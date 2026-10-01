@@ -10,9 +10,12 @@ runtime in the gateway, consulted by the kill gate. This module supplies the two
 things that registry deliberately does not decide, plus the cap:
 
 ``eligible_for_chat_sharing``
-    Whether a session may share at all. A cron, hook, task-runner or crew-member
-    session keeps its own process, and so does an incognito or temporary session
-    -- see the function's own reasoning.
+    Whether a session may share at all. A cron, hook or task-runner session keeps
+    its own process, and so does an incognito or temporary session -- see the
+    function's own reasoning. A crew-member session also keeps its own process:
+    member memory and workspace are isolated per member, so a member session is
+    refused with the ``member_session`` reason rather than sharing one runtime
+    across members.
 
 :class:`ChatRuntimeKey`
     WHICH process, as the registry's compatibility key. Two sessions may land on
@@ -77,13 +80,46 @@ def chat_runtime_cap(*, sharing_enabled: bool, configured: int) -> int:
     return max(CHAT_RUNTIME_CAP, int(configured))
 
 
+def chat_sharing_ineligible_reason(
+    *,
+    session_key: str | None,
+    memory_mode: str,
+    sharing_enabled: bool,
+    backend: str,
+    member_context: bool,
+) -> str:
+    """WHY this session may not share a chat runtime, or ``""`` when it may.
+
+    The decision itself lives here, and :func:`eligible_for_chat_sharing` is the
+    boolean over it, so there is exactly one place the branches are written. The
+    reason is returned rather than only logged because a refusal is invisible
+    otherwise: an operator who turned sharing on and still sees one process per
+    session has no way to tell WHICH condition refused, and the branch name is
+    the whole answer.
+
+    Each value names the condition, never a session property worth hiding: a
+    branch name carries no key, no path and no environment value.
+    """
+    if not sharing_enabled:
+        return "sharing_disabled"
+    if backend not in ACP_BACKENDS_CHAT_RUNTIME_SHARING:
+        return "backend_not_chat_shareable"
+    if memory_mode not in _SHAREABLE_MEMORY_MODES:
+        return "memory_mode_not_shareable"
+    if telemetry_channel_of(session_key) != "dashboard":
+        return "origin_not_dashboard"
+    if member_context:
+        return "member_session"
+    return ""
+
+
 def eligible_for_chat_sharing(
     *,
     session_key: str | None,
     memory_mode: str,
-    member_context: bool,
     sharing_enabled: bool,
     backend: str,
+    member_context: bool,
 ) -> bool:
     """Whether this session may join (or found) a shared chat runtime.
 
@@ -112,19 +148,19 @@ def eligible_for_chat_sharing(
     unsupported backend have equal keys, so they would share with each other,
     which is the broken case rather than a safe one.
 
-    ``member_context`` is refused because a crew member's process captures that
-    member's native launch documents at spawn, so its process is already
-    member-specific.
+    A crew-member session is refused: it keeps its own process. A member session
+    carries member-specific memory and workspace isolation, so sharing one
+    runtime across member sessions is an isolation boundary this change does not
+    cross -- the safe default wins. Member sharing can return in a follow-up once
+    a maintainer approves it.
     """
-    if not sharing_enabled:
-        return False
-    if backend not in ACP_BACKENDS_CHAT_RUNTIME_SHARING:
-        return False
-    if member_context:
-        return False
-    if memory_mode not in _SHAREABLE_MEMORY_MODES:
-        return False
-    return telemetry_channel_of(session_key) == "dashboard"
+    return not chat_sharing_ineligible_reason(
+        session_key=session_key,
+        memory_mode=memory_mode,
+        member_context=member_context,
+        sharing_enabled=sharing_enabled,
+        backend=backend,
+    )
 
 
 def _freeze_env(extra_env: dict[str, str] | None) -> tuple[tuple[str, str], ...]:
@@ -205,16 +241,6 @@ class ChatRuntimeKey:
         Selects the harness, and through it the binary and the handshake.
     ``tool_search``
         Sent once in the ``initialize`` handshake.
-    ``member_context``
-        Decides whether native launch documents are captured at spawn.
-
-        An eligibility MIRROR, not a discriminator: ``eligible_for_chat_sharing``
-        refuses a member session outright, so the only value that ever reaches
-        this key is ``False``. That single admitted value is the reason the field
-        stays -- it is the second line of a two-line defence over a property that
-        is unsafe to share, and eligibility cannot be folded into the key (see
-        that function's own note on equal keys). Removing it as a constant
-        removes a guard.
     ``memory_mode``
         Latches the runtime's recording permission at ``create_session``.
 
@@ -285,7 +311,6 @@ class ChatRuntimeKey:
     extra_env: tuple[tuple[str, str], ...]
     acp_backend: str
     tool_search: tuple[object, ...]
-    member_context: bool
     memory_mode: str
     shared_scratch: str
     mcp_gateway_overlay: str
@@ -305,7 +330,6 @@ class ChatRuntimeKey:
         extra_env: dict[str, str] | None,
         acp_backend: str,
         tool_search: "ToolSearchSettings | None",
-        member_context: bool,
         memory_mode: str,
         shared_scratch: Path | None,
         mcp_gateway_overlay: str | Path | None,
@@ -336,7 +360,6 @@ class ChatRuntimeKey:
             extra_env=_freeze_env(extra_env),
             acp_backend=acp_backend or "",
             tool_search=_freeze_tool_search(tool_search),
-            member_context=bool(member_context),
             memory_mode=memory_mode or "",
             shared_scratch=_freeze_path(shared_scratch),
             mcp_gateway_overlay=_freeze_path(mcp_gateway_overlay),
@@ -505,5 +528,6 @@ __all__ = [
     "ChatRuntimeKey",
     "agent_spec_generation",
     "chat_runtime_cap",
+    "chat_sharing_ineligible_reason",
     "eligible_for_chat_sharing",
 ]

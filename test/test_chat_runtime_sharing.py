@@ -19,6 +19,7 @@ import kiro_crew.runtime_ownership as ro
 from kiro_crew.acp.chat_runtime_sharing import (
     ChatRuntimeKey,
     chat_runtime_cap,
+    chat_sharing_ineligible_reason,
     eligible_for_chat_sharing,
 )
 from kiro_crew.acp_backends import (
@@ -29,6 +30,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKENDS_SESSION_SHARING,
 )
 from kiro_crew.runtime_ownership import RuntimeOwnership, authorize_runtime_kill
+from kiro_crew.testing.wait import async_wait_until
 
 
 class FakeRuntime:
@@ -67,7 +69,6 @@ def a_key(**overrides) -> ChatRuntimeKey:
         extra_env={"A": "1", "B": "2"},
         acp_backend="kiro",
         tool_search=None,
-        member_context=False,
         memory_mode="persistent",
         shared_scratch=None,
         mcp_gateway_overlay=None,
@@ -87,18 +88,18 @@ class TestChatSharingEligibility:
         assert eligible_for_chat_sharing(
             session_key="dashboard:chat-12-1790000000",
             memory_mode="persistent",
-            member_context=False,
             sharing_enabled=True,
             backend=ACP_BACKEND_KIRO,
+            member_context=False,
         )
 
     def test_bare_chat_slot_key_is_eligible(self):
         assert eligible_for_chat_sharing(
             session_key="chat-12-1790000000",
             memory_mode="persistent",
-            member_context=False,
             sharing_enabled=True,
             backend=ACP_BACKEND_KIRO,
+            member_context=False,
         )
 
     @pytest.mark.parametrize("mode", ["incognito", "temporary"])
@@ -106,27 +107,39 @@ class TestChatSharingEligibility:
         assert not eligible_for_chat_sharing(
             session_key="dashboard:chat-12-1790000000",
             memory_mode=mode,
-            member_context=False,
             sharing_enabled=True,
             backend=ACP_BACKEND_KIRO,
+            member_context=False,
         )
 
-    def test_member_session_never_shares(self):
+    def test_member_session_is_refused_and_keeps_its_own_process(self):
+        """A crew-member session is refused chat sharing and keeps its own
+        process. Member memory and workspace are isolated per member, so sharing
+        one runtime across member sessions is a boundary this change does not
+        cross -- the safe default wins. A non-member dashboard slot still shares.
+        """
         assert not eligible_for_chat_sharing(
             session_key="dashboard:chat-12-1790000000",
             memory_mode="persistent",
-            member_context=True,
             sharing_enabled=True,
             backend=ACP_BACKEND_KIRO,
+            member_context=True,
+        )
+        assert eligible_for_chat_sharing(
+            session_key="dashboard:chat-12-1790000000",
+            memory_mode="persistent",
+            sharing_enabled=True,
+            backend=ACP_BACKEND_KIRO,
+            member_context=False,
         )
 
     def test_flag_off_disables_sharing(self):
         assert not eligible_for_chat_sharing(
             session_key="dashboard:chat-12-1790000000",
             memory_mode="persistent",
-            member_context=False,
             sharing_enabled=False,
             backend=ACP_BACKEND_KIRO,
+            member_context=False,
         )
 
     def test_a_backend_without_multiplexed_sessions_is_not_eligible(self):
@@ -141,17 +154,17 @@ class TestChatSharingEligibility:
         assert not eligible_for_chat_sharing(
             session_key="dashboard:chat-12-1790000000",
             memory_mode="persistent",
-            member_context=False,
             sharing_enabled=True,
             backend=ACP_BACKEND_KAS,
+            member_context=False,
         )
         # Everything else identical, on a host that DOES multiplex.
         assert eligible_for_chat_sharing(
             session_key="dashboard:chat-12-1790000000",
             memory_mode="persistent",
-            member_context=False,
             sharing_enabled=True,
             backend=ACP_BACKEND_KIRO,
+            member_context=False,
         )
 
     def test_chat_sharing_is_not_inherited_from_subagent_sharing(self):
@@ -174,9 +187,9 @@ class TestChatSharingEligibility:
         assert not eligible_for_chat_sharing(
             session_key="dashboard:chat-12-1790000000",
             memory_mode="persistent",
-            member_context=False,
             sharing_enabled=True,
             backend=ACP_BACKEND_CODEX,
+            member_context=False,
         )
 
     @pytest.mark.parametrize(
@@ -195,13 +208,82 @@ class TestChatSharingEligibility:
         assert not eligible_for_chat_sharing(
             session_key=key,
             memory_mode="persistent",
-            member_context=False,
             sharing_enabled=True,
             backend=ACP_BACKEND_KIRO,
+            member_context=False,
         )
 
 
-# ── The cap ──
+class TestTheRefusalNamesItsBranch:
+    """The reason is what an operator reads in the log, so it is pinned.
+
+    A refused placement looks exactly like a gateway where sharing was never
+    turned on: one process per session. The branch name is the only thing that
+    separates the four reasons, so a renamed or collapsed branch has to fail here.
+    """
+
+    def _ask(self, **overrides) -> str:
+        base = dict(
+            session_key="dashboard:chat-12-1790000000",
+            memory_mode="persistent",
+            sharing_enabled=True,
+            backend=ACP_BACKEND_KIRO,
+        )
+        base.update(overrides)
+        return chat_sharing_ineligible_reason(
+            **base,
+            member_context=False,
+        )
+
+    def test_an_eligible_session_has_no_reason(self):
+        assert self._ask() == ""
+
+    @pytest.mark.parametrize(
+        "overrides,reason",
+        [
+            ({"sharing_enabled": False}, "sharing_disabled"),
+            ({"backend": ACP_BACKEND_CODEX}, "backend_not_chat_shareable"),
+            ({"memory_mode": "incognito"}, "memory_mode_not_shareable"),
+            ({"session_key": "cron:nightly-digest"}, "origin_not_dashboard"),
+        ],
+    )
+    def test_each_refusal_names_its_own_branch(self, overrides, reason):
+        assert self._ask(**overrides) == reason
+
+    def test_a_member_session_is_refused(self):
+        """A crew-member session keeps its own process: member memory and
+        workspace isolation is a boundary chat sharing does not cross, so the
+        safe default refuses it. The refusal lives in this function, named."""
+        import inspect
+
+        params = inspect.signature(chat_sharing_ineligible_reason).parameters
+        assert "member_context" in params
+        assert "member_context" in inspect.signature(eligible_for_chat_sharing).parameters
+        assert (
+            chat_sharing_ineligible_reason(
+                session_key="dashboard:chat-12-1790000000",
+                memory_mode="persistent",
+                sharing_enabled=True,
+                backend=ACP_BACKEND_KIRO,
+                member_context=True,
+            )
+            == "member_session"
+        )
+
+    @pytest.mark.parametrize("enabled", [True, False])
+    @pytest.mark.parametrize("mode", ["persistent", "incognito"])
+    @pytest.mark.parametrize("backend", [ACP_BACKEND_KIRO, ACP_BACKEND_CODEX])
+    def test_the_boolean_and_the_reason_never_disagree(self, enabled, mode, backend):
+        """One decision, two spellings: a reason means refused, and no reason means
+        eligible. A branch added to one and not the other would split them."""
+        args = dict(
+            session_key="dashboard:chat-12-1790000000",
+            memory_mode=mode,
+            sharing_enabled=enabled,
+            backend=backend,
+            member_context=False,
+        )
+        assert eligible_for_chat_sharing(**args) == (chat_sharing_ineligible_reason(**args) == "")
 
 
 class TestTheCapIsGovernedByTheSwitch:
@@ -259,7 +341,6 @@ class TestChatRuntimeKey:
             ("sandbox_mode", "strict"),
             ("extra_env", {"A": "9"}),
             ("acp_backend", "kas"),
-            ("member_context", True),
             ("memory_mode", "incognito"),
             ("shared_scratch", Path("/scratch/tree-a")),
             ("mcp_gateway_overlay", "/overlay/a.json"),
@@ -296,6 +377,33 @@ class TestChatRuntimeKey:
         from kiro_crew.acp.chat_runtime_sharing import _freeze_path
 
         assert _freeze_path("/home/u/a") != _freeze_path("/home/u/b")
+
+    def test_a_member_session_is_refused_and_founds_its_own_process(self):
+        """A crew-member session keeps its own process: it is refused chat
+        sharing, so even four dashboard slots of ONE member each found their own
+        runtime. Member memory and workspace are isolated per member, so sharing
+        one runtime across member sessions is a boundary this change does not
+        cross -- the safe default wins. Driven through the registry, the path a
+        real start takes.
+        """
+        ro._reset_for_tests()
+        try:
+            table = ro.RUNTIME_OWNERSHIP
+            spawn = spawner(*[FakeRuntime(pid=9400 + n) for n in range(4)])
+            for n in range(4):
+                session = f"dashboard:chat-{n}-1790000000"
+                assert not eligible_for_chat_sharing(
+                    session_key=session,
+                    memory_mode="persistent",
+                    sharing_enabled=True,
+                    backend=ACP_BACKEND_KIRO,
+                    member_context=True,
+                ), "a member session must be refused chat sharing"
+                # Refused -> each founds its own runtime at cap 1.
+                asyncio.run(table.acquire(a_key(), session, spawn, cap=1))
+            assert len(spawn.calls) == 4, "member slots were allowed to share a process"
+        finally:
+            ro._reset_for_tests()
 
     def test_reasoning_effort_splits_the_key(self):
         """Two slots asking for different effort cannot share one process.
@@ -725,6 +833,41 @@ class TestThePlacementIsConfirmedAgainstTheSpecAfterwards:
         finally:
             ro._reset_for_tests()
 
+    def test_every_placement_decision_is_logged_at_warning(self):
+        """Structural: one WARNING line per placement, in the two places a
+        placement is decided.
+
+        A refusal and a join are both invisible at WARNING without these, which is
+        how a gateway ran 24 processes for 14 sessions with nothing in the log
+        saying why. Pinned by source because reaching either line needs the whole
+        ``AcpProvider.start`` preamble, and what a later edit silently does is drop
+        the level to INFO or delete the call.
+        """
+        import re
+        from pathlib import Path
+
+        import kiro_crew.providers.acp as provider_mod
+
+        source = Path(provider_mod.__file__).read_text()
+        # Control: the string the scan is built around is really in this file, so
+        # an empty match below means the call went away rather than the scan being
+        # pointed at the wrong module.
+        assert "chat-runtime-sharing" in source, "scanning the wrong module proves nothing"
+        refusal = re.search(
+            r"logger\.warning\(\s*\n\s*\"chat-runtime-sharing ineligible reason=%s session=%s\"",
+            source,
+        )
+        assert refusal, "the ineligible branch is no longer logged at WARNING"
+        placement = re.search(
+            r"logger\.warning\(\s*\n\s*\"chat-runtime-sharing %s runtime=%s tenants=%d session=%s\"",
+            source,
+        )
+        assert placement, "the join/spawn outcome is no longer logged at WARNING"
+        outcome = source[placement.end() : placement.end() + 200]
+        assert (
+            '"joined" if joined_shared_runtime else "spawned"' in outcome
+        ), "the outcome word no longer comes from the acquisition's own joined flag"
+
     def test_the_confirmation_is_wired_into_the_placement(self):
         """Structural: the helper being right is not the placement calling it.
 
@@ -761,9 +904,14 @@ class TestThePlacementIsConfirmedAgainstTheSpecAfterwards:
             "process that authenticated under the older era"
         )
         assert (
-            "if confirmed == chat_share_spec_generation and era_holds and forward_ssh_holds:"
-            in region
-        ), "the placement returns without confirming the spec generation, the era, AND the consent"
+            "confirmed == chat_share_spec_generation" in region
+            and "era_holds" in region
+            and "forward_ssh_holds" in region
+            and "sandbox_tier_holds" in region
+        ), (
+            "the placement returns without confirming the spec generation, the era, "
+            "the consent AND the governed sandbox tier"
+        )
         assert (
             "confirmed_era == chat_share_pre_spawn_era" in region
         ), "the era is re-read but not compared to the era this start observed"
@@ -774,13 +922,28 @@ class TestThePlacementIsConfirmedAgainstTheSpecAfterwards:
         # landing on a process founded under the older consent bypasses an opt-out
         # the operator updated during the acquisition wait. Re-read and compared on
         # the same bracket as the era and the generation.
-        assert "_forward_ssh_auth_sock)" in region, (
+        assert "confirmed_forward_ssh = await asyncio.to_thread(" in region and (
+            "_forward_ssh_auth_sock," in region
+        ), (
             "the placement no longer re-reads the SSH_AUTH_SOCK-forwarding consent after "
             "acquiring, so a joiner bypasses a resource opt-out that landed during the wait"
         )
         assert (
             "confirmed_forward_ssh == chat_share_forward_ssh" in region
         ), "the forwarding consent is re-read but not compared to the one this start placed on"
+        # The governed sandbox tier is a GOVERNANCE ceiling raised out of band: a
+        # joiner landing on a process founded under a lower tier bypasses a floor
+        # the operator raised during the acquisition wait. Re-read and compared on
+        # the same bracket as the era, the generation and the consent.
+        assert "confirmed_sandbox_tier = await asyncio.to_thread(" in region and (
+            "effective_sandbox_mode," in region
+        ), (
+            "the placement no longer re-reads the governed sandbox tier after "
+            "acquiring, so a joiner bypasses a sandbox floor raised during the wait"
+        )
+        assert (
+            "confirmed_sandbox_tier == chat_share_sandbox_tier" in region
+        ), "the governed sandbox tier is re-read but not compared to the one this start placed on"
         # COUNTED, not merely present. The retry and the exhausted-attempts path
         # each release and each gate on the handback, so an assertion that one
         # occurrence exists passes while the other is gutted.
@@ -817,6 +980,157 @@ class TestThePlacementIsConfirmedAgainstTheSpecAfterwards:
                     "a confirmation in the placement is gated on a literal false, so the "
                     f"read it guards decides nothing (line {node.lineno} of providers/acp.py)"
                 )
+
+
+class TestAnUnkeyedSpawnRereadsTheForwardingConsent:
+    """The frozen consent travels with a KEY, and only with a key.
+
+    Freezing the SSH_AUTH_SOCK-forwarding consent is what lets a shared process
+    match the key it was founded under. The unshared branch founds no key, so
+    handing it the frozen value there swaps the fresh read inside ``spawn()``
+    for an older one and protects nothing: an operator who revokes forwarding
+    after this start's early read would still see the new process receive the
+    agent socket, and a running process cannot shed it.
+    """
+
+    def test_the_spawn_site_conditions_the_override_on_the_key(self):
+        """The argument is a conditional on ``chat_share_key``, not the bare value.
+
+        Read as a tree rather than as text: the unconditional spelling and the
+        conditional one share every identifier, so a substring search passes on
+        both and would pin nothing.
+        """
+        import ast
+        from pathlib import Path
+
+        import kiro_crew.providers.acp as provider_mod
+
+        source = Path(provider_mod.__file__).read_text(encoding="utf-8")
+        spawn = next(
+            n
+            for n in ast.walk(ast.parse(source))
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and n.name == "_spawn_chat_runtime"
+        )
+        overrides = [
+            kw
+            for node in ast.walk(spawn)
+            if isinstance(node, ast.Call)
+            for kw in node.keywords
+            if kw.arg == "forward_ssh_auth_sock"
+        ]
+        assert len(overrides) == 1, (
+            "expected exactly one forwarding-consent argument in the spawn helper, "
+            f"found {len(overrides)}"
+        )
+        value = overrides[0].value
+        assert isinstance(value, ast.IfExp), (
+            "the spawn helper hands the frozen forwarding consent to EVERY start. "
+            "Without a key there is nothing for it to match, so an unshared spawn "
+            "uses a staler consent than the fresh read it displaces"
+        )
+        guard = {n.id for n in ast.walk(value.test) if isinstance(n, ast.Name)}
+        assert "chat_share_key" in guard, (
+            "the override is conditional, but not on whether this start keyed a "
+            f"shared runtime (guard reads {sorted(guard)})"
+        )
+        assert "chat_share_key_joinable" in guard, (
+            "the guard asks whether a key exists but not whether anything can match "
+            "it. Placement swaps a unique token into the key when it gives up, and "
+            "that last spawn then founds its own process under a consent nobody "
+            f"keyed on (guard reads {sorted(guard)})"
+        )
+        assert isinstance(
+            value.orelse, ast.Constant
+        ), "the unkeyed branch must pass a literal None so spawn() resolves consent"
+        assert value.orelse.value is None, (
+            "the unkeyed branch passes "
+            f"{value.orelse.value!r} rather than None, so spawn() still skips its own read"
+        )
+
+    def test_giving_up_on_placement_drops_the_frozen_consent(self):
+        """Exhaustion must clear joinability BEFORE its own founding acquire.
+
+        The retry tail swaps a unique token into the key so this session takes a
+        process of its own. That acquisition can only miss, so no other session
+        keyed on the consent frozen with it -- and three mismatching placements
+        are exactly the window in which an operator revoked forwarding. Reading
+        it fresh at spawn is the only answer that honours the revocation.
+        """
+        import ast
+        from pathlib import Path
+
+        import kiro_crew.providers.acp as provider_mod
+
+        source = Path(provider_mod.__file__).read_text(encoding="utf-8")
+        place = next(
+            n
+            for n in ast.walk(ast.parse(source))
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and n.name == "_place_chat_runtime"
+        )
+        loops = [n for n in place.body if isinstance(n, ast.For)]
+        assert len(loops) == 1, f"expected one placement loop, found {len(loops)}"
+        tail = [n for n in place.body if n is not loops[0]]
+        cleared = [
+            stmt
+            for node in tail
+            for stmt in ast.walk(node)
+            if isinstance(stmt, ast.Assign)
+            and any(
+                isinstance(t, ast.Name) and t.id == "chat_share_key_joinable" for t in stmt.targets
+            )
+        ]
+        assert len(cleared) == 1, (
+            "the exhausted tail does not record that its key became unjoinable, so "
+            "the fallback spawn still hands a process the consent frozen three "
+            f"placements ago (found {len(cleared)} assignments)"
+        )
+        assigned = cleared[0].value
+        assert isinstance(assigned, ast.Constant) and assigned.value is False, (
+            "the tail assigns "
+            f"{ast.dump(assigned)} rather than False, so the key still reads as joinable"
+        )
+        in_loop = [
+            stmt
+            for stmt in ast.walk(loops[0])
+            if isinstance(stmt, ast.Assign)
+            and any(
+                isinstance(t, ast.Name) and t.id == "chat_share_key_joinable" for t in stmt.targets
+            )
+        ]
+        assert not in_loop, (
+            "a retry that is still placing against other sessions cleared joinability, "
+            "which would drop the freeze the key is still being matched on"
+        )
+
+    def test_the_runtime_treats_none_as_resolve_it_yourself(self):
+        """``None`` is the contract the unkeyed branch relies on.
+
+        The provider's fix is only a fix because the launch tail reads a ``None``
+        override as "no frozen answer, resolve the consent at spawn". If that
+        consumer ever treated ``None`` as a value, the unkeyed branch would be
+        passing an answer of "off" rather than asking for a fresh read. The launch
+        tail lives in ``acp.launch.launch``; the runtime threads its
+        ``_forward_ssh_auth_sock_override`` into the ``LaunchRequest`` and the
+        None-distinction lives there.
+        """
+        from pathlib import Path
+
+        import kiro_crew.acp.launch as launch_mod
+        import kiro_crew.acp.runtime as runtime_mod
+
+        launch_src = Path(launch_mod.__file__).read_text(encoding="utf-8")
+        assert "if request.forward_ssh_auth_sock_override is not None:" in launch_src, (
+            "the launch tail no longer distinguishes an absent override from a false "
+            "one, so an unkeyed spawn's None is read as a decision instead of a "
+            "request to resolve the consent"
+        )
+        # The runtime must still carry the frozen value through to that tail.
+        runtime_src = Path(runtime_mod.__file__).read_text(encoding="utf-8")
+        assert (
+            "forward_ssh_auth_sock_override=self._forward_ssh_auth_sock_override" in runtime_src
+        ), "the runtime no longer threads its frozen forwarding consent into the launch request"
 
 
 # ── Two sessions on one process ──
@@ -1365,20 +1679,28 @@ class TestAFailedStartReleasesBeforeItKills:
         end = re.search(r"^[ \t]*raise[ \t]*$", source[start:], re.MULTILINE)
         assert end is not None, "the post-start stamp arm no longer re-raises"
         region = source[start : start + end.start()]
-        assert "release_session_lease(provider)" in region, (
-            "the post-start cleanup kills without releasing the lease its own "
-            "placement took, so the gate refuses the kill and the runtime is "
-            "left leased and unreapable"
+        assert "provider.shutdown()" in region, (
+            "the post-start cleanup no longer runs the provider's own shutdown, so "
+            "a failed shared start leaves its native session, queue and MCP "
+            "children resident on the surviving runtime"
         )
-        # Order, not mere presence: killing first is refused by the gate.
-        assert region.index("release_session_lease(provider)") < region.index(
+        # Order, not mere presence: the shutdown (which releases the lease and
+        # evicts the session) must precede the hard-kill fallback.
+        assert region.index("provider.shutdown()") < region.index(
             "_dispatch_hard_kill"
-        ), "the cleanup kills before it releases, which the gate refuses"
+        ), "the cleanup hard-kills before it runs the graceful shutdown"
+        # The hard kill is only a fallback for a shutdown that itself raised, not
+        # the primary teardown: it sits under the shutdown's own failure.
+        assert re.search(r"except\s+Exception\s*:\s*\n\s*owner\._dispatch_hard_kill", region), (
+            "the post-start cleanup hard-kills unconditionally instead of only "
+            "when the graceful shutdown fails"
+        )
         # The exception in flight is usually CancelledError, so a bare await would
-        # take the next one and never reach the kill.
-        assert re.search(r"await asyncio\.shield\(\s*_release\s*\)", region), (
-            "the release is unshielded, so a cancellation lands mid-release and "
-            "strands the lease this arm exists to give back"
+        # take the next one and never reach the teardown; the shutdown runs as a
+        # shielded task.
+        assert re.search(r"await asyncio\.shield\(\s*_shutdown\s*\)", region), (
+            "the shutdown is unshielded, so a cancellation lands mid-teardown and "
+            "strands the session this arm exists to evict"
         )
 
 
@@ -1408,6 +1730,13 @@ class TestProjectionSkipOnJoin:
             def agent(self, mode_agent):
                 return f"{mode_agent}@{self.tag}"
 
+            def spawn_agent(self, mode_agent):
+                # The launch agent's own activation (mode_agent == runtime._agent)
+                # takes this path in _resolve_start_alias, which "keeps the
+                # authored name"; mirror agent() so the bracket still sends a
+                # mode and the test's calls-based assertions are unaffected.
+                return f"{mode_agent}@{self.tag}"
+
             def recognise(self, _other):
                 return None
 
@@ -1424,6 +1753,11 @@ class TestProjectionSkipOnJoin:
 
         rt = AcpRuntime.__new__(AcpRuntime)
         rt._work_dir = Path("/home/u/.kirocrew/workspace")
+        # The agent this runtime was spawned as. The refresh branch resolves the
+        # start alias through _resolve_start_alias, which compares mode_agent to
+        # self._agent to allow the launch agent's own activation, so the stub has
+        # to carry it or that read raises. The tests activate "kirocrew".
+        rt._agent = "kirocrew"
         rt._native_skill_projection = _FakeProjection("already-live")
         rt._spawn_skill_projection = None
         sent: list = []
@@ -1690,12 +2024,25 @@ class TestChatTurnsAreSerializedOnASharedProcess:
 
         ta = asyncio.create_task(run_a())
         tb = asyncio.create_task(run_b())
-        await asyncio.sleep(0.02)
+        # Wait on the STATE, not a fixed sleep: a is inside the gate (order shows
+        # "a-in") and b is parked on the lock (the lock is held and b has not
+        # entered). Both are loop-confined asyncio state, so evaluate on-loop.
+        await async_wait_until(
+            lambda: order == ["a-in"] and rt._chat_turn_lock.locked(),
+            timeout=5,
+            describe=lambda: f"order={order} locked={rt._chat_turn_lock.locked()}",
+        )
         # a is inside and holding; b is blocked on the lock, not inside.
         assert order == ["a-in"], order
         assert rt.max_concurrent == 1
         b_may_finish.set()
-        await asyncio.gather(ta, tb)
+        try:
+            await asyncio.wait_for(asyncio.gather(ta, tb), timeout=5)
+        except (asyncio.TimeoutError, TimeoutError):
+            for t in (ta, tb):
+                t.cancel()
+            await asyncio.gather(ta, tb, return_exceptions=True)
+            raise AssertionError("gate turns did not drain within 5s")
         assert order == ["a-in", "a-out", "b-in"], order
         assert rt.max_concurrent == 1, "two shared chat turns were inside the gate at once"
 
@@ -1714,8 +2061,192 @@ class TestChatTurnsAreSerializedOnASharedProcess:
         async with principal._chat_turn_gate():
             assert rt._chat_turn_lock.locked(), "principal did not take the shared lock"
             # The sub-agent's gate must not block on the principal's held lock.
+            # Bound the acquisition with a local deadline: if the exemption
+            # regresses, the sub-agent would wait on the principal's held lock
+            # forever, so without this the Windows pytest-timeout kills the whole
+            # worker instead of producing a bounded failure here.
             entered = False
-            async with subagent._chat_turn_gate():
-                entered = True
+
+            async def _enter_subagent_gate() -> None:
+                nonlocal entered
+                async with subagent._chat_turn_gate():
+                    entered = True
+
+            try:
+                await asyncio.wait_for(_enter_subagent_gate(), timeout=5)
+            except (asyncio.TimeoutError, TimeoutError):
+                raise AssertionError("a sub-agent turn was blocked by the principal's turn gate")
             assert entered, "a sub-agent turn was blocked by the principal's turn gate"
         assert not rt._chat_turn_lock.locked()
+
+
+class TestSharedRuntimeFanoutGating:
+    """The three ``_run_chat`` branches a shared runtime fans out to co-tenants.
+
+    A shared runtime fans a ``/clear``, a compaction, and an agent-switch echo
+    to EVERY co-tenant runner, marked ``runtime_global`` with no issuer. The
+    W14 review (GPT 6.1 / Opus) rejected both blanket positions -- discard on
+    the flag drops the issuer's own frame; apply on the flag accepts a peer's --
+    and prescribed a per-branch shape. These assertions read ``chat_runner``
+    source and lock that shape in so a future revert cannot silently re-take
+    either blanket position. The threshold (``len(_queues) > 1``) is reachable
+    on the shipped default via subagent session sharing, so this is in scope
+    with ``chat_runtime_sharing=False`` too.
+    """
+
+    @pytest.fixture
+    def src(self):
+        import inspect
+
+        import kiro_crew.dashboard.chat_runner as cr
+
+        return inspect.getsource(cr)
+
+    def test_a_fanned_out_clear_is_ignored_unless_this_turn_typed_it(self, src):
+        # The /clear handler pairs the ownerless flag with a per-turn issuer
+        # marker: ignore a fanned clear unless THIS runner's own command this
+        # turn is /clear, so a peer's clear never wipes this session's history.
+        clear = src.index("elif event.kind == EVENT_CLEAR_STATUS:")
+        window = src[clear : clear + 1600]
+        assert "if event.runtime_global and not _this_turn_is_clear:" in window
+        assert "continue" in window
+        # and it still retires the first-turn-history debt in the OWN-clear path.
+        assert "consume_first_turn_history_owed(session_key)" in window
+
+    def test_the_compaction_durable_half_runs_only_on_a_real_terminal(self, src):
+        # ``started`` is admitted unconditionally (self-healing: a peer's
+        # terminal clears what its started set); the DURABLE segment-boundary
+        # drop of assistant_text runs only on a REAL (not synthesized) terminal,
+        # the window two source ratchets (test_leaked_toolcall_notice,
+        # test_post_compaction_continuation) lock: scan then clear, under
+        # ``if not event.synthesized:`` with nothing between but the scan.
+        comp = src.index("elif event.kind == EVENT_COMPACTION_STATUS:")
+        branch = src[comp : src.index("elif event.kind == EVENT_CLEAR_STATUS:", comp)]
+        # started arm has no runtime_global gate of its own.
+        started = branch.index('if event.text == "started":')
+        assert "runtime_global" not in branch[started : started + 400]
+        # the durable reset sits under the real-terminal window and is preceded
+        # by the leak scan.
+        assert "if not event.synthesized:" in branch
+        window = branch.index("if not event.synthesized:")
+        guarded = branch[window:]
+        assert "has_leaked_tool_call(" in guarded
+        assert guarded.index("has_leaked_tool_call(") < guarded.index('assistant_text = ""')
+
+    def test_the_agent_switch_veto_is_unconditional_but_bookkeeping_is_gated(self, src):
+        # The member-pin veto must NOT be gated on the ownerless flag (skipping
+        # it on this session's own switch is a silent security regression); only
+        # the non-member bookkeeping is gated against an ownerless (peer) frame.
+        sw = src.index("elif event.kind == EVENT_AGENT_SWITCHED:")
+        # the branch runs to the next elif on the event kind.
+        nxt = src.index("elif event.kind ==", sw + 1)
+        branch = src[sw:nxt]
+        veto = branch.index("if new_agent and (")
+        # The veto CONDITION itself carries no ownerless gate -- it fires on this
+        # session's own switch regardless of the frame's provenance.
+        veto_line = branch[veto : branch.index(":", veto) + 1]
+        assert "runtime_global" not in veto_line
+        # The non-member bookkeeping IS gated against an ownerless (peer) frame.
+        assert "elif new_agent and not event.runtime_global:" in branch
+
+
+# ── A failed start on a shared process must not try to kill a co-tenant's process ──
+
+
+class TestFailedAllocationCleanupNeverKillsACoTenantsProcess:
+    """A start that fails AFTER taking its lease on a SHARED chat runtime must
+    EVICT its own session and kill the process ONLY when it was the last holder.
+
+    The allocation cleanup runs the provider's own shutdown, which destroys this
+    session's handle -- so its native session, queue and MCP children leave the
+    shared process -- releases the lease, and kills the runtime only when this was
+    its last holder. Releasing the lease alone would leave the abandoned session
+    resident on a runtime a co-tenant keeps alive. A sole owner's shutdown kills
+    its runtime, as the unshared path always did.
+    """
+
+    def test_a_failed_joiner_is_evicted_without_killing_the_co_tenants_process(self):
+        ro._reset_for_tests()
+        try:
+            rt = KillableRuntime(pid=9400)
+            live = ro.RUNTIME_OWNERSHIP
+            # Two sessions share one process; the first one's start then fails.
+            failing = asyncio.run(live.acquire(a_key(), "dashboard:chat-1-1", spawner(rt), cap=10))
+            other = asyncio.run(live.acquire(a_key(), "dashboard:chat-2-1", spawner(rt), cap=10))
+
+            provider, handle = shared_provider(rt, "dashboard:chat-1-1", failing.lease)
+            # The failed-start cleanup runs the provider's own shutdown.
+            asyncio.run(provider.shutdown())
+
+            assert handle.destroyed == 1, (
+                "the failed shared start must evict its session (destroy the "
+                "handle) so its native session and queue leave the process"
+            )
+            assert rt.kills == [], "the failed start killed a co-tenant's process"
+            assert rt.is_alive(), "the co-tenant's process must still be running"
+            assert provider._runtime_lease is None, "the failed start must drop its own lease"
+            # The surviving co-tenant still holds it; ITS release ends the process.
+            assert asyncio.run(live.release(other.lease)) is rt
+        finally:
+            ro._reset_for_tests()
+
+    def test_a_failed_sole_owner_start_still_kills_its_runtime(self):
+        ro._reset_for_tests()
+        try:
+            rt = KillableRuntime(pid=9401)
+            live = ro.RUNTIME_OWNERSHIP
+            only = asyncio.run(live.acquire(a_key(), "dashboard:chat-1-1", spawner(rt), cap=10))
+
+            provider, handle = shared_provider(rt, "dashboard:chat-1-1", only.lease)
+            asyncio.run(provider.shutdown())
+
+            assert handle.destroyed == 1
+            assert len(rt.kills) == 1, "the sole holder's failed start must end the process"
+            assert not rt.is_alive()
+        finally:
+            ro._reset_for_tests()
+
+    def test_the_allocation_cleanup_evicts_via_shutdown_with_a_hard_kill_fallback(self):
+        """Source + reachability pin: the two post-start cleanup arms must run
+        ``provider.shutdown()`` (which evicts the session and kills only the last
+        holder) and dispatch the hard kill ONLY when that shutdown itself fails.
+        """
+        import ast
+        import inspect
+
+        from kiro_crew import session_allocation
+
+        source = inspect.getsource(session_allocation)
+        assert source.count("provider.shutdown()") >= 2, (
+            "a post-start cleanup arm no longer runs the provider's own shutdown, "
+            "so a failed shared start leaves its session resident on the runtime"
+        )
+
+        tree = ast.parse(source)
+        impl = next(
+            n
+            for n in ast.walk(tree)
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and n.name == "_get_or_create_impl"
+        )
+        # Every _dispatch_hard_kill in the cleanup arms must sit under an
+        # ``except Exception`` handler -- i.e. a fallback for a failed shutdown,
+        # not the primary teardown.
+        fallback = 0
+        for node in ast.walk(impl):
+            if isinstance(node, ast.ExceptHandler):
+                for sub in ast.walk(node):
+                    if (
+                        isinstance(sub, ast.Call)
+                        and isinstance(sub.func, ast.Attribute)
+                        and sub.func.attr == "_dispatch_hard_kill"
+                    ):
+                        # The handler must be catching Exception (the shutdown's
+                        # own failure), not the outer BaseException arm.
+                        exc_type = node.type
+                        if isinstance(exc_type, ast.Name) and exc_type.id == "Exception":
+                            fallback += 1
+        assert fallback >= 2, (
+            "the two cleanup arms must dispatch _dispatch_hard_kill only as a "
+            f"fallback when provider.shutdown() fails; found {fallback}"
+        )

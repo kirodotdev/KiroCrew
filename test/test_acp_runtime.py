@@ -77,6 +77,7 @@ from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS
 from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
 from kiro_crew.metrics.events import CHILD_PERMISSION_DENIED
 from kiro_crew.start_priority import StartPriority
+from kiro_crew.testing.wait import async_wait_until
 
 # ── Harness ──
 
@@ -1236,10 +1237,23 @@ async def test_the_chat_turn_gate_serializes_on_the_real_runtime():
 
     ta = asyncio.create_task(hold_a())
     tb = asyncio.create_task(hold_b())
-    await asyncio.sleep(0.02)
+    # Wait on the STATE, not a fixed sleep (D1): a is inside the gate (order
+    # shows "a-in") and the lock is held, which is what b is parked on. Both are
+    # loop-confined asyncio state, so evaluate on-loop.
+    await async_wait_until(
+        lambda: order == ["a-in"] and rt._chat_turn_lock.locked(),
+        timeout=5,
+        describe=lambda: f"order={order} locked={rt._chat_turn_lock.locked()}",
+    )
     assert order == ["a-in"], order
     release_a.set()
-    await asyncio.gather(ta, tb)
+    try:
+        await asyncio.wait_for(asyncio.gather(ta, tb), timeout=5)
+    except (asyncio.TimeoutError, TimeoutError):
+        for t in (ta, tb):
+            t.cancel()
+        await asyncio.gather(ta, tb, return_exceptions=True)
+        raise AssertionError("chat-turn-gate turns did not drain within 5s")
     assert order == ["a-in", "a-out", "b-in"], order
     assert peak == 1, "two chat turns held the real runtime's gate at once"
 
@@ -14952,3 +14966,166 @@ async def test_read_path_revalidation_reuses_the_shared_probe_not_a_second_one()
     # refresh path — proof the read path did not grow a second parser/probe.
     assert calls["n"] == 1
     assert [m["modelId"] for m in handle.available_models] == ["auto", "claude-opus-5"]
+
+
+# ── A cancel during the post-session/new finish must not leak the session ──
+
+
+class TestCancelDuringFinishCreateSessionEvictsTheSession:
+    """``_finish_create_session`` registers the native session and its queue the
+    instant ``session/new`` returns, then runs several awaits (watchdog load,
+    permission routing, mode activation, init drain) before it hands a handle
+    back. A cancellation landing in any of those awaits leaves the native session
+    resident on a shared process and its queue registered, while the caller gets
+    no handle — so the start-failure cleanup, which only evicts when a handle was
+    returned, cannot reach it. The finish must evict the session it created on
+    every exit, cancellation included.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_cancel_in_the_watchdog_load_terminates_the_session(self, monkeypatch):
+        rt, _reader, _proc = _make_runtime()
+
+        terminated: list[str] = []
+
+        async def _terminate(session_id: str) -> None:
+            terminated.append(session_id)
+            # Mirror the real terminate_session's local half: drop the queue.
+            rt._session_queues.pop(session_id, None)
+
+        monkeypatch.setattr(rt, "terminate_session", _terminate)
+
+        # The first await after the queue is registered. A cancellation here
+        # stands in for a cancel landing anywhere in the post-session/new waits.
+        def _boom(_crew):
+            raise asyncio.CancelledError()
+
+        monkeypatch.setattr(runtime_mod, "_load_watchdog_settings", _boom)
+
+        with pytest.raises(asyncio.CancelledError):
+            await rt._finish_create_session(
+                "sess-cancel-1",
+                {},
+                buffered_init=[],
+                agent=None,
+                crew_agent=None,
+                kas_agents=None,
+                mcp_servers=[],
+                budget=30.0,
+                stub_token="",
+                denied_tools=frozenset(),
+                mirrored_snapshot=None,
+                ref_spec=None,
+                active_agent="kirocrew",
+                session_work_dir="/tmp",
+                projected_sources={},
+                payload_snapshot=None,
+            )
+
+        assert terminated == ["sess-cancel-1"], (
+            "a cancel during the finish must terminate the native session it "
+            "created, not leave it resident on the shared process"
+        )
+        assert (
+            "sess-cancel-1" not in rt._session_queues
+        ), "the session's queue must be unregistered when the finish is cancelled"
+
+    @pytest.mark.asyncio
+    async def test_an_inner_guard_failure_terminates_exactly_once(self, monkeypatch):
+        """An inner guard that already terminated must not be followed by a second
+        teardown from the outer handler. Several inner paths (the permission
+        routing guard, the mode-activation guards, ``_wait_managed_mcp``) call
+        ``terminate_session`` and re-raise; the re-raised error reaches the outer
+        ``except BaseException``, and a second ``session/terminate`` for an
+        already-gone session makes a non-acking runtime stall for the whole
+        teardown budget before the real error surfaces. The outer handler
+        terminates only while the session is still registered, so an inner guard's
+        teardown is the only one.
+        """
+        rt, _reader, _proc = _make_runtime()
+
+        terminated: list[str] = []
+
+        async def _terminate(session_id: str) -> None:
+            terminated.append(session_id)
+            rt._session_queues.pop(session_id, None)
+
+        monkeypatch.setattr(rt, "terminate_session", _terminate)
+
+        # Make the first inner-guarded await fail: apply_session_permission_routing
+        # raises an ordinary Exception, whose guard terminates then re-raises.
+        async def _routing_boom():
+            raise RuntimeError("permission routing failed")
+
+        import kiro_crew.acp.session_handle as sh_mod
+
+        monkeypatch.setattr(
+            sh_mod.AcpSessionHandle,
+            "apply_session_permission_routing",
+            lambda self: _routing_boom(),
+            raising=False,
+        )
+
+        with pytest.raises(RuntimeError, match="permission routing failed"):
+            await rt._finish_create_session(
+                "sess-inner-1",
+                {},
+                buffered_init=[],
+                agent=None,
+                crew_agent=None,
+                kas_agents=None,
+                mcp_servers=[],
+                budget=30.0,
+                stub_token="",
+                denied_tools=frozenset(),
+                mirrored_snapshot=None,
+                ref_spec=None,
+                active_agent="kirocrew",
+                session_work_dir="/tmp",
+                projected_sources={},
+                payload_snapshot=None,
+            )
+
+        assert terminated == ["sess-inner-1"], (
+            "the inner guard terminated once; the outer handler must not send a "
+            f"second teardown for the already-gone session (saw {terminated})"
+        )
+        assert "sess-inner-1" not in rt._session_queues
+
+
+def test_load_session_evicts_the_resumed_session_on_a_cancelled_post_load_init():
+    """The resume twin of ``_finish_create_session``'s cancellation guard.
+
+    ``load_session`` registers ``resume_sid``'s queue the instant ``session/load``
+    returns, then runs the same post-response awaits (watchdog, permission
+    routing, mode activation, init drain) before handing back a handle. A
+    cancellation in any of those -- which the per-step ``except Exception`` guards
+    do not catch -- would otherwise leave the resumed native session, its queue
+    and MCP children resident on the (possibly shared) process with no handle for
+    the start-failure cleanup to evict by. The post-load body terminates the
+    session it resumed on every exit, cancellation included, exactly once.
+
+    Pinned on the source because driving the real resume needs a live backend; the
+    guard shape is what a later edit breaks.
+    """
+    import inspect
+
+    src = inspect.getsource(runtime_mod.AcpRuntime.load_session)
+    flat = " ".join(src.split())
+    # The post-load body runs under a terminated-flag guard: an outer
+    # ``except BaseException`` that evicts resume_sid only when nothing already
+    # did -- the same shape as _finish_create_session.
+    assert "terminated = False" in flat, (
+        "load_session no longer guards its post-load init, so a cancelled resume "
+        "leaks the resumed session on the shared process"
+    )
+    assert (
+        "if not terminated: with contextlib.suppress(Exception): "
+        "await self.terminate_session(resume_sid) raise"
+    ) in flat, "load_session's outer handler does not evict resume_sid when no inner guard did"
+    # The frozen snapshot guard is preserved verbatim (also pinned by
+    # test_process_tree TestEverySessionPathSnapshots[load_session-resume_sid]).
+    assert (
+        "try: await self._snapshot_descendants() except BaseException: "
+        "await self.terminate_session(resume_sid) raise"
+    ) in flat, "load_session's snapshot cleanup guard lost its established shape"

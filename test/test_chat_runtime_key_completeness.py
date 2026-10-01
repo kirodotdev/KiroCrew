@@ -40,7 +40,6 @@ _SPAWN_INPUT_KEYED = {
     "mcp_gateway_socket": "mcp_gateway_socket",
     "model": "model",
     "acp_backend": "acp_backend",
-    "member_context": "member_context",
     "memory_mode": "memory_mode",
     "tool_search": "tool_search",
     "shared_scratch": "shared_scratch",
@@ -51,6 +50,14 @@ _SPAWN_INPUT_KEYED = {
 #: A reason, never a boolean: the next reader needs to know why without
 #: re-deriving it, and a boolean invites flipping.
 _SPAWN_INPUT_NOT_KEYED = {
+    "member_context": (
+        "Whether this is a crew-member session. A member session is REFUSED chat "
+        "sharing (chat_sharing_ineligible_reason returns 'member_session') and keeps "
+        "its own process, so it never reaches the key and this bool selects no "
+        "shared process -- member isolation of memory and workspace is the safe "
+        "default this change does not cross. Member sharing can return in a "
+        "follow-up once a maintainer approves it."
+    ),
     "max_age_secs": (
         "A recycle threshold, not an input the child behaves differently under. "
         "A hard module default with no config path, so every chat slot passes the "

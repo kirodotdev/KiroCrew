@@ -1030,31 +1030,63 @@ class CompactionCoordinator:
                 nonlocal result_wait_used
                 # Keep this lazy: importing the ACP package eagerly recreates
                 # the providers/session cycle avoided by this module boundary.
+                import contextlib
+
                 from kiro_crew.acp.types import EVENT_COMPACTION_STATUS
 
-                status: str | None = None
-                async for event in session.provider.stream_command("/compact"):
-                    if event.kind == EVENT_COMPACTION_STATUS and event.text in (
-                        "completed",
-                        "failed",
-                    ):
-                        status = event.text
-                if status is None:
-                    # No special case for an inline harness HERE. This loop
-                    # drives the harness through ``stream_command`` rather than
-                    # ``provider.compact()``, and the wait below is the method
-                    # that answers immediately for a member of
-                    # ``ACP_BACKENDS_INLINE_COMPACTION`` -- so both routes to a
-                    # compaction settle in ONE place. Teaching this one call
-                    # site instead would have left the same strand at every
-                    # other site that awaits a compaction.
-                    result_wait_used = self._deps.compact_result_wait_secs(
-                        time.monotonic() - started, timeout
-                    )
-                    result = await session.provider.wait_for_compaction(timeout=result_wait_used)
-                    status = result.get("type") if isinstance(result, dict) else None
-                if status != "completed":
-                    raise RuntimeError(f"compaction reported {status or 'no result'}")
+                # Hold the per-process chat turn gate CONTINUOUSLY across the
+                # whole compaction -- the ``stream_command`` turn AND the deferred
+                # ``wait_for_compaction`` receipt below. On a shared runtime a
+                # ``/compact`` whose terminal arrives late (no inline status) runs
+                # that wait AFTER ``stream_command`` has returned; without one
+                # continuous hold the gate drops in that gap, a co-tenant starts a
+                # turn, and this session's ownerless compaction terminal is
+                # broadcast to it -- clearing the co-tenant's already-streamed
+                # answer before it is persisted. The hold is reentrant for this
+                # task, so the inner ``stream_command`` / ``wait_for_compaction``
+                # acquisitions are no-ops. A provider without the hold (non-shared,
+                # or a non-ACP provider) gets a null context and the prior
+                # behaviour.
+                hold = getattr(session.provider, "hold_chat_turn_gate", None)
+                gate_ctx: Any = contextlib.nullcontext()
+                if hold is not None:
+                    candidate = hold()
+                    # Only use it when it is a real async context manager: a test
+                    # double's auto-created attribute returns a bare coroutine,
+                    # which is not one -- fall back to the null context there.
+                    if hasattr(candidate, "__aenter__") and hasattr(candidate, "__aexit__"):
+                        gate_ctx = candidate
+                    else:
+                        close = getattr(candidate, "close", None)
+                        if close is not None:
+                            with contextlib.suppress(Exception):
+                                close()
+                async with gate_ctx:
+                    status: str | None = None
+                    async for event in session.provider.stream_command("/compact"):
+                        if event.kind == EVENT_COMPACTION_STATUS and event.text in (
+                            "completed",
+                            "failed",
+                        ):
+                            status = event.text
+                    if status is None:
+                        # No special case for an inline harness HERE. This loop
+                        # drives the harness through ``stream_command`` rather than
+                        # ``provider.compact()``, and the wait below is the method
+                        # that answers immediately for a member of
+                        # ``ACP_BACKENDS_INLINE_COMPACTION`` -- so both routes to a
+                        # compaction settle in ONE place. Teaching this one call
+                        # site instead would have left the same strand at every
+                        # other site that awaits a compaction.
+                        result_wait_used = self._deps.compact_result_wait_secs(
+                            time.monotonic() - started, timeout
+                        )
+                        result = await session.provider.wait_for_compaction(
+                            timeout=result_wait_used
+                        )
+                        status = result.get("type") if isinstance(result, dict) else None
+                    if status != "completed":
+                        raise RuntimeError(f"compaction reported {status or 'no result'}")
 
             # The inner status wait spends the full remainder; margin keeps its
             # graceful no-result diagnostic ahead of the outer backstop.

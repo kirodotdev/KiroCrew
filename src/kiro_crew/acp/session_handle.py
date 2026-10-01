@@ -5300,15 +5300,31 @@ class AcpSessionHandle:
                     # session's own.
                     yield AcpEvent(kind=EVENT_CLEAR_STATUS, runtime_global=msg.fanout_no_owner)
                 elif action == "agent_switched":
-                    saw_agent_switch = True
                     params = msg.params or {}
                     name = params.get("agentName", "")
                     self.active_agent = name if isinstance(name, str) else ""
-                    yield AcpEvent(
-                        kind=EVENT_AGENT_SWITCHED,
-                        text=params.get("agentName", ""),
-                        runtime_global=msg.fanout_no_owner,
-                    )
+                    if extract_command_result:
+                        # This is THIS handle's own ``commands/execute`` turn, so
+                        # the switch is provably session-scoped even though the
+                        # runtime fanned the ``session/update`` out ownerless once
+                        # a second queue registered (``fanout_no_owner`` means
+                        # "nobody can tell", not "a peer's"). Defer to the OWNED
+                        # command-result fallback below, which emits the switch
+                        # from this turn's own response with correct attribution,
+                        # so the issuer's persistence/reset/spec-hooks branch runs.
+                        # Do NOT set ``saw_agent_switch`` (that would suppress the
+                        # fallback) and do NOT emit the ownerless event here (the
+                        # consumer gates its bookkeeping on ``not runtime_global``,
+                        # so an ownerless copy would strand the issuer's own switch
+                        # on the old agent).
+                        pass
+                    else:
+                        saw_agent_switch = True
+                        yield AcpEvent(
+                            kind=EVENT_AGENT_SWITCHED,
+                            text=params.get("agentName", ""),
+                            runtime_global=msg.fanout_no_owner,
+                        )
                 elif action == "subagent_list":
                     params = msg.params or {}
                     subs = params.get("subagents")

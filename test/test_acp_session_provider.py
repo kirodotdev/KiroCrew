@@ -1449,3 +1449,68 @@ class TestAdvertisedModelIds:
         assert advertised_model_ids(None) == []
         assert advertised_model_ids("nope") == []
         assert advertised_model_ids([{"modelId": "  "}, "x", 7]) == []
+
+
+class TestChatTurnGateHeldAcrossCompaction:
+    """The compaction coordinator holds the per-process chat turn gate across the
+    whole compaction via ``provider.hold_chat_turn_gate``. GPT 6.1 found the hook
+    unreachable on the real path: ``session.provider`` is an ``AcpProvider`` and
+    the hold lived only on the inner ``AcpSessionProvider``, so the lookup
+    returned ``None`` and the gate was NOT held across the deferred terminal
+    wait. These pin the delegation and the reentrancy that make the hold real."""
+
+    def _gate_runtime(self):
+        import contextlib
+
+        held = {"depth": 0, "max": 0}
+
+        @contextlib.asynccontextmanager
+        async def chat_turn_gate():
+            held["depth"] += 1
+            held["max"] = max(held["max"], held["depth"])
+            try:
+                yield
+            finally:
+                held["depth"] -= 1
+
+        runtime = _make_runtime()
+        runtime.chat_turn_gate = chat_turn_gate
+        return runtime, held
+
+    @pytest.mark.asyncio
+    async def test_session_provider_hold_enters_the_gate(self):
+        runtime, held = self._gate_runtime()
+        provider = AcpSessionProvider(_make_handle(), runtime, shared_runtime=True)
+        async with provider.hold_chat_turn_gate():
+            assert held["depth"] == 1, "hold did not enter the per-process gate"
+            # Reentrant for this task: an inner acquire is a no-op, not a deadlock
+            # or a second hold.
+            async with provider._chat_turn_gate():
+                assert held["depth"] == 1, "a nested acquire re-took the gate"
+        assert held["depth"] == 0, "the gate was not released after the hold"
+        assert held["max"] == 1
+
+    @pytest.mark.asyncio
+    async def test_acp_provider_delegates_hold_to_the_inner_session_provider(self):
+        # The real path: the coordinator calls hold_chat_turn_gate on the OUTER
+        # AcpProvider, which must forward to its AcpSessionProvider client.
+        from kiro_crew.providers.acp import AcpProvider
+
+        runtime, held = self._gate_runtime()
+        inner = AcpSessionProvider(_make_handle(), runtime, shared_runtime=True)
+        outer = AcpProvider.__new__(AcpProvider)
+        outer._client = inner
+        async with outer.hold_chat_turn_gate():
+            assert held["depth"] == 1, "AcpProvider did not forward the hold to its client"
+        assert held["depth"] == 0
+
+    @pytest.mark.asyncio
+    async def test_acp_provider_hold_is_a_null_context_without_a_gate_client(self):
+        # A placeholder client before kiro startup has no gate hook: the hold is a
+        # null context rather than an AttributeError into a compaction.
+        from kiro_crew.providers.acp import AcpProvider
+
+        outer = AcpProvider.__new__(AcpProvider)
+        outer._client = object()
+        async with outer.hold_chat_turn_gate():
+            pass

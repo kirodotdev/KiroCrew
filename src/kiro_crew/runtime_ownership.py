@@ -1205,6 +1205,29 @@ def _lease_holder(provider: object) -> object | None:
     return None
 
 
+def holds_runtime_lease(provider: object) -> bool:
+    """Whether *provider* currently holds a runtime lease (a shared chat start).
+
+    True only when the lease holder's slot carries a lease STRING -- an eligible
+    chat-share session that took its lease before the spawn. A non-sharing
+    provider (a subagent, a spec-resume prefetch, a cron/task session) has no
+    lease slot, or an empty one, and answers False. A failed-start cleanup uses
+    this to tell the two apart: a shared chat start is torn down through the
+    provider's own shutdown (which evicts its session and kills only the last
+    holder), while a non-sharing provider keeps the unconditional hard kill it
+    always took.
+
+    Duck-typed via :func:`_lease_holder`, so a ``MagicMock`` provider (whose
+    ``_runtime_lease`` resolves to a mock, not ``None`` or a string) is NOT
+    recognised as a holder and answers False -- the non-sharing behaviour the
+    kill-path tests pin.
+    """
+    holder = _lease_holder(provider)
+    if holder is None:
+        return False
+    return isinstance(getattr(holder, "_runtime_lease", None), str)
+
+
 async def acquire_session_lease(provider: object) -> None:
     """Record a registered session's claim on its runtime. No-op for other shapes.
 
@@ -1252,6 +1275,7 @@ __all__ = [
     "authorize_runtime_kill",
     "claim_runtime_tenancy",
     "commit_runtime_teardown",
+    "holds_runtime_lease",
     "note_runtime_kill",
     "outstanding_leases",
     "release_runtime_teardown",

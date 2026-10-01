@@ -145,6 +145,10 @@ class AcpSessionProvider(LLMProvider):
         # told apart at teardown time -- by then a joiner may have arrived, or may
         # not have -- so both take the same arm and the table decides.
         self._shared_runtime = shared_runtime
+        # The task currently holding this process's chat turn gate through THIS
+        # provider, for the reentrant acquire in ``_chat_turn_gate`` (lets a
+        # ``/compact`` turn hold the gate across the deferred compaction receipt).
+        self._chat_gate_holder: "asyncio.Task[Any] | None" = None
         self._resumed_flag: bool = False
         self._resume_session_id: str = ""
         # The session this provider serves. ``rekey()`` sets it on a warm-pool
@@ -329,6 +333,16 @@ class AcpSessionProvider(LLMProvider):
         deadlock the parent→subagent await, and it produces none of these
         user-control frames.
 
+        REENTRANT for the current task: a ``/compact`` turn holds the gate across
+        the whole compaction — the ``stream_command`` turn AND the deferred
+        ``wait_for_compaction`` receipt that follows it (see
+        ``hold_chat_turn_gate``) — so the inner ``stream_command`` /
+        ``wait_for_compaction`` acquisitions this same task makes are no-ops that
+        neither re-take nor release the lock. Without this the gate would drop
+        between ``stream_command`` and the deferred wait, letting a co-tenant
+        start a turn into which this session's ownerless compaction terminal is
+        then broadcast — clearing the co-tenant's already-streamed answer.
+
         Read defensively: the unit tests of this class substitute a fake runtime
         without the gate, and a session assembled without ``__init__`` (the
         exception-translation tests) has no ``_shared_runtime`` — either falls
@@ -340,7 +354,34 @@ class AcpSessionProvider(LLMProvider):
         if gate is None:
             yield
             return
+        # Already held by THIS task (an outer hold_chat_turn_gate, or a nested
+        # call within the same turn): re-entering is a no-op, so the single
+        # outermost hold spans the whole compaction continuously.
+        current = asyncio.current_task()
+        if self._chat_gate_holder is not None and self._chat_gate_holder is current:
+            yield
+            return
         async with gate():
+            self._chat_gate_holder = current
+            try:
+                yield
+            finally:
+                self._chat_gate_holder = None
+
+    @asynccontextmanager
+    async def hold_chat_turn_gate(self) -> "AsyncIterator[None]":
+        """Hold the per-process chat turn gate across a whole compaction.
+
+        The compaction coordinator wraps the deferred-compaction sequence —
+        ``stream_command('/compact')`` then, when no inline terminal arrived, the
+        ``wait_for_compaction`` receipt and its post-compaction metadata drain —
+        in this, so the gate is held CONTINUOUSLY through both. The inner
+        ``stream_command`` and ``wait_for_compaction`` re-enter ``_chat_turn_gate``
+        on the same task, which is a no-op while this hold is active, so there is
+        no self-deadlock and no release-reacquire gap for a co-tenant to slip a
+        turn into.
+        """
+        async with self._chat_turn_gate():
             yield
 
     async def new_conversation(self) -> None:
@@ -788,9 +829,7 @@ class AcpSessionProvider(LLMProvider):
                 send = functools.partial(send, allow_image=False)
             try:
                 async with aclosing(
-                    self.essential_delivery.stream(
-                        message, send, lambda: self.context_incarnation
-                    )
+                    self.essential_delivery.stream(message, send, lambda: self.context_incarnation)
                 ) as events:
                     async for event in events:
                         yield event

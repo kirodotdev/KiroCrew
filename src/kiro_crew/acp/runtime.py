@@ -6158,6 +6158,19 @@ class AcpRuntime:
                             self._note_unadopted_skill_projection(generation)
                     projection_now = self._native_skill_projection
                     used_generation = self._adopted_skill_projection_generation()
+            elif skip_projection_refresh and previous is not None:
+                # A joiner does not rebuild the founder's projection, but it must
+                # still translate its set_mode alias through that projection and run
+                # the supersession checks around the send. Capture the adopted view
+                # and its generation under the lock so a concurrent start adopting a
+                # newer view bumps the generation this capture records: the re-check
+                # loop below then re-derives the alias, and _refuse_if_view_superseded
+                # fails the start if the alias it sent was revoked. Reading them
+                # unlocked could pair a view with a stale generation and silently
+                # accept a pre-revocation alias.
+                async with self._skill_projection_lock():
+                    projection_now = self._native_skill_projection
+                    used_generation = self._adopted_skill_projection_generation()
             # set_mode is a handshake request: switching to an agent boots THAT
             # agent's MCP servers, the same server (re-)initialization that gives
             # session/new and session/load their 90s budget. A switched-to server
@@ -7447,214 +7460,284 @@ class AcpRuntime:
         for msg in buffered_init:
             queue.put_nowait(msg)
 
-        # Resolve the watchdog snapshot OFF the loop before constructing the
-        # handle: the load is config file reads + jsonschema validation on a
-        # config change, and the handle constructor is synchronous. The crew
-        # identity is canonical (a cfg.agents key) — the kiro ``agent`` name
-        # is a different namespace and is not stored on the handle.
-        _crew = crew_agent if crew_agent is not None else self._crew_agent
-        _wd = await asyncio.to_thread(_load_watchdog_settings, _crew)
-        handle = AcpSessionHandle(
-            session_id=session_id,
-            queue=queue,
-            runtime=self,
-            watchdog=_wd,
-            crew_agent=_crew,
-            session_key=session_key,
-            bound_cwd=str(session_work_dir),
-        )
-        handle.memory_mode = memory_mode
-        # The token this session's stubs carry, so a later claim (warm-pool
-        # rekey) can name THIS session instead of every session on the runtime.
-        handle.stub_session_token = stub_token
-        handle.member_dispatch_mounted = member_dispatch_mounted
-        # The projection's client obligation, on the driver that answers this
-        # session's permission requests. Empty for a host with no mirror and for a
-        # caller-supplied array, and the handle's check is a no-op on empty.
-        handle.spec_denied_tools = denied_tools
-        # What the registered agent batch grants, recorded by the harness that
-        # registered one; a host that took its agent at spawn time records nothing.
-        self._harness.record_session_projection(handle, kas_agents, active_agent)
-        if self._mirrored_spec_check_needed(mirrored_snapshot):
-            await self._require_unchanged_mirrored_spec(session_id, mirrored_snapshot)
-
-        # Populate state from session/new response (configOptions, available models)
-        handle.store_session_config(resp)
-        # Both halves of that snapshot are now known, which is what makes the
-        # served-default check answerable: the model the backend picked for
-        # this session can be one the account's partition does not serve.
-        await handle.ensure_served_default()
-        # Make a SESSION_CONFIG host actually ask, before anything can prompt it.
-        # Wired HERE and not earlier because the call reads the option list
-        # ``store_session_config`` just parsed: it has to know whether the option
-        # was advertised to tell "not advertised" (INDETERMINATE) from "the write
-        # was rejected" (BYPASSED). Self-gating on the routing table, so kiro-cli
-        # and the KAS relay send nothing extra — they route through their agent
-        # spec. An enforced host that cannot be routed refuses, and the refusal
-        # travels the same cleanup path as a failed set_mode below: session/new
-        # already succeeded, so a plain local unregister would leak the session in
-        # the shared process.
+        # Set true once anything has already terminated this session on a failure
+        # path -- the inline guards below, or a callee that terminates on its own
+        # failure (``_verify_spawn_agent_active``, ``_activate_mode_bracketed``,
+        # ``_wait_managed_mcp``). The outer ``except`` then does NOT terminate a
+        # second time: a duplicate ``session/terminate`` for an already-gone
+        # session makes a non-acking runtime stall for ``_TERMINATE_TIMEOUT``
+        # before the original error surfaces. Tracked as a flag rather than read
+        # off the registry, because the teardown that matters here is the wire
+        # request, which fires whether or not the local queue was already dropped.
+        terminated = False
         try:
-            await handle.apply_session_permission_routing()
-        except Exception:
-            await self.terminate_session(session_id)
-            raise
-        # The roster this session put on the wire. Set BEFORE drain_init so the
-        # report can be read as "of the N we sent, these reported" rather than
-        # as a bare list of names.
-        handle.mcp_session_report().begin_session(mcp_servers)
-        self._guard_unresolved_mcp_refs(handle, ref_spec, active_agent, mcp_servers)
+            # Resolve the watchdog snapshot OFF the loop before constructing the
+            # handle: the load is config file reads + jsonschema validation on a
+            # config change, and the handle constructor is synchronous. The crew
+            # identity is canonical (a cfg.agents key) — the kiro ``agent`` name
+            # is a different namespace and is not stored on the handle.
+            _crew = crew_agent if crew_agent is not None else self._crew_agent
+            _wd = await asyncio.to_thread(_load_watchdog_settings, _crew)
+            handle = AcpSessionHandle(
+                session_id=session_id,
+                queue=queue,
+                runtime=self,
+                watchdog=_wd,
+                crew_agent=_crew,
+                session_key=session_key,
+                bound_cwd=str(session_work_dir),
+            )
+            handle.memory_mode = memory_mode
+            # The token this session's stubs carry, so a later claim (warm-pool
+            # rekey) can name THIS session instead of every session on the runtime.
+            handle.stub_session_token = stub_token
+            handle.member_dispatch_mounted = member_dispatch_mounted
+            # The projection's client obligation, on the driver that answers this
+            # session's permission requests. Empty for a host with no mirror and for a
+            # caller-supplied array, and the handle's check is a no-op on empty.
+            handle.spec_denied_tools = denied_tools
+            # What the registered agent batch grants, recorded by the harness that
+            # registered one; a host that took its agent at spawn time records nothing.
+            self._harness.record_session_projection(handle, kas_agents, active_agent)
+            if self._mirrored_spec_check_needed(mirrored_snapshot):
+                await self._require_unchanged_mirrored_spec(session_id, mirrored_snapshot)
 
-        mode_switched = False
-        staged_before_switch = 0
-        # Set agent mode if specified. If set_mode raises, no handle is returned
-        # to the caller, so terminate the session we just created above —
-        # session/new already succeeded so the session exists in kiro-cli; a
-        # plain local unregister would leak it in the shared process. terminate_
-        # session also unregisters the queue. Mirrors the same cleanup in
-        # load_session().
-        #
-        # Guard (A): only activate the mode when the backend advertised it in the
-        # session/new `modes` list, or advertised no modes at all (older kiro-cli
-        # / fake backend → attempt, backward-compatible). If modes ARE advertised
-        # but the requested agent is absent, its ~/.kiro/agents/<agent>.json never
-        # loaded (pre-spawn self-heal covers only the managed default). FAIL CLOSED
-        # rather than silently leaving the session on kiro-cli's default mode: for
-        # a restricted/app agent that would run a BROADER agent than requested (a
-        # privilege escalation), so we terminate and raise an actionable error.
-        #
-        # Guard (A2) runs FIRST: the guard below never sees the agent `--agent`
-        # selected, which on kiro-cli is every ordinary session's agent. See
-        # _verify_spawn_agent_active.
-        await self._verify_spawn_agent_active(session_id, resp, override=agent)
-        # The agent to ACTIVATE. An explicit request always applies. When a KAS
-        # custom agent was injected (``kas_agents`` non-empty) the runtime
-        # default must be activated too: KAS has no --agent flag, so an injected
-        # default that is not set here stays registered-but-inactive and the
-        # session silently runs KAS's own default mode. On kiro ``kas_agents`` is
-        # None and the --agent spawn already selected the default, so only an
-        # explicit override reaches set_mode here.
-        #
-        # Asked of the routing table first (see _activates_agent_by_mode): a host
-        # that governs its privileged tools some other way has no agent for
-        # set_mode to resolve, so there is nothing to activate and nothing for
-        # Guard (A) to fail closed on.
-        mode_agent = (
-            agent or (self._agent if kas_agents else None)
-            if self._activates_agent_by_mode()
-            else None
-        )
-        # Guard (C): the id may be advertised, yet as the HOST's own agent; a
-        # set_mode would succeed and run that agent under the crewmate's name.
-        # Asked of the harness as a seam (H13): the spawn-time hosts answer None
-        # and the wire-registered one reads the stamp the engine put on the mode.
-        refusal = self._harness.activation_refusal(mode_agent, resp) if mode_agent else None
-        if refusal:
-            await self.terminate_session(session_id)
-            raise AcpRuntimeError(refusal)
-        if mode_agent and self._mode_available(mode_agent, resp):
-            # Measured BEFORE the request goes out, which is the only moment the
-            # answer is unambiguous: everything queued right now initialized
-            # under the pre-switch mode. Reading it after set_mode returns would
-            # count the switched-to agent's own registrations -- which kiro-cli
-            # can emit before it answers -- as pre-switch, and those frames are
-            # then consumed without being recorded, leaving the panel at a false
-            # "no report" for the rest of the session.
-            staged_before_switch = handle.queued_frame_count()
-            await self._activate_mode_bracketed(
-                session_id,
-                mode_agent,
-                budget=budget,
-                payload_snapshot=payload_snapshot,
-                wire_registered=kas_agents is not None,
-                skip_projection_refresh=skip_projection_refresh,
-            )
-            handle.active_agent = mode_agent
-            # Whether set_mode actually SWITCHED modes: the servers that
-            # initialized during session/new belong to the mode kiro-cli
-            # started the session on. If the requested agent differs, those
-            # staged registration frames describe the pre-switch roster and
-            # must not arm the drain's idle shortcut while the switched-to
-            # agent's own servers may still be booting.
-            _ids, _current, _adv = parse_session_modes(resp)
-            mode_switched = mode_agent != _current and (
-                bool(_current) or self._harness.notification_aliases.mcp_readiness
-            )
-        elif mode_agent:
-            _ids, _current, _adv = parse_session_modes(resp)
-            await self.terminate_session(session_id)
-            cause, remedy = await asyncio.to_thread(unavailable_mode_explanation, mode_agent)
-            raise AcpRuntimeError(
-                f"Agent mode {mode_agent!r} is not available on this session "
-                f"(advertised modes: {_ids or 'none'}); {cause} Refusing to run "
-                f"the backend default mode {_current or '(unknown)'} in its place. "
-                f"{remedy}"
-            )
+            # Populate state from session/new response (configOptions, available models)
+            handle.store_session_config(resp)
+            # Both halves of that snapshot are now known, which is what makes the
+            # served-default check answerable: the model the backend picked for
+            # this session can be one the account's partition does not serve.
+            await handle.ensure_served_default()
+            # Make a SESSION_CONFIG host actually ask, before anything can prompt it.
+            # Wired HERE and not earlier because the call reads the option list
+            # ``store_session_config`` just parsed: it has to know whether the option
+            # was advertised to tell "not advertised" (INDETERMINATE) from "the write
+            # was rejected" (BYPASSED). Self-gating on the routing table, so kiro-cli
+            # and the KAS relay send nothing extra — they route through their agent
+            # spec. An enforced host that cannot be routed refuses, and the refusal
+            # travels the same cleanup path as a failed set_mode below: session/new
+            # already succeeded, so a plain local unregister would leak the session in
+            # the shared process.
+            try:
+                await handle.apply_session_permission_routing()
+            except Exception:
+                await self.terminate_session(session_id)
+                terminated = True
+                raise
+            # The roster this session put on the wire. Set BEFORE drain_init so the
+            # report can be read as "of the N we sent, these reported" rather than
+            # as a bare list of names.
+            handle.mcp_session_report().begin_session(mcp_servers)
+            self._guard_unresolved_mcp_refs(handle, ref_spec, active_agent, mcp_servers)
 
-        # Drain MCP-server-init / oauth / config notifications before the first
-        # prompt so they don't race into the first turn (parity with
-        # AcpClient._drain_notifications). Best-effort, bounded: exits shortly
-        # after the servers report, or at the no-report ceiling if none do.
-        # A runtime declared MCP-free skips the ceiling — nothing can arm it.
-        # After a real mode SWITCH, reports staged during session/new describe
-        # the pre-switch roster, so they must not arm the idle shortcut.
-        if self._harness.notification_aliases.mcp_readiness:
-            readiness_params: dict[str, Any] = {"mcpServers": mcp_servers}
-            attach_kas_custom_agents(readiness_params, kas_agents)
-            await self._wait_managed_mcp(
-                handle,
-                readiness_params,
-                active_agent,
-                budget,
-                staged_before_switch if mode_switched else 0,
+            mode_switched = False
+            staged_before_switch = 0
+            # Set agent mode if specified. If set_mode raises, no handle is returned
+            # to the caller, so terminate the session we just created above —
+            # session/new already succeeded so the session exists in kiro-cli; a
+            # plain local unregister would leak it in the shared process. terminate_
+            # session also unregisters the queue. Mirrors the same cleanup in
+            # load_session().
+            #
+            # Guard (A): only activate the mode when the backend advertised it in the
+            # session/new `modes` list, or advertised no modes at all (older kiro-cli
+            # / fake backend → attempt, backward-compatible). If modes ARE advertised
+            # but the requested agent is absent, its ~/.kiro/agents/<agent>.json never
+            # loaded (pre-spawn self-heal covers only the managed default). FAIL CLOSED
+            # rather than silently leaving the session on kiro-cli's default mode: for
+            # a restricted/app agent that would run a BROADER agent than requested (a
+            # privilege escalation), so we terminate and raise an actionable error.
+            #
+            # Guard (A2) runs FIRST: the guard below never sees the agent `--agent`
+            # selected, which on kiro-cli is every ordinary session's agent. See
+            # _verify_spawn_agent_active.
+            try:
+                await self._verify_spawn_agent_active(session_id, resp, override=agent)
+            except Exception:
+                # It terminates the session itself on its failure path (an
+                # ``AcpRuntimeError``), so the outer handler must not terminate
+                # again. A ``CancelledError`` is NOT caught here: it does not
+                # self-terminate, so it falls through to the outer handler, which
+                # performs the single teardown.
+                terminated = True
+                raise
+            # The agent to ACTIVATE. An explicit request always applies. When a KAS
+            # custom agent was injected (``kas_agents`` non-empty) the runtime
+            # default must be activated too: KAS has no --agent flag, so an injected
+            # default that is not set here stays registered-but-inactive and the
+            # session silently runs KAS's own default mode. On kiro ``kas_agents`` is
+            # None and the --agent spawn already selected the default, so only an
+            # explicit override reaches set_mode here.
+            #
+            # Asked of the routing table first (see _activates_agent_by_mode): a host
+            # that governs its privileged tools some other way has no agent for
+            # set_mode to resolve, so there is nothing to activate and nothing for
+            # Guard (A) to fail closed on.
+            mode_agent = (
+                agent or (self._agent if kas_agents else None)
+                if self._activates_agent_by_mode()
+                else None
             )
-        elif self._expect_mcp_reports:
-            await handle.drain_init(
-                stale_report_frames=staged_before_switch if mode_switched else 0
-            )
-        else:
-            await handle.drain_init(no_report_ceiling=0.0)
+            # Guard (C): the id may be advertised, yet as the HOST's own agent; a
+            # set_mode would succeed and run that agent under the crewmate's name.
+            # Asked of the harness as a seam (H13): the spawn-time hosts answer None
+            # and the wire-registered one reads the stamp the engine put on the mode.
+            refusal = self._harness.activation_refusal(mode_agent, resp) if mode_agent else None
+            if refusal:
+                await self.terminate_session(session_id)
+                terminated = True
+                raise AcpRuntimeError(refusal)
+            if mode_agent and self._mode_available(mode_agent, resp):
+                # Measured BEFORE the request goes out, which is the only moment the
+                # answer is unambiguous: everything queued right now initialized
+                # under the pre-switch mode. Reading it after set_mode returns would
+                # count the switched-to agent's own registrations -- which kiro-cli
+                # can emit before it answers -- as pre-switch, and those frames are
+                # then consumed without being recorded, leaving the panel at a false
+                # "no report" for the rest of the session.
+                staged_before_switch = handle.queued_frame_count()
+                try:
+                    await self._activate_mode_bracketed(
+                        session_id,
+                        mode_agent,
+                        budget=budget,
+                        payload_snapshot=payload_snapshot,
+                        wire_registered=kas_agents is not None,
+                        skip_projection_refresh=skip_projection_refresh,
+                    )
+                except Exception:
+                    # It terminates the session itself on its failure paths, so
+                    # the outer handler must not terminate again. A
+                    # ``CancelledError`` is not caught here and falls through to
+                    # the single teardown in the outer handler.
+                    terminated = True
+                    raise
+                handle.active_agent = mode_agent
+                # Whether set_mode actually SWITCHED modes: the servers that
+                # initialized during session/new belong to the mode kiro-cli
+                # started the session on. If the requested agent differs, those
+                # staged registration frames describe the pre-switch roster and
+                # must not arm the drain's idle shortcut while the switched-to
+                # agent's own servers may still be booting.
+                _ids, _current, _adv = parse_session_modes(resp)
+                mode_switched = mode_agent != _current and (
+                    bool(_current) or self._harness.notification_aliases.mcp_readiness
+                )
+            elif mode_agent:
+                _ids, _current, _adv = parse_session_modes(resp)
+                await self.terminate_session(session_id)
+                terminated = True
+                cause, remedy = await asyncio.to_thread(unavailable_mode_explanation, mode_agent)
+                raise AcpRuntimeError(
+                    f"Agent mode {mode_agent!r} is not available on this session "
+                    f"(advertised modes: {_ids or 'none'}); {cause} Refusing to run "
+                    f"the backend default mode {_current or '(unknown)'} in its place. "
+                    f"{remedy}"
+                )
 
-        if active_agent == self._agent and str(session_work_dir) == str(self._work_dir):
-            handle.native_context_documents.update(self._native_launch_sources)
-        handle.native_context_documents.update(projected_sources)
-        # Inline prompt bytes and file resources come from the same activated
-        # wire definition. Conditional and indexed resources remain native.
-        for definition in kas_agents or ():
-            if definition.get("id") == active_agent and isinstance(definition.get("prompt"), str):
-                handle.native_context_documents[f"template://{active_agent}#prompt"] = definition[
-                    "prompt"
-                ]
+            # Drain MCP-server-init / oauth / config notifications before the first
+            # prompt so they don't race into the first turn (parity with
+            # AcpClient._drain_notifications). Best-effort, bounded: exits shortly
+            # after the servers report, or at the no-report ceiling if none do.
+            # A runtime declared MCP-free skips the ceiling — nothing can arm it.
+            # After a real mode SWITCH, reports staged during session/new describe
+            # the pre-switch roster, so they must not arm the idle shortcut.
+            if self._harness.notification_aliases.mcp_readiness:
+                readiness_params: dict[str, Any] = {"mcpServers": mcp_servers}
+                attach_kas_custom_agents(readiness_params, kas_agents)
+                try:
+                    await self._wait_managed_mcp(
+                        handle,
+                        readiness_params,
+                        active_agent,
+                        budget,
+                        staged_before_switch if mode_switched else 0,
+                    )
+                except Exception:
+                    # It evicts the session itself on a readiness failure (a
+                    # ``terminate_session`` or, for a joiner, a local
+                    # ``unregister_session``), so the outer handler must not
+                    # terminate again. A ``CancelledError`` falls through to the
+                    # single teardown there.
+                    terminated = True
+                    raise
+            elif self._expect_mcp_reports:
+                await handle.drain_init(
+                    stale_report_frames=staged_before_switch if mode_switched else 0
+                )
+            else:
+                await handle.drain_init(no_report_ceiling=0.0)
 
-        # Each session start forks another agent process under the root, and
-        # its MCP servers have just reported, so scan again: the spawn snapshot
-        # predates all of them. Safe to repeat -- see _snapshot_descendants.
-        #
-        # Guarded like every other post-session/new step here: session/new has
-        # already succeeded, so a cancellation inside the scan would leave the
-        # session live in the shared process with no handle returned to anyone.
-        # Only a cancellation can reach this arm; the scan swallows its own
-        # failures.
-        #
-        # Startup is over by this point: session/new has succeeded, which is the
-        # proof no sandbox refusal on the way here was fatal. So the startup latch
-        # is spent, and spending it -- rather than merely ceasing to arm it -- is
-        # what makes every consumer correct by construction: a translator reached
-        # after this can only ever see False, so none of them re-derives the window.
-        #
-        # First session only. A later session/new on a warm runtime is ordinary
-        # mid-life work, and a refusal its child prints then says nothing about
-        # whether the agent process can start.
-        self._first_session_ready = True
-        self._saw_sandbox_init_failure = False
-        try:
-            await self._snapshot_descendants()
+            if active_agent == self._agent and str(session_work_dir) == str(self._work_dir):
+                handle.native_context_documents.update(self._native_launch_sources)
+            handle.native_context_documents.update(projected_sources)
+            # Inline prompt bytes and file resources come from the same activated
+            # wire definition. Conditional and indexed resources remain native.
+            for definition in kas_agents or ():
+                if definition.get("id") == active_agent and isinstance(
+                    definition.get("prompt"), str
+                ):
+                    handle.native_context_documents[f"template://{active_agent}#prompt"] = (
+                        definition["prompt"]
+                    )
+
+            # Each session start forks another agent process under the root, and
+            # its MCP servers have just reported, so scan again: the spawn snapshot
+            # predates all of them. Safe to repeat -- see _snapshot_descendants.
+            #
+            # Guarded like every other post-session/new step here: session/new has
+            # already succeeded, so a cancellation inside the scan would leave the
+            # session live in the shared process with no handle returned to anyone.
+            # Only a cancellation can reach this arm; the scan swallows its own
+            # failures.
+            #
+            # Startup is over by this point: session/new has succeeded, which is the
+            # proof no sandbox refusal on the way here was fatal. So the startup latch
+            # is spent, and spending it -- rather than merely ceasing to arm it -- is
+            # what makes every consumer correct by construction: a translator reached
+            # after this can only ever see False, so none of them re-derives the window.
+            #
+            # First session only. A later session/new on a warm runtime is ordinary
+            # mid-life work, and a refusal its child prints then says nothing about
+            # whether the agent process can start.
+            self._first_session_ready = True
+            self._saw_sandbox_init_failure = False
+            # The inner guard's shape is pinned by a source-contract test
+            # (``test_the_scan_runs_under_a_terminate_guard``): the snapshot MUST
+            # run under ``try: ... except BaseException: await
+            # self.terminate_session(session_id) raise`` verbatim. The thin outer
+            # re-catch records that this path already terminated, so the method's
+            # final ``except BaseException`` does not fire a second teardown.
+            try:
+                try:
+                    await self._snapshot_descendants()
+                except BaseException:
+                    await self.terminate_session(session_id)
+                    raise
+            except BaseException:
+                terminated = True
+                raise
+
+            logger.info("Created session %s on runtime PID %d", session_id, self._pid or 0)
+            return handle
         except BaseException:
-            await self.terminate_session(session_id)
+            # ``session/new`` already committed, so the native session and the
+            # queue registered above exist on this (possibly shared) process. An
+            # exit before the handle is returned leaves both resident on the
+            # runtime with no handle for the caller's start-failure cleanup to
+            # evict by. The inner guards and the self-terminating callees
+            # (``_verify_spawn_agent_active``, ``_activate_mode_bracketed``,
+            # ``_wait_managed_mcp``) already tore the session down on the failures
+            # they handle and set ``terminated``. Terminating again would send a
+            # second ``session/terminate`` a non-acking runtime stalls on for
+            # ``_TERMINATE_TIMEOUT`` before the original error surfaces, so this
+            # handler covers only the awaits with no inner guard -- chiefly a
+            # ``CancelledError`` the per-step ``except Exception`` guards do not
+            # catch -- when ``terminated`` is still False.
+            if not terminated:
+                with contextlib.suppress(Exception):
+                    await self.terminate_session(session_id)
             raise
-
-        logger.info("Created session %s on runtime PID %d", session_id, self._pid or 0)
-        return handle
 
     async def probe_advertised_models(
         self, *, force: bool = False, not_before: float = 0.0
@@ -8047,147 +8130,181 @@ class AcpRuntime:
         for msg in buffered_init:
             queue.put_nowait(msg)
 
-        # Mirrors create_session: a resumed session gets the same
-        # canonical-crew watchdog snapshot, resolved off-loop.
-        _crew = crew_agent if crew_agent is not None else self._crew_agent
-        _wd = await asyncio.to_thread(_load_watchdog_settings, _crew)
-        handle = AcpSessionHandle(
-            session_id=resume_sid,
-            queue=queue,
-            runtime=self,
-            watchdog=_wd,
-            crew_agent=_crew,
-            session_key=session_key,
-            bound_cwd=str(load_params["cwd"]),
-        )
-        # Mirrors create_session: the resumed session's own stub token.
-        handle.stub_session_token = stub_token
-        handle.member_dispatch_mounted = member_mounted
-        # Mirrors create_session: the resumed session re-declares the array, so it
-        # re-derives the deny set that array came with and re-checks the generation.
-        handle.spec_denied_tools = denied_tools
-        # Mirrors create_session: the re-registered batch is what this session now
-        # runs.
-        self._harness.record_session_projection(handle, kas_agents, active_agent)
-        if self._mirrored_spec_check_needed(mirrored_snapshot):
-            await self._require_unchanged_mirrored_spec(resume_sid, mirrored_snapshot)
-        handle.store_session_config(resp)
-        # session/load echoes ``currentModelId`` exactly like session/new, and a
-        # session persisted before the account's served list changed can come
-        # back on a default the account does not serve — so the resumed session gets
-        # the same served-default check as a fresh one.
-        await handle.ensure_served_default()
-        # Same as create_session, and for the same reason a resumed session gets
-        # the served-default check: the option list came back on THIS response,
-        # and a resumed session prompts the host exactly as a fresh one does, so
-        # its permission boundary has to be armed here too. Refusal terminates
-        # the resume_sid session rather than leaking it, matching the set_mode
-        # cleanup below.
+        terminated = False
         try:
-            await handle.apply_session_permission_routing()
-        except Exception:
-            await self.terminate_session(resume_sid)
-            raise
-        # session/load re-initializes this session's servers, so the resumed
-        # session gets its own report against the roster load re-declared.
-        handle.mcp_session_report().begin_session(wire_servers)
-        self._guard_unresolved_mcp_refs(handle, ref_spec, active_agent, wire_servers)
+            # Mirrors create_session: a resumed session gets the same
+            # canonical-crew watchdog snapshot, resolved off-loop.
+            _crew = crew_agent if crew_agent is not None else self._crew_agent
+            _wd = await asyncio.to_thread(_load_watchdog_settings, _crew)
+            handle = AcpSessionHandle(
+                session_id=resume_sid,
+                queue=queue,
+                runtime=self,
+                watchdog=_wd,
+                crew_agent=_crew,
+                session_key=session_key,
+                bound_cwd=str(load_params["cwd"]),
+            )
+            # Mirrors create_session: the resumed session's own stub token.
+            handle.stub_session_token = stub_token
+            handle.member_dispatch_mounted = member_mounted
+            # Mirrors create_session: the resumed session re-declares the array, so it
+            # re-derives the deny set that array came with and re-checks the generation.
+            handle.spec_denied_tools = denied_tools
+            # Mirrors create_session: the re-registered batch is what this session now
+            # runs.
+            self._harness.record_session_projection(handle, kas_agents, active_agent)
+            if self._mirrored_spec_check_needed(mirrored_snapshot):
+                await self._require_unchanged_mirrored_spec(resume_sid, mirrored_snapshot)
+            handle.store_session_config(resp)
+            # session/load echoes ``currentModelId`` exactly like session/new, and a
+            # session persisted before the account's served list changed can come
+            # back on a default the account does not serve — so the resumed session gets
+            # the same served-default check as a fresh one.
+            await handle.ensure_served_default()
+            # Same as create_session, and for the same reason a resumed session gets
+            # the served-default check: the option list came back on THIS response,
+            # and a resumed session prompts the host exactly as a fresh one does, so
+            # its permission boundary has to be armed here too. Refusal terminates
+            # the resume_sid session rather than leaking it, matching the set_mode
+            # cleanup below.
+            try:
+                await handle.apply_session_permission_routing()
+            except Exception:
+                await self.terminate_session(resume_sid)
+                terminated = True
+                raise
+            # session/load re-initializes this session's servers, so the resumed
+            # session gets its own report against the roster load re-declared.
+            handle.mcp_session_report().begin_session(wire_servers)
+            self._guard_unresolved_mcp_refs(handle, ref_spec, active_agent, wire_servers)
 
-        mode_switched = False
-        staged_before_switch = 0
-        # Activate the agent (mirrors AcpClient step 4 — set_mode applies to a
-        # resumed session too, not just fresh ones). If set_mode raises, the
-        # caller falls back to create_session() (a fresh sid + its own queue),
-        # so terminate this resume_sid session first — session/load already
-        # succeeded so kiro-cli holds it; a plain local unregister would leak it
-        # in the shared process (and leave the reader routing late transcript-
-        # replay frames to an abandoned queue). terminate_session unregisters too.
-        #
-        # Guard (A2), same as create_session: the check below reads `agent`, and
-        # this method's only caller passes `agent=agent or None`, so a resume with
-        # no override reaches no check at all. A fresh runtime resuming a session
-        # re-reads the spec from disk, so the spawn agent can fail to load here
-        # exactly as it can on a cold start.
-        await self._verify_spawn_agent_active(resume_sid, resp, override=agent)
-        # Same routing-table question as create_session: a host with no agent
-        # spec has no mode to resume onto either.
-        mode_agent = agent if self._activates_agent_by_mode() else None
-        # Guard (C) -- see create_session: advertised, but as the host's own.
-        refusal = self._harness.activation_refusal(mode_agent, resp) if mode_agent else None
-        if refusal:
-            await self.terminate_session(resume_sid)
-            raise AcpRuntimeError(refusal)
-        if mode_agent and self._mode_available(mode_agent, resp):
-            # Measured BEFORE the request goes out, which is the only moment the
-            # answer is unambiguous: everything queued right now initialized
-            # under the pre-switch mode. Reading it after set_mode returns would
-            # count the switched-to agent's own registrations -- which kiro-cli
-            # can emit before it answers -- as pre-switch, and those frames are
-            # then consumed without being recorded, leaving the panel at a false
-            # "no report" for the rest of the session.
-            staged_before_switch = handle.queued_frame_count()
-            await self._activate_mode_bracketed(
-                resume_sid,
-                mode_agent,
-                budget=budget,
-                payload_snapshot=payload_snapshot,
-                wire_registered=kas_agents is not None,
-                skip_projection_refresh=skip_projection_refresh,
-            )
-            handle.active_agent = mode_agent
-            # See create_session: after a real mode switch, registration frames
-            # staged during session/load describe the pre-switch roster.
-            _ids, _current, _adv = parse_session_modes(resp)
-            mode_switched = mode_agent != _current and (
-                bool(_current) or self._harness.notification_aliases.mcp_readiness
-            )
-        elif mode_agent:
-            # Guard (A) — see create_session. A resumed session always echoes a
-            # `modes` list (checked above), so an absent agent means its config
-            # isn't loaded. Fail closed rather than silently resuming on a
-            # different (broader) default agent than the one requested.
-            _ids, _current, _adv = parse_session_modes(resp)
-            await self.terminate_session(resume_sid)
-            cause, remedy = await asyncio.to_thread(unavailable_mode_explanation, mode_agent)
-            raise AcpRuntimeError(
-                f"Agent mode {agent!r} is not available for resumed session "
-                f"{resume_sid} (advertised modes: {_ids or 'none'}); {cause} Refusing "
-                f"to run the backend default mode {_current or '(unknown)'} in its place. "
-                f"{remedy}"
-            )
+            mode_switched = False
+            staged_before_switch = 0
+            # Activate the agent (mirrors AcpClient step 4 — set_mode applies to a
+            # resumed session too, not just fresh ones). If set_mode raises, the
+            # caller falls back to create_session() (a fresh sid + its own queue),
+            # so terminate this resume_sid session first — session/load already
+            # succeeded so kiro-cli holds it; a plain local unregister would leak it
+            # in the shared process (and leave the reader routing late transcript-
+            # replay frames to an abandoned queue). terminate_session unregisters too.
+            #
+            # Guard (A2), same as create_session: the check below reads `agent`, and
+            # this method's only caller passes `agent=agent or None`, so a resume with
+            # no override reaches no check at all. A fresh runtime resuming a session
+            # re-reads the spec from disk, so the spawn agent can fail to load here
+            # exactly as it can on a cold start.
+            try:
+                await self._verify_spawn_agent_active(resume_sid, resp, override=agent)
+            except Exception:
+                terminated = True
+                raise
+            # Same routing-table question as create_session: a host with no agent
+            # spec has no mode to resume onto either.
+            mode_agent = agent if self._activates_agent_by_mode() else None
+            # Guard (C) -- see create_session: advertised, but as the host's own.
+            refusal = self._harness.activation_refusal(mode_agent, resp) if mode_agent else None
+            if refusal:
+                await self.terminate_session(resume_sid)
+                terminated = True
+                raise AcpRuntimeError(refusal)
+            if mode_agent and self._mode_available(mode_agent, resp):
+                # Measured BEFORE the request goes out, which is the only moment the
+                # answer is unambiguous: everything queued right now initialized
+                # under the pre-switch mode. Reading it after set_mode returns would
+                # count the switched-to agent's own registrations -- which kiro-cli
+                # can emit before it answers -- as pre-switch, and those frames are
+                # then consumed without being recorded, leaving the panel at a false
+                # "no report" for the rest of the session.
+                staged_before_switch = handle.queued_frame_count()
+                try:
+                    await self._activate_mode_bracketed(
+                        resume_sid,
+                        mode_agent,
+                        budget=budget,
+                        payload_snapshot=payload_snapshot,
+                        wire_registered=kas_agents is not None,
+                        skip_projection_refresh=skip_projection_refresh,
+                    )
+                except Exception:
+                    terminated = True
+                    raise
+                handle.active_agent = mode_agent
+                # See create_session: after a real mode switch, registration frames
+                # staged during session/load describe the pre-switch roster.
+                _ids, _current, _adv = parse_session_modes(resp)
+                mode_switched = mode_agent != _current and (
+                    bool(_current) or self._harness.notification_aliases.mcp_readiness
+                )
+            elif mode_agent:
+                # Guard (A) — see create_session. A resumed session always echoes a
+                # `modes` list (checked above), so an absent agent means its config
+                # isn't loaded. Fail closed rather than silently resuming on a
+                # different (broader) default agent than the one requested.
+                _ids, _current, _adv = parse_session_modes(resp)
+                await self.terminate_session(resume_sid)
+                terminated = True
+                cause, remedy = await asyncio.to_thread(unavailable_mode_explanation, mode_agent)
+                raise AcpRuntimeError(
+                    f"Agent mode {agent!r} is not available for resumed session "
+                    f"{resume_sid} (advertised modes: {_ids or 'none'}); {cause} Refusing "
+                    f"to run the backend default mode {_current or '(unknown)'} in its place. "
+                    f"{remedy}"
+                )
 
-        # Drain MCP-init / oauth / config notifications before the first prompt
-        # (parity with AcpClient). Transcript-replay frames were already dropped
-        # before the queue was registered above, so only genuine init frames
-        # remain to drain here. MCP-free runtimes skip the no-report ceiling.
-        # After a real mode SWITCH, staged reports are pre-switch — don't arm.
-        if self._harness.notification_aliases.mcp_readiness:
-            await self._wait_managed_mcp(
-                handle,
-                load_params,
-                active_agent,
-                budget,
-                staged_before_switch if mode_switched else 0,
-            )
-        elif self._expect_mcp_reports:
-            await handle.drain_init(
-                stale_report_frames=staged_before_switch if mode_switched else 0
-            )
-        else:
-            await handle.drain_init(no_report_ceiling=0.0)
+            # Drain MCP-init / oauth / config notifications before the first prompt
+            # (parity with AcpClient). Transcript-replay frames were already dropped
+            # before the queue was registered above, so only genuine init frames
+            # remain to drain here. MCP-free runtimes skip the no-report ceiling.
+            # After a real mode SWITCH, staged reports are pre-switch — don't arm.
+            if self._harness.notification_aliases.mcp_readiness:
+                try:
+                    await self._wait_managed_mcp(
+                        handle,
+                        load_params,
+                        active_agent,
+                        budget,
+                        staged_before_switch if mode_switched else 0,
+                    )
+                except Exception:
+                    terminated = True
+                    raise
+            elif self._expect_mcp_reports:
+                await handle.drain_init(
+                    stale_report_frames=staged_before_switch if mode_switched else 0
+                )
+            else:
+                await handle.drain_init(no_report_ceiling=0.0)
 
-        # A resume re-initializes the MCP servers and forks the same agent
-        # processes a fresh session does, so it needs the same scan; without it
-        # every descendant a resumed session created stays unrecorded. Guarded
-        # for the same reason as create_session: session/load already succeeded.
-        try:
-            await self._snapshot_descendants()
+            # A resume re-initializes the MCP servers and forks the same agent
+            # processes a fresh session does, so it needs the same scan; without it
+            # every descendant a resumed session created stays unrecorded. Guarded
+            # for the same reason as create_session: session/load already succeeded.
+            try:
+                try:
+                    await self._snapshot_descendants()
+                except BaseException:
+                    await self.terminate_session(resume_sid)
+                    raise
+            except BaseException:
+                terminated = True
+                raise
+
+            logger.info("Resumed session %s on runtime PID %d", resume_sid, self._pid or 0)
+            return handle
         except BaseException:
-            await self.terminate_session(resume_sid)
+            # ``session/load`` already committed and the queue above is
+            # registered, so a cancellation in the post-load awaits (which the
+            # per-step ``except Exception`` guards do not catch) would leave the
+            # resumed session resident on the (possibly shared) process with no
+            # handle for the start-failure cleanup to evict by -- the resume twin
+            # of the ``_finish_create_session`` guard. The inner guards and the
+            # self-terminating callees set ``terminated``; evict here only when
+            # none already did.
+            if not terminated:
+                with contextlib.suppress(Exception):
+                    await self.terminate_session(resume_sid)
             raise
-
-        logger.info("Resumed session %s on runtime PID %d", resume_sid, self._pid or 0)
-        return handle
 
     # ── Internal Helpers ──
 

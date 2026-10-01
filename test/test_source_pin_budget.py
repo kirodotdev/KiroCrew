@@ -68,6 +68,7 @@ BUDGET: dict[str, int] = {
     "test/test_chat_hooks.py": 1,
     "test/test_chat_runner_composition_contract.py": 5,
     "test/test_chat_runner_early_recovery_actor.py": 1,
+    "test/test_chat_runtime_sharing.py": 1,  # the fanout-gate shape ratchet reads chat_runner
     "test/test_chat_turn_timeout_consistency.py": 1,
     "test/test_credential_redaction_switch.py": 1,
     "test/test_credential_sources.py": 1,

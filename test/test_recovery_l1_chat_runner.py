@@ -367,7 +367,12 @@ class TestRunnerBranch:
         # — otherwise a fresh /clear leaves it armed and the next prompt rebuilds
         # the history the user dropped.
         clear = src.index("elif event.kind == EVENT_CLEAR_STATUS:")
-        assert "consume_first_turn_history_owed(session_key)" in src[clear : clear + 1200]
+        # Window widened from 1200 to 1600: the shared-runtime ownerless-clear
+        # guard (an early ``continue`` so a peer's fanned ``/clear`` never wipes
+        # this session's history) legitimately sits at the top of the handler,
+        # ahead of the debt-retire. The consume still lives inside the clear
+        # handler, beside the replay lease, which is what this asserts.
+        assert "consume_first_turn_history_owed(session_key)" in src[clear : clear + 1600]
         # Post-token same-session recovery settles the debt, but ONLY when the
         # turn assembled history (``_first_turn_history_assembled``): a slash first
         # turn streams native output and can reach this arm, yet it assembled
