@@ -22,7 +22,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_crew.subagent import SubagentInfo, SubagentManager
+from kiro_crew.subagent import SUCCESSOR_UNKNOWN, SubagentInfo, SubagentManager
+from kiro_crew.subagent_manager.continuation import ContinuationCoordinator
 from kiro_crew.subagent_persistence import create_agent_folder, write_run_agent
 
 # ``SubagentManager.spawn`` refuses -- registering no task -- while the host
@@ -3677,3 +3678,188 @@ class TestSharedBindIdentityLabel:
         info, live, _ = await self._bound(ACP_BACKEND_KIRO)
         assert info._session_provider == PROVIDER_LABEL_DEFAULT
         assert live and live[0].get("provider") == PROVIDER_LABEL_DEFAULT
+
+
+class TestSuccessorClaim:
+    """A failed run has one successor: a dashboard retry or a continuation."""
+
+    @staticmethod
+    def _failed(manager: SubagentManager, run_id: str = "fail1234") -> SubagentInfo:
+        failed = SubagentInfo(id=run_id, task="t", done=True, error="turn_limit:100")
+        manager._agents[run_id] = failed
+        return failed
+
+    # Every state a failed run's successor claim can be in, and whether a retry
+    # and a continuation are each granted from it. The continuation column is
+    # the claim alone: a live or queued continuation is refused one step later
+    # by the conversation-busy check every continuation already runs.
+    @staticmethod
+    def _state_none(m: SubagentManager, f: SubagentInfo) -> None:
+        return None
+
+    @staticmethod
+    def _state_retry_starting(m: SubagentManager, f: SubagentInfo) -> None:
+        assert m.claim_retry(f) == ""
+
+    @staticmethod
+    def _state_retried(m: SubagentManager, f: SubagentInfo) -> None:
+        assert m.claim_retry(f) == ""
+        m.settle_retry(f, "retry5678")
+
+    @staticmethod
+    def _state_retry_start_failed(m: SubagentManager, f: SubagentInfo) -> None:
+        assert m.claim_retry(f) == ""
+        m.settle_retry(f, None)
+
+    @staticmethod
+    def _state_continuation_starting(m: SubagentManager, f: SubagentInfo) -> None:
+        assert m._claim_continuation(f.id, "x", "", "")[1] is None
+
+    @staticmethod
+    def _state_continued(m: SubagentManager, f: SubagentInfo) -> None:
+        assert m._claim_continuation(f.id, "x", "", "")[1] is None
+        m._settle_continuation(f, SubagentInfo(id="cont0001", task="t"))
+
+    @staticmethod
+    def _state_continuation_start_failed(m: SubagentManager, f: SubagentInfo) -> None:
+        assert m._claim_continuation(f.id, "x", "", "")[1] is None
+        m._settle_continuation(f, None)
+
+    @staticmethod
+    def _state_retry_start_raised(m: SubagentManager, f: SubagentInfo) -> None:
+        assert m.claim_retry(f) == ""
+        m.settle_retry(f, SUCCESSOR_UNKNOWN)
+        m.settle_retry(f, None)
+
+    @staticmethod
+    def _state_continuation_start_raised(m: SubagentManager, f: SubagentInfo) -> None:
+        assert m._claim_continuation(f.id, "x", "", "")[1] is None
+        m._settle_continuation(f, None, raised=True)
+
+    @staticmethod
+    def _state_continued_then_refused(m: SubagentManager, f: SubagentInfo) -> None:
+        TestSuccessorClaim._state_continued(m, f)
+        assert m._claim_continuation(f.id, "x", "", "")[1] is None
+        busy = SubagentInfo(id="x", task="t", done=True, error="conversation_busy: busy")
+        m._settle_continuation(f, busy)
+
+    @staticmethod
+    def _state_queued_continuation(m: SubagentManager, f: SubagentInfo) -> None:
+        m._queue.append({"_preassigned_id": "cont0001", "conversation_key": f"subagent:{f.id}"})
+
+    @staticmethod
+    def _state_live_continuation(m: SubagentManager, f: SubagentInfo) -> None:
+        m._agents["cont0001"] = SubagentInfo(
+            id="cont0001", task="t", conversation_key=f"subagent:{f.id}"
+        )
+
+    @staticmethod
+    def _state_finished_continuation(m: SubagentManager, f: SubagentInfo) -> None:
+        m._agents["cont0001"] = SubagentInfo(
+            id="cont0001", task="t", done=True, conversation_key=f"subagent:{f.id}"
+        )
+
+    @pytest.mark.parametrize(
+        ("state", "retry_granted", "continue_granted"),
+        [
+            ("none", True, True),
+            ("retry_starting", False, False),
+            ("retried", False, False),
+            ("retry_start_failed", True, True),
+            ("retry_start_raised", False, False),
+            ("continuation_starting", False, False),
+            ("continued", False, True),
+            ("continuation_start_failed", True, True),
+            ("continuation_start_raised", False, True),
+            ("continued_then_refused", False, True),
+            ("queued_continuation", False, True),
+            ("live_continuation", False, True),
+            ("finished_continuation", False, True),
+        ],
+    )
+    def test_every_claim_state_answers_retry_and_continue(
+        self, state: str, retry_granted: bool, continue_granted: bool
+    ) -> None:
+        for op in ("retry", "continue"):
+            manager = _manager()
+            failed = self._failed(manager)
+            getattr(self, f"_state_{state}")(manager, failed)
+            if op == "retry":
+                assert (manager.claim_retry(failed) == "") is retry_granted, op
+            else:
+                refusal = manager._claim_continuation(failed.id, "x", "", "")[1]
+                assert (refusal is None) is continue_granted, op
+                if refusal is not None:
+                    assert refusal.error.startswith("conversation_busy")
+
+    def test_a_continued_run_stays_claimed_after_its_successor_leaves(self) -> None:
+        manager = _manager()
+        failed = self._failed(manager)
+        self._state_continued(manager, failed)
+        manager._agents.pop("cont0001", None)
+        assert manager.claim_retry(failed) == "cont0001"
+
+    @pytest.mark.asyncio
+    async def test_retry_is_refused_while_a_continuation_start_is_in_flight(self) -> None:
+        """The continuation claims before its first await, so a retry landing
+        while its durable accept is still pending sees the claim."""
+        manager = _manager()
+        failed = self._failed(manager)
+        gate = asyncio.Event()
+        seen: list[str] = []
+
+        async def slow_continue(*_a, **_k):
+            seen.append(manager.claim_retry(failed))
+            await gate.wait()
+            return SubagentInfo(id="cont0001", task="t")
+
+        with patch.object(
+            ContinuationCoordinator, "continue_conversation_async_impl", new=slow_continue
+        ):
+            task = asyncio.ensure_future(manager.continue_conversation_async("fail1234", "x"))
+            await asyncio.sleep(0)
+            assert manager.claim_retry(failed) != ""
+            gate.set()
+            await task
+        assert seen and seen[0] != ""
+        assert manager.claim_retry(failed) == "cont0001"
+
+    @pytest.mark.asyncio
+    async def test_a_continuation_start_that_raises_keeps_the_claim(self) -> None:
+        manager = _manager()
+        failed = self._failed(manager)
+
+        async def raises(*_a, **_k):
+            raise asyncio.CancelledError
+
+        with (
+            patch.object(ContinuationCoordinator, "continue_conversation_async_impl", new=raises),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await manager.continue_conversation_async("fail1234", "x")
+        assert manager.claim_retry(failed) == SUCCESSOR_UNKNOWN
+        assert manager._claim_continuation("fail1234", "x", "", "")[1] is None
+
+    @pytest.mark.asyncio
+    async def test_second_continuation_is_refused_while_the_first_is_starting(self) -> None:
+        manager = _manager()
+        self._failed(manager)
+        gate = asyncio.Event()
+        starts: list[str] = []
+
+        async def slow_continue(*_a, **_k):
+            starts.append("x")
+            await gate.wait()
+            return SubagentInfo(id="cont0001", task="t")
+
+        with patch.object(
+            ContinuationCoordinator, "continue_conversation_async_impl", new=slow_continue
+        ):
+            first = asyncio.ensure_future(manager.continue_conversation_async("fail1234", "a"))
+            await asyncio.sleep(0)
+            second = await manager.continue_conversation_async("fail1234", "b")
+            gate.set()
+            await first
+        assert second is not None and second.done
+        assert second.error.startswith("conversation_busy")
+        assert starts == ["x"]

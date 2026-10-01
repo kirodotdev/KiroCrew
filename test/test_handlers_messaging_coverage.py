@@ -23,7 +23,7 @@ import threading
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
@@ -954,6 +954,65 @@ class TestApiSpawnRetry:
         assert _payload(resp) == {"id": "new", "retried_from": "a1", "status": "spawned"}
         assert mgr.spawn.call_args.args[0] == "original task"
         assert "batch_id" not in mgr.spawn.call_args.kwargs
+
+    def test_refuses_a_run_whose_successor_claim_is_taken(self) -> None:
+        """The manager's claim decides; the route starts nothing when it is taken."""
+        mgr = _mgr()
+        mgr.get.return_value = _info(done=True, outcome="failed", _raw_task="original task")
+        mgr.claim_retry.return_value = "c1"
+        resp = _run(mod.api_spawn_retry, self._req(mgr))
+        assert resp.status == 409
+        assert _payload(resp)["code"] == "retry_superseded"
+        assert "c1" in _payload(resp)["error"]
+        mgr.claim_retry.assert_called_once_with(mgr.get.return_value)
+        mgr.spawn.assert_not_called()
+
+    def test_a_landed_retry_settles_its_claim_with_the_new_id(self) -> None:
+        mgr = _mgr()
+        old = _info(done=True, outcome="failed", _raw_task="t")
+        mgr.get.return_value = old
+        mgr.claim_retry.return_value = ""
+        mgr.spawn.return_value = _info(id="new")
+        assert _run(mod.api_spawn_retry, self._req(mgr)).status == 200
+        assert mgr.settle_retry.call_args_list[0].args == (old, "new")
+
+    def test_a_start_that_raises_keeps_the_claim(self) -> None:
+        """The start may have accepted its row before raising, so the run is
+        not handed back as retryable."""
+        mgr = _mgr()
+        mgr.get.return_value = _info(done=True, outcome="failed", _raw_task="t")
+        mgr.claim_retry.return_value = ""
+        old = mgr.get.return_value
+        mgr.spawn.side_effect = RuntimeError("store write raised")
+        with pytest.raises(RuntimeError):
+            _run(mod.api_spawn_retry, self._req(mgr))
+        assert mgr.settle_retry.call_args_list[0].args == (old, mod.SUCCESSOR_UNKNOWN)
+
+    def test_a_raise_before_the_spawn_releases_the_claim(self) -> None:
+        """Nothing can have landed before the spawn is reached, so the run stays
+        retryable."""
+        mgr = _mgr()
+        old = _info(done=True, outcome="failed", _raw_task="t", agent="proj-agent")
+        mgr.get.return_value = old
+        mgr.claim_retry.return_value = ""
+        with (
+            patch.object(
+                mod, "warm_project_agents_for_spawn", AsyncMock(side_effect=RuntimeError("x"))
+            ),
+            pytest.raises(RuntimeError),
+        ):
+            _run(mod.api_spawn_retry, self._req(mgr))
+        assert mgr.settle_retry.call_args_list == [((old, None),)]
+        mgr.spawn.assert_not_called()
+
+    def test_a_refused_start_releases_the_claim(self) -> None:
+        mgr = _mgr()
+        old = _info(done=True, outcome="failed", _raw_task="t")
+        mgr.get.return_value = old
+        mgr.claim_retry.return_value = ""
+        mgr.spawn.return_value = None
+        assert _run(mod.api_spawn_retry, self._req(mgr)).status == 429
+        assert mgr.settle_retry.call_args_list == [((old, None),)]
 
     def test_falls_back_to_redacted_task_when_raw_is_empty(self) -> None:
         mgr = _mgr()

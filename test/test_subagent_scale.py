@@ -542,9 +542,9 @@ class TestBatchIdentity:
         from types import SimpleNamespace
 
         from kiro_crew.dashboard.handlers.messaging import (
+            _retry_failed_run,
             _stage_boundary_owner_for_parent,
             _stage_boundary_slot_for_parent,
-            api_spawn_retry,
         )
         from kiro_crew.dashboard.state import StageBoundary
         from kiro_crew.subagent_manager.admission.gate import _GateMixin
@@ -562,7 +562,7 @@ class TestBatchIdentity:
                 '"_stage_boundary_owner": _stage_boundary_owner',
             ),
             "retry": (
-                api_spawn_retry,
+                _retry_failed_run,
                 "_stage_boundary_owner_for_parent(state, old.parent_session_key)",
             ),
             "respawn": (
