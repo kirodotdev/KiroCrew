@@ -380,5 +380,9 @@ def test_a_failed_ledger_record_aborts_the_removal():
 def test_doctor_replays_the_rewrite_with_a_restore_command():
     line = SD.adoption_summary(KEY, False)
     assert line.endswith("kirocrew config set skills.lazy_load false")
-    assert "still listed as drift" not in line, "this key has no registry row to list it"
+    # The skills.lazy_load registry row carries the same key and old value, so it
+    # vouches for the ledger entry and lists a value a failed write left stored.
+    assert (KEY, False) in {(e.dotted_key, e.old_default) for e in SD.SUPERSEDED_DEFAULTS}
+    assert SD.LEGACY_LAZY_LOAD_ADOPTION == (KEY, False)
+    assert "still listed as drift" in line
     assert "no registered default explains" in SD.adoption_summary(KEY, True)

@@ -358,7 +358,10 @@ def _report_superseded_defaults(base_data: dict, *, skip: set[str] | None = None
     buys nothing because there the process IS the invocation. The per-key detail
     belongs on the surface the operator asked for: ``kirocrew config defaults``,
     and ``doctor``. It is also emitted at debug here, so a gateway run with
-    ``-vv`` still carries the full text in its own log.
+    ``-vv`` still carries the full text in its own log. The one exception is the
+    note of a row marked ``meaning_moved``: its stored value now selects a
+    different behaviour from the one an operator who chose it got, so the line
+    carries that note for someone who would otherwise ``--keep`` it unread.
 
     Keys already named in this process are not repeated, so a gateway that loads
     config many times says it once. An acknowledged key is not reported at all --
@@ -381,10 +384,15 @@ def _report_superseded_defaults(base_data: dict, *, skip: set[str] | None = None
     for entry in drifted:
         _REPORTED_SUPERSEDED_KEYS.add(entry.dotted_key)
         logger.debug("Superseded default in stored config: %s", drift_summary(entry))
+    # Only a moved MEANING earns line space: an operator who never opens 'config
+    # defaults' must still read what the stored value selects now before choosing
+    # '--keep'. Every other note stays on the per-key surfaces.
+    notes = "".join(f" {e.dotted_key}: {e.note}." for e in drifted if e.meaning_moved and e.note)
     logger.warning(
         "%d stored config value(s) still hold a superseded default: %s. "
         "Run 'kirocrew config defaults' to see each one, '--adopt' to take the "
-        "current defaults, or '--keep' to affirm yours and stop this notice.",
+        "current defaults, or '--keep' to affirm yours and stop this notice.%s",
         len(drifted),
         ", ".join(e.dotted_key for e in drifted),
+        notes,
     )

@@ -131,6 +131,38 @@ def test_keep_records_the_stored_values_and_silences_the_report(home, capsys):
     assert "recorded as intentional" in capsys.readouterr().out
 
 
+def test_keeping_a_row_whose_meaning_moved_repeats_the_note(tmp_path, capsys):
+    d = tmp_path / "crew"
+    d.mkdir()
+    (d / "config.json").write_text(json.dumps({"skills": {"lazy_load": False}}), encoding="utf-8")
+    lazy = next(e for e in SD.SUPERSEDED_DEFAULTS if e.dotted_key == "skills.lazy_load")
+    _run(_args(keep=True), d)
+    out = capsys.readouterr().out
+    assert "skills.lazy_load recorded as intentional" in out
+    assert f"Note: {lazy.note}." in out
+
+
+def test_keeping_one_of_the_tool_stall_pair_says_the_other_still_bounds_it(tmp_path, capsys):
+    """Keeping the hard cap at 3600 while adopting the suspect window leaves the
+    window at an hour, and the confirmation is the moment to say so."""
+    d = tmp_path / "crew"
+    d.mkdir()
+    stored = {"watchdog": {"tool_stall_suspect_secs": 3600.0, "tool_stall_hard_cap_secs": 3600.0}}
+    (d / "config.json").write_text(json.dumps(stored), encoding="utf-8")
+    cap = next(
+        e for e in SD.SUPERSEDED_DEFAULTS if e.dotted_key == "watchdog.tool_stall_hard_cap_secs"
+    )
+    _run(_args(keys=["watchdog.tool_stall_hard_cap_secs"], keep=True), d)
+    assert f"Note: {cap.note}." in capsys.readouterr().out
+    _run(_args(), d)
+    assert cap.note in capsys.readouterr().out
+
+
+def test_keeping_a_row_without_a_note_prints_no_note(home, capsys):
+    _run(_args(keep=True), home)
+    assert "Note:" not in capsys.readouterr().out
+
+
 def test_adopting_an_acked_key_drops_its_ack(home):
     """The ack recorded a value that is not the stored one, so keeping it would
     silence a genuinely deliberate choice made later."""

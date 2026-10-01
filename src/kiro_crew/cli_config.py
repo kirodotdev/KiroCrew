@@ -584,8 +584,13 @@ def _defaults_cmd(args: argparse.Namespace) -> None:
             source="cli",
             resources=",".join(recorded),
         )
+        notes = {e.dotted_key: e.note for e in drifted if e.note}
         for key in recorded:
             print(f"✅ {key} recorded as intentional — no longer reported")
+            if key in notes:
+                # Said again at the moment of affirming: the note is a fact the
+                # choice to keep depends on, and this is the last line they read.
+                print(f"   Note: {notes[key]}.")
         print("\nChanging one of these values later reports it again.")
         return
 

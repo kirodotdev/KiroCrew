@@ -3808,8 +3808,8 @@ def _validated_stt_provider(value: object) -> str:
         logger.warning(
             "STT provider %r is retired; using %r instead. It needed a separate "
             "out-of-band install, which the bundled local engine removes while "
-            "recognising the same speech. Run 'kirocrew config defaults --adopt' "
-            "to drop the stored value and this notice.",
+            "recognising the same speech. Run 'kirocrew config defaults --adopt "
+            "stt.provider' to drop the stored value and this notice.",
             value,
             resolved,
         )
@@ -3818,7 +3818,7 @@ def _validated_stt_provider(value: object) -> str:
             "Unknown STT provider %r; using %r instead, so no recogniser runs until "
             "the value is fixed. Selectable providers: %s. Run "
             "'kirocrew config set stt.provider <provider>' to choose one, or "
-            "'kirocrew config defaults --adopt' to drop the stored value.",
+            "'kirocrew config defaults --adopt stt.provider' to drop the stored value.",
             value,
             resolved,
             ", ".join(_VALID_STT_PROVIDERS),

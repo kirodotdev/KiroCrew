@@ -538,17 +538,38 @@ release that changed it. `superseded_default_drift(base_data)` returns the entri
 whose stored value equals the old default, comparing type as well as value so a
 stored `0` is not read as `False`.
 
-Registered so far: `mcp_gateway.forward_declared_env` (False -> True, #4566),
-`session.autocompact_pct` (90.0 -> 70.0, #4388), `stt.streaming` (False -> True,
-0.5.0), `stt.model` ("turbo" -> "base", 0.5.0),
-`dashboard.loop_stall_exit_after_secs` (25 -> unset, #6651),
-`instances.warm_set_cap` (5 -> 0, #7248),
-`agent.chat_turn_timeout_secs` (7200 -> 14400, #8949) and
-`agent.subagent_timeout_secs` (1800 -> 10800, #8891), and
-`agent.subagent_max_turns` (100 -> 1000, #12203), and
-`agent.spawn_min_memory_gb` (4.0 -> 2.0, #15890). **Three** carry `auto_adopt` --
-the agent timeout budgets and the spawn memory floor -- and the other entries are
-report-only; see below.
+Every registered row is listed once, in the table under *Auto-adoption* below,
+with its change and the reason it adopts or only reports. **Three** carry
+`auto_adopt` -- the agent timeout budgets and the spawn memory floor -- and every
+other row is report-only.
+`test_the_spec_table_lists_every_registered_row` keeps that table equal to the
+registry.
+
+A row may also carry a `note`: one sentence that `doctor`,
+`kirocrew config defaults` and the `--keep` confirmation append to it. It exists
+when choosing between `--adopt` and `--keep` needs a fact the old and new values
+do not carry. `skills.lazy_load`'s says what `false` means now (below).
+`decisions.history_budget_chars` says adopting is bounded by the consented history
+ceiling. The two tool-stall windows say they are coupled (see the table).
+
+A row marked `meaning_moved` also puts its note on the one-line load-path
+warning. That mark is for a stored value whose MEANING moved along with the
+default, and `skills.lazy_load` is the one such row. On 0.6.0 and earlier
+`false` was the default full skills dump, and today it selects the shorter entry
+naming only the eight hottest skills. A 0.6.0 install may hold a materialized
+`false`, and an operator who chose `false` there chose the full dump. The row
+stays report-only because `false` is also the supported switch to the short
+entry. Its note says what `false` means now, on every surface, so keeping it is
+never mistaken for keeping the 0.6.0 behaviour, and `--adopt` takes the index.
+
+A row may also carry `applies`, a predicate that says where the old and new
+defaults behave differently; elsewhere the row is not drift. `stt.language_code`
+uses it: only the local recogniser auto-detects, and every other provider
+resolves `"auto"` to `en-US`, so a stored `en-US` there already behaves like the
+default and is not reported. The row's own value is still detected on the base
+document alone, but the predicate reads the EFFECTIVE `stt.provider`, with
+`config.local.json` merged over the base, because the recogniser that runs is the
+effective one.
 
 The subagent turn budget follows 1000 automatically when its key is absent,
 including in an existing installation after an update. Every valid stored value
@@ -574,27 +595,39 @@ So `SupersededDefault.auto_adopt` opts ONE entry into a one-shot rewrite. What k
 the set small is **not** a judgment about how wide the value's range is. That
 criterion was tried and is wrong: `instances.warm_set_cap` is numeric with a range,
 and an operator running five crews who types 5 stores exactly the old default. The
-line that holds is whether the repository ALREADY PINS the stored value as a
-supported configuration:
+line that holds is whether the old value is something an operator sets on purpose.
+For four rows another suite pins it as a supported configuration, and the table
+names that test; every other report-only row gives its plain reason:
 
-| Key | | Pinned by |
-|---|---|---|
-| `agent.subagent_timeout_secs` | adopts | -- |
-| `agent.chat_turn_timeout_secs` | adopts | -- |
-| `agent.spawn_min_memory_gb` | adopts | -- (the 4.0 inputs in the admission tests set a floor, they do not pin a stored 4.0 as supported; the opt-out is `0`, not the old default) |
-| `session.autocompact_pct` | reports | `test_a_persisted_ceiling_value_is_left_alone` |
-| `dashboard.loop_stall_exit_after_secs` | reports | `test_explicit_desktop_default_is_preserved_for_managed_service` |
-| `stt.streaming` | reports | `test_put_persists_streaming` |
-| `mcp_gateway.forward_declared_env` | reports | `test_a_real_false_still_turns_it_off` |
-| `stt.model` | reports | a picker value; adopting changes transcription accuracy |
-| `instances.warm_set_cap` | reports | 5 is an ordinary deliberate cap |
-| `agent.subagent_max_turns` | reports | An explicitly stored 100 is a supported cost/turn cap |
+| Key | Change | | Pinned by, or why |
+|---|---|---|---|
+| `agent.subagent_timeout_secs` | 1800 -> 10800, #8891 | adopts | -- |
+| `agent.chat_turn_timeout_secs` | 7200 -> 14400, #8949 | adopts | -- |
+| `agent.spawn_min_memory_gb` | 4.0 -> 2.0, #15890 | adopts | -- (the 4.0 inputs in the admission tests set a floor, they do not pin a stored 4.0 as supported; the opt-out is `0`, not the old default) |
+| `session.autocompact_pct` | 90.0 -> 70.0, #4388 | reports | `test_a_persisted_ceiling_value_is_left_alone` |
+| `dashboard.loop_stall_exit_after_secs` | 25 -> unset, #6651 | reports | `test_explicit_desktop_default_is_preserved_for_managed_service` |
+| `stt.streaming` | false -> true, 0.5.0 | reports | `test_put_persists_streaming` |
+| `mcp_gateway.forward_declared_env` | false -> true, #4566 | reports | `test_a_real_false_still_turns_it_off` |
+| `stt.model` | "turbo" -> "base", 0.5.0 | reports | a picker value; adopting changes transcription accuracy |
+| `instances.warm_set_cap` | 5 -> 0, #7248 | reports | 5 is an ordinary deliberate cap |
+| `agent.subagent_max_turns` | 100 -> 1000, #12203 | reports | an explicitly stored 100 is a supported cost/turn cap |
+| `agent.session_control` | false -> true, #8375 | reports | false is the supported global withdrawal of peer-session tools |
+| `skills.lazy_load` | false -> true, #12131 | reports | false is the supported switch to the short skill entry; its `note` reaches the load line too (`meaning_moved`, above) |
+| `agent.subagent_spawn_stagger_secs` | 2.0 -> 0.25, #12203 | reports | the knob to raise when the host or provider is the bottleneck |
+| `session.watchdog_rss_max_mb` | 0 -> 1536, #9626 | reports | 0 is the documented off switch for session recycling |
+| `stt.language_code` | "en-US" -> "auto", #9246 | reports | a locale picked on purpose; adopting changes what the recogniser listens for. Only where the effective provider, overlay included, is local (`applies`): elsewhere "auto" resolves to en-US |
+| `decisions.history_budget_chars` | 0 -> 2000, #12928 | reports | 0 is a supported setting below the consented history ceiling; adopting raises it only up to that ceiling (carries a `note`) |
+| `watchdog.stale_window_secs` | 300.0 -> 600.0, #8949 | reports | a tuning knob; holding it probes a live think sooner, which regenerates it |
+| `watchdog.tool_stall_suspect_secs` | 3600.0 -> 5400.0, #8949 | reports | a tuning knob; holding it cancels a tool the oracle cannot attest after an hour, with no re-run, so that tool's work is lost. Coupled with the hard cap (`note`): the window is the smaller of the two, so both must be adopted to get 5400 |
+| `watchdog.tool_stall_hard_cap_secs` | 3600.0 -> 7200.0, #8949 | reports | a tuning knob; holding it caps the same forbearance at an hour, with the same cost. Coupled with the suspect window (`note`): adopting either one alone leaves the window at an hour |
+| `watchdog.model_silent_probe_secs` | 900.0 -> 1800.0, #8949 | reports | a tuning knob; holding it probes a long silent think sooner, which regenerates it |
 
-A row whose old value another suite guarantees is not stale noise by definition,
-whatever its type. `test_only_unpinned_broken_budgets_adopt_themselves` pins the
-opted-in set and names every exclusion, so a row cannot gain the flag without the
-suite that pins it being consulted. `auto_adopt` defaults to False, so a new row is
-report-only until someone states otherwise.
+A row whose old value is a supported configuration is not stale noise, whatever
+its type. `test_only_unpinned_broken_budgets_adopt_themselves` pins both sets by
+name -- the rows that adopt, and the rows that only report -- so a new row has to
+be placed in one of them on purpose, and moving a row across edits that test in
+the same change. `auto_adopt` defaults to False, so a new row is report-only until
+someone states otherwise.
 
 Two further properties make the rewrite safe on the rows that remain, without the
 per-key provenance the config layer still lacks:
@@ -690,7 +723,7 @@ window (an entry whose config write failed describes a value that is still store
 and still listed as drift). Both fields come from the sidecar, a file the agent
 sandbox can write, so they are untrusted output: every character is rendered
 terminal-safe (control characters escaped, never executed), and the pasteable
-restore command is built only from `SUPERSEDED_DEFAULTS` (and `LEGACY_LAZY_LOAD_ADOPTION`) literals after matching the
+restore command is built only from `SUPERSEDED_DEFAULTS` literals after matching the
 entry by key and exact value -- no quoting scheme is portable across every shell an
 operator might paste into, so an entry the registry does not vouch for is shown,
 escaped, with no command. An adopted key holds no stored value any more, so it is
@@ -734,7 +767,11 @@ than pointing the operator at a command for something already fixed:
   grows without bound on exactly the long-lived installs with the most real drift,
   and it lands on every short-lived `kirocrew` invocation, where the
   once-per-process guard buys nothing because there the process IS the invocation.
-  The per-key text is still emitted at debug, so `-vv` keeps it in the log.
+  The per-key text is still emitted at debug, so `-vv` keeps it in the log. The one
+  per-key text the line does carry is the note of a `meaning_moved` row, because
+  that stored value now selects a different behaviour from the one its operator
+  chose, and the line is what someone who never opens `config defaults` reads
+  before running `--keep`.
 - `kirocrew doctor` prints a `Stored Defaults` section reading `config.json`
   directly. Drift is informational and does NOT become an issue; an unreadable or
   malformed config does.
@@ -796,13 +833,14 @@ the validated-data cache dropped when the write did not land, and the
 `connections_ui` marker deferred with it. One WARNING per rewrite names the key, the
 writer's version, why, which value now applies (the default, or the overlay's when
 `config.local.json` sets the key), and the `kirocrew config set skills.lazy_load
-false` that chooses the short entry. `superseded_defaults.LEGACY_LAZY_LOAD_ADOPTION` lets
-`adoption_summary` vouch for the ledger entry, so `doctor` and `kirocrew config
-defaults` replay it with a restore command (a bool spelled as JSON). It is never
-drift, so the marker-first residual leaves the value stored with only that line
-saying so. A load that declines on an unreadable ledger or stamp still writes the
-marker, so that install keeps its value for good; a degraded or deferred load
-writes neither and the next clean load decides again.
+false` that chooses the short entry. The `skills.lazy_load` registry row has the
+ledger entry's key and old value (`superseded_defaults.LEGACY_LAZY_LOAD_ADOPTION`),
+so `adoption_summary` vouches for it and `doctor` and `kirocrew config defaults`
+replay it with a restore command (a bool spelled as JSON); the marker-first
+residual leaves a stored value that row still lists as drift. A load that declines
+on an unreadable ledger or stamp still writes the marker, so that install keeps its
+value for good; a degraded or deferred load writes neither and the next clean load
+decides again.
 `test_config_lazy_load_legacy_migration.py` pins the truth table.
 
 ## Acknowledging a superseded default
@@ -824,7 +862,8 @@ must not resolve for anyone:
   ever removed. Detection runs again inside the write lock, so a value changed
   since it was listed is left alone;
 - `--keep [KEY...]` records the stored values as intentional, which suppresses the
-  load-path line for exactly those values.
+  load-path line for exactly those values. A kept row that carries a `note`
+  prints it again in the confirmation.
 
 An acknowledgment records `<dotted key> -> the acked VALUE`, not the key alone, so
 it covers the choice rather than the key: change the value later and the report
