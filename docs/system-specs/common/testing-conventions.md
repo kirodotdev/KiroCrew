@@ -3985,6 +3985,20 @@ answers before its work finishes leaves the assertion racing the loop. There is 
 synchronisation point, so use it — `drain_background_tasks(state)` — and see the Rules
 entry for what it looks like when you do not (a different test failing each run).
 
+An unawaited executor job holding a `file_lock` is the sharpest version, because the
+acquire on the event-loop thread is one attempt and never waits (the
+`platform_compat.file_lock` docstring). `await svc.remove(a)` leaves its trust
+revocation running on an executor thread, so a sync `svc.remove_sync(b)` on the next
+line, still on the loop, fails closed (`test_autonudge_refactor_contract`, 7 CI runs
+in one day). Prefer the async mutator, `await svc.remove(b)`. A test whose subject IS
+the sync mutator calls it off the loop (`await asyncio.to_thread(...)`) only when
+nothing else on the service is in flight: no armed timer, no observer, no pending
+persist, since those all belong to the loop. The mirror image is a holder on a fixed
+timer: it races the waiter's own start (`test_posix_lock_ceiling` saw a 4e-05s
+"wait"). Release it when the waiter's own refused attempt on that lock file is seen,
+and release it inside the coroutine, because `asyncio.run` joins its executor before
+an outer `finally` runs and a waiter cannot finish while the lock is held.
+
 Two more shapes, both MEASURED in a 5x full-suite run on Windows:
 
 - **A completion signalled from another thread.** `await handler(...)` returning does

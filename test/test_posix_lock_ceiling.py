@@ -32,6 +32,7 @@ import textwrap
 import threading
 import time
 from pathlib import Path
+from typing import Iterator
 
 import pytest
 
@@ -360,7 +361,13 @@ class TestInProcessOverlapOffTheLoop:
     """
 
     @staticmethod
-    def _hold_in_thread(lock_path: Path, release_after: float | None):
+    @contextlib.contextmanager
+    def _hold_in_thread(lock_path: Path) -> Iterator[threading.Event]:
+        """Hold the lock on a thread until the yielded event is set, never on a timer.
+
+        Leaving the block always releases and joins the holder, including when the
+        holder never took the lock in time.
+        """
         held = threading.Event()
         stop = threading.Event()
 
@@ -369,14 +376,18 @@ class TestInProcessOverlapOffTheLoop:
             try:
                 with platform_compat.file_lock(fd, exclusive=True):
                     held.set()
-                    stop.wait(release_after)
+                    stop.wait()
             finally:
                 os.close(fd)
 
         thread = threading.Thread(target=_run, daemon=True)
         thread.start()
-        assert held.wait(5), "holder thread failed to take the lock"
-        return thread, stop
+        try:
+            assert held.wait(5), "holder thread failed to take the lock"
+            yield stop
+        finally:
+            stop.set()
+            thread.join(5)
 
     @staticmethod
     def _locked_section(lock_path: Path, timeout: float) -> float:
@@ -388,25 +399,58 @@ class TestInProcessOverlapOffTheLoop:
         finally:
             os.close(fd)
 
-    def test_a_brief_in_process_holder_is_waited_out(self, tmp_path: Path):
+    def test_a_brief_in_process_holder_is_waited_out(self, tmp_path: Path, monkeypatch):
         lock_path = tmp_path / "overlap.lock"
-        thread, stop = self._hold_in_thread(lock_path, release_after=0.05)
+        hold_secs = 0.05
+        # Only a safety ceiling: the waiter is released long before it, so a
+        # starved runner must not turn a slow wake-up into a refusal.
+        waiter_ceiling = 10.0
+        with self._hold_in_thread(lock_path) as stop:
+            # The holder lets go on a signal, not after a fixed hold: a fixed hold
+            # races the waiter's own start, and a waiter scheduled after it ends
+            # finds the lock already free. The signal is the waiter's own refused
+            # attempt on THIS lock file, so no other thread's flock can send it.
+            lock_inode = os.stat(lock_path).st_ino
+            met = threading.Event()
+            real_flock = platform_compat.fcntl.flock
 
-        async def _main() -> float:
-            return await asyncio.to_thread(self._locked_section, lock_path, 2.0)
+            def _flock(fd: int, op: int) -> None:
+                try:
+                    real_flock(fd, op)
+                except BlockingIOError:
+                    if op & platform_compat.fcntl.LOCK_NB and os.fstat(fd).st_ino == lock_inode:
+                        met.set()
+                    raise
 
-        try:
+            monkeypatch.setattr(platform_compat.fcntl, "flock", _flock)
+
+            async def _main() -> float:
+                waiter = asyncio.create_task(
+                    asyncio.to_thread(self._locked_section, lock_path, waiter_ceiling)
+                )
+                watcher = asyncio.create_task(asyncio.to_thread(met.wait, 5))
+                # Release inside the coroutine: asyncio.run joins its executor
+                # before an outer finally could, and the waiter cannot finish
+                # while the lock is held.
+                try:
+                    await asyncio.wait({waiter, watcher}, return_when=asyncio.FIRST_COMPLETED)
+                    if waiter.done():
+                        return await waiter  # its own error, not "never met"
+                    assert watcher.result(), "waiter never met the lock"
+                    await asyncio.sleep(hold_secs)
+                finally:
+                    stop.set()
+                    met.set()
+                return await waiter
+
             waited = asyncio.run(_main())
-        finally:
-            stop.set()
-            thread.join(5)
 
-        # Entered after the holder let go: not refused at 0s, not at the 2s limit.
-        assert 0.03 <= waited < 1.0
+        # Refused at first, then entered (a refusal at the ceiling would have
+        # raised) no earlier than the release: a real wait, not a free lock.
+        assert waited >= hold_secs
 
     def test_a_holder_that_never_releases_is_refused_at_the_timeout(self, tmp_path: Path):
         lock_path = tmp_path / "held-forever.lock"
-        thread, stop = self._hold_in_thread(lock_path, release_after=None)
 
         async def _main() -> tuple[OSError, float]:
             started = time.monotonic()
@@ -414,11 +458,8 @@ class TestInProcessOverlapOffTheLoop:
                 await asyncio.to_thread(self._locked_section, lock_path, 2.0)
             return excinfo.value, time.monotonic() - started
 
-        try:
+        with self._hold_in_thread(lock_path):
             error, waited = asyncio.run(_main())
-        finally:
-            stop.set()
-            thread.join(5)
 
         assert not isinstance(error, BlockingIOError)
         assert 2.0 <= waited < 3.0

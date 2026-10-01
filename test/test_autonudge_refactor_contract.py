@@ -854,7 +854,10 @@ class TestInstanceSeamsReachEveryInternalCaller:
             await svc.stop_monitor("struct01")
             await svc._persist_locked()
             await svc.remove("legacy01")
-            svc.remove_sync("struct01")
+            # Off the loop: remove() above left its trust revocation running on an
+            # executor thread, holding the provider-trust file lock, and
+            # platform_compat.file_lock is single-shot on the event-loop thread.
+            await asyncio.to_thread(svc.remove_sync, "struct01")
         finally:
             svc.stop()
         both = ["legacy01", "struct01"]
