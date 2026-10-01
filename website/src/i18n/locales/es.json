@@ -8856,7 +8856,6 @@
     "welcomeView": {
       "incognito": "Incógnito",
       "incognito_desc": "Usa la memoria existente, pero no aprende lecciones. Conserva la transcripción para recuperar la pestaña.",
-      "refresh_suggestions": "Actualizar sugerencias",
       "suggestion_pipeline_status": "Consultar el estado de mi pipeline",
       "suggestion_review_cr": "Revisar mi último CR",
       "suggestion_search_code": "Buscar ejemplos de uso en el código",
@@ -8876,7 +8875,8 @@
       "greeting_good_to_see_you": "Qué bueno verte. ¿Qué sigue?",
       "greeting_good_morning": "Buenos días. ¿Por dónde empezamos?",
       "greeting_good_afternoon": "Buenas tardes. ¿Por dónde empezamos?",
-      "greeting_good_evening": "Buenas noches. ¿Por dónde empezamos?"
+      "greeting_good_evening": "Buenas noches. ¿Por dónde empezamos?",
+      "suggestions_failed_to_load": "No se pudieron cargar las sugerencias"
     },
     "widgetFrame": {
       "cannot_star_widget_has_no_slug_or_message_contex": "No se puede destacar: el widget no tiene slug ni contexto de mensaje",

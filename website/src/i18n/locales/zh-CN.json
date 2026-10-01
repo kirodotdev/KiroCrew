@@ -8612,7 +8612,6 @@
     "welcomeView": {
       "incognito": "隐身",
       "incognito_desc": "使用现有记忆，但不会学习新经验。保留聊天记录以便恢复标签页。",
-      "refresh_suggestions": "刷新建议",
       "suggestion_pipeline_status": "查看我的流水线状态",
       "suggestion_review_cr": "审查我最新的 CR",
       "suggestion_search_code": "在代码中搜索用法示例",
@@ -8632,7 +8631,8 @@
       "greeting_good_to_see_you": "很高兴见到你。接下来做什么？",
       "greeting_good_morning": "早上好。我们从哪里开始？",
       "greeting_good_afternoon": "下午好。我们从哪里开始？",
-      "greeting_good_evening": "晚上好。我们从哪里开始？"
+      "greeting_good_evening": "晚上好。我们从哪里开始？",
+      "suggestions_failed_to_load": "无法加载建议"
     },
     "widgetFrame": {
       "cannot_star_widget_has_no_slug_or_message_contex": "无法加星标：小组件没有 slug 或消息上下文",

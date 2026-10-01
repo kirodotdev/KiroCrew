@@ -5524,9 +5524,7 @@
       "this_dashboard_is_served_over_https_so_the_brows": "This dashboard is served over HTTPS, so the browser blocks embedding an",
       "web_preview": "Web preview"
     },
-    "welcomeView": {
-      "refresh_suggestions": "Refresh suggestions"
-    },
+    "welcomeView": {},
     "widgetFrame": {
       "could_not_render": "Couldn't render this widget",
       "download_as_html": "Download as HTML",

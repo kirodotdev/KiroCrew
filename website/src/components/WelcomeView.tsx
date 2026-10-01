@@ -1,12 +1,14 @@
 import { useState } from 'react'
 import {
-  Activity, Clock, Code2, Eye, FileText, ListChecks, RefreshCw, Search, Sparkles, type LucideIcon,
+  Activity, Clock, Code2, Eye, FileText, ListChecks, Search, Sparkles, type LucideIcon,
 } from 'lucide-react'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
+import ErrorNotice from './ErrorNotice'
 import { KiroGhost } from './KiroGhost'
 import { useTheme } from '../hooks/useTheme'
 import { getThemeBranding } from '../themeBranding'
 import { api, type SuggestionItem, type SuggestionKind } from '../api/client'
+import { reportForError } from '../utils/errorReport'
 
 import { i18nT } from '../i18n/t'
 interface WelcomeViewProps {
@@ -57,9 +59,7 @@ export function welcomeGreetings(): string[] {
 }
 
 function SuggestedCards({ setInput }: { setInput: (v: string) => void }) {
-  const qc = useQueryClient()
-  const [refreshing, setRefreshing] = useState(false)
-  const { data, isFetching } = useQuery({
+  const { data, isError, error } = useQuery({
     queryKey: ['suggestions'],
     queryFn: () => api.suggestions(),
     staleTime: 5 * 60_000,
@@ -79,29 +79,34 @@ function SuggestedCards({ setInput }: { setInput: (v: string) => void }) {
   ]
   const cards = data?.suggestions?.length ? data.suggestions.map(normalizeSuggestion) : fallbackSuggestions
 
-  const handleRefresh = async () => {
-    setRefreshing(true)
-    try {
-      const fresh = await api.suggestions(true)
-      qc.setQueryData(['suggestions'], fresh)
-    } catch {}
-    setRefreshing(false)
-  }
-
-  const spinning = isFetching || refreshing
-
   return (
     // Short wide windows (under 600px tall, 640px+ wide) show the compact one-line
     // rows in three columns; at 620px those rows kept ~15 characters of label, so
     // the grid widens to the content column there and the labels keep ~30.
     <div className="w-full max-w-[620px] [@media(min-width:640px)_and_(max-height:599px)]:max-w-[900px] mx-auto">
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+      {/* A failed fetch still shows the built-in cards below, but says so: the
+          welcome screen holds no unsaved state, so the agent hand-off is on. The
+          message is the localized line, not the transport error -- "Failed to
+          fetch" is jargon on the product's first screen -- so the structured
+          report (endpoint, status, code) rides along explicitly for the hand-off. */}
+      {isError && (
+        <ErrorNotice
+          message={i18nT('components.welcomeView.suggestions_failed_to_load')}
+          report={reportForError(error)}
+          variant="inline"
+          askAgent
+          className="mb-3"
+        />
+      )}
+      {/* Phones: a tight list of bare rows (2px apart). sm+: 12px gaps between
+          cards, compact or tall. */}
+      <div className="grid grid-cols-1 gap-0.5 sm:grid-cols-3 sm:gap-3">
         {cards.map(({ text, kind }, i) => {
           const { Icon, tile } = SUGGESTION_KIND_STYLE[kind]
           return (
-            // Phones and short wide windows (under 600px tall): a compact one-line row, so
-            // the whole hero -- both rows and the Refresh link -- fits above the composer
-            // dock without scrolling. Wide AND tall: fixed-height cell with the card
+            // Phones: a compact one-line row with no box around it, so six of them stack
+            // tightly. Short wide windows (under 600px tall): the same compact row, boxed,
+            // so the whole hero fits above the composer dock without scrolling. Wide AND tall: fixed-height cell with the card
             // absolute inside it, so on hover/focus it grows DOWN over the next row
             // instead of reflowing. Same media query as the layout grid below.
             <div key={`${i}-${text}`} className="relative [@media(min-width:640px)_and_(min-height:600px)]:h-[108px] hover:z-10 focus-within:z-10">
@@ -118,9 +123,9 @@ function SuggestedCards({ setInput }: { setInput: (v: string) => void }) {
                 // focus wrap below is the reveal; the tooltip names the full text
                 // for a pointer that only pauses).
                 title={text}
-                className="group relative w-full [@media(min-width:640px)_and_(min-height:600px)]:absolute [@media(min-width:640px)_and_(min-height:600px)]:top-0 [@media(min-width:640px)_and_(min-height:600px)]:inset-x-0 [@media(min-width:640px)_and_(min-height:600px)]:min-h-full flex flex-row [@media(min-width:640px)_and_(min-height:600px)]:flex-col items-center [@media(min-width:640px)_and_(min-height:600px)]:items-start gap-3 px-4 py-3 [@media(min-width:640px)_and_(min-height:600px)]:gap-2.5 [@media(min-width:640px)_and_(min-height:600px)]:p-3.5 rounded-xl border border-border bg-card text-card-fg text-[13px] font-medium text-left overflow-hidden cursor-pointer transition-[border-color,box-shadow] duration-200 hover:border-accent hover:shadow-lg focus-visible:border-accent focus-visible:shadow-lg"
+                className="group relative w-full [@media(min-width:640px)_and_(min-height:600px)]:absolute [@media(min-width:640px)_and_(min-height:600px)]:top-0 [@media(min-width:640px)_and_(min-height:600px)]:inset-x-0 [@media(min-width:640px)_and_(min-height:600px)]:min-h-full flex flex-row [@media(min-width:640px)_and_(min-height:600px)]:flex-col items-center [@media(min-width:640px)_and_(min-height:600px)]:items-start gap-2.5 px-2 py-1.5 sm:gap-3 sm:px-4 sm:py-3 [@media(min-width:640px)_and_(min-height:600px)]:gap-2.5 [@media(min-width:640px)_and_(min-height:600px)]:p-3.5 rounded-lg sm:rounded-xl border border-transparent sm:border-border bg-transparent sm:bg-card text-text sm:text-card-fg text-[13px] font-medium text-left overflow-hidden cursor-pointer transition-[border-color,box-shadow,background-color] duration-200 hover:bg-bg-hover sm:hover:bg-card sm:hover:border-accent sm:hover:shadow-lg focus-visible:bg-bg-hover sm:focus-visible:bg-card sm:focus-visible:border-accent sm:focus-visible:shadow-lg"
               >
-                <span aria-hidden="true" className={`w-8 h-8 shrink-0 rounded-lg flex items-center justify-center ${tile}`}>
+                <span aria-hidden="true" className={`w-7 h-7 sm:w-8 sm:h-8 shrink-0 rounded-lg flex items-center justify-center ${tile}`}>
                   <Icon size={16} />
                 </span>
                 {/* Compact rows truncate to one line; hover or keyboard focus lets the
@@ -132,18 +137,6 @@ function SuggestedCards({ setInput }: { setInput: (v: string) => void }) {
             </div>
           )
         })}
-      </div>
-      {/* z-20 keeps the link above a hovered bottom-row card (z-10) growing over it. */}
-      <div className="relative z-20 flex justify-end mt-4">
-        <button
-          type="button"
-          onClick={handleRefresh}
-          disabled={spinning}
-          className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-[12px] text-muted hover:text-text hover:bg-bg-hover bg-transparent transition-colors cursor-pointer disabled:cursor-default"
-        >
-          <RefreshCw size={12} className={spinning ? 'animate-spin' : ''} />
-          <span>{i18nT('components.welcomeView.refresh_suggestions')}</span>
-        </button>
       </div>
     </div>
   )
@@ -187,9 +180,9 @@ export default function WelcomeView({ setInput }: WelcomeViewProps) {
             row's height, or a tight hero slides the brand mark under that row. */}
         <div aria-hidden="true" className="hidden basis-[45%] shrink min-h-12 [@media(min-width:640px)_and_(min-height:600px)]:block" />
         <div className="flex flex-col items-center gap-3 text-center shrink-0">
-          {/* Under 600px tall the brand mark yields its 60px so both card rows and the
-              Refresh link fit above the composer dock without scrolling; the greeting
-              keeps the identity. */}
+          {/* Under 600px tall the brand mark yields its 60px so both card rows fit
+              above the composer dock without scrolling; the greeting keeps the
+              identity. */}
           <div className="contents [@media(max-height:599px)]:hidden">{brandMark}</div>
           <h2 className="text-3xl sm:text-4xl font-light text-text-strong tracking-tight">{i18nT(greetingKey)}</h2>
         </div>

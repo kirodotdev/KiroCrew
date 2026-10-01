@@ -8734,7 +8734,6 @@
     "welcomeView": {
       "incognito": "ছদ্মবেশী",
       "incognito_desc": "বিদ্যমান মেমরি ব্যবহার করে, কিন্তু নতুন কোনো শিক্ষা শেখে না। ট্যাব পুনরুদ্ধারের জন্য ট্রান্সক্রিপ্ট রাখে।",
-      "refresh_suggestions": "পরামর্শ রিফ্রেশ করুন",
       "suggestion_pipeline_status": "আমার পাইপলাইনের অবস্থা দেখুন",
       "suggestion_review_cr": "আমার সর্বশেষ CR পর্যালোচনা করুন",
       "suggestion_search_code": "ব্যবহারের উদাহরণের জন্য কোড খুঁজুন",
@@ -8754,7 +8753,8 @@
       "greeting_good_to_see_you": "তোমাকে দেখে ভালো লাগল। এরপর কী?",
       "greeting_good_morning": "সুপ্রভাত। আমরা কোথা থেকে শুরু করব?",
       "greeting_good_afternoon": "শুভ অপরাহ্ন। আমরা কোথা থেকে শুরু করব?",
-      "greeting_good_evening": "শুভ সন্ধ্যা। আমরা কোথা থেকে শুরু করব?"
+      "greeting_good_evening": "শুভ সন্ধ্যা। আমরা কোথা থেকে শুরু করব?",
+      "suggestions_failed_to_load": "পরামর্শ লোড করা যায়নি"
     },
     "widgetFrame": {
       "cannot_star_widget_has_no_slug_or_message_contex": "স্টার দেওয়া যাবে না: উইজেটের কোনো slug বা মেসেজ কনটেক্সট নেই",

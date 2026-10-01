@@ -8612,7 +8612,6 @@
     "welcomeView": {
       "incognito": "プライベート",
       "incognito_desc": "既存のメモリを使いますが、新しいレッスンは学習しません。タブを復元できるよう、会話記録は保持します。",
-      "refresh_suggestions": "提案を更新",
       "suggestion_pipeline_status": "パイプラインステータスを確認",
       "suggestion_review_cr": "最新のCRをレビュー",
       "suggestion_search_code": "コード使用例を検索",
@@ -8632,7 +8631,8 @@
       "greeting_good_to_see_you": "お会いできてうれしいです。次は何をしますか？",
       "greeting_good_morning": "おはようございます。どこから始めましょうか？",
       "greeting_good_afternoon": "こんにちは。どこから始めましょうか？",
-      "greeting_good_evening": "こんばんは。どこから始めましょうか？"
+      "greeting_good_evening": "こんばんは。どこから始めましょうか？",
+      "suggestions_failed_to_load": "提案を読み込めませんでした"
     },
     "widgetFrame": {
       "cannot_star_widget_has_no_slug_or_message_contex": "スター付けできません：ウィジェットにslugまたはメッセージコンテキストがありません",

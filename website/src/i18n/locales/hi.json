@@ -8734,7 +8734,6 @@
     "welcomeView": {
       "incognito": "गुप्त",
       "incognito_desc": "मौजूदा मेमोरी का उपयोग करता है, लेकिन कोई नई सीख नहीं लेता। टैब वापस पाने के लिए ट्रांसक्रिप्ट रखता है।",
-      "refresh_suggestions": "सुझाव रीफ़्रेश करें",
       "suggestion_pipeline_status": "मेरी पाइपलाइन स्थिति जांचें",
       "suggestion_review_cr": "मेरे नवीनतम CR की समीक्षा करें",
       "suggestion_search_code": "उपयोग उदाहरणों के लिए कोड खोजें",
@@ -8754,7 +8753,8 @@
       "greeting_good_to_see_you": "तुमसे मिलकर अच्छा लगा। आगे क्या?",
       "greeting_good_morning": "सुप्रभात। कहाँ से शुरू करते हैं?",
       "greeting_good_afternoon": "नमस्कार। कहाँ से शुरू करते हैं?",
-      "greeting_good_evening": "शुभ संध्या। कहाँ से शुरू करते हैं?"
+      "greeting_good_evening": "शुभ संध्या। कहाँ से शुरू करते हैं?",
+      "suggestions_failed_to_load": "सुझाव लोड नहीं हो सके"
     },
     "widgetFrame": {
       "cannot_star_widget_has_no_slug_or_message_contex": "स्टार नहीं किया जा सकता: विजेट में कोई slug या संदेश संदर्भ नहीं है",

@@ -3233,7 +3233,8 @@
       "greeting_good_to_see_you": "Good to see you. What's next?",
       "greeting_good_morning": "Good morning. Where should we start?",
       "greeting_good_afternoon": "Good afternoon. Where should we start?",
-      "greeting_good_evening": "Good evening. Where should we start?"
+      "greeting_good_evening": "Good evening. Where should we start?",
+      "suggestions_failed_to_load": "Couldn't load suggestions"
     },
     "widgetFrame": {
       "cannot_star_widget_has_no_slug_or_message_contex": "Cannot star: widget has no slug or message context",

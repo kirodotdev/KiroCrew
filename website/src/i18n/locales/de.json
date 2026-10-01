@@ -8734,7 +8734,6 @@
     "welcomeView": {
       "incognito": "Inkognito",
       "incognito_desc": "Nutzt vorhandene Erinnerungen, lernt aber keine Lektionen. Speichert den Chatverlauf zur Wiederherstellung des Tabs.",
-      "refresh_suggestions": "Vorschläge aktualisieren",
       "suggestion_pipeline_status": "Meinen Pipeline-Status prüfen",
       "suggestion_review_cr": "Meinen neuesten CR überprüfen",
       "suggestion_search_code": "Code nach Verwendungsbeispielen durchsuchen",
@@ -8754,7 +8753,8 @@
       "greeting_good_to_see_you": "Schön, dich zu sehen. Was steht an?",
       "greeting_good_morning": "Guten Morgen. Womit fangen wir an?",
       "greeting_good_afternoon": "Guten Tag. Womit fangen wir an?",
-      "greeting_good_evening": "Guten Abend. Womit fangen wir an?"
+      "greeting_good_evening": "Guten Abend. Womit fangen wir an?",
+      "suggestions_failed_to_load": "Vorschläge konnten nicht geladen werden"
     },
     "widgetFrame": {
       "cannot_star_widget_has_no_slug_or_message_contex": "Markieren nicht möglich: Widget hat keinen Slug und keinen Nachrichtenkontext",
