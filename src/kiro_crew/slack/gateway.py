@@ -8759,9 +8759,12 @@ class GatewayOrchestrator:
                 # Exception-first digest content: failures/stops carry detail,
                 # successes are one pointer line (full output stays on disk).
                 if _oc == "completed":
+                    # A run that kept its output after a generate failure is
+                    # completed but partial; the digest must say so.
+                    _kept = " (partial: backend failed to generate the final response)"
                     bp["ok_lines"].append(
-                        f"— `{info.id}` ✅ {task_text[:80]}{_model_tag} · {usage}"
-                        + (f"\n  → {result_path}" if result_path else "")
+                        f"— `{info.id}` ✅{_kept if info.partial else ''} {task_text[:80]}"
+                        f"{_model_tag} · {usage}" + (f"\n  → {result_path}" if result_path else "")
                     )
                 else:
                     bp["fail_lines"].append(

@@ -1775,6 +1775,8 @@ class RunEventCoordinator(ManagerComponent):
         # On such a backend PreToolUse hooks gate each permission request below;
         # the KAS projection turns every call they cover into one.
         _spec = await turn_spec_hooks(client, agent)
+        # Set when the stream ends on a generate failure after real output.
+        _kept_after_generate_failure = False
 
         async def _stream_with_transient_retry():
             """Yield stream events, retrying transient backend errors.
@@ -1911,6 +1913,19 @@ class RunEventCoordinator(ManagerComponent):
                     # re-run it (duplicate writes/messages). Only a turn with
                     # zero observed activity resends the original prompt.
                     _had_activity = bool(result_text) or turns > 0 or info.tool_count > 0
+                    # The one continue is spent and the backend still fails to
+                    # generate after real output: end the stream and keep that
+                    # output (flagged below) instead of failing a run that answered.
+                    if (
+                        post_activity_attempts >= 1
+                        # A bare [OPTIONS: ...] tag is stripped later, leaving nothing.
+                        and extract_options(result_text)[0].strip()
+                        and "failed to generate a response" in str(exc).lower()
+                    ):
+                        nonlocal _kept_after_generate_failure
+                        _kept_after_generate_failure = True
+                        logger.warning("Subagent %s: kept output after a transient error", info.id)
+                        return
                     # A failure an adapter recognises as a DEPENDENCY condition
                     # (provider throttle, 5xx, connection loss: taskq.dependency)
                     # is not retried here: the run reports it to the per-scope
@@ -2637,6 +2652,16 @@ class RunEventCoordinator(ManagerComponent):
             self._manager._completion_keep,
             self._manager._completion_keep_chars,
         )
+        if _kept_after_generate_failure:
+            # Added AFTER the keep cap, so no keep mode can cut it off.
+            _warn = (
+                "_Warning: the backend failed to generate a final response; "
+                "this is the output streamed before that._"
+            )
+            info.result = f"{_warn}\n\n{info.result}"
+            info.partial = True
+            # result.txt is what spawn_status / spawn_run read for a done run.
+            write_result_chunk(info.id, f"\n\n{_warn}\n")
         evict_completed_agents(self._manager._agents)
 
         # ── Per-turn usage row: attribute subagent spend. ──

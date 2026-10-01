@@ -1221,3 +1221,92 @@ async def test_reconcile_single_orphan_dm_is_not_wrapped_in_digest():
     msg = dm.await_args.args[0]
     assert "solo-1" in msg
     assert "restart digest" not in msg
+
+
+def _streams_then_fails(error: Exception, text: str = "the answer "):
+    def stream_factory(msg: str, *a, **kw):
+        async def _gen():
+            if text:
+                yield _text_event(text)
+            raise error
+
+        return _gen()
+
+    return stream_factory
+
+
+_GENERATE_FAILED = "The model failed to generate a response (transient error)."
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("keep", ["head", "tail"])
+async def test_generate_failed_after_output_keeps_the_output_with_a_warning(keep):
+    """Output already streamed survives a transient generate failure the retry cannot fix.
+
+    Longer than the keep cap, so a warning added before the cap would be cut off."""
+    error, text = _TransientError(_GENERATE_FAILED), "x" * 4000
+    calls: list[str] = []
+    factory = _streams_then_fails(error, text)
+
+    def _recording(msg: str, *a, **kw):
+        calls.append(msg)
+        return factory(msg, *a, **kw)
+
+    mgr = _manager(_mock_sessions(_recording))
+    mgr.update_completion_keep(keep, 3000)
+    with patch("kiro_crew.subagent.transient_retry_delay", return_value=0.0):
+        info = await _spawn_and_wait(mgr)
+
+    assert info.outcome == "completed"
+    assert not info.error
+    assert info.partial is True
+    assert info.result.startswith("_Warning: the backend failed to generate")
+    assert "xxxx" in info.result
+    # The output is kept only after the one continue turn was tried.
+    assert len(calls) == 2 and calls[1] == _TRANSIENT_CONTINUE_MSG
+    # The disk copy, read by spawn_status / spawn_run, carries the warning too.
+    from pathlib import Path
+
+    assert info.result_path
+    assert "_Warning: the backend failed to generate" in Path(info.result_path).read_text()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error", "text"),
+    [
+        (_TransientError("500 mid-stream"), "the answer "),  # transient, not generate-failed
+        (_FatalError(_GENERATE_FAILED), "the answer "),  # not transient
+        (_TransientError(_GENERATE_FAILED), " "),  # whitespace-only output
+    ],
+)
+async def test_other_failures_after_output_still_fail(error, text):
+    mgr = _manager(_mock_sessions(_streams_then_fails(error, text)))
+    with patch("kiro_crew.subagent.transient_retry_delay", return_value=0.0):
+        info = await _spawn_and_wait(mgr)
+
+    assert info.outcome == "failed"
+    assert info.error
+
+
+@pytest.mark.asyncio
+async def test_control_tag_only_output_still_fails():
+    """Output that is only an [OPTIONS: ...] tag is empty once the tag is stripped."""
+    calls: list[str] = []
+
+    def stream_factory(msg: str, *a, **kw):
+        calls.append(msg)
+
+        async def _gen():
+            if len(calls) == 1:
+                yield _text_event("[OPTIONS: Retry | Stop]")
+            raise _TransientError(_GENERATE_FAILED)
+
+        return _gen()
+
+    mgr = _manager(_mock_sessions(stream_factory))
+    with patch("kiro_crew.subagent.transient_retry_delay", return_value=0.0):
+        info = await _spawn_and_wait(mgr)
+
+    assert info.outcome == "failed"
+    assert info.error

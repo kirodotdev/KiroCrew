@@ -1259,6 +1259,45 @@ class TestWaveDigest:
         assert "requested" not in body
 
     @pytest.mark.asyncio
+    async def test_wave_digest_flags_a_completed_partial_member(self):
+        """A member kept after a generate failure is completed but partial; its ok line says so."""
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+        orch.ctx_builder = MagicMock()
+        orch.ctx_builder.hooks = MagicMock()
+        orch.dashboard_state = _mock_dashboard_state()
+        slot = MagicMock()
+        slot.mode = "chat"
+        slot.running = False
+        slot.task = None
+        slot._subagent_deliveries_inflight = 0
+        orch.dashboard_state.get_slot = MagicMock(return_value=slot)
+        mgr, on_done = self._capture_on_done(orch)
+        injected: list[str] = []
+
+        async def _fake_run_chat(_state, _slot, text, *, _directive_user_origin, **_kw):
+            injected.append(text)
+
+        with (
+            patch("kiro_crew.slack.gateway._run_chat", side_effect=_fake_run_chat),
+            patch("kiro_crew.subagent_persistence.mark_delivered"),
+        ):
+            m0, m1 = self._member(0, 2), self._member(1, 2)
+            m0.partial = True
+            mgr.batch_members_pending = MagicMock(return_value=True)
+            await on_done(m0)
+            await asyncio.sleep(0)
+            mgr.batch_members_pending = MagicMock(return_value=False)
+            await on_done(m1)
+            await asyncio.sleep(0)
+            await _settle(lambda: len(injected) >= 1, what="the wave digest injected")
+
+        lines = "\n".join(injected).splitlines()
+        tag = "✅ (partial: backend failed to generate the final response)"
+        assert any(f"`{m0.id}` {tag}" in line for line in lines)
+        assert not any(f"`{m1.id}`" in line and "partial" in line for line in lines)
+
+    @pytest.mark.asyncio
     async def test_wave_digest_no_model_tag_when_served_model_absent(self):
         """Maintainer kyleseaman: when resolved_model is empty the card shows
         nothing, so the digest line must not label the pin as `model
