@@ -29,6 +29,7 @@ import { useSocketConnection } from './websocket/connection'
 import { decodeFrame } from './websocket/frames'
 import { useStreamBuffers } from './websocket/streamBuffers'
 import { useVoicePlayback } from './websocket/voicePlayback'
+import { useRowDeliveryWatchdog } from './websocket/rowDeliveryWatchdog'
 import { useApprovalRegistry } from './websocket/approvals'
 import { useComposerCards } from './websocket/composerCards'
 import { useAutomationSeed } from './websocket/automationSeed'
@@ -85,6 +86,8 @@ export {
   slotProjectionFloor,
   takeFoldedSlotProjection,
 } from './websocket/slotProjection'
+
+export { ROW_STALL_MS, ROW_STALL_TICK_MS } from './websocket/rowDeliveryWatchdog'
 
 /** A socket that has delivered nothing for this long while the page is visible
  *  is treated as dead, even when its `readyState` still reads OPEN. The gateway
@@ -789,6 +792,7 @@ export function useWebSocket() {
   const forceReconnect = useCallback(() => {
     socket.forceReconnect(voice.releaseVoiceOnSocketLoss, connect)
   }, [socket, voice, connect])
+  useRowDeliveryWatchdog(dispatch, forceReconnect)
 
   /** Replace a socket that is OPEN but has stopped delivering.
    *

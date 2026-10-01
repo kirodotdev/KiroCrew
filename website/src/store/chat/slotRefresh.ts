@@ -2,12 +2,12 @@
  *  the open pane (reconnect, turn end, variant switch) and `warmSlotCache` for
  *  a background pane, each with the reducer that merges its count-matched page
  *  onto what the tab already holds. */
-import { createAsyncThunk, isDraft, original, type ActionReducerMapBuilder } from '@reduxjs/toolkit'
+import { createAsyncThunk, isDraft, original, type ActionReducerMapBuilder, type Reducer } from '@reduxjs/toolkit'
 import type { ChatMessage } from '../../types'
 import { mergePreservedPastes } from '../../utils/pasteTokens'
 import type { ChatState } from './state'
 import { fetchSlotDetail, isUnsafeKey, safeKey } from './wire'
-import { deduplicateByMid, floorForGen, hasUnidentifiedDurableRow, idAnchorsOneRow, isDurableRow, mergePreservedClientTs, midOccurrences, olderHeadAbovePage, raiseChunkSeq, rowIdentities, serverRowCount, snapshotChunkGen, snapshotChunkSeq, tailNotInPage, transcriptTsMs, tsEpoch } from './transcript'
+import { deduplicateByMid, finalizeTrailingStreaming, floorForGen, hasUnidentifiedDurableRow, idAnchorsOneRow, isDurableRow, mergePreservedClientTs, midOccurrences, olderHeadAbovePage, raiseChunkSeq, rowIdentities, serverRowCount, snapshotChunkGen, snapshotChunkSeq, tailNotInPage, transcriptTsMs, tsEpoch } from './transcript'
 import { PANE_HYDRATE_LIMIT, REFRESH_LIMIT_CEILING, SLOT_DETAIL_MAX_LIMIT, countMatchedFetchLimit, pagingCursorAfterKeptHead, slotCoverageShortfall } from './paging'
 import { mergePreservedThinking, reinsertThinkingOrphans } from './thinking'
 import { applyWarmRunState, bumpRunEpoch } from './runState'
@@ -15,20 +15,54 @@ import { retainServerTotal, seedContextUsage, setPagingCursor, writeSlotPage } f
 import { hydrateQueuedBubbles } from './queue'
 import { walkWindowBackTo } from './windowWalk'
 
+const refreshFields = [
+  'activeSlot', 'messages', 'slotRunning', 'slotState', 'slotStopping',
+  'pendingTurnSlot', 'lastChunkSeq', 'lastChunkGen', 'slotSwitchRequestId',
+  'slotSwitchTarget', 'slotHasMore', 'slotOldestIndex', 'slotCursorKey', 'slotOlderError',
+] as const satisfies readonly (keyof ChatState)[]
+
+/** Observe each reduction so transitions back to the original values still
+ *  invalidate recovery. Unrelated activity must not starve transcript repair. */
+export function withRefreshRevision(reducer: Reducer<ChatState>): Reducer<ChatState> {
+  return (before, action) => {
+    const after = reducer(before, action)
+    if (!before || before === after) return after
+    const key = before.activeSlot === null ? null : safeKey(before.activeSlot)
+    const changed = refreshFields.some(field => before[field] !== after[field]) ||
+      (key !== null && (
+        before.thinkingOrphans?.[key] !== after.thinkingOrphans?.[key] ||
+        before.runEpoch?.[key] !== after.runEpoch?.[key] ||
+        before.slotServerTotal?.[key] !== after.slotServerTotal?.[key]
+      ))
+    return changed ? { ...after, recoveryRevision: (before.recoveryRevision ?? 0) + 1 } : after
+  }
+}
+
 /** Re-fetch messages for a slot without changing activeSlot. Only applies if still active. */
 let refreshSeqCounter = 0
 const nextRefreshSeq = (): number => ++refreshSeqCounter
 
-export const refreshSlot = createAsyncThunk(
+export const refreshSlot = createAsyncThunk<
+  (Awaited<ReturnType<typeof fetchSlotDetail>> & { refreshSeq: number }) | null,
+  string | { key: string; onlyIfUnchanged?: boolean },
+  { fulfilledMeta: { recoveryRevision?: number } }
+>(
   'chat/refreshSlot',
-  async (key: string, { getState }) => {
+  async (arg, { getState, fulfillWithValue }) => {
+    const key = typeof arg === 'string' ? arg : arg.key
+    const onlyIfUnchanged = typeof arg !== 'string' && arg.onlyIfUnchanged
     const state = (getState() as { chat: ChatState }).chat
-    if (state.activeSlot !== key) return null
+    if (state.activeSlot !== key) return fulfillWithValue(null, {})
     // Sampled before the first await: the walk below declines when a live frame
     // reduced into the view at any point since (see `liveFrameSeq`).
     const liveAtStart = state.liveFrameSeq ?? 0
     // Dispatch order, captured before any await (see `refreshAppliedSeq`).
     const refreshSeq = nextRefreshSeq()
+    const finish = (page: Awaited<ReturnType<typeof fetchSlotDetail>> | null) =>
+      fulfillWithValue(page ? { ...page, refreshSeq } : null,
+        onlyIfUnchanged ? { recoveryRevision: state.recoveryRevision ?? 0 } : {})
+    const isStale = () => onlyIfUnchanged &&
+      ((getState() as { chat: ChatState }).chat.recoveryRevision ?? 0) !== (state.recoveryRevision ?? 0)
     // COUNT-MATCHED bound, not a fixed one. The recurring refresh (reconnect,
     // chat_done, variant switch) REPLACES `messages` wholesale, so a fixed
     // bound would delete scrollback the user paged in. Asking for at least as
@@ -112,7 +146,7 @@ export const refreshSlot = createAsyncThunk(
      * A slot switch during the await makes the whole answer moot, so it declines the
      * same way the pre-fetch check does. */
     const after = (getState() as { chat: ChatState }).chat
-    if (after.activeSlot !== key) return null
+    if (after.activeSlot !== key || isStale()) return finish(null)
     const viewNow = after.messages
     const serverRowsNow = viewNow.filter(
       m => isDurableRow(m) && typeof m.meta?.mid === 'string' && m.meta.mid.length > 0,
@@ -126,7 +160,7 @@ export const refreshSlot = createAsyncThunk(
      * anchor is guarded rather than indexed blind. */
     const spansView = spanIsTrustworthy && serverRowsNow.length > 0 && anchors(serverRowsNow[0].meta?.mid)
     const overlapsView = anchors(page.messages[0]?.meta?.mid)
-    if (!page.hasMore || spansView || overlapsView) return { ...page, refreshSeq }
+    if (!page.hasMore || spansView || overlapsView) return finish(page)
     const walked = await walkWindowBackTo(key, page, viewNow)
     /* The walk adds up to `WINDOW_WALK_MAX_PAGES` more awaits, and every row it
      * returns is no newer than the FIRST page. A live chunk or a new row that
@@ -143,9 +177,9 @@ export const refreshSlot = createAsyncThunk(
      * sit below. Every live frame passes through `applyActiveFrame`, which
      * counts it, so the counter answers exactly the question asked. */
     const settled = (getState() as { chat: ChatState }).chat
-    if (settled.activeSlot !== key) return null
-    if ((settled.liveFrameSeq ?? 0) !== liveAtStart) return null
-    return { ...walked, refreshSeq }
+    if (settled.activeSlot !== key || isStale()) return finish(null)
+    if ((settled.liveFrameSeq ?? 0) !== liveAtStart) return finish(null)
+    return finish(walked)
   },
 )
 
@@ -301,6 +335,10 @@ export function addSlotRefreshCases(builder: ActionReducerMapBuilder<ChatState>)
   builder
     .addCase(refreshSlot.fulfilled, (state, action) => {
       if (!action.payload) return
+      // Payload creation and fulfillment dispatch are separate microtasks.
+      // Check the revision here before any recovery write.
+      if (action.meta?.recoveryRevision !== undefined &&
+          (state.recoveryRevision ?? 0) !== action.meta.recoveryRevision) return
       const { key, messages, running, hasMore, queue, nextBefore } = action.payload
       if (isUnsafeKey(key)) return
       if (state.activeSlot !== key) return  // user switched away
@@ -312,6 +350,7 @@ export function addSlotRefreshCases(builder: ActionReducerMapBuilder<ChatState>)
         if ((applied[safeKey(key)] ?? 0) > refreshSeq) return
         applied[safeKey(key)] = refreshSeq
       }
+      if (action.meta?.recoveryRevision !== undefined) state.lastRecoveryRequestId = action.meta.requestId
       retainServerTotal(state, key, action.payload.total, running, undefined, action.payload.boundedRead)
       // Merge permission messages: prefer state perms (have frontend resolved flags)
       // but include API perms for any we don't have locally (e.g. arrived while disconnected)
@@ -406,6 +445,11 @@ export function addSlotRefreshCases(builder: ActionReducerMapBuilder<ChatState>)
       if (running && !state.slotRunning) bumpRunEpoch(state, key)
       state.slotRunning = running
       state.slotStopping = action.payload.stopping ?? false
+      if (action.meta?.recoveryRevision !== undefined && !running) {
+        state.slotState = 'idle'
+        state.slotStopping = false
+        finalizeTrailingStreaming(state.messages)
+      }
       state.pendingTurnSlot = null
       // Same seeding as switchSlot: this refresh is the reconnect recovery,
       // and the frames that raced it are exactly the ones it must not let

@@ -42,7 +42,7 @@ import { workflowReducers } from './chat/workflows'
 import { mcpAppReducers } from './chat/mcpApps'
 import { addSlotListCases, evictSlotState } from './chat/slotResidue'
 import { addSlotSwitchCases, switchSlot } from './chat/slotSwitch'
-import { addSlotRefreshCases } from './chat/slotRefresh'
+import { addSlotRefreshCases, withRefreshRevision } from './chat/slotRefresh'
 import { addLifecycleCases, historyNoticeReducers } from './chat/lifecycle'
 
 /** Frame roles that retire a slot's pending STATELESS question card.
@@ -895,4 +895,4 @@ export { refreshSlot, warmSlotCache } from './chat/slotRefresh'
 export { WINDOW_WALK_MAX_PAGES } from './chat/windowWalk'
 export { createSlot, deleteHistorySession, fetchHistory, forkSlot, resumeFromHistory } from './chat/lifecycle'
 
-export default chatSlice.reducer
+export default withRefreshRevision(chatSlice.reducer)

@@ -20,7 +20,9 @@
  *  touched here; `chatSlice.warmSlotCacheBound.test.ts` owns it.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { configureStore } from '@reduxjs/toolkit'
+import { configureStore, type Reducer } from '@reduxjs/toolkit'
+import { withRefreshRevision } from './chat/slotRefresh'
+import type { ChatState } from './chat/state'
 
 const TOTAL = 300
 /** The slot-detail handler's own clamp (`min(int(limit), 500)`), mirrored so a
@@ -79,18 +81,64 @@ import chatReducer, {
   REFRESH_LIMIT_CEILING,
   refreshSlot,
   replaceMessages,
+  switchSlot,
+  setSlotRunning,
+  setSlotState,
+  setSlotStopping,
   sseChatMessage,
+  sseChatMessageUpdate,
+  sseChatMessagePatchByTs,
+  sseToolResult,
+  sseToolActivity,
+  sseContextUsage,
+  setSlotStatusDetail,
+  setActiveSlot,
+  startLocalTurn,
+  appendQueuedMessage,
+  editQueuedMessage,
+  cancelQueuedMessage,
+  reorderQueuedMessages,
+  loadOlderMessages,
 } from './chatSlice'
 import { api } from '../api/client'
 
 const SLOT = 'slot-1'
 
-function makeStore(extra: Record<string, unknown> = {}) {
+// Ordering receipts do not describe the visible view. Context meters seed only
+// missing values, so a concurrent measured update cannot be overwritten.
+const refreshBookkeeping = new Set<keyof ChatState>([
+  'recoveryRevision', 'refreshAppliedSeq', 'lastRecoveryRequestId',
+  'slotContextPct', 'slotContextTokens',
+])
+
+const guardedRefreshReducer: Reducer<ChatState> = (before, action) => {
+  const after = chatReducer(before, action)
+  if (before && refreshSlot.fulfilled.match(action)) {
+    // Derive writes from the real reducer, including its helper calls. A new
+    // refresh field must invalidate recovery on its own, not ride a row change.
+    const fields = new Set([...Object.keys(before), ...Object.keys(after)])
+    for (const field of fields as Set<keyof ChatState>) {
+      if (before[field] === after[field] || refreshBookkeeping.has(field)) continue
+      const isolatedWrite = withRefreshRevision(() => ({ ...before, [field]: after[field] }))
+      expect(isolatedWrite(before, { type: 'probe' }).recoveryRevision,
+        `refresh writes ${field}, but that field alone does not invalidate recovery`,
+      ).toBe((before.recoveryRevision ?? 0) + 1)
+    }
+  }
+  return after
+}
+
+function makeStore(extra: Record<string, unknown> = {}, beforeFulfilled?: () => void) {
   const base = chatReducer(undefined, { type: '@@INIT' })
   return configureStore({
-    reducer: { chat: chatReducer },
+    reducer: { chat: guardedRefreshReducer },
     preloadedState: { chat: { ...base, activeSlot: SLOT, ...extra } },
-    middleware: (getDefault) => getDefault({ serializableCheck: false, immutableCheck: false }),
+    middleware: (getDefault) => getDefault({ serializableCheck: false, immutableCheck: false }).concat(
+      () => next => action => {
+        if (refreshSlot.fulfilled.match(action)) beforeFulfilled?.()
+        return next(action)
+      },
+    ),
   })
 }
 
@@ -126,6 +174,200 @@ describe('refreshSlot count-matched bound', () => {
     HISTORY = rows(TOTAL)
     RUNNING = false
     DURING_FETCH = null
+  })
+
+  describe('watchdog stale responses', () => {
+    it.each(['bounded', 'empty', 'walk'])('accepts %s recovery amid unrelated activity at both boundaries', async shape => {
+      HISTORY = rows(shape === 'walk' ? TOTAL * 2 : 120)
+      let updates = 0
+      const unrelated = () => {
+        updates++
+        store.dispatch(sseChatMessage({ slot: 'background', role: 'chunk', content: 'x' }))
+        store.dispatch(setSlotStatusDetail({ slot: SLOT, kind: 'thinking', label: 'Working', ts: updates }))
+        store.dispatch(sseToolActivity({ slot: SLOT, tool: 'search', kind: 'tool', purpose: '', input_preview: '' }))
+        store.dispatch(sseContextUsage({ slot: SLOT, pct: updates, used_tokens: 10, window_tokens: 100 }))
+        DURING_FETCH = unrelated
+      }
+      const store = makeStore({ messages: shape === 'empty' ? [] : rows(120), slotRunning: true }, unrelated)
+      DURING_FETCH = unrelated
+      const result = await store.dispatch(refreshSlot({ key: SLOT, onlyIfUnchanged: true }))
+      const chat = store.getState().chat
+      expect(updates).toBe(shape === 'walk' ? 4 : 2)
+      expect(chat.lastRecoveryRequestId).toBe(result.meta.requestId)
+      expect(chat.messages.at(-1)?.content).toBe(HISTORY.at(-1)?.content)
+      expect(chat.slotMessages.background.at(-1)?.content).toBe('x'.repeat(updates))
+      expect(chat.toolLog).toHaveLength(updates)
+      expect(chat.slotStatusDetail[SLOT]?.ts).toBe(updates)
+      expect(chat.slotContextPct[SLOT]).toBe(updates)
+      expect(chat.slotRunning).toBe(false)
+      expect(limits()).toEqual(shape === 'bounded' ? [120] : shape === 'walk' ? [120, SERVER_CLAMP, SERVER_CLAMP] : [PANE_HYDRATE_LIMIT])
+    })
+
+    it.each(['fetch', 'fulfillment'])('preserves changed refresh dependencies at %s', async boundary => {
+      // Each case starts a separate request so one dependency cannot mask another.
+      const changes = [
+        [setSlotRunning(true), setSlotRunning(false)],
+        [setSlotState('tool_running'), setSlotState('idle')],
+        [setSlotStopping(true), setSlotStopping(false)],
+        [setActiveSlot('other'), setActiveSlot(SLOT)],
+        [startLocalTurn(SLOT)],
+        [sseToolResult({ slot: SLOT, tool_call_id: 'tool-1', output: 'Spawned 1 subagent(s).'  })],
+        [appendQueuedMessage({ slot: SLOT, content: 'new queue', queue_id: 'q3', ts: rows(1)[0].ts })],
+        [editQueuedMessage({ slot: SLOT, queue_id: 'q1', content: 'edited' })],
+        [cancelQueuedMessage({ slot: SLOT, queue_id: 'q1' })],
+        [reorderQueuedMessages({ slot: SLOT, order: ['q2', 'q1'] })],
+        [sseChatMessage({ slot: SLOT, role: 'chunk', content: '', seq: 9, gen: 'new-generation' })],
+        [loadOlderMessages.rejected(null, 'paging', undefined, { slot: SLOT })],
+      ]
+      for (const actions of changes) {
+        let live: ReturnType<typeof chatReducer> | undefined
+        const change = () => {
+          for (const action of actions) store.dispatch(action)
+          live = store.getState().chat
+        }
+        const store = makeStore({ messages: [
+          ...rows(2),
+          { role: 'tool', content: 'tool', meta: { tool_call_id: 'tool-1' } },
+          { role: 'queued', content: 'one', meta: { queueId: 'q1' } },
+          { role: 'queued', content: 'two', meta: { queueId: 'q2' } },
+        ] }, boundary === 'fulfillment' ? change : undefined)
+        DURING_FETCH = boundary === 'fetch' ? change : null
+        const result = await store.dispatch(refreshSlot({ key: SLOT, onlyIfUnchanged: true }))
+        expect(live?.recoveryRevision ?? 0, actions[0].type).toBeGreaterThan(0)
+        expect(store.getState().chat, actions[0].type).toBe(live)
+        expect(store.getState().chat.lastRecoveryRequestId).not.toBe(result.meta.requestId)
+        if (boundary === 'fetch') expect(result.payload).toBeNull()
+        else expect(result.payload).not.toBeNull()
+      }
+    })
+
+    it.each(['bounded', 'empty', 'walk'])(
+      'preserves live completion at the %s fulfillment boundary', async shape => {
+        const initial = shape === 'empty' ? [] : rows(120)
+        HISTORY = rows(shape === 'walk' ? TOTAL * 2 : 120)
+        RUNNING = true
+        let live: ReturnType<typeof chatReducer> | undefined
+        const store = makeStore({ messages: initial, slotRunning: true }, () => {
+          store.dispatch(sseChatMessage({ slot: SLOT, role: 'assistant', content: 'final live row' }))
+          store.dispatch(setSlotRunning(false))
+          live = store.getState().chat
+        })
+
+        const result = await store.dispatch(refreshSlot({ key: SLOT, onlyIfUnchanged: true }))
+
+        expect(result.payload).not.toBeNull()
+        expect(store.getState().chat).toBe(live)
+        expect(store.getState().chat.messages.at(-1)?.content).toBe('final live row')
+        expect(store.getState().chat.slotRunning).toBe(false)
+        expect(store.getState().chat.lastRecoveryRequestId).not.toBe(result.meta.requestId)
+        expect(limits()).toEqual(shape === 'bounded' ? [120] : shape === 'walk' ? [120, SERVER_CLAMP, SERVER_CLAMP] : [PANE_HYDRATE_LIMIT])
+      },
+    )
+
+    it.each([false, true])('discards a slot switch during fetch (returns to slot: %s)', async returns => {
+      const store = pagedBack(120)
+      DURING_FETCH = () => {
+        store.dispatch(switchSlot.pending('away', 'other-slot'))
+        if (returns) store.dispatch(switchSlot.pending('back', SLOT))
+      }
+      const result = await store.dispatch(refreshSlot({ key: SLOT, onlyIfUnchanged: true }))
+      expect(result.payload).toBeNull()
+      expect(store.getState().chat.activeSlot).toBe(returns ? SLOT : 'other-slot')
+    })
+
+    it.each(['bounded', 'empty', 'over ceiling', 'unidentified'])(
+      'discards a concurrent edit during a %s fetch',
+      async shape => {
+        HISTORY = rows(shape === 'over ceiling' ? REFRESH_LIMIT_CEILING + 1 : 6)
+        const messages = shape === 'empty' ? [] : HISTORY.map(row => ({
+          ...row,
+          meta: shape === 'unidentified' ? undefined : row.meta,
+        }))
+        const store = makeStore({ messages, slotRunning: true })
+        let live = store.getState().chat
+        DURING_FETCH = () => {
+          if (shape === 'empty') {
+            store.dispatch(sseChatMessage({ slot: SLOT, role: 'assistant', content: 'live' }))
+          } else {
+            store.dispatch(sseChatMessageUpdate({ slot: SLOT, ts: HISTORY[0].ts, content: 'XX' }))
+          }
+          live = store.getState().chat
+        }
+
+        const result = await store.dispatch(refreshSlot({ key: SLOT, onlyIfUnchanged: true }))
+
+        expect(result.payload).toBeNull()
+        expect(store.getState().chat).toBe(live)
+        expect(limits()).toEqual([shape === 'over ceiling' ? REFRESH_LIMIT_CEILING : PANE_HYDRATE_LIMIT])
+      },
+    )
+
+    it.each([
+      ['metadata patch', sseChatMessagePatchByTs({ slot: SLOT, ts: rows(1)[0].ts, meta: { edited: true } })],
+      ['segment finalization', sseChatMessage({ slot: SLOT, role: '_segment', content: '' })],
+      ['chunk', sseChatMessage({ slot: SLOT, role: 'chunk', content: 'x' })],
+      ['completion', sseChatMessage({ slot: SLOT, role: '_done', content: '' })],
+      ['running state', setSlotRunning(false)],
+      ['slot state', setSlotState('tool_running')],
+      ['stopping state', setSlotStopping(true)],
+    ])('preserves a concurrent %s change', async (_name, action) => {
+      HISTORY = rows(2)
+      const store = makeStore({
+        messages: [HISTORY[0], { ...HISTORY[1], role: 'streaming' }],
+        slotRunning: true,
+        slotState: 'streaming',
+      })
+      const before = store.getState().chat
+      let live = before
+      DURING_FETCH = () => {
+        store.dispatch(action)
+        live = store.getState().chat
+      }
+
+      const result = await store.dispatch(refreshSlot({ key: SLOT, onlyIfUnchanged: true }))
+
+      expect(live).not.toBe(before)
+      expect(result.payload).toBeNull()
+      expect(store.getState().chat).toBe(live)
+    })
+
+    it('detects run-state movement even when its value returns to the snapshot', async () => {
+      const store = pagedBack(120)
+      DURING_FETCH = () => {
+        store.dispatch(setSlotRunning(true))
+        store.dispatch(setSlotRunning(false))
+      }
+      const result = await store.dispatch(refreshSlot({ key: SLOT, onlyIfUnchanged: true }))
+      expect(result.payload).toBeNull()
+    })
+
+    it('checks again after walking a disjoint page back to the held view', async () => {
+      const store = pagedBack(120)
+      HISTORY = rows(TOTAL * 2)
+      let live = store.getState().chat
+      DURING_FETCH = () => {
+        DURING_FETCH = () => {
+          store.dispatch(sseChatMessageUpdate({ slot: SLOT, ts: rows(TOTAL)[TOTAL - 1].ts, content: 'live' }))
+          live = store.getState().chat
+        }
+      }
+
+      const result = await store.dispatch(refreshSlot({ key: SLOT, onlyIfUnchanged: true }))
+
+      expect(limits()).toEqual([120, SERVER_CLAMP, SERVER_CLAMP])
+      expect(result.payload).toBeNull()
+      expect(store.getState().chat).toBe(live)
+    })
+
+    it.each(['bounded', 'empty', 'walk'])('recovers an unchanged %s view', async shape => {
+      const store = shape === 'empty' ? makeStore({ slotRunning: true }) : pagedBack(120)
+      if (shape === 'walk') HISTORY = rows(TOTAL * 2)
+      const result = await store.dispatch(refreshSlot({ key: SLOT, onlyIfUnchanged: true }))
+      expect(result.payload).not.toBeNull()
+      expect(result.meta.requestStatus).toBe('fulfilled')
+      expect(store.getState().chat.messages.at(-1)?.content).toBe(HISTORY.at(-1)?.content)
+      expect(store.getState().chat.slotRunning).toBe(false)
+    })
   })
 
   it('bounds the recurring refresh instead of pulling the whole transcript', async () => {

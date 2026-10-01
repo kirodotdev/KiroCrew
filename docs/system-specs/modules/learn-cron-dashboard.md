@@ -3337,6 +3337,43 @@ Unmounted rows retain only their own width's measurements.
 
 **Real-time updates** — Single WebSocket at `/api/ws` (`useWebSocket` hook) multiplexes all events: `dashboard`, `slots`, `slot_title`, `notification`, `notification_ack`, `notification_unack`, `notifications_clear`, `refresh`, `chat_message`, `chat_chunk`, `chat_done`, `log`, `refine`, `sessions_restarting`, `heartbeat`, `tool_call`, `context_usage`. Exponential backoff reconnect (1s→2s→4s→max 10s); on reconnect re-fetches slots via Redux dispatch — **no page reload** unless the server `version` field in the `dashboard` status message changes (actual code update). This preserves unsent messages, scroll position, and form state across transient disconnects. `App.tsx` installs the one `useWebSocket()` and provides its `WsContext` (`subscribeLogs`, `subscribeSubagents`, `forceReconnect`) above every layout branch; `WsContext` provides log subscribe/unsubscribe to `LogsPage`; the WebSocket is the only log transport the frontend opens. The `/api/logs` and `/api/stream` SSE routes are still served but have no frontend consumer. Chat send uses `AbortController` with 10-second timeout — if the backend is busy starting kiro sessions, the fetch times out gracefully without showing an error (the message was received server-side; chunks arrive via WS when the session is ready).
 
+**Stalled transcript recovery** — The facade's socket-silence check covers a
+connection that stops delivering every frame family. Status frames can still
+arrive while chat rows stall, so `useWebSocket` also composes
+`hooks/websocket/rowDeliveryWatchdog.ts`, which checks every
+`ROW_STALL_TICK_MS` whether an active slot believed to be running has gone
+`ROW_STALL_MS` without a row-count or tail-text-length change. It requests a
+`refreshSlot` snapshot even when the socket remains open. The watchdog opts into
+`onlyIfUnchanged`: the thunk captures a revision of the active refresh inputs
+and discards a response if that revision changed during the request. The chat
+reducer advances it for transcript identity (including queued bubbles),
+run/stopping/pending-turn state, chunk ordering, slot-switch identity, paging,
+and the active slot's reasoning orphans, run epoch and retained server total.
+Nested row edits change transcript identity; per-slot comparisons ignore other
+slots. Context usage needs no guard because refresh seeds only absent readings
+and preserves live measurements. This covers
+same-length text edits, metadata and role updates, and run-state transitions,
+including transitions back to the original value. The check applies to bounded
+pages, empty-view reads, and the bounded older-page walk for a disjoint page.
+Recovery retains the shared refresh dispatch sequence, so an older recovery
+cannot overwrite a newer refresh.
+The refresh scenario suite derives changed fields from the actual reducer output,
+including helper writes, and checks each field's independent invalidation. Only
+ordering receipts, the revision itself, and absent-only context seeds are exempt.
+The fulfillment reducer checks the same revision before writing; an update after
+payload creation also invalidates recovery. Reconnect requires the request id
+of an applied recovery and the same active slot. Switching slots resets the
+stall clock, and unmount clears the watchdog interval.
+Background streaming, tool logs, status details and context updates do not defer
+recovery. Ordinary reconnect refreshes retain their existing behavior. An accepted page
+repairs the transcript and running state. A guarded recovery reporting idle also
+clears the active phase and stopping flag and finalizes trailing streaming text,
+so a missed completion cannot keep the composer busy or sustain idle polling.
+Only an accepted page containing a
+server row id absent from the stalled view triggers reconnect and its wider
+catch-up; a discarded or failed fetch does not. Slots believed idle are not
+polled by this watchdog.
+
 **Routing** — `App.tsx` holds the one React Router table. The popout (`/popout/chat/:slug?`, `/popout/artifact/:slug`, `/popout/terminal`) and embed (`/embed/chat/:slug?`, `/embed/sessions`, `/embed/settings`) trees are chosen before any dashboard chrome renders. The dashboard table maps first-party pages (`/chat/:slug?`, `/notifications`, `/sessions`, `/session-dashboards`, `/members`, `/crew-board`, `/schedule`, `/logs`, `/hooks`, `/webhooks`, `/capabilities`, the `/apps` store, `/settings/*`, `/developer`, `/artifacts`, `/deploy`), the dev-only `/developer/layout-editor` harness (linked from no nav), and then built-in app pages through `/:builtinApp/*` (`apps/builtinRegistry.ts`, e.g. `/projects`, `/worlds`). `/agents` and `/mc-agents` redirect to `/capabilities` (Agents is the panel's first tab); `/knowledge`, `/connections`, `/overview` and `/instances` redirect to their Customize or Settings homes, `/tasks` to `/projects`, `/orchestrated/:slug?` to `/chat`. A one-segment path no route claims reaches `/:builtinApp/*`, whose `BuiltinAppRoute` sends an unregistered app to `/chat`; the bare root `/` reaches `ChatRedirect`, which lands on `/chat` with the query kept. Most lazy pages load through `lazyPage` (`shell/routes.tsx`), a route-scoped error card whose retry re-imports the chunk; `/sessions`, `/session-dashboards`, `/members`, `/crew-board`, `/apps`, `/apps/library` and `/developer/layout-editor` use a plain `lazy()` under their own `Suspense`. The query-keeping redirects (`TasksRedirect`, `ChatRedirect`, `OrchestratedRedirect`) live beside `lazyPage`; the others are inline `<Navigate>` elements in the table. SPA fallback middleware in `server.py` catches 404s on non-API GET requests and serves `index.html`.
 
 **App shell composition** — `App.tsx` is the shell's composition root and its public surface: the default export, `WsContext`, `NavItem`, `NavBadge`, `MobileNavGlyph`, `RailHeaderGlyph`, `UpdateOverlay`, `metricColor` and `memColorClass`. It keeps the route table, the header, rail and nav-drawer markup, the boot effect (slots, notifications, status) ahead of the one `useWebSocket()`, and the update subscription. The rest lives in owners under `website/src/shell/`:

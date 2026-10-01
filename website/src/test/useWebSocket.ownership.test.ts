@@ -53,6 +53,7 @@ const OWNER_MODULES = [
   'frames.ts',
   'reconnectCatchUp.ts',
   'retiredIds.ts',
+  'rowDeliveryWatchdog.ts',
   'serverState.ts',
   'sessionProjection.ts',
   'slotList.ts',
@@ -86,6 +87,8 @@ describe('the websocket owner directory is fully classified', () => {
 describe('one public surface', () => {
   it('the facade exports exactly its original names', () => {
     expect(Object.keys(facade).sort()).toEqual([
+      'ROW_STALL_MS',
+      'ROW_STALL_TICK_MS',
       'UPDATE_RESTART_LATCH_KEY',
       'UPDATE_RESTART_LATCH_TTL_MS',
       'WS_SILENCE_CHECK_MS',
@@ -170,9 +173,9 @@ describe('one public surface', () => {
 })
 
 describe('effect order', () => {
-  it('only the workflow heal and the chunk-drain owners declare an effect', () => {
+  it('only the workflow heal, the chunk-drain and the row-watchdog owners declare an effect', () => {
     const withEffects = OWNER_MODULES.filter((file) => /\buse(Layout)?Effect\(/.test(code(join(DIR, file))))
-    expect(withEffects).toEqual(['streamBuffers.ts', 'workflowRuns.ts'])
+    expect(withEffects).toEqual(['rowDeliveryWatchdog.ts', 'streamBuffers.ts', 'workflowRuns.ts'])
   })
 
   it('the facade composes them before its own watchdog and mount effects', () => {
