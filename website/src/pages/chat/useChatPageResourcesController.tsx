@@ -50,6 +50,7 @@ import {
 import type { ResizeInfo } from '../../utils/resizeImage'
 import { errMessage } from '../../utils/thunkError'
 import { fileLandingSlot } from '../../utils/uploadRouting'
+import { pinSlotSuccession, releaseSlotSuccession, resolveSlotSuccession } from '../../utils/slotSuccession'
 import { usePanelDocumentActions } from '../../hooks/usePanelDocumentActions'
 import { fetchDashboardConfig } from '../../api/dashboardConfigQuery'
 
@@ -657,12 +658,16 @@ export function useChatPageResourcesController({
     const controller = new AbortController()
     uploadAbortsRef.current.add(controller)
     setUploadCancellable(true)
+    // A memory-mode switch can retire `requestSlot` while this upload runs;
+    // the pin keeps its succession edge alive so the completion lands in the
+    // replacement instead of the deleted slot's draft.
+    pinSlotSuccession(requestSlot)
     try {
       const res = await api.uploadFiles(files, controller.signal)
       if (res.error) {
         setUploadError(i18nT('pages.chatPage.upload_failed_error', { error: res.error }))
       } else if (res.paths?.length) {
-        const landing = fileLandingSlot(requestSlot, activeSlotRef.current)
+        const landing = fileLandingSlot(resolveSlotSuccession(requestSlot), activeSlotRef.current)
         if (landing.target === 'pending') {
           setPendingFiles(prev => [...prev, ...res.paths])
         } else if (landing.target === 'draft') {
@@ -685,6 +690,7 @@ export function useChatPageResourcesController({
       // Drop only THIS request's controller, and keep the control offered while
       // a sibling upload is still running.
       uploadAbortsRef.current.delete(controller)
+      releaseSlotSuccession(requestSlot)
       setUploadCancellable(uploadAbortsRef.current.size > 0)
       // Unchanged from main, and still wrong for concurrent uploads: the first
       // request to settle clears the shared flag while a sibling runs. Left
