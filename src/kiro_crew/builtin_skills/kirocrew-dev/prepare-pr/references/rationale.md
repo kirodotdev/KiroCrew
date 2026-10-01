@@ -55,6 +55,186 @@ Operating on a stale `origin/<base>` ref was the root cause of the 2026-07-31
 clobber, where a force-push replayed 114 duplicate commits. The fetch therefore fails
 closed rather than proceeding on the cached ref.
 
+## Why push_guard builds the commits, and never from the shared index
+
+A soft reset onto the base plus `git commit` commits whatever the index holds,
+and in a shared checkout the index is shared state: another session's
+`git checkout -q origin/main -- .` once left a stale tree staged there. Squashed
+that way, the commit sat exactly where a good squash sits, so every structural
+check passed (ancestry, ahead count, patch-id replay, `HEAD~1 == origin/<base>`)
+and the post-squash guard printed `SAFE TO PUSH (single commit on base)` for a
+commit that changed 5607 files and reverted 1480 upstream commits. A plain
+`git commit` after staging one file sweeps in every pre-staged path the same way.
+
+A content heuristic over the diff was built first (count the paths put back to
+an older base blob) and dropped. Measured on this repository's history, it let
+most trees one PR stale through. It could not see a reverted hunk inside a file
+the PR also edits. It refused re-lands, bulk deletions, low-similarity moves and
+codemod undos. Its limits were calibrated on one repository, while the guard runs
+on any. The real root cause is a shared checkout, so the fix is to stop each step
+from reading shared state:
+
+- **Nothing staged that you did not name.** Every mode except `--check-index`
+  refuses (41) while the index holds a path HEAD lacks. For `--commit` and
+  `--amend` that means a path that is not literally one of the names; a
+  directory does not name the entries under it. Names are compared as real
+  paths, so a symlinked prefix names the same file; an empty name (an unset
+  shell variable would otherwise name the whole tree) and a path outside the
+  repository, or on another drive, are usage errors (64).
+- **A commit by name is built in a private index.** It is seeded from HEAD;
+  each named path's worktree copy is added (`-f` only for a file, never for a
+  directory, so a named directory never sweeps in its ignored files), except
+  that a staged change the worktree cannot show (`git rm --cached`,
+  `update-index --chmod`, a gitlink whose submodule is not checked out) is
+  kept. `git commit` then commits that index, hooks and signing included,
+  with the message from `-m` or from `-F <file>` (which keeps prose off the
+  command line a shell fence reads). The shared index changes only after the
+  commit lands, only for the committed paths, and only where no one staged
+  anything since the run read it, so a rejecting hook leaves nothing staged
+  and a concurrent `git add` is kept. The commit landed when git exits 0 AND
+  HEAD is what was built: its parents, its author, and its tree outside the
+  named paths (a hook may reformat those, never add others). A commit that is
+  not is taken back with a compare-and-swap when the shape is unambiguous: it
+  sits where it was built, or git parented it on a commit that landed in
+  between. A failure that moved HEAD anyway is named as such, never as
+  "nothing was committed".
+- **The squash commit is built from a tree, with no index.** `--squash` runs
+  the history checks first and pins HEAD and the fully qualified
+  `refs/remotes/origin/<base>` once, so a commit or fetch during the replay
+  scan cannot slip in. `commit-tree` makes the commit object from HEAD's tree
+  on that base, signed with `-S` when `commit.gpgSign` asks. The message is
+  handled as bytes: cleaned like `git commit -F`, passed through the
+  prepare-commit-msg and commit-msg hooks (`git hook run`, with an index of the
+  squash's tree and `GIT_EDITOR=:`), cleaned again as `commit.cleanup` says, and
+  refused if that leaves it empty. A git older than 2.36 cannot run hooks by
+  name, so it refuses when such a hook exists instead of skipping it.
+  Pre-commit hooks do not run, because they ran when the squashed commits were
+  made. The branch ref (named once, never HEAD) then moves exactly once, by
+  compare-and-swap from the vetted tip, and the outcome is read back from the
+  ref. An interrupt or kill at any moment, SIGKILL included, leaves the branch
+  at its old tip or at the finished squash, never at the base. That property
+  is what makes a kill safe.
+  `commit-tree` also reads no MERGE_HEAD or CHERRY_PICK_HEAD, so a merge
+  another session starts mid-squash neither leaks in nor is used up.
+  Alternative rejected for the squash: `git commit` against a private index
+  (it parks the branch on the base while hooks run, and consumes another
+  session's state). A commit by name has neither problem: its branch never
+  leaves HEAD.
+- **A rebase stop is checked before it is continued.** `git rebase --continue`
+  commits from the shared index, so the skill runs `--check-index` first. At a
+  stop, the replayed commit's own paths are expected, including where the
+  other side renamed them (`STATUS: CLEAN`); anything else staged is listed
+  (41), with remedies that only unstage or abort, never one that discards the
+  replayed change. A stop on unresolved conflicts names them. An operation
+  counts as in progress the way `git status` decides it: its state directory,
+  or a pseudo-ref `git commit` would consume; a sequencer-only stop is named
+  from its todo list (a revert is a revert). A stale `REBASE_HEAD` left by a
+  finished rebase does not count. Every mode checks this before anything else,
+  so a squash at a stop names the stop, not a detached HEAD.
+- **Every SAFE mode reads the build record.** The record lives in the common
+  git dir, so every worktree of the repository shares it. It holds one file
+  per commit the guard made, named by the commit's sha and listing the paths
+  it committed. A commit by name is recorded only once it has landed, so one
+  a hook rejected records nothing. The squash is recorded just before its one
+  compare-and-swap move, so an interrupt after the move still leaves it
+  recorded; a squash whose move failed is on no branch, so its record vouches
+  for nothing. No two writers share a file, and no entry evicts
+  another; entries older than 180 days are pruned. Every mode that can say
+  SAFE refuses while HEAD changes, against the base, a path nothing accounts
+  for. That is what a squash or commit made by hand from a stale index looks
+  like. A path is accounted for in four ways:
+  - it is recorded for one of the branch's own commits;
+  - it is recorded for a past tip in the branch's reflog, which is what a
+    re-sync rebase, a conflict resolution or a squash rewrote, followed
+    through any rename the base made since. `--amend` reads the base as last
+    fetched for this, so it accounts for a path exactly as the push check
+    does;
+  - it is published: a commit on the pushed branch (`origin/<branch>`) whose
+    author is not this checkout's identity changes it, and HEAD holds
+    exactly that copy, as with a maintainer's commit already on the pull
+    request. The pushed branch counts only when HEAD or one of the branch's
+    reflog tips reaches it, so a stale remote ref left by an earlier branch of
+    the same name counts for nothing;
+  - it is named after `--`, which is the agent vouching for it after reading
+    its diff. In the default mode and `--require-single-on-base` that vouch
+    is read-only, for that run alone, so an author's commit plus a follow-up
+    pushes with both commits and authors intact. `--squash` and `--amend`
+    commit what is named (an amend, its worktree copy) and record it, and
+    their refusals say so.
+
+  Keying by commit, with the reflog for rewritten tips, means a deleted and
+  re-created branch, a name reset with `git switch -C`, `checkout -B` or
+  `branch -f` (the reflog is read back only to that reset), or a detached HEAD
+  in another worktree, inherits nothing: none has those tips. A worktree
+  carried from HEAD (`git worktree add -b`)
+  carries them. The record proves who committed a path, not what a later hand
+  edit put in it. A stale hunk inside a path the branch committed through the
+  guard is the residual below.
+- **A listed path is named back as printed.** Refusals print each path as
+  `:(top,literal)<path>`, which git and the guard both read as that path from
+  the top, from any directory. The guard reads such a name as written, never
+  through a parent that is now a symlink, and refuses one with a `..`
+  component. Each refusal also writes a NUL-separated list file, which
+  `--paths-from-file` reads, for a name no terminal can show.
+
+Every probe child runs with no terminal prompt (`GIT_TERMINAL_PROMPT=0`,
+`GCM_INTERACTIVE=never`), no stdin and `LC_ALL=C`. `GIT_ASKPASS` is left alone:
+it is also how a non-interactive credential source is wired. Output goes to
+files, not pipes, so a hook's background child cannot hold a finished step open.
+Children that run user code (the message hooks, `commit-tree`'s signing, `git
+commit`) keep the caller's locale, prompts, stdin and stderr, so a passphrase
+prompt can be answered and git's messages show as they happen. Every child
+drops the variables that relocate the repository, keeps the caller's
+`GIT_CONFIG_*` (identity, hooks path, signing), and runs with
+`GIT_NO_REPLACE_OBJECTS=1` and a `GIT_GRAFT_FILE` that cannot exist (a name
+under the null device), so neither a replace ref nor a legacy `info/grafts` line
+can hide trunk commits from the count. A graft file git can open, even an empty
+one, makes every child print git's "info/grafts is deprecated" advice, hooks'
+own git calls included. Every
+child stays in the guard's process group: whoever stops that group (a harness
+timeout, a closed terminal, SIGKILL) stops the child too. A child that outlives
+its bound gets SIGTERM, then SIGKILL after a grace period (on Windows, `taskkill
+/T`, then `/T /F`). SIGINT, SIGTERM and SIGHUP stop the current child before the
+guard reports, except that a signal the caller ignores (`nohup`) stays ignored,
+for the guard and its children. The base fetch runs with `--progress` and is stopped only when
+its output has not grown for `FETCH_STALL_S`: a killed fetch keeps nothing it
+received, so a total bound would fail a slow link on every retry. Its refusal
+names the one unbounded manual `git fetch` that gets past a link that stalls.
+Each 41 writes its own list file, so a remedy reads exactly the list it
+printed, and it lists every path whose worktree copy may hold edits (`(*)`);
+the command that clears the list is offered only when none is marked.
+
+Residuals, on the record:
+
+- An exact re-land of a reverted change is still refused by the replay check.
+  That check predates this design.
+- A conflict resolved wrongly, for example `rebase -X theirs` dropping an
+  upstream line, is the branch's own content. So is a stale copy of a file the
+  replayed commit also touches, staged at a rebase stop, and a stale hunk
+  committed by hand into a path the record already holds. No history or index
+  invariant can tell any of them from an intended edit; the review lanes are
+  the check.
+- Vouching for a path by name is the agent's word. The refusal counts and
+  lists the paths and tells it to read each diff first, and never to name one
+  that is not its own; no shipped remedy lists a whole diff to vouch with.
+- A path counts as published only on `origin/<branch>`. A fork's pull request
+  pushed to another remote has no published paths, so a co-author's commit
+  there is read and named. A commit of yours that was pushed without the guard
+  is not published either, so it is read and named. A stale copy pushed by
+  another author still counts as published, and pushing it again changes
+  nothing on the pull request.
+- The rewritten tips come from the branch's reflog. Where reflogs are off, or
+  a rebased-away tip's entry has expired (30 days by default), the guard's own
+  paths are refused and named again: the failure is a refusal, never a pass.
+- A grandchild that left the guard's group and ignores SIGTERM can outlive a
+  stopped child. On Windows the tree kill reaches it.
+- `preflight.py` refuses a git resolved inside the worktree, and a batch
+  launcher fed metacharacters. push_guard's runner does not yet; moving those
+  guards into push_guard (preflight already imports it) is a follow-up.
+- The replay scan runs one `diff-tree` and one `patch-id` per commit, each with
+  its own bound. Batching them, and one overall deadline, are follow-ups, as
+  are `diff_signals.py` and `green_age.py` still resolving short base names.
+
 ## Why a green expires, and why the check is client-side
 
 A pull request's green is a verdict about `refs/pull/<N>/merge` at the moment the

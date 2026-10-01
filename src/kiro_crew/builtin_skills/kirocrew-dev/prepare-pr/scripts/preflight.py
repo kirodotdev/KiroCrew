@@ -20,7 +20,20 @@ import shutil
 import subprocess
 import sys
 
-from push_guard import DEFAULT_MAX_AHEAD, _classify_fetch_error
+from push_guard import (
+    DEFAULT_MAX_AHEAD,
+    GIT_TIMEOUT_S,
+    _remote_ref,
+    _Terminated,
+    child_env,
+    fetch_base_ref,
+    fetch_diagnostic,
+    install_termination_handlers,
+    parse_origin_head,
+    restore_handlers,
+    run_child,
+    ssh_batch_env,
+)
 
 _WORKTREE_ROOT_UNRESOLVED = object()
 _WORKTREE_ROOT = _WORKTREE_ROOT_UNRESOLVED
@@ -47,6 +60,7 @@ def _resolve_worktree_root():
     try:
         proc = subprocess.run(
             [git_exe_abs, "rev-parse", "--show-toplevel"],
+            env=child_env(),
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -70,15 +84,17 @@ def _path_is_within(path, root):
     return path_norm == root_norm or path_norm.startswith(root_norm.rstrip(os.sep) + os.sep)
 
 
-def run(args, extra_env=None, timeout=None):
+def run(args, extra_env=None, timeout=None, stall=None):
     """Run a command; return (returncode, stdout, stderr) as stripped text.
 
     Never raises - a missing executable is reported as rc 127. ``extra_env``
     overlays the inherited environment for this one call.  ``timeout`` (in
-    seconds) bounds the subprocess: on expiry the child is killed and the
-    call reports rc 124 (the shell ``timeout`` convention) with a hardcoded
-    message, so a probe that would otherwise block forever (e.g. an
-    interactive transport waiting on a tty) always terminates.
+    seconds; push_guard's GIT_TIMEOUT_S when neither bound is given) bounds
+    the subprocess, and ``stall`` bounds how long its output may stop
+    growing: on expiry the child is stopped and the call reports rc 124 (the
+    shell ``timeout`` convention) with a hardcoded message, so a probe that
+    would otherwise block forever (e.g. an interactive transport waiting on a
+    tty) always terminates.
 
     argv[0] is resolved with ``shutil.which`` first: Windows CreateProcess
     appends only ``.exe`` when searching PATH, so a ``gh.cmd`` / ``git.cmd``
@@ -100,10 +116,8 @@ def run(args, extra_env=None, timeout=None):
     rc 126, whatever its extension.
     """
     try:
-        env = None
-        if extra_env:
-            env = dict(os.environ)
-            env.update(extra_env)
+        # No variable that relocates the repository, and no prompt of any kind.
+        env = child_env(extra=extra_env)
         exe = shutil.which(args[0])
         if exe is None:
             return 127, "", "{}: not found on PATH".format(args[0])
@@ -128,18 +142,19 @@ def run(args, extra_env=None, timeout=None):
                         "metacharacters in arguments".format(args[0])
                     ),
                 )
-        p = subprocess.run(
-            [exe] + rest,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            env=env,
-            timeout=timeout,
+        # push_guard's runner: files instead of pipes, so a hook's background
+        # child cannot hold the call open, and a child stopped at its bound is
+        # reaped before this returns.
+        if timeout is None and stall is None:
+            timeout = GIT_TIMEOUT_S
+        res = run_child([exe] + rest, env, timeout, stall=stall)
+        if res.timed_out:
+            return 124, "", "{}: timed out after {}s".format(args[0], timeout or stall)
+        return (
+            res.rc,
+            res.out.decode("utf-8", "replace").strip(),
+            res.err.decode("utf-8", "replace").strip(),
         )
-        return p.returncode, p.stdout.strip(), p.stderr.strip()
-    except subprocess.TimeoutExpired:
-        return 124, "", "{}: timed out after {}s".format(args[0], timeout)
     except OSError as exc:
         return 127, "", "{}: {}".format(args[0], exc)
 
@@ -223,6 +238,10 @@ _PUSH_NO_CREDENTIAL_RE = re.compile(
     r"could not read (?:Username|Password)|permission denied \(publickey", re.IGNORECASE
 )
 
+# Git Credential Manager under GCM_INTERACTIVE=never with an expired token: a
+# credential to refresh, not a denial.
+_GCM_NO_PROMPT_RE = re.compile(r"interactivity has been disabled", re.IGNORECASE)
+
 # Definitive permission/authentication denials from the transport.
 _PUSH_DENIED_RE = re.compile(
     r"permission denied|denied to |not authorized|authentication failed"
@@ -250,6 +269,11 @@ def _classify_push_probe_error(stderr):
     text = stderr or ""
     if _PUSH_REJECTED_RE.search(text):
         return _WRITE_WRITER, "push dry-run rejected non-fast-forward (write access confirmed)"
+    if _GCM_NO_PROMPT_RE.search(text):
+        return _WRITE_UNKNOWN, (
+            "Git Credential Manager needs a prompt: run git fetch once "
+            "interactively to refresh it"
+        )
     if _PUSH_NO_CREDENTIAL_RE.search(text):
         return _WRITE_DENIED, "no non-interactive git push credential"
     if _PUSH_DENIED_RE.search(text):
@@ -258,28 +282,17 @@ def _classify_push_probe_error(stderr):
 
 
 def _push_probe_env():
-    """Env overlay that keeps the dry-run non-interactive WITHOUT changing
+    """The SSH overlay that keeps the dry-run non-interactive WITHOUT changing
     which SSH identity/config the real push would use.
 
-    ``GIT_TERMINAL_PROMPT=0`` stops git's own credential prompts, and
-    ``LC_ALL=C`` pins the client-side message locale so a definitive denial
-    shape (e.g. ``could not read Username``) is never degraded to a warning
-    by a translated message on a non-English host.  For SSH,
-    batch mode is APPENDED to the ssh command the push would actually run
-    (inherited ``GIT_SSH_COMMAND``, else ``core.sshCommand``, else plain
-    ``ssh``), so a per-repo identity or custom config is preserved.  When the
-    legacy ``GIT_SSH`` program variable is in effect it takes no options, so
-    it is left untouched rather than overridden; the probe timeout
-    (``_PROBE_TIMEOUT_SECS``, applied in ``push_transport_verdict``) bounds
-    the hang risk an interactive legacy program would otherwise pose.
+    No-prompt and ``LC_ALL=C`` come from run() itself (push_guard.child_env),
+    so a definitive denial shape is never degraded by a translated message.
+    push_guard.ssh_batch_env adds the batch switch the configured transport
+    understands (OpenSSH or plink), leaves an unknown one or a legacy
+    ``GIT_SSH`` program alone, and the probe timeout (``_PROBE_TIMEOUT_SECS``)
+    bounds what that leaves.
     """
-    env = {"GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C"}
-    ssh_command = os.environ.get("GIT_SSH_COMMAND") or run(["git", "config", "core.sshCommand"])[1]
-    if ssh_command:
-        env["GIT_SSH_COMMAND"] = ssh_command + " -oBatchMode=yes"
-    elif not os.environ.get("GIT_SSH"):
-        env["GIT_SSH_COMMAND"] = "ssh -oBatchMode=yes"
-    return env
+    return ssh_batch_env(run)
 
 
 def push_transport_verdict(branch):
@@ -316,6 +329,17 @@ def push_transport_verdict(branch):
 
 
 def main():
+    previous = install_termination_handlers()
+    try:
+        return _main()
+    except (KeyboardInterrupt, _Terminated):
+        print("BLOCKER: interrupted; the command it was running was stopped.")
+        return 30
+    finally:
+        restore_handlers(previous)
+
+
+def _main():
     if run(["git", "rev-parse", "--is-inside-work-tree"])[0] != 0:
         err("ERROR: not inside a git repository (or git not found).")
         return 2
@@ -393,11 +417,8 @@ def main():
     # Base branch: prefer an existing PR's base, else origin/HEAD, else "main".
     base = pr_base
     if not base:
-        sym = run(["git", "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"])[1]
-        if sym.startswith("origin/"):
-            base = sym[len("origin/") :]
-        else:
-            base = sym
+        rc, full, _ = run(["git", "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"])
+        base = (parse_origin_head(full) if rc == 0 else None) or ""
     if not base:
         base = "main"
 
@@ -412,12 +433,13 @@ def main():
     # regardless of the clone's configured remote.origin.fetch (single-branch
     # clones, narrow CI checkouts).
     behind = ahead = "?"
-    refspec = "+refs/heads/{}:refs/remotes/origin/{}".format(base, base)
-    fetch_rc, _, fetch_err = run(["git", "fetch", "--quiet", "origin", refspec])
+    fetch_rc, fetch_err = fetch_base_ref(
+        base, run_fn=lambda args, env=None, stall=None: run(args, extra_env=env, stall=stall)
+    )
     fetch_ok = fetch_rc == 0
     if fetch_ok:
         rc, out, _ = run(
-            ["git", "rev-list", "--left-right", "--count", "origin/{}...HEAD".format(base)]
+            ["git", "rev-list", "--left-right", "--count", _remote_ref(base) + "...HEAD", "--"]
         )
         if rc == 0 and len(out.split()) == 2:
             behind, ahead = out.split()
@@ -499,7 +521,7 @@ def main():
             # through (free-text can carry bare tokens from remote helpers
             # or credential-helper error messages that no URL-shape scrubber
             # can redact; round-13 lesson).
-            print("  error class: " + _classify_fetch_error(fetch_err))
+            print("  error class: " + fetch_diagnostic(fetch_rc, fetch_err).replace("<base>", base))
         blocked = True
     # Stale-base guard: if the branch is implausibly far ahead of origin/<base>
     # (more than DEFAULT_MAX_AHEAD commits for a single-commit PR workflow),

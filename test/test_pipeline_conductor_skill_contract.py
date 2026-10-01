@@ -1394,7 +1394,7 @@ class TestWorkOrderBriefClauses:
         assert "modulenotfounderror" in brief
 
     def test_the_push_gate_checks_the_tree_it_claims_to_check(self):
-        """``push_guard.py`` inspects base and commit structure, never the index,
+        """``push_guard.py`` checks the INDEX against HEAD but never the worktree,
         so the clause has to demand the clean tree itself -- otherwise it promises
         a check no mandated script performs and unstaged work reaches the PR."""
         brief = _flat(_skill_section(self.HEADING))
@@ -1446,6 +1446,25 @@ class TestWorkOrderBriefClauses:
             f"brief says the script defaults to {stated.group(1)} but "
             f"DEFAULT_MAX_AHEAD is {declared.group(1)}"
         )
+
+    def test_the_briefs_refusal_codes_track_the_script(self):
+        """The clause lists the codes that mean REFUSED. The index refusal is a
+        named constant in the script; a brief that drops it would read 41 as an
+        unknown code, so the number is asserted against the script."""
+        script = (
+            REPO_ROOT / "src/kiro_crew/builtin_skills/kirocrew-dev/prepare-pr/scripts/push_guard.py"
+        ).read_text(encoding="utf-8")
+        declared = re.search(r"^EXIT_FOREIGN_INDEX = (\d+)", script, re.M)
+        assert declared, "EXIT_FOREIGN_INDEX not found in push_guard.py"
+        brief = _flat(_skill_section(self.HEADING))
+        assert (
+            f"`{declared.group(1)}` the gate refused" in brief
+        ), "the brief does not list the index refusal code"
+        assert "push_guard.py --commit" in brief, "the brief does not prescribe commits by name"
+        # The squash counts the commits it is about to collapse, so the PR's
+        # own ceiling there would refuse exactly the branches that need it.
+        assert "--max-ahead {max_commits} --squash" not in brief
+        assert "--squash" in brief and "--require-single-on-base" in brief
 
     def test_the_suite_wrapper_ban_excludes_the_push_gate(self):
         """The ban and the gate live in the same brief, and the ban is the more

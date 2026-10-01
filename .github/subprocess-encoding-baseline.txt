@@ -92,7 +92,7 @@
 4 test/test_prepare_pr_local_review.py
 1 test/test_prepare_pr_profiles.py
 2 test/test_prepare_pr_prove.py
-3 test/test_push_guard.py
+1 test/test_push_guard.py
 6 test/test_sandbox_argv.py
 9 test/test_security.py
 1 test/test_ship_report_issues.py
