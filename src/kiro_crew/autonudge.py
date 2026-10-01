@@ -1785,17 +1785,14 @@ class AutoNudgeService:
         ``_arm_from_deadline``, which refuses it and logs why, so the refusal lives in one
         place rather than being restated here.
 
-        The kind is compared against ``probes.WORK_LEDGER``, imported locally for the
-        reason the package itself spells its kinds as literals: the observation layer must
-        not land on the gateway's boot path to answer a string comparison.
+        The kind is compared against ``probes.WORK_LEDGER``, read off the module-level
+        ``probes`` binding this facade already re-exports.
         """
         monitor = getattr(loop, "monitor", None)
         if monitor is None:
             return False
         if getattr(monitor, "version", None) != MONITOR_STATE_VERSION:
             return False
-        from kiro_crew import probes
-
         return str(getattr(monitor, "kind", "")) == probes.WORK_LEDGER
 
     def _worker_closed(self, session_key: str) -> bool:
