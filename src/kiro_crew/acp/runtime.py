@@ -52,6 +52,7 @@ from kiro_crew.acp.client import (
     _capture_child_records,
     _drain_oversize_line,
     _get_child_pids,
+    _kill_escaped_children,
     _KiroExecutableTrustError,
     _loggable_request_id,
     apply_pod_bundle_spawn,
@@ -3135,6 +3136,13 @@ class AcpRuntime:
             # together. Bounded and swallowing (see ``settle_stderr``); this is
             # already the failure path.
             await self.settle_stderr()
+            # The group kill below reaches only kiro-cli's own process group, and
+            # every stdio MCP server it launches leads a group of its own. A
+            # runtime that served a session has those recorded by the scan at the
+            # end of this block; one that failed before it has none, so its MCP
+            # servers outlive it unrecorded. Record the tree now, while the root
+            # still links it, and kill whatever of it survives the group kill.
+            escapees = await self._record_tree_before_failed_start_kill()
             try:
                 # This death IS abnormal (failed spawn/handshake): kill()'s
                 # expected=False default keeps its log at WARNING.
@@ -3143,7 +3151,47 @@ class AcpRuntime:
                 logger.debug(
                     "AcpRuntime: cleanup kill after failed spawn/handshake failed", exc_info=True
                 )
+            if escapees:
+                await self._kill_failed_start_escapees(escapees)
             raise
+
+    async def _record_tree_before_failed_start_kill(self) -> dict[int, ChildRecord]:
+        """The descendants of a runtime whose start failed, read before its kill.
+
+        Best-effort and bounded: the scan swallows its own failures, and a
+        cancellation landing here must not stop the kill that follows, so it is
+        absorbed and the tree is left to the group kill alone.
+        """
+        if platform_compat.IS_WINDOWS:
+            return {}
+        try:
+            await self._snapshot_descendants()
+        except asyncio.CancelledError:
+            return {}
+        return dict(self._child_pids)
+
+    async def _kill_failed_start_escapees(self, escapees: dict[int, ChildRecord]) -> None:
+        """SIGKILL the recorded descendants of a failed start that are still ours.
+
+        Each is checked against the identity recorded at the scan, so a number
+        reused since then is skipped. Entries of the ones confirmed gone are
+        pruned from the tracking file; a survivor keeps its entry for the sweep.
+        """
+        try:
+            await asyncio.to_thread(_kill_escaped_children, escapees)
+            survivors = await asyncio.to_thread(_prune_dead_descendants, escapees)
+        except Exception:
+            logger.warning(
+                "AcpRuntime: could not reap the descendants of a failed start", exc_info=True
+            )
+            return
+        if survivors:
+            logger.warning(
+                "AcpRuntime: %d descendant PID(s) of a failed start survived SIGKILL; "
+                "left tracked for the orphan sweep: %s",
+                len(survivors),
+                survivors,
+            )
 
     #: One retry for a descendant scan that came back empty. The spawned root
     #: is a launcher that forks the agent, which forks again, so a scan racing a

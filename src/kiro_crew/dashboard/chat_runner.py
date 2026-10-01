@@ -6647,6 +6647,76 @@ _EAGER_SPAWN_DEBOUNCE_SECS = 1.5
 _EAGER_SPAWN_MAX_CONCURRENT = 2
 _eager_spawn_sem = asyncio.Semaphore(_EAGER_SPAWN_MAX_CONCURRENT)
 
+# Background starts of a slot whose agent keeps failing to start. Each failure
+# spawns and tears down a whole process tree, and the signals that schedule an
+# eager spawn (focus, reconnect, slot create, reset) fire again and again, so an
+# unbounded retry turns one broken start into a steady churn of processes. After
+# each failure the next background start waits for an exponential backoff; after
+# the cap the slot stops starting in the background and says so once. The user's
+# own next message still starts it, and a start that succeeds clears the count.
+_EAGER_SPAWN_FAILURE_CAP = 3
+_EAGER_SPAWN_BACKOFF_BASE_SECS = 10.0
+_EAGER_SPAWN_BACKOFF_MAX_SECS = 300.0
+
+
+def _eager_spawn_backoff_secs(failures: int) -> float:
+    """Seconds the next background start waits after *failures* in a row."""
+    if failures <= 0:
+        return 0.0
+    return min(
+        _EAGER_SPAWN_BACKOFF_BASE_SECS * (2 ** min(failures - 1, 16)),
+        _EAGER_SPAWN_BACKOFF_MAX_SECS,
+    )
+
+
+def _eager_spawn_held_off(slot: "_ChatSlot") -> bool:
+    """Whether *slot*'s failed starts hold its next background start back."""
+    failures = getattr(slot, "_eager_spawn_failures", 0)
+    if failures >= _EAGER_SPAWN_FAILURE_CAP:
+        return True
+    return time.monotonic() < getattr(slot, "_eager_spawn_retry_at", 0.0)
+
+
+def _note_eager_spawn_failure(slot: "_ChatSlot", exc: BaseException) -> None:
+    """Count a failed background start; at the cap, stop and tell the user."""
+    failures = getattr(slot, "_eager_spawn_failures", 0) + 1
+    slot._eager_spawn_failures = failures
+    slot._eager_spawn_retry_at = time.monotonic() + _eager_spawn_backoff_secs(failures)
+    if failures < _EAGER_SPAWN_FAILURE_CAP:
+        logger.warning(
+            "Eager spawn: slot %s failed to start (%d/%d); next background start " "in %.0fs",
+            slot.key,
+            failures,
+            _EAGER_SPAWN_FAILURE_CAP,
+            _eager_spawn_backoff_secs(failures),
+        )
+        return
+    logger.error(
+        "Eager spawn: slot %s failed to start %d times in a row; background starts "
+        "stopped until a start succeeds",
+        slot.key,
+        failures,
+    )
+    detail, _ = redact_exfiltration_urls(str(exc))
+    detail, _ = redact_credentials(detail)
+    try:
+        slot.append(
+            "error",
+            f"This chat's agent failed to start {failures} times in a row, so it "
+            "will not be started again in the background. Send a message to try "
+            f"again. Last error: {detail or type(exc).__name__}",
+            "msg msg-err",
+        )
+    except Exception:
+        logger.debug("Eager spawn: could not post the stop notice for %s", slot.key, exc_info=True)
+
+
+def _clear_eager_spawn_failures(slot: "_ChatSlot") -> None:
+    """Forget *slot*'s failed starts once one start succeeded."""
+    slot._eager_spawn_failures = 0
+    slot._eager_spawn_retry_at = 0.0
+
+
 # How long a speculatively RESUMED session may sit unclaimed before it is
 # torn down. A resumed session holds kiro-cli's native per-session lock, so
 # a prefetch the user walked away from must release it cleanly rather than
@@ -6912,6 +6982,9 @@ def schedule_eager_spawn(
         if cfg is None or not cfg.session.eager_spawn:
             return None
     except Exception:
+        return None
+    if _eager_spawn_held_off(slot):
+        logger.debug("Eager spawn: slot %s is backing off after failed starts", slot.key)
         return None
     prev = getattr(slot, "_eager_spawn_task", None)
     if prev is not None and not prev.done():
@@ -7307,8 +7380,9 @@ async def _eager_spawn(
         # closing while the speculative spawn was mid-start. Not a failure —
         # the allocation path already reaped the half-started provider.
         logger.info("Eager spawn for %s aborted — gateway is shutting down", slot.key)
-    except Exception:
+    except Exception as exc:
         logger.warning("Eager spawn failed for slot %s", slot.key, exc_info=True)
+        _note_eager_spawn_failure(slot, exc)
 
 
 async def _spawn_admitted_prefetch(
@@ -7425,6 +7499,7 @@ async def _spawn_admitted_prefetch(
         slot._session_requested_model = (
             sessions.allocation_requested_model(session_key) or _requested_model
         )
+    _clear_eager_spawn_failures(slot)
     logger.info(
         "Eager spawn: session ready for %s in %.0fms (new=%s resumed=%s)",
         session_key,
@@ -11599,6 +11674,7 @@ async def _run_chat(
         # Registered: the switch handlers' busy scan sees this session from
         # here on, so the lock has done its job and the turn must not hold it.
         _release_dispatch_lock()
+        _clear_eager_spawn_failures(slot)
         if is_new and not resumed:
             # An observation this call CONSUMED, which is not the same as an
             # allocation this call made: a prewarmed session arms
