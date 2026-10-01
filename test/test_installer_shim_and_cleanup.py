@@ -761,6 +761,89 @@ def test_clean_stale_purges_deleted_playwright_proxy(tmp_path, monkeypatch):
     assert "ai-community-slack-mcp" in remaining  # user server kept
 
 
+_posix_inode_semantics = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="needs a handle that survives a replace and POSIX mode bits / symlinks / uids",
+)
+
+
+def _stale_mcp_doc() -> str:
+    return json.dumps(
+        {
+            "mcpServers": {
+                "kirocrew-core": {"command": "kirocrew", "args": ["mcp-core"]},
+                "ai-community-slack-mcp": {"command": "ai-community-slack-mcp", "args": []},
+            }
+        },
+        indent=2,
+    )
+
+
+@_posix_inode_semantics
+def test_clean_stale_never_rewrites_the_file_in_place(tmp_path, monkeypatch):
+    """The cleanup must REPLACE mcp.json, never truncate-and-rewrite the open inode.
+
+    A reader caught inside an in-place rewrite sees 0 bytes, and the session-start
+    reader treats an empty mcp.json as "no servers". The observable for "never in
+    place" is the ORIGINAL inode: a handle opened before the cleanup must still read
+    every original byte afterwards. An in-place write truncates and refills exactly
+    that inode, so the handle would read the new (or a torn) document instead.
+    """
+    p = tmp_path / "mcp.json"
+    original = _stale_mcp_doc()
+    p.write_text(original, encoding="utf-8")
+    monkeypatch.setattr(mcp_cleanup, "_KIRO_MCP_JSON", p)
+
+    with open(p, encoding="utf-8") as before:
+        assert mcp_cleanup.clean_stale_managed_mcp() == ["kirocrew-core"]
+        before.seek(0)
+        assert before.read() == original  # the old inode was never touched
+
+    assert set(json.loads(p.read_text(encoding="utf-8"))["mcpServers"]) == {
+        "ai-community-slack-mcp"
+    }
+
+
+@_posix_inode_semantics
+def test_clean_stale_keeps_the_files_permissions(tmp_path, monkeypatch):
+    p = tmp_path / "mcp.json"
+    p.write_text(_stale_mcp_doc(), encoding="utf-8")
+    os.chmod(p, 0o640)
+    monkeypatch.setattr(mcp_cleanup, "_KIRO_MCP_JSON", p)
+
+    assert mcp_cleanup.clean_stale_managed_mcp() == ["kirocrew-core"]
+    assert os.stat(p).st_mode & 0o7777 == 0o640
+
+
+@_posix_inode_semantics
+def test_clean_stale_keeps_a_symlinked_mcp_json_a_symlink(tmp_path, monkeypatch):
+    """A dotfiles-managed mcp.json is a symlink; the replace lands on its target."""
+    real = tmp_path / "dotfiles" / "mcp.json"
+    real.parent.mkdir()
+    real.write_text(_stale_mcp_doc(), encoding="utf-8")
+    link = tmp_path / "mcp.json"
+    link.symlink_to(real)
+    monkeypatch.setattr(mcp_cleanup, "_KIRO_MCP_JSON", link)
+
+    assert mcp_cleanup.clean_stale_managed_mcp() == ["kirocrew-core"]
+    assert link.is_symlink()
+    assert "kirocrew-core" not in json.loads(real.read_text(encoding="utf-8"))["mcpServers"]
+
+
+@_posix_inode_semantics
+def test_clean_stale_refuses_to_take_over_another_users_file(tmp_path, monkeypatch):
+    """A rename hands the new inode to THIS user, so a foreign-owned file is left alone."""
+    p = tmp_path / "mcp.json"
+    original = _stale_mcp_doc()
+    p.write_text(original, encoding="utf-8")
+    monkeypatch.setattr(mcp_cleanup, "_KIRO_MCP_JSON", p)
+    owner = os.stat(p).st_uid
+    monkeypatch.setattr(os, "geteuid", lambda: owner + 1)
+
+    assert mcp_cleanup.clean_stale_managed_mcp() == []
+    assert p.read_text(encoding="utf-8") == original
+
+
 def test_first_run_no_global_mcp(tmp_path, monkeypatch):
     exe = _fake_bundle_launcher(tmp_path)
     marker, mcp = _sandbox_first_run(tmp_path, monkeypatch, exe)
