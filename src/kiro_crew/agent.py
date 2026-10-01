@@ -47,7 +47,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from types import ModuleType
-from typing import TYPE_CHECKING, Any, Iterator, Literal, MutableMapping
+from typing import TYPE_CHECKING, Any, Iterator, Literal, MutableMapping, cast
 
 from kiro_crew import agent_state, platform_compat
 from kiro_crew.agent_discovery import (
@@ -84,9 +84,17 @@ from kiro_crew.config.paths import (
     kiro_agents_dir,
     shared_kiro_agents_writable,
 )
-from kiro_crew.env import mcp_search_path, resolved_command_casing, spec_path_key
-from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
+from kiro_crew.env import (
+    mcp_search_path,
+    resolved_command_casing,
+    spec_path_key,
+)
+from kiro_crew.hooks import (
+    FileTooLargeError,
+    safe_read_file_bytes_nolink,
+)
 from kiro_crew.platform import (
+    PlatformCompositionError,
     current_context,
 )
 from kiro_crew.platform import redact_log_via_context as redact_log
@@ -1174,6 +1182,32 @@ def _extra_mcp_servers() -> dict[str, dict]:
         lambda: current_context().mcp_tooling.extra_mcp_servers(),
         fallback={},
         log_message="extra_mcp_servers lookup failed; using none",
+    )
+    return dict(extra) if extra else {}
+
+
+def _extra_heartbeat_mcp_servers() -> dict[str, dict]:
+    """Edition-contributed MCP servers scoped to the heartbeat agent only.
+
+    Mirrors ``_extra_mcp_servers()`` exactly (same fail-closed /
+    degrade-to-empty split via ``safe_context_call``), but reads
+    ``McpToolingProvider.extra_heartbeat_mcp_servers()`` instead of
+    ``extra_mcp_servers()``. Kept as a dedicated seam rather than reusing the
+    generic one so heartbeat's MCP surface stays independently controllable by
+    editions: a server contributed here reaches only the heartbeat agent, not
+    the research or main agent configs (and vice versa).
+
+    v1 method addition, no ``CONTRACT_VERSION`` bump: a companion built
+    against a core that predates this seam has no ``extra_heartbeat_mcp_servers``
+    attribute at all, so the lookup raises ``AttributeError`` — a non-composition
+    error that ``safe_context_call`` degrades to ``{}`` rather than re-raising,
+    so the heartbeat agent still installs with ``kirocrew-core`` alone against
+    an older companion.
+    """
+    extra: dict[str, dict] = safe_context_call(
+        lambda: current_context().mcp_tooling.extra_heartbeat_mcp_servers(),
+        fallback={},
+        log_message="extra_heartbeat_mcp_servers lookup failed; using none",
     )
     return dict(extra) if extra else {}
 
@@ -3394,8 +3428,38 @@ def rebuild_agent_config(
         logger.debug("kirocrew-research agent install failed", exc_info=True)
 
     # Install kirocrew-heartbeat agent (used by HeartbeatService for unattended polling)
+    #
+    # PlatformCompositionError propagates rather than being caught here: it is
+    # the fail-closed signal from _extra_heartbeat_mcp_servers() that a
+    # non-standalone host could not compose its context at all. Swallowing it
+    # in this generic wrapper would leave the PRIOR on-disk heartbeat config
+    # in place with no rewrite: a server set, and an autoApprove verdict, that
+    # the current edition contribution and the current governance pass never
+    # judged, on the one agent with no approver behind it. Every other
+    # exception still degrades to a debug log, matching every sibling agent
+    # installer below.
+    #
+    # Heartbeat only, deliberately. The sibling installers (research, the
+    # conductors, worker) build through build_agent_config() and swallow the
+    # same error, but each of those agents runs behind a human or a
+    # hook-based approver, so a stale spec there is caught at the tool gate;
+    # heartbeat's gate IS its spec plus _heartbeat_approval, with nobody
+    # behind it. Widening the re-raise to six installers changes boot-time
+    # failure behaviour this fix does not need. Likewise the two mcp_custom
+    # endpoints are the callers that surface it; rebuild_agent_config's other
+    # callers (onboarding_import, doctor_deadpath, launch_resolve,
+    # kiro_prerequisite) keep their blanket handlers, and at startup
+    # boot_platform aborts on a composition failure before this runs at all.
+    #
+    # Held, not raised here: raising mid-sequence would skip the five
+    # installers below, leaving THEIR specs stale across this boot, which is
+    # the opposite of the heartbeat-only scoping above. Every installer runs;
+    # the error is re-raised once the sequence is complete.
+    heartbeat_composition_error: PlatformCompositionError | None = None
     try:
         _install_heartbeat_agent()
+    except PlatformCompositionError as exc:
+        heartbeat_composition_error = exc
     except Exception:
         logger.debug("kirocrew-heartbeat agent install failed", exc_info=True)
 
@@ -3449,6 +3513,12 @@ def rebuild_agent_config(
         worker_agent._install_worker_agent()
     except Exception:
         logger.debug("kirocrew-worker agent install failed", exc_info=True)
+
+    # Every installer has now run. The heartbeat composition failure held
+    # above still fails this rebuild closed for its caller: the heartbeat spec
+    # on disk is the prior one, unjudged by the current edition contribution.
+    if heartbeat_composition_error is not None:
+        raise heartbeat_composition_error
 
     # Bidirectional sync: ensure packages installed for one provider
     # are also available for the other (agents↔plugins, skills).
@@ -4765,22 +4835,58 @@ the response — the operator will add it after observing the SEL `denied` event
 """
 
 
+def _audit_heartbeat_auto_approve_withheld(name: str) -> None:
+    """Record that an edition heartbeat server's ``autoApprove`` was dropped.
+
+    Same operation and shape as the record ``strip_ungoverned_auto_approve``
+    emits, so the feed shows one kind of withhold. Best-effort: audit never
+    breaks a rebuild.
+    """
+    logger.info(
+        "Withheld autoApprove on edition heartbeat MCP server %s: heartbeat has no approver",
+        name,
+    )
+    try:
+        sel().log_api_access(
+            caller="system",
+            operation="mcp_auto_approve_withheld",
+            outcome="ok",
+            source="_install_heartbeat_agent",
+            resources=(
+                f"@{name} autoApprove narrowed to [] (edition entry on the unattended "
+                "heartbeat agent, which has no approver); every call goes through the gate"
+            ),
+        )
+    except Exception:  # noqa: BLE001 — audit must not break the rebuild
+        logger.debug("SEL audit unavailable for heartbeat autoApprove strip", exc_info=True)
+
+
 def _install_heartbeat_agent() -> None:
     """Generate and install the kirocrew-heartbeat agent config.
 
-    A dedicated agent for HeartbeatService.  Minimal MCP surface — only
-    ``kirocrew-core`` (learn/cron/spawn list, recall, artifacts read) on
-    public installs.  Tool approval is enforced gateway-side against
-    ``HEARTBEAT_SAFE_TOOLS`` regardless; the per-agent MCP narrowing here
-    keeps cold-start cost low and reduces the surface the gateway has to
-    police.
+    A dedicated agent for HeartbeatService.  Base MCP surface is
+    ``kirocrew-core`` (learn/spawn list, recall, artifacts read), plus an
+    ADD-only mapping from ``McpToolingProvider.extra_heartbeat_mcp_servers()``.
+    The default is ``{}``, so a standalone install produces the same heartbeat
+    agent config as before the seam existed.
 
-    (The Amazon-internal MCP server code-review/ticket/pipeline read wiring is
-    omitted on public installs, matching ``_install_research_agent`` /
-    ``_install_knowledge_agent``.)
+    This is deliberately narrower than ``extra_mcp_servers()``, the interactive
+    main-agent set: editions name only heartbeat-relevant servers. Tool approval
+    remains gateway-side in ``HEARTBEAT_SAFE_TOOLS`` for every wired server; the
+    one exception is an owner-written ``autoApprove`` on ``kirocrew-core``, which
+    the RFC lets kiro-cli honour before the gateway gate (the edition-added
+    entries never keep one, see below).
 
-    SEL audit logging stays at the gateway side — see
-    ``GatewayOrchestrator._heartbeat_approval``.
+    ``_install_research_agent`` already builds through ``build_agent_config()``,
+    which merges ``extra_mcp_servers()``. ``_install_knowledge_agent`` ships an
+    empty ``mcpServers`` by design (LLMPool document extraction).
+
+    SEL audit logging for actual tool-call approval/denial stays at the
+    gateway side — see ``GatewayOrchestrator._heartbeat_approval``. An
+    ``autoApprove`` withheld from the assembled MCP map below is audited as
+    ``mcp_auto_approve_withheld``: an edition entry's by this installer, the
+    core entry's by ``strip_ungoverned_auto_approve`` itself, the same record
+    every other agent-config writer emits.
     """
     kiro_agents_dir_path().mkdir(parents=True, exist_ok=True)
     path = kiro_agents_dir_path() / _HEARTBEAT_AGENT_FILENAME
@@ -4830,6 +4936,55 @@ def _install_heartbeat_agent() -> None:
             cleaned["args"] = filtered
         mcp[name] = cleaned
 
+    # Edition-contributed servers for the heartbeat agent (CPP seam), ADD-only.
+    # Args are used VERBATIM — deliberately NOT run through ``_strip_flags``
+    # above.  That stripping exists to widen ``kirocrew-core``, whose narrowing
+    # args belong to the main agent and are irrelevant here; an edition's
+    # ``--include-tools``/``--exclude-tools`` are instead a purposeful first
+    # defense in front of ``HEARTBEAT_SAFE_TOOLS``, so they are preserved.
+    # ``autoApprove`` is a first-class kiro-cli ``mcpServers`` field that makes
+    # kiro-cli approve matching calls locally, so the call never reaches
+    # ``_heartbeat_approval``, ``HEARTBEAT_SAFE_TOOLS`` or per-call SEL audit.
+    # An edition entry never carries one into the heartbeat spec: a companion
+    # adapter is not the owner, and the declared-verb exemption
+    # (``declared_auto_approve``, "our own emission") that the governed pass
+    # below grants a spec ALSO returned by ``extra_mcp_servers()`` would let the
+    # same server run ungated on the one session with no approver behind it.
+    # So the field is dropped here, before that pass, on every install, with
+    # the same audit record the governed strip emits.
+    for name, spec in _extra_heartbeat_mcp_servers().items():
+        if name in mcp:
+            continue
+        cleaned = dict(spec)
+        if "autoApprove" in cleaned:
+            cleaned.pop("autoApprove")
+            _audit_heartbeat_auto_approve_withheld(name)
+        mcp[name] = cleaned
+
+    # LAST pass over the assembled map, through the SAME chokepoint every other
+    # agent-config writer uses (``default_spec_commit`` for the main agent,
+    # ``apps/bridges.py`` for app agents): ``strip_ungoverned_auto_approve``.
+    # The only ``autoApprove`` that can still be present is on the
+    # ``kirocrew-core`` copy, which came from the on-disk main agent spec and
+    # already went through this helper. Who may say it is decided by
+    # rfc-owner-written-mcp-auto-approve, and this writer applies that ruling
+    # rather than a heartbeat-only one: an ``autoApprove`` the OWNER wrote
+    # survives under ``mcp.honour_auto_approve`` (the RFC's recorded knob) and
+    # is withheld the moment a governance ceiling constrains the server,
+    # exactly as it is for the main agent.
+    #
+    # Resolved through _owner() like _normalize_mcp_server_keys below: the name
+    # is re-exported from kiro_crew.agent_materialization.auto_approve, and a
+    # second top-level import here would give the facade two owners for it.
+    # cast, not a narrower helper signature: the helper is typed generically
+    # over Mapping[str, object] -> Dict[str, object] for every caller; it only
+    # pops or narrows a key, never changes a value's type, so ``dict[str, dict]``
+    # remains true after the call.
+    mcp = cast(
+        dict[str, dict],
+        _owner("strip_ungoverned_auto_approve").strip_ungoverned_auto_approve(mcp),
+    )
+
     config: dict[str, object] = {
         "name": "kirocrew-heartbeat",
         "description": (
@@ -4846,6 +5001,41 @@ def _install_heartbeat_agent() -> None:
         # rebuild_agent_config flow may run before either main entry exists.
         "tools": [f"@{name}" for name in mcp],
     }
+
+    # Same normalization the main-agent path runs (build_agent_config, via
+    # _normalize_mcp_server_keys) after ITS merges: an edition-contributed
+    # heartbeat server is free to use a namespaced key (e.g. "@internal/tool")
+    # -- extra_heartbeat_mcp_servers()'s contract places no restriction on
+    # naming -- and mcp.setdefault above preserves that key verbatim. Without
+    # this call, "tools" above would carry a malformed "@@internal/tool"-
+    # shaped reference (the "@" prefix duplicating the key's own "/"-split
+    # namespace) that kiro-cli cannot resolve, silently dropping that tool
+    # from the heartbeat agent's toolset. Runs on the FULL config (not just
+    # `mcp`) because it also rewrites the matching @ref inside "tools".
+    #
+    # Resolved through _owner() rather than a real top-level import: this
+    # name is re-exported from kiro_crew.agent_materialization.mcp_aliases,
+    # which itself imports kiro_crew.agent -- a real import here would be
+    # circular. _owner()/__getattr__ is this module's own established path
+    # for reaching a re-exported name (see the compatibility-facade note
+    # above _EXPORTS_BY_OWNER); it is not triggered by a bare local call.
+    aliases = _owner("_normalize_mcp_server_keys")._normalize_mcp_server_keys(config)
+    # The alias is the identity kiro-cli will report as mcp_server_name, and
+    # heartbeat_safe_tools() entries are matched on exactly that. An edition
+    # that pinned "@internal/tool/read_docs" for a key it spelled
+    # "internal/tool" would see every call denied with nothing but SEL
+    # `denied` rows to say why, so name the mount here where the author
+    # reads the install log. Only edition keys can be slashed: the core copy
+    # is slash-free by construction.
+    for original, alias in sorted(aliases.items()):
+        if original != alias:
+            logger.warning(
+                "Heartbeat MCP server %r is mounted as %r: heartbeat_safe_tools() "
+                "entries for it must be spelled '@%s/<Tool>'",
+                original,
+                alias,
+                alias,
+            )
 
     _atomic_json_write(path, config)
     # CC model for the heartbeat agent lives in the sidecar, not the kiro spec.

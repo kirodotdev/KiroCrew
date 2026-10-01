@@ -549,6 +549,40 @@ class McpToolingProvider(Protocol):
 
     def extra_mcp_servers(self) -> Dict[str, dict]: ...
 
+    def extra_heartbeat_mcp_servers(self) -> Dict[str, dict]:
+        """Edition MCP servers wired into the unattended heartbeat agent.
+
+        ``_install_heartbeat_agent`` merges the returned mapping ADD-only after
+        ``kirocrew-core``; the public default is ``{}``, so a standalone install
+        contributes no additional server here. Args are used verbatim,
+        including an edition's narrowing filters, and are supplied only by the
+        companion adapter — never config.
+        ``autoApprove`` is the one field that does not pass through: it would
+        let kiro-cli approve matching calls locally, bypassing the gateway's
+        ``_heartbeat_approval`` callback (and with it ``HEARTBEAT_SAFE_TOOLS``
+        and SEL audit) on this unattended session. ``_install_heartbeat_agent``
+        drops it from every contributed entry, on every install, and audits the
+        withhold; a companion is not the owner, and the declared-verb exemption
+        a spec also returned by ``extra_mcp_servers()`` would otherwise earn does
+        not extend to the one agent with no approver. The owner's own
+        ``kirocrew-core`` entry follows rfc-owner-written-mcp-auto-approve,
+        exactly as it does for the main agent.
+
+        A key containing ``/`` is mounted under its slash-free alias (the same
+        ``_normalize_mcp_server_keys`` pass the main agent runs), and that alias
+        is the ``mcp_server_name`` kiro-cli reports. A matching
+        ``heartbeat_safe_tools()`` entry must therefore pin the alias
+        (``"@internal-tool/Read"`` for a key spelled ``"internal/tool"``), not
+        the original key; the installer logs the mount at WARNING so the
+        mismatch is visible before the first denied call.
+
+        v1 method addition; no ``CONTRACT_VERSION`` bump. A companion subclassing
+        ``DefaultMcpToolingProvider`` inherits ``{}``; a structural older
+        companion's ``AttributeError`` degrades to no servers via
+        ``safe_context_call``. ``PlatformCompositionError`` still re-raises.
+        """
+        ...
+
     def extra_skills(self) -> List[Path]:
         """Extra SKILL.md source roots the edition contributes.
 

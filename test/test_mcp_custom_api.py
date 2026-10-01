@@ -144,6 +144,39 @@ class TestCustomAdd:
         finally:
             await client.close()
 
+    async def test_add_reports_platform_composition_failure(self, sandbox, fake_sel):
+        """When the agent-config rebuild fails closed on ``PlatformCompositionError``
+        (a non-standalone host that could not compose its context), the endpoint
+        must report the failure rather than the blanket ``{"ok": True}`` every
+        other add returns. The write to disk already happened; silently
+        swallowing the rebuild failure here would leave a PRIOR heartbeat spec
+        in place -- potentially carrying a stale ``autoApprove`` -- with no
+        signal to the caller that heartbeat's config did not actually update."""
+        from kiro_crew.platform.context import PlatformCompositionError
+
+        sandbox.rebuild.side_effect = PlatformCompositionError("companion unavailable")
+        client = await _client()
+        try:
+            resp = await client.post("/api/mcp/custom", json={"servers": {"weather": _STDIO}})
+            assert resp.status == 500
+            body = await resp.json()
+            assert body["code"] == "agent_config_rebuild_failed"
+            # The disk write itself is not rolled back -- only the rebuild
+            # step failed -- so the server IS present on disk even though the
+            # response reports an error, matching the code comment's framing
+            # ("server saved, but the agent config could not be rebuilt").
+            assert "weather" in _written(sandbox)
+            # The one path where the mutation is on disk but not in effect
+            # must not be the one path with no SEL row: audited as an error,
+            # like the malformed-config 500 in the same handler.
+            kwargs = fake_sel.log_api_access.call_args.kwargs
+            assert kwargs["operation"] == "mcp_custom_add"
+            assert kwargs["outcome"] == "error"
+            assert "weather" in kwargs["resources"]
+            assert "rebuild failed" in kwargs["resources"]
+        finally:
+            await client.close()
+
     async def test_remote_spec_keeps_scopes_and_client_id(self, sandbox, fake_sel):
         """A Connect writes the card's promised access; the entry must carry it."""
         spec = {
@@ -382,6 +415,33 @@ class TestCustomUpdate:
         finally:
             await client.close()
 
+    async def test_update_reports_platform_composition_failure(self, sandbox, fake_sel):
+        """Same rationale as the add-path equivalent: a fail-closed
+        ``PlatformCompositionError`` from the rebuild must surface as an
+        error, not the endpoint's normal ``{"ok": True, "name": ...}`` —
+        the on-disk spec was already replaced, so the prior (pre-update)
+        heartbeat config is what's left effectively active until this is
+        retried, and the caller needs to know that happened."""
+        from kiro_crew.platform.context import PlatformCompositionError
+
+        entry = dict(_STDIO, disabled=True)
+        sandbox.kirocrew_json.write_text(json.dumps({"mcpServers": {"weather": entry}}))
+        sandbox.rebuild.side_effect = PlatformCompositionError("companion unavailable")
+        client = await _client()
+        try:
+            resp = await client.put("/api/mcp/custom/weather", json={"spec": _REMOTE})
+            assert resp.status == 500
+            body = await resp.json()
+            assert body["code"] == "agent_config_rebuild_failed"
+            # The disk replacement already happened before the rebuild step.
+            assert _written(sandbox)["weather"]["url"] == _REMOTE["url"]
+            kwargs = fake_sel.log_api_access.call_args.kwargs
+            assert kwargs["operation"] == "mcp_custom_update"
+            assert kwargs["outcome"] == "error"
+            assert "custom:weather" in kwargs["resources"]
+        finally:
+            await client.close()
+
     async def test_enabled_server_stays_enabled(self, sandbox, fake_sel):
         sandbox.kirocrew_json.write_text(json.dumps({"mcpServers": {"weather": dict(_STDIO)}}))
         client = await _client()
@@ -536,9 +596,7 @@ class TestCustomGet:
         finally:
             await client.close()
 
-    async def test_oauth_hints_round_trip_without_echoing_authorization(
-        self, sandbox, fake_sel
-    ):
+    async def test_oauth_hints_round_trip_without_echoing_authorization(self, sandbox, fake_sel):
         """scopes/clientId survive GET→PUT unchanged, alongside a header entry."""
         entry = {
             "url": "https://api.githubcopilot.com/mcp/",
@@ -564,9 +622,7 @@ class TestCustomGet:
         finally:
             await client.close()
 
-    async def test_redacted_headers_round_trip_without_overwriting_values(
-        self, sandbox, fake_sel
-    ):
+    async def test_redacted_headers_round_trip_without_overwriting_values(self, sandbox, fake_sel):
         raw_headers = {
             "Authorization": "Bearer custom-secret",
             "X-Api-Key": "custom-api-key",
@@ -583,9 +639,7 @@ class TestCustomGet:
             assert "custom-secret" not in json.dumps(body)
             assert "custom-api-key" not in json.dumps(body)
 
-            resp = await client.put(
-                "/api/mcp/custom/remote", json={"spec": body["spec"]}
-            )
+            resp = await client.put("/api/mcp/custom/remote", json={"spec": body["spec"]})
             assert resp.status == 200
             assert _written(sandbox)["remote"]["headers"] == raw_headers
         finally:
@@ -638,9 +692,7 @@ class TestMalformedConfigNeverClobbered:
         sandbox.kirocrew_json.write_text("{not json")
         client = await _client()
         try:
-            resp = await client.post(
-                "/api/mcp/custom", json={"servers": {"weather": dict(_STDIO)}}
-            )
+            resp = await client.post("/api/mcp/custom", json={"servers": {"weather": dict(_STDIO)}})
             assert resp.status == 500
             assert "malformed" in (await resp.json())["error"]
             # The broken file is untouched — nothing was clobbered.
@@ -652,11 +704,11 @@ class TestMalformedConfigNeverClobbered:
         sandbox.kirocrew_json.write_text(json.dumps({"mcpServers": ["broken"]}))
         client = await _client()
         try:
-            resp = await client.post(
-                "/api/mcp/custom", json={"servers": {"weather": dict(_STDIO)}}
-            )
+            resp = await client.post("/api/mcp/custom", json={"servers": {"weather": dict(_STDIO)}})
             assert resp.status == 500
-            assert json.loads(sandbox.kirocrew_json.read_text(encoding="utf-8"))["mcpServers"] == ["broken"]
+            assert json.loads(sandbox.kirocrew_json.read_text(encoding="utf-8"))["mcpServers"] == [
+                "broken"
+            ]
         finally:
             await client.close()
 
@@ -666,9 +718,7 @@ class TestMalformedConfigNeverClobbered:
         )
         client = await _client()
         try:
-            resp = await client.post(
-                "/api/mcp/custom", json={"servers": {"weather": dict(_STDIO)}}
-            )
+            resp = await client.post("/api/mcp/custom", json={"servers": {"weather": dict(_STDIO)}})
             assert resp.status == 200
             servers = json.loads(sandbox.kirocrew_json.read_text(encoding="utf-8"))["mcpServers"]
             assert servers["existing"] == {"command": "keepme"}
@@ -764,7 +814,9 @@ class TestCarriedKeyRoundTrip:
                 json={"spec": {"command": "npx", "args": ["-y", "@acme/weather-mcp@2"]}},
             )
             assert resp.status == 200
-            entry = json.loads(sandbox.kirocrew_json.read_text(encoding="utf-8"))["mcpServers"]["weather"]
+            entry = json.loads(sandbox.kirocrew_json.read_text(encoding="utf-8"))["mcpServers"][
+                "weather"
+            ]
             assert entry["disabledTools"] == ["dangerous_tool"], "must never be dropped by edit"
             assert entry["args"] == ["-y", "@acme/weather-mcp@2"]
         finally:
@@ -780,7 +832,9 @@ class TestCarriedKeyRoundTrip:
             )
             assert resp.status == 400
             assert "managed by other flows" in (await resp.json())["error"]
-            entry = json.loads(sandbox.kirocrew_json.read_text(encoding="utf-8"))["mcpServers"]["weather"]
+            entry = json.loads(sandbox.kirocrew_json.read_text(encoding="utf-8"))["mcpServers"][
+                "weather"
+            ]
             assert entry["disabledTools"] == ["dangerous_tool"]
         finally:
             await client.close()
@@ -820,15 +874,13 @@ class TestCarriedKeyRoundTrip:
             entry = _written(sandbox)["weather"]
             assert kiro_entry_scopes(entry) == [], "the cleared scopes must not come back"
             assert kiro_entry_client_id(entry) == "", "nor the cleared client id"
-            assert entry.get("oauth", {}).get("issuer") == "https://iss", (
-                "a sibling sub-key we never owned still survives"
-            )
+            assert (
+                entry.get("oauth", {}).get("issuer") == "https://iss"
+            ), "a sibling sub-key we never owned still survives"
         finally:
             await client.close()
 
-    async def test_clearing_oauth_hints_also_drops_the_nested_wire_sibling(
-        self, sandbox, fake_sel
-    ):
+    async def test_clearing_oauth_hints_also_drops_the_nested_wire_sibling(self, sandbox, fake_sel):
         """The reader falls through to ``oauth.oauthScopes`` too, so a clear must reach it."""
         from kiro_crew.mcp_utils import kiro_entry_scopes
 
@@ -856,9 +908,9 @@ class TestCarriedKeyRoundTrip:
             assert resp.status == 200
             entry = _written(sandbox)["weather"]
             assert kiro_entry_scopes(entry) == [], "a nested wire sibling must not survive"
-            assert entry.get("oauth", {}).get("issuer") == "https://iss", (
-                "an unrelated oauth sub-key still survives"
-            )
+            assert (
+                entry.get("oauth", {}).get("issuer") == "https://iss"
+            ), "an unrelated oauth sub-key still survives"
         finally:
             await client.close()
 
@@ -882,9 +934,7 @@ class TestCarriedKeyRoundTrip:
             {"oauth": {"clientId": ""}},
             {"oauth": "not-a-dict"},
         ):
-            sandbox.kirocrew_json.write_text(
-                json.dumps({"mcpServers": {"weather": {"url": url}}})
-            )
+            sandbox.kirocrew_json.write_text(json.dumps({"mcpServers": {"weather": {"url": url}}}))
             client = await _client()
             try:
                 resp = await client.put(
@@ -953,9 +1003,9 @@ class TestCarriedKeyRoundTrip:
                 entry = _written(sandbox)["weather"]
                 from kiro_crew.mcp_utils import kiro_entry_scopes
 
-                assert kiro_entry_scopes(entry) == expect_scopes, (
-                    f"{submit} must persist, got {entry}"
-                )
+                assert (
+                    kiro_entry_scopes(entry) == expect_scopes
+                ), f"{submit} must persist, got {entry}"
             finally:
                 await client.close()
 
@@ -1116,9 +1166,7 @@ class TestServersListSurfacesCustomAdds:
         from kiro_crew.dashboard.handlers import mcp as mcp_mod
 
         # Route discovery at the sandboxed KiroCrew scope file only.
-        monkeypatch.setattr(
-            "kiro_crew.mcp_discovery._MCP_JSON_PATHS", (sandbox.kirocrew_json,)
-        )
+        monkeypatch.setattr("kiro_crew.mcp_discovery._MCP_JSON_PATHS", (sandbox.kirocrew_json,))
         monkeypatch.setattr("kiro_crew.mcp_discovery._extra_scope_sources", lambda: [])
 
         app = web.Application()
@@ -1136,9 +1184,7 @@ class TestServersListSurfacesCustomAdds:
         client = TestClient(TestServer(as_owner(app)))
         await client.start_server()
         try:
-            resp = await client.post(
-                "/api/mcp/custom", json={"servers": {"weather": dict(_STDIO)}}
-            )
+            resp = await client.post("/api/mcp/custom", json={"servers": {"weather": dict(_STDIO)}})
             assert resp.status == 200
 
             resp = await client.get("/api/mcp")

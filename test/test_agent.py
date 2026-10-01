@@ -8748,6 +8748,72 @@ class TestRefreshForkedTemplates:
             result = json.loads(path.read_text(encoding="utf-8"))
         assert result["hooks"] == {"preToolUse": "audit"}
 
+    def test_heartbeat_composition_error_propagates_not_swallowed(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """``PlatformCompositionError`` from the heartbeat agent install
+        propagates out of ``rebuild_agent_config`` rather than being caught by
+        the generic per-installer wrapper.
+
+        ``_extra_heartbeat_mcp_servers()`` re-raises this error, by design,
+        when a non-standalone host cannot compose its context at all (see
+        ``test_extra_heartbeat_mcp_servers_fails_closed_on_composition_error``).
+        A wrapper that swallowed it would leave the PRIOR on-disk heartbeat
+        config in place with no rewrite -- a server set and an ``autoApprove``
+        verdict the current governance pass never judged, on the unattended
+        session that has no approver behind it. Every other exception type must
+        still degrade silently (matching the sibling research/conductor
+        installers), so this only asserts the ONE type propagates.
+        """
+        import kiro_crew.agent as agent_mod
+        from kiro_crew.agent_materialization import conductor_agents, worker_agent
+        from kiro_crew.platform.context import PlatformCompositionError
+
+        def _raise_composition_error():
+            raise PlatformCompositionError("host cannot compose context")
+
+        monkeypatch.setattr(agent_mod, "_install_heartbeat_agent", _raise_composition_error)
+        # The error is HELD until every sibling installer has run: raising
+        # mid-sequence would leave the five specs below heartbeat stale for
+        # this boot, the opposite of the heartbeat-only scoping.
+        ran: list[str] = []
+        for mod, name in (
+            (conductor_agents, "_install_conductor_agent"),
+            (conductor_agents, "_install_pipeline_conductor_agent"),
+            (conductor_agents, "_install_ledger_conductor_agent"),
+            (conductor_agents, "_install_security_conductor_agent"),
+            (worker_agent, "_install_worker_agent"),
+        ):
+            monkeypatch.setattr(mod, name, lambda _n=name: ran.append(_n))
+
+        with _fork_env(tmp_path):
+            with pytest.raises(PlatformCompositionError):
+                agent_mod.rebuild_agent_config(refresh_forks="defer")
+        assert ran == [
+            "_install_conductor_agent",
+            "_install_pipeline_conductor_agent",
+            "_install_ledger_conductor_agent",
+            "_install_security_conductor_agent",
+            "_install_worker_agent",
+        ]
+
+    def test_heartbeat_install_other_exceptions_still_degrade(self, tmp_path: Path, monkeypatch):
+        """A non-composition exception from the heartbeat install still
+        degrades to a debug log -- only ``PlatformCompositionError`` gets the
+        propagate treatment, matching every sibling installer's behavior for
+        everything else.
+        """
+        import kiro_crew.agent as agent_mod
+
+        def _raise_other():
+            raise RuntimeError("unrelated failure")
+
+        monkeypatch.setattr(agent_mod, "_install_heartbeat_agent", _raise_other)
+
+        with _fork_env(tmp_path):
+            # Must NOT raise -- rebuild_agent_config completes normally.
+            agent_mod.rebuild_agent_config(refresh_forks="defer")
+
     def test_custom_origin_fork_is_left_untouched(self, tmp_path: Path):
         """UNCORROBORATED lineage (no config.json binding) drives no write at
         all — the sidecar is agent-writable, so lineage alone never qualifies.
