@@ -468,7 +468,7 @@ class TestLaunchAndLifecycleBoundary:
             pytest.fail("disabled app open attempted to spawn")
 
         monkeypatch.setattr(routes, "create_subprocess_limited", _unexpected_spawn)
-        async with TestClient(TestServer(_route_app())) as client:
+        async with TestClient(TestServer(as_owner(_route_app()))) as client:
             response = await client.post("/api/apps/execution-test-app/open")
             assert response.status == 409
             body = await response.json()
@@ -491,7 +491,7 @@ class TestLaunchAndLifecycleBoundary:
             pytest.fail("openCommand spawned while execution was disabled")
 
         monkeypatch.setattr(routes, "create_subprocess_limited", _unexpected_spawn)
-        async with TestClient(TestServer(_route_app())) as client:
+        async with TestClient(TestServer(as_owner(_route_app()))) as client:
             response = await client.post("/api/apps/execution-test-app/open")
             assert response.status == 403
             body = await response.json()
@@ -520,7 +520,7 @@ class TestLaunchAndLifecycleBoundary:
             return SimpleNamespace(pid=1234)
 
         monkeypatch.setattr(routes, "create_subprocess_limited", _spawn)
-        async with TestClient(TestServer(_route_app())) as client:
+        async with TestClient(TestServer(as_owner(_route_app()))) as client:
             response = await client.post("/api/apps/execution-test-app/open")
             assert response.status == 200
             assert (await response.json())["pid"] == 1234
@@ -546,7 +546,7 @@ class TestLaunchAndLifecycleBoundary:
             pytest.fail("forged builtin provenance spawned an openCommand")
 
         monkeypatch.setattr(routes, "create_subprocess_limited", _unexpected_spawn)
-        async with TestClient(TestServer(_route_app())) as client:
+        async with TestClient(TestServer(as_owner(_route_app()))) as client:
             response = await client.post(f"/api/apps/{name}/open")
             assert response.status == 403
             body = await response.json()

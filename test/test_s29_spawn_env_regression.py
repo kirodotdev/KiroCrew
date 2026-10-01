@@ -33,6 +33,7 @@ from types import SimpleNamespace
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
+from dashboard_owner_helpers import as_owner
 from test_app_execution import _install_test_app, _route_app
 from test_update_provider import _UNALLOCATABLE_PID
 
@@ -110,7 +111,7 @@ async def _open_app_child_env(tmp_path, monkeypatch) -> dict[str, str]:
         return SimpleNamespace(pid=_UNALLOCATABLE_PID)
 
     monkeypatch.setattr(routes, "create_subprocess_limited", _spawn)
-    async with TestClient(TestServer(_route_app())) as client:
+    async with TestClient(TestServer(as_owner(_route_app()))) as client:
         response = await client.post("/api/apps/execution-test-app/open")
         assert response.status == 200, await response.text()
     assert "env" in captured, "the route never reached the spawn"
