@@ -235,8 +235,15 @@ pass the agent name to `session_create` yourself.
 ### Patrol
 
 After dispatching, arm a loop on your own session with `monitor_start`. Put the
-check AND the exit condition in the message and pass explicit positive
-`interval_secs`, `max_cycles` and `max_runtime_secs`. Take the runtime from the
+check AND the exit condition in the message, pass `watch="work-ledger"`, and
+pass explicit positive `interval_secs`, `max_cycles` and `max_runtime_secs`.
+`watch="work-ledger"` gates the loop on the ledger you dispatched into: a cycle
+where no worker reported anything costs no turn, and a worker's report, a worker
+session closing, or a worker turn ending pulls the next cycle forward to within
+seconds. The interval then only sets how often a silent fleet is re-checked, not
+how fast a report reaches you. A loop armed without it is a plain timer and pays
+a turn every interval, so if you find yours without it, add it with
+`monitor_update(watch="work-ledger")` rather than re-arming. Take the runtime from the
 operator's time budget, or 86,400 seconds when none is set. **The bounds come
 from the script, not from you:**
 
@@ -514,12 +521,6 @@ what the composer renders:
 
 ## Known limits of this version
 
-- **The patrol loop is on a timer, not on the ledger.** `monitor_start` gates on
-  a single pull-request URL and nothing else today, so a cycle fires whether or
-  not anything was reported. When it accepts a `watch: "work-ledger"` field,
-  arm that instead and the quiet cycles stop costing a turn. Until then, size
-  the interval for the report cadence you expect rather than for the latency you
-  want.
 - **A question card can be displaced by your own later turns.** `ask_question` posts a card into the dashboard transcript, and every patrol turn you take while it is outstanding can push it out of the user's view.
 - **The session and ledger tools may not be in your tool list yet.** With MCP
   Tool Search active their specs are deferred, so a first `session_create` fails
