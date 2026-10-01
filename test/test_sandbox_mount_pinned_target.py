@@ -55,7 +55,9 @@ pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX launcher 
 #: A LINK at a protected name can only be pinned no-follow with ``O_PATH``, which
 #: only Linux has; elsewhere the pin refuses it outright (asserted below), so the
 #: cases whose subject IS a tolerated link exercise Linux behaviour only. The
-#: namespace launcher itself runs nowhere else.
+#: private-window walk opens every component with ``os.O_PATH`` outright, so a case
+#: that binds a window is Linux-only too. The namespace launcher itself runs nowhere
+#: else.
 _LINUX_LINK_PIN = pytest.mark.skipif(
     not sys.platform.startswith("linux"),
     reason="pinning a link no-follow needs O_PATH; the namespace launcher is Linux-only",
@@ -1153,6 +1155,7 @@ def test_the_directory_loop_records_every_name_it_masks(tmp_path: Path) -> None:
         assert stand_in_id in region["_OWN_STAND_INS"], name
 
 
+@_LINUX_LINK_PIN
 def test_the_directory_loop_records_every_window_it_binds(tmp_path: Path) -> None:
     """The walk's stop condition is written by the loop, for each window it mounts back.
 
