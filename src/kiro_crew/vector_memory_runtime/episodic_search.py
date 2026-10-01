@@ -21,12 +21,8 @@ from typing import TYPE_CHECKING
 from kiro_crew import memory_record_metadata as record_meta
 from kiro_crew import memory_v2
 from kiro_crew.embeddings import PRIORITY_INTERACTIVE
+from kiro_crew.vector_memory_runtime import text_scoring as _text_scoring
 from kiro_crew.vector_memory_runtime.embedding import _RecallQuery
-from kiro_crew.vector_memory_runtime.text_scoring import (
-    _MMR_MAX_POOL,
-    _is_selective_keyword,
-    _mmr_rerank,
-)
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -218,7 +214,7 @@ def search_episodic(
             # whenever native work must stay bounded independently of lifetime
             # tombstones.
             k = (
-                min(_MMR_MAX_POOL, store._faiss_index.ntotal)  # type: ignore[attr-defined]
+                min(_text_scoring._MMR_MAX_POOL, store._faiss_index.ntotal)  # type: ignore[attr-defined]
                 if mmr and not tag_filter
                 else min(max(limit * 2, 16), store._faiss_index.ntotal)  # type: ignore[attr-defined]
             )
@@ -272,7 +268,7 @@ def search_episodic(
             )
 
         candidates.sort(key=lambda x: x["score"], reverse=True)
-        result = _mmr_rerank(candidates, limit=limit) if mmr else candidates[:limit]
+        result = _text_scoring._mmr_rerank(candidates, limit=limit) if mmr else candidates[:limit]
 
         # Update last_accessed_at under the same lock as the rest of the write
         # path. Left unlocked this UPDATE races concurrent writers/readers of the
@@ -365,7 +361,7 @@ def search_episodic_v2(
             row["cosine_sim"] = cosine
         candidates.append(row)
     candidates.sort(key=lambda row: (-row["score"], row["id"]))
-    result = _mmr_rerank(candidates, limit=limit) if mmr else candidates[:limit]
+    result = _text_scoring._mmr_rerank(candidates, limit=limit) if mmr else candidates[:limit]
     store._touch_last_accessed([row["id"] for row in result])
     return result
 
@@ -488,7 +484,7 @@ def sqlite_vector_search(
     if relevance_filter:
         candidates = store._filter_by_relevance(candidates)
     candidates.sort(key=lambda x: x["score"], reverse=True)
-    result = _mmr_rerank(candidates, limit=limit) if mmr else candidates[:limit]
+    result = _text_scoring._mmr_rerank(candidates, limit=limit) if mmr else candidates[:limit]
     # Same lock discipline as the FAISS path in search_episodic. This UPDATE
     # runs on every context assembly, so several threads reach it at once
     # (parallel subagent spawns), and sqlite's implicit BEGIN is per
@@ -688,7 +684,7 @@ def rank_from_scoring_set(
     # Stable descending sort matches list.sort(key=score, reverse=True), which
     # leaves rows of equal score in population order.
     ranked = surviving[vm.np.argsort(-scores[surviving], kind="stable")]
-    pool = ranked[: min(ranked.size, _MMR_MAX_POOL if mmr else limit)]
+    pool = ranked[: min(ranked.size, _text_scoring._MMR_MAX_POOL if mmr else limit)]
 
     bodies = store._get_episodic_batch([scoring.ids[int(i)] for i in pool])
     candidates: list[dict] = []
@@ -700,7 +696,7 @@ def rank_from_scoring_set(
             continue
         candidates.append({**body, "score": float(scores[i]), "cosine_sim": float(sims_rounded[i])})
 
-    result = _mmr_rerank(candidates, limit=limit) if mmr else candidates[:limit]
+    result = _text_scoring._mmr_rerank(candidates, limit=limit) if mmr else candidates[:limit]
     store._touch_last_accessed([c["id"] for c in result])
     return result
 
@@ -875,7 +871,7 @@ def fts5_episodic_search(
     store: VectorMemoryStore, query: str, limit: int, tag_filter: list[str] | None = None
 ) -> list[dict]:
     """Simple LIKE-based text + tags search fallback for episodic memories."""
-    words = [w for w in query.strip().split()[:5] if _is_selective_keyword(w)]
+    words = [w for w in query.strip().split()[:5] if _text_scoring._is_selective_keyword(w)]
     if not words:
         return []
     conditions = " OR ".join(["text LIKE ?" for _ in words] + ["tags LIKE ?" for _ in words])

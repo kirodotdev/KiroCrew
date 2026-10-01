@@ -35,14 +35,12 @@ from kiro_crew.project_scope import (
     scope_is_admissible,
     scope_selector_is_inadmissible,
 )
+from kiro_crew.vector_memory_runtime import text_scoring as _text_scoring
 from kiro_crew.vector_memory_runtime.embedding import _RecallQuery
-from kiro_crew.vector_memory_runtime.text_scoring import (
-    _hybrid_score,
-    _keyword_score,
-    _row_stem_tokens_for_scan,
-    _stem_one,
-    _stem_words,
-)
+
+# A by-name copy on purpose: the keyword-ranking tests patch ``lessons._stem_one``
+# apart from ``text_scoring._stem_one``.
+from kiro_crew.vector_memory_runtime.text_scoring import _stem_one
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -1180,7 +1178,7 @@ def rank_lessons(
     # Same row-side derivation, and the same width rule, as the semantic scan:
     # a lesson's tokens depend only on its own rendered text, and only a pass
     # that fits the cache can hit it.
-    row_tokens = _row_stem_tokens_for_scan(len(entries))
+    row_tokens = _text_scoring._row_stem_tokens_for_scan(len(entries))
     if not query_emb:
         lexical_query_words = {_stem_one(word) for word in request_words}
         lexical = _lexical_lesson_scores(entries, lexical_query_words, row_tokens)
@@ -1188,7 +1186,7 @@ def rank_lessons(
         # row -- keep the caller's newest-first order.
         order = sorted(range(len(entries)), key=lambda index: -lexical[index])
         return [entries[index] for index in order]
-    query_words = _stem_words(request_words)
+    query_words = _text_scoring._stem_words(request_words)
     similarity = store._stored_similarity_scorer(query_emb)
     scored: list[tuple[float, tuple[dict, str]]] = []
     for entry in entries:
@@ -1197,7 +1195,7 @@ def rank_lessons(
         # ``lesson.<md5hash>``, which carries no words, so there is no key
         # term to weight here the way get_semantic_context() weights its own.
         overlap = len(query_words & row_tokens(text.lower()))
-        score = _hybrid_score(_keyword_score(overlap), similarity(row))
+        score = _text_scoring._hybrid_score(_text_scoring._keyword_score(overlap), similarity(row))
         scored.append((score, entry))
     scored.sort(key=lambda pair: -pair[0])
     return [entry for _, entry in scored]
@@ -1267,8 +1265,8 @@ def any_lesson_overlap(
     """
     if not entries or not query_text.strip():
         return False
-    query_words = _stem_words(set(re.findall(r"\w+", query_text.lower())))
+    query_words = _text_scoring._stem_words(set(re.findall(r"\w+", query_text.lower())))
     if not query_words:
         return False
-    row_tokens = _row_stem_tokens_for_scan(len(entries))
+    row_tokens = _text_scoring._row_stem_tokens_for_scan(len(entries))
     return any(query_words & row_tokens(text.lower()) for _, text in entries)

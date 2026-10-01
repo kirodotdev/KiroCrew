@@ -15,8 +15,8 @@ from typing import TYPE_CHECKING, Callable
 
 from kiro_crew import memory_v2
 from kiro_crew.embeddings import PRIORITY_INTERACTIVE
+from kiro_crew.vector_memory_runtime import episodic_search as _episodic_search
 from kiro_crew.vector_memory_runtime.embedding import _RecallQuery, _RecallSpaceChanged
-from kiro_crew.vector_memory_runtime.episodic_search import EPISODIC_BLOCK_TEXT_CHARS
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -246,7 +246,7 @@ def recall_once(
             truncated = False
             display_id = row["id"]
             if episodic:
-                body = row["text"][:EPISODIC_BLOCK_TEXT_CHARS]
+                body = row["text"][: _episodic_search.EPISODIC_BLOCK_TEXT_CHARS]
             else:
                 body = f"{store._fact_label(row)}: {memory_v2.visible_json(row['value_json'])}"
             line = f"[memory:{display_id}] {body}\n"

@@ -17,8 +17,6 @@ from typing import TYPE_CHECKING, NamedTuple
 
 from kiro_crew import cli_doctor
 from kiro_crew.doctor_checks import render
-from kiro_crew.service import common as common_service
-from kiro_crew.service import controller as service_controller
 
 if TYPE_CHECKING:
     from kiro_crew.config import KiroCrewConfig
@@ -26,7 +24,7 @@ if TYPE_CHECKING:
 
 def _doctor_managed_service_policy(issues: list[str]) -> None:
     """Surface installed service definitions that predate launch-class policy."""
-    state = service_controller.installed_service_has_managed_marker()
+    state = cli_doctor.service_controller.installed_service_has_managed_marker()
     if state is None:
         return
     print("\nManaged Service")
@@ -150,9 +148,9 @@ def _doctor_headless_auth(issues: list[str]) -> None:
     """
     del issues  # advisory-only diagnostic; keeps the call-site signature uniform
     try:
-        if service_controller.installed_unit_path() is None:
+        if cli_doctor.service_controller.installed_unit_path() is None:
             return
-        warning = common_service.headless_auth_warning()
+        warning = cli_doctor.common_service.headless_auth_warning()
     except Exception:
         return
     if not warning:

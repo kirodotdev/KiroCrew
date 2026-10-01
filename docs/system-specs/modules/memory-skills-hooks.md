@@ -569,13 +569,24 @@ never the function that implements it), so a class-level patch of a method reach
 every caller. It reads the facade's patch seams (`np`, `faiss`, `_HAS_NUMPY`,
 `_HAS_FAISS`, `datetime`, `time`, `sqlite3`, `_now_iso`, `_contains_injection`,
 `bulk_pace_delay` and the patched bounds) through `kiro_crew.vector_memory` at
-call time. Any other moved name belongs to its runtime module, and a patch of it
-goes there. `vector_memory.py` imports every runtime module when it loads and still
+call time. The seams are the ones the store had when it was split plus every
+facade name the tests rebind, found by scanning the tests rather than listed, so the
+set never drops below the split's, and a runtime module holds its own binding of one only
+when it reads that name back through the facade (`text_scoring` defines the
+row-memo width its `lru_cache` takes at import). Any other moved name belongs to
+its runtime module, and a patch of it goes there. A moved name two modules read has
+one binding, its owner's: a sibling owner and the facade's own retained code read
+it through the owner module (`_text_scoring._MMR_MAX_POOL`,
+`_semantic._json_value_equal`), never through a by-name copy, so one patch of the
+owner reaches every caller. `lessons` keeps one copy on purpose, `_stem_one`, because a test
+patches it apart from `text_scoring._stem_one`; a class is imported by name, since
+a patch of a class lands on the object every binding shares.
+`vector_memory.py` imports every runtime module when it loads and still
 binds every name it defined or imported from another `kiro_crew` module, and the
 runtime modules log on the `kiro_crew.vector_memory` logger.
-`test/test_vector_memory_composition_contract.py` pins that surface, the seams, the
-import and logger rules and the through-the-store call rule, and re-applies the
-source guards that scan
+`test/test_vector_memory_composition_contract.py` pins that surface, the seams and
+the one-binding rule for a name two modules read, the import and logger rules and the through-the-store call
+rule, and re-applies the source guards that scan
 `vector_memory.py` by name — the lineage relation and kind-guard checks, the
 facet-in-view check, the redaction-sink and md5 checks — to every runtime module,
 each with a planted violation proving the re-applied check can fail.

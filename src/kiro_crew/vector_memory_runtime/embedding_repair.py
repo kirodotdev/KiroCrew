@@ -15,7 +15,7 @@ import logging
 import struct
 from typing import TYPE_CHECKING, Callable, cast
 
-from kiro_crew.vector_memory_runtime.lessons import _lesson_embed_text
+from kiro_crew.vector_memory_runtime import lessons as _lessons
 
 if TYPE_CHECKING:
     import faiss
@@ -540,7 +540,7 @@ def backfill_lesson_embeddings(
             # write_lesson, which embeds the bare rule), the stored text for
             # a legacy string row. Embedding a mapping row's str() would
             # vectorize its Python repr.
-            text = _lesson_embed_text(json.loads(row["value_json"]))
+            text = _lessons._lesson_embed_text(json.loads(row["value_json"]))
         except (ValueError, TypeError):
             logger.debug("Skipping lesson %s with unparseable value", row["key"])
             continue

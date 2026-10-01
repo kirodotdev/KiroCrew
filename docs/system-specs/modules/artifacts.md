@@ -224,9 +224,11 @@ for isolated test instances.
 keeps its whole import surface, re-exporting each moved name with one identity:
 `kiro_crew.artifacts.ArtifactFolderStore` and
 `kiro_crew.artifact_store.folders.ArtifactFolderStore` are the same class. Its
-`__all__` lists that complete public surface, the moved names included, so a
-star import exposes them. The `records` and `comments` helpers the store calls
-are internal to it and are imported from their owner.
+`__all__` is derived from what the module binds plus its forwarding table
+(`_EXPORTS`), minus the forwarding machinery, so a star import exposes every
+public name, the moved and forwarded ones included, and no list of names is kept
+by hand. The `records` and `comments` helpers the store calls are internal to it
+and are imported from their owner.
 
 | Owner | Responsibility |
 |---|---|
@@ -245,8 +247,14 @@ time (`folders` names `ArtifactStore` for type checking only), and none performs
 networking or redaction or touches the filesystem except `ArtifactFolderStore` on
 its own file. `rules` imports `kiro_crew.history` and `kiro_crew.messaging.link`
 inside `_strip_session_scope` because both import the facade back. The moved
-classes keep `kiro_crew.artifacts` as their `__module__`, so tracebacks and type
-names in logs are unchanged.
+error classes (`ArtifactError` and its five subclasses) keep `kiro_crew.artifacts`
+as their `__module__`, so tracebacks and the error types in logs are unchanged;
+the cost is that `inspect.getsource` cannot find them through that name and
+raises `OSError`, and `inspect.getfile` names `artifacts.py` rather than the owner
+file that defines them. Every other moved class -- the record
+dataclasses, the class of `EXPECT_ABSENT` and `ArtifactFolderStore` -- reports
+the owner module that defines it, so the source lookup and a debugger find its
+definition.
 
 The store's seams belong to the facade, which hands them to the owners at call
 time, so they are patched on `kiro_crew.artifacts`: `config_dir`, `_now_iso`,
@@ -272,19 +280,40 @@ own imports too: a directly constructed `ArtifactFolderStore` takes its default
 path from `folders`' `config_dir` and logs through `folders`' `logger`, which is
 the same `kiro_crew.artifacts` logger object.
 
-Rule data an owner's own code reads has one live binding, in the owner, and the
-store reads it through the owner module too (`create_image` truncates to
-`MAX_NAME_LEN` / `MAX_DESCRIPTION_LEN`, and `update` pre-checks
+Rule data an owner's own code reads has one binding, in the owner, and the
+facade forwards it instead of holding a copy: `_EXPORTS` maps each such name to
+its owner, the module `__getattr__` answers a read from the owner in
+`sys.modules`, and the module's class sends a write or a delete to the owner. A
+patch through `kiro_crew.artifacts` (`monkeypatch`, or `mock.patch` without
+`create`) and a patch of the owner module therefore both reach every reader that
+looks the name up on the owner or the facade when it runs (a module that imports a
+forwarded name by name keeps its own copy, as `code_review_sage`'s report module
+does with `_SLUG_RE`), and the store reads these names through the owner module too (`create_image`
+truncates to `MAX_NAME_LEN` / `MAX_DESCRIPTION_LEN`, and `update` pre-checks
 `ALLOWED_EVENT_TYPES`). That covers the field limits and grammar
 (`MAX_NAME_LEN`, `MAX_DESCRIPTION_LEN`, `MAX_TAGS`, `MAX_SOURCE_PATH_LEN`,
-`_SLUG_RE`, `_TAG_RE`), the kind sets and inference maps (`ALLOWED_KINDS`,
-`ALLOWED_SOURCES`, `_EXT_KIND_MAP`, `_HTML_SNIFF_MARKERS`) in `rules`, the
-event-type vocabulary (`ALLOWED_EVENT_TYPES`) in `records`, and the folder path
-limits (`FOLDER_PATH_SEP`, `MAX_FOLDER_DEPTH`) in `folders`. The facade copy of
-such a name is an import-compatible re-export that steers nothing, so patch the
-owner module. `_IMAGE_MIME_EXT` is read only by the store, so its facade binding
-is the live one. `MAX_AUTO_WIDGET_ARTIFACTS` is the default argument of
-`prune_auto_widgets`, bound when the class is defined.
+`_SLUG_RE`, `_TAG_RE`, `_SLUG_NORMALIZE_RE`), the kind sets and inference tables
+(`ALLOWED_KINDS`, `ALLOWED_SOURCES`, `DOC_EXTENSIONS`, `_EXT_KIND_MAP`,
+`_HTML_SNIFF_MARKERS`, `_MD_HEADING_RE`, `_SVG_ROOT_RE`), the theme-colour lint
+patterns (`_HARDCODED_COLOR_RE`, `_HREF_ATTR_RE`) and `_strip_session_scope` in
+`rules`, the event-type vocabulary (`ALLOWED_EVENT_TYPES`) in `records`, the
+folder limits (`FOLDER_PATH_SEP`, `MAX_FOLDER_DEPTH`, `_NO_GENERATIONS`) in
+`folders`, and the per-format sniffers (`_sniff_jpeg_dimensions`,
+`_sniff_webp_dimensions`) in `images`. The moved classes stay ordinary bindings
+of the facade, since a class is never rebound and the store's string annotations
+resolve through them. The forwarding `__getattr__` is hidden from type checkers,
+which see each forwarded name through a `TYPE_CHECKING` import from its owner.
+`mock.patch(..., create=True)` on a forwarded name is not supported, because its
+exit deletes the owner's binding, and `test_artifacts_refactor_create_guard`
+refuses one anywhere in the test trees. `_IMAGE_MIME_EXT` is read only by the
+store, so its facade binding is the live one. `MAX_AUTO_WIDGET_ARTIFACTS` is the
+default argument of `prune_auto_widgets`, bound when the class is defined.
+
+`test_artifacts_refactor_store_contract` derives, from the tests themselves, every
+name a test rebinds on `kiro_crew.artifacts`, and fails when one is neither
+forwarded nor held by the facade alone with no owner function reading its own
+binding of it. Its one listed exception is `config_dir`, which `folders` reads for
+a directly constructed `ArtifactFolderStore`.
 
 `list()` returns newest first on a TOTAL order, `(updated_at, slug)` descending.
 The tie-break is load-bearing, not cosmetic: `updated_at` is microsecond ISO, so

@@ -1833,9 +1833,13 @@ with one, or an assignment chain to any of them. A write passing `create` as any
 `False` or `raising` as anything but `True`, or naming an attribute the source does not fix, is
 refused, and one deliberate demonstration is exempt by file and enclosing test. The
 standard-library names the one-module builder bound stay bound in the facade, so each still
-resolves there. Run as `python -m packaging.build` the facade is `__main__`, so it resolves its
-owners against `__package__` rather than `__name__`; run by file path (`python .../build.py`)
-it has no package to resolve them against and refuses with exit status 2, naming the
+resolves there. Importing the facade imports every owner at the end of its body, not on a
+first read: an owner binds what it imports by name when it first runs (`pipeline/scan.py` takes
+`redact_credentials` from `kiro_crew.security`), and a first read inside a test's patch of that
+source would leave the owner holding the patched value for the rest of the process. Run as
+`python -m packaging.build` the facade is `__main__`, so it resolves its owners against
+`__package__` rather than `__name__`; run by file path (`python .../build.py`) it has no package
+to resolve them against, so it imports none and refuses with exit status 2, naming the
 `python -m` entry.
 
 The suites in `crew/packaging/tests/` load a throwaway copy of the whole package
@@ -1846,6 +1850,9 @@ builder file. `test_pipeline_composition.py` pins the frozen name inventory, the
 against the owners' own definitions, that the facade's own code reads no forwarded name as a
 bare global, that a loaded owner is read and written without calling
 `importlib.import_module`, the layer order, the late-binding rule and the write rule above.
+`test/test_packaging_build_refactor_facade.py` pins, in a fresh interpreter, that importing
+the facade has loaded every owner before a test can patch `kiro_crew.security`, and that both
+entries above still hold.
 
 ## The crew container runtime
 

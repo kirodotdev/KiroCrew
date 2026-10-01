@@ -14,16 +14,20 @@ facade and on the owner modules.
 
 from __future__ import annotations
 
+import ast
 import dataclasses
 import importlib
 import importlib.util
+import inspect
 import json
+import re
 import threading
 import time
 import uuid
 from pathlib import Path
 
 import pytest
+from source_corpus import repo_files_named, repo_root
 
 from kiro_crew import artifacts as art_mod
 from kiro_crew.artifacts import (
@@ -579,6 +583,18 @@ class TestChangeListenerOrdering:
         ] == ["artifact change listener failed: action=upsert slug=swallow"]
 
 
+#: The moved classes that are not errors: each reports the module that defines it.
+_MOVED_RECORDS = (
+    Artifact,
+    ArtifactComment,
+    ArtifactPublication,
+    ForkMetadata,
+    ImageMetadata,
+    type(EXPECT_ABSENT),
+    ArtifactFolderStore,
+)
+
+
 class TestFacadeSeams:
     """Names callers and tests patch on :mod:`kiro_crew.artifacts` keep steering the store."""
 
@@ -690,20 +706,32 @@ class TestFacadeSeams:
             store.update(art.slug, content=body, snapshot=True)
         assert [e["version"] for e in store.get(art.slug).events] == [3, 4]
 
-    def test_moved_classes_report_the_facade_module(self) -> None:
+    def test_moved_errors_report_the_facade_module(self) -> None:
         for cls in (
-            Artifact,
-            ArtifactComment,
             ArtifactError,
-            ArtifactFolderStore,
             ArtifactNotFoundError,
-            ArtifactPublication,
+            ArtifactAlreadyExistsError,
+            ArtifactValidationError,
+            ArtifactStillPublishedError,
             ArtifactReplacedError,
-            ForkMetadata,
-            ImageMetadata,
-            type(EXPECT_ABSENT),
         ):
             assert cls.__module__ == "kiro_crew.artifacts", cls
+
+    def test_moved_records_report_their_owner_module(self) -> None:
+        owners = {cls: cls.__module__ for cls in _MOVED_RECORDS}
+        assert owners == {
+            Artifact: "kiro_crew.artifact_store.model",
+            ArtifactComment: "kiro_crew.artifact_store.model",
+            ArtifactPublication: "kiro_crew.artifact_store.model",
+            ForkMetadata: "kiro_crew.artifact_store.model",
+            ImageMetadata: "kiro_crew.artifact_store.model",
+            type(EXPECT_ABSENT): "kiro_crew.artifact_store.model",
+            ArtifactFolderStore: "kiro_crew.artifact_store.folders",
+        }
+
+    @pytest.mark.parametrize("cls", _MOVED_RECORDS, ids=lambda cls: cls.__name__)
+    def test_the_source_of_a_moved_record_is_found(self, cls: type) -> None:
+        assert f"class {cls.__name__}" in inspect.getsource(cls)
 
 
 def _fake_infer_kind(content: str, source_path: str = "", explicit: str | None = None) -> str:
@@ -756,6 +784,29 @@ def _reads_event_types(store: ArtifactStore) -> None:
     assert [e["type"] for e in store.get(art.slug).events] == ["created", "probe"]
 
 
+def _reads_tag_limit(store: ArtifactStore) -> None:
+    with pytest.raises(ArtifactValidationError, match=r"^too many tags \(2 > 1\)$"):
+        store.create(name="t", content="c", tags=["a", "b"])
+
+
+def _reads_slug_grammar(store: ArtifactStore) -> None:
+    assert art_mod.slug_is_well_formed("fine-a") is True
+    assert art_mod.slug_is_well_formed("plain") is False
+    with pytest.raises(ArtifactValidationError, match=r"^invalid slug 'plain': must match"):
+        store.create(name="p", content="c", slug="plain")
+
+
+def _reads_folder_depth(store: ArtifactStore) -> None:
+    folders = ArtifactFolderStore(path=store.root.parent / "artifact_folders.json")
+    with pytest.raises(ArtifactValidationError, match=r"^folder nesting exceeds max depth 1$"):
+        folders.resolve_path("a/b", create_missing=True)
+
+
+def _reads_jpeg_sniffer(store: ArtifactStore) -> None:
+    img = store.create_image(name="j", image_bytes=_jpeg(60, 40), mime="image/jpeg")
+    assert (img.image.width, img.image.height) == (7, 9)
+
+
 #: ``(module, attribute, replacement(original), probe)``: the probe drives every
 #: reader of the attribute and fails unless each one sees the replacement.
 SEAM_CASES = [
@@ -794,6 +845,49 @@ SEAM_CASES = [
         _reads_event_types,
         id="records-ALLOWED_EVENT_TYPES",
     ),
+    # Rule data the owners read, patched through the facade: the write reaches the owner.
+    pytest.param(
+        "kiro_crew.artifacts",
+        "MAX_TAGS",
+        lambda _original: 1,
+        _reads_tag_limit,
+        id="facade-MAX_TAGS",
+    ),
+    pytest.param(
+        "kiro_crew.artifacts",
+        "MAX_NAME_LEN",
+        lambda _original: 5,
+        _reads_name_limit,
+        id="facade-MAX_NAME_LEN",
+    ),
+    pytest.param(
+        "kiro_crew.artifacts",
+        "_SLUG_RE",
+        lambda _original: re.compile(r"^fine-[a-z]\Z"),
+        _reads_slug_grammar,
+        id="facade-_SLUG_RE",
+    ),
+    pytest.param(
+        "kiro_crew.artifacts",
+        "ALLOWED_EVENT_TYPES",
+        lambda original: frozenset(original | {"probe"}),
+        _reads_event_types,
+        id="facade-ALLOWED_EVENT_TYPES",
+    ),
+    pytest.param(
+        "kiro_crew.artifacts",
+        "MAX_FOLDER_DEPTH",
+        lambda _original: 1,
+        _reads_folder_depth,
+        id="facade-MAX_FOLDER_DEPTH",
+    ),
+    pytest.param(
+        "kiro_crew.artifacts",
+        "_sniff_jpeg_dimensions",
+        lambda _original: lambda _data: (7, 9),
+        _reads_jpeg_sniffer,
+        id="facade-_sniff_jpeg_dimensions",
+    ),
 ]
 
 
@@ -810,10 +904,160 @@ class TestSeamReach:
         monkeypatch.setattr(module, attr, replacement(getattr(module, attr)))
         probe(store)
 
+    def test_every_name_tests_rebind_on_the_facade_reaches_its_readers(self) -> None:
+        """Derived from the tests themselves: a name rebound on the facade either is
+        forwarded, so the write lands in the owner every reader reads, or is held
+        by the facade alone, read by no owner module as its own global."""
+        patched = _corpus_patched_names()
+        # Non-vacuous: the scan sees the seams the store's own tests rebind.
+        assert {"MAX_VERSIONS", "_now_iso", "config_dir", "MAX_TAGS", "_validate_slug"} <= patched
+        split: dict[str, list[str]] = {}
+        for name in sorted(patched):
+            if name in art_mod._EXPORTS:
+                assert name not in vars(art_mod), name
+                continue
+            assert name in vars(art_mod), name
+            readers = [leaf for leaf, source in _owner_sources() if name in _bare_reads(source)]
+            if readers:
+                split[name] = readers
+        assert split == _DOCUMENTED_SPLITS
 
-#: Every public name of the facade: a star import of :mod:`kiro_crew.artifacts` binds
-#: exactly these, the names its owner modules define included.
-FACADE_PUBLIC_NAMES = frozenset(
+    def test_the_patch_scan_finds_each_spelling(self) -> None:
+        source = (
+            "from kiro_crew import artifacts as art\n"
+            "import kiro_crew.artifacts as facade\n"
+            "def test_x(monkeypatch, other):\n"
+            '    monkeypatch.setattr(art, "MAX_TAGS", 1)\n'
+            '    monkeypatch.setattr(facade, "_SLUG_RE", 1)\n'
+            '    monkeypatch.setattr("kiro_crew.artifacts.MAX_NAME_LEN", 1)\n'
+            '    mock.patch.object(art, "config_dir")\n'
+            '    monkeypatch.setattr(other, "NOT_THE_FACADE", 1)\n'
+            '    monkeypatch.setattr(art.ArtifactStore, "create", None)\n'
+        )
+        assert _facade_patched_names(source) == {
+            "MAX_TAGS",
+            "_SLUG_RE",
+            "MAX_NAME_LEN",
+            "config_dir",
+        }
+
+    def test_the_reader_scan_counts_only_bare_global_reads(self) -> None:
+        source = (
+            "def f(limit: MAX_TAGS = 0) -> MAX_NAME_LEN:\n"
+            "    return MAX_TAGS + rules.MAX_SOURCE_PATH_LEN\n"
+            "def g(MAX_FOLDER_DEPTH):\n"
+            "    return MAX_FOLDER_DEPTH\n"
+        )
+        assert _bare_reads(source) == {"MAX_TAGS", "rules"}
+
+
+#: Facade-held names an owner also reads through a binding of its own, each a
+#: documented contract: a directly constructed ``ArtifactFolderStore`` takes its
+#: default path from ``folders``' own ``config_dir``.
+_DOCUMENTED_SPLITS = {"config_dir": ["folders"]}
+
+#: Every spelling a test uses to name the facade module.
+_MENTIONS_THE_FACADE = re.compile(
+    r"kiro_crew\.artifacts\b|from kiro_crew import [^\n]*\bartifacts\b"
+)
+
+
+def _facade_patched_names(text: str) -> set[str]:
+    """Names one test file rebinds on ``kiro_crew.artifacts`` itself."""
+    tree = ast.parse(text)
+    aliases = {"kiro_crew.artifacts"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "kiro_crew":
+            aliases |= {a.asname or a.name for a in node.names if a.name == "artifacts"}
+        elif isinstance(node, ast.Import):
+            aliases |= {
+                a.asname for a in node.names if a.name == "kiro_crew.artifacts" and a.asname
+            }
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or len(node.args) < 2:
+            continue
+        target, name = node.args[0], node.args[1]
+        if (
+            ast.unparse(target) in aliases
+            and isinstance(name, ast.Constant)
+            and isinstance(name.value, str)
+            and ast.unparse(node.func).endswith(("setattr", "patch.object"))
+        ):
+            found.add(name.value)
+    found |= set(re.findall(r"""["']kiro_crew\.artifacts\.(\w+)["']""", text))
+    return found
+
+
+def _corpus_patched_names() -> set[str]:
+    """Names any test rebinds on the facade, the parametrized seam cases above included."""
+    root = repo_root()
+    found = {case.values[1] for case in SEAM_CASES if case.values[0] == "kiro_crew.artifacts"}
+    for path in repo_files_named(".py"):
+        relative = path.relative_to(root).parts
+        in_tests = relative[0] == "test" or (relative[0] == "src" and "tests" in relative)
+        if not in_tests or not path.name.startswith("test_"):
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if _MENTIONS_THE_FACADE.search(text):
+            found |= _facade_patched_names(text)
+    return found
+
+
+def _owner_sources() -> list[tuple[str, str]]:
+    """``(leaf, source)`` for every owner module of the artifact store."""
+    package = Path(inspect.getfile(art_mod)).parent / "artifact_store"
+    return [
+        (path.stem, path.read_text(encoding="utf-8"))
+        for path in sorted(package.glob("*.py"))
+        if path.stem != "__init__"
+    ]
+
+
+def _bare_reads(source: str) -> set[str]:
+    """Names a function in *source* reads as a module global: a bare Load outside
+    annotations that the function does not bind itself. Module-level code runs once,
+    at import, so it is not a reader a later patch could miss."""
+    tree = ast.parse(source)
+    annotations: set[int] = set()
+    for node in ast.walk(tree):
+        for field in ("annotation", "returns"):
+            sub = getattr(node, field, None)
+            if sub is not None:
+                annotations.update(id(part) for part in ast.walk(sub))
+    function_types = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
+    nested = {
+        id(inner)
+        for outer in ast.walk(tree)
+        if isinstance(outer, function_types)
+        for inner in ast.walk(outer)
+        if inner is not outer and isinstance(inner, function_types)
+    }
+    found: set[str] = set()
+    for function in ast.walk(tree):
+        if not isinstance(function, function_types) or id(function) in nested:
+            continue
+        local = {arg.arg for arg in ast.walk(function) if isinstance(arg, ast.arg)}
+        local |= {
+            node.id
+            for node in ast.walk(function)
+            if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del))
+        }
+        found |= {
+            node.id
+            for node in ast.walk(function)
+            if isinstance(node, ast.Name)
+            and isinstance(node.ctx, ast.Load)
+            and node.id not in local
+            and id(node) not in annotations
+        }
+    return found
+
+
+#: Every public name the facade bound before its rules moved into
+#: :mod:`kiro_crew.artifact_store`, the moved names included. Each must still resolve
+#: here and reach a star import.
+BASE_PUBLIC_NAMES = frozenset(
     {
         "ALLOWED_EVENT_TYPES",
         "ALLOWED_KINDS",
@@ -901,6 +1145,10 @@ FACADE_PUBLIC_NAMES = frozenset(
     }
 )
 
+#: Every public name of the facade: a star import of :mod:`kiro_crew.artifacts` binds
+#: exactly these, the base names plus ``platform_compat``, a public module binding.
+FACADE_PUBLIC_NAMES = BASE_PUBLIC_NAMES | {"platform_compat"}
+
 
 class TestPublicSurface:
     def test_star_import_exposes_the_same_public_names(self, tmp_path: Path) -> None:
@@ -915,10 +1163,25 @@ class TestPublicSurface:
             n: v for n, v in vars(module).items() if not (n.startswith("__") and n.endswith("__"))
         }
         assert set(ns) == FACADE_PUBLIC_NAMES
-        assert [n for n in sorted(FACADE_PUBLIC_NAMES) if ns[n] is not getattr(art_mod, n)] == []
+        assert [n for n in sorted(ns) if ns[n] is not getattr(art_mod, n)] == []
 
-    def test_all_declares_the_same_public_names(self) -> None:
+    def test_every_base_public_name_still_resolves(self) -> None:
+        assert [name for name in sorted(BASE_PUBLIC_NAMES) if not hasattr(art_mod, name)] == []
+
+    def test_all_is_derived_from_the_bindings_and_the_forwarding_table(self) -> None:
+        bound = set(vars(art_mod)) | set(art_mod._EXPORTS)
+        assert art_mod.__all__ == sorted(
+            n for n in bound if not n.startswith("_") and n not in art_mod._MACHINERY
+        )
         assert sorted(art_mod.__all__) == sorted(FACADE_PUBLIC_NAMES)
+        tree = ast.parse(Path(inspect.getfile(art_mod)).read_text(encoding="utf-8"))
+        [assigned] = [
+            node.value
+            for node in tree.body
+            if isinstance(node, ast.Assign)
+            and [ast.unparse(target) for target in node.targets] == ["__all__"]
+        ]
+        assert not isinstance(assigned, (ast.List, ast.Tuple, ast.Set)), "__all__ is hand-written"
 
 
 def _jpeg(width: int, height: int) -> bytes:

@@ -13,7 +13,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from kiro_crew import cli_doctor, sandbox
+from kiro_crew import cli_doctor
 from kiro_crew.doctor_checks import render
 
 # Alias count above which the skill-view census warns. The projection publishes
@@ -182,7 +182,7 @@ def _runtime_tmpfs_roots() -> list[str]:
     Reuses the sandbox's own chooser rather than hardcoding ``/run/user`` so a
     change to the launcher's fallback chain moves this check with it.
     """
-    return sandbox._mount_source_candidate_roots()
+    return cli_doctor.sandbox._mount_source_candidate_roots()
 
 
 def _tmpfs_usage(root: str) -> tuple[float, float, int, int] | None:

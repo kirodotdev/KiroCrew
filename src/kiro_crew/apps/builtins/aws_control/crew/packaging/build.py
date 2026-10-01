@@ -476,9 +476,7 @@ else:
         # ``from ... import *`` reads ``__all__`` through here. It carries what the one-module
         # builder's star import did -- the public names bound here and the exports their owner
         # binds -- and is computed per read because ``redact_credentials`` exists only where
-        # its optional import succeeded. Filtered at import it would load every owner there,
-        # but owners load on first access: ``import build`` runs none, and run by file path
-        # there is no package to load one from, so the main guard refuses first.
+        # its optional import succeeded, which the owner held at the read decides.
         if name == "__all__":
             return sorted(n for n in set(globals()) | _bound_exports() if not n.startswith("_"))
         if name not in _EXPORTS:
@@ -512,6 +510,16 @@ class _ReExportModule(_ModuleType):
         else:
             super().__delattr__(name)
 
+
+# Every owner is imported here, once this module has bound its own names, rather than on its
+# first read. An owner binds what it imports by name when it first runs -- ``scan`` takes
+# ``redact_credentials`` from ``kiro_crew.security`` -- and a first read inside a test's patch
+# of that source would leave the owner holding the patched value for the rest of the process.
+# Run by file path there is no package to import one from, so none is and the guard refuses.
+if __package__:
+    for _module_name in dict.fromkeys(_EXPORTS.values()):
+        _submodule(_module_name)
+    del _module_name
 
 # Installed last, so the forwarding is live for every caller but never runs while this
 # module is still binding its own names.
