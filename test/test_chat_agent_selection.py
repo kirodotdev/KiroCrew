@@ -91,9 +91,9 @@ def test_resume_after_crewmate_prune_resolves_installed_agent(monkeypatch):
     """A chat bound to a sync-generated crewmate stays resumable after the prune.
 
     The startup prune deletes the crewmate's ``config.agents`` row but leaves the
-    agent installed. The chat's record still says ``member``, which used to
-    suppress the installed-agent lookup and refuse every resumed turn with
-    "Crew Member ... is unavailable".
+    agent installed. The chat's record still says ``member``, and a member
+    selection never takes the installed-agent lookup, so without the fallback
+    every resumed turn is refused with "Crew Member ... is unavailable".
     """
     from kiro_crew import execution_context, session_agent_selection
 
