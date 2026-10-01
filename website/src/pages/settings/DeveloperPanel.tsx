@@ -6,6 +6,7 @@ import { SettingsSection, SettingsCard, SettingsToggle } from '../../components/
 import { useLocalGateway } from '../../hooks/useLocalGateway'
 import { FeaturePreviewsSection } from './FeaturePreviewsSection'
 import { CrewmatesSection } from './CrewmatesSection'
+import { SessionControlSection } from './SessionControlSection'
 
 import { i18nT } from '../../i18n/t'
 const DEV_MODE_KEY = 'mc-dev-mode'
@@ -74,6 +75,9 @@ export function DeveloperPanel() {
     {/* The crewmate feature switches, under the Crew Members preview card that
         is their one door (`CrewmatesSection.tsx`). */}
     <CrewmatesSection />
+    {/* The global withdrawal of the agent session tools (`agent.session_control`,
+        `SessionControlSection.tsx`): a server-side switch like the one above. */}
+    <SessionControlSection />
     {localGatewaySupported && (
       <SettingsSection title={i18nT('pages.settings.developerPanel.gateway')}>
         <SettingsCard>

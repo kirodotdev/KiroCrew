@@ -14846,6 +14846,17 @@
         "failed_to_load": "クルーの設定を読み込めませんでした。",
         "retry": "再試行"
       },
+      "sessionControlSection": {
+        "title": "セッション制御",
+        "session_control_tools": "エージェントに他のセッションの操作を許可",
+        "session_control_tools_desc": "ダッシュボードのセッションツールを持つエージェントは、セッションを開き、このワークスペース内のあなたの他のセッションを読む、メッセージを送る、停止する、閉じることができます。オフにすると、クルーメンバーの DM を除くすべてのエージェントからこの権限が外れます。変更はすぐに、実行中のセッションにも適用されます。",
+        "session_control_tools_hint": "クルーメンバーの DM がこれらのツールを使えるのは、config.json の agent.member_dispatch がオンの間だけです。クルーメンバーやスケジュール実行が届くのは、自分で作成したセッションだけです。",
+        "failed_to_save": "セッション制御の設定を保存できませんでした。もう一度お試しください。",
+        "failed_to_load": "セッション制御の設定を読み込めませんでした。",
+        "overlay_owned": "この設定は config.json を上書きする ~/.kiro/crew/config.local.json で設定されています。そちらで変更するか削除してください。",
+        "retry": "再試行",
+        "loading": "現在の設定を読み込んでいます…"
+      },
       "developerPanel": {
         "developer_mode": "開発者モード",
         "developer_tools": "開発者ツール",

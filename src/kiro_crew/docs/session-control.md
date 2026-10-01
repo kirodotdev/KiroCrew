@@ -619,7 +619,7 @@ user's private work, in front of whoever is in the thread.
 
 | Knob | Default | Effect |
 |---|---|---|
-| `agent.session_control` | `true` | The whole surface. Turn it off to withdraw the capability from every agent at once without editing a spec |
+| `agent.session_control` | `true` | The whole surface. Turn it off to withdraw the capability from every agent at once without editing a spec. Settings > Developer > Session Control has an On/Off row for it; a change applies to the next session-control call from any session, running ones included |
 | `agent.member_dispatch` | `true` | A crew member's DM session drives workers it created even when session control is off. Turn it off to put member callers back under the switch |
 | `agent.crew_panel` | `true` | A crew member publishes its own webview, shown in that member's drawer on the Crew page. Its own mount and its own switch, so withdrawing session control leaves the drawer alone and withdrawing the drawer leaves session control alone |
 

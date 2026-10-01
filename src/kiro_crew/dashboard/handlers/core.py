@@ -2611,6 +2611,16 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     "agent.sandbox": {"type": "enum", "values": ["auto", "strict", "off"]},
     "agent.sandbox_allow_no_isolation": {"type": "bool"},
     "agent.tool_search": {"type": "bool"},
+    # The global withdrawal of the session-control tools (Settings > Developer).
+    # Editable here, unlike agent.dangerously_skip_permissions above, because
+    # `true` is the shipped default rather than a widening past it, and it
+    # grants nothing on its own: an agent reaches the tools only when its spec
+    # mounts the kirocrew-dashboard server, and each call still passes the
+    # caller gates (and authorize_target where it names a target session).
+    # This route is owner-only, so an agent's own token cannot
+    # write the key. `session_control_enabled()` reads config per call, so a
+    # write here reaches running sessions on their next session-control call.
+    "agent.session_control": {"type": "bool"},
     "agent.completion_keep": {"type": "enum", "values": ["head", "tail", "both"]},
     "agent.completion_keep_chars": {
         "type": "int",
@@ -2911,6 +2921,24 @@ def _beacon_governance_pinned_off() -> bool:
     return beacon.is_governance_pinned_off(audit_tool="config_patch_dashboard")
 
 
+def _overlay_owns_session_control() -> bool:
+    """Return whether ``config.local.json`` sets ``agent.session_control`` (blocking I/O).
+
+    An unreadable or non-object overlay is ignored by the loader, so ``config.json``
+    is effective and the write is not refused. A present non-object ``agent``
+    section (``{"agent": null}``) is different: the deep merge lets it replace the
+    base section, the loader then falls back to defaults (session control On), and
+    a written ``false`` would never take effect -- so it counts as owning the key.
+
+    Only this key is checked. Every other editable key can still be shadowed by
+    the overlay; this one is refused because a silent no-op here leaves agents
+    with a permission the operator believes was withdrawn.
+    """
+    from kiro_crew.config.loader import overlay_owned_agent_keys
+
+    return bool(overlay_owned_agent_keys(("session_control",), non_object_agent_owns=True))
+
+
 def _tailnet_governance_pinned_off() -> bool:
     """Return whether a ceiling pins ``capabilities.tailnet_origin`` off (blocking).
 
@@ -3205,6 +3233,24 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
                 "in the config file instead, where the destination is configured.",
                 f"{path_key}={value}",
                 409,
+            )
+
+    # `agent.session_control` is a permission withdrawal, so a write that the
+    # user-owned `config.local.json` overlay would shadow must be refused, not
+    # accepted: the loader deep-merges the overlay over `config.json`, and a 200
+    # here would leave agents holding cross-session control while the switch
+    # claimed Off. Same rule as the trusted-apps route's `TrustSettingOverlayOwned`;
+    # the overlay is never written on the user's behalf.
+    if path_key == "agent.session_control":
+        if await asyncio.to_thread(_overlay_owns_session_control):
+            _log_sel("denied", f"{path_key}={value}:overlay_owned")
+            return web.json_response(
+                {
+                    "error": "agent.session_control is set in config.local.json, which "
+                    "overrides config.json. Change or remove it there.",
+                    "code": "session_control_overlay_owned",
+                },
+                status=409,
             )
 
     # Same rule, same direction, for the tailnet origin derivation. `false` stays

@@ -15298,6 +15298,17 @@
         "failed_to_load": "Impossible de charger les réglages de l'équipe.",
         "retry": "Réessayer"
       },
+      "sessionControlSection": {
+        "title": "Contrôle des sessions",
+        "session_control_tools": "Laisser les agents contrôler tes autres sessions",
+        "session_control_tools_desc": "Les agents dotés des outils de session du tableau de bord peuvent ouvrir des sessions et lire, envoyer un message à, arrêter ou fermer tes autres sessions de cet espace de travail. Désactivé, ce droit est retiré à tous les agents sauf le DM d'un membre de l'équipe. Un changement s'applique immédiatement, y compris aux sessions en cours.",
+        "session_control_tools_hint": "Le DM d'un membre de l'équipe ne garde ces outils que tant que agent.member_dispatch est activé dans config.json. Un membre de l'équipe ou une exécution planifiée n'atteint que les sessions qu'il a créées.",
+        "failed_to_save": "Impossible d'enregistrer le réglage de contrôle des sessions. Réessaie.",
+        "failed_to_load": "Impossible de charger le réglage de contrôle des sessions.",
+        "overlay_owned": "Ce réglage est défini dans ~/.kiro/crew/config.local.json, qui remplace config.json. Modifie-le ou supprime-le là-bas.",
+        "retry": "Réessayer",
+        "loading": "Chargement du réglage actuel…"
+      },
       "developerPanel": {
         "developer_mode": "Mode développeur",
         "developer_tools": "Outils de développement",

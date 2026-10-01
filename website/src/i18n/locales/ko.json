@@ -14846,6 +14846,17 @@
         "failed_to_load": "크루 설정을 불러올 수 없습니다.",
         "retry": "다시 시도"
       },
+      "sessionControlSection": {
+        "title": "세션 제어",
+        "session_control_tools": "에이전트가 다른 세션을 제어하도록 허용",
+        "session_control_tools_desc": "대시보드 세션 도구가 있는 에이전트는 세션을 열고, 이 작업 공간에 있는 다른 세션을 읽거나, 메시지를 보내거나, 중지하거나, 닫을 수 있습니다. 끄면 크루 멤버의 DM을 제외한 모든 에이전트에게서 이 권한이 사라집니다. 변경은 즉시 적용되며, 실행 중인 세션에도 적용됩니다.",
+        "session_control_tools_hint": "크루 멤버의 DM은 config.json의 agent.member_dispatch가 켜져 있는 동안에만 이 도구를 유지합니다. 크루 멤버나 예약 실행은 자신이 만든 세션에만 닿습니다.",
+        "failed_to_save": "세션 제어 설정을 저장하지 못했습니다. 다시 시도하세요.",
+        "failed_to_load": "세션 제어 설정을 불러오지 못했습니다.",
+        "overlay_owned": "이 설정은 config.json을 덮어쓰는 ~/.kiro/crew/config.local.json에 지정되어 있습니다. 그 파일에서 바꾸거나 지우세요.",
+        "retry": "다시 시도",
+        "loading": "현재 설정을 불러오는 중입니다…"
+      },
       "developerPanel": {
         "developer_mode": "개발자 모드",
         "developer_tools": "개발자 도구",

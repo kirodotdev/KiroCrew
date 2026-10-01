@@ -707,6 +707,36 @@ def config_local_path() -> Path:
     return config_dir() / "config.local.json"
 
 
+def overlay_owned_agent_keys(names: Iterable[str], *, non_object_agent_owns: bool) -> list[str]:
+    """Return which of *names* ``config.local.json`` owns under ``agent`` (blocking I/O).
+
+    The one reader behind every dashboard write that refuses rather than silently
+    writing a ``config.json`` value the overlay shadows. A missing, unreadable or
+    non-object overlay is ignored by the loader, so ``config.json`` is effective
+    and nothing is owned.
+
+    *non_object_agent_owns* decides the ``{"agent": null}`` case, where the deep
+    merge replaces the base section and the loader falls back to defaults. A
+    caller whose default is the permissive value (session control On) passes
+    True, because a written ``false`` would never take effect. The trust-settings
+    caller passes False: the fallback there is the empty, most restrictive trust
+    list, so a revoke is already effective.
+    """
+    path = config_local_path()
+    if not path.is_file():
+        return []
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return []
+    if not isinstance(raw, dict) or "agent" not in raw:
+        return []
+    agent = raw["agent"]
+    if not isinstance(agent, dict):
+        return list(names) if non_object_agent_owns else []
+    return [name for name in names if name in agent]
+
+
 def denied_commands_path() -> Path:
     """Return path to denied_commands.json — the denied-command opt-out state.
 

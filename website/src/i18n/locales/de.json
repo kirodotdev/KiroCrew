@@ -15072,6 +15072,17 @@
         "failed_to_load": "Die Crew-Einstellungen konnten nicht geladen werden.",
         "retry": "Erneut versuchen"
       },
+      "sessionControlSection": {
+        "title": "Sitzungssteuerung",
+        "session_control_tools": "Agenten deine anderen Sitzungen steuern lassen",
+        "session_control_tools_desc": "Agenten mit den Sitzungswerkzeugen des Dashboards können Sitzungen öffnen und deine anderen Sitzungen in diesem Arbeitsbereich lesen, ihnen Nachrichten senden, sie stoppen oder schließen. Aus entzieht das jedem Agenten außer der DM eines Crew-Mitglieds. Eine Änderung gilt sofort, auch in laufenden Sitzungen.",
+        "session_control_tools_hint": "Die DM eines Crew-Mitglieds behält diese Werkzeuge nur, solange agent.member_dispatch in config.json an ist. Ein Crew-Mitglied oder ein geplanter Lauf erreicht nur Sitzungen, die es selbst erstellt hat.",
+        "failed_to_save": "Die Einstellung zur Sitzungssteuerung konnte nicht gespeichert werden. Versuch es noch einmal.",
+        "failed_to_load": "Die Einstellung zur Sitzungssteuerung konnte nicht geladen werden.",
+        "overlay_owned": "Diese Einstellung ist in ~/.kiro/crew/config.local.json gesetzt, die config.json überschreibt. Ändere oder entferne sie dort.",
+        "retry": "Erneut versuchen",
+        "loading": "Aktuelle Einstellung wird geladen…"
+      },
       "developerPanel": {
         "developer_mode": "Entwicklermodus",
         "developer_tools": "Entwicklerwerkzeuge",

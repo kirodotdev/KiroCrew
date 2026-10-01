@@ -15298,6 +15298,17 @@
         "failed_to_load": "Não foi possível carregar as configurações da equipe.",
         "retry": "Tentar de novo"
       },
+      "sessionControlSection": {
+        "title": "Controle de sessões",
+        "session_control_tools": "Deixar os agentes controlarem suas outras sessões",
+        "session_control_tools_desc": "Agentes com as ferramentas de sessão do painel podem abrir sessões e ler, enviar mensagens, parar ou fechar suas outras sessões neste espaço de trabalho. Desligado, isso é retirado de todos os agentes exceto a DM de um membro da equipe. Uma mudança vale na hora, inclusive em sessões em andamento.",
+        "session_control_tools_hint": "A DM de um membro da equipe mantém essas ferramentas só enquanto agent.member_dispatch estiver ligado no config.json. Um membro da equipe ou uma execução agendada alcança só as sessões que criou.",
+        "failed_to_save": "Não foi possível salvar a configuração de controle de sessões. Tente de novo.",
+        "failed_to_load": "Não foi possível carregar a configuração de controle de sessões.",
+        "overlay_owned": "Esta configuração está definida em ~/.kiro/crew/config.local.json, que substitui config.json. Altere ou remova lá.",
+        "retry": "Tentar novamente",
+        "loading": "Carregando a configuração atual…"
+      },
       "developerPanel": {
         "developer_mode": "Modo desenvolvedor",
         "developer_tools": "Ferramentas de desenvolvedor",

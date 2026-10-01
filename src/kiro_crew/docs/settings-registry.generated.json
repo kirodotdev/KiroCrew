@@ -955,6 +955,13 @@
       "description": "Kept in this dashboard's secret store on the machine that runs Kiro Crew, never in config.json, and never shown again once you save it."
     },
     {
+      "id": "developer.let-agents-control-your-other-sessions",
+      "label": "Let agents control your other sessions",
+      "tab": "developer",
+      "route": "/settings/developer?highlight=developer.let-agents-control-your-other-sessions",
+      "description": "Agents given the dashboard session tools can open sessions and read, message, stop or close your other sessions in this workspace. Off withdraws this from every agent except a crew member's DM. A change takes effect immediately, running sessions included."
+    },
+    {
       "id": "developer.model-for-the-small-model-judge",
       "label": "Model for the small-model judge",
       "tab": "developer",

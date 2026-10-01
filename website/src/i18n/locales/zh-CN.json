@@ -14846,6 +14846,17 @@
         "failed_to_load": "无法加载团队设置。",
         "retry": "重试"
       },
+      "sessionControlSection": {
+        "title": "会话控制",
+        "session_control_tools": "允许智能体控制你的其他会话",
+        "session_control_tools_desc": "拥有仪表板会话工具的智能体可以打开会话，并读取、发送消息给、停止或关闭你在此工作区中的其他会话。关闭后，除团队成员的私信外，所有智能体都会失去这项权限。更改立即生效，正在运行的会话也一样。",
+        "session_control_tools_hint": "只有在 config.json 中的 agent.member_dispatch 开启时，团队成员的私信才保留这些工具。团队成员或定时运行只能触及它自己创建的会话。",
+        "failed_to_save": "无法保存会话控制设置。请重试。",
+        "failed_to_load": "无法加载会话控制设置。",
+        "overlay_owned": "此设置在 ~/.kiro/crew/config.local.json 中设定，它会覆盖 config.json。请在那里修改或删除它。",
+        "retry": "重试",
+        "loading": "正在加载当前设置…"
+      },
       "developerPanel": {
         "developer_mode": "开发者模式",
         "developer_tools": "开发者工具",

@@ -1599,6 +1599,18 @@ keeps a quoted `"false"` from loading as enabled — `bool("false")` is `True`, 
 plain coercion would give a user who wrote it in an editor that quotes values the
 opposite of what they read.
 
+There are two ways to set it. An operator can edit `config.json` (or
+`config.local.json`) by hand, which is the case `_safe_bool` covers. The dashboard
+owner can flip the On/Off row in Settings > Developer > Session control, which
+writes a real JSON bool through `PATCH /api/config/kirocrew` (`_EDITABLE_CONFIG`
+entry, owner-only via `require_owner_dashboard_request`). Neither path needs a
+restart, because `session_control_enabled()` re-reads config on every call. The
+PATCH refuses with 409 when `config.local.json` sets the key
+(`_overlay_owns_session_control`): the loader deep-merges that overlay over
+`config.json`, so a base write would be shadowed and the switch would show Off
+while agents kept control. The overlay is user-owned and never written on the
+user's behalf, the same rule as the trusted-apps route's `TrustSettingOverlayOwned`.
+
 A config read that RAISES still resolves to disabled rather than to the default.
 That is deliberately not symmetric with the absent case: an unreadable config is a
 transient fault the operator can diagnose from the log line, and refusing during it

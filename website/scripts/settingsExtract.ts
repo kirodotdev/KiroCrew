@@ -163,6 +163,9 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   // server-side crewmate switches (reply threads today). Same tab, so a
   // SettingRef to `dashboard.crewmate_threads` deep-links to the row.
   'CrewmatesSection.tsx': 'developer',
+  // The Session control row DeveloperPanel mounts after Crewmates, so a
+  // SettingRef to `agent.session_control` deep-links to it.
+  'SessionControlSection.tsx': 'developer',
   // The Decisions (Jev) card, which FeaturePreviewsSection mounts. Its own file
   // because it is a list and a detail rather than one row, and mapped here for the
   // reason the section above is: a control on a Settings pane that search cannot

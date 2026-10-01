@@ -6577,6 +6577,17 @@
         "failed_to_load": "Couldn't load the crewmate settings.",
         "retry": "Retry"
       },
+      "sessionControlSection": {
+        "title": "Session control",
+        "session_control_tools": "Let agents control your other sessions",
+        "session_control_tools_desc": "Agents given the dashboard session tools can open sessions and read, message, stop or close your other sessions in this workspace. Off withdraws this from every agent except a crew member's DM. A change takes effect immediately, running sessions included.",
+        "session_control_tools_hint": "A crew member's DM keeps these tools only while agent.member_dispatch is on in config.json. A crew member or scheduled run reaches only sessions it created.",
+        "failed_to_save": "Couldn't save the session control setting. Try again.",
+        "failed_to_load": "Couldn't load the session control setting.",
+        "overlay_owned": "This setting is set in ~/.kiro/crew/config.local.json, which overrides config.json. Change or remove it there.",
+        "retry": "Retry",
+        "loading": "Loading the current setting…"
+      },
       "developerPanel": {
         "feature_previews": "Feature Previews",
         "feature_previews_desc": "Unreleased features and pages. The pages stay hidden from the sidebar and from Search Everywhere until you turn them on here; the switches themselves do show up in Settings search. Unpolished on purpose, and per-device unless a card says otherwise."

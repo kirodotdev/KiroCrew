@@ -1650,6 +1650,15 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "developer.let-agents-control-your-other-sessions",
+    "label": "Let agents control your other sessions",
+    "labelKey": "pages.settings.sessionControlSection.session_control_tools",
+    "description": "Agents given the dashboard session tools can open sessions and read, message, stop or close your other sessions in this workspace. Off withdraws this from every agent except a crew member's DM. A change takes effect immediately, running sessions included.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
     "id": "developer.model-for-the-small-model-judge",
     "label": "Model for the small-model judge",
     "labelKey": "pages.developer.featurePreviewsTab.decisions_judge_model",

@@ -68,9 +68,9 @@ from kiro_crew.config.loader import (
     ConfigReadError,
     KiroCrewConfig,
     _invalidate_config_cache,
-    config_local_path,
     config_path,
     denied_commands_path,
+    overlay_owned_agent_keys,
     update_config_locked,
 )
 from kiro_crew.dashboard.handlers.agents import _get_config_lock
@@ -1024,19 +1024,9 @@ _TRUST_SETTING_NAMES = (
 
 def _overlay_owned_trust_settings() -> list[str]:
     """Return the trust settings ``config.local.json`` currently owns (blocking I/O)."""
-    path = config_local_path()
-    if not path.is_file():
-        return []
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        # Unreadable overlay: the loader ignores it, so config.json IS effective.
-        # Refusing here would block a legitimate revoke on an unrelated broken file.
-        return []
-    agent = raw.get("agent") if isinstance(raw, dict) else None
-    if not isinstance(agent, dict):
-        return []
-    return [name for name in _TRUST_SETTING_NAMES if name in agent]
+    # An unreadable overlay is ignored by the loader, so config.json IS effective;
+    # refusing would block a legitimate revoke on an unrelated broken file.
+    return overlay_owned_agent_keys(_TRUST_SETTING_NAMES, non_object_agent_owns=False)
 
 
 async def _preflight_agent_config_mutable() -> None:

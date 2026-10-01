@@ -15298,6 +15298,17 @@
         "failed_to_load": "Impossibile caricare le impostazioni della crew.",
         "retry": "Riprova"
       },
+      "sessionControlSection": {
+        "title": "Controllo delle sessioni",
+        "session_control_tools": "Consenti agli agenti di controllare le tue altre sessioni",
+        "session_control_tools_desc": "Gli agenti con gli strumenti di sessione della dashboard possono aprire sessioni e leggere, inviare messaggi, fermare o chiudere le tue altre sessioni in questo spazio di lavoro. Disattivato, viene tolto a ogni agente tranne il DM di un membro della crew. Una modifica vale subito, anche nelle sessioni in corso.",
+        "session_control_tools_hint": "Il DM di un membro della crew mantiene questi strumenti solo finché agent.member_dispatch è attivo in config.json. Un membro della crew o un'esecuzione pianificata raggiunge solo le sessioni che ha creato.",
+        "failed_to_save": "Impossibile salvare l'impostazione di controllo delle sessioni. Riprova.",
+        "failed_to_load": "Impossibile caricare l'impostazione di controllo delle sessioni.",
+        "overlay_owned": "Questa impostazione è definita in ~/.kiro/crew/config.local.json, che sovrascrive config.json. Modificala o rimuovila lì.",
+        "retry": "Riprova",
+        "loading": "Caricamento dell'impostazione attuale…"
+      },
       "developerPanel": {
         "developer_mode": "Modalità sviluppatore",
         "developer_tools": "Strumenti per sviluppatori",
