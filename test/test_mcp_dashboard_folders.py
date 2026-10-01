@@ -667,7 +667,9 @@ class TestFolderMove:
 
 
 class TestFolderDelete:
-    """``chat_folder_delete`` removes a folder only when it holds nothing."""
+    """``chat_folder_delete`` asks the endpoint for its empty-only delete."""
+
+    _URL = "/api/chat/folders/cccccccccccc?if_empty=true"
 
     def test_deletes_an_empty_folder_by_path(self) -> None:
         with (
@@ -675,71 +677,55 @@ class TestFolderDelete:
             patch("kiro_crew.mcp_dashboard._delete", return_value={"ok": True}) as mock_delete,
         ):
             out = _call_tool_inner("chat_folder_delete", {"folder": "Travel"})
-        assert mock_delete.call_args.args == ("/api/chat/folders/cccccccccccc",)
+        assert mock_delete.call_args.args == (self._URL,)
         # The verified caller key is what the write carries, not a re-resolved one.
         assert mock_delete.call_args.kwargs == {"session_key": "dashboard:chat-1-100"}
         assert out == "Deleted empty folder `Travel` (id=cccccccccccc)."
 
-    def test_a_folder_with_subfolders_is_refused(self) -> None:
+    def test_the_tool_does_not_decide_emptiness_itself(self) -> None:
+        """No pre-check: a folder with children still goes to the endpoint.
+
+        A read here would be stale by the time the DELETE lands; the endpoint
+        decides occupancy under the folder-store lock instead.
+        """
         with (
             patch("kiro_crew.mcp_dashboard._get", side_effect=_rows),
-            patch("kiro_crew.mcp_dashboard._delete") as mock_delete,
+            patch(
+                "kiro_crew.mcp_dashboard._delete",
+                return_value={"error": "folder has subfolders", "code": "folder_not_empty"},
+            ) as mock_delete,
         ):
             out = _call_tool_inner("chat_folder_delete", {"folder": "kirocrew"})
+        assert mock_delete.call_args.args[0].endswith("?if_empty=true")
         assert out.startswith("Error:") and "subfolders" in out
-        mock_delete.assert_not_called()
+        assert "chat_folder_move_session" in out
 
-    def test_a_folder_with_a_live_session_is_refused(self) -> None:
+    def test_a_not_empty_refusal_names_no_session(self) -> None:
         with (
             patch("kiro_crew.mcp_dashboard._get", side_effect=_rows),
-            patch("kiro_crew.mcp_dashboard._delete") as mock_delete,
-        ):
-            out = _call_tool_inner("chat_folder_delete", {"folder": "kirocrew/0811"})
-        assert out.startswith("Error:") and "live sessions" in out
-        mock_delete.assert_not_called()
-
-    def test_a_folder_holding_only_a_private_session_is_refused_without_naming_it(
-        self,
-    ) -> None:
-        private = {
-            "key": "chat-9-900",
-            "title": "Secret plans",
-            "folder_id": "cccccccccccc",
-            "memory_mode": "incognito",
-        }
-
-        def _get(path: str) -> list[dict]:
-            if path == "/api/chat/slots":
-                return _slots_with_caller(private)
-            return _rows(path)
-
-        with (
-            patch("kiro_crew.mcp_dashboard._get", side_effect=_get),
-            patch("kiro_crew.mcp_dashboard._delete") as mock_delete,
+            patch(
+                "kiro_crew.mcp_dashboard._delete",
+                return_value={
+                    "error": "folder still holds live sessions",
+                    "code": "folder_not_empty",
+                },
+            ),
         ):
             out = _call_tool_inner("chat_folder_delete", {"folder": "Travel"})
         assert out.startswith("Error:") and "live sessions" in out
-        assert "chat-9-900" not in out and "Secret plans" not in out
-        mock_delete.assert_not_called()
+        assert "chat-" not in out
 
-    def test_a_folder_with_archived_sessions_is_refused_without_a_count(self) -> None:
-        folders = [
-            {"id": "cccccccccccc", "name": "Travel", "parent_id": "", "history_count": 2},
-        ]
-
-        def _get(path: str) -> list[dict]:
-            if path == "/api/chat/folders":
-                return [dict(f) for f in folders]
-            return _slots_with_caller()
-
+    def test_a_folder_that_is_not_the_callers_is_left_for_the_person(self) -> None:
         with (
-            patch("kiro_crew.mcp_dashboard._get", side_effect=_get),
-            patch("kiro_crew.mcp_dashboard._delete") as mock_delete,
+            patch("kiro_crew.mcp_dashboard._get", side_effect=_rows),
+            patch(
+                "kiro_crew.mcp_dashboard._delete",
+                return_value={"error": "x", "code": "folder_not_agent_owned"},
+            ),
         ):
             out = _call_tool_inner("chat_folder_delete", {"folder": "Travel"})
-        assert out.startswith("Error:") and "archived" in out
-        assert "2" not in out
-        mock_delete.assert_not_called()
+        assert out.startswith("Error:") and "did not create it" in out
+        assert "Leave it for the person" in out
 
     def test_root_is_not_a_deletable_subject(self) -> None:
         with (

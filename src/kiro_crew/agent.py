@@ -4133,10 +4133,11 @@ handle immediately.
 #:   same-workspace session, losing filing the user did by hand.
 #: * ``chat_folder_move`` — WITHHELD. Reparents an existing folder tree, and no
 #:   conductor step needs it.
-#: * ``chat_folder_delete`` — WITHHELD, on the invariant: it removes a folder
-#:   that already existed and is not the caller's own, even though it only
-#:   accepts an empty one. The dashboard also refuses it for an app or crew
-#:   member principal, and no conductor step needs it.
+#: * ``chat_folder_delete`` — WITHHELD. It passes the invariant: the dashboard
+#:   removes only an empty folder the CALLER's own session created and the
+#:   person has not touched since, and refuses an app or crew member outright.
+#:   It is withheld for the ``session_summary`` reason: no conductor step calls
+#:   it yet. A skill whose cleanup step adopts it adds it here with that step.
 #: * ``chat_tag_list`` / ``chat_tag_create`` / ``chat_tag_update`` — WITHHELD,
 #:   not because any fails the invariant (a read, a create that dedups on name,
 #:   and a metadata edit that loses no assignment) but because no conductor step

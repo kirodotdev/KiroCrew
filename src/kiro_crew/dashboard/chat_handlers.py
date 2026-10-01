@@ -4501,8 +4501,17 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             # `name` can address an already-used slot, so clearing outright would
             # unfile a conversation that was sitting in a perfectly good folder
             # of its own. This is a chat turn, so declining the move beats
-            # failing the turn.
-            if not await _unhide_folder(state, folder_id):
+            # failing the turn. A person opening a chat in the folder (no
+            # internal secret: the browser) claims it, so an agent's
+            # chat_folder_delete refuses it from then on.
+            if not await _unhide_folder(
+                state,
+                folder_id,
+                claim_for_person=(
+                    folder_id != previous_folder
+                    and request.headers.get("X-Internal-Secret") is None
+                ),
+            ):
                 slot.folder_id = previous_folder
                 slot._folder_changed = previous_changed
             else:

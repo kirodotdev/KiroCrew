@@ -339,9 +339,10 @@ class TestWhatThisSetGrants:
         "chat_folder_move",
         "chat_folder_move_session",
         "chat_folder_file_self",
-        # Empty-only: the tool refuses a folder holding a subfolder or a live or
-        # archived session, so it relocates nothing and loses nothing. The
-        # endpoint refuses every app and crew-member caller outright.
+        # Empty-only and creator-only: the endpoint's ``if_empty`` mode refuses
+        # a folder holding a subfolder or a live or archived session instead of
+        # unfiling it, refuses a folder the calling session did not create or
+        # the person has touched, and refuses every app and crew-member caller.
         "chat_folder_delete",
     }
     #: The tag half of sidebar organization. Same posture as the folder tools —

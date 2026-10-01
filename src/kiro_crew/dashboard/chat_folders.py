@@ -404,7 +404,44 @@ def folder_ids_filed_into(state: DashboardState) -> set[str]:
     return set(ids) if isinstance(ids, set) else set()
 
 
-async def _unhide_folder(state: DashboardState, folder_id: str) -> bool:
+#: The folder field naming the agent session that created it. Present only on a
+#: folder an agent's MCP call created and the person has not touched since: a
+#: person renaming, moving, restyling or hiding it, filing a session into it, or
+#: nesting a folder under it removes the field, and nothing ever puts it back.
+#: ``chat_folder_delete`` deletes only a folder that still carries the CALLER's
+#: own session key here, so a folder the person made or reused is never removed
+#: by an agent. A row from before this field existed has none, and reads as the
+#: person's.
+CREATED_BY_SESSION = "created_by_session"
+
+#: PATCH fields that change how the sidebar draws a folder rather than what the
+#: folder is. A person changing only these has not claimed the folder:
+#: collapsing it to look past it, or a drag that renumbers its siblings.
+_LAYOUT_ONLY_FIELDS = frozenset({"collapsed", "order"})
+
+
+def agent_creator_key(state: DashboardState, request: web.Request) -> str:
+    """The live session key an agent create is attributed to, or ``""``.
+
+    Only an internal (MCP) request names an agent: the browser never carries
+    ``X-Internal-Secret``, so a person's create is never stamped. The key must
+    name a live dashboard slot, the same key ``chat_folder_delete`` later sends
+    for the same session.
+    """
+    if request_origin(request, what="folder write", log=logger)[0] == "dashboard":
+        return ""
+    key = str(request.headers.get("X-Session-Key") or "").strip()
+    if not key.startswith("dashboard:"):
+        return ""
+    slots = getattr(state, "_slots", None)
+    if not isinstance(slots, dict) or key[len("dashboard:") :] not in slots:
+        return ""
+    return key
+
+
+async def _unhide_folder(
+    state: DashboardState, folder_id: str, *, claim_for_person: bool = False
+) -> bool:
     """Clear a folder's `hidden` flag when a session re-engages it.
 
     Model-B semantics: reviving or moving a session into a folder un-hides it so
@@ -416,6 +453,10 @@ async def _unhide_folder(state: DashboardState, folder_id: str) -> bool:
     caller that validated against ``state._folders`` beforehand and then assigned
     can have the folder deleted in between, and would persist a placement into a
     folder that is gone.
+
+    ``claim_for_person`` is set when the PERSON filed the session: the folder is
+    then theirs, so its :data:`CREATED_BY_SESSION` mark is removed in the same
+    locked step.
     """
     if not folder_id:
         return True
@@ -423,8 +464,11 @@ async def _unhide_folder(state: DashboardState, folder_id: str) -> bool:
     def _clear(folders: list[dict[str, Any]]) -> tuple[bool, bool]:
         for f in folders:
             if f["id"] == folder_id:
+                claimed = bool(claim_for_person and f.pop(CREATED_BY_SESSION, None))
                 if f.get("hidden"):
                     f["hidden"] = False
+                    return True, True
+                if claimed:
                     return True, True
                 # Present and already visible: report no change so the store is
                 # not rewritten. This runs on every session move, so a needless
@@ -1159,6 +1203,8 @@ async def create_folder_record(
     require_resolved_project_dir: bool = False,
     refuse_duplicate_name: bool = False,
     home_slot: Any = None,
+    created_by_session: str = "",
+    claim_parent_for_person: bool = False,
 ) -> dict[str, Any]:
     """Validate one folder and append it to the store under the folders lock.
 
@@ -1233,6 +1279,12 @@ async def create_folder_record(
     A non-person principal may nest directly under the folder that session is
     filed in, even when the person owns that folder. The slot's ``folder_id``
     is read under the lock, where the parent is decided.
+
+    ``created_by_session`` is the agent session this create is attributed to
+    (see :func:`agent_creator_key`); it is stored as :data:`CREATED_BY_SESSION`
+    on a NEW folder only, never on a reused one. ``claim_parent_for_person`` is
+    set when the person is creating: nesting into a folder claims that parent,
+    so its mark is removed under the same lock as the append.
 
     Raises:
         FolderCreateError: if the folder was refused (unusable name, missing
@@ -1314,6 +1366,8 @@ async def create_folder_record(
         folder["steering_dirs"] = resolved_steering
     if request_app:
         folder["owner_app"] = request_app
+    if created_by_session:
+        folder[CREATED_BY_SESSION] = created_by_session
 
     reused: list[dict[str, Any]] = []
 
@@ -1369,6 +1423,8 @@ async def create_folder_record(
             if twins:
                 return False, "name_exists"
         folder["order"] = len(folders)  # recount under the lock
+        if claim_parent_for_person and parent is not None:
+            parent.pop(CREATED_BY_SESSION, None)
         folders.append(folder)
         return True, ""
 
@@ -1506,6 +1562,8 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
             # The browser keeps a person's freedom to name two folders alike.
             refuse_duplicate_name=rl_source != "dashboard",
             home_slot=caller_home_slot(state, request, request_app),
+            created_by_session=agent_creator_key(state, request),
+            claim_parent_for_person=rl_source == "dashboard",
         )
     except FolderNameExistsError as exc:
         sel().log_api_access(
@@ -1738,6 +1796,14 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
     # persisted name — never from a pre-lock snapshot a concurrent write may
     # have superseded.
     committed_name: list[str] = []
+    # A person editing anything beyond layout claims the folder: its agent mark
+    # goes, and chat_folder_delete refuses it from then on. ``regenerate_icon``
+    # is not in ``changes`` (the icon lands later, from the generator), so it
+    # is counted here by name. A person moving a folder INTO another also
+    # claims that destination, the same as nesting a new folder under it.
+    by_person = _audit_origin(request)[0] == "dashboard"
+    claims_for_person = by_person and (regenerate_icon or bool(set(changes) - _LAYOUT_ONLY_FIELDS))
+    claims_parent_for_person = by_person and reparenting and bool(new_parent)
 
     def _apply(folders: list[dict[str, Any]]) -> tuple[bool, str]:
         target = next((f for f in folders if f["id"] == fid), None)
@@ -1770,6 +1836,12 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
             # level too -- "" is still a move.
             return False, "foreign_descendant"
         target.update(changes)
+        if claims_for_person:
+            target.pop(CREATED_BY_SESSION, None)
+        if claims_parent_for_person:
+            dest_row = next((f for f in folders if f["id"] == new_parent), None)
+            if dest_row is not None:
+                dest_row.pop(CREATED_BY_SESSION, None)
         if not target.get("color"):
             target.pop("color", None)
         if not target.get("icon"):
@@ -2179,9 +2251,9 @@ async def api_chat_folder_delete(request: web.Request) -> web.Response:
     # Each was closable in isolation; the class was not.
     #
     # Nothing shipped loses a capability: the one MCP tool that reaches this
-    # route, chat_folder_delete, deletes only an EMPTY folder and is refused
-    # here for an app like any other app caller, so its working callers are
-    # the person's own sessions and the dashboard UI. An app organizes its own work by
+    # route, chat_folder_delete, sends ``if_empty`` (below) and is refused here
+    # for an app like any other app caller, so its working callers are the
+    # person's own sessions and the dashboard UI. An app organizes its own work by
     # creating, renaming and reparenting its folders and filing its sessions --
     # cleanup is the person's, who can delete a full folder as they always could.
     if request_app:
@@ -2203,6 +2275,92 @@ async def api_chat_folder_delete(request: web.Request) -> web.Response:
             },
             status=403,
         )
+    # ``?if_empty=true`` is the empty-only delete the chat_folder_delete MCP tool
+    # sends. It never unfiles a slot or lifts a subfolder: occupancy is answered
+    # where the removal happens. Live slots and child folders are re-checked
+    # inside the folder-store callback below, which runs synchronously under the
+    # store lock and removes the row from the live list in the same step, so a
+    # slot PATCH or a child create cannot land between the check and the removal
+    # (both refuse a folder that is absent from the live list). Archived
+    # sessions are counted first, off the loop, because that is a disk scan; a
+    # session that is filed AND closed inside that one scan is the residue, and
+    # its transcript keeps a folder id that every reader renders as unfiled.
+    if_empty = (request.query.get("if_empty") or "").strip().lower() in ("1", "true", "yes")
+    if if_empty:
+        # Only a folder the CALLER's own session created, and the person has not
+        # touched since (see CREATED_BY_SESSION), may go this way. A folder the
+        # person made, reused, renamed, moved, or filed a session into carries
+        # no mark, so an agent never removes a folder the person relies on.
+        # Decided again under the lock below; this read only spares the
+        # archive scan for the common refusal.
+        caller_key = agent_creator_key(state, request)
+        not_yours = not caller_key or str(target.get(CREATED_BY_SESSION) or "") != caller_key
+        loop = asyncio.get_running_loop()
+        archived = (
+            {}
+            if not_yours
+            else await loop.run_in_executor(subprocess_executor(), _folder_history_counts, state)
+        )
+        if archived.get(fid, 0):
+            return web.json_response(
+                {
+                    "error": "folder still holds archived sessions",
+                    "code": "folder_not_empty",
+                },
+                status=409,
+            )
+
+        def _remove_if_empty(folders: list[dict[str, Any]]) -> tuple[bool, str]:
+            row = next((f for f in folders if f.get("id") == fid), None)
+            if row is None:
+                return False, "gone"
+            if not caller_key or str(row.get(CREATED_BY_SESSION) or "") != caller_key:
+                return False, "not_yours"
+            if any(f.get("parent_id") == fid for f in folders):
+                return False, "folder has subfolders"
+            if any(slot.folder_id == fid for slot in state._slots.values()):
+                return False, "folder still holds live sessions"
+            folders[:] = [f for f in folders if f["id"] != fid]
+            return True, ""
+
+        refused = await state.mutate_folders(_remove_if_empty)
+        if refused == "gone":
+            return web.json_response({"error": "not found", "code": "folder_not_found"}, status=404)
+        if refused == "not_yours":
+            sel().log_api_access(
+                caller=_audit_origin(request)[1],
+                operation="chat.folder_delete",
+                outcome="denied",
+                source="folder_origin",
+                resources=fid,
+                error="folder was not created by this session, or the person has used it",
+            )
+            return web.json_response(
+                {
+                    "error": (
+                        "only a folder this session created, and the person has not "
+                        "edited or used since, can be deleted this way"
+                    ),
+                    "code": "folder_not_agent_owned",
+                },
+                status=403,
+            )
+        if refused:
+            return web.json_response({"error": refused, "code": "folder_not_empty"}, status=409)
+        _CHAT_FOLDER_ICON_EPOCHS.pop(fid, None)
+        pending_icon = _CHAT_FOLDER_PENDING_ICON_TASKS.pop(fid, None)
+        if pending_icon is not None and not pending_icon.done():
+            pending_icon.cancel()
+        state.push_slots_update()
+        source, caller = _audit_origin(request)
+        sel().log_api_access(
+            caller=caller,
+            operation="chat.folder_delete",
+            outcome="allowed",
+            source=source,
+            resources=fid,
+        )
+        return web.json_response({"ok": True})
     # Unfile the folder's slots first, then commit the folder removal. If that
     # commit fails, put the slots back: otherwise the delete half-lands —
     # conversations persistently unfiled while the folder they came from is
@@ -2505,7 +2663,13 @@ async def api_chat_slot_folder(request: web.Request) -> web.Response:
         # and here. _unhide_folder re-checks existence under the store lock, which
         # is the only place the answer cannot go stale — reject rather than persist a
         # placement into a folder that no longer exists.
-        if not await _unhide_folder(state, folder_id):
+        if not await _unhide_folder(
+            state,
+            folder_id,
+            # The person filing a session INTO this folder claims it; a re-file
+            # into the folder it already sits in changes nothing.
+            claim_for_person=folder_id != previous and _audit_origin(request)[0] == "dashboard",
+        ):
             slot.folder_id = previous
             slot._folder_changed = previous_changed
             return web.json_response(

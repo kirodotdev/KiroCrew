@@ -1714,10 +1714,30 @@ atomically with the removal. Successively narrower rules each leaked through
 another seam: a session filed while the archive scan awaited, a child created while
 the lock was acquired, a session closing after the scan and writing its `folder_id`
 on the way out. Each was closable alone; the class was not, so the verb is withheld
-instead. Nothing shipped loses a capability -- no MCP tool exposes deletion and the
-only client of the route is the dashboard UI -- and an app organizes its work by
-creating, renaming and reparenting its own folders and filing its own sessions. The
-person deletes a full folder exactly as before.
+from apps. An app organizes its work by creating, renaming and reparenting its own
+folders and filing its own sessions. The person deletes a full folder exactly as
+before.
+
+The person's own sessions can delete an EMPTY folder through `chat_folder_delete`,
+and only one the calling session created that the person has not touched since.
+An agent create stamps the creating session's key on the row as
+`created_by_session`; a browser write that renames, moves, restyles or hides the
+folder, files a session into it, opens a chat in it, or nests a folder under it
+removes the field for good. A person's folder, a reused same-name folder and
+every older row carry none, so an agent's cleanup can never remove a folder the
+person relies on. The field lives on the folder row in `folders.json`, so it
+survives a restart with the folder. The delete sends `?if_empty=true`, which
+never unfiles a session or lifts a subfolder: the endpoint reads the mark, counts
+archived sessions, then re-checks the mark, subfolders and live slots in
+the same locked folder-store step that removes the row. A slot PATCH and a child
+create both re-check the folder under that lock, so neither can slip between the
+check and the removal. One seam stays open: a session filed and then closed while
+the archive scan runs is in neither store at the locked check, so the delete
+proceeds and that archived transcript keeps the gone folder's id. Every reader
+already renders such a session as unfiled, which is the same state the person's
+full delete leaves on every archived session it does not touch, and nothing in the
+transcript is lost. Closing that seam means registering every in-flight close
+across all of the slot-removal paths, which this verb does not justify.
 
 The policy lives in the endpoints, not in the MCP server. Only the endpoint holds
 the store lock and sees the authoritative tree, so a second copy of the rule in

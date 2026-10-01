@@ -20,9 +20,10 @@ that must be grantable separately belongs in a server of its own.
 
 What it controls today is the chat (sidebar) folder tree: read it, create a
 folder, reparent a folder, file a live session into one, and delete a folder
-that is EMPTY. No rename, and the delete refuses any folder that still holds a
-subfolder or a live or archived session, so nothing here can lose a
-conversation or unfile one. It also
+that is EMPTY. No rename. The delete asks the endpoint for its empty-only mode
+(``?if_empty=true``), which refuses a folder holding a subfolder or a live or
+archived session instead of unfiling them, so nothing here can lose a
+conversation. It also
 controls session TAGS with the same posture: read the vocabulary, create or
 update a tag (rename, recolor, status flag), and add or remove tags on a live
 session — no tag delete, so nothing here can strip a label from every session
@@ -321,13 +322,16 @@ def _tool_definitions() -> list[dict[str, Any]]:
         {
             "name": "chat_folder_delete",
             "description": (
-                "Delete an EMPTY sidebar folder. ``folder`` is a folder id or human "
-                "path from chat_folder_tree. Refused unless the folder holds no "
-                "subfolders, no live sessions and no archived (history) sessions, "
-                "so a delete never moves or unfiles anything: empty it first with "
-                "chat_folder_move / chat_folder_move_session. Only the person's "
-                "own sessions may delete; an app agent or a crew member is "
-                "refused by the dashboard."
+                "Delete an EMPTY sidebar folder that THIS session created, to clean "
+                "up after your own work. ``folder`` is a folder id or human path "
+                "from chat_folder_tree. Refused for a folder the person created, "
+                "a same-name folder you reused, another session's folder, or one "
+                "the person has since renamed, moved, restyled, hidden, filed a "
+                "session into or nested a folder under: those are the person's. "
+                "Also refused unless it holds no subfolders, no live sessions and "
+                "no archived (history) sessions; the dashboard checks all of this "
+                "in the same step as the removal, and never unfiles a session or "
+                "lifts a subfolder. An app agent or a crew member is refused."
             ),
             "inputSchema": {
                 "type": "object",
@@ -3374,36 +3378,28 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         if not fld_id:
             return "Error: 'root' is not a folder — name the folder to delete."
         fld_path = _chat_folder_paths(chat_folders).get(fld_id) or fld_id
-        # Empty-only. The endpoint deletes a full folder by unfiling its sessions
-        # and lifting its subfolders to the top level, and leaves archived
-        # sessions pointing at a folder that is gone. That is the person's own
-        # sidebar action; this tool only removes a folder with nothing in it, so
-        # a delete through here relocates nothing the person arranged.
-        if any(str(f.get("parent_id") or "") == fld_id for f in chat_folders):
-            return redact(
-                f"Error: folder `{fld_path}` has subfolders, so it is not deleted. "
-                "Move or delete them first."
-            )
-        row = next((f for f in chat_folders if str(f.get("id")) == fld_id), {})
-        # No count and no names: the archived count and the raw slot list cover
-        # private (incognito / temporary) sessions too, which nothing this server
-        # emits may describe. "Not empty" is the most the refusal says.
-        if int(row.get("history_count") or 0) > 0:
-            return redact(
-                f"Error: folder `{fld_path}` still holds archived (history) "
-                "sessions, so it is not deleted. Revive and move them out first, "
-                "or ask the person to delete it from the sidebar."
-            )
-        slot_rows, slots_err = _get_rows("/api/chat/slots")
-        if slots_err:
-            return redact(f"Error: {slots_err}")
-        if any(str(r.get("folder_id") or "") == fld_id for r in slot_rows):
-            return redact(
-                f"Error: folder `{fld_path}` still holds live sessions, so it is not "
-                "deleted. Move them out with chat_folder_move_session first."
-            )
-        d = _delete(f"/api/chat/folders/{quote(fld_id, safe='')}", session_key=caller_key)
+        # Empty-only, decided by the endpoint: ``if_empty`` makes it re-check
+        # subfolders and live sessions under the folder-store lock in the same
+        # step that removes the row, so nothing filed after this tool's read can
+        # be unfiled by the delete. A pre-check here could not give that answer.
+        # The refusal text names no session and carries no count.
+        d = _delete(
+            f"/api/chat/folders/{quote(fld_id, safe='')}?if_empty=true",
+            session_key=caller_key,
+        )
         if d.get("error"):
+            if d.get("code") == "folder_not_agent_owned":
+                return redact(
+                    f"Error: folder `{fld_path}` is not deleted: this session did not "
+                    "create it, or the person has edited or used it since. Leave it "
+                    "for the person."
+                )
+            if d.get("code") == "folder_not_empty":
+                return redact(
+                    f"Error: folder `{fld_path}` is not deleted: {d['error']}. Empty it "
+                    "first with chat_folder_move / chat_folder_move_session (an "
+                    "archived session needs session_revive before it can move)."
+                )
             return redact(f"Error: {d['error']}")
         return redact(f"Deleted empty folder `{fld_path}` (id={fld_id}).")
 

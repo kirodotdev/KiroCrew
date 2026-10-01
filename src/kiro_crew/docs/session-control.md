@@ -521,7 +521,7 @@ The sidebar tree the person organizes their sessions in.
 | `chat_folder_create` | `name` (required), `parent` | Create a folder. `parent` is an id or a `/`-separated path; missing segments are created (`mkdir -p`). Omit or pass `root` for top level. Creating never moves anything |
 | `chat_folder_move` | `folder` (required), `new_parent`, `before`, `after` | Reparent a folder and/or set its position among siblings. Moves everything inside it; cycle-guarded |
 | `chat_folder_move_session` | `session` (required), `folder` | File another live session into a folder, or omit `folder` to unfile it to the top level |
-| `chat_folder_delete` | `folder` (required) | Delete an **empty** folder. Refused while it holds a subfolder, a live session or an archived session |
+| `chat_folder_delete` | `folder` (required) | Delete an **empty** folder **this session created**. Refused for the person's folders, and while it holds a subfolder, a live session or an archived session |
 | `chat_folder_file_self` | `folder` | File **this** session — the caller — into a folder. Writes only its own placement |
 
 Read `chat_folder_tree` before you move anything: it renders folders in the order
@@ -545,10 +545,21 @@ Folder moves are metadata only: the session keeps its transcript, its model, and
 any running turn. Archived (history) sessions cannot be moved — bring one back
 with `session_revive` first.
 
-`chat_folder_delete` removes only a folder with nothing in it, so it never
-unfiles a session or lifts a subfolder to the top level. Empty the folder first
-with `chat_folder_move` and `chat_folder_move_session`. Only the person's own
-sessions may call it: the dashboard refuses an app agent or a crew member.
+`chat_folder_delete` is how a conductor cleans up after its own work. It removes
+only a folder that the calling session created and that has nothing in it.
+
+A folder created through an agent's MCP call records the creating session's key
+in `created_by_session`. The person claims the folder, and the field is removed
+for good, when they rename, move, restyle or hide it, file a session into it,
+open a new chat in it, or nest a folder under it. Collapsing it or dragging its
+siblings into a new order does not claim it. A folder the person created, a
+same-name folder an agent reused instead of creating, and every folder from
+before this field existed carry no mark, so no agent can delete them.
+
+The dashboard checks the mark, subfolders and live sessions in the same locked
+step that removes the folder, and refuses rather than unfiling anything. Empty
+the folder first with `chat_folder_move` and `chat_folder_move_session`. The
+dashboard refuses an app agent or a crew member outright.
 
 ## Tags
 
