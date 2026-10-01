@@ -23,6 +23,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
+from off_loop_helpers import off_loop
 
 from kiro_crew import crew_log as lg
 from kiro_crew.crew_log import CrewLog, Ref
@@ -373,6 +374,10 @@ async def test_the_batch_read_answers_every_fold_from_one_resolution():
     # Every fold came from the same read, so none of them can be ahead of the file
     # the others were folded from.
     assert {fold["seq"] for fold in body["projections"].values()} <= {0, handle.last_seq}
+    # The unit the folds came from, so the panel can refuse a pushed frame from another
+    # unit, and each fold's revision, so it can order a push against this baseline.
+    assert body["unit"] == SESSION
+    assert body["projections"]["status"]["revision"] > 0
 
 
 @pytest.mark.asyncio
@@ -771,12 +776,12 @@ async def test_a_page_past_its_ref_budget_says_how_many_it_left():
 async def test_each_projection_is_served_with_the_seq_it_folded_through(name):
     handle = _log()
     _opened(handle)
-    _turn(handle, 1)
+    off_loop(_turn, handle, 1)
     body = _body(await routes.api_session_crew_log_projection(_projection_request(name)))
     assert body["name"] == name
     assert body["seq"] == handle.last_seq
     assert body["session_id"] == SESSION
-    assert body["value"] == crew_log.read_projection(SESSION, name).value
+    assert body["value"] == off_loop(crew_log.read_projection, SESSION, name).value
 
 
 @pytest.mark.asyncio
@@ -994,7 +999,7 @@ async def test_the_publisher_caches_a_bounded_number_of_sessions():
         unit = f"s-many{index}"
         _opened(_log(unit))
         await publisher._publish(unit)
-    assert len(publisher._bundles) == routes.MAX_CACHED_SESSIONS
+    assert len(publisher._sent) == routes.MAX_CACHED_SESSIONS
 
 
 @pytest.mark.asyncio
@@ -1167,23 +1172,20 @@ async def test_a_recreated_log_at_the_same_seq_still_pushes_its_new_values():
     publisher = routes.CrewLogPublisher(state)
     publisher.bind(asyncio.get_running_loop())
     await publisher._publish(SESSION)
-    before = publisher._bundles[SESSION]
     state.frames.clear()
 
-    # Same session id, a DIFFERENT file, folded to the same terminal seq. Handing
-    # the publisher that cached bundle is the recreated-log shape without touching
-    # the filesystem, so it behaves the same on every platform.
-    other = _log("s-recreated-src")
-    _opened(other)
-    _turn(other, 1)
-    fresh = crew_log.fold_session("s-recreated-src", crew_log.PROJECTION_NAMES)
-    assert fresh.last_seq == before.last_seq  # seq-only check would suppress
-    assert fresh.origin != before.origin
-    publisher._bundles[SESSION] = crew_log.SessionProjections(
-        session_id=SESSION,
-        last_seq=fresh.last_seq,
-        checkpoints=fresh.checkpoints,
-        origin="a-retired-file",
+    # Same session id, the warm memo now holding a bundle whose ORIGIN names a retired
+    # file at the same terminal seq: the recreated-log shape without touching the
+    # filesystem, so it behaves the same on every platform.
+    key = (str(crew_log.data_home()), SESSION)
+    held = crew_log._session_memos[key]
+    crew_log._session_memos[key] = held._replace(
+        bundle=crew_log.SessionProjections(
+            session_id=SESSION,
+            last_seq=held.bundle.last_seq,
+            checkpoints=held.bundle.checkpoints,
+            origin="a-retired-file",
+        )
     )
 
     await publisher._publish(SESSION)
@@ -1220,18 +1222,20 @@ async def test_rebinding_clears_scheduling_flags_left_on_the_retired_loop():
     Left set, ``_scheduled`` makes a growth believe a pass is already coming and
     ``_flushing`` makes the runner yield to a pass that does not exist, so the
     publisher would go quiet permanently after a restart. The dirty set is kept:
-    those sessions did grow and the next pass folds them forward.
+    those sessions did grow, and a pass for them is armed on the loop now serving.
     """
     publisher = routes.CrewLogPublisher(_Sockets())
     publisher.bind(asyncio.get_running_loop())
     publisher._scheduled = True
     publisher._flushing = True
+    publisher._sessions_armed = True
     publisher._dirty.add(SESSION)
 
     publisher.bind(asyncio.get_running_loop(), _Sockets())
 
-    assert publisher._scheduled is False
     assert publisher._flushing is False
+    assert publisher._sessions_armed is False, "nothing is held, so no window is armed"
+    assert publisher._scheduled is True, "the kept dirty set gets a pass on this loop"
     assert publisher._dirty == {SESSION}
 
 

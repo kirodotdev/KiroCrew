@@ -61,7 +61,9 @@ import hashlib
 import json
 import logging
 import math
+import os
 import threading
+from collections import OrderedDict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -94,7 +96,7 @@ from kiro_crew.crew_log.entry_types import (
     WORK_ENTRY_TYPE,
 )
 from kiro_crew.crew_log.errors import CODE_BAD_DATA, CrewLogError
-from kiro_crew.crew_log.schema import KIND_SESSION, Entry
+from kiro_crew.crew_log.schema import KIND_SESSION, MAX_ENTRY_BYTES, Entry
 from kiro_crew.crew_log.session_tree import OpenedRecord, log_rank_of
 from kiro_crew.crew_log.store import (
     CrewLog,
@@ -358,14 +360,31 @@ class Projection:
     ``seq`` is the crew log's seq the value was folded through, which is what
     makes two projections comparable and what a reconnecting client truncates
     against (FR-5).
+
+    ``revision`` is what ORDERS two values of the same (key, fold), and it exists because
+    ``seq`` cannot. A slot fold's ``seq`` is the newest unit's own
+    (:func:`_slot_checkpoint`), and a slot's units are folded in a fixed order -- so a
+    conductor-side change on a board with any worker bound leaves that number unmoved,
+    and a client ordering by it would discard the changed value. A session fold's ``seq``
+    restarts when its unit is recreated under the same id. The revision is minted by the
+    process that folded (:func:`_next_slot_revision`, one counter for both families),
+    never read off a file, so a new unit, a recreated unit and a rewritten prefix all
+    move it forward. ``0`` means no revision is vouched for: a fold read outside a warm
+    memo, or one that has folded nothing.
     """
 
     name: str
     seq: int
     value: dict[str, Any]
+    revision: int = 0
 
     def to_dict(self) -> dict[str, Any]:
-        return {"name": self.name, "seq": self.seq, "value": self.value}
+        return {
+            "name": self.name,
+            "seq": self.seq,
+            "value": self.value,
+            "revision": self.revision,
+        }
 
 
 @dataclass(frozen=True)
@@ -470,14 +489,44 @@ class _Fold:
     meaning costs a cold fold to that fold alone -- see
     :data:`_FOLD_STATE_VERSION_BASE` for the rule that moves it.
 
-    ``mode`` decides WHEN the fold runs. ``"lazy"`` is the original posture: the value
-    is folded when a reader asks for it. ``"eager"`` folds it off the append path
-    instead, so a reader is served a value that was already current
-    (:mod:`kiro_crew.crew_log.eager`). An eager fold must declare ``affects``: the worker
-    wakes on the entry types its folds name, and a fold every entry moves would wake it
-    for every message body in the log -- the exact cost the mode exists to remove from
-    the read. That is checked here, at import, because a registry the process cannot
-    honour is not a thing to discover under load.
+    ``mode`` decides WHEN the fold runs, and ``"eager"`` IS THE DEFAULT. An eager fold
+    is advanced off the append path, so a reader is served a value that was already
+    current (:mod:`kiro_crew.crew_log.eager`); a lazy one is folded when a reader asks,
+    which is the posture every fold had before and the one a reader pays a walk of the
+    whole log for. The default is eager because that is the posture a dashboard wants
+    and because leaving it implicit is what let the other folds stay lazy by nobody
+    having decided -- so ``"lazy"`` now costs a ``lazy_reason``, and a fold with no
+    reason to be lazy is eager without anyone writing the word.
+
+    ``lazy_reason`` is that one line, REQUIRED of a lazy fold and refused on an eager
+    one. Required because "lazy" is the exception and an exception with no stated ground
+    is indistinguishable from an oversight; refused on an eager fold because a reason
+    sitting on one describes a posture this registry does not hold.
+
+    An eager fold must also declare ``affects``, spelled out even when it is every type:
+    the worker skips the copy and the step for an entry a fold does not name, and a
+    ``None`` there would leave a reader unable to tell "all of them" from "not decided".
+    Both are checked here, at import, because a registry the process cannot honour is
+    not a thing to discover under load.
+
+    ``count_rows`` is how much this fold's state RETAINS, as a count of rows rather than
+    a count of bytes, and it is what the warm memo's byte budget charges a cell by
+    (:func:`slot_fold_cell_bytes`). It must count every container the state keeps,
+    INCLUDING a list nested inside each item -- that nesting is why no single
+    measured-at-caps figure can bound these states. It must stay O(the item cap): a few
+    ``len`` calls and one pass over the items, never a serialization.
+
+    ``count_opaque`` counts what ``count_rows`` cannot charge by a row cost: a retained
+    value the fold keeps WHOLE and does not clamp, so the only bound on it is the entry
+    that carried it. Each one is charged :data:`MAX_ENTRY_BYTES`. Same O(the item cap)
+    rule, no serialization. ``work`` has three: an item's ``acceptance`` (the one field the
+    store does not cap), its ``artifacts`` map (values unclamped), and each parked entry.
+
+    ``None`` means the fold declares no row count, and a cell of it is charged the
+    one-row floor. That is right for a SESSION-keyed fold, which has no warm SLOT cell at
+    all -- its own memo weighs it by serialized size (:func:`session_fold_state_bytes`);
+    a slot-keyed fold without one is refused at import, because the budget would
+    then be charging it a constant while its state grows.
     """
 
     name: str
@@ -488,7 +537,10 @@ class _Fold:
     affects: frozenset[str] | None = None
     copy_state: Callable[[dict[str, Any]], dict[str, Any]] | None = None
     state_version: int = _FOLD_STATE_VERSION_BASE
-    mode: Literal["eager", "lazy"] = "lazy"
+    mode: Literal["eager", "lazy"] = "eager"
+    lazy_reason: str = ""
+    count_rows: Callable[[Mapping[str, Any]], int] | None = None
+    count_opaque: Callable[[Mapping[str, Any]], int] | None = None
 
     def __post_init__(self) -> None:
         if self.mode == "eager" and self.affects is None:
@@ -496,6 +548,17 @@ class _Fold:
                 f"the {self.name} fold is eager with no affects set: an eager fold is "
                 "woken by entry type, so one that every entry moves would fold on every "
                 "entry in the log off the append path"
+            )
+        if self.mode == "eager" and self.lazy_reason:
+            raise ValueError(
+                f"the {self.name} fold is eager and carries a lazy_reason: a reason left "
+                "behind a flip describes a posture this registry no longer holds"
+            )
+        if self.mode == "lazy" and not self.lazy_reason:
+            raise ValueError(
+                f"the {self.name} fold is lazy with no lazy_reason: eager is the default, "
+                "so staying lazy is an exception and an exception with no stated ground "
+                "cannot be told apart from an oversight"
             )
 
     def touched_by(self, entry: Entry) -> bool:
@@ -581,13 +644,19 @@ def advance(checkpoint: Checkpoint, entries: Iterable[Entry]) -> Checkpoint:
     return Checkpoint(name=checkpoint.name, last_seq=last, state=state)
 
 
-def projection_of(checkpoint: Checkpoint) -> Projection:
-    """*checkpoint* rendered -- the value a reader is served, at its own seq."""
+def projection_of(checkpoint: Checkpoint, *, revision: int = 0) -> Projection:
+    """*checkpoint* rendered -- the value a reader is served, at its own seq.
+
+    *revision* is passed by the two warm paths, which hold one: the slot memo and the
+    session memo (``WarmSession.projection``). A cold fold has none and answers ``0``
+    (:class:`Projection`).
+    """
     fold_spec = _FOLDS[require_name(checkpoint.name)]
     return Projection(
         name=checkpoint.name,
         seq=checkpoint.last_seq,
         value=fold_spec.render(checkpoint.state),
+        revision=revision,
     )
 
 
@@ -1228,8 +1297,15 @@ def _cells_as_checkpoints(registry: ProjectionRegistry, session_id: str) -> dict
 
 
 def read_projection(session_id: str, name: str) -> Projection:
-    """One projection for *session_id*, folded from the start of its crew log."""
-    bundle = fold_session(session_id, (require_name(name),))
+    """One projection for *session_id*, as current as its crew log.
+
+    An EAGER session fold is answered from the warm memo (:func:`fold_session_warm`), so
+    it carries the revision a pushed frame for it carries. Any other is folded from the
+    savepoint beside the log, or from seq 1 when there is none.
+    """
+    if require_name(name) in EAGER_SESSION_FOLD_NAMES:
+        return fold_session_warm(session_id).projection(name)
+    bundle = fold_session(session_id, (name,))
     return bundle.projection(name)
 
 
@@ -3577,7 +3653,8 @@ def read_slot_projection(slot: str, name: str, *, also_slots: Sequence[str] = ()
             if unit_id not in known:
                 known.add(unit_id)
                 units.append(unit_id)
-    return projection_of(fold_slot_warm(require_name(name), units, slot=slot))
+    checkpoint, revision = fold_slot_warm_revised(require_name(name), units, slot=slot)
+    return projection_of(checkpoint, revision=revision)
 
 
 def _supplemental_units(slot: str, name: str) -> "tuple[str, ...]":
@@ -3718,19 +3795,133 @@ def _slot_units_for_fold(slot: str, name: str) -> "tuple[str, ...]":
 # A slot's folds on the projection kernel
 # --------------------------------------------------------------------------- #
 
-#: Slot folds kept warm between reads, keyed by (data home, slot, fold name). Bounded
-#: by COUNT: each cell is a bounded record, so what needs a ceiling is how many are
-#: retained, and the insertion order makes the oldest the one evicted. An evicted slot
-#: folds cold on its next read, which costs time and never correctness.
+#: What ONE RETAINED ROW of each slot fold costs, measured rather than reasoned about:
+#: the marginal bytes of the WIDEST row kind that fold keeps.
 #:
-#: What that bound is in BYTES, measured at each fold's declared caps rather than
-#: reasoned about: the largest cell is ``radar`` at :data:`RADAR_ITEM_LIMIT` items,
-#: 995,342 bytes, so a table of 64 of those is 60.8 MiB; ``work`` at
-#: :data:`WORK_ITEM_LIMIT` plus :data:`WORK_EVENT_LIMIT` is 138,067 bytes, 8.4 MiB for 64.
-#: A separate byte ceiling was tried and removed: at any value above this it never fires,
-#: and below it the eviction order stops meaning "least recently used" and starts meaning
-#: "whoever has the biggest board loses", which is not a policy anything asked for.
-SLOT_FOLD_CACHE_SLOTS: Final[int] = 64
+#: PER ROW AND NOT PER CELL, which is the whole shape of this budget and not a detail.
+#: A per-cell figure measured at the caps cannot bound these states, because three of
+#: the four nest a capped list INSIDE each capped item -- so their cap-state is the
+#: PRODUCT of two caps rather than the sum:
+#:
+#:   ``radar``   :data:`RADAR_ITEM_LIMIT` items x :data:`RADAR_TRIED_LIMIT` tried rows,
+#:               and one ``phase_lines`` key per item x :data:`RADAR_PHASE_LINE_LIMIT`
+#:   ``work``    :data:`WORK_ITEM_LIMIT` items x :data:`WORK_EVENT_LIMIT` events
+#:   ``panel``   :data:`PANEL_OWNER_LIMIT` owners x :data:`PANEL_HISTORY_LIMIT` rows
+#:   ``ledger``  flat
+#:
+#: So ``radar``'s cap-state is 156,500 rows, which at the figure below is 24,402 MiB --
+#: not the 26 MiB a cell driven to its items and skips alone measures, and not the
+#: 995,342 bytes the spec recorded before that. A static per-cell charge is therefore not
+#: an upper bound at all, and a budget built on one is not a bound. The four cap-state
+#: charges are ``radar`` 24,402 MiB, ``work`` 165.6 MiB, ``panel`` 10.1 MiB, ``ledger``
+#: 2.8 MiB.
+#:
+#: HOW MEASURED. Each row kind is driven with its free-text fields at the clamp the FOLD
+#: applies, in 4-byte UTF-8 characters, because the clamps count CHARACTERS and an
+#: ASCII row is a quarter of the bytes the same clamp admits. The cost is
+#: ``(bytes at N rows - bytes at 1 row) / (N - 1)`` of
+#: ``len(json.dumps(state, ensure_ascii=False).encode("utf-8"))``, except ``radar``,
+#: whose figure is the widest item weighed alone (each item brings narrow companion
+#: rows that pull an average below it), and ``panel``, driven in ASCII: its row is one
+#: entry's document kept whole, so the entry's byte cap binds, and ASCII fills it widest.
+#: ``test_every_slot_folds_row_cost_is_derived_from_its_own_rows`` re-derives all four,
+#: so a clamp raised without re-measuring fails CI rather than quietly invalidating this.
+#:
+#: ONE FIGURE PER FOLD, the widest of its own kinds, so a ``radar`` skip, tried or
+#: progress row is charged as a whole item. That over-charges every cell but one made of
+#: full items, which is the safe direction: the budget then holds fewer cells than its
+#: bytes allow, never more.
+_SLOT_FOLD_ROW_BYTES: Final[dict[str, int]] = {
+    # a published document per owner, filling one entry (51,655 measured)
+    "panel": 52_000,
+    # a work item with every field it keeps at its clamp (163,464 measured)
+    "radar": 163_500,
+    # a tried row: two fields at LEDGER_TEXT_LIMIT (16,065 measured)
+    "ledger": 16_100,
+    # an item with title, summary and decision at their clamps; its acceptance and
+    # artifacts have no clamp and are charged per container (``_work_opaque``)
+    "work": 2_705,
+}
+
+#: Default ceiling on the bytes EVERY warm slot cell may hold together, across every
+#: data home, slot and fold. 256 MiB.
+#:
+#: Chosen so that one fold at its declared caps still FITS and the one that cannot is the
+#: one that must not: ``work`` at 256 items x 200 events is charged 165.6 MiB (133.6
+#: for its rows, 32 for each item's ``acceptance`` and ``artifacts`` at the entry bound,
+#: :func:`_work_opaque`), ``panel``
+#: 10.1 MiB, ``ledger`` 2.8 MiB -- while ``radar`` at its caps is 24,402 MiB and is refused
+#: rather than fitted (:func:`_remember_slot_fold`). A smaller default would start
+#: refusing the biggest work board, which is the one a cold fold costs most.
+#:
+#: It is a ceiling on CHARGES, not on bytes allocated, and the charge runs about 4x over a
+#: real cell's serialized size (one row cost covers the fold's widest row kind). So a full
+#: table at this ceiling is nearer 60 MiB resident than 256.
+#:
+#: The ceiling it replaces admitted 64 cells of any size, so its own worst case was
+#: 64 x 24,402 MiB, which no number in the code had to move to reach.
+DEFAULT_SLOT_FOLD_CACHE_BYTES: Final[int] = 256 * 1024 * 1024
+
+#: The variable an operator lowers the ceiling with, in BYTES. Read per call, so a test
+#: or a small deployment can set it without a restart; an unparseable or non-positive
+#: value leaves the default standing rather than switching the cache off, because a
+#: typo'd ceiling must not silently cost every read a cold fold.
+SLOT_FOLD_CACHE_BYTES_ENV: Final[str] = "KIROCREW_SLOT_FOLD_CACHE_BYTES"
+
+#: Charged per row to a fold that declares no row cost, so an unmeasured fold cannot make
+#: the budget unbounded by costing nothing. 64 KiB is :data:`MAX_ENTRY_BYTES`: no row can
+#: hold more than the entry that carried it.
+_UNMEASURED_ROW_BYTES: Final[int] = 64 * 1024
+
+
+def slot_fold_cache_bytes() -> int:
+    """The live ceiling on all warm slot cells together, in bytes.
+
+    One accessor rather than a constant, because the variable is read per call and the
+    eviction loop and every test that reports the budget must agree on the same number.
+    """
+    raw = os.environ.get(SLOT_FOLD_CACHE_BYTES_ENV, "").strip()
+    if raw:
+        try:
+            value = int(raw)
+        except ValueError:
+            value = 0
+        if value > 0:
+            return value
+    return DEFAULT_SLOT_FOLD_CACHE_BYTES
+
+
+def slot_fold_row_bytes(name: str) -> int:
+    """What one retained row of the *name* fold is charged. See :data:`_SLOT_FOLD_ROW_BYTES`."""
+    return _SLOT_FOLD_ROW_BYTES.get(name, _UNMEASURED_ROW_BYTES)
+
+
+def slot_fold_cell_bytes(name: str, state: "Mapping[str, Any] | None" = None) -> int:
+    """An upper bound on what *state* retains, charged against the ceiling.
+
+    ``rows + 1`` rather than ``rows``: the extra row covers the fold's flat header fields
+    -- a ``goal``, a ``next``, a crew id -- which belong to no row and which an empty cell
+    holds anyway. It also means a cell is never charged zero.
+
+    COUNTING, not serializing. The count is a handful of ``len`` calls plus one pass over
+    the items (bounded by the fold's own item cap), where weighing the state itself would
+    mean serializing up to 2.4 GiB on every store -- more than the fold that produced it.
+    And counting is still an UPPER BOUND, because each row's own text is clamped by the
+    fold, and a value the fold keeps whole is charged the entry that carried it
+    (``count_opaque``): that is what a static per-cell figure could not be.
+
+    *state* absent answers the one-row floor, which is what a caller asking about a fold
+    rather than about a cell wants.
+    """
+    fold = _FOLDS.get(name)
+    rows = 0
+    opaque = 0
+    if state is not None and fold is not None:
+        if fold.count_rows is not None:
+            rows = max(0, fold.count_rows(state))
+        if fold.count_opaque is not None:
+            opaque = max(0, fold.count_opaque(state))
+    return (rows + 1) * slot_fold_row_bytes(name) + opaque * MAX_ENTRY_BYTES
 
 
 class _Ordinal(NamedTuple):
@@ -3990,10 +4181,50 @@ class _SlotMemo:
     #: ``None`` means no digest is vouched for -- the file moved during the pass, or
     #: could not be read -- and a continuation is refused rather than trusted.
     prefix: "_PrefixSeen | None" = None
+    #: What ORDERS this cell against every other value of the same (slot, fold). Minted
+    #: when the cell is built, so a cell CARRIED FORWARD unchanged keeps its number and a
+    #: cell that folded anything new gets a higher one. See :func:`_next_slot_revision`.
+    revision: int = 0
+    #: What this cell is charged against the ceiling, counted ONCE when it is built
+    #: (:func:`slot_fold_cell_bytes`). Stored rather than recomputed because the eviction
+    #: loop sums every held cell, and re-counting there would make one store cost a walk
+    #: of every warm cell's items.
+    weight: int = 0
 
 
 _slot_memos: "dict[tuple[str, str, str], _SlotMemo]" = {}
 _slot_memo_guard = threading.Lock()
+
+#: The last revision this process handed out, for any (slot, fold). Guarded by
+#: :data:`_slot_memo_guard`.
+#:
+#: ONE COUNTER FOR EVERY KEY rather than one per key, which costs a shared number and
+#: buys the property the push needs with nothing to evict: a per-key counter would have
+#: to live somewhere, and the only table it could live in is the memo table -- which is
+#: evicted, so an evicted key's next cell would restart at 1 and a client holding the
+#: earlier number would discard every value after it. A process-wide counter is
+#: strictly increasing for every key at once, so it is monotonic per key as a
+#: consequence rather than as a thing to maintain.
+#:
+#: NOT comparable ACROSS PROCESSES, and nothing asks it to be: a frame carries the
+#: revision of the process that folded it, and a client reconnecting to another gateway
+#: re-reads rather than continues. In process, a restart folds cold and starts at 1
+#: again, which a client that reconnected has already discarded its own state for.
+_slot_revision = 0
+
+
+def _next_slot_revision() -> int:
+    """The next revision, strictly above every one already handed out.
+
+    Caller holds :data:`_slot_memo_guard`. Never derived from a seq, a time or a file:
+    every one of those can repeat or step backwards across a unit rollover, a unit
+    recreated under the same id, or a rewritten prefix -- the three cases
+    :func:`fold_slot_warm` names -- and the whole purpose of this number is to order two
+    values that those cases leave looking identical.
+    """
+    global _slot_revision
+    _slot_revision += 1
+    return _slot_revision
 
 
 @dataclass
@@ -4081,17 +4312,57 @@ def forget_slot_folds(slot: str = "", name: str = "") -> None:
     with _slot_memo_guard:
         if not slot and not name:
             _slot_memos.clear()
+            _oversize_slot_cells.clear()
             return
-        for key in [
-            held
-            for held in _slot_memos
-            if held[0] == home and (not slot or held[1] == slot) and (not name or held[2] == name)
-        ]:
-            del _slot_memos[key]
+        for table in (_slot_memos, _oversize_slot_cells):
+            for key in [
+                held
+                for held in table
+                if held[0] == home
+                and (not slot or held[1] == slot)
+                and (not name or held[2] == name)
+            ]:
+                del table[key]
+
+
+def _slot_memo_bytes() -> int:
+    """What every warm cell held right now is charged, together. Caller holds the guard.
+
+    Read off each memo's own stored charge rather than recomputed. Re-counting would walk
+    every held cell's items on every store, which turns one store into O(all cells) work.
+    """
+    return sum(memo.weight for memo in _slot_memos.values())
 
 
 def _remember_slot_fold(key: "tuple[str, str, str]", memo: _SlotMemo) -> None:
-    """Keep *memo* under *key*, capped by COUNT; least recently STORED goes first.
+    """Keep *memo* under *key*, capped by BYTES; least recently STORED goes first.
+
+    BY BYTES RATHER THAN BY COUNT, which is a reversal of an earlier decision and worth
+    stating as one. The count ceiling's case was that each cell is a bounded record, so
+    the thing needing a limit is how many are retained -- and that holds exactly as long
+    as the cells are comparable. They are not. A ``panel`` cell is a few hundred KiB and a
+    ``radar`` cell at its declared caps is 2.4 GiB, so one ceiling of 64 cells priced a
+    resident total across four orders of magnitude with no number in the code moving.
+    Eager folding is what makes the high end reachable rather than theoretical: the worker
+    stores a cell for every board this process WRITES, so which 64 cells are held stopped
+    being a function of what a reader asked for.
+
+    So the ceiling is a byte figure (:func:`slot_fold_cache_bytes`) and each cell is
+    charged what it RETAINS (:func:`slot_fold_cell_bytes`). Small cells keep many slots
+    warm and a huge one keeps few, which is the behaviour a count could not express.
+
+    The earlier decision's second objection stands and is accepted: below the worst case
+    the eviction order does mean "whoever has the biggest board loses". That is now the
+    POINT -- one 2 GiB cell should lose to four hundred small ones -- rather than a side
+    effect, because what is being bounded is resident bytes and not cell count.
+
+    A CELL THAT CANNOT FIT THE WHOLE CEILING IS NOT STORED. ``radar`` at its caps is
+    charged more than any sane ceiling, and the two alternatives are both worse: parking
+    it would hold 2.4 GiB resident until the next store, and evicting everything else
+    first would empty the table to make room for one cell that still does not fit. So it
+    is refused, the read still answers correctly, and that slot folds cold next time --
+    which costs time and never an answer. The first refusal of a cell is logged at
+    WARNING and later ones at DEBUG; the operator's answer is a higher ceiling.
 
     Eviction order is least recently stored or advanced, which is not the same as least
     recently read: a read that finds the cell already at the file's position returns it
@@ -4103,11 +4374,75 @@ def _remember_slot_fold(key: "tuple[str, str, str]", memo: _SlotMemo) -> None:
     Insertion order tracks stores because a cell is never edited in place -- a read or an
     eager fold that carries one forward stores a NEW memo, which moves it to the end.
     """
+    ceiling = slot_fold_cache_bytes()
+    if memo.weight > ceiling:
+        with _slot_memo_guard:
+            # Dropped rather than left standing: an older cell of this key describes
+            # bytes this pass has already folded past, so serving it later would be a
+            # stale answer, where no cell is a cold fold.
+            _slot_memos.pop(key, None)
+            first = key not in _oversize_slot_cells
+            _oversize_slot_cells[key] = memo.weight
+            _oversize_slot_cells.move_to_end(key)
+            while len(_oversize_slot_cells) > OVERSIZE_SLOT_CELL_LIMIT:
+                _oversize_slot_cells.popitem(last=False)
+        # WARNING once per cell, where an operator looks: from here on every read of this
+        # board folds cold, and the answer is a higher ceiling.
+        logger.log(
+            logging.WARNING if first else logging.DEBUG,
+            "crew log slot fold %s/%s retains %d charged bytes, above the %d-byte "
+            "ceiling (%s), so it is not kept warm; every read of it folds cold",
+            key[1],
+            key[2],
+            memo.weight,
+            ceiling,
+            SLOT_FOLD_CACHE_BYTES_ENV,
+        )
+        return
     with _slot_memo_guard:
         _slot_memos.pop(key, None)
+        _oversize_slot_cells.pop(key, None)
         _slot_memos[key] = memo
-        while len(_slot_memos) > SLOT_FOLD_CACHE_SLOTS:
-            _slot_memos.pop(next(iter(_slot_memos)))
+        held = _slot_memo_bytes()
+        while held > ceiling and len(_slot_memos) > 1:
+            oldest, evicted = next(iter(_slot_memos.items()))
+            _slot_memos.pop(oldest)
+            held -= evicted.weight
+
+
+#: Cells the last pass REFUSED to keep because their charge was above the whole ceiling,
+#: with that charge. The eager worker reads this (:func:`slot_fold_over_ceiling`) and does
+#: not advance such a cell on a wake: a pass it cannot store is a cold fold of every unit
+#: the slot ran under, paid for a value nobody kept, once per wake. The read path is not
+#: affected -- it folds the cell when asked, which is the lazy behaviour -- and a pass that
+#: CAN store the cell (a raised ceiling, a state that shrank) clears the entry.
+#:
+#: BOUNDED, least recently refused first, at :data:`OVERSIZE_SLOT_CELL_LIMIT`. An entry
+#: evicted here costs one wasted fold: the next wake for that cell tries it, is refused
+#: again, and records it again.
+_oversize_slot_cells: "OrderedDict[tuple[str, str, str], int]" = OrderedDict()
+
+#: Most refused cells remembered at once. A refused cell is one at a fold's caps, so even a
+#: large fleet holds few; past this the oldest is forgotten and costs one retry.
+OVERSIZE_SLOT_CELL_LIMIT: Final[int] = 256
+
+
+def slot_fold_over_ceiling(slot: str, name: str) -> bool:
+    """Whether *slot*'s *name* cell was last refused as too big for the CURRENT ceiling.
+
+    Compared against the ceiling now, not the one in force when the cell was refused, so
+    an operator raising ``KIROCREW_SLOT_FOLD_CACHE_BYTES`` lets the next wake advance it.
+    """
+    key = (str(data_home()), slot, name)
+    with _slot_memo_guard:
+        weight = _oversize_slot_cells.get(key)
+    return weight is not None and weight > slot_fold_cache_bytes()
+
+
+def _minted_revision() -> int:
+    """One fresh revision, taking the guard. For a cell about to be built."""
+    with _slot_memo_guard:
+        return _next_slot_revision()
 
 
 def _continuable(marks: "tuple[_UnitMark, ...]", held: "tuple[_UnitMark, ...]") -> bool:
@@ -4176,6 +4511,26 @@ def fold_slot_warm(name: str, unit_ids: Sequence[str], *, slot: str) -> Checkpoi
     is a WRONG answer, so every condition :func:`_continuable` does not admit refolds
     from empty rather than carrying state that describes other bytes.
     """
+    return fold_slot_warm_revised(name, unit_ids, slot=slot)[0]
+
+
+def fold_slot_warm_revised(
+    name: str, unit_ids: Sequence[str], *, slot: str
+) -> "tuple[Checkpoint, int]":
+    """:func:`fold_slot_warm`, and the REVISION of the cell it answered from.
+
+    Two returns rather than a second lookup, because the pairing has to be atomic. A
+    caller that read the checkpoint and then asked the memo table for its revision could
+    be handed a number minted by a LATER pass -- and a frame carrying a newer revision
+    beside an older value makes the client discard the newer value when it arrives, which
+    is the one failure the revision exists to prevent. So the pass that folded reports
+    both, inside its own lock.
+
+    :func:`fold_slot_warm` stays the one-value call every existing caller makes: a
+    savepoint, a writer continuing a checkpoint and a test have no use for a revision,
+    and giving them a tuple to unpack would spread a push's contract over callers that
+    do not push.
+    """
     require_name(name)
     key = (str(data_home()), slot, name)
     # The whole pass, under this key's own lock. Everything below reads or advances one
@@ -4191,7 +4546,7 @@ def fold_slot_warm(name: str, unit_ids: Sequence[str], *, slot: str) -> Checkpoi
 
 def _fold_slot_warm_locked(
     name: str, key: "tuple[str, str, str]", unit_ids: Sequence[str], *, slot: str
-) -> Checkpoint:
+) -> "tuple[Checkpoint, int]":
     """:func:`fold_slot_warm`'s body, with this key's lock already held.
 
     Split out so the lock's extent is one ``with`` statement rather than an indentation
@@ -4204,6 +4559,9 @@ def _fold_slot_warm_locked(
     known = all(mark.origin is not None for mark in marks)
     if memo is not None and memo.units == units:
         if known and memo.marks == marks:
+            # NOTHING FOLDED, so the cell keeps the revision it was built with. Minting
+            # one here would move the number on every poll of an idle board, and a client
+            # would re-seed from a frame that carries the value it already holds.
             return _slot_checkpoint(name, memo)
         if (
             _continuable(marks, memo.marks)
@@ -4225,6 +4583,8 @@ def _fold_slot_warm_locked(
                 marks=_folded_marks(units, marks, tail, carried=memo.marks),
                 reached=tail.reached,
                 prefix=_vouched(units[-1], before),
+                revision=_minted_revision(),
+                weight=_cell_weight(name, memo.registry, memo.store),
             )
             _remember_slot_fold(key, grown)
             return _slot_checkpoint(name, grown)
@@ -4240,10 +4600,30 @@ def _fold_slot_warm_locked(
         marks=_folded_marks(units, marks, cold),
         reached=cold.reached,
         prefix=_vouched(units[-1], before) if units else None,
+        # A cold fold is where the three rollover cases land -- a new unit, a unit
+        # recreated under the same id, a rewritten prefix -- and every one of them can
+        # leave ``reached`` unmoved or lower. The mint is what makes the value after them
+        # orderable at all.
+        revision=_minted_revision(),
+        weight=_cell_weight(name, registry, slot),
     )
     if known:
         _remember_slot_fold(key, fresh)
     return _slot_checkpoint(name, fresh)
+
+
+def _cell_weight(name: str, registry: ProjectionRegistry, store: str) -> int:
+    """What the cell *registry* holds for *name* is charged, read off the live cell.
+
+    Counted from the state the kernel actually holds rather than from the checkpoint,
+    because the charge has to describe the object that stays resident -- and that is the
+    cell, which the checkpoint only borrows a reference to.
+    """
+    try:
+        state, _watermark = registry.cells(store)[name]
+    except Exception:  # pragma: no cover - a cell the registry did not build
+        return slot_fold_cell_bytes(name)
+    return slot_fold_cell_bytes(name, state)
 
 
 def _vouched(unit_id: str, before: "_PrefixSeen | None") -> "_PrefixSeen | None":
@@ -4295,8 +4675,8 @@ def _folded_marks(
     )
 
 
-def _slot_checkpoint(name: str, memo: _SlotMemo) -> Checkpoint:
-    """*memo*'s kernel cell as the checkpoint this module's callers carry.
+def _slot_checkpoint(name: str, memo: _SlotMemo) -> "tuple[Checkpoint, int]":
+    """*memo*'s kernel cell as the checkpoint this module's callers carry, and its revision.
 
     ``last_seq`` is the newest unit's OWN seq, not the kernel's ordinal, and that is
     the contract rather than an implementation detail: a writer advances this
@@ -4311,7 +4691,240 @@ def _slot_checkpoint(name: str, memo: _SlotMemo) -> Checkpoint:
     which copies before its first step.
     """
     state, _watermark = memo.registry.cells(memo.store)[name]
-    return Checkpoint(name=name, last_seq=max(memo.reached, 0), state=state)
+    return Checkpoint(name=name, last_seq=max(memo.reached, 0), state=state), memo.revision
+
+
+# --------------------------------------------------------------------------- #
+# A session's folds, kept warm
+# --------------------------------------------------------------------------- #
+#
+# The session-keyed half of eager folding. The eager folder (:mod:`.eager`) wakes on
+# every committed entry, and for the entry's own unit it calls :func:`fold_session_warm`,
+# which continues that unit's bundle from where the last call left it. The route that
+# serves the panel calls the same function, so a read after a wake is a memo lookup.
+#
+# THE SAME DISCIPLINE AS THE SLOT MEMO, in each of its three parts. A cell is continued
+# only from a bundle :func:`fold_session` itself accepts as ``since=`` (same file, same
+# origin, not ahead of the log), so the memo cannot hold a value a cold fold would not
+# reach. A revision is minted from the one process-wide counter the slot memo uses
+# (:func:`_minted_revision`), so it is monotonic per (session, fold) across a unit
+# recreated under the same id and across a resume from disk. And the table is bounded in
+# BYTES, least recently advanced first.
+#
+# THE SAVEPOINT IS STILL BROUGHT FORWARD. ``fold_session`` writes nothing on a read that
+# reused ``since=``, because it cannot vouch for the prefix that bundle came from. A memo
+# that always passed ``since=`` would therefore leave the disk savepoint where the first
+# fold put it for the life of the process, and a restart would replay the whole gap. So a
+# pass whose bundle has moved far enough past its savepoint to earn a write
+# (``checkpoint.write_is_earned``) folds from the DISK savepoint instead, which replays at
+# most that many entries and writes the savepoint back.
+
+#: Default ceiling on the bytes every warm SESSION cell may hold together. 64 MiB.
+#:
+#: Charged by each fold's SERIALIZED size, unlike the slot table, and that difference is
+#: affordable here for a reason the slot table does not have: a session fold's state is
+#: flat and capped near a megabyte (see the measured figures in
+#: ``docs/system-specs/modules/crew-log-projection.md``), and the fold already COPIES that
+#: state for every entry that moves it (``copy_state``). Weighing a CHANGED fold once per
+#: pass is the same order of work as one of those copies, so it buys an exact charge for no
+#: new cost class. A slot state can be 2.4 GiB, where the same step would cost more than
+#: the fold.
+DEFAULT_SESSION_FOLD_CACHE_BYTES: Final[int] = 64 * 1024 * 1024
+
+#: The variable an operator lowers the session ceiling with, in BYTES; same rules as
+#: :data:`SLOT_FOLD_CACHE_BYTES_ENV`.
+SESSION_FOLD_CACHE_BYTES_ENV: Final[str] = "KIROCREW_SESSION_FOLD_CACHE_BYTES"
+
+
+def session_fold_cache_bytes() -> int:
+    """The live ceiling on all warm session cells together, in bytes."""
+    raw = os.environ.get(SESSION_FOLD_CACHE_BYTES_ENV, "").strip()
+    if raw:
+        try:
+            value = int(raw)
+        except ValueError:
+            value = 0
+        if value > 0:
+            return value
+    return DEFAULT_SESSION_FOLD_CACHE_BYTES
+
+
+def session_fold_state_bytes(state: Mapping[str, Any]) -> int:
+    """What one session fold's *state* weighs: its UTF-8 JSON length.
+
+    The same measure every cell figure in this module is quoted in, so the ceiling and
+    the numbers beside it are in one unit. A state that will not serialize is charged
+    :data:`_UNMEASURED_ROW_BYTES` rather than raising: the pass storing it must not fail
+    over a charge.
+    """
+    try:
+        return len(json.dumps(state, ensure_ascii=False).encode("utf-8"))
+    except (TypeError, ValueError):  # pragma: no cover - every fold state is JSON
+        return _UNMEASURED_ROW_BYTES
+
+
+class _SessionMemo(NamedTuple):
+    """One session's warm bundle, its revision per fold, and what each fold weighs."""
+
+    bundle: SessionProjections
+    revisions: Mapping[str, int]
+    weights: Mapping[str, int]
+
+    @property
+    def weight(self) -> int:
+        return sum(self.weights.values())
+
+
+class WarmSession(NamedTuple):
+    """What :func:`fold_session_warm` answers.
+
+    ``changed`` names the folds whose revision this pass MINTED, in registry order --
+    the ones whose value differs from the last one this process handed out. It is what
+    the eager folder publishes, and why an entry that moved only ``status`` costs one
+    event rather than seven.
+    """
+
+    bundle: SessionProjections
+    revisions: Mapping[str, int]
+    changed: tuple[str, ...]
+
+    def projection(self, name: str) -> Projection:
+        """One fold of the bundle, rendered, carrying its revision."""
+        return projection_of(
+            self.bundle.checkpoints[require_name(name)], revision=self.revisions.get(name, 0)
+        )
+
+
+_session_memos: "dict[tuple[str, str], _SessionMemo]" = {}
+_session_memo_guard = threading.Lock()
+
+#: The fold-lock family a session memo is serialized under. A NUL cannot appear in a
+#: registered fold name, so a session key can never share a lock with a slot key.
+_SESSION_LOCK_TAG: Final[str] = "\0session"
+
+
+def fold_session_warm(session_id: str) -> WarmSession:
+    """Every eager SESSION fold for *session_id*, continued from this process's memo.
+
+    One call folds them all, because they share one pass over one file -- the property
+    :func:`fold_session` exists for -- and the route that serves the panel needs them
+    together from the same moment.
+
+    Serialized per session under the fold-lock table the slot memo uses, so the eager
+    worker and a route cannot interleave a read of the memo with another pass's store.
+    """
+    home = str(data_home())
+    key = (home, session_id)
+    lock_key = (home, session_id, _SESSION_LOCK_TAG)
+    entry = _acquire_fold_lock(lock_key)
+    try:
+        with entry.lock:
+            return _fold_session_warm_locked(session_id, key, EAGER_SESSION_FOLD_NAMES)
+    finally:
+        _release_fold_lock(lock_key, entry)
+
+
+def _fold_session_warm_locked(
+    session_id: str, key: "tuple[str, str]", names: "tuple[str, ...]"
+) -> WarmSession:
+    """:func:`fold_session_warm`'s body, with this session's lock already held."""
+    from kiro_crew.crew_log import checkpoint as savepoints
+
+    with _session_memo_guard:
+        held = _session_memos.get(key)
+    since = held.bundle if held is not None else None
+    if since is not None and savepoints.write_is_earned(since.last_seq, since.saved_seq):
+        # Far enough past the disk savepoint to owe it a write, and only a pass that
+        # folds the prefix itself may write one. See this section's header.
+        since = None
+    bundle = fold_session(session_id, names, since=since)
+    # A different file, or one whose identity could not be held still: nothing the memo
+    # vouched for describes it, so every non-empty fold is new.
+    rebuilt = held is None or bundle.origin is None or held.bundle.origin != bundle.origin
+    revisions: dict[str, int] = {}
+    weights: dict[str, int] = {}
+    changed: list[str] = []
+    for name in names:
+        checkpoint = bundle.checkpoints[name]
+        before = None if rebuilt or held is None else held.bundle.checkpoints.get(name)
+        previous = 0 if rebuilt or held is None else held.revisions.get(name, 0)
+        # IDENTITY FIRST, equality only when it fails. A fold the pass did not move hands
+        # back the very object it was given, which is the common case and costs nothing;
+        # a pass that resumed from disk hands back an equal object that is not the same
+        # one, and minting for it would push a value nothing changed.
+        same = before is not None and (
+            before.state is checkpoint.state or before.state == checkpoint.state
+        )
+        if same and previous > 0 and held is not None:
+            revisions[name] = previous
+            weights[name] = held.weights.get(name, 0)
+            continue
+        weights[name] = session_fold_state_bytes(checkpoint.state)
+        if checkpoint.last_seq <= 0:
+            # Nothing folded: an empty value is not worth an order, and 0 tells a
+            # consumer there is none.
+            revisions[name] = 0
+            continue
+        revisions[name] = _minted_revision()
+        changed.append(name)
+    memo = _SessionMemo(bundle=bundle, revisions=revisions, weights=weights)
+    if bundle.origin is not None:
+        _remember_session_fold(key, memo)
+    else:
+        # Served, never kept: an identity that could not be held still is one a later
+        # pass must not continue from.
+        with _session_memo_guard:
+            _session_memos.pop(key, None)
+    return WarmSession(bundle=bundle, revisions=revisions, changed=tuple(changed))
+
+
+def _remember_session_fold(key: "tuple[str, str]", memo: _SessionMemo) -> None:
+    """Store *memo*, evicting least recently advanced cells until the table fits.
+
+    The rules of :func:`_remember_slot_fold`, for the same reasons: a cell above the
+    whole ceiling is not stored (a cold fold costs time, never an answer), and insertion
+    order is advance order because a cell is never edited in place.
+    """
+    ceiling = session_fold_cache_bytes()
+    with _session_memo_guard:
+        _session_memos.pop(key, None)
+        if memo.weight > ceiling:
+            logger.debug(
+                "crew log session %s weighs %d bytes, above the %d-byte ceiling (%s), so "
+                "it is not kept warm",
+                key[1],
+                memo.weight,
+                ceiling,
+                SESSION_FOLD_CACHE_BYTES_ENV,
+            )
+            return
+        _session_memos[key] = memo
+        held = sum(cell.weight for cell in _session_memos.values())
+        while held > ceiling and len(_session_memos) > 1:
+            oldest, evicted = next(iter(_session_memos.items()))
+            _session_memos.pop(oldest)
+            held -= evicted.weight
+
+
+def forget_session_folds(session_id: str = "") -> None:
+    """Drop *session_id*'s warm cell in every home, or every cell when it is empty.
+
+    What a ``session/closed`` does once the closing entry has been folded and pushed:
+    the unit will not append again, its savepoint holds the state, and a warm cell would
+    be bytes held for a reader that already has the value.
+    """
+    with _session_memo_guard:
+        if not session_id:
+            _session_memos.clear()
+            return
+        for key in [key for key in _session_memos if key[1] == session_id]:
+            _session_memos.pop(key, None)
+
+
+def session_fold_memo_bytes() -> int:
+    """What every warm session cell held right now weighs, together."""
+    with _session_memo_guard:
+        return sum(cell.weight for cell in _session_memos.values())
 
 
 def slot_of_session(session_id: str) -> str:
@@ -5345,11 +5958,130 @@ def _subagents_copy(state: dict[str, Any]) -> dict[str, Any]:
     return grown
 
 
+# --------------------------------------------------------------------------- #
+# What each slot fold RETAINS, counted in rows
+# --------------------------------------------------------------------------- #
+#
+# One counter per slot-keyed fold, for the warm memo's byte budget
+# (:func:`slot_fold_cell_bytes`). Each counts every container its fold keeps, and the
+# NESTED ones are the whole reason these exist: a per-cell figure measured at the caps
+# would miss them and would not be an upper bound.
+#
+# Each is O(the fold's own item cap) and allocates nothing.
+
+
+def _rows_in(value: Any) -> int:
+    """How many rows *value* holds, for a list or a dict; 0 for anything else.
+
+    Tolerant on purpose. These run over a state that may have come off disk from an
+    older build, and a charge that raised would take down the read that was storing the
+    cell -- where answering 0 only under-counts a container the fold does not use.
+    """
+    return len(value) if isinstance(value, (list, dict)) else 0
+
+
+def _ledger_rows(state: Mapping[str, Any]) -> int:
+    """``ledger``: flat. Rejected approaches, events, artifact pointers."""
+    return (
+        _rows_in(state.get("tried"))
+        + _rows_in(state.get("events"))
+        + _rows_in(state.get("artifacts"))
+    )
+
+
+def _radar_rows(state: Mapping[str, Any]) -> int:
+    """``radar``: the widest, and the one with TWO nested containers.
+
+    Each item keeps its own ``tried`` list (:data:`RADAR_TRIED_LIMIT`) and ``phase_lines``
+    holds one list per item (:data:`RADAR_PHASE_LINE_LIMIT`), so the cap-state is
+    500 x 100 plus 500 x 200 rows -- about 156,500 in total, where the items and skips
+    alone are 5,500. Counting only the top level would under-charge a full cell by 28x.
+    """
+    items = state.get("items")
+    rows = _rows_in(items)
+    if isinstance(items, dict):
+        for item in items.values():
+            if isinstance(item, Mapping):
+                rows += _rows_in(item.get("tried"))
+    phase_lines = state.get("phase_lines")
+    if isinstance(phase_lines, dict):
+        for lines in phase_lines.values():
+            rows += _rows_in(lines)
+    return (
+        rows
+        + _rows_in(state.get("skips"))
+        + _rows_in(state.get("events"))
+        + _rows_in(state.get("last_update"))
+    )
+
+
+def _work_rows(state: Mapping[str, Any]) -> int:
+    """``work``: each item keeps its own event tail (:data:`WORK_EVENT_LIMIT`).
+
+    Only the CLAMPED part. ``acceptance``, ``artifacts`` and the parked entries are kept
+    whole, so a row cost cannot bound them; :func:`_work_opaque` charges those.
+    """
+    items = state.get("items")
+    rows = _rows_in(items)
+    if isinstance(items, dict):
+        for item in items.values():
+            if isinstance(item, Mapping):
+                rows += _rows_in(item.get("events"))
+    return rows + _rows_in(state.get("parked")) + _rows_in(state.get("order"))
+
+
+def _work_opaque(state: Mapping[str, Any]) -> int:
+    """``work``: the values it keeps whole, each bounded only by the entry that set it.
+
+    An item's ``acceptance`` is the one field the store does not cap, and its
+    ``artifacts`` map keeps every value as given; a report or an ``accept`` replaces each
+    WHOLE, so each is at most one entry. A parked entry is a whole entry's data. An empty
+    container is not counted: it holds nothing the header row does not already cover.
+    """
+    count = 0
+    items = state.get("items")
+    if isinstance(items, dict):
+        for item in items.values():
+            if isinstance(item, Mapping):
+                count += bool(item.get("acceptance")) + bool(item.get("artifacts"))
+    parked = state.get("parked")
+    if isinstance(parked, dict):
+        for held in parked.values():
+            count += _rows_in(held)
+    return count
+
+
+def _panel_rows(state: Mapping[str, Any]) -> int:
+    """``panel``: each owner keeps one whole published document and its history tail.
+
+    The document is bounded by :data:`~kiro_crew.crew_log.schema.MAX_ENTRY_BYTES` rather
+    than by a fold cap, and it is what makes an OWNER the widest row this fold has -- so
+    an owner counts as one row and is charged that width.
+    """
+    owners = state.get("owners")
+    rows = _rows_in(owners)
+    if isinstance(owners, dict):
+        for owner in owners.values():
+            if isinstance(owner, Mapping):
+                rows += _rows_in(owner.get("history"))
+    return rows
+
+
 _FOLDS: Final[dict[str, _Fold]] = {
-    # ``affects=None``: every entry moves these two. ``status`` counts entries and
-    # keeps the newest time, and ``class`` records the seq it saw so a gap in the
-    # history reads as damage.
-    "status": _Fold("status", _status_start, _status_step, _status_render, copy_state=_flat_copy),
+    # ``affects`` is SPELLED OUT for both of these even though it is every type this
+    # module knows, because a fold that genuinely consumes the whole vocabulary should
+    # say so rather than leave a reader to read ``None`` as either "all of them" or "not
+    # decided yet". ``status`` counts entries and keeps the newest time; ``class``
+    # records the seq it saw so a gap in the history reads as damage. The wide set is
+    # also why EVERY committed entry wakes the eager folder (``eager.note_commit``).
+    "status": _Fold(
+        "status",
+        _status_start,
+        _status_step,
+        _status_render,
+        affects=KNOWN_TYPES,
+        copy_state=_flat_copy,
+    ),
     "usage": _Fold(
         "usage",
         _usage_start,
@@ -5382,11 +6114,8 @@ _FOLDS: Final[dict[str, _Fold]] = {
         # carries neither the new field nor the turns that map had already evicted.
         state_version=_FOLD_STATE_VERSION_BASE + 9,
     ),
-    # LAZY on purpose, and the one fold where that deserves saying. It is the fold a
-    # reader would guess wants pushing, because it is the one that looks like a live
-    # feed -- but its value is a 200-entry window (``TIMELINE_LIMIT``) that the
-    # dashboard does not read, and it is session-keyed, so folding it eagerly would
-    # advance state nothing asks for.
+    # The panel's feed section reads this one, so it is pushed like the rest; its value
+    # is bounded by ``TIMELINE_LIMIT`` whatever the session's length.
     "timeline": _Fold(
         "timeline",
         _timeline_start,
@@ -5415,10 +6144,6 @@ _FOLDS: Final[dict[str, _Fold]] = {
         affects=APPROVAL_TYPES,
         copy_state=_approvals_copy,
     ),
-    # LAZY, and the reason is not this fold's own: eager folding continues the warm SLOT
-    # memo, and this fold is keyed by one SESSION. See the import-time rule below
-    # (``EAGER_FOLD_NAMES <= SLOT_PROJECTION_NAMES``). A reader asks for this one when it
-    # draws the panel, which is a read per turn rather than a read on a timer.
     "subagents": _Fold(
         "subagents",
         _subagents_start,
@@ -5435,19 +6160,33 @@ _FOLDS: Final[dict[str, _Fold]] = {
         # :data:`_FOLD_STATE_VERSION_BASE`.
         state_version=_FOLD_STATE_VERSION_BASE + 2,
     ),
-    "class": _Fold("class", _class_start, _class_step, _class_render, copy_state=_flat_copy),
+    "class": _Fold(
+        "class",
+        _class_start,
+        _class_step,
+        _class_render,
+        affects=KNOWN_TYPES,
+        copy_state=_flat_copy,
+    ),
     # The SLOT-keyed folds each answer to exactly ONE entry type -- their ``step``
     # returns on its first line for anything else -- so ``affects`` names that type and
     # the kernel skips both the copy and the step for every other entry. A slot's log
     # is mostly message bodies and tool rows, so that is nearly all of it. They declare
     # no ``copy_state`` and fall back to the deep copy, which every fold state here is
     # bounded by construction for.
+    #
+    # ALL FOUR ARE EAGER, which is the default and so is written nowhere below. Each is
+    # read by a loop that wakes on a timer and each wakes the worker for one entry type
+    # in a log that is otherwise message bodies, so the read it serves is a memo lookup
+    # rather than a walk of every unit the slot ran under. What their four warm cells
+    # cost resident is :data:`SLOT_FOLD_CACHE_BYTES`' problem, not this table's.
     "ledger": _Fold(
         "ledger",
         _ledger_start,
         _ledger_step,
         _ledger_render,
         affects=frozenset({LEDGER_ENTRY_TYPE}),
+        count_rows=_ledger_rows,
     ),
     "radar": _Fold(
         "radar",
@@ -5455,11 +6194,8 @@ _FOLDS: Final[dict[str, _Fold]] = {
         _radar_step,
         _radar_render,
         affects=frozenset({RADAR_ENTRY_TYPE}),
+        count_rows=_radar_rows,
     ),
-    # EAGER. These two are the folds a dashboard reads on a timer, and each answers to
-    # exactly one entry type -- so the eager worker wakes for one type in a log that is
-    # otherwise message bodies, and the read it serves is a memo lookup rather than a
-    # walk of every unit the slot ran under.
     "work": _Fold(
         "work",
         _work_start,
@@ -5475,7 +6211,8 @@ _FOLDS: Final[dict[str, _Fold]] = {
         cast("Callable[[dict[str, Any]], dict[str, Any]]", _work_render),
         bind_slot=_work_bind_slot,
         affects=frozenset({WORK_ENTRY_TYPE}),
-        mode="eager",
+        count_rows=_work_rows,
+        count_opaque=_work_opaque,
     ),
     PANEL_FOLD_NAME: _Fold(
         PANEL_FOLD_NAME,
@@ -5483,7 +6220,7 @@ _FOLDS: Final[dict[str, _Fold]] = {
         _panel_step,
         _panel_render,
         affects=frozenset({PANEL_ENTRY_TYPE}),
-        mode="eager",
+        count_rows=_panel_rows,
     ),
 }
 
@@ -5492,18 +6229,54 @@ if tuple(_FOLDS) != FOLD_NAMES:  # pragma: no cover - import-time consistency
         "the fold registry and FOLD_NAMES disagree: " f"{tuple(_FOLDS)} against {FOLD_NAMES}"
     )
 
-#: The eager folds, resolved once at import. Every one is SLOT-keyed: eager folding
-#: continues the warm slot memo (:func:`fold_slot_warm`), which is the one warm path
-#: this module has, and a session-keyed fold's warm state is a bundle its own caller
-#: holds rather than anything this module could advance on its behalf.
+#: The eager folds, resolved once at import. Eager is the default, so this is every fold
+#: that did not write down why it is not.
 EAGER_FOLD_NAMES: Final[tuple[str, ...]] = tuple(
     name for name, fold in _FOLDS.items() if fold.mode == "eager"
 )
 
-if not set(EAGER_FOLD_NAMES) <= set(SLOT_PROJECTION_NAMES):  # pragma: no cover - import-time
+#: The eager folds split by WHAT THEY ARE KEYED BY, because each half has its own warm
+#: path and the eager folder drives the two differently. A SLOT fold joins every unit the
+#: slot ran under and is continued in the slot memo (:func:`fold_slot_warm_revised`); a
+#: SESSION fold reads one unit's file and is continued in the session memo
+#: (:func:`fold_session_warm`). Both mint their revision from the same counter, so the
+#: consumer rule "keep the highest revision per (key, fold)" is one rule.
+EAGER_SLOT_FOLD_NAMES: Final[tuple[str, ...]] = tuple(
+    name for name in EAGER_FOLD_NAMES if name in SLOT_PROJECTION_NAMES
+)
+EAGER_SESSION_FOLD_NAMES: Final[tuple[str, ...]] = tuple(
+    name for name in EAGER_FOLD_NAMES if name in SESSION_FOLD_NAMES
+)
+
+#: The exceptions, each beside the one line that earns it. A caller auditing the posture
+#: reads this rather than inverting :data:`EAGER_FOLD_NAMES`, because the absence of a
+#: name says nothing about why. EMPTY today: every fold has a reader that wants it
+#: current, and none has a cost that outweighs that.
+LAZY_FOLD_REASONS: Final[dict[str, str]] = {
+    name: fold.lazy_reason for name, fold in _FOLDS.items() if fold.mode == "lazy"
+}
+
+#: Every eager fold has a warm path to be advanced along. A fold in neither family would
+#: be woken for and then have nothing to continue, which is a silent lazy fold.
+_ORPHAN_EAGER: Final[tuple[str, ...]] = tuple(
+    name
+    for name in EAGER_FOLD_NAMES
+    if name not in EAGER_SLOT_FOLD_NAMES and name not in EAGER_SESSION_FOLD_NAMES
+)
+if _ORPHAN_EAGER:  # pragma: no cover - import-time
+    raise RuntimeError(f"an eager fold has no warm path to advance: {list(_ORPHAN_EAGER)}")
+
+#: A slot-keyed fold is the only kind that gets a warm cell, so it is the only kind the
+#: byte budget charges -- and a charge that cannot see the state's row count is a
+#: CONSTANT, which is what this change exists to stop being. Checked at import because a
+#: fold added without a counter would be silently under-charged forever.
+_UNCOUNTED_SLOT_FOLDS: Final[tuple[str, ...]] = tuple(
+    name for name in SLOT_PROJECTION_NAMES if _FOLDS[name].count_rows is None
+)
+if _UNCOUNTED_SLOT_FOLDS:  # pragma: no cover - import-time
     raise RuntimeError(
-        "an eager fold must be slot-keyed, because eager folding advances the slot "
-        f"memo: {sorted(set(EAGER_FOLD_NAMES) - set(SLOT_PROJECTION_NAMES))}"
+        "a slot-keyed fold must declare count_rows, or the warm memo's byte budget "
+        f"charges it a constant while its state grows: {list(_UNCOUNTED_SLOT_FOLDS)}"
     )
 
 

@@ -1,5 +1,12 @@
 """Eager folding: an EAGER fold is advanced when its entry lands, not when it is read.
 
+TWO FAMILIES, ONE WORKER. A SLOT-keyed fold joins every unit a slot ran under; a
+SESSION-keyed fold reads one unit's own file. Each has its own warm memo in
+:mod:`~kiro_crew.crew_log.projection` and this worker drives both from the same wake:
+the wake names the unit, a slot fold is advanced for the slot that unit's entry belongs
+to, and the unit's session folds are advanced for the unit itself
+(:func:`~kiro_crew.crew_log.projection.fold_session_warm`).
+
 WHY THIS EXISTS. A slot-keyed fold is answered by walking every line of every unit the
 slot ran under, because the fold interprets one entry type and the file is mostly
 message bodies (:func:`~kiro_crew.crew_log.projection.fold_slot_warm` says this at
@@ -18,33 +25,47 @@ latency. Dropping is safe because the fold is not the record -- the log is -- so
 dropped wake leaves the memo behind the file and the next READ carries it forward,
 which is exactly the lazy behaviour that was there before.
 
-WHAT THE WORKER RUNS. :func:`~kiro_crew.crew_log.projection.read_slot_projection`, the
-same call the dashboard route makes. Not a second folding path: the rules a slot fold
+WHAT THE WORKER RUNS. :func:`~kiro_crew.crew_log.projection.read_slot_projection` for a
+slot fold and :func:`~kiro_crew.crew_log.projection.fold_session_warm` for a session's,
+the same calls the dashboard routes make. Not a second folding path: the rules a slot fold
 has to enforce about continuing a cell -- a changed unit list, a recreated unit, an
 earlier unit that grew, a rewritten prefix -- are stated once over there, and a rule
 missing from a copy here would be a wrong record rather than a slow one. It also
 resolves the unit list through the fold's OWNER, which is what makes the value the
 eager path stores equal to the one a reader would have folded.
 
-WHAT IT DOES NOT DO: push THE FOLD. An advanced fold is not broadcast, and that is a
-decision rather than an omission. A slot fold's ``last_seq`` is the NEWEST unit's own seq
-by contract, and conductor units are folded before worker units -- so a conductor-side
-change on a board with any worker bound leaves that number unmoved, and any client rule
-that orders frames by it would discard the changed value. Pushing correctly needs a
-monotonic per-(slot, fold) revision that reads and frames share, which is a new contract
-in the read path; and there is no consumer yet to need it. So the value is folded here and
-READ from here, and the revision question belongs to the change that adds the reader.
+WHAT IT PUBLISHES, AND WHAT MADE THAT POSSIBLE. An advanced fold is published on
+:mod:`kiro_crew.crew_log.bus` as a ``FoldAdvanced(scope, key, fold, revision, value,
+seq)``, one per coalesced batch per fold it moved. Through a bus and not to a named consumer, because this value has
+several consumers coming and this module must know about none of them; the dashboard's WS
+exporter subscribes where the dashboard state exists.
 
-WHAT IT DOES PUSH is a DEADLINE, and only one: a conductor's armed work-ledger loop is
-pulled forward when a worker bound to it commits a ``work/recorded`` entry
-(:func:`_push_conductor_wakes`). That carries no value and no frame, so none of the
-revision contract above applies to it -- the conductor's own gate then reads the ledger
-itself, under its own identity, exactly as on a scheduled tick. It rides this drain rather
-than the append because the lookup is a file read and the fire crosses onto the event
-loop, neither of which may sit on a worker's own ``work_report``.
+IT ALSO PUSHES A DEADLINE: a conductor's armed work-ledger loop is pulled forward when a
+worker bound to it commits a ``work/recorded`` entry (:func:`_push_conductor_wakes`). That
+carries no value and no frame, so the revision contract below does not apply to it -- the
+conductor's own gate then reads the ledger itself, under its own identity, exactly as on a
+scheduled tick. It rides this drain rather than the append because the lookup is a file
+read and the fire crosses onto the event loop, neither of which may sit on a worker's own
+``work_report``.
 
-WHAT IT IS NOT. Durable. The memo lives in this process, so a restart folds cold; a
-savepoint for a SLOT fold would be a store of its own, keyed by slot rather than by
+The first version of this module deliberately published NOTHING, and the obstacle was real:
+a slot fold's ``last_seq`` is the NEWEST unit's own seq by contract, and conductor units are
+folded before worker units -- so a conductor-side change on a board with any worker bound
+leaves that number unmoved, and any client rule that ordered frames by it would discard the
+changed value. What was missing was a monotonic per-(slot, fold) revision that the read path
+and the event share. :func:`~kiro_crew.crew_log.projection.fold_slot_warm_revised` is that
+contract: the process that folds mints the number, it is never read off a file, and a cell
+carried forward unchanged keeps it -- so the consumer rule is "keep the highest revision per
+(slot, fold), discard anything lower" and an idle board produces no event at all.
+
+A DROPPED PUBLISH IS STILL SAFE, which is the property the dropped WAKE already had and the
+one this must not spend. A subscriber that raises, a full socket, a client that reconnects:
+each leaves the memo ahead of the consumer, and the next lazy read serves the current value.
+The publish is currency, never the record.
+
+WHAT IT IS NOT. Durable for a slot. A session fold has its savepoint beside the unit's
+file and the warm memo brings it forward; a slot memo lives in this process, so a
+restart folds a slot cold. A savepoint for a SLOT fold would be a store of its own, keyed by slot rather than by
 unit, with its own admission rules about the unit vector it was folded over. That is
 not this module's, and :func:`~kiro_crew.session_ledger._fold_checkpoint` already says
 so about the same cell.
@@ -52,10 +73,13 @@ so about the same cell.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import queue
 import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any, Final, NamedTuple
 
 from kiro_crew.crew_log.errors import CrewLogError
@@ -72,17 +96,19 @@ QUEUE_LIMIT: Final[int] = 1024
 #: Entry type that ends a unit, and with it the reason to hold its slot warm.
 _CLOSED_TYPE: Final[str] = "session/closed"
 
-#: Every entry type worth a wake: the types the eager folds declare, plus the closer.
-#:
-#: LITERALS, because :func:`note_commit` sees every append and the bulk of a log is types
-#: no eager fold names -- so the filter that rejects them has to be one frozenset lookup
-#: and must not reach the registry, which means importing ``projection`` on the append
-#: path. The price is that the types are written in two places, and being left out of this
-#: one would look exactly like a fold working lazily. That is what
-#: ``test_the_append_paths_wake_filter_covers_every_eager_folds_types`` exists for: it
-#: derives the set from ``EAGER_FOLD_NAMES`` and fails on any divergence, so the registry
-#: stays the authority and this stays cheap.
-_WAKE_TYPES: Final[frozenset[str]] = frozenset({_CLOSED_TYPE, "work/recorded", "panel/published"})
+#: The entry types a SLOT fold answers to, plus the closer. Not a filter on the append
+#: path -- every committed entry wakes, see :func:`note_commit` -- but the set a test
+#: derives from ``EAGER_SLOT_FOLD_NAMES``, so a slot fold whose type is named nowhere a
+#: reader can find it fails CI rather than looking lazy.
+_WAKE_TYPES: Final[frozenset[str]] = frozenset(
+    {
+        _CLOSED_TYPE,
+        "work/recorded",
+        "panel/published",
+        "ledger/recorded",
+        "radar/recorded",
+    }
+)
 
 #: How long the worker waits for a wake before looping, so a stop is noticed.
 _POLL_SECONDS: Final[float] = 0.5
@@ -145,6 +171,21 @@ _queued = 0
 _settled = 0
 _progress = threading.Condition()
 
+#: Held by the worker across each batch, and by a removal across its unlinks.
+#:
+#: A fold READS unit files, and on Windows a file that any handle has open cannot be
+#: unlinked: a removal that ran mid-fold left the segment it was reading behind, a partial
+#: delete. The savepoint WRITE is already safe -- it is taken under the unit's lease, which a
+#: removal holds ``sole`` -- but a read takes no lease, so this is the one handle the
+#: removal could not see. See :func:`paused`.
+_fold_gate = threading.Lock()
+
+#: The longest a removal off the event loop waits for a batch in flight to finish.
+#: Generous next to a batch over a real board, short enough that a wedged worker
+#: cannot hold a delete. On the loop the wait is one attempt, since a sleep there stalls
+#: every session.
+_PAUSE_SECONDS: Final[float] = 5.0
+
 
 def _log_exc(level: int, message: str, *args: Any) -> None:
     """Log *message* with the exception RENDERED TO TEXT, never as a traceback object.
@@ -204,13 +245,16 @@ def note_commit(unit_id: str, entry_type: str, seq: int, board: str = "") -> Non
     caller that has just committed an entry has already done the thing that mattered,
     and a failure to tell a cache about it must not reach that caller.
 
-    An entry no eager fold names is dropped HERE rather than handed over, because the
-    types that matter are a handful and the entries that do not are the bulk of a log.
+    EVERY TYPE WAKES. Two session folds consume the whole vocabulary -- ``status`` counts
+    every entry and keeps the newest time, ``class`` records each seq so a gap reads as
+    damage -- so a type filter here would pass everything and cost a lookup to say so.
+    The worker sorts a wake into the folds it moves, and coalescing makes a turn's burst
+    of entries one fold per (unit, fold) rather than one per entry.
     """
     if not unit_id or not entry_type:
         return
     try:
-        if entry_type not in _WAKE_TYPES or _retired.is_set():
+        if _retired.is_set():
             # Retired means a caller has torn its crew log down and the home it folded
             # against is going away; a wake arriving now is a leak, not a request
             # (:func:`retire_for_tests`).
@@ -324,8 +368,8 @@ def _run() -> None:
     Everything available is taken before anything is folded, and that is the point
     rather than a nicety: a turn writes several entries, and folding once per wake would
     pay the warm continuation once per entry to reach the same value the last one
-    reaches. So a batch is COALESCED -- the newest seq per unit wins -- and each affected
-    (slot, fold) is folded once.
+    reaches. So a batch is COALESCED -- the newest seq per (unit, board, type) wins -- and
+    each affected (slot, fold) is folded once.
     """
     while not _stopping.is_set():
         first = _await_wake()
@@ -333,23 +377,55 @@ def _run() -> None:
             continue
         batch, closers, taken = _coalesce(first)
         try:
-            try:
-                _fold_batch(batch, closers)
-            except Exception:  # pragma: no cover - the loop outlives one bad batch
-                _log_exc(logging.WARNING, "crew log eager fold batch failed")
-            # The SECOND consumer, and the one the module header said was missing: an
-            # advanced fold is not pushed, but a conductor's armed gate wants to know
-            # its worker wrote. Its own ``try`` rather than a shared one, because the
-            # two consumers are independent -- a fold that raised must not cost the
-            # conductor its wake, and a wake that raised must not look like a fold
-            # failure. Both sit inside the ``finally`` that settles, so neither can
-            # strand :func:`drain`.
-            try:
-                _push_conductor_wakes(batch)
-            except Exception:  # pragma: no cover - the loop outlives one bad batch
-                _log_exc(logging.DEBUG, "crew log conductor wake batch failed")
+            # Both consumers run under the gate: resolving a writer's slot reads its unit
+            # header, so a removal held by :func:`paused` must wait for the wake lookups as
+            # well as the fold. The fire itself never waits on the loop, so the gate is
+            # never held across a loop turn.
+            with _fold_gate:
+                try:
+                    _fold_batch(batch, closers)
+                except Exception:  # pragma: no cover - the loop outlives one bad batch
+                    _log_exc(logging.WARNING, "crew log eager fold batch failed")
+                # The second consumer: a conductor's armed gate wants to know its worker
+                # wrote. Its own ``try`` rather than a shared one, because the two
+                # consumers are independent -- a fold that raised must not cost the
+                # conductor its wake, and a wake that raised must not look like a fold
+                # failure. Both sit inside the ``finally`` that settles, so neither can
+                # strand :func:`drain`.
+                try:
+                    _push_conductor_wakes(batch)
+                except Exception:  # pragma: no cover - the loop outlives one bad batch
+                    _log_exc(logging.DEBUG, "crew log conductor wake batch failed")
         finally:
             _settle(taken)
+
+
+@contextmanager
+def paused() -> Iterator[bool]:
+    """Hold the worker BETWEEN batches for the body; yields whether it is held.
+
+    For a caller about to unlink unit files: inside the body no fold has a unit file open,
+    so the unlink cannot be refused for a handle this process holds. A wake that lands
+    meanwhile waits in the queue and folds after, and a fold of a unit that is gone by
+    then reads it as absent.
+
+    Bounded, never a requirement: when a batch does not finish within
+    :data:`_PAUSE_SECONDS` (or at once, on the event loop) the body runs anyway with
+    ``False``, which is the behaviour before this existed -- the removal reports what it
+    could not unlink and a later pass collects it.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        timeout = _PAUSE_SECONDS
+    else:
+        timeout = 0.0
+    held = _fold_gate.acquire(timeout=timeout) if timeout > 0 else _fold_gate.acquire(False)
+    try:
+        yield held
+    finally:
+        if held:
+            _fold_gate.release()
 
 
 def _await_wake() -> "_Wake | None":
@@ -371,8 +447,14 @@ def _await_wake() -> "_Wake | None":
 
 def _coalesce(
     first: _Wake,
-) -> "tuple[dict[tuple[str, str], _Wake], dict[str, int], int]":
-    """*first* plus everything queued: the newest wake per (unit, board), the closers, the count.
+) -> "tuple[dict[tuple[str, str, str], _Wake], dict[str, int], int]":
+    """*first* plus everything queued: the newest wake per (unit, board, type), the closers, the count.
+
+    Keyed by TYPE too, because the type is what decides which slot folds a wake moves
+    (``touched_by_type``). One wake per (unit, board) would let a ``panel/published``
+    after a ``ledger/recorded`` hide the ledger's advance, and an eager fold left stale
+    by the coalescer is a lazy one. The key stays bounded: a unit writes a fixed
+    vocabulary of types, so a batch holds at most that many wakes per (unit, board).
 
     The CLOSERS ride separately because a closer and a later entry mean opposite things
     about one memo, and an append after a closer is accepted, so the batch has to carry
@@ -385,16 +467,16 @@ def _coalesce(
     into one entry: settling by the batch's length would leave :func:`drain` waiting
     forever for the ones it merged away.
     """
-    # Keyed by (unit, board) rather than by unit: one unit can append to more than one
+    # Keyed by (unit, board, type) rather than by unit: one unit can append to more than one
     # board -- a worker bound to two conductors reports to both -- and collapsing those
     # onto the unit would fold one board and silently drop the other.
-    batch: dict[tuple[str, str], _Wake] = {}
+    batch: dict[tuple[str, str, str], _Wake] = {}
     closers: dict[str, int] = {}
     taken = 1
     pending = _queue
     wake: "_Wake | None" = first
     while wake is not None:
-        slot_key = (wake.unit_id, wake.board)
+        slot_key = (wake.unit_id, wake.board, wake.entry_type)
         held = batch.get(slot_key)
         if held is None or wake.seq >= held.seq:
             batch[slot_key] = wake
@@ -416,16 +498,23 @@ def _coalesce(
 
 
 def _fold_batch(
-    batch: "dict[tuple[str, str], _Wake]", closers: "dict[str, int] | None" = None
+    batch: "dict[tuple[str, str, str], _Wake]", closers: "dict[str, int] | None" = None
 ) -> None:
-    """Apply one batch: drop the slots a closer named, then advance the folds above it.
+    """Apply one batch: slot folds first, then each woken unit's session folds.
 
-    DROP FIRST, ADVANCE AFTER, which is commit order and not an arbitrary choice of one
-    over the other. A closer says the unit is finished and its memo holds nothing; an entry
-    committed after it says that memo has a newer value. Both are true of the same slot,
-    and the file's order settles which wins: the drop applies to what the closer saw, the
-    advance to what came after. Advancing first would leave the drop erasing a fold nothing
-    then refolds, which costs the next dashboard read the whole history.
+    SLOT FOLDS: DROP FIRST, ADVANCE AFTER, which is commit order and not an arbitrary
+    choice of one over the other. A closer says the unit is finished and its memo holds
+    nothing; an entry committed after it says that memo has a newer value. Both are true
+    of the same slot, and the file's order settles which wins: the drop applies to what the
+    closer saw, the advance to what came after. Advancing first would leave the drop
+    erasing a fold nothing then refolds, which costs the next dashboard read the whole
+    history.
+
+    SESSION FOLDS: ADVANCE FIRST, DROP AFTER, the reverse and for the reverse reason. A
+    session fold READS the closer -- ``status`` reports the session closed, ``timeline``
+    shows it -- so the closing value is one a dashboard must be handed. The cell is
+    dropped only once that value is published, and only when no entry of that unit in
+    this batch came after the closer.
     """
     projection = _projection()
     closed = closers or {}
@@ -434,8 +523,19 @@ def _fold_batch(
     own_slots = {unit_id: _slot_of(unit_id) for unit_id in closed}
     closed_slots = {slot for slot in own_slots.values() if slot}
     work: dict[tuple[str, str], int] = {}
+    # The newest seq woken per UNIT, across every board it wrote to: what decides whether
+    # a closer is the last word on that unit's session cell.
+    newest: dict[str, int] = {}
     for wake in batch.values():
+        newest[wake.unit_id] = max(newest.get(wake.unit_id, 0), wake.seq)
         if wake.entry_type == _CLOSED_TYPE:
+            continue
+        touches_slot = [
+            name
+            for name in projection.EAGER_SLOT_FOLD_NAMES
+            if projection._FOLDS[name].touched_by_type(wake.entry_type)
+        ]
+        if not touches_slot:
             continue
         # The entry's own board wins over the unit's header. A worker's report names the
         # conductor's board and belongs to that fold; the header would name the worker's.
@@ -447,10 +547,9 @@ def _fold_batch(
             continue
         if _outranked_by_a_closer(wake, slot, closed, own_slots):
             continue
-        for name in projection.EAGER_FOLD_NAMES:
-            if projection._FOLDS[name].touched_by_type(wake.entry_type):
-                key = (slot, name)
-                work[key] = max(work.get(key, 0), wake.seq)
+        for name in touches_slot:
+            key = (slot, name)
+            work[key] = max(work.get(key, 0), wake.seq)
     for slot in closed_slots:
         # The savepoint story for a slot fold is the memo, so dropping it costs the next
         # read one cold fold of a unit that has stopped growing -- and holds nothing for
@@ -458,13 +557,56 @@ def _fold_batch(
         #
         # NAMED, one fold at a time. A bare ``slot=`` matches every ``(home, slot, *)``
         # memo, and a ``session/closed`` is not always the end of a board: a slot reset,
-        # or one worker unit of a LIVE crew, would take that crew's lazy ``ledger`` and
-        # ``radar`` cells with it -- cells no wake ever warmed, whose next read then pays
-        # a cold fold nothing asked for. The closer drops what eager folding warmed.
-        for eager_name in projection.EAGER_FOLD_NAMES:
+        # or one worker unit of a LIVE crew, would take that crew's other cells with it.
+        for eager_name in projection.EAGER_SLOT_FOLD_NAMES:
             projection.forget_slot_folds(slot=slot, name=eager_name)
     for slot, name in work:
+        if projection.slot_fold_over_ceiling(slot, name):
+            # The last pass could not keep this cell -- its charge is above the whole
+            # ceiling (``radar`` at its caps is) -- so advancing it now would fold every
+            # unit the slot ran under and throw the result away. Left to the read path,
+            # which folds it when a reader asks.
+            continue
         _advance(slot, name)
+    # Every woken unit, once: its session folds share one pass over its one file, and
+    # ``status`` and ``class`` read every type, so any wake moves at least one of them.
+    for unit_id, seq in newest.items():
+        _advance_session(unit_id)
+        if closed.get(unit_id, 0) >= seq > 0:
+            projection.forget_session_folds(unit_id)
+
+
+def _advance_session(unit_id: str) -> None:
+    """Continue *unit_id*'s session folds, then publish each one that moved."""
+    projection = _projection()
+    try:
+        warm = projection.fold_session_warm(unit_id)
+    except CrewLogError as exc:
+        logger.debug("crew log eager session fold skipped for %s: %s", unit_id, exc)
+        return
+    except Exception:
+        _log_exc(logging.WARNING, "crew log eager session fold failed for %s", unit_id)
+        return
+    if not warm.changed:
+        return
+    # boot-path import gate: see this module's docstring and ``_projection``.
+    from kiro_crew.crew_log import bus
+
+    for name in warm.changed:
+        rendered = warm.projection(name)
+        if rendered.revision <= 0:  # pragma: no cover - ``changed`` only names minted ones
+            continue
+        bus.publish(
+            bus.FOLD_ADVANCED,
+            bus.FoldAdvanced(
+                scope=bus.SCOPE_SESSION,
+                key=unit_id,
+                fold=name,
+                revision=rendered.revision,
+                value=rendered.value,
+                seq=rendered.seq,
+            ),
+        )
 
 
 def _outranked_by_a_closer(
@@ -488,7 +630,7 @@ def _outranked_by_a_closer(
     return wake.seq <= closed.get(wake.unit_id, 0) and slot == own_slots.get(wake.unit_id)
 
 
-def _push_conductor_wakes(batch: "dict[tuple[str, str], _Wake]") -> None:
+def _push_conductor_wakes(batch: "dict[tuple[str, str, str], _Wake]") -> None:
     """Pull the conductor forward for every bound worker that reported in *batch*.
 
     ON THE WORKER THREAD, never on the writer's. That is the whole reason this lives here
@@ -539,15 +681,20 @@ def _push_conductor_wakes(batch: "dict[tuple[str, str], _Wake]") -> None:
 
 
 def _advance(slot: str, name: str) -> None:
-    """Fold *slot*'s *name* through the read path, so the memo a reader takes is current.
+    """Fold *slot*'s *name* through the read path, then publish what it folded.
 
-    The folded value is DISCARDED here, and that is the whole shape of this module: folding
-    STORES the value, storing it is the errand, and handing it anywhere would be a push --
-    which the module docstring says this does not do. A reader gets the value by reading.
+    The read path is what folds: it owns the rules about continuing a cell, and a copy of
+    them here would be a wrong record rather than a slow one. The folded value is then
+    PUBLISHED on :mod:`kiro_crew.crew_log.bus`, which is how a dashboard learns a board
+    moved without re-reading it -- and how the next consumer will, without this module
+    gaining a second name to call.
+
+    Still on THIS thread and not on the append path. The bus contract says a subscriber
+    hands real work to its own loop, exactly as the emitter's growth listener does.
     """
     projection = _projection()
     try:
-        projection.read_slot_projection(slot, name)
+        folded = projection.read_slot_projection(slot, name)
     except CrewLogError:
         # A refusal is about the record, not about this path: the read route raises the
         # same thing for the same slot, and inventing a value here would serve one the
@@ -556,6 +703,47 @@ def _advance(slot: str, name: str) -> None:
         return
     except Exception:
         _log_exc(logging.WARNING, "crew log eager fold failed for %s/%s", slot, name)
+        return
+    _publish_fold(slot, name, folded)
+
+
+def _publish_fold(slot: str, name: str, folded: Any) -> None:
+    """Publish one :class:`~kiro_crew.crew_log.bus.FoldAdvanced` for *slot*'s *name*.
+
+    Through the BUS rather than to a listener this module holds, and that is the whole
+    reason the bus exists: this value has more than one consumer coming (a socket exporter
+    now, a summary fold and a card trigger later) and this module must know about none of
+    them. The bus fans out synchronously on THIS thread -- the fold worker's, never the
+    append path's -- and swallows a subscriber's exception, so a consumer's bug costs a
+    frame and never a fold.
+
+    A revision of 0 is NOT published. It means the read path vouched for no revision, so a
+    consumer has nothing to order the event by -- and an event it cannot order is one it
+    must either trust blindly or drop, neither of which is worth sending.
+
+    The import is function-local for the same reason :func:`_projection` is: this module is
+    reachable from the gateway's boot path and must not pull the fold surface onto it.
+    """
+    revision = int(getattr(folded, "revision", 0) or 0)
+    if revision <= 0:
+        return
+    value = getattr(folded, "value", None)
+    if not isinstance(value, dict):  # pragma: no cover - the read path always renders one
+        return
+    # boot-path import gate: see this module's docstring and ``_projection``.
+    from kiro_crew.crew_log import bus
+
+    bus.publish(
+        bus.FOLD_ADVANCED,
+        bus.FoldAdvanced(
+            scope=bus.SCOPE_SLOT,
+            key=slot,
+            fold=name,
+            revision=revision,
+            value=value,
+            seq=int(getattr(folded, "seq", 0) or 0),
+        ),
+    )
 
 
 def _slot_of(unit_id: str) -> str:
@@ -575,9 +763,11 @@ def _slot_of(unit_id: str) -> str:
 def drain(timeout: float = 5.0) -> bool:
     """Wait until every wake queued so far has been FOLDED. ``True`` when it has.
 
-    A TEST SEAM, named as one: for a case that has just committed an entry and needs the
-    fold to have happened before it reads. Production never waits for this -- an eager
-    fold is currency, and a reader that arrives first is served by the lazy path. The wait
+    Two callers. A test that has just committed an entry and needs the fold to have
+    happened before it reads. And the shutdown barrier (``emit.drain_for_shutdown``),
+    which waits here so nothing is still folding into the data home once it returns. No
+    READ waits for this -- an eager fold is currency, and a reader that arrives first is
+    served by the lazy path. The wait
     is on the counters rather than on the queue being empty: an empty queue means the
     worker has TAKEN the last wake, which is not the same as having folded it, and a
     waiter that stopped there would read a value the fold had not reached yet.

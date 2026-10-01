@@ -48,6 +48,7 @@ from unittest.mock import AsyncMock
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 from dashboard_owner_helpers import NoConfiguredOwner
+from off_loop_helpers import off_loop
 
 from kiro_crew import mcp_core
 from kiro_crew.apps.builtins.issue_radar.backend import (
@@ -351,20 +352,22 @@ class _CrewRouteCase(unittest.IsolatedAsyncioTestCase):
         return session_id
 
     def work(self, crew_id: str, number: int, phase: str, **patch) -> dict:
-        return crew_store.commit_work_progress(
+        return off_loop(
+            crew_store.commit_work_progress,
             OWNER, REPO, crew_id, number, {"phase": phase, **patch}, "claim", "seeded",
             root=self.root, session_id=self._units[crew_id],
         )["item"]
 
     def progress(self, crew_id: str, number: int, kind: str = "ci", text: str = "progress", **patch) -> dict:
         """A write that carries no phase: progress on an existing item."""
-        return crew_store.commit_work_progress(
+        return off_loop(
+            crew_store.commit_work_progress,
             OWNER, REPO, crew_id, number, patch, kind, text,
             root=self.root, session_id=self._units[crew_id],
         )["item"]
 
     def ledger(self, crew_id: str = "") -> list[dict]:
-        return crew_store.read_events(OWNER, REPO, self.root, crew_id=crew_id)
+        return off_loop(crew_store.read_events, OWNER, REPO, self.root, crew_id=crew_id)
 
 
 # ── registration and the two gates ──────────────────────────────────────────
@@ -786,7 +789,7 @@ class TestAgentIdentityIsTheSession(_CrewRouteCase):
             internal_auth=True, session=self.agent(crew),
         )
         self.assertEqual(res.status, 200)
-        item = crew_store.read_work_item(OWNER, REPO, crew["id"], 7, self.root)
+        item = off_loop(crew_store.read_work_item, OWNER, REPO, crew["id"], 7, self.root)
         self.assertEqual(item["phase"], "claimed")
         self.assertEqual([e["text"] for e in self.ledger(crew["id"])], ["took #7"])
 
@@ -879,7 +882,7 @@ class TestACrewCanRecordAnEmptyQueue(_CrewRouteCase):
         )
         # Absent, not zero — a `0` would read as a real issue everywhere.
         self.assertNotIn("number", self.ledger(crew["id"])[0])
-        self.assertEqual(crew_store.list_work_items(OWNER, REPO, crew["id"], self.root), [])
+        self.assertEqual(off_loop(crew_store.list_work_items, OWNER, REPO, crew["id"], self.root), [])
 
     async def test_an_idle_crew_does_not_bury_its_own_work_log(self):
         """Repeated idle cycles must not run the ledger away.
@@ -1102,7 +1105,7 @@ class TestWorkItems(_CrewRouteCase):
         self.assertIsNone(item["pr_number"])
         self.assertEqual(item["next"], "")
         self.assertEqual(item["claim_comment_id"], 6, "set beats clear in one call")
-        stored = crew_store.read_work_item(OWNER, REPO, crew["id"], 7, self.root)
+        stored = off_loop(crew_store.read_work_item, OWNER, REPO, crew["id"], 7, self.root)
         self.assertIsNone(stored["pr_number"])
         self.assertEqual(stored["phase"], "awaiting-ci", "an unnamed field is untouched")
 
@@ -1116,7 +1119,7 @@ class TestWorkItems(_CrewRouteCase):
             )
             self.assertEqual(res.status, 400, bad)
             self.assertEqual(_payload(res)["code"], "invalid_clear", bad)
-        self.assertIsNone(crew_store.read_work_item(OWNER, REPO, crew["id"], 7, self.root))
+        self.assertIsNone(off_loop(crew_store.read_work_item, OWNER, REPO, crew["id"], 7, self.root))
         # A crew-level line has no item to clear a field on.
         res = await self.call(
             "PUT", "/crew/work",
@@ -1141,7 +1144,7 @@ class TestWorkItems(_CrewRouteCase):
             )
         self.assertEqual(res.status, 503)
         self.assertEqual(_payload(res)["code"], "ledger_not_recorded")
-        self.assertIsNone(crew_store.read_work_item(OWNER, REPO, crew["id"], 7, self.root))
+        self.assertIsNone(off_loop(crew_store.read_work_item, OWNER, REPO, crew["id"], 7, self.root))
         self.assertEqual(self.ledger(crew["id"]), [])
 
     async def test_a_write_without_an_event_is_refused(self):
@@ -1155,7 +1158,7 @@ class TestWorkItems(_CrewRouteCase):
         )
         self.assertEqual(res.status, 400)
         self.assertEqual(_payload(res)["code"], "event_required")
-        self.assertIsNone(crew_store.read_work_item(OWNER, REPO, crew["id"], 7, self.root))
+        self.assertIsNone(off_loop(crew_store.read_work_item, OWNER, REPO, crew["id"], 7, self.root))
 
     async def test_an_unknown_event_kind_is_400_and_writes_nothing(self):
         crew = self.crew("Andromeda")
@@ -1167,7 +1170,7 @@ class TestWorkItems(_CrewRouteCase):
         self.assertEqual(res.status, 400)
         self.assertEqual(_payload(res)["code"], "invalid_event_kind")
         # Validated BEFORE the upsert, so the item was never written.
-        self.assertIsNone(crew_store.read_work_item(OWNER, REPO, crew["id"], 7, self.root))
+        self.assertIsNone(off_loop(crew_store.read_work_item, OWNER, REPO, crew["id"], 7, self.root))
 
     async def test_a_bad_number_is_400(self):
         crew = self.crew("Andromeda")
@@ -1290,7 +1293,7 @@ class TestSharedSkipIndex(_CrewRouteCase):
         )
         # And it did not become the reader's own work item — the index is the
         # shared surface, the work item stays the author's.
-        self.assertIsNone(crew_store.read_work_item(OWNER, REPO, reader["id"], 42, self.root))
+        self.assertIsNone(off_loop(crew_store.read_work_item, OWNER, REPO, reader["id"], 42, self.root))
 
     async def test_a_needs_human_pass_is_accepted_and_indexed_for_the_fleet(self):
         """The write path that replaces holding an issue for a human.
@@ -1320,7 +1323,7 @@ class TestSharedSkipIndex(_CrewRouteCase):
                     page["recent_skips"],
                 )
         # Two passes, no slot held by either crew.
-        self.assertEqual(crew_store.open_slot_count(OWNER, REPO, author["id"], self.root), 0)
+        self.assertEqual(off_loop(crew_store.open_slot_count, OWNER, REPO, author["id"], self.root), 0)
 
     async def test_a_skip_is_indexed_even_with_no_skip_scope(self):
         """The invariant, at its weakest input.
@@ -1414,7 +1417,11 @@ class TestWorkWriteIsOneEntry(_CrewRouteCase):
         return f"dashboard:{crew['slot_key']}"
 
     def _entries(self, crew: dict) -> list:
-        handle = CrewLog.open(KIND_SESSION, self._units[crew["id"]])
+        return off_loop(self._read_entries, self._units[crew["id"]])
+
+    @staticmethod
+    def _read_entries(unit_id: str) -> list:
+        handle = CrewLog.open(KIND_SESSION, unit_id)
         try:
             return [e for e in handle.iter_from(1) if e.type == crew_store.LEDGER_ENTRY_TYPE]
         finally:
@@ -1458,7 +1465,7 @@ class TestWorkWriteIsOneEntry(_CrewRouteCase):
         self.assertEqual(res.status, 409)
         self.assertEqual(_payload(res)["code"], "crew_conflict")
         self.assertEqual(self._entries(crew), before)
-        self.assertIsNone(crew_store.read_work_item(OWNER, REPO, crew["id"], 9, self.root))
+        self.assertIsNone(off_loop(crew_store.read_work_item, OWNER, REPO, crew["id"], 9, self.root))
 
     async def test_a_crew_whose_slot_has_no_live_session_is_told_so(self):
         """No live unit, no record: 409 with its own code, not a generic conflict, so
@@ -2088,7 +2095,7 @@ class TestNonFiniteNumbersAreRefused(_CrewRouteCase):
 
         self.assertEqual(res.status, 400)
         self.assertEqual(_payload(res)["code"], "non_finite_number")
-        self.assertIsNone(crew_store.read_work_item(OWNER, REPO, crew["id"], 7, self.root))
+        self.assertIsNone(off_loop(crew_store.read_work_item, OWNER, REPO, crew["id"], 7, self.root))
 
     async def test_the_agent_leg_is_refused_too(self):
         """The internal-secret caller reads its body through the same helper, so the
@@ -2105,7 +2112,7 @@ class TestNonFiniteNumbersAreRefused(_CrewRouteCase):
         )
         self.assertEqual(res.status, 400)
         self.assertEqual(_payload(res)["code"], "non_finite_number")
-        self.assertIsNone(crew_store.read_work_item(OWNER, REPO, crew["id"], 7, self.root))
+        self.assertIsNone(off_loop(crew_store.read_work_item, OWNER, REPO, crew["id"], 7, self.root))
 
     async def test_a_legitimate_number_is_unaffected(self):
         """The guard must not cost a valid body — the same fields, with numbers a

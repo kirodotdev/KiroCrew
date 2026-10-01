@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from kiro_crew.crew_log import eager
 from kiro_crew.crew_log import holders as holders_mod
 from kiro_crew.crew_log import session_tree as tree_mod
 from kiro_crew.crew_log import store as crew_store
@@ -837,7 +838,8 @@ class TestScannerBounds:
         def retire_then_answer(preferred: object = ()) -> TreeReading:
             # Runs BETWEEN the two scans, which is the only window the race has:
             # the mention is already captured, and the lineage is read after.
-            shutil.rmtree(crew_store.crew_log_dir(KIND_SESSION, "sid-old"))
+            with eager.paused():
+                shutil.rmtree(crew_store.crew_log_dir(KIND_SESSION, "sid-old"))
             # The slot is still held -- by a newer session that took the vacancy.
             return TreeReading(nodes={"slot-shared": _node("slot-shared")}, incomplete=False)
 
@@ -1267,7 +1269,8 @@ class TestScannerHolders:
         assert _ref(42) in captured.mentions
         # Retire the unit AFTER the reference scan, then fold with a lineage that
         # does not know the slot -- exactly the window's shape.
-        shutil.rmtree(crew_store.crew_log_dir(KIND_SESSION, "sid-w"))
+        with eager.paused():
+            shutil.rmtree(crew_store.crew_log_dir(KIND_SESSION, "sid-w"))
         monkeypatch.setattr(
             scanner,
             "references",

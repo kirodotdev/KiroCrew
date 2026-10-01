@@ -474,14 +474,41 @@ def test_a_unit_with_no_log_is_skipped_rather_than_refused():
     assert json.loads(_warm("ledger", units))["goal"] == "kept"
 
 
-def test_the_warm_store_is_bounded_by_slot_count():
-    """Many slots cannot grow the store without limit; the oldest is evicted."""
+def _held_cell_bytes() -> int:
+    """What every warm cell is charged together, the way the eviction loop counts it."""
+    return sum(memo.weight for memo in crew_log._slot_memos.values())
+
+
+def _ledger_cell() -> int:
+    """What FIRST's one ledger cell is charged, read off a real stored memo.
+
+    The charge is ``(rows + 1) x`` the fold's row cost, and the row count is the fold's
+    own counter's to give, so the figure is read rather than recomputed here.
+    """
+    crew_log.fold_slot_warm("ledger", (FIRST,), slot="chat-weigh")
+    weight = next(m.weight for k, m in crew_log._slot_memos.items() if k[1] == "chat-weigh")
+    crew_log.forget_slot_folds("chat-weigh")
+    return weight
+
+
+def test_the_warm_store_is_bounded_by_resident_bytes(monkeypatch):
+    """Many slots cannot grow the store without limit; the oldest is evicted.
+
+    By BYTES, through the operator's own variable: the ceiling here is eight ``ledger``
+    cells, so a ninth slot evicts the first.
+    """
     _unit(FIRST)
     _ledger(FIRST, goal="g", event="a", event_kind="progress")
-    for index in range(crew_log.SLOT_FOLD_CACHE_SLOTS + 8):
+    cell = _ledger_cell()
+    monkeypatch.setenv(crew_log.SLOT_FOLD_CACHE_BYTES_ENV, str(cell * 8))
+    for index in range(16):
         crew_log.fold_slot_warm("ledger", (FIRST,), slot=f"chat-{index}")
 
-    assert len(crew_log._slot_memos) <= crew_log.SLOT_FOLD_CACHE_SLOTS
+    assert _held_cell_bytes() <= cell * 8
+    assert len(crew_log._slot_memos) == 8, (
+        f"a budget of eight ledger cells holds {len(crew_log._slot_memos)}; the charge is "
+        "not what each cell is charged"
+    )
 
 
 class _GuardedOnly(dict):
@@ -522,11 +549,13 @@ def test_every_warm_store_access_holds_the_guard(monkeypatch):
     # The write path's remember, then the read path's get.
     assert crew_log.fold_slot_warm("ledger", (FIRST,), slot=SLOT).state["goal"] == "g"
     assert crew_log.fold_slot_warm("ledger", (FIRST,), slot=SLOT).state["goal"] == "g"
-    # Fill past the cap so the eviction loop runs under the guard too.
-    for index in range(crew_log.SLOT_FOLD_CACHE_SLOTS + 3):
+    cell = next(m.weight for k, m in crew_log._slot_memos.items() if k[1] == SLOT)
+    # Fill past the budget so the eviction loop runs under the guard too.
+    monkeypatch.setenv(crew_log.SLOT_FOLD_CACHE_BYTES_ENV, str(cell * 4))
+    for index in range(8):
         crew_log.fold_slot_warm("ledger", (FIRST,), slot=f"chat-guard-{index}")
 
-    assert len(crew_log._slot_memos) == crew_log.SLOT_FOLD_CACHE_SLOTS
+    assert len(crew_log._slot_memos) == 4
     crew_log.forget_slot_folds(SLOT)
 
 
@@ -542,3 +571,188 @@ def test_forgetting_one_slots_fold_leaves_another_slots_warm():
     held = {key[1] for key in crew_log._slot_memos}
     assert "chat-a" not in held
     assert "chat-b" in held
+
+
+# --------------------------------------------------------------------------- #
+# The push revision
+# --------------------------------------------------------------------------- #
+
+
+def _revision(units: "tuple[str, ...]", name: str = "ledger") -> int:
+    """The revision the read path reports for *name* over *units*."""
+    return crew_log.fold_slot_warm_revised(name, units, slot=SLOT)[1]
+
+
+def test_a_fold_that_advanced_reports_a_higher_revision():
+    """The base case: something new folded, so the number a client orders by moved."""
+    _unit(FIRST)
+    _ledger(FIRST, goal="g", event="a", event_kind="progress")
+    first = _revision((FIRST,))
+
+    _ledger(FIRST, event="b", event_kind="progress")
+    second = _revision((FIRST,))
+
+    assert first > 0, "a slot read has to vouch for a revision, or nothing can be pushed"
+    assert second > first, (
+        f"the revision stood at {first} and is {second} after an entry folded; a client "
+        "ordering frames by it would discard the new value"
+    )
+
+
+def test_a_fold_that_found_nothing_new_keeps_its_revision():
+    """MUTATION-SENSITIVE: an idle board produces no new number, so it produces no frame.
+
+    Minting on every read instead would push the same value to every client on every
+    dashboard poll -- which is the cost eager folding exists to remove, re-added on the
+    socket instead of the read.
+    """
+    _unit(FIRST)
+    _ledger(FIRST, goal="g", event="a", event_kind="progress")
+    held = _revision((FIRST,))
+
+    assert _revision((FIRST,)) == held
+    assert _revision((FIRST,)) == held, (
+        "a second read of an unmoved board minted a new revision; every poll would then "
+        "look like a change"
+    )
+
+
+def test_the_revision_rises_across_a_new_unit_even_though_the_seq_falls():
+    """THE CASE THE WHOLE CONTRACT EXISTS FOR: seq is not orderable, revision is.
+
+    A slot fold's ``last_seq`` is the NEWEST unit's own, and a fresh unit starts at 1 --
+    so adding a unit to a board can move the folded VALUE while moving the seq DOWN. A
+    client ordering frames by seq discards the newer value; the revision is what it orders
+    by instead.
+    """
+    _unit(FIRST)
+    for step in range(5):
+        _ledger(FIRST, goal=f"g{step}", event=f"e{step}", event_kind="progress")
+    before, first_revision = crew_log.fold_slot_warm_revised("ledger", (FIRST,), slot=SLOT)
+
+    _unit(SECOND)
+    _ledger(SECOND, event="from the new unit", event_kind="progress")
+    after, second_revision = crew_log.fold_slot_warm_revised("ledger", (FIRST, SECOND), slot=SLOT)
+
+    assert after.last_seq < before.last_seq, (
+        f"the fixture did not reproduce the case: seq went {before.last_seq} -> "
+        f"{after.last_seq}, so this proves nothing about ordering by seq"
+    )
+    assert "from the new unit" in [
+        event["text"] for event in after.state["events"]
+    ], "the new unit's entry is not in the value, so there is no change to order"
+    assert second_revision > first_revision, (
+        f"the revision went {first_revision} -> {second_revision} while the value changed; "
+        "the frame carrying it would be discarded as stale"
+    )
+
+
+def test_the_revision_rises_across_a_unit_recreated_under_the_same_id():
+    """A recreated log folds cold, and the value after it must still be orderable.
+
+    Its seq climbs back from 1, so the number can land at or below where it already was.
+    The revision is minted by the folding process and never read off a file, which is what
+    makes it rise here.
+    """
+    _unit(FIRST)
+    _unit(SECOND)
+    for step in range(4):
+        _ledger(SECOND, goal=f"g{step}", event=f"e{step}", event_kind="progress")
+    units = (FIRST, SECOND)
+    before = _revision(units)
+
+    for path in crew_log.segment_paths(lg.KIND_SESSION, SECOND):
+        path.unlink()
+    crew_log_emit.reset_caches()
+    _unit(SECOND)
+    _ledger(SECOND, goal="after the recreate", event="fresh", event_kind="progress")
+
+    checkpoint, after = crew_log.fold_slot_warm_revised("ledger", units, slot=SLOT)
+    assert checkpoint.state["goal"] == "after the recreate", "the cold refold did not happen"
+    assert after > before, (
+        f"the revision went {before} -> {after} across a recreated unit; a client would "
+        "keep the retired file's value"
+    )
+
+
+def test_the_revision_rises_across_a_rewritten_prefix():
+    """A prefix rewritten under a grown file folds cold, and that value must order too.
+
+    The store rewrites a committed prefix on its recovery paths, which every stat and seq
+    comparison reads as a plain append -- so the fold is redone and the value changes while
+    the seq only grows by the one appended entry. The revision rises because a cold fold
+    mints one.
+    """
+    _unit(FIRST)
+    _ledger(FIRST, goal="g", event="ORIGINAL-ONE", event_kind="progress")
+    _ledger(FIRST, goal="g", event="ORIGINAL-TWO", event_kind="progress")
+    units = (FIRST,)
+    before = _revision(units)
+
+    _rewrite_in_place(FIRST, "ORIGINAL-TWO", "REWRITTEN-UNDER-A-GROWN-FILE")
+    crew_log_emit.reset_caches()
+    _ledger(FIRST, goal="g", event="ORIGINAL-THREE", event_kind="progress")
+
+    checkpoint, after = crew_log.fold_slot_warm_revised("ledger", units, slot=SLOT)
+    assert [event["text"] for event in checkpoint.state["events"]] == [
+        "ORIGINAL-ONE",
+        "REWRITTEN-UNDER-A-GROWN-FILE",
+        "ORIGINAL-THREE",
+    ]
+    assert after > before, (
+        f"the revision went {before} -> {after} across a rewritten prefix; the client "
+        "would hold the pre-rewrite value"
+    )
+
+
+def test_the_revision_never_repeats_across_two_folds_and_two_slots():
+    """One counter for every key, so a number identifies one value of one board.
+
+    A per-key counter would have to live in the memo table, and that table is EVICTED --
+    an evicted key's next cell would restart low and a client holding the earlier number
+    would discard every value after it.
+    """
+    _unit(FIRST)
+    _ledger(FIRST, goal="g", event="a", event_kind="progress")
+    _radar(FIRST, number=1, event="looked")
+
+    seen = [
+        crew_log.fold_slot_warm_revised("ledger", (FIRST,), slot=SLOT)[1],
+        crew_log.fold_slot_warm_revised("radar", (FIRST,), slot=SLOT)[1],
+        crew_log.fold_slot_warm_revised("ledger", (FIRST,), slot="chat-other")[1],
+        crew_log.fold_slot_warm_revised("radar", (FIRST,), slot="chat-other")[1],
+    ]
+
+    assert len(set(seen)) == len(seen), f"two cells share a revision: {seen}"
+    assert seen == sorted(seen), f"the counter went backwards across keys: {seen}"
+
+
+def test_an_evicted_cell_refolds_to_a_higher_revision_not_a_lower_one(monkeypatch):
+    """MUTATION-SENSITIVE: eviction must not reset the number a client has already seen.
+
+    This is what the process-wide counter buys. Hold the revision for a board, evict its
+    cell through the byte budget, then read it again: the refold is cold and its revision
+    has to be ABOVE the one the client holds, or the client discards the value it just
+    asked for and the board freezes for the life of the tab.
+    """
+    _unit(FIRST)
+    _ledger(FIRST, goal="g", event="a", event_kind="progress")
+    held = _revision((FIRST,))
+
+    # A budget of one ledger cell, so every further board evicts the one before it.
+    monkeypatch.setenv(crew_log.SLOT_FOLD_CACHE_BYTES_ENV, str(_ledger_cell()))
+    for index in range(4):
+        crew_log.fold_slot_warm("ledger", (FIRST,), slot=f"chat-evict-{index}")
+    assert (
+        str(crew_log.data_home()),
+        SLOT,
+        "ledger",
+    ) not in crew_log._slot_memos, (
+        "the fixture did not evict the cell under test, so this measured nothing"
+    )
+    after = _revision((FIRST,))
+
+    assert after > held, (
+        f"a cold refold after eviction reported revision {after} against the {held} a "
+        "client already holds; every later frame for this board would be discarded"
+    )

@@ -35,6 +35,7 @@ import { selectComposerBusy, selectSlotStreamState } from '../../store/chatSlice
 import { i18nT } from '../../i18n/t'
 import { fmtCompact, fmtElapsed, fmtNumber, fmtPercent, fmtTimeNumeric } from '../../i18n/format'
 import { splitOnPlaceholder } from '../../lib/splitOnPlaceholder'
+import { crewLogProjectionsKey } from '../../hooks/useWebSocket'
 
 /** The six folds, in the order the backend declares them (`PROJECTION_NAMES`). */
 export const CREW_LOG_FOLDS = ['status', 'usage', 'timeline', 'tools', 'approvals', 'subagents'] as const
@@ -46,6 +47,8 @@ export interface CrewLogProjection {
   name?: string
   seq: number
   value: Record<string, unknown>
+  /** Orders this value against a pushed one; absent from an older gateway. */
+  revision?: number
 }
 export type CrewLogBundle = Record<CrewLogFold, CrewLogProjection>
 /** What one read of the batch route answers: the six folds, plus the two things
@@ -57,6 +60,8 @@ const CREW_LOG_DOCS_URL =
 
 export type CrewLogRead = {
   folds: CrewLogBundle
+  /** The unit the folds came from; a pushed frame naming another is not applied. */
+  unit: string
   resolved: boolean
   writesDrained: boolean
   /** False when the gateway reports recording switched off. */
@@ -895,7 +900,9 @@ const OPEN_BY_DEFAULT: CrewLogFold[] = ['status', 'usage']
 
 export function CrewLogTab({ slot }: { slot: string }) {
   const { data, isLoading, error, refetch, isFetching } = useQuery<CrewLogRead>({
-    queryKey: ['crew-log-projections', slot],
+    // The key a pushed `session_projection` frame updates, so the panel stays
+    // current between the turn edges below without re-reading.
+    queryKey: crewLogProjectionsKey(slot),
     queryFn: () => api.sessionCrewLogProjections(slot) as Promise<CrewLogRead>,
     enabled: !!slot,
     // The panel's body is unmounted while another tab is shown, so the turn-end

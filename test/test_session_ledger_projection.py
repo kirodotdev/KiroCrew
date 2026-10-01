@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import threading
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -22,7 +23,7 @@ import pytest
 
 from kiro_crew import crew_log as lg
 from kiro_crew import session_ledger as sl
-from kiro_crew.crew_log import CrewLog
+from kiro_crew.crew_log import CrewLog, eager
 from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.crew_log import projection as crew_log
 from kiro_crew.crew_log import store
@@ -645,12 +646,14 @@ def test_a_carried_document_is_not_resurrected_after_a_permanent_delete():
     assert sl.read_state(SLOT)["goal"] == "deleted conversation"
 
     # The permanent delete: the session's crew log unit goes, the legacy store stays.
-    # The emitter caches this unit's open handle, which HOLDS its `.lease`. Windows
-    # refuses to unlink an open file, so the test drops the handle it caused to be
-    # opened before standing in for a delete. POSIX would allow the unlink; the
-    # cleanup is the test's either way.
+    # The emitter caches this unit's open handle, which HOLDS its `.lease`, so the test
+    # drops it first -- the removal takes that lease `sole`. Through the real funnel,
+    # which holds the eager folder between batches so no fold has the log open: Windows
+    # refuses to unlink a file any handle holds.
     crew_log_emit.reset_caches()
-    shutil.rmtree(store.crew_log_dir(lg.KIND_SESSION, SESSION))
+    assert (
+        store.remove_unit(lg.KIND_SESSION, SESSION, guard=lambda _dir: True) == store.REMOVE_REMOVED
+    )
     crew_log_emit.reset_caches()
     crew_log.forget_slot_folds()
     assert sl.ledger_dir(SLOT).exists(), "the legacy store is preserved by the funnel"
@@ -1445,14 +1448,26 @@ def test_a_fold_racing_an_append_is_not_cached_with_a_stale_seq():
     """
     _unit()
     sl.record(SLOT, session_id=SESSION, goal="before the race")
+    # ``ledger`` is an EAGER fold, so that record also woke the fold worker. Settle it
+    # BEFORE the table is dropped, or its pass lands afterwards and the case has two
+    # folders racing on one key -- which is a different race from the one under test.
+    assert eager.drain(timeout=10.0)
     crew_log.forget_slot_folds()
 
     real_mark = crew_log._unit_mark
     calls = {"n": 0}
+    # THIS thread's sample is the one the race is about. ``ledger`` is an EAGER fold, so
+    # the append above also wakes the fold worker, and that worker samples marks through
+    # the same module attribute -- so a probe counting every call can have its one shot
+    # consumed by the worker, land the racing append outside the read under test, and
+    # report an empty value as if the read had dropped it.
+    reader = threading.get_ident()
 
     def _sampling_that_lands_an_append(unit_id: str):
-        calls["n"] += 1
         mark = real_mark(unit_id)
+        if threading.get_ident() != reader:
+            return mark
+        calls["n"] += 1
         if calls["n"] == 1:
             # Between the sample and the fold, one more entry lands.
             handle = CrewLog.open(lg.KIND_SESSION, SESSION)
@@ -1581,12 +1596,20 @@ def test_a_new_unit_for_the_slot_rebuilds_the_fold():
     assert state["next"] == "after"
 
 
-def test_the_fold_cache_is_bounded_by_slot_count():
-    """A gateway sees many slots over its life; the warm store cannot grow with them."""
+def test_the_fold_cache_is_bounded_by_resident_bytes(monkeypatch):
+    """A gateway sees many slots over its life; the warm store cannot grow with them.
+
+    Bounded in BYTES, each cell charged its own fold's measured cost, so the ceiling here
+    is six ``ledger`` cells however many slots are read.
+    """
+    budget = crew_log.slot_fold_cell_bytes("ledger") * 6
+    monkeypatch.setenv(crew_log.SLOT_FOLD_CACHE_BYTES_ENV, str(budget))
     _unit()
-    for n in range(crew_log.SLOT_FOLD_CACHE_SLOTS + 8):
+    for n in range(14):
         sl.read_state(f"chat-{n}")
-    assert len(crew_log._slot_memos) <= crew_log.SLOT_FOLD_CACHE_SLOTS
+    held = sum(crew_log.slot_fold_cell_bytes(key[2]) for key in crew_log._slot_memos)
+    assert held <= budget
+    assert len(crew_log._slot_memos) == 6
 
 
 def test_growth_in_an_older_unit_is_not_hidden_by_the_cache():
@@ -1679,7 +1702,8 @@ def test_a_same_count_unit_swap_invalidates_the_slot_map():
     # opened before standing in for a delete. POSIX would allow the unlink; the
     # cleanup is the test's either way.
     crew_log_emit.reset_caches()
-    shutil.rmtree(store.crew_log_dir(lg.KIND_SESSION, SESSION))
+    with eager.paused():
+        shutil.rmtree(store.crew_log_dir(lg.KIND_SESSION, SESSION))
     _unit(LATER_SESSION)
     os.utime(root, ns=(before, before))
     assert store.session_units_for_slot(SLOT) == (LATER_SESSION,)
@@ -1757,6 +1781,13 @@ def test_an_append_landing_during_a_fold_survives_the_next_read():
     for goal in ("fourth", "fifth"):
         crew_log_emit.on_ledger_recorded(SESSION, {"slot": SLOT, "goal": goal})
     assert crew_log_emit.flush(timeout=5.0)
+    # Every committed entry wakes the eager folder, which folds this unit's slot AND
+    # session folds on its own thread through the same module attributes the probes
+    # below replace. Settled first, and both probes count only THIS thread: otherwise
+    # the folder can take the one short sample, or its own session pass shows up as a
+    # read here, and the case measures the folder rather than the read under test.
+    assert eager.drain(timeout=10.0)
+    reader = threading.get_ident()
 
     # Stand in for an append landing DURING the fold: the pre-read sample misses the
     # newest seq, while the stream reads to the end of the file and folds it.
@@ -1764,6 +1795,8 @@ def test_an_append_landing_during_a_fold_survives_the_next_read():
     calls = {"n": 0}
 
     def _sampled_one_short(unit_id: str):
+        if threading.get_ident() != reader:
+            return real(unit_id)
         calls["n"] += 1
         mark = real(unit_id)
         if calls["n"] == 1:
@@ -1787,7 +1820,8 @@ def test_an_append_landing_during_a_fold_survives_the_next_read():
     real_iter = CrewLog.iter_from
 
     def counted(self, start, **kwargs):
-        reads.append(start)
+        if threading.get_ident() == reader:
+            reads.append(start)
         return real_iter(self, start, **kwargs)
 
     CrewLog.iter_from = counted  # type: ignore[assignment]

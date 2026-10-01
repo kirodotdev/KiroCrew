@@ -45,6 +45,7 @@ export function createTelemetryEndpoints({ get, post, j }: ClientTransport) {
       const body = await fetch(`/api/sessions/${encodeURIComponent(slot)}/crew-log/projections`).then(j)
       const read = body as {
         projections?: Record<string, unknown>
+        unit?: unknown
         resolved?: unknown
         writes_drained?: unknown
         recording?: unknown
@@ -54,6 +55,10 @@ export function createTelemetryEndpoints({ get, post, j }: ClientTransport) {
       }
       return {
         folds: read.projections ?? {},
+        // The unit these folds came from. A pushed `session_projection` frame names
+        // its unit and is applied only when it names this one. Empty from an older
+        // gateway, which pushes no such frame.
+        unit: typeof read.unit === 'string' ? read.unit : '',
         // Whether a unit was NAMED for the id sent. An empty fold cannot say why it
         // is empty, and the two reasons need different words on screen: a slot that
         // never recorded anything, versus one whose ACP session was torn down and

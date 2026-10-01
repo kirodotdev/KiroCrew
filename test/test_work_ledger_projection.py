@@ -22,7 +22,7 @@ from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 
 from kiro_crew import work_ledger as wl
-from kiro_crew.crew_log import entry_types, projection, schema
+from kiro_crew.crew_log import eager, entry_types, projection, schema
 from kiro_crew.dashboard.handlers import work_ledger as routes
 
 CONDUCTOR = "chat-9-conductor"
@@ -2337,7 +2337,8 @@ async def test_a_pruned_worker_unit_refuses_the_rebuild_instead_of_erasing_its_r
 
     from kiro_crew import crew_log as lg
 
-    shutil.rmtree(store.crew_log_dir(lg.KIND_SESSION, "u-worker"))
+    with eager.paused():
+        shutil.rmtree(store.crew_log_dir(lg.KIND_SESSION, "u-worker"))
     with pytest.raises(wl.WorkLedgerError) as caught:
         wl.rebuild_from_projection(CONDUCTOR)
     assert caught.value.code == "crew_log_incomplete"
@@ -2378,7 +2379,8 @@ async def test_a_rebuild_keeps_the_completeness_marker_so_a_later_prune_still_re
     assert rebuilt.recorded_at == stamped.recorded_at
     assert (rebuilt.status, rebuilt.summary) == ("progress", "half way")
 
-    shutil.rmtree(store.crew_log_dir(lg.KIND_SESSION, "u-worker"))
+    with eager.paused():
+        shutil.rmtree(store.crew_log_dir(lg.KIND_SESSION, "u-worker"))
     with pytest.raises(wl.WorkLedgerError) as caught:
         wl.rebuild_from_projection(CONDUCTOR)
     assert caught.value.code == "crew_log_incomplete"

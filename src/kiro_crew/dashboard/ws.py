@@ -45,6 +45,30 @@ logger = logging.getLogger(__name__)
 _WS_STATUS_INTERVAL = 5  # seconds between dashboard status pushes
 
 
+async def _send_slot_projection_subscribed(ws: web.WebSocketResponse) -> None:
+    """Send the one-shot ``slot_projection/subscribed`` floor to a NEW owner socket.
+
+    Carries ``{"revisions": {slot: {fold: revision}}}`` -- the newest revision the
+    crew-log publisher has pushed for each cell. The client records it as a floor BEFORE
+    it issues any baseline read, which is what keeps a read already on the wire from
+    resolving later and replacing a value the client was handed first.
+
+    No publisher means no eager fold has run in this process, so there is no floor to
+    state and no frame is sent; a client with no floor keeps its own rule of "accept the
+    first revision you see", which is correct because nothing has been pushed to it.
+
+    The import is function-local so this module's own import pulls in no crew-log
+    submodule, which is the gate the crew-log handler states for itself.
+    """
+    from kiro_crew.dashboard.handlers.crew_log import SLOT_SUBSCRIBED_FRAME, live_publisher
+
+    publisher = live_publisher()
+    if publisher is None:
+        return
+    revisions = publisher.known_revisions()
+    await ws.send_str(json.dumps({"type": SLOT_SUBSCRIBED_FRAME, "data": {"revisions": revisions}}))
+
+
 async def _status_frame(state: DashboardState) -> dict[str, Any]:
     """Build the Tier-0 ``dashboard`` frame payload.
 
@@ -690,6 +714,14 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
                 await state.send_members_subscribed(ws)
             except Exception:
                 logger.debug("members_subscribed baseline not sent", exc_info=True)
+            # The same shape for SLOT folds, and the same reason: a revision floor the
+            # client holds BEFORE it issues a baseline read, so a read already on the
+            # wire cannot resolve later and overwrite a newer pushed value. Isolated for
+            # the same reason as the one above.
+            try:
+                await _send_slot_projection_subscribed(ws)
+            except Exception:
+                logger.debug("slot_projection/subscribed baseline not sent", exc_info=True)
         if owner_request or is_dashboard_user:
             # Issue links carry no check status — skip them so the scheduler
             # never hands an issue URL to the pull-request-only chip fetch.

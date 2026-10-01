@@ -123,6 +123,65 @@ describe('useWebSocket artifact_update frame', () => {
     expect(spy).not.toHaveBeenCalled()
   })
 
+  it('seeds only the frame\'s own board and re-reads its ancestors\' boards', async () => {
+    const team = [
+      { key: 'root', messages: 1, running: false }, { key: 'worker', messages: 1, running: false, created_by: 'root' },
+    ]
+    renderHook(() => useWebSocket(), { wrapper })
+    const ws = WS_INSTANCES[0]
+    await act(async () => { ws.simulateOpen(); await new Promise(resolve => setTimeout(resolve, 0)) })
+    act(() => { store.dispatch(sseSlots(team)) })
+    qc.setQueryData(['command-center', 'root', 'work'], { value: { items: [{ item_id: 'root-own' }] } })
+    const spy = vi.spyOn(qc, 'invalidateQueries')
+    act(() => {
+      ws.simulateMessage({
+        type: 'slot_projection',
+        data: { slot: 'dashboard:worker', fold: 'work', revision: 3, value: { items: [{ item_id: 'worker-own' }] } },
+      })
+    })
+    // The worker's board took the pushed value; the root kept ITS OWN board and is re-read.
+    expect(qc.getQueryData<{ value: { items: { item_id: string }[] } }>(['command-center', 'worker', 'work'])?.value.items)
+      .toEqual([{ item_id: 'worker-own' }])
+    expect(qc.getQueryData<{ value: { items: { item_id: string }[] } }>(['command-center', 'root', 'work'])?.value.items)
+      .toEqual([{ item_id: 'root-own' }])
+    const keys = spy.mock.calls.map(c => JSON.stringify(c[0]?.queryKey))
+    expect(keys).toContain(JSON.stringify(['command-center', 'root', 'work']))
+    expect(keys).not.toContain(JSON.stringify(['command-center', 'worker', 'work']))
+  })
+
+  it('re-reads a board cached below the floor the subscribe frame records', async () => {
+    // A REST read cached revision 4 before the subscribe frame arrived with 5:
+    // nothing else would move that board, so the frame itself re-reads it.
+    renderHook(() => useWebSocket(), { wrapper })
+    const ws = WS_INSTANCES[0]
+    await act(async () => { ws.simulateOpen(); await new Promise(resolve => setTimeout(resolve, 0)) })
+    qc.setQueryData(['command-center', 'root', 'work'], { value: { items: [] }, revision: 4 })
+    qc.setQueryData(['command-center', 'other', 'work'], { value: { items: [] }, revision: 5 })
+    const spy = vi.spyOn(qc, 'invalidateQueries')
+    act(() => {
+      ws.simulateMessage({
+        type: 'slot_projection/subscribed',
+        data: { revisions: { 'dashboard:root': { work: 5 }, 'dashboard:other': { work: 5 } } },
+      })
+    })
+    const work = spy.mock.calls.filter(c => (c[0]?.queryKey as unknown[] | undefined)?.[2] === 'work')
+    expect(work.map(c => c[0]?.queryKey)).toEqual([['command-center', 'root', 'work']])
+  })
+
+  it('a pushed frame above a cached board replaces it, so the floor it raises strands nothing', async () => {
+    renderHook(() => useWebSocket(), { wrapper })
+    const ws = WS_INSTANCES[0]
+    await act(async () => { ws.simulateOpen(); await new Promise(resolve => setTimeout(resolve, 0)) })
+    qc.setQueryData(['command-center', 'root', 'work'], { value: { items: [{ item_id: 'old' }] }, revision: 4 })
+    act(() => {
+      ws.simulateMessage({
+        type: 'slot_projection',
+        data: { slot: 'dashboard:root', fold: 'work', revision: 6, value: { items: [{ item_id: 'new' }] } },
+      })
+    })
+    expect(qc.getQueryData<{ revision: number }>(['command-center', 'root', 'work'])?.revision).toBe(6)
+  })
+
   it('follows a work read that was in flight with one more read once it settles', async () => {
     renderHook(() => useWebSocket(), { wrapper })
     const ws = WS_INSTANCES[0]
@@ -138,6 +197,19 @@ describe('useWebSocket artifact_update frame', () => {
     await act(async () => { release({ value: { items: [] } }) })
     await waitFor(() => expect(reads).toBe(2))
     unsubscribe()
+  })
+
+  it('re-reads the crew-log panel on every (re)connect, re-basing it on the process now serving', () => {
+    const spy = vi.spyOn(qc, 'invalidateQueries')
+    renderHook(() => useWebSocket(), { wrapper })
+    const ws = WS_INSTANCES[0]
+    act(() => { ws.simulateOpen() })
+    const prefix = JSON.stringify(['crew-log-projections'])
+    expect(spy.mock.calls.filter(c => JSON.stringify(c[0]?.queryKey) === prefix)).toHaveLength(1)
+    act(() => { ws.onclose?.(new CloseEvent('close')) })
+    spy.mockClear()
+    act(() => { WS_INSTANCES[WS_INSTANCES.length - 1].simulateOpen() })
+    expect(spy.mock.calls.filter(c => JSON.stringify(c[0]?.queryKey) === prefix)).toHaveLength(1)
   })
 
   it('re-reads the shared approvals inventory on reconnect', () => {

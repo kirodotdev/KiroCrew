@@ -623,21 +623,15 @@ def test_the_fold_is_registered_and_advertised():
     assert crew_log.require_name("subagents") == "subagents"
 
 
-def test_the_fold_is_lazy_because_eager_folding_is_slot_keyed():
-    """Pinned so the reason survives, rather than reading as an oversight.
+def test_the_fold_is_eager_on_the_session_warm_path():
+    """The panel's subagent section reads this fold, so it is advanced as entries land.
 
-    The plan asked for this fold EAGER. It cannot be, and the constraint is not this
-    fold's: eager folding continues the warm SLOT memo -- ``_fold_batch`` resolves a
-    slot from the unit header and calls ``read_slot_projection`` -- and ``subagents`` is
-    keyed by one SESSION. ``projection.py`` states the rule at import
-    (``EAGER_FOLD_NAMES <= SLOT_PROJECTION_NAMES``) and ``eager._WAKE_TYPES`` is a fixed
-    three-type set that no ``subagent/*`` type is in, so declaring this fold eager would
-    register a mode the process cannot honour. Making it eager means building a warm
-    SESSION path, which is a change to the eager module's contract rather than a fold.
+    Session-keyed, so it rides the warm SESSION memo (``fold_session_warm``) rather than
+    the slot one, and the eager worker advances it for the unit that wrote the entry.
     """
-    assert crew_log._FOLDS["subagents"].mode == "lazy"
-    assert "subagents" not in crew_log.EAGER_FOLD_NAMES
-    assert set(crew_log.EAGER_FOLD_NAMES) <= set(crew_log.SLOT_PROJECTION_NAMES)
+    assert crew_log._FOLDS["subagents"].mode == "eager"
+    assert "subagents" in crew_log.EAGER_SESSION_FOLD_NAMES
+    assert "subagents" not in crew_log.EAGER_SLOT_FOLD_NAMES
 
 
 def test_the_fold_declares_the_three_subagent_types_it_reads():

@@ -853,21 +853,45 @@ def _landed_since(
     into a refusal, and a second failure is the same answer as a missing entry -- the
     writer is done and nothing shows the entry in the file. A log that is gone answers
     ``(None, False)``: nothing landed and nothing will.
+
+    Every miss is logged at WARNING with the seq, the unit and the file it read:
+    the callers ask only after the writer reported the entry written, so a miss is
+    the "written but not readable" state, and the log line is the only place its
+    cause shows.
     """
+    path: Any = None
     for attempt in (1, 2):
         try:
             handle = projection.open_session_log(session_id)
             if handle is None:
+                logger.warning(
+                    "crew ledger: entry after seq %d not readable: unit %s has no log",
+                    after_seq,
+                    session_id,
+                )
                 return None, False
+            path = getattr(handle, "path", None)
             since = tuple(handle.iter_from(after_seq + 1, known=projection.KNOWN_TYPES))
-            return since, any(
-                e.type == LEDGER_ENTRY_TYPE and e.data == data for e in since
-            )
+            landed = any(e.type == LEDGER_ENTRY_TYPE and e.data == data for e in since)
+            if not landed:
+                logger.warning(
+                    "crew ledger: entry after seq %d not found in unit %s log %s "
+                    "(%d entries read)",
+                    after_seq,
+                    session_id,
+                    path,
+                    len(since),
+                )
+            return since, landed
         except Exception:
             log_exception_text(
                 logger,
-                logging.DEBUG,
-                "crew ledger: could not read the appended entry back (attempt %d)",
+                logging.WARNING,
+                "crew ledger: could not read the entry after seq %d back from unit "
+                "%s log %s (attempt %d)",
+                after_seq,
+                session_id,
+                path,
                 attempt,
             )
     return None, False

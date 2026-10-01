@@ -48,12 +48,33 @@ and two declarations about itself:
 | declaration | what it decides |
 |---|---|
 | `state_version` | the version of what THIS fold stores, and what its savepoint files carry (section 7) |
-| `mode` | `lazy` -- folded when a reader asks; `eager` -- folded when the entry lands (section 5.1) |
+| `mode` | `eager` (the DEFAULT) -- folded when the entry lands; `lazy` -- folded when a reader asks (section 5.1) |
+| `lazy_reason` | the one line a lazy fold owes, refused on an eager one |
 
-`mode = "eager"` requires `affects`, and `_Fold.__post_init__` refuses the pair at
-import. An eager fold is woken by entry TYPE, so one that every entry moves would be
-woken for every message body in the log -- which is the cost the mode exists to take
-off the read, paid on the append path instead.
+**Eager is the default, and lazy is the exception a fold has to justify.** `mode`
+defaults to `"eager"`, and `_Fold.__post_init__` refuses a lazy fold that declares no
+`lazy_reason` -- so a fold added without anyone deciding its posture is eager, and one
+that stays lazy has said why in its own declaration. The earlier default was the other
+way round, which is how four slot folds a dashboard polls on a timer stayed lazy with
+nobody having chosen that: an omission read as a decision.
+
+`mode = "eager"` requires `affects`, and `_Fold.__post_init__` refuses that pair at
+import too, spelled out even when it is every type: the kernel skips the copy and the
+step for an entry a fold does not name, and `None` would leave a reader unable to tell
+"all of them" from "not decided".
+
+**Every fold is eager today, and `LAZY_FOLD_REASONS` is empty.** The two families each
+have their own warm path (section 5.1): the four SLOT folds -- `ledger`, `radar`, `work`,
+`panel` -- are continued in the slot memo, and the seven SESSION folds -- the six the
+crew-log panel draws plus the internal `class` -- in the session memo.
+`EAGER_SLOT_FOLD_NAMES` and `EAGER_SESSION_FOLD_NAMES` name the two halves, and an eager
+fold in neither is refused at import, because it would be woken for and then have
+nothing to continue. `timeline` is eager like the rest: the panel's feed section reads
+it, and its value is bounded by `TIMELINE_LIMIT` whatever the session's length.
+
+`status` and `class` declare `affects = KNOWN_TYPES` rather than `None`, because both
+are moved by every entry. That is also why EVERY committed entry wakes the eager worker
+(section 5.1).
 
 `fold(name, entries)` is those pieces run over every entry. The INCREMENTAL form
 is the primitive and the whole-file form is one line on top of it, so a resumed
@@ -295,10 +316,9 @@ OPEN outcome enum, so a value outside `completed`/`failed`/`stopped`/`unknown` i
 under `unknown` while the row keeps the literal string, which loses nothing at the level
 that can hold it.
 
-The fold is LAZY, and that is a constraint of the eager path rather than a choice about
-this fold: eager folding continues the warm SLOT memo (§5.1), and `subagents` is keyed by
-one session. `EAGER_FOLD_NAMES <= SLOT_PROJECTION_NAMES` is checked at import, so
-declaring it eager would register a mode the process cannot honour.
+The fold is EAGER and session-keyed, so it rides the session memo (section 5.1): the
+panel's subagent section is current when its entry lands rather than when the tab is
+reopened.
 
 ### The slot-keyed folds
 
@@ -672,46 +692,62 @@ so the audience is the person the conversation belongs to.
 
 ## 5. The push
 
-A `session_projection` frame carries `{session_id, name, seq, value}` and is sent
-to OWNER sockets, matching the read gate: an app token is an authorized socket and
-is not the conversation's owner.
+A `session_projection` frame carries `{session_id, slot, name, seq, value, revision}`
+and is sent to OWNER sockets, matching the read gate: an app token is an authorized
+socket and is not the conversation's owner. `session_id` is the UNIT the fold read and
+`slot` the slot its header names, which is the key the crew-log panel caches its read
+under. `revision` orders two frames for one (unit, fold); `seq` cannot, because it
+restarts when a unit is recreated under the same id (section 5.2).
 
-The trigger is the emitter's growth signal. `crew_log.emit`'s write-behind
-already groups a turn's burst into one drained batch, and
-`add_growth_listener` reports that batch -- so a consumer is woken once per pass
-rather than once per entry. The listener is REGISTERED rather than imported: the
-emitter is imported by the dashboard, so calling a dashboard publisher from it
+TWO SOURCES feed one exporter, `CrewLogPublisher`, and both end in the same frames:
+
+- **The crew-log bus** (`crew_log.bus`), which hands the publisher every fold the eager
+  worker advanced (section 5.1). This is the normal path: the value is already folded
+  and only needs sending.
+- **The emitter's growth signal** (`add_growth_listener`), which is the BACKSTOP for a
+  wake the eager queue dropped. A coalesced pass reads the same warm session memo
+  (`fold_session_warm`), which is a lookup when the worker got there first and a short
+  continuation when it did not.
+
+A session frame is sent only for a fold whose revision is ABOVE the last one this
+publisher sent for that (unit, fold), so the two sources never send one value twice
+and an idle session sends nothing. Session values arriving from the bus are COALESCED
+for `COALESCE_SECONDS`, newest revision per (unit, fold): a session fold moves on every
+entry -- `status` counts them all, each streamed `message/chunk` included -- and the
+worker folds as fast as entries land, so a frame per value would be a frame per chunk
+on every owner socket. The fold is not delayed, only the frame. `class` is never sent:
+its one reader asks for it by name, and a browser cannot draw it.
+
+The listener and the subscriber are REGISTERED rather than imported: the emitter and
+the crew log are imported by the dashboard, so calling a dashboard publisher from them
 would close an import cycle and put a reader's name in the writer's code.
 
-The publisher runs the reading half on the event loop, never on the writer
-thread: `notify` hands the id to the loop and returns. It then coalesces for
-`COALESCE_SECONDS`, folds every advertised projection from ONE incremental read of the
-entries that arrived, and sends a frame only for a projection whose `seq` moved --
-re-sending an unchanged value would spend a socket write to say nothing.
+The growth pass runs on the event loop, never on the writer thread: `notify` hands the
+id to the loop and returns. A flush pass runs to completion before the next one starts,
+so a growth arriving during a slow fold does not launch an overlapping pass. When a pass
+finishes with more work marked, it schedules the next pass itself.
 
-A flush pass runs to completion before the next one starts. A growth arriving
-during a slow fold does not launch an overlapping pass: two `_publish` for one
-session would otherwise share the same prior bundle and race the cache write, so
-an older `seq` could be broadcast last. When a pass finishes with more work
-marked, it schedules the next pass itself.
+A growth pass also sends one `slot_projection` frame, `{slot}`, for each distinct slot
+whose units had a session fold move in it, naming the slot the unit's header records:
+several units of one slot growing in one pass are one frame. It carries no value. The
+unit-to-slot answer comes from the header, which is written once and never rewritten, so
+it is cached for at most `MAX_CACHED_SLOT_OWNERS` units; a unit whose header names no
+slot yet sends no slot frame and is asked again on its next growth. When the eager
+worker already sent a pass's values, that pass moves nothing and sends no bare frame --
+the valued slot frames of section 5.2 already told the dashboard.
 
-A pass also sends one `slot_projection` frame, `{slot}`, for each distinct slot
-whose units had a projection move in it, naming the slot the unit's header
-records: several units of one slot growing in one pass are one frame. It carries no value:
-slot folds (the conductor `work` board among them) join several units and are
-read through the projection route, so the frame only tells an observer which
-slot to re-read instead of polling. The unit-to-slot answer comes from the
-header, which is written once and never rewritten, so it is cached for at most
-`MAX_CACHED_SLOT_OWNERS` units; a unit whose header names no slot yet sends no
-slot frame and is asked again on its next growth. A worker's growth names the
-worker's slot, and a work board also folds its bound workers' units, so the
-dashboard re-reads exactly the boards of the named slot and of every slot it was
-created under, letting a read already in flight absorb the frame.
+What was sent is remembered for at most `MAX_CACHED_SESSIONS` units. When no dashboard
+user has a socket open the growth pass folds nothing; the eager worker still does,
+because a reader arriving later is served from the memo.
 
-Fold state is cached for at most `MAX_CACHED_SESSIONS` sessions; an evicted
-session folds from the start on its next growth. When no dashboard user has a
-socket open the pass folds nothing, because the state stays cached and the next
-growth continues from where it is, so skipping costs no accuracy.
+The panel's REST read (`GET /api/sessions/{id}/crew-log/projections`) answers from the
+same warm memo, so a read after a wake is a lookup and each fold carries the revision a
+frame for it carries. It also answers `unit`, the unit the folds came from: the panel
+applies a frame only when it names that unit, so after a slot moves to a new ACP
+session a late frame from the old one prompts a re-read instead of landing in the new
+one's panel. A frame arriving while the panel's read is in flight is not seeded either
+-- the response would land over it with an older value -- and prompts one read after
+that response settles (`website/src/hooks/websocket/sessionProjection.ts`).
 
 The storage package is imported LAZILY by the handler module, never at import
 time. The crew log can be switched off with `KIROCREW_CREW_LOG=0`, this module sits
@@ -729,22 +765,42 @@ off the installer builds no publisher and registers no listener.
 
 ### 5.1 Eager folds
 
-The push above is SESSION-keyed and driven by a reader on the event loop. The
-slot-keyed folds (section 3) have a second path, because their cost is different: a
-slot fold interprets one entry type and its reader has to walk every line of every
-unit the slot ran under to find it, so the first read of a cold cell is O(the slot's
-whole history) to produce a value that is a function of entries this process just
-wrote. A fold marked `eager` is therefore folded when the entry lands.
+A fold marked `eager` -- every fold, today -- is folded when its entry lands, not when a
+reader asks. The two families get there differently. A SLOT fold interprets one entry
+type, and its reader has to walk every line of every unit the slot ran under to find it,
+so a cold cell is O(the slot's whole history) for a value that is a function of entries
+this process just wrote. A SESSION fold reads one unit's own file and resumes from its
+savepoint, so its cold read is cheaper -- but the panel that draws it re-read it on every
+turn edge and every tab reopen, which a push removes.
 
-`work` and `panel` are eager. Everything else is lazy, and `timeline` is the one
-where that deserves saying: it is the fold that looks like a live feed, but its value
-is a 200-row window the dashboard does not read, and it is session-keyed.
+**One worker, one wake, both families.** The wake names the unit. A slot fold is
+advanced for the slot that unit's entry belongs to (`read_slot_projection`); the unit's
+session folds are advanced for the unit itself (`fold_session_warm`), all seven in one
+pass over its one file. Slot folds go first and drop before they advance on a closer;
+session folds advance first and drop after, because they READ the closer -- `status`
+reports the session closed -- so the closing value is one a dashboard must be handed.
+The session cell is dropped only when no entry of that unit in the batch came after the
+closer.
+
+**The session memo keeps the slot memo's discipline.** A cell is continued only from a
+bundle `fold_session` itself accepts as `since=` (same file, same origin, not ahead of the
+log), so the memo cannot hold a value a cold fold would not reach. A revision is minted
+from the one counter the slot memo uses, and a fold whose state the pass did not move --
+the same object, or an equal one after a resume from disk -- keeps its number, so it
+costs no frame. And the disk savepoint is still brought forward: `fold_session` writes
+nothing on a read that reused `since=`, so a pass whose bundle is far enough past its
+savepoint to earn a write (`checkpoint.write_is_earned`) folds from the DISK savepoint
+instead, replaying at most `MIN_ADVANCE_ENTRIES` entries and writing it back.
 
 **What the append path pays is one `queue.Queue.put_nowait`.** Not the slot lookup,
-not the fold. `emit`'s append job calls
+not the fold, and not the frame. `emit`'s append job calls
 `crew_log.eager.note_commit(unit_id, entry_type, seq, board)` after the append
-returns, and that call is a membership test against the eager folds' declared types
-plus the enqueue. One daemon thread drains the queue.
+returns, and EVERY committed type wakes: `status` and `class` read the whole
+vocabulary, so a type filter would pass everything and cost a lookup to say so. One
+daemon thread drains the queue and coalesces a burst to one fold per (unit, fold).
+`_WAKE_TYPES` survives as the set of the slot folds' types plus the closer, and
+`test_the_slot_wake_types_cover_every_eager_slot_folds_types` derives it from the
+registry so a slot fold's type is named where a reader finds it.
 
 The hook sits in the emitter's generic `_write` job, which every ordinary entry type
 takes, so a fold marked eager later needs no second edit; the two emitters that build
@@ -776,18 +832,13 @@ which is exactly the lazy behaviour that was there before.
 continuing a warm cell -- a changed unit list, a recreated unit, an earlier unit that
 grew, a rewritten prefix -- are stated once, and a rule missing from a copy here would
 be a wrong record rather than a slow one. A batch is coalesced first, newest wake per
-(unit, board), because a turn writes several entries and folding per wake would pay the
-same continuation repeatedly to reach the value the last one reaches. Keyed by the PAIR
-and not by the unit: one unit can append to two boards -- a worker bound to two
-conductors -- and collapsing those onto the unit would fold one and drop the other.
-
-**Nothing is PUSHED, and that is a decision.** A slot fold's `last_seq` is the newest
-unit's own seq by contract, and conductor units are folded before worker units -- so a
-conductor-side change on a board with any worker bound leaves that number unmoved, and a
-client rule that ordered frames by it would discard the changed value. Pushing correctly
-needs a monotonic per-(slot, fold) revision that reads and frames share, which is a new
-contract in the read path, and there is no consumer yet to need it. So the value is folded
-here and READ from here; the revision belongs to the change that adds the reader.
+(unit, board, type), because a turn writes several entries and folding per wake would pay
+the same continuation repeatedly to reach the value the last one reaches. Keyed by the
+BOARD and not by the unit: one unit can append to two boards -- a worker bound to two
+conductors -- and collapsing those onto the unit would fold one and drop the other. Keyed
+by the TYPE too, because the type decides which slot folds a wake moves: a `ledger/recorded`
+followed by a `panel/published` would otherwise keep only the panel's wake and leave the
+ledger fold stale. A unit writes a fixed vocabulary, so the batch stays bounded.
 
 **One pass per (slot, fold) at a time.** `fold_slot_warm` holds a per-key lock for its
 whole body, and the reason is a defect eager folding created rather than a tidiness rule.
@@ -812,22 +863,100 @@ other type and it calls `forget_slot_folds(slot=...)`: a unit that will never ap
 again has no value being held warm for it. This costs the next read of that slot one
 cold fold and never an answer.
 
-**The warm memos are bounded by COUNT, and that is the whole bound.**
-`SLOT_FOLD_CACHE_SLOTS` is 64 cells, keyed (data home, slot, fold). What that is in bytes
-is measured at each fold's declared caps rather than reasoned about: the largest cell is
-`radar` at `RADAR_ITEM_LIMIT` items, 995,342 bytes, so a full table of those is 60.8 MiB;
-`work` at `WORK_ITEM_LIMIT` items plus `WORK_EVENT_LIMIT` events is 138,067 bytes, 8.4 MiB
-for 64.
+**The warm slot memos are bounded by RESIDENT BYTES, and each cell is charged what it
+retains.** `slot_fold_cache_bytes()` is the one ceiling for every slot cell together,
+across every data home, slot and fold. It defaults to 256 MiB and an operator lowers it
+with `KIROCREW_SLOT_FOLD_CACHE_BYTES`; an unparseable or non-positive value leaves the
+default standing, because a typo'd ceiling must not silently cost every read a cold fold.
 
-A separate byte ceiling was written and then removed, and the reason is worth keeping. Its
-case was that eager folding uncouples the retained set from what a reader asked for -- true,
-but the count ceiling bounds the SET either way, so all that changes is which 64 cells are
-held. At any value above the measured worst case it never fires; below it, the eviction
-order stops meaning "least recently used" and starts meaning "whoever has the biggest board
-loses", which is a cache policy nothing asked for. The first version of this section quoted
-1.2 MB for a `work` cell and 79 MB for the table, from a per-item cost multiplied out; both
-were wrong, because the per-item figure included the board-level event log that 256 items
-share. The numbers above are direct measurements of the state at the caps.
+A cell is charged `(rows + 1) x` its fold's ROW cost, where `rows` is the fold's own
+`count_rows` over the state -- every container it keeps, INCLUDING a list nested inside
+each item -- and the `+ 1` covers the flat header fields. Per row and not per cell,
+because three of the four folds nest a capped list inside each capped item, so a cell's
+cap-state is the PRODUCT of two caps and no figure measured once per cell bounds it. A
+static per-cell charge was the earlier design and was not an upper bound at all.
+
+The row cost is the marginal bytes of one more row of the fold's WIDEST kind, with every
+free-text field at the clamp the fold applies, weighed as
+`len(json.dumps(state, ensure_ascii=False).encode("utf-8"))`. The text is 4-byte UTF-8
+characters, because the clamps count characters and an ASCII row is a quarter of the
+bytes the same clamp admits. Two exceptions. `radar`'s figure is its widest item weighed
+alone, each field from its own entry, since one entry cannot carry them all and an
+average over the item's companion rows sits below it. `panel` is driven in ASCII: its row
+is one entry's document kept whole, the entry's byte cap binds, and an entry stores a
+non-ASCII character in more bytes than the state does.
+
+| fold | bytes per row | widest row | cap-state rows | cap-state charge |
+|---|---|---|---|---|
+| `panel` | 52,000 | an owner's published document, filling one entry (51,655 measured) | `PANEL_OWNER_LIMIT` x `PANEL_HISTORY_LIMIT` | 10.1 MiB |
+| `radar` | 163,500 | a work item, every field it keeps at its clamp (163,464 measured) | `RADAR_ITEM_LIMIT` x `RADAR_TRIED_LIMIT` + one `phase_lines` list per item x `RADAR_PHASE_LINE_LIMIT` + skips: about 156,500 | 24,402 MiB |
+| `ledger` | 16,100 | a tried row, two fields at `LEDGER_TEXT_LIMIT` (16,065 measured) | flat | 2.8 MiB |
+| `work` | 2,705 | an item with title, summary and decision at their clamps | `WORK_ITEM_LIMIT` x `WORK_EVENT_LIMIT`, plus each item's `acceptance` and `artifacts` at 64 KiB | 165.6 MiB |
+
+A fold may also keep a value WHOLE, with no clamp of its own. `work` keeps three: an
+item's `acceptance` (the one field the store does not cap), its `artifacts` map, and each
+parked entry. A row cost cannot bound those, so each one present is charged
+`MAX_ENTRY_BYTES` (64 KiB), the entry that carried it (`_Fold.count_opaque`). That is
+counting, not serializing. A board holding the full parked set (256 x 64 entries) is
+charged about 1 GiB, over the ceiling, so it joins `radar` in being skipped on wake.
+
+One figure per fold covers its widest row kind, so a `radar` skip, tried or progress row
+is charged as a whole item. That over-charges every cell but one made of full items, which
+is the safe direction: the table then holds fewer cells than its bytes allow, never more.
+`test_every_slot_folds_row_cost_is_derived_from_its_own_rows` re-derives all four and
+also checks that a driven cell weighs no more than it is charged, so a clamp raised
+without re-measuring fails CI.
+
+**This reverses two earlier decisions.** The count ceiling (64 cells) assumed cells are
+comparable, and they are not: a `panel` cell is a few hundred KiB and a `radar` cell at
+its caps 2.4 GiB, so one ceiling of 64 priced a resident total across four orders of
+magnitude with no number in the code moving. Eager folding makes the high end reachable,
+because the worker stores a cell for every board this process WRITES. And the first byte
+budget charged each fold one figure measured at its caps -- 26,473,153 bytes for
+`radar`, itself a correction of an earlier 995,342 that measured the items half at
+200-character fields -- which missed the nested lists and so understated the same cell
+by about 90x.
+
+Counting is affordable where weighing is not: the count is a handful of `len` calls and
+one pass over the items, bounded by the fold's own item cap, where serializing a
+2.4 GiB state on every store would cost more than the fold that produced it. And it is
+still an upper bound, because each row's own text is clamped by the fold.
+
+**A cell that cannot fit the whole ceiling is not stored.** `radar` at its caps is
+charged more than any sane ceiling, and both alternatives are worse: parking it would
+hold 2.4 GiB until the next store, and evicting everything else first would empty the
+table for one cell that still does not fit. So it is refused, the read still answers,
+and that slot folds cold next time -- time, never an answer. An operator's answer to a
+deployment that needs it warm is a higher ceiling.
+
+**And the eager worker stops advancing it.** A refused cell is logged at WARNING once and
+recorded with its charge (`slot_fold_over_ceiling`), in a record bounded at
+`OVERSIZE_SLOT_CELL_LIMIT` cells, least recently refused first (an evicted entry costs
+one more fold, refused and recorded again). A later wake for that (slot, fold) is
+skipped: folding a cell it cannot keep is a cold fold of every unit the slot ran under,
+thrown away, once per wake. The read path still folds it when asked, which is the lazy behaviour. A pass
+that can store the cell -- a raised ceiling, a state that shrank -- clears the record.
+At the declared caps and the default ceiling, `radar` is the one fold that lands here;
+the other three fit with room to spare. A `work` board holding its full parked set also
+lands here, because each parked entry is charged a whole entry. Session cells are not skipped: a session fold
+resumes from its savepoint, so a pass costs the tail rather than the history.
+
+Below the worst case, eviction order does mean "whoever has the biggest board loses".
+That is the POINT -- one 2 GiB cell should lose to four hundred small ones -- because
+what is being bounded is resident bytes and not cell count.
+
+**The warm SESSION memos have a ceiling of their own**, `session_fold_cache_bytes()`,
+64 MiB by default, lowered with `KIROCREW_SESSION_FOLD_CACHE_BYTES`. A session cell is
+charged its SERIALIZED size, summed over its seven folds and weighed only for the folds
+a pass changed. That is affordable here for a reason the slot table does not have: a
+session fold's state is flat and small, and the fold already copies it for every entry
+that moves it (`copy_state`), so weighing it once per pass is the same order of work.
+Measured with 1,200 turns over 150 distinct models and tool names, each name past its
+clamp: `status` 633 bytes, `usage` 21,035, `timeline` 44,730, `tools` 20,641;
+`approvals` and `subagents` are bounded by `OPEN_RETAIN_LIMIT` ids at `ID_LIMIT`, about
+100 KB each. So 64 MiB keeps several hundred busy sessions warm. Eviction is least
+recently advanced; a cell above the whole ceiling is served and not kept, as above; and
+an evicted session resumes from its disk savepoint on its next wake.
 
 Eviction order is least recently STORED OR ADVANCED, not least recently read: a read that
 finds the cell already at the file's position returns it without storing, so it does not
@@ -836,13 +965,18 @@ That is the price of not taking the guard on a read that had nothing to record. 
 IS stored again -- by a read that carried it forward, or by an eager fold -- moves to the
 back, so the order tracks stores rather than arrival.
 
-More than 64 boards being WRITTEN at once is the one regime where that order stops helping:
-every eager fold stores a cell, each store evicts the cell furthest from the back, and the
-next wake for the evicted board folds it cold. The worker degrades to bounded churn -- one
-cold fold per wake, on one thread, at the cap -- and the queue's own limit absorbs the rest
-by dropping wakes and counting them, which costs a reader a cold fold and never an answer.
-A 65th active board therefore makes eager folding stop paying without making anything
-slower than the lazy path it replaced.
+More boards being WRITTEN at once than the budget's cells is the one regime where that
+order stops helping: every eager fold stores a cell, each store evicts the cell furthest
+from the back, and the next wake for the evicted board folds it cold. The worker degrades
+to bounded churn -- one cold fold per wake, on one thread, at the cap -- and the queue's own
+limit absorbs the rest by dropping wakes and counting them, which costs a reader a cold
+fold and never an answer. So passing the budget makes eager folding stop paying without
+making anything slower than the lazy path it replaced.
+
+How many boards that is now depends on what each board holds, which is the behaviour a
+count ceiling could not express. A deployment whose boards are larger than the default
+leaves room for raises `KIROCREW_SLOT_FOLD_CACHE_BYTES`, which is why the ceiling is a
+variable rather than a constant.
 
 The per-key fold locks are a second table, and what bounds it is the passes in flight: an
 entry exists while some pass holds or waits for that key's lock, and the last holder to
@@ -881,6 +1015,95 @@ turn standing. Clearing it would assert the turn finished when nothing recorded 
 doing so, and would erase the one fact a reader wants from that log: this session
 died with work in flight. A reader sees `closed_at` and the open turn together and
 can tell exactly what happened. Only `turn/completed` closes a turn.
+
+
+### 5.2 The push, and the revision that makes it orderable
+
+**An advanced fold is published on the crew-log bus with its value.** The worker
+publishes `FoldAdvanced(scope, key, fold, revision, value, seq)` on `crew_log.bus` --
+`scope` is `slot` or `session`, `key` the slot or the unit -- once per coalesced batch
+per fold it moved. The bus fans out synchronously on the worker's own thread, in
+registration order, logs and skips a subscriber that raises, and retains nothing: an
+event with no subscriber is dropped, which is safe for the same reason a dropped wake is.
+The dashboard's `CrewLogPublisher` subscribes once per process, at the one place the
+dashboard state exists, so the crew log names no dashboard symbol. Further consumers --
+a summary fold over a session's events, the automatic-card sentence trigger, channel
+notifications -- are expected to subscribe the same way and are not built here.
+
+**Why that needed a revision, and why `seq` could not be it.** A slot fold's `last_seq` is
+the NEWEST unit's own seq by contract, and conductor units are folded before worker units.
+So a conductor-side change on a board with any worker bound leaves that number unmoved, and
+adding a unit to a board can move the folded value while moving the seq DOWN -- a fresh unit
+starts at 1. A client ordering frames by seq discards the newer value in both cases. That
+is why the first version of eager folding pushed nothing at all: the obstacle was real, and
+the missing piece was a number the read path and the frame share.
+
+**The contract.** For a session fold it is `fold_session_warm(unit)`, which returns the
+bundle, each fold's revision and the folds it minted for, inside the session's own lock.
+For a slot fold, `fold_slot_warm_revised(name, units, slot=...)` returns the checkpoint
+AND the revision of the cell it answered from, inside the pass's own lock -- two returns
+rather than a second lookup, because a frame carrying a newer revision beside an older
+value makes the client discard the newer value when it arrives, which is the one failure
+the revision exists to prevent. `read_slot_projection` carries it onto `Projection.revision`.
+Three properties:
+
+- **Minted, never derived.** One process-wide counter (`_next_slot_revision`), guarded by
+  `_slot_memo_guard`, strictly increasing for every key at once -- so it is monotonic per
+  key as a consequence rather than as a thing to maintain. It is never read off a seq, a
+  time or a file, because every one of those repeats or steps backwards across the three
+  rollover cases a continuation already has to handle: a new unit, a unit recreated under
+  the same id, a rewritten prefix.
+- **Per key and not per key.** A per-key counter would have to live in the memo table, and
+  that table is evicted -- an evicted key's next cell would restart at 1 and a client
+  holding the earlier number would discard every value after it. One shared counter costs
+  nothing to evict.
+- **A cell that folded nothing keeps its number.** A read that finds the cell already at
+  the file's position returns it unchanged, so an idle board produces no new revision and
+  therefore no frame. Minting on every read would push the same value to every client on
+  every dashboard poll -- the cost eager folding removes from the read, re-added on the
+  socket.
+
+**A revision orders frames within ONE gateway process**, and is not comparable across
+processes: a restarted gateway numbers from 1 again, below every floor a tab kept. So
+every (re)connect re-bases the tab. It clears its own ledger when the socket opens
+(`resetSlotProjectionRevisions`), REPLACES its floors with the `slot_projection/subscribed`
+frame the new process sends -- never merging them with the old ones -- and re-reads the
+crew-log panel once, so the session folds' cached revisions come from the process now
+serving. The counter is not persisted, because nothing outside one process orders by it.
+
+**The slot frame.** One kind, `slot_projection`, in two shapes. `{slot}` alone is the original
+growth signal and still means "re-read this slot". `{slot, fold, revision, value}` is what
+an eager advance sends. The client keeps the highest revision per (slot, fold), discards
+anything lower OR equal, and seeds its own cache from the value -- so the read is removed
+rather than made cheaper. The seed never moves a cached value backwards: a REST baseline
+raises no floor, so a delayed frame can pass the floor and still be older than what the
+cache holds, and then the held value stays. A fold the client caches under no key of its own falls through to
+the invalidate path, so its reader still learns the board moved.
+
+**A dropped push is safe**, which is the property the dropped WAKE already had and the one
+this must not spend. A listener that raises, a closed loop, a client that reconnects: each
+leaves the memo ahead of the client, and the next lazy read serves the current value. The
+push is currency, never the record. For a SLOT fold a `session/closed` publishes nothing,
+because it DROPS a cell -- a frame carrying the pre-drop value would say the board changed
+to what the client already holds, and one carrying an empty value would claim the record is
+empty. For a SESSION fold it publishes the closing value first, because those folds read it.
+
+**The subscribe floor.** A socket that opens is sent `slot_projection/subscribed`,
+`{revisions: {slot: {fold: revision}}}`, BEFORE it issues any baseline read: the newest
+revision this process has published per cell. A baseline read already on the wire
+resolves into the same cache entry a pushed frame writes, and it resolves LATER, so
+without a floor established first an older response wins by arriving last. The client
+discards any frame at or below its floor and refuses to let a baseline response older
+than it stand: with a value held, the held value stays; with nothing held, the response
+is not kept either and the query reads once more (`StaleBaselineError`, answered by the
+query client's retry). It carries revisions, never values: the tab still reads its own
+baseline.
+
+Nothing is added to the append path: the event is built on the worker thread, and
+`on_fold_advanced` hands it to the loop that owns the sockets exactly as `notify` does.
+A slot value is not coalesced a second time -- the worker already folds each (slot,
+fold) once per batch. A session value is, for the reason section 5 gives.
+
 
 ## 6. The session tree -- the one fold across logs
 

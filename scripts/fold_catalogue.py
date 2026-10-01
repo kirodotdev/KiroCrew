@@ -164,8 +164,14 @@ def catalogue() -> dict[str, Any]:
                 # reports a part as the whole.
                 "mode": "session" if name in proj.SESSION_FOLD_NAMES else "slot",
                 "advertised": name not in proj.INTERNAL_PROJECTION_NAMES,
-                # ``None`` means every entry moves this fold.
-                "affects": None if fold.affects is None else sorted(fold.affects),
+                # ``None`` means every entry moves this fold -- whether the registry
+                # leaves ``affects`` unset or spells out the whole vocabulary, which is
+                # how ``status`` and ``class`` declare it.
+                "affects": (
+                    None
+                    if fold.affects is None or fold.affects >= proj.KNOWN_TYPES
+                    else sorted(fold.affects)
+                ),
                 "answers": _ANSWERS[name],
                 "fields": _field_rows(name),
             }

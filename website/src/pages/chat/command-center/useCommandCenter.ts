@@ -1,11 +1,15 @@
 import { useMemo, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../../api/client'
 import { fmtList } from '../../../i18n/format'
 import { i18nT } from '../../../i18n/t'
 import { useAppSelector } from '../../../store'
 import type { Artifact, SubagentActivity } from '../../../types'
+import { baselineOrHeld } from '../../../hooks/useWebSocket'
 import { buildCommandCenter, effectiveApprovalMode, scopedSlots, slotKey, type PendingQuestion, type WorkItem } from './model'
+
+/** The work board as its route serves it: the folded value plus its revision. */
+type WorkProjection = { value?: { items: WorkItem[]; omitted?: number }; revision?: number }
 
 export const TASK_DASHBOARD_TAG = 'task-dashboard'
 /** Names of the optional sources that can fail. Literal keys, so the catalog
@@ -43,6 +47,9 @@ export function useCommandCenter(root: string | null, enabled = true, scope: 'ta
   const liveWorkflows = useAppSelector(s => s.chat.workflowRuns)
   const connected = useAppSelector(s => s.dashboard.connected)
   const fleet = scope === 'fleet'
+  // Read inside the work query's own `queryFn`, to compare a baseline response
+  // against the value a push may already have put in this key.
+  const queryClient = useQueryClient()
   const scoped = useMemo(() => fleet ? slots : root ? scopedSlots(slots, root) : [], [slots, root, fleet])
   const canRead = enabled && (fleet || !!root && scoped.length > 0)
   const scopedKeySet = useMemo(() => new Set(scoped.map(s => s.key)), [scoped])
@@ -91,7 +98,14 @@ export function useCommandCenter(root: string | null, enabled = true, scope: 'ta
   )
   const work = useQuery({
     queryKey: ['command-center', root, 'work'],
-    queryFn: () => api.sessionWorkProjection(root!) as Promise<{ value?: { items: WorkItem[]; omitted?: number } }>,
+    // Gated on the revision floor the socket handed this tab before any read went
+    // out: a response at or below it describes an older fold than one already
+    // applied here, and letting it land would undo a push by arriving later.
+    queryFn: async () => {
+      const key = ['command-center', root, 'work']
+      const response = (await api.sessionWorkProjection(root!)) as WorkProjection
+      return baselineOrHeld(root!, 'work', response, queryClient.getQueryData<WorkProjection>(key))
+    },
     // The dock is mounted in every chat and the board is a whole-log fold, so it
     // reads the board only where it can be on screen: for a team (workers are
     // what feed it), or for a lone slot whose published view keeps the dock

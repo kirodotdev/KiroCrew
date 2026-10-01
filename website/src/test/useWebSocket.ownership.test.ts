@@ -29,6 +29,8 @@ import * as composerCards from '../hooks/websocket/composerCards'
 import * as retiredIds from '../hooks/websocket/retiredIds'
 import * as bundleReload from '../hooks/websocket/bundleReload'
 import * as attention from '../hooks/websocket/attention'
+import * as slotProjection from '../hooks/websocket/slotProjection'
+import * as sessionProjection from '../hooks/websocket/sessionProjection'
 
 const SRC = join(__dirname, '..')
 const WEBSITE = join(SRC, '..')
@@ -52,7 +54,9 @@ const OWNER_MODULES = [
   'reconnectCatchUp.ts',
   'retiredIds.ts',
   'serverState.ts',
+  'sessionProjection.ts',
   'slotList.ts',
+  'slotProjection.ts',
   'streamBuffers.ts',
   'turnCompletion.ts',
   'voicePlayback.ts',
@@ -88,14 +92,26 @@ describe('one public surface', () => {
       'WS_SILENCE_MAX_MS',
       'WS_SILENCE_MS',
       '__resetRedactionHealForTests',
+      'applySessionProjection',
       'askIdsOf',
+      'baselineOrHeld',
       'consumeUpdateRestartLatch',
+      'crewLogProjectionsKey',
       'emitSlotFocused',
+      'fetchingAnyFoldQuery',
       'healRedactionSwitchAfterReconnect',
       'identityOf',
+      'invalidateBelowFloor',
+      'readSessionProjectionFrame',
       'reconcileQuestions',
+      'recordSlotProjectionFloor',
+      'refetchSessionProjections',
+      'resetSlotProjectionRevisions',
       'resolvedSince',
+      'seedFoldedProjection',
+      'slotProjectionFloor',
       'staleAskIds',
+      'takeFoldedSlotProjection',
       'useWebSocket',
     ])
   })
@@ -114,6 +130,14 @@ describe('one public surface', () => {
     expect(facade.UPDATE_RESTART_LATCH_TTL_MS).toBe(bundleReload.UPDATE_RESTART_LATCH_TTL_MS)
     expect(facade.consumeUpdateRestartLatch).toBe(bundleReload.consumeUpdateRestartLatch)
     expect(facade.emitSlotFocused).toBe(attention.emitSlotFocused)
+    expect(facade.crewLogProjectionsKey).toBe(sessionProjection.crewLogProjectionsKey)
+    expect(facade.applySessionProjection).toBe(sessionProjection.applySessionProjection)
+    expect(facade.readSessionProjectionFrame).toBe(sessionProjection.readSessionProjectionFrame)
+    // The accepted-revision ledger is module state too: a second copy would let a
+    // reset reach a different Map from the gate that reads it.
+    expect(facade.resetSlotProjectionRevisions).toBe(slotProjection.resetSlotProjectionRevisions)
+    expect(facade.takeFoldedSlotProjection).toBe(slotProjection.takeFoldedSlotProjection)
+    expect(facade.seedFoldedProjection).toBe(slotProjection.seedFoldedProjection)
   })
 
   it('no owner imports the facade', () => {

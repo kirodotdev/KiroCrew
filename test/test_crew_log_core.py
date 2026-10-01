@@ -1337,6 +1337,114 @@ def test_a_torn_last_line_is_truncated_on_open():
     assert reopened.append("item/opened", {}, src="gateway").seq == 2
 
 
+def _append_stuck_in_fsync(monkeypatch, crew):
+    """Start an append that has written and flushed its line and is inside a failing fsync.
+
+    Returns the event that lets the fsync fail and the appender thread. Until the event
+    is set the line is in the file and the append lock is held, which is the window a
+    reader without the lock would see a line the rollback then removes.
+    """
+    in_fsync, fail = threading.Event(), threading.Event()
+    real_fsync = store.os.fsync
+
+    def _fsync(fd: int) -> None:
+        # Only the append's own fsync fails; the rollback's fsync is real, so the
+        # failure is the definite "the line is gone" outcome a rollback promises.
+        if threading.current_thread().name != "stuck-appender" or in_fsync.is_set():
+            return real_fsync(fd)
+        in_fsync.set()
+        fail.wait(5)
+        raise OSError(5, "simulated fsync failure")
+
+    monkeypatch.setattr(store.os, "fsync", _fsync)
+
+    def _append() -> None:
+        with pytest.raises(OSError):
+            crew.append("item/opened", {"kept": False}, src="gateway")
+
+    appender = threading.Thread(target=_append, name="stuck-appender", daemon=True)
+    appender.start()
+    assert in_fsync.wait(5)
+    return fail, appender
+
+
+def _read_in_thread(read):
+    """Run *read* on a thread; return (finished event, result box)."""
+    done, box = threading.Event(), {}
+
+    def _run() -> None:
+        try:
+            box["value"] = read()
+        finally:
+            done.set()
+
+    threading.Thread(target=_run, daemon=True).start()
+    return done, box
+
+
+def test_an_open_does_not_see_an_append_whose_fsync_has_not_returned(monkeypatch):
+    # No reader folds bytes the writer has not yet fsynced under its lock: the open's
+    # tail read waits for the append, and the failed fsync's rollback is what it sees.
+    crew = _crew()
+    crew.append("item/opened", {"kept": True}, src="gateway")
+    fail, appender = _append_stuck_in_fsync(monkeypatch, crew)
+    path = lg.crew_log_path(lg.KIND_CREW, CREW)
+    assert path.read_bytes().count(b'"seq":2') == 1  # the in-flight line is on disk
+
+    done, box = _read_in_thread(lambda: CrewLog.open(lg.KIND_CREW, CREW).last_seq)
+    assert not done.wait(0.3), "the open read the tail while the append held the lock"
+    fail.set()
+    appender.join(5)
+    assert done.wait(5)
+
+    assert box["value"] == 1
+
+
+def test_a_held_handle_does_not_read_an_append_whose_fsync_has_not_returned(monkeypatch):
+    # The same rule for a handle opened earlier: each read measures the newest
+    # segment's end under the lock, so an in-flight line is never yielded.
+    crew = _crew()
+    crew.append("item/opened", {"kept": True}, src="gateway")
+    held = CrewLog.open(lg.KIND_CREW, CREW)
+    fail, appender = _append_stuck_in_fsync(monkeypatch, crew)
+
+    done, box = _read_in_thread(lambda: [entry.seq for entry in held.iter_from(1)])
+    assert not done.wait(0.3), "the read walked the file while the append held the lock"
+    fail.set()
+    appender.join(5)
+    assert done.wait(5)
+
+    assert box["value"] == [1]
+
+
+def test_a_torn_tail_still_waits_for_the_lock_before_truncating():
+    # A torn tail may be an append in flight, so its open takes the lock and
+    # reads again: the holder finishing the line means nothing is dropped.
+    crew = _crew()
+    crew.append("item/opened", {"kept": True}, src="gateway")
+    path = lg.crew_log_path(lg.KIND_CREW, CREW)
+    intact = path.read_bytes()
+    finished = b'{"type":"item/opened","seq":2}\n'
+    path.write_bytes(intact + finished[:12])
+    taken, release = threading.Event(), threading.Event()
+
+    def _finish_under_lock() -> None:
+        with store._open_lock(store._lock_path(lg.KIND_CREW, CREW)):
+            taken.set()
+            release.wait(5)
+            path.write_bytes(intact + finished)
+
+    holder = threading.Thread(target=_finish_under_lock, daemon=True)
+    holder.start()
+    assert taken.wait(5)
+    threading.Timer(0.2, release.set).start()
+
+    CrewLog.open(lg.KIND_CREW, CREW)
+    holder.join(5)
+
+    assert path.read_bytes() == intact + finished
+
+
 def test_a_complete_last_line_missing_only_its_newline_is_kept():
     # Only the separator was lost, so the record is real; the next append
     # re-supplies the newline instead of rewriting the line.

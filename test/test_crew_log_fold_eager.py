@@ -26,12 +26,14 @@ import queue
 import threading
 import time
 import unittest.mock
+from collections.abc import Callable, Mapping
 from dataclasses import replace
+from typing import Any
 
 import pytest
 
 from kiro_crew import crew_log as lg
-from kiro_crew.crew_log import CrewLog
+from kiro_crew.crew_log import CrewLog, bus
 from kiro_crew.crew_log import checkpoint as savepoints
 from kiro_crew.crew_log import eager, emit
 from kiro_crew.crew_log import projection as crew_log
@@ -115,30 +117,37 @@ def test_every_fold_declares_its_own_state_version():
     assert all(isinstance(value, int) and value >= 1 for value in versions.values())
 
 
-def test_the_append_paths_wake_filter_covers_every_eager_folds_types():
-    """MUTATION-SENSITIVE: the cheap filter and the registry name the same types.
+def test_the_slot_wake_types_cover_every_eager_slot_folds_types():
+    """MUTATION-SENSITIVE: the slot folds' types are written down where a reader finds them.
 
-    ``note_commit`` runs on every append, and the bulk of a log is entries no eager fold
-    names, so the filter that rejects them is a frozenset of literals -- it loads no
-    registry and imports nothing. The cost of that is a second place the types are
-    written, and the failure it invites is silent: a fold marked eager whose type is
-    missing from the filter looks exactly like a fold working lazily.
-
-    This is what makes that impossible. The types are DERIVED here from the registry, and
-    the filter has to equal them plus ``session/closed``, which is a wake no fold declares
-    because it drops the slot instead of advancing it.
+    ``_WAKE_TYPES`` is not a filter -- every committed entry wakes, because two
+    session folds read every type -- but it is still the one place the slot folds' types
+    and the closer are named together. They are DERIVED here from the registry, so a slot
+    fold whose type is missing fails CI rather than reading as lazy.
     """
     derived = {
         entry_type
-        for name in crew_log.EAGER_FOLD_NAMES
+        for name in crew_log.EAGER_SLOT_FOLD_NAMES
         for entry_type in (crew_log._FOLDS[name].affects or ())
     }
-    assert derived, "no eager fold declares an affects set, so this measured nothing"
+    assert derived, "no eager slot fold declares an affects set, so this measured nothing"
     assert eager._WAKE_TYPES == derived | {"session/closed"}, (
-        f"the append path's filter is {sorted(eager._WAKE_TYPES)} while the registry names "
-        f"{sorted(derived)}: a type in one and not the other is a fold that silently "
-        "stays lazy, or a wake nothing folds"
+        f"the wake set is {sorted(eager._WAKE_TYPES)} while the slot folds name "
+        f"{sorted(derived)}"
     )
+
+
+def test_every_committed_type_wakes_because_session_folds_read_every_type():
+    """MUTATION-SENSITIVE: a ``message/chunk`` wakes the worker, not just a slot type.
+
+    ``status`` and ``class`` consume the whole vocabulary, so an append-path filter would
+    pass everything; one that kept the old slot-only filter would leave both stale.
+    """
+    eager.stop_for_tests()
+    eager.note_commit("s-any", "message/chunk", 3)
+    queued = eager._queue
+    assert queued is not None and not queued.empty(), "a message chunk did not wake"
+    assert queued.get_nowait().entry_type == "message/chunk"
 
 
 def test_a_savepoint_file_records_the_folds_own_version():
@@ -211,12 +220,18 @@ def test_an_eager_fold_with_an_affects_set_is_accepted():
     assert fold.mode == "eager"
 
 
-def test_eager_folds_are_slot_keyed_and_the_rest_stay_lazy():
-    """Eager folding runs through the slot warm path, so an eager fold must be one."""
-    eager = [name for name, fold in crew_log._FOLDS.items() if fold.mode == "eager"]
-    assert eager, "the change is pointless with nothing eager"
-    assert set(eager) <= set(crew_log.SLOT_PROJECTION_NAMES)
-    assert crew_log._FOLDS["timeline"].mode == "lazy"
+def test_every_fold_is_eager_and_each_family_has_a_warm_path():
+    """The rule is "eager unless written down", and today nothing is written down.
+
+    The session-keyed folds are what the dashboard's panel reads, so they are eager like
+    the slot folds; each family is advanced along its own memo, and together they are the
+    whole registry.
+    """
+    assert set(crew_log.EAGER_FOLD_NAMES) == set(crew_log.FOLD_NAMES)
+    assert crew_log.LAZY_FOLD_REASONS == {}
+    assert set(crew_log.EAGER_SLOT_FOLD_NAMES) == set(crew_log.SLOT_PROJECTION_NAMES)
+    assert set(crew_log.EAGER_SESSION_FOLD_NAMES) == set(crew_log.SESSION_FOLD_NAMES)
+    assert not set(crew_log.EAGER_SLOT_FOLD_NAMES) & set(crew_log.EAGER_SESSION_FOLD_NAMES)
 
 
 # --------------------------------------------------------------------------- #
@@ -333,17 +348,21 @@ def test_a_closed_session_drops_the_slots_eager_memos():
 
     Two things this pins beyond the drop itself.
 
-    THE LAZY CELLS STAY. A closer is not always the end of a board: a slot reset, or one
-    worker unit of a live crew, closes while the board goes on. Dropping every
-    ``(home, slot, *)`` memo would take that crew's ``ledger`` and ``radar`` with it --
-    cells no wake ever warmed, whose next read then pays a cold fold nothing asked for.
+    IT IS SCOPED TO THE CLOSING SLOT. A closer is not always the end of a board: a slot
+    reset, or one worker unit of a live crew, closes while the board goes on. Another
+    board's cells are not this closer's to drop, and the case below holds one to prove it.
 
-    AND THE COUNT CEILING IS NOT WHAT DOES IT. Eviction by count fires only when the table
-    is full; below the cap it removes nothing, ever, and a closed board's cell is never
-    re-stored so it never moves towards the back either. On any gateway running fewer than
-    ``SLOT_FOLD_CACHE_SLOTS`` board folds -- the ordinary case -- that cell would sit there
-    for the life of the process. The assertion below records that the table was nowhere
-    near the cap when the drop happened, so the ceiling cannot be the cause.
+    The drop walks ``EAGER_FOLD_NAMES`` rather than passing a bare ``slot=``, and with
+    every slot fold eager (the default) those two now reach the same cells. The loop stays
+    because the RULE is "the closer drops what eager folding warmed", and a slot fold that
+    ever goes back to lazy must not be taken by it.
+
+    AND THE BYTE BUDGET IS NOT WHAT DOES IT. Eviction fires only once the ceiling is
+    exceeded; under it nothing is removed, ever, and a closed board's cell is never
+    re-stored so it never moves towards the back either. On any gateway holding less than
+    :func:`slot_fold_cache_bytes` of cells -- the ordinary case -- that cell would sit
+    there for the life of the process. The assertion below records how far under the
+    ceiling the table was when the drop happened, so the budget cannot be the cause.
     """
     slot = WORK_SLOT
     handle = _slot_log("s-work-6", slot)
@@ -351,14 +370,18 @@ def test_a_closed_session_drops_the_slots_eager_memos():
     eager.note_commit("s-work-6", "work/recorded", seq)
     assert eager.drain(timeout=10.0)
     assert (slot, "work") in _memo_keys()
-    # A lazy fold of the SAME slot, warmed by a read rather than by a wake.
-    crew_log.fold_slot_warm("ledger", ("s-work-6",), slot=slot)
-    assert (slot, "ledger") in _memo_keys(), "the lazy cell this test is about is not warm"
+    # Another board's cell, which this closer has no business touching.
+    other = "dashboard:kept"
+    other_handle = _slot_log("s-work-6-other", other)
+    _work_entry(other_handle, "it-1", slot=other)
+    crew_log.fold_slot_warm("work", ("s-work-6-other",), slot=other)
+    assert (other, "work") in _memo_keys(), "the neighbour cell this test is about is not warm"
 
-    assert len(_memo_keys()) < crew_log.SLOT_FOLD_CACHE_SLOTS, (
-        f"{len(_memo_keys())} cells held against a ceiling of "
-        f"{crew_log.SLOT_FOLD_CACHE_SLOTS}: this case has to sit below the cap, or the "
-        "ceiling could be what drops the cell rather than the closer"
+    held_bytes = sum(memo.weight for memo in crew_log._slot_memos.values())
+    assert held_bytes < crew_log.slot_fold_cache_bytes(), (
+        f"{held_bytes:,} bytes held against a ceiling of "
+        f"{crew_log.slot_fold_cache_bytes():,}: this case has to sit under the budget, or "
+        "eviction could be what drops the cell rather than the closer"
     )
 
     closed = handle.append("session/closed", {"reason": "done"}, src=GATEWAY)
@@ -366,22 +389,59 @@ def test_a_closed_session_drops_the_slots_eager_memos():
     assert eager.drain(timeout=10.0)
 
     assert (slot, "work") not in _memo_keys()
-    assert (slot, "ledger") in _memo_keys(), (
-        f"the closer took a lazy fold with it; warm = {sorted(_memo_keys())}. It drops what "
-        "eager folding warmed, not every fold the slot has"
+    assert (other, "work") in _memo_keys(), (
+        f"the closer took another board's cell with it; warm = {sorted(_memo_keys())}. It "
+        "drops the slot that closed, not every slot this process folded"
     )
 
 
-def test_the_count_ceiling_evicts_back_to_a_cold_fold(monkeypatch):
-    """Past the retained-cell ceiling the least recently stored memo goes.
+def _one_item_cell_bytes(name: str, items: int = 1) -> int:
+    """What a ``name`` cell holding *items* records is charged, read off a stored memo.
 
-    The memos are an optimization with no answer of their own, so the ceiling is spent on
-    the slots being written now and an evicted one pays one refold. Measured bound rather
-    than an argued one: the largest cell any slot fold can hold is ``radar`` at its item
-    cap, 995,342 bytes, so a full table of those is 60.8 MiB -- which is why a count
-    ceiling is the whole bound and a byte ceiling on top of it never fires.
+    Read off the memo rather than computed here, because the charge is
+    ``(rows + 1) x row cost`` and the row count is the fold's own counter's to give.
     """
-    monkeypatch.setattr(crew_log, "SLOT_FOLD_CACHE_SLOTS", 1)
+    slot = f"dashboard:weigh-{name}-{items}"
+    unit = f"s-weigh-{name}-{items}"
+    handle = _slot_log(unit, slot)
+    if name == "panel":
+        handle.append(
+            "panel/published",
+            {"crew_key": "c0", "template": "t", "title": "a", "data": {"k": "v"}},
+            src=GATEWAY,
+        )
+    else:
+        for index in range(items):
+            _work_entry(handle, f"it-{index}", slot=slot)
+    crew_log.fold_slot_warm(name, (unit,), slot=slot)
+    weight = next(memo.weight for key, memo in crew_log._slot_memos.items() if key[1] == slot)
+    crew_log.forget_slot_folds(slot=slot, name=name)
+    return weight
+
+
+def _work_cell_ceiling(monkeypatch, cells: int) -> None:
+    """Set the byte ceiling to exactly *cells* one-item ``work`` cells, via the real variable.
+
+    Through the ENV VAR rather than by patching a constant, because that is the knob an
+    operator has and :func:`slot_fold_cache_bytes` reads it per call -- so a test that
+    patched a module attribute instead would be pinning a path production does not take.
+    """
+    monkeypatch.setenv(
+        crew_log.SLOT_FOLD_CACHE_BYTES_ENV, str(_one_item_cell_bytes("work") * cells)
+    )
+
+
+def test_the_byte_budget_evicts_back_to_a_cold_fold(monkeypatch):
+    """Past the resident-byte ceiling the least recently stored memo goes.
+
+    The memos are an optimization with no answer of their own, so the budget is spent on
+    the slots being written now and an evicted one pays one refold.
+
+    IN BYTES, not in cells, because the cells are not comparable: a ``radar`` cell at its
+    declared caps is charged 24,402 MiB against a ``panel`` cell's 10.1 MiB, so a count
+    ceiling priced a resident total across orders of magnitude with no number moving.
+    """
+    _work_cell_ceiling(monkeypatch, 1)
     slots = ["dashboard:20", "dashboard:21", "dashboard:22"]
     for index, slot in enumerate(slots):
         handle = _slot_log(f"s-budget-{index}", slot)
@@ -389,10 +449,61 @@ def test_the_count_ceiling_evicts_back_to_a_cold_fold(monkeypatch):
         eager.note_commit(f"s-budget-{index}", "work/recorded", seq, board=slot)
         assert eager.drain(timeout=10.0)
 
-    assert len(_memo_keys()) == 1, "a one-cell ceiling keeps only the newest memo"
+    assert len(_memo_keys()) == 1, "a budget of one work cell keeps only the newest memo"
     assert (slots[-1], "work") in _memo_keys()
     # Correctness is untouched: the evicted slot still folds its own record.
     assert crew_log.read_slot_projection(slots[0], "work").value["items"]
+
+
+def test_the_byte_budget_keeps_more_small_cells_than_large_ones(monkeypatch):
+    """MUTATION-SENSITIVE: the charge follows each CELL's size, so cheap cells keep more.
+
+    This is the behaviour a count ceiling could not express and the whole reason for the
+    reversal. One budget, two kinds of cell: at a ceiling of four one-item ``work`` cells
+    the same bytes hold more one-document ``panel`` cells when a panel cell is charged
+    less, and fewer when it is charged more -- either way the counts DIFFER, where a
+    table charging every cell the same holds four of each.
+    """
+    work_cell = _one_item_cell_bytes("work")
+    panel_cell = _one_item_cell_bytes("panel")
+    budget = work_cell * 4
+    monkeypatch.setenv(crew_log.SLOT_FOLD_CACHE_BYTES_ENV, str(budget))
+    expected_panel = budget // panel_cell
+    assert expected_panel != 4, (
+        f"a panel cell is charged {panel_cell:,} against work's {work_cell:,}; this case "
+        "needs them to differ enough that the two folds hold different counts"
+    )
+
+    for index in range(12):
+        unit = f"s-small-{index}"
+        slot = f"dashboard:small-{index}"
+        handle = _slot_log(unit, slot)
+        handle.append(
+            "panel/published",
+            {"crew_key": f"c{index}", "template": "t", "title": "a", "data": {"k": "v"}},
+            src=GATEWAY,
+        )
+        crew_log.fold_slot_warm("panel", (unit,), slot=slot)
+    panels = len(_memo_keys())
+
+    crew_log.forget_slot_folds()
+    for index in range(12):
+        unit = f"s-big-{index}"
+        slot = f"dashboard:big-{index}"
+        handle = _slot_log(unit, slot)
+        _work_entry(handle, "it-0", slot=slot)
+        crew_log.fold_slot_warm("work", (unit,), slot=slot)
+    works = len(_memo_keys())
+
+    assert works == 4, f"four work cells fit the budget, {works} held"
+    assert panels == expected_panel, (
+        f"the same budget held {panels} panel cells where its bytes allow "
+        f"{expected_panel}; the charge is not following each fold's own measured cost"
+    )
+    assert panels != works, (
+        f"{panels} panel cells against {works} work cells: cells of different sizes must "
+        "keep different counts out of one budget, which a count ceiling cannot do"
+    )
 
 
 def test_an_advanced_cell_moves_to_the_back_and_outlives_an_older_neighbour(monkeypatch):
@@ -404,11 +515,16 @@ def test_an_advanced_cell_moves_to_the_back_and_outlives_an_older_neighbour(monk
     declares and the eager worker depends on: a board being written now is stored on every
     wake and must not be the one that goes.
 
-    Three boards at a ceiling of two, and the discriminating step is the middle one: board
-    A is advanced by a fresh entry AFTER B is folded, so with the move A sits behind B and
-    C's arrival evicts B. Without it A is still at the front and C's arrival evicts A.
+    Three boards at a budget of two cells, and the discriminating step is the middle one:
+    board A is advanced by a fresh entry AFTER B is folded, so with the move A sits behind
+    B and C's arrival evicts B. Without it A is still at the front and C's arrival evicts A.
+
+    The ceiling is A-after-its-second-item plus one one-item cell, because a cell is
+    charged what it holds: A grows when it is advanced, and a ceiling of two one-item
+    cells would then evict for size rather than for order.
     """
-    monkeypatch.setattr(crew_log, "SLOT_FOLD_CACHE_SLOTS", 2)
+    ceiling = _one_item_cell_bytes("work", items=2) + _one_item_cell_bytes("work")
+    monkeypatch.setenv(crew_log.SLOT_FOLD_CACHE_BYTES_ENV, str(ceiling))
     boards = {}
     for index, slot in enumerate(("dashboard:30", "dashboard:31")):
         unit = f"s-lru-{index}"
@@ -431,7 +547,7 @@ def test_an_advanced_cell_moves_to_the_back_and_outlives_an_older_neighbour(monk
     crew_log.fold_slot_warm("work", (third_unit,), slot=third)
 
     held = _memo_keys()
-    assert len(held) == 2, f"a two-cell ceiling should hold two memos, holds {sorted(held)}"
+    assert len(held) == 2, f"a two-cell budget should hold two memos, holds {sorted(held)}"
     assert (third, "work") in held, "the newest fold is not held at all"
     assert (first, "work") in held, (
         f"the cell advanced most recently was evicted; held = {sorted(held)}. A store has to "
@@ -902,56 +1018,273 @@ def test_two_concurrent_folds_never_pair_one_passs_seq_with_anothers_state():
     )
 
 
-def test_the_recorded_worst_case_cell_size_is_derived_not_asserted():
-    """The byte figure the removed ceiling was decided on, re-derived here.
+def _state_bytes(name: str, unit: str, slot: str) -> int:
+    """The warm cell for *name*, weighed the way the recorded row costs were weighed."""
+    folded = crew_log.fold_slot_warm(name, (unit,), slot=slot)
+    return len(json.dumps(folded.state, ensure_ascii=False).encode("utf-8"))
 
-    ``crew-log-projection.md`` says the largest cell any slot fold can hold is ``radar``
-    at its item cap, and that 64 of those is 60.8 MiB -- which is the whole argument for
-    bounding the table by COUNT and adding no byte ceiling. A number in prose drifts; this
-    recomputes it, so a fold whose state grows past what that decision assumed fails here
-    instead of quietly invalidating the spec.
 
-    A band rather than an exact byte, because the decision rests on the order of
-    magnitude: the point is that a full table stays near the 64 MiB a byte ceiling would
-    have spent, not that it is 63,701,888 bytes.
-    """
-    slot = "dashboard:worst-cell"
-    handle = _slot_log("s-worst", slot)
-    label = "n" * crew_log.TEXT_LIMIT
-    appended = 0
-    for number in range(crew_log.RADAR_ITEM_LIMIT + 4):
+#: Free text past every clamp a fold applies, so each field lands AT the fold's own clamp
+#: -- the only width a per-row cost may be measured at. In the widest UTF-8 character
+#: (4 bytes), because the folds clamp by CHARACTERS: an ASCII row is a quarter of the
+#: bytes the same clamp admits.
+_WIDE = "\U0001f600" * 6000
+
+#: The one exception: a ``panel`` row is one entry's document kept whole, so the entry's
+#: own byte cap binds rather than a character clamp. An entry stores a non-ASCII
+#: character escaped (up to 12 bytes) where the state holds at most 4, so ASCII, at one
+#: byte in both, is the text that fills that row widest.
+_WIDE_ASCII = "n" * 6000
+
+#: Rows driven to measure a marginal cost. Enough that the per-cell header is noise.
+_ROWS = 40
+
+
+def _append_row(handle: CrewLog, name: str, slot: str, index: int) -> None:
+    """One row of *name*'s WIDEST kind, every text field at the fold's clamp."""
+    if name == "ledger":
         handle.append(
-            RADAR_ENTRY_TYPE,
+            "ledger/recorded",
             {
-                "crew_id": label[:64],
-                "repo": label[:64],
-                "owner": label[:64],
-                "number": number + 1,
-                "event": label[:200],
-                "event_kind": "investigate",
-                "phase": "investigating",
-                "why": label[:200],
-                "next": label[:200],
-                "branch": label[:100],
-                "worktree": label[:200],
-                "base_sha": "a" * 40,
-                "outcome": label[:120],
-                "decision": label[:120],
+                "slot": slot,
+                "tried": {
+                    "approach": f"{index:04d}{_WIDE}"[: crew_log.LEDGER_TEXT_LIMIT],
+                    "rejected_because": _WIDE[: crew_log.LEDGER_TEXT_LIMIT],
+                },
             },
             src=GATEWAY,
         )
-        appended += 1
-    assert appended > crew_log.RADAR_ITEM_LIMIT, "the fixture must push past the item cap"
+    elif name == "work":
+        handle.append(
+            "work/recorded",
+            {
+                "slot": slot,
+                "actor": "conductor",
+                "by": slot,
+                "action": "create",
+                "item_id": f"it-{index:06d}",
+                "title": _WIDE[:200],
+                "summary": _WIDE[:500],
+                "decision": _WIDE[:2000],
+                "acceptance": {"kind": "pr_checks", "pr": index + 1, "repo": _WIDE[:120]},
+            },
+            src=GATEWAY,
+        )
+    elif name == "panel":
+        handle.append(
+            "panel/published",
+            {
+                "crew_key": f"{_WIDE_ASCII[: crew_log.PANEL_CREW_KEY_LIMIT - 4]}{index:04d}",
+                "crew": _WIDE_ASCII[: crew_log.PANEL_TITLE_LIMIT],
+                "template": _WIDE_ASCII[: crew_log.PANEL_TEMPLATE_LIMIT],
+                "title": _WIDE_ASCII[: crew_log.PANEL_TITLE_LIMIT],
+                "data": {f"k{key:03d}": _WIDE_ASCII[:200] for key in range(240)},
+            },
+            src=GATEWAY,
+        )
+    else:
+        _append_radar_item(handle, index)
 
-    folded = crew_log.fold_slot_warm("radar", ("s-worst",), slot=slot)
-    cell = len(json.dumps(folded.state, ensure_ascii=False).encode("utf-8"))
-    table = cell * crew_log.SLOT_FOLD_CACHE_SLOTS
-    recorded = 60.8 * 1024 * 1024
-    assert 0.65 * recorded <= table <= 1.35 * recorded, (
-        f"a full table of worst-case cells measures {table:,} bytes "
-        f"({table / 1024 / 1024:.1f} MiB); the spec records 60.8 MiB and the decision to "
-        "bound by count alone rests on it -- re-measure and update both"
+
+def _append_radar_item(handle: CrewLog, index: int) -> None:
+    """One ``radar`` item with EVERY field it keeps at its clamp, one field per entry.
+
+    No single entry can carry them all: at 4 bytes a character, each free-text field is
+    most of an entry's byte cap on its own. The item is the widest row this fold keeps;
+    its companion rows (the progress line each entry adds, a phase line, the update
+    digest) are far narrower.
+    """
+    limit = crew_log.RADAR_TEXT_LIMIT
+    base = {"crew_id": _WIDE[:64], "number": index + 1, "event_kind": "investigate", "event": "e"}
+    # Every entry names the repository, but only the first one's is kept (and copied
+    # into each item), so only that one carries it at its clamp.
+    wide = _WIDE[:256] if index == 0 else "o"
+    handle.append(
+        RADAR_ENTRY_TYPE, {**base, "owner": wide, "repo": wide, "phase": "resolved"}, src=GATEWAY
     )
+    base = {**base, "owner": "o", "repo": "o"}
+    fields: list[dict[str, Any]] = [
+        {name: _WIDE[:limit]}
+        for name in ("decision", "why", "next", "worktree", "branch", "base_sha", "outcome")
+    ]
+    fields.append({"labels_applied": [_WIDE[:256]] * crew_log.RADAR_LABELS_LIMIT})
+    fields.append({"ci_state": {"state": _WIDE[:32], "passed": 1, "total": 1, "round": 1}})
+    for field in fields:
+        handle.append(RADAR_ENTRY_TYPE, {**base, **field}, src=GATEWAY)
+
+
+def _widest_radar_item(state: Mapping[str, Any]) -> int:
+    """The serialized bytes of the widest ``radar`` item *state* holds."""
+    return max(
+        len(json.dumps(item, ensure_ascii=False).encode("utf-8"))
+        for item in state["items"].values()
+    )
+
+
+@pytest.mark.parametrize("name", crew_log.SLOT_PROJECTION_NAMES)
+def test_every_slot_folds_row_cost_is_derived_from_its_own_rows(name):
+    """MUTATION-SENSITIVE: each recorded per-row charge is re-measured, not asserted.
+
+    The budget charges a cell ``(rows + 1) x`` its fold's row cost, so every figure in
+    ``_SLOT_FOLD_ROW_BYTES`` is load bearing: too low and the ceiling admits more bytes
+    than it says. The cost is the MARGINAL bytes per counted row of the fold's widest
+    kind, ``(bytes at N entries - bytes at 1) / (rows at N - rows at 1)``, with every text
+    field at the fold's own clamp; a clamp raised without re-measuring fails here.
+
+    Two bounds. The charge must be AT LEAST the measured cost, and a whole driven cell
+    must weigh no more than it is charged, or the budget is not a bound. And it must be
+    within 10x, so a figure left far above the truth after a clamp is LOWERED fails too:
+    one figure per fold covers its widest row kind, so an average over mixed kinds sits
+    below it by design (``radar``'s skip and event rows, ``work``'s event tail).
+    """
+    slot = f"dashboard:row-{name}"
+    unit = f"s-row-{name}"
+    handle = _slot_log(unit, slot)
+    count = crew_log._FOLDS[name].count_rows
+    _append_row(handle, name, slot, 0)
+    one = _state_bytes(name, unit, slot)
+    one_rows = count(crew_log.fold_slot_warm(name, (unit,), slot=slot).state)
+    for index in range(1, _ROWS):
+        _append_row(handle, name, slot, index)
+    many = _state_bytes(name, unit, slot)
+    many_rows = count(crew_log.fold_slot_warm(name, (unit,), slot=slot).state)
+    assert many_rows > one_rows, f"the {name} fixture added no counted rows"
+    measured = (many - one) / (many_rows - one_rows)
+    recorded = crew_log.slot_fold_row_bytes(name)
+    state = crew_log.fold_slot_warm(name, (unit,), slot=slot).state
+    if name == "radar":
+        # Each item brings narrow companion rows, so the average sits far below the
+        # item; the figure must cover the item itself.
+        measured = _widest_radar_item(state)
+    assert many <= crew_log.slot_fold_cell_bytes(name, state), (
+        f"a driven {name} cell weighs {many:,} bytes and is charged "
+        f"{crew_log.slot_fold_cell_bytes(name, state):,}: the charge is not an upper bound"
+    )
+    assert measured <= recorded <= 10 * measured, (
+        f"one {name} row measures {measured:,.0f} bytes ({many_rows - one_rows} rows over "
+        f"{_ROWS - 1} entries) against the recorded {recorded:,}; the byte budget charges "
+        "every row of this fold that figure -- re-measure and update _SLOT_FOLD_ROW_BYTES "
+        "and docs/system-specs/modules/crew-log-projection.md"
+    )
+
+
+def test_a_cells_charge_counts_the_rows_nested_inside_each_item():
+    """MUTATION-SENSITIVE: ``count_rows`` walks INTO each item, not just the top level.
+
+    A work item carries its own event tail, and that nesting is why a per-cell figure
+    could not bound these states. A counter that stopped at ``items`` would charge a
+    board with one item and two hundred events as one row.
+    """
+    slot = "dashboard:nested"
+    unit = "s-nested"
+    handle = _slot_log(unit, slot)
+    _work_entry(handle, "it-0", slot=slot)
+    flat = crew_log.fold_slot_warm("work", (unit,), slot=slot)
+    flat_rows = crew_log._FOLDS["work"].count_rows(flat.state)
+    for _ in range(10):
+        handle.append(
+            "work/recorded",
+            {
+                "slot": slot,
+                "actor": "conductor",
+                "by": slot,
+                "action": "decide",
+                "item_id": "it-0",
+                "decision": "d",
+                "event_kind": "decision",
+                "event": "e",
+            },
+            src=GATEWAY,
+        )
+    deep = crew_log.fold_slot_warm("work", (unit,), slot=slot)
+    events = len(deep.state["items"]["it-0"]["events"])
+    assert events > 1, "the fixture added no events to the item, so this measures nothing"
+    assert crew_log._FOLDS["work"].count_rows(deep.state) >= flat_rows + events - 1
+    assert crew_log.slot_fold_cell_bytes("work", deep.state) > crew_log.slot_fold_cell_bytes(
+        "work", flat.state
+    )
+
+
+def test_a_work_cell_is_charged_for_the_values_it_keeps_whole():
+    """MUTATION-SENSITIVE: ``acceptance``, ``artifacts`` and parked entries have no clamp.
+
+    The store caps every work field but ``acceptance``, and the fold keeps it, an
+    ``artifacts`` map and each parked entry WHOLE -- so a near-limit one weighs far more
+    than the 2,705-byte row cost. Drop ``count_opaque`` from the ``work`` fold and these
+    cells weigh more than they are charged.
+    """
+    slot = "dashboard:opaque"
+    unit = "s-opaque"
+    handle = _slot_log(unit, slot)
+    bulk = "a" * 40_000
+    handle.append(
+        "work/recorded",
+        {
+            "slot": slot,
+            "actor": "conductor",
+            "by": slot,
+            "action": "create",
+            "item_id": "it-0",
+            "title": "t",
+            "acceptance": {"kind": "human_approval", "note": bulk},
+        },
+        src=GATEWAY,
+    )
+    handle.append(
+        "work/recorded",
+        {
+            "slot": slot,
+            "actor": "worker",
+            "by": slot,
+            "action": "report",
+            "item_id": "it-0",
+            "status": "progress",
+            "artifacts": {"log": bulk},
+        },
+        src=GATEWAY,
+    )
+    # An entry for an item the board has not seen is parked whole.
+    handle.append(
+        "work/recorded",
+        {
+            "slot": slot,
+            "actor": "worker",
+            "by": slot,
+            "action": "report",
+            "item_id": "it-unseen",
+            "status": "progress",
+            "summary": "s",
+            "artifacts": {"log": bulk},
+        },
+        src=GATEWAY,
+    )
+    state = crew_log.fold_slot_warm("work", (unit,), slot=slot).state
+    assert state["items"]["it-0"]["acceptance"]["note"] == bulk
+    assert state["items"]["it-0"]["artifacts"] == {"log": bulk}
+    assert state["parked"]["it-unseen"], "the fixture parked nothing, so this measures nothing"
+    weighed = _state_bytes("work", unit, slot)
+    assert weighed > 3 * len(bulk)
+    assert weighed <= crew_log.slot_fold_cell_bytes("work", state), (
+        f"a work cell weighs {weighed:,} bytes and is charged "
+        f"{crew_log.slot_fold_cell_bytes('work', state):,}: its whole-kept values are not charged"
+    )
+    assert crew_log._FOLDS["work"].count_opaque(state) == 3
+
+
+def test_a_cell_above_the_whole_ceiling_is_served_but_not_kept(monkeypatch):
+    """A cell that cannot fit is refused rather than parked or made room for.
+
+    Parking it would hold its bytes until the next store; evicting everything else first
+    would empty the table for a cell that still does not fit. The read still answers.
+    """
+    slot = "dashboard:huge"
+    unit = "s-huge"
+    handle = _slot_log(unit, slot)
+    _work_entry(handle, "it-0", slot=slot)
+    monkeypatch.setenv(crew_log.SLOT_FOLD_CACHE_BYTES_ENV, "1")
+    folded = crew_log.fold_slot_warm("work", (unit,), slot=slot)
+    assert folded.state["items"], "the read must still answer"
+    assert (slot, "work") not in _memo_keys()
 
 
 def test_a_finished_fold_keeps_no_lock_for_the_slot_it_folded():
@@ -1076,10 +1409,44 @@ def test_an_entry_after_the_closer_leaves_its_fold_warm(monkeypatch):
         "took the key and the later entry was discarded"
     )
     held = crew_log._slot_memos[(str(crew_log.data_home()), slot, "work")]
-    reached = crew_log._slot_checkpoint("work", held)
+    reached, _revision = crew_log._slot_checkpoint("work", held)
     assert reached.last_seq == after, (
         f"the warm fold stands at seq {reached.last_seq}, not at the post-closer entry "
         f"{after}: the drop was applied after the advance"
+    )
+
+
+def test_a_later_entry_of_another_type_does_not_hide_a_slot_folds_advance(monkeypatch):
+    """MUTATION-SENSITIVE: coalescing keeps one wake per TYPE, not one per (unit, board).
+
+    Which slot folds a wake moves is decided by its type. A ``work/recorded`` followed in
+    the same batch by an entry the work fold does not read (``panel/published`` here)
+    collapsed, under a (unit, board) key, onto the later wake alone -- so the work fold
+    was never advanced and the eager board sat stale until a reader folded it lazily.
+    """
+    slot = WORK_SLOT
+    handle = _slot_log("s-mixed-batch", slot)
+    seq = _work_entry(handle, "it-mixed", slot=slot)
+    later_type = "panel/published"
+    assert not crew_log._FOLDS["work"].touched_by_type(
+        later_type
+    ), "the fixture needs a later type the work fold does not read"
+
+    eager.stop_for_tests()
+    monkeypatch.setattr(eager, "_run", lambda: None)
+    eager.note_commit("s-mixed-batch", "work/recorded", seq, board=slot)
+    eager.note_commit("s-mixed-batch", later_type, seq + 1, board=slot)
+    crew_log.forget_slot_folds()
+
+    queued = eager._queue
+    assert queued is not None, "the wakes were never queued"
+    batch, closers, _taken = eager._coalesce(queued.get_nowait())
+    eager._fold_batch(batch, closers)
+
+    warm = {(key[1], key[2]) for key in crew_log._slot_memos}
+    assert (slot, "work") in warm, (
+        f"the work fold was not advanced; warm = {sorted(warm)}. The later wake of another "
+        "type took the coalescing key and the work wake was dropped"
     )
 
 
@@ -1414,3 +1781,261 @@ def test_a_stop_wakes_the_parked_worker_instead_of_waiting_out_its_poll(monkeypa
         f"the stop took {elapsed:.1f}s against a {parked:.0f}s poll interval: it waited for "
         "the parked get to lapse instead of waking it"
     )
+
+
+# --------------------------------------------------------------------------- #
+# 4. Eager is the DEFAULT, and lazy is an exception that has to say why
+# --------------------------------------------------------------------------- #
+
+
+def test_every_fold_is_eager_or_carries_a_reason_to_be_lazy():
+    """MUTATION-SENSITIVE: the posture is decided in the declaration, never by omission.
+
+    The flip this pins is not a list of folds -- it is where the burden sits. ``mode``
+    defaults to ``"eager"`` and ``_Fold`` REFUSES a lazy fold with no ``lazy_reason``, so a
+    fold added without thinking about its posture is eager, and one that stays lazy has
+    said why in its own declaration. Before the flip the default was lazy, which is how
+    four slot folds a dashboard polls on a timer stayed lazy with nobody having decided.
+    """
+    for name, fold in crew_log._FOLDS.items():
+        assert fold.mode in ("eager", "lazy"), f"{name} declares mode {fold.mode!r}"
+        if fold.mode == "lazy":
+            assert fold.lazy_reason.strip(), (
+                f"the {name} fold is lazy with no reason; eager is the default, so an "
+                "exception has to state its ground in the declaration"
+            )
+        else:
+            assert not fold.lazy_reason, (
+                f"the eager {name} fold carries a lazy_reason, which describes a posture "
+                "this registry no longer holds"
+            )
+
+
+def test_a_lazy_fold_declared_without_a_reason_is_refused():
+    """MUTATION-SENSITIVE: the requirement is in the TYPE, not only in the pin above.
+
+    A test that merely walks the registry passes the moment someone adds a reason; this is
+    what makes a reason impossible to leave out in the first place.
+    """
+    with pytest.raises(ValueError, match="lazy with no lazy_reason"):
+        replace(crew_log._FOLDS["work"], mode="lazy", lazy_reason="")
+
+
+def test_an_eager_fold_declared_with_a_lazy_reason_is_refused():
+    """A reason left behind a flip would describe a posture the registry does not hold."""
+    with pytest.raises(ValueError, match="carries a lazy_reason"):
+        replace(crew_log._FOLDS["work"], lazy_reason="left over from when it was lazy")
+
+
+def test_a_fold_with_no_mode_written_down_is_eager():
+    """The default itself, asserted on a fold built without naming a mode."""
+    built = crew_log._Fold(
+        "probe",
+        crew_log._FOLDS["work"].start,
+        crew_log._FOLDS["work"].step,
+        crew_log._FOLDS["work"].render,
+        affects=frozenset({"work/recorded"}),
+    )
+    assert built.mode == "eager"
+
+
+def test_status_and_class_declare_the_whole_vocabulary_rather_than_none():
+    """``affects=None`` read as both "every type" and "not decided yet". Now it says which.
+
+    Both are eager, and the wide set is WHY every committed entry wakes the worker; what
+    spelling it out buys is that a reader of the registry can tell a fold that genuinely
+    consumes everything from one whose posture was never written down.
+    """
+    for name in ("status", "class"):
+        affects = crew_log._FOLDS[name].affects
+        assert affects is not None, f"{name} still leaves affects undeclared"
+        assert affects == crew_log.KNOWN_TYPES, (
+            f"{name} declares {len(affects)} types against the vocabulary's "
+            f"{len(crew_log.KNOWN_TYPES)}; these two are moved by every entry"
+        )
+
+
+# --------------------------------------------------------------------------- #
+# 5. The push: an advanced fold reaches a listener with a value and a revision
+# --------------------------------------------------------------------------- #
+
+
+def _slot_events(sink: list) -> "Callable[[Any], None]":
+    """A bus subscriber appending each SLOT event as ``(slot, fold, revision, value)``."""
+
+    def subscriber(event) -> None:
+        if event.scope == bus.SCOPE_SLOT:
+            sink.append((event.key, event.fold, event.revision, event.value))
+
+    return subscriber
+
+
+@pytest.fixture
+def pushed():
+    """Every ``(slot, fold, revision, value)`` an eager advance published in this test."""
+    seen: list[tuple[str, str, int, dict]] = []
+    bus.reset_for_tests()
+    bus.subscribe(bus.FOLD_ADVANCED, _slot_events(seen))
+    yield seen
+    bus.reset_for_tests()
+
+
+def test_an_advanced_fold_is_pushed_with_its_value_and_revision(pushed):
+    """The folded value reaches a consumer, not just the memo.
+
+    An eager advance that only STORED the value would still leave a dashboard reading it.
+    The frame carries the value, so the read is removed rather than made cheap.
+    """
+    slot = WORK_SLOT
+    handle = _slot_log("s-push-1", slot)
+    seq = _work_entry(handle, "it-pushed")
+    eager.note_commit("s-push-1", "work/recorded", seq, board=slot)
+    assert eager.drain(timeout=10.0)
+
+    assert pushed, "an eager advance published nothing; the dashboard still has to poll"
+    board, fold, revision, value = pushed[-1]
+    assert (board, fold) == (slot, "work")
+    assert revision > 0, "a frame with no revision cannot be ordered by its client"
+    assert [item["item_id"] for item in value["items"]] == [
+        "it-pushed"
+    ], f"the pushed value is not this board's record: {value}"
+
+
+def test_a_burst_pushes_once_per_board_rather_than_once_per_entry(pushed):
+    """MUTATION-SENSITIVE: the worker's coalesce is what bounds the frames, not a timer.
+
+    A turn writes several entries. The worker drains its whole queue per batch and folds
+    each (slot, fold) once, so the push inherits that and needs no second coalesce window
+    -- which is why the slot half of ``CrewLogPublisher.on_fold_advanced`` adds none.
+    """
+    slot = WORK_SLOT
+    handle = _slot_log("s-push-2", slot)
+    # Queued while the worker is stopped, so all three are in ONE batch.
+    eager.stop_for_tests()
+    bus.reset_for_tests()
+    seen: list[tuple[str, str, int, dict]] = []
+    bus.subscribe(bus.FOLD_ADVANCED, _slot_events(seen))
+    seqs = [_work_entry(handle, f"it-{index}", slot=slot) for index in range(3)]
+    for seq in seqs:
+        eager.note_commit("s-push-2", "work/recorded", seq, board=slot)
+    queued = eager._queue
+    assert queued is not None, "the wakes were never queued"
+    batch, closers, _taken = eager._coalesce(queued.get_nowait())
+    eager._fold_batch(batch, closers)
+
+    assert len(seen) == 1, (
+        f"three entries of one board published {len(seen)} frames; the push is not "
+        "inheriting the worker's per-batch coalesce"
+    )
+    assert [item["item_id"] for item in seen[0][3]["items"]] == ["it-0", "it-1", "it-2"]
+
+
+def test_a_listener_that_raises_does_not_stop_the_fold(pushed):
+    """A dropped push is safe, which is the property the dropped WAKE already had.
+
+    The memo is still advanced and the next lazy read serves the current value, so a
+    listener's own failure costs a client latency and never an answer.
+    """
+    bus.reset_for_tests()
+    bus.subscribe(bus.FOLD_ADVANCED, lambda _event: (_ for _ in ()).throw(RuntimeError("no")))
+    landed: list[tuple] = []
+    bus.subscribe(bus.FOLD_ADVANCED, _slot_events(landed))
+
+    slot = WORK_SLOT
+    handle = _slot_log("s-push-3", slot)
+    seq = _work_entry(handle, "it-raise", slot=slot)
+    eager.note_commit("s-push-3", "work/recorded", seq, board=slot)
+    assert eager.drain(timeout=10.0)
+
+    assert (slot, "work") in _memo_keys(), "the raising listener cost the fold its memo"
+    assert landed, "a listener registered after the raising one was never called"
+    assert crew_log.read_slot_projection(slot, "work").value[
+        "items"
+    ], "the read path cannot serve the board a failed push was about"
+
+
+def test_a_closer_pushes_nothing_because_it_drops_rather_than_advances(pushed):
+    """``session/closed`` removes a cell; there is no value to publish for a removal.
+
+    A frame carrying the pre-drop value would tell a client the board just changed to what
+    it already held, and a frame carrying an empty one would claim the record is empty.
+    """
+    slot = "dashboard:push-closed"
+    handle = _slot_log("s-push-4", slot)
+    seq = _work_entry(handle, "it-0", slot=slot)
+    eager.note_commit("s-push-4", "work/recorded", seq, board=slot)
+    assert eager.drain(timeout=10.0)
+    before = len(pushed)
+
+    closed = handle.append("session/closed", {"reason": "done"}, src=GATEWAY)
+    eager.note_commit("s-push-4", "session/closed", int(closed.seq))
+    assert eager.drain(timeout=10.0)
+
+    assert (
+        len(pushed) == before
+    ), f"the closer published {len(pushed) - before} frame(s); a drop has no value to send"
+
+
+def test_each_push_of_one_board_carries_a_higher_revision_than_the_last(pushed):
+    """The client rule is "keep the highest", so successive pushes have to rise."""
+    slot = "dashboard:push-rising"
+    handle = _slot_log("s-push-5", slot)
+    for index in range(3):
+        seq = _work_entry(handle, f"it-{index}", slot=slot)
+        eager.note_commit("s-push-5", "work/recorded", seq, board=slot)
+        assert eager.drain(timeout=10.0)
+
+    revisions = [frame[2] for frame in pushed if frame[0] == slot]
+    assert len(revisions) >= 2, f"only {len(revisions)} frame(s) for this board"
+    assert revisions == sorted(set(revisions)), (
+        f"the revisions this board pushed were {revisions}; a client keeping the highest "
+        "would discard a value it should have taken"
+    )
+
+
+def test_a_wake_for_a_cell_above_the_ceiling_performs_no_fold(monkeypatch):
+    """MUTATION-SENSITIVE: a cell the table refused is not folded again on every wake.
+
+    A cell whose charge is above the whole ceiling (``radar`` at its caps) cannot be kept,
+    so an eager pass for it is a cold fold of every unit the slot ran under, thrown away.
+    After the first refusal the worker leaves it to the read path, which still answers.
+    """
+    slot = "dashboard:oversize"
+    unit = "s-oversize"
+    handle = _slot_log(unit, slot)
+    _work_entry(handle, "it-0", slot=slot)
+    monkeypatch.setenv(crew_log.SLOT_FOLD_CACHE_BYTES_ENV, "1")
+    crew_log.read_slot_projection(slot, "work")
+    assert crew_log.slot_fold_over_ceiling(slot, "work"), "the refusal was not recorded"
+
+    seq = _work_entry(handle, "it-1", slot=slot)
+    with unittest.mock.patch.object(
+        crew_log, "read_slot_projection", wraps=crew_log.read_slot_projection
+    ) as spy:
+        eager.note_commit(unit, "work/recorded", seq, board=slot)
+        assert eager.drain(timeout=10.0)
+    assert spy.call_count == 0, "the worker folded a cell it could not keep"
+    assert [
+        item["item_id"] for item in crew_log.read_slot_projection(slot, "work").value["items"]
+    ] == [
+        "it-0",
+        "it-1",
+    ]
+
+    # A ceiling raised above the cell's charge lets the next wake advance it again.
+    monkeypatch.delenv(crew_log.SLOT_FOLD_CACHE_BYTES_ENV)
+    assert not crew_log.slot_fold_over_ceiling(slot, "work")
+
+
+def test_the_refused_cell_record_is_bounded(monkeypatch):
+    """The over-ceiling record keeps at most ``OVERSIZE_SLOT_CELL_LIMIT`` cells, oldest out."""
+    monkeypatch.setattr(crew_log, "OVERSIZE_SLOT_CELL_LIMIT", 2)
+    monkeypatch.setenv(crew_log.SLOT_FOLD_CACHE_BYTES_ENV, "1")
+    slots = [f"dashboard:refused-{index}" for index in range(3)]
+    for index, slot in enumerate(slots):
+        handle = _slot_log(f"s-refused-{index}", slot)
+        _work_entry(handle, "it-0", slot=slot)
+        crew_log.read_slot_projection(slot, "work")
+    held = {key[1] for key in crew_log._oversize_slot_cells}
+    assert held == set(slots[1:]), f"held {sorted(held)}; the oldest refusal must go first"
+    assert not crew_log.slot_fold_over_ceiling(slots[0], "work")

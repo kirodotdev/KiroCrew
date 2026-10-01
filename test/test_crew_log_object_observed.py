@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from unittest.mock import AsyncMock
 
 import pytest
+from off_loop_helpers import off_loop
 
 from kiro_crew import crew_log as lg
 from kiro_crew.autonudge import AutoNudgeService
@@ -66,6 +67,10 @@ def _unit(unit_id: str = SESSION) -> None:
 
 def _observed(unit_id: str = SESSION) -> list:
     assert crew_log_emit.flush(timeout=5.0)
+    return off_loop(_read_observed, unit_id)
+
+
+def _read_observed(unit_id: str) -> list:
     handle = CrewLog.open(KIND_SESSION, unit_id)
     try:
         return [entry for entry in handle.iter_from(1) if entry.type == ENTRY_TYPE]

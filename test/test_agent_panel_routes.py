@@ -21,6 +21,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from member_memory_helpers import write_member_home
+from off_loop_helpers import off_loop
 
 from kiro_crew import agent_panel
 from kiro_crew import crew_log as lg
@@ -105,7 +106,9 @@ def _folded(crew_name: str = CREW) -> dict[str, Any] | None:
     earlier read in the same test warmed this cell's watermark.
     """
     crew_log_projection.forget_slot_folds()
-    folded = crew_log_projection.read_slot_projection(_crew_slot(crew_name), "panel").value
+    folded = off_loop(
+        crew_log_projection.read_slot_projection, _crew_slot(crew_name), "panel"
+    ).value
     owners = folded.get("owners") if isinstance(folded, dict) else None
     mine = (owners or {}).get(agent_panel.crew_key(crew_name))
     # An empty ``template`` is the fold's own "nothing published", matching the
@@ -338,8 +341,8 @@ async def test_a_publish_keys_on_the_crews_persisted_member_id(vetted):
     # The name-derived slug is the slot NO read path resolves to. Asserted on the
     # slot rather than on the file because the slot is what the append is keyed by.
     crew_log_projection.forget_slot_folds()
-    astray = crew_log_projection.read_slot_projection(
-        members_mod.member_slot_key(SLUG), "panel"
+    astray = off_loop(
+        crew_log_projection.read_slot_projection, members_mod.member_slot_key(SLUG), "panel"
     ).value
     assert not (astray.get("owners") if isinstance(astray, dict) else None), (
         "nothing may be appended under the name-derived slug: that is the slot "
@@ -1361,8 +1364,11 @@ async def test_a_publish_whose_append_is_skipped_is_still_what_a_reader_gets(vet
     from kiro_crew.config.loader import KiroCrewConfig
 
     crew_log_projection.forget_slot_folds()
-    record = routes._panel_record(
-        routes._panel_slot(KiroCrewConfig.load(), CREW, SLUG), SLUG, agent_panel.crew_key(CREW)
+    record = off_loop(
+        routes._panel_record,
+        routes._panel_slot(KiroCrewConfig.load(), CREW, SLUG),
+        SLUG,
+        agent_panel.crew_key(CREW),
     )
     assert record["data"] == {"cycle": 3}, "the record should carry the file's newer panel"
     assert record["history"], "the fold's history should survive the file deciding the panel"

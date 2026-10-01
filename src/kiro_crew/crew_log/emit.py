@@ -97,6 +97,7 @@ import hashlib
 import json
 import logging
 import math
+import sys
 import threading
 import time
 import traceback
@@ -2109,6 +2110,41 @@ def _drain_inline_until(deadline: float) -> bool:
 
 
 def drain_for_shutdown(timeout: float = _SHUTDOWN_DRAIN_SECONDS) -> bool:
+    """Write out everything buffered, then let the eager folder finish what it was handed.
+
+    Returns what :func:`_drain_writer_for_shutdown` returns -- whether the LOG is
+    complete, which is the record. The fold step after it is part of the quiescence
+    barrier and not of that answer: the eager folder runs on its own thread and writes
+    savepoints into the data home, so a caller that tears the home down (a test's temp
+    directory, a gateway exiting) right after this call would otherwise race a fold still
+    reading or writing there. It is waited for within what is left of *timeout*, with a
+    short floor so a writer that spent the whole budget does not skip it entirely, and
+    only when that module is loaded -- a process that never folded eagerly pays nothing.
+    A fold that does not settle in time costs a savepoint, never an entry.
+    """
+    started = time.monotonic()
+    drained = _drain_writer_for_shutdown(timeout)
+    eager = sys.modules.get("kiro_crew.crew_log.eager")
+    settle = getattr(eager, "drain", None)
+    if settle is not None:
+        budget = max(started + timeout - time.monotonic(), _EAGER_SETTLE_FLOOR_SECONDS)
+        try:
+            if not settle(budget):
+                logger.debug("crew log eager folds still in flight %.1fs into shutdown", budget)
+        except Exception:  # pragma: no cover - a fold must not cost the shutdown
+            # Rendered text, never ``exc_info``, for the reason ``_note_eager`` gives.
+            logger.debug(
+                "crew log eager settle failed at shutdown:\n%s", traceback.format_exc().rstrip()
+            )
+    return drained
+
+
+#: The least time :func:`drain_for_shutdown` gives the eager folder to settle, even when
+#: the writer spent the whole budget: one batch of folds over a busy session's tail.
+_EAGER_SETTLE_FLOOR_SECONDS: Final[float] = 1.0
+
+
+def _drain_writer_for_shutdown(timeout: float) -> bool:
     """Write out everything buffered, then stop accepting batching pauses.
 
     The quiescence barrier a restart needs: entries live in memory until the

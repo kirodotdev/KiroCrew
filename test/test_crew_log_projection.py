@@ -358,8 +358,12 @@ def test_an_entry_a_fold_declares_untouched_really_moves_nothing(name):
                 f"state at seq {entry.seq}"
             )
         state = grown
-    if fold_spec.affects is not None:
-        assert skipped > 0, f"{name} declares a type set but skipped nothing to prove it"
+    # Only a NARROWED set can skip anything. ``status`` and ``class`` declare the whole
+    # vocabulary -- ``KNOWN_TYPES`` -- because every entry moves them, and that is a
+    # statement about them rather than a set left undeclared: a fold whose ``affects`` is
+    # the vocabulary skips nothing, and there is nothing for it to prove here.
+    if fold_spec.affects is not None and fold_spec.affects != crew_log.KNOWN_TYPES:
+        assert skipped > 0, f"{name} declares a narrowed type set but skipped nothing"
 
 
 @pytest.mark.parametrize("name", crew_log.PROJECTION_NAMES)
