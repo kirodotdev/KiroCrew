@@ -74,6 +74,16 @@ class TestStripMarkdown:
         assert strip_markdown(f"see [Python]({url}) now") == "see Python now"
         assert strip_markdown("see [docs](https://example.com/a_(b)_c) now") == "see docs now"
 
+    def test_a_web_address_in_an_unbalanced_link_is_never_spoken(self) -> None:
+        """An unbalanced ``(`` makes this text, not a link, so it stays as written
+        and the bare-URL pass replaces the web address."""
+        assert strip_markdown("see [a](https://example.com/(b) now") == "see [a]( (link) now"
+
+    def test_a_relative_destination_in_an_unbalanced_link_is_spoken_as_written(self) -> None:
+        """The bare-URL pass only knows web addresses, so nothing shortens this one."""
+        text = "see [guide](docs/setup(old) now"
+        assert strip_markdown(text) == text
+
     def test_removes_bold_italic(self) -> None:
         assert strip_markdown("**bold** and *italic*") == "bold and italic"
 

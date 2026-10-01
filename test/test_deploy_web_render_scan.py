@@ -44,6 +44,12 @@ def test_markdown_link_with_an_unbalanced_url_is_left_as_text():
     assert "see [a](https://example.com/(b) now" in out
 
 
+def test_a_quote_in_a_parenthesised_link_url_stays_escaped_in_the_href():
+    out = render_standalone("markdown", 'see [a](https://example.com/(b"onmouseover="x)) now')
+    assert '<a href="https://example.com/(b&quot;onmouseover=&quot;x)">a</a> now' in out
+    assert 'onmouseover="' not in out
+
+
 def test_full_html_passthrough():
     doc = "<html><head></head><body>hi</body></html>"
     assert render_standalone("html", doc) == doc
