@@ -20,7 +20,7 @@ import { deduplicateByMid, floorForGen, olderHeadAbovePage, raiseChunkSeq, sameT
 import { abortActiveOlderFetch, pagingCursorAfterKeptHead, slotCoverageShortfall, slotSwitchFetchLimit } from './paging'
 import { mergePreservedThinking, reinsertThinkingOrphans, type ThinkingAnchor } from './thinking'
 import { bumpRunEpoch, enterActiveSlot, pushHistory } from './runState'
-import { retainServerTotal, seedContextUsage, setPagingCursor, writeSlotPage } from './slotCache'
+import { parkActiveTranscript, retainServerTotal, seedContextUsage, setPagingCursor, writeSlotPage } from './slotCache'
 import { hydrateQueuedBubbles } from './queue'
 import { loadSlotActivity } from './activity'
 import { walkWindowBackTo } from './windowWalk'
@@ -394,6 +394,9 @@ export function addSlotSwitchCases(builder: ActionReducerMapBuilder<ChatState>):
           run: { state: state.slotState, running: state.slotRunning, stopping: state.slotStopping },
         }
       }
+      // Cache the outgoing slot's messages before the switch fields below are
+      // re-keyed (see parkActiveTranscript).
+      parkActiveTranscript(state)
       // This fetch replaces the cursor, so it is stale from here until it lands
       // -- including a same-key switch, where the key alone still looks valid.
       state.slotCursorKey = null
@@ -402,15 +405,6 @@ export function addSlotSwitchCases(builder: ActionReducerMapBuilder<ChatState>):
       // Save current slot's activity
       if (state.activeSlot) {
         state.slotActivity[state.activeSlot] = { toolLog: state.toolLog, subagents: state.subagents, activityTab: state.activityTab, activityOpen: state.activityOpen }
-      }
-      // Cache current slot's messages before switching
-      if (state.activeSlot && state.messages.length > 0) {
-        // Once its switch has landed the view is the whole transcript, so its own
-        // has_more is the marker; before that, preserve what the pane already had.
-        const k = safeKey(state.activeSlot)
-        writeSlotPage(state, state.activeSlot, state.messages,
-          viewIsProvisional ? undefined : state.slotHasMore,
-          viewIsProvisional ? state.slotPaneBounded?.[k] : undefined)
       }
       // Always strip target from history: activeSlot ∉ slotHistory
       state.slotHistory = state.slotHistory.filter(k => k !== target)

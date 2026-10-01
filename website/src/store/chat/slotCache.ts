@@ -62,6 +62,33 @@ export function writeSlotPage(
   state.slotPaneHasMore[k] = hasMore
 }
 
+/** Cache the ACTIVE slot's on-screen transcript under its key before
+ *  `activeSlot` moves off it, so returning to the slot restores what the
+ *  reader had rather than an older snapshot.
+ *
+ *  Every writer that moves the active slot away has to call this, not only
+ *  `switchSlot`: New Chat (`setActiveSlot(null)` and then `createSlot`) and a
+ *  history resume used to skip it, so a chat left that way kept whatever
+ *  `slotMessages` held from the LAST switch. Closing the new chat then landed
+ *  back on the old one through `switchSlot.pending`, which paints that stale
+ *  entry -- the first page from an earlier visit, missing everything paged in
+ *  or streamed since -- and the bounded switch read only widens it again when
+ *  the cache and the window happen not to overlap.
+ *
+ *  Call it before the switch fields are re-keyed. A view whose own switch is
+ *  still in flight keeps the pane's existing marker and bounded length rather
+ *  than guessing; once a switch has landed the view is that switch's result,
+ *  so `slotHasMore` is its marker. */
+export function parkActiveTranscript(state: ChatState): void {
+  const slot = state.activeSlot
+  if (!slot || isUnsafeKey(slot) || state.messages.length === 0) return
+  const viewIsProvisional = state.slotSwitchRequestId !== null && state.slotSwitchTarget === slot
+  const k = safeKey(slot)
+  writeSlotPage(state, slot, state.messages,
+    viewIsProvisional ? undefined : state.slotHasMore,
+    viewIsProvisional ? state.slotPaneBounded?.[k] : undefined)
+}
+
 /** SINGLE writer for the retained per-slot server count, so the three reducers
  *  that consume a slot-detail payload cannot drift apart on it. A warm reads this
  *  to tell a truncated row from one the page was merely built too early to carry,

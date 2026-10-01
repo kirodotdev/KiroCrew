@@ -16,7 +16,7 @@ import type { HistoryDeleteRefusal } from '../../utils/historyDeleteRefusal'
 import type { ChatState } from './state'
 import { filterMessages, safeKey } from './wire'
 import { enterActiveSlot, pushHistory } from './runState'
-import { setPagingCursor } from './slotCache'
+import { parkActiveTranscript, setPagingCursor } from './slotCache'
 
 export const fetchHistory = createAsyncThunk(
   'chat/fetchHistory',
@@ -302,6 +302,7 @@ export function addLifecycleCases(builder: ActionReducerMapBuilder<ChatState>): 
       if (state.activeSlot) {
         state.slotActivity[state.activeSlot] = { toolLog: state.toolLog, subagents: state.subagents, activityTab: state.activityTab, activityOpen: state.activityOpen }
         state.slotHistory = pushHistory(state.slotHistory, state.activeSlot)
+        parkActiveTranscript(state)
       }
       enterActiveSlot(state, action.payload.key)
       state.lastCreatedActivation = { slot: action.payload.key, requestId: action.meta.requestId }
@@ -389,6 +390,7 @@ export function addLifecycleCases(builder: ActionReducerMapBuilder<ChatState>): 
           state.slotActivity[state.activeSlot] = { toolLog: state.toolLog, subagents: state.subagents, activityTab: state.activityTab, activityOpen: state.activityOpen }
           if (state.activeSlot !== action.payload.key) {
             state.slotHistory = pushHistory(state.slotHistory, state.activeSlot)
+            parkActiveTranscript(state)
           }
         }
         const cached = state.slotActivity[action.payload.key]

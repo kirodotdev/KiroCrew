@@ -6,7 +6,7 @@ import type { PayloadAction } from '@reduxjs/toolkit'
 import type { ChatState, SlotState, SlotStatusDetail } from './state'
 import { isUnsafeKey, safeKey } from './wire'
 import { finalizeTrailingStreaming } from './transcript'
-import { setPagingCursor } from './slotCache'
+import { parkActiveTranscript, setPagingCursor } from './slotCache'
 
 export function pushHistory(history: string[], key: string): string[] {
   const deduped = history.filter(k => k !== key)
@@ -114,7 +114,12 @@ export function enterActiveSlot(state: ChatState, target: string | null): void {
 }
 
 export const runStateReducers = {
-  setActiveSlot(state: ChatState, action: PayloadAction<string | null>) { enterActiveSlot(state, action.payload); state.slotState = 'idle'; state.pendingTurnSlot = null },
+  setActiveSlot(state: ChatState, action: PayloadAction<string | null>) {
+    // New Chat clears the selection here before `createSlot` lands, so this is
+    // the last point at which the chat being left can be cached.
+    if (action.payload !== state.activeSlot) parkActiveTranscript(state)
+    enterActiveSlot(state, action.payload); state.slotState = 'idle'; state.pendingTurnSlot = null
+  },
   clearSlotState(state: ChatState) { state.messages = []; state.toolLog = []; state.subagents = {}; state.activityTab = 'changes'; state.slotRunning = false; state.slotStopping = false; state.slotState = 'idle'; setPagingCursor(state, false, 0); state.loadingOlder = false; state.lastChunkSeq = undefined; state.lastChunkGen = undefined; state._wsChunkedDuringFetch = false; state.slotStatusDetail = {}; state.voicePlaying = false; state.voiceAudio = null; if (state.activeSlot) delete state.pendingQuestions?.[state.activeSlot]; state.pendingTurnSlot = null },
   setSlotRunning(state: ChatState, action: PayloadAction<boolean>) {
     state.slotRunning = action.payload
