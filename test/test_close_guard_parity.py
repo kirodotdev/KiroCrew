@@ -169,6 +169,11 @@ class TestRatchet:
             pkg.glob("*/transport_dispatch.py")
         )
         assert len(targets) >= 5, f"expected the dispatcher set, found {targets}"
+        # A composed dispatcher's owners (``<channel>/dispatch/``) are read too, so a
+        # close moved out of a facade stays inside this ratchet.
+        owners = sorted(pkg.glob("*/dispatch/*.py"))
+        assert len(owners) >= 8, f"expected telegram's dispatch owners, found {owners}"
+        targets += owners
 
         offenders = {
             str(p.relative_to(pkg)): lines

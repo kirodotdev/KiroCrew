@@ -926,3 +926,313 @@ class TestTheOriginatingTurnsSweepSparesAnInFlightSpawnPrompt:
             return bool(await task)
 
         assert asyncio.run(_go()) is True
+
+
+# ── Characterization: the delivery hook's exact shape and every fall-through ──
+
+
+def _clear_windows() -> None:
+    TelegramApprovalDecider._REGISTRY.clear()
+    TelegramApprovalDecider._NONCES.clear()
+    TelegramApprovalDecider._AWAITED.clear()
+
+
+def _no_window_left(key: str) -> bool:
+    return (
+        key not in TelegramApprovalDecider._REGISTRY
+        and key not in TelegramApprovalDecider._NONCES
+        and key not in TelegramApprovalDecider._AWAITED
+    )
+
+
+class TestTheDeliveryHookCharacterization:
+    """What the Telegram hook posts, when it arms, and every path that falls through."""
+
+    @pytest.fixture(autouse=True)
+    def _short_prompt_wait(self, monkeypatch: pytest.MonkeyPatch) -> Any:
+        import kiro_crew.telegram.renderer as renderer_mod
+
+        monkeypatch.setattr(renderer_mod, "_APPROVAL_TIMEOUT_S", 0.2)
+        _clear_windows()
+        yield
+        _clear_windows()
+
+    def test_a_missing_client_arms_nothing(self) -> None:
+        d, _cli, _sess = _dispatcher({7})
+        d.client = None
+        key = d._session_key(("direct", "7"))
+        assert asyncio.run(d.deliver_spawn_approval("spawn:abc", "spawn_run(x)", key)) is None
+        assert TelegramApprovalDecider._NONCES == {}
+        assert TelegramApprovalDecider._REGISTRY == {} and TelegramApprovalDecider._AWAITED == set()
+
+    @pytest.mark.parametrize(
+        "parent",
+        [
+            "",
+            "telegram:kirocrew",
+            "telegram:kirocrew:direct:abc",
+            "telegram:kirocrew:forum:-1001234567890",
+            "telegram:kirocrew:group:7",
+            "discord:kirocrew:direct:7",
+            "dashboard:chat-1",
+            "unified:kirocrew",
+        ],
+    )
+    def test_an_unaddressable_parent_arms_nothing(self, parent: str) -> None:
+        d, cli, _sess = _dispatcher({7})
+        assert asyncio.run(d.deliver_spawn_approval("spawn:abc", "spawn_run(x)", parent)) is None
+        assert cli.sent == [] and TelegramApprovalDecider._NONCES == {}
+
+    @pytest.mark.parametrize(
+        ("parent", "expected"),
+        [
+            ("telegram:kirocrew:direct:7", (7, None)),
+            ("telegram:kirocrew:direct:7:gen3", (7, None)),
+            ("telegram:kirocrew:forum:-1001234567890:42", (-1001234567890, 42)),
+            ("telegram:kirocrew:forum:-1001234567890:42:gen1", (-1001234567890, 42)),
+            ("telegram:kirocrew:forum:-1001234567890:42:9", (-1001234567890, 42)),
+            ("telegram:kirocrew:forum:-1001234567890", None),
+            ("telegram:kirocrew:direct:7:8", None),
+            ("telegram:kirocrew:direct:abc", None),
+            ("telegram:kirocrew:forum:x:42", None),
+            ("telegram:kirocrew:group:7", None),
+            ("telegram:kirocrew:direct:", None),
+            ("unified:kirocrew", None),
+            ("discord:kirocrew:direct:7", None),
+            ("", None),
+        ],
+    )
+    def test_the_chat_target_table(self, parent: str, expected: Any) -> None:
+        d, _cli, _sess = _dispatcher({7})
+        target = d._spawn_chat_target(parent)
+        assert target == (None if expected is None else (*expected, parent))
+
+    def test_the_prompt_body_keyboard_and_kwargs_are_exact(self) -> None:
+        d, cli, _sess = _dispatcher({7})
+        assert d.client is not None
+        calls: list[tuple[Any, ...]] = []
+        real_send = d.client.send_message
+
+        async def _record(chat_id: int, text: str, **kw: Any) -> Any:
+            key = TelegramApprovalDecider.key("telegram:kirocrew:direct:7", "spawn:abc")
+            calls.append((chat_id, text, dict(kw), TelegramApprovalDecider._NONCES.get(key)))
+            return await real_send(chat_id, text, **kw)
+
+        d.client.send_message = _record  # type: ignore[method-assign]
+        asyncio.run(
+            d.deliver_spawn_approval(
+                "spawn:abc", "spawn_run(<b>\"x\"</b>\n\t& 'y')", "telegram:kirocrew:direct:7"
+            )
+        )
+        chat_id, text, kw, nonce = calls[0]
+        assert chat_id == 7
+        assert text == (
+            "🔐 Approve sub-agent spawn?\n"
+            "<pre>spawn_run(&lt;b&gt;&quot;x&quot;&lt;/b&gt; &amp; &#x27;y&#x27;)</pre>"
+        )
+        assert kw == {
+            "parse_mode": "HTML",
+            "reply_markup": {
+                "inline_keyboard": [
+                    [
+                        {"text": "✅ Approve", "callback_data": f"a:spawn:abc:{nonce}:1"},
+                        {"text": "🚫 Deny", "callback_data": f"a:spawn:abc:{nonce}:0"},
+                    ],
+                    [
+                        {
+                            "text": "🤝 Trust this conversation",
+                            "callback_data": f"a:spawn:abc:{nonce}:t",
+                        }
+                    ],
+                ]
+            },
+            "message_thread_id": None,
+        }
+
+    @pytest.mark.parametrize(
+        ("description", "detail"),
+        [
+            ("", "spawn_run"),
+            (None, "spawn_run"),
+            ("  \n ", ""),
+            ("spawn_run(t=[x])", "spawn_run(t=[x])"),
+        ],
+    )
+    def test_the_detail_defaults_and_collapses(self, description: Any, detail: str) -> None:
+        d, cli, _sess = _dispatcher({7})
+        asyncio.run(
+            d.deliver_spawn_approval("spawn:abc", description, "telegram:kirocrew:direct:7")
+        )
+        assert cli.sent[0][0] == f"🔐 Approve sub-agent spawn?\n<pre>{detail}</pre>"
+
+    def test_the_window_is_armed_detached_before_the_send(self) -> None:
+        d, _cli, _sess = _dispatcher({7})
+        assert d.client is not None
+        key = TelegramApprovalDecider.key("telegram:kirocrew:direct:7", "spawn:abc")
+        seen: list[tuple[bool, bool, bool]] = []
+        real_send = d.client.send_message
+
+        async def _record(chat_id: int, text: str, **kw: Any) -> Any:
+            seen.append(
+                (
+                    key in TelegramApprovalDecider._NONCES,
+                    key in TelegramApprovalDecider._REGISTRY,
+                    key in TelegramApprovalDecider._AWAITED,
+                )
+            )
+            return await real_send(chat_id, text, **kw)
+
+        d.client.send_message = _record  # type: ignore[method-assign]
+        asyncio.run(d.deliver_spawn_approval("spawn:abc", "d", "telegram:kirocrew:direct:7"))
+        assert seen == [(True, True, True)]
+        assert _no_window_left(key)
+
+    def test_the_destination_is_checked_after_the_arm(self) -> None:
+        d, cli, _sess = _dispatcher({7})
+        key = TelegramApprovalDecider.key("telegram:kirocrew:direct:7", "spawn:abc")
+        seen: list[tuple[Any, ...]] = []
+
+        def _check(chat_id: int, thread_id: Any) -> bool:
+            seen.append((chat_id, thread_id, key in TelegramApprovalDecider._NONCES))
+            return False
+
+        d._spawn_prompt_destination_permitted = _check  # type: ignore[method-assign]
+        result = asyncio.run(
+            d.deliver_spawn_approval("spawn:abc", "d", "telegram:kirocrew:direct:7")
+        )
+        assert result is None and seen == [(7, None, True)] and cli.sent == []
+        assert _no_window_left(key)
+
+    @pytest.mark.parametrize("outcome", ["raises", "none", "zero"])
+    def test_a_failed_send_retires_the_window(self, outcome: str) -> None:
+        d, _cli, _sess = _dispatcher({7})
+        assert d.client is not None
+        key = TelegramApprovalDecider.key("telegram:kirocrew:direct:7", "spawn:abc")
+
+        async def _send(chat_id: int, text: str, **kw: Any) -> Any:
+            if outcome == "raises":
+                raise OSError("bot api down")
+            return None if outcome == "none" else 0
+
+        d.client.send_message = _send  # type: ignore[method-assign]
+        result = asyncio.run(
+            d.deliver_spawn_approval("spawn:abc", "d", "telegram:kirocrew:direct:7")
+        )
+        assert result is None
+        assert _no_window_left(key)
+
+    def test_a_cancel_during_the_send_retires_and_reraises(self) -> None:
+        d, cli, _sess = _dispatcher({7})
+        assert d.client is not None
+        key = TelegramApprovalDecider.key("telegram:kirocrew:direct:7", "spawn:abc")
+        entered = asyncio.Event()
+
+        async def _hang(chat_id: int, text: str, **kw: Any) -> Any:
+            entered.set()
+            await asyncio.Event().wait()
+
+        d.client.send_message = _hang  # type: ignore[method-assign]
+
+        async def _go() -> None:
+            task = asyncio.ensure_future(
+                d.deliver_spawn_approval("spawn:abc", "d", "telegram:kirocrew:direct:7")
+            )
+            await asyncio.wait_for(entered.wait(), 5)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        asyncio.run(_go())
+        assert _no_window_left(key) and cli.sent == []
+
+    def test_the_decider_waits_on_the_parent_key_verbatim(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured: list[tuple[Any, ...]] = []
+
+        async def _decide(self: Any, event: Any) -> Any:
+            captured.append((self._session_key, getattr(event, "request_id", None)))
+            return 1
+
+        monkeypatch.setattr(TelegramApprovalDecider, "__call__", _decide)
+        d, _cli, _sess = _dispatcher({7})
+        parent = "telegram:kirocrew:direct:7:gen2"
+        assert asyncio.run(d.deliver_spawn_approval("spawn:abc", "d", parent)) is True
+        assert captured == [(parent, "spawn:abc")]
+
+    def test_an_elapsed_wait_returns_the_seams_answer_verbatim(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        asked: list[tuple[str, str]] = []
+
+        async def _answer(channel: str, rid: str) -> bool:
+            asked.append((channel, rid))
+            return True
+
+        monkeypatch.setattr("kiro_crew.telegram.transport_dispatch.unpressed_wait_answer", _answer)
+        d, _cli, _sess = _dispatcher({7})
+        reads: list[tuple[Any, Any]] = []
+        real_check = d._spawn_prompt_destination_permitted
+
+        def _count(chat_id: int, thread_id: Any) -> bool:
+            reads.append((chat_id, thread_id))
+            return real_check(chat_id, thread_id)
+
+        d._spawn_prompt_destination_permitted = _count  # type: ignore[method-assign]
+        result = asyncio.run(
+            d.deliver_spawn_approval("spawn:abc", "d", "telegram:kirocrew:direct:7")
+        )
+        assert result is True and asked == [("telegram", "spawn:abc")]
+        assert reads == [(7, None), (7, None)]
+
+    def test_egress_revoked_during_the_wait_falls_through(self) -> None:
+        d, cli, _sess = _dispatcher({7})
+        calls = {"n": 0}
+
+        def _gate(chat: str, thread: Any) -> bool:
+            calls["n"] += 1
+            if calls["n"] > 1:
+                raise RuntimeError("egress state unreadable")
+            return True
+
+        d.transport = SimpleNamespace(may_send_to=_gate)  # type: ignore[assignment]
+        result = asyncio.run(
+            d.deliver_spawn_approval("spawn:abc", "d", "telegram:kirocrew:direct:7")
+        )
+        assert result is None and len(cli.sent) == 1
+
+    def test_the_destination_table(self) -> None:
+        d, _cli, _sess = _dispatcher({7})
+        assert d._spawn_prompt_destination_permitted(7, None) is True
+        assert d._spawn_prompt_destination_permitted(8, None) is False
+        assert d._spawn_prompt_destination_permitted(0, None) is False
+        d._allowed.clear()
+        assert d._spawn_prompt_destination_permitted(7, None) is False
+
+        d, _cli, _sess = _dispatcher({7}, allow_forum=True, allowed_forum_chat_ids=[-1001234567890])
+        assert d._spawn_prompt_destination_permitted(-1001234567890, 42) is True
+        assert d._spawn_prompt_destination_permitted(-1009999999999, 42) is False
+        d._allowed.clear()
+        assert d._spawn_prompt_destination_permitted(-1001234567890, 42) is False
+
+    def test_the_egress_gate_table(self) -> None:
+        d, _cli, _sess = _dispatcher({7}, allow_forum=True, allowed_forum_chat_ids=[-1001234567890])
+        seen: list[tuple[Any, Any]] = []
+
+        def _answer(value: Any):  # type: ignore[no-untyped-def]
+            def _gate(chat: str, thread: Any) -> Any:
+                seen.append((chat, thread))
+                return value
+
+            return _gate
+
+        d.transport = SimpleNamespace()  # type: ignore[assignment]
+        assert d._spawn_prompt_destination_permitted(7, None) is True
+        d.transport = SimpleNamespace(may_send_to=_answer(0))  # type: ignore[assignment]
+        assert d._spawn_prompt_destination_permitted(7, None) is False
+        d.transport = SimpleNamespace(may_send_to=_answer("yes"))  # type: ignore[assignment]
+        assert d._spawn_prompt_destination_permitted(-1001234567890, 42) is True
+        assert seen == [("7", None), ("-1001234567890", "42")]
+        seen.clear()
+        assert d._spawn_prompt_destination_permitted(8, None) is False
+        assert seen == [], "a roster denial never asks the transport"

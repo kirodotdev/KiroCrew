@@ -1685,3 +1685,117 @@ class TestTelegramRestrictedResumedSession:
         persisted = src.index("self._persist_turn,")
 
         assert decided < guarded < projected < persisted
+
+
+class TestResumedRefusalsCharacterization:
+    """The refusals a RESUMED dashboard session gets, byte for byte, and their order.
+
+    Telegram's busy branch refuses a resumed session outright (it does not route the
+    message into the dashboard slot the way Discord does), and a privacy modifier on
+    a resumed session is refused before the busy check is even asked.
+    """
+
+    _BUSY = (
+        "⏳ That session is busy with a turn started elsewhere. Send your message again "
+        "once it finishes, or /unlink to return to your Telegram conversation."
+    )
+    _PRIVACY = (
+        "🔒 Privacy mode can't be changed while a dashboard session is resumed. Your "
+        "message was NOT processed. Use /unlink or /new first."
+    )
+    _BUSY_OPTION = (
+        "🔘 That conversation is busy with another turn, so your choice was NOT "
+        "applied. Type it as a message once the turn finishes."
+    )
+
+    @staticmethod
+    def _resumed(tmp_path: Any) -> tuple[Any, Any, Any]:
+        dispatcher, client, sessions, _ = _dispatcher(tmp_path)
+        dispatcher._session_resume.route = AsyncMock(  # type: ignore[method-assign]
+            return_value=RoutingDecision(resumed_key="dashboard:chat-1")
+        )
+        return dispatcher, client, sessions
+
+    @pytest.mark.asyncio
+    async def test_a_busy_resumed_session_refuses_byte_exact(self, tmp_path: Any) -> None:
+        dispatcher, client, sessions = self._resumed(tmp_path)
+        sessions.busy = True
+        busy = AsyncMock()
+        dispatcher._handle_busy = busy  # type: ignore[method-assign]
+
+        await dispatcher.handle_message(_dm("continue"))
+
+        assert [t for t, _ in client.sent] == [self._BUSY]
+        assert client.send_threads == [None]
+        busy.assert_not_awaited()
+        assert sessions.last_key == "" and sessions.queued == []
+
+    @pytest.mark.asyncio
+    async def test_a_busy_resumed_topic_refuses_in_its_topic(self, tmp_path: Any) -> None:
+        dispatcher, client, sessions = self._resumed(tmp_path)
+        dispatcher.cfg.telegram.allow_forum = True
+        dispatcher.cfg.telegram.allowed_forum_chat_ids = [-100]
+        sessions.busy = True
+
+        await dispatcher.handle_message(_topic("continue", 5))
+
+        assert [t for t, _ in client.sent] == [self._BUSY]
+        assert client.send_threads == [5]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("text", ["/temporary", "/incognito private question"])
+    async def test_a_resumed_privacy_modifier_refuses_byte_exact(
+        self, tmp_path: Any, monkeypatch: Any, text: str
+    ) -> None:
+        from kiro_crew.messaging import privacy_mode
+
+        dispatcher, client, sessions = self._resumed(tmp_path)
+        apply = AsyncMock()
+        monkeypatch.setattr(privacy_mode, "apply_mode", apply)
+        rotated: list[Any] = []
+        original = dispatcher._rotated_session_key
+
+        def _spy(route: Any) -> str:
+            rotated.append(route)
+            return original(route)
+
+        dispatcher._rotated_session_key = _spy  # type: ignore[method-assign]
+        sessions.busy = True
+
+        await dispatcher.handle_message(_dm(text))
+
+        assert [t for t, _ in client.sent] == [self._PRIVACY]
+        assert client.send_threads == [None]
+        apply.assert_not_awaited()
+        assert rotated == [] and sessions.last_key == "" and sessions.queued == []
+
+    @pytest.mark.asyncio
+    async def test_a_busy_resumed_option_press_gets_the_options_refusal(
+        self, tmp_path: Any
+    ) -> None:
+        dispatcher, client, sessions = self._resumed(tmp_path)
+        tag = session_provenance_tag("dashboard:chat-1")
+        sessions.busy = True
+
+        await dispatcher.on_callback(_callback(f"opt:0:{tag}", label="Ship it"))
+
+        assert [t for t, _ in client.sent] == [
+            "<blockquote>Ship it</blockquote>",
+            self._BUSY_OPTION,
+        ]
+        assert sessions.queued == [] and sessions.provider.steered == []
+        assert sessions.last_key == ""
+
+    @pytest.mark.asyncio
+    async def test_a_resumed_press_never_rotates(self, tmp_path: Any) -> None:
+        dispatcher, _client, sessions = self._resumed(tmp_path)
+        rotated: list[Any] = []
+        original = dispatcher._rotated_session_key
+        dispatcher._rotated_session_key = lambda route: (  # type: ignore[method-assign]
+            rotated.append(route) or original(route)
+        )
+        tag = session_provenance_tag("dashboard:chat-1")
+
+        await dispatcher.on_callback(_callback(f"opt:0:{tag}", label="Ship it"))
+
+        assert rotated == [] and sessions.last_key == "dashboard:chat-1"

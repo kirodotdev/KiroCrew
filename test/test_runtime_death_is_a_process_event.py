@@ -981,6 +981,11 @@ def _channel_dispatch_files() -> list[Path]:
     """
     files = sorted(_SRC.glob("*/transport_dispatch.py"))
     files.append(_SRC / "messaging" / "dispatch.py")
+    # A composed dispatcher's owners (``<channel>/dispatch/``) end turns too: Telegram's
+    # callback, command and spawn-approval arms catch ``Exception`` there.
+    owners = sorted(_SRC.glob("*/dispatch/*.py"))
+    assert len(owners) >= 8, f"expected telegram's dispatch owners, found {owners}"
+    files.extend(owners)
     return [p for p in files if p.exists()]
 
 

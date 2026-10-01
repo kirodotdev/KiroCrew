@@ -391,6 +391,18 @@ def _dispatchers() -> list[Path]:
     return found
 
 
+def _dispatch_owners() -> list[Path]:
+    """The owners a composed dispatcher moved its handlers into (``<channel>/dispatch/``).
+
+    Telegram's mid-turn queue arm and its picker, callback and command handlers live
+    there, so a receipt registry or lock added to one of them is still a channel's own.
+    """
+    pkg = Path(Q.__file__).resolve().parent.parent
+    found = sorted(pkg.glob("*/dispatch/*.py"))
+    assert len(found) >= 8, f"expected telegram's dispatch owners, found {found}"
+    return found
+
+
 #: The two names a drain reaches the flip through: the registry transition itself, and a
 #: channel's own thin wrapper around it. Both are checked, because a wrapper that forwards
 #: an owner says nothing about whether its own caller supplied one.
@@ -401,7 +413,7 @@ class TestRatchet:
     def test_no_channel_keeps_its_own_receipt_registry_or_lock(self) -> None:
         """A third copy of this subsystem must fail here, not in production."""
         offenders: dict[str, list[str]] = {}
-        for path in _dispatchers():
+        for path in _dispatchers() + _dispatch_owners():
             src = path.read_text(encoding="utf-8")
             tree = ast.parse(src)
             names = {

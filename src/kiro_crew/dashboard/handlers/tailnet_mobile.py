@@ -462,7 +462,7 @@ def _guard(request: web.Request) -> web.Response | None:
     **Owner only.** Being a dashboard user is NOT enough, because a dashboard user
     is not necessarily *this* dashboard's owner. Telegram, Teams and Slack all
     hand a presigned dashboard link to any ALLOWED user, minting a token whose
-    ``sub`` is that user's own id (``telegram/transport_dispatch``,
+    ``sub`` is that user's own id (``telegram/dispatch/commands``,
     ``teams/transport_dispatch``) — so a non-owner can legitimately hold a
     dashboard session. The QR endpoint mints ``generate_token(owner_id or
     "local-app")``, i.e. an OWNER-subject credential, and ``local-app`` is itself

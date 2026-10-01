@@ -3144,13 +3144,23 @@ class TestARestrictedSessionWritesNothingAtAll:
             source = path.read_text(encoding="utf-8")
             if "privacy_mode" not in source:
                 continue
-            tree = ast.parse(source)
-            for node in ast.walk(tree):
-                if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    continue
-                if "'set_title'" in ast.dump(node):
-                    found.setdefault(path.parent.name, []).append(node.name)
+            for module in TestARestrictedSessionWritesNothingAtAll._dispatch_sources(path):
+                tree = ast.parse(module.read_text(encoding="utf-8"))
+                for node in ast.walk(tree):
+                    if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        continue
+                    if "'set_title'" in ast.dump(node):
+                        found.setdefault(path.parent.name, []).append(node.name)
         return found
+
+    @staticmethod
+    def _dispatch_sources(facade: Any) -> list[Any]:
+        """A channel's dispatcher files: its facade and the owners composed into it.
+
+        A title write in an owner module is one the dispatcher makes, so it is read
+        with the facade rather than left outside the scan.
+        """
+        return [facade, *sorted((facade.parent / "dispatch").glob("*.py"))]
 
     def test_the_scan_finds_the_writes_it_is_meant_to_guard(self) -> None:
         """A scan that matched nothing would make the next test vacuous."""
@@ -3174,19 +3184,20 @@ class TestARestrictedSessionWritesNothingAtAll:
         root = Path(kiro_crew_pkg.__file__).parent
         ungated: list[str] = []
         for channel, functions in sorted(self._title_writes_by_channel().items()):
-            tree = ast.parse((root / channel / "transport_dispatch.py").read_text("utf-8"))
-            for node in ast.walk(tree):
-                if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    continue
-                if node.name not in functions:
-                    continue
-                # Both shapes count: an early return (``_persist_turn``) and a
-                # guarded branch that answers the user (``_handle_title``). The
-                # dashboard-aware helper is named ``_session_restricted`` rather
-                # than ``privacy_mode.is_restricted``; both are explicit gates.
-                dump = ast.dump(node)
-                if "is_restricted" not in dump and "session_restricted" not in dump:
-                    ungated.append(f"{channel}.{node.name}")
+            for module in self._dispatch_sources(root / channel / "transport_dispatch.py"):
+                tree = ast.parse(module.read_text("utf-8"))
+                for node in ast.walk(tree):
+                    if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        continue
+                    if node.name not in functions:
+                        continue
+                    # Both shapes count: an early return (``_persist_turn``) and a
+                    # guarded branch that answers the user (``_handle_title``). The
+                    # dashboard-aware helper is named ``_session_restricted`` rather
+                    # than ``privacy_mode.is_restricted``; both are explicit gates.
+                    dump = ast.dump(node)
+                    if "is_restricted" not in dump and "session_restricted" not in dump:
+                        ungated.append(f"{channel}.{node.name}")
         assert not ungated, (
             "these write a durable title without checking the privacy mode, so a "
             f"restricted conversation would persist one: {ungated}"
@@ -4364,6 +4375,7 @@ class TestRotationChokepoint:
         # is how a third path gets to key on a stale generation. The busy check is
         # the one deliberate reader of the pre-rotation key, and it does not rotate.
         import inspect
+        from pathlib import Path
 
         from kiro_crew.telegram import transport_dispatch as td
 
@@ -4371,6 +4383,11 @@ class TestRotationChokepoint:
         assert (
             src.count("self._conv.maybe_rotate(") == 1
         ), "rotation must be settled by _rotated_session_key alone"
+        # The dispatcher's owners run on the same state, so one of them settling
+        # rotation would be the second site this pins against.
+        owners = sorted(Path(td.__file__).with_name("dispatch").glob("*.py"))
+        assert len(owners) >= 8, owners
+        assert [p.name for p in owners if "maybe_rotate(" in p.read_text("utf-8")] == []
 
     def test_resolving_twice_in_one_message_is_a_no_op(self) -> None:
         # The helper is called on both the bare-modifier and the turn path, so it
@@ -4782,19 +4799,27 @@ class TestDurableWritesUseTheRotatedKey:
         # A method that resolves a session key and is absent from the table is
         # exactly the gap this class exists to close.
         import inspect
-        import re
 
         from kiro_crew.telegram.transport_dispatch import TelegramDispatcher
 
-        src = inspect.getsource(TelegramDispatcher)
-        consumers = set()
-        current = ""
-        for line in src.split("\n"):
-            m = re.match(r"\s*(?:async\s+)?def\s+(\w+)", line)
-            if m:
-                current = m.group(1)
-            elif "_session_key(route)" in line and current:
-                consumers.add(current)
+        consumers = self._consumers(inspect.getsource(TelegramDispatcher))
+        # The methods ``telegram/dispatch`` owns are bound on the class too, so their
+        # sources are read with the same rule; a scan of the class body alone would
+        # stop seeing every consumer that moved.
+        owned = set()
+        for owner in self._owner_modules():
+            owned |= self._consumers(inspect.getsource(owner))
+        assert owned >= {
+            "_handle_model",
+            "_apply_model",
+            "_apply_agent",
+            "_handle_compact",
+            "_handle_spawn",
+            "_handle_task",
+            "_handle_link",
+            "_handle_unlink",
+        }, sorted(owned)
+        consumers |= owned
         # These resolve a key for reasons the durable/live split does not govern.
         exempt = {
             "_rotated_session_key",
@@ -4805,6 +4830,38 @@ class TestDurableWritesUseTheRotatedKey:
         }
         missing = consumers - set(self._CLASSIFIED) - exempt
         assert not missing, f"unclassified session-key consumers: {sorted(missing)}"
+
+    @staticmethod
+    def _consumers(src: str) -> set[str]:
+        """Every ``def`` in *src* whose own lines resolve a key from ``route``."""
+        import re
+
+        consumers = set()
+        current = ""
+        for line in src.split("\n"):
+            m = re.match(r"\s*(?:async\s+)?def\s+(\w+)", line)
+            if m:
+                current = m.group(1)
+            elif "_session_key(route)" in line and current:
+                consumers.add(current)
+        return consumers
+
+    @staticmethod
+    def _owner_modules() -> list[Any]:
+        import importlib
+        from pathlib import Path
+
+        from kiro_crew.telegram import transport_dispatch as td
+
+        return [
+            importlib.import_module(f"kiro_crew.telegram.dispatch.{p.stem}")
+            for p in sorted(Path(td.__file__).with_name("dispatch").glob("*.py"))
+            if p.stem != "__init__"
+        ]
+
+    def test_the_consumer_scan_reads_an_owner_the_same_way(self) -> None:
+        planted = "def _handle_new_thing(self, route):\n    return self._session_key(route)\n"
+        assert self._consumers(planted) == {"_handle_new_thing"}
 
     @pytest.mark.asyncio
     async def test_title_renames_the_session_the_next_message_will_use(self) -> None:
@@ -5203,3 +5260,705 @@ class TestTheCursorIsFenced:
                 client._task.cancel()
 
         assert client._offset == 42
+
+
+# ── Dispatch characterization: owner-level contracts a module split must keep ──
+
+
+class _VoiceClient(FakeClient):
+    """A client that also records ``sendVoice``."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.voice: list[tuple[Any, ...]] = []
+        self.voice_mid: Any = 555
+        self.voice_error: BaseException | None = None
+
+    async def send_voice(
+        self, chat_id: int, data: bytes, *, filename: str, mime: str, message_thread_id: Any = None
+    ) -> Any:
+        if self.voice_error is not None:
+            raise self.voice_error
+        self.voice.append((chat_id, data, filename, mime, message_thread_id))
+        return self.voice_mid
+
+
+class TestVoiceReplyCharacterization:
+    """Spoken replies: the length floor, the settings, the delivery leg, the toggle."""
+
+    @staticmethod
+    def _voice_dispatcher() -> tuple[Any, _VoiceClient]:
+        d, _cli, _sess = _dispatcher({1})
+        client = _VoiceClient()
+        d.client = client  # type: ignore[assignment]
+        return d, client
+
+    @staticmethod
+    def _synth(seen: list, results: list, path: Any = None):  # type: ignore[no-untyped-def]
+        async def _synthesize(deliver, text, **settings):  # noqa: ANN001 - test stub
+            seen.append((text, settings))
+            if path is None:
+                return False
+            results.append(await deliver(str(path)))
+            return results[-1]
+
+        return _synthesize
+
+    @pytest.mark.asyncio
+    async def test_the_floor_is_fifty_raw_characters(self, monkeypatch: Any) -> None:
+        seen: list[Any] = []
+        monkeypatch.setattr(
+            "kiro_crew.telegram.transport_dispatch.synthesize_and_deliver", self._synth(seen, [])
+        )
+        d, _client = self._voice_dispatcher()
+        await d._speak_reply(("direct", "1"), 1, "x" * 49, None)
+        assert seen == []
+        await d._speak_reply(("direct", "1"), 1, "x" * 50, None)
+        assert len(seen) == 1
+        d.client = None
+        await d._speak_reply(("direct", "1"), 1, "x" * 200, None)
+        assert len(seen) == 1
+
+    @pytest.mark.asyncio
+    async def test_settings_come_from_the_boot_config(self, monkeypatch: Any) -> None:
+        from kiro_crew.voice_reply import synthesis_settings
+
+        seen: list[Any] = []
+        monkeypatch.setattr(
+            "kiro_crew.telegram.transport_dispatch.synthesize_and_deliver", self._synth(seen, [])
+        )
+        d, _client = self._voice_dispatcher()
+        section = {"provider": "piper", "piper_binary": "pb"}
+        for raw, expected in (
+            ({"voice_reply": section}, synthesis_settings(section)),
+            ("junk", synthesis_settings(None)),
+            ({"voice_reply": "junk"}, synthesis_settings(None)),
+        ):
+            seen.clear()
+            d.cfg.raw = raw
+            await d._speak_reply(("direct", "1"), 1, "y" * 60, None)
+            assert seen[0][1] == expected, raw
+
+    @pytest.mark.asyncio
+    async def test_the_file_is_sent_as_a_voice_note(self, monkeypatch: Any, tmp_path: Any) -> None:
+        path = tmp_path / "reply.ogg"
+        path.write_bytes(b"OggS..")
+        seen: list[Any] = []
+        results: list[Any] = []
+        monkeypatch.setattr(
+            "kiro_crew.telegram.transport_dispatch.synthesize_and_deliver",
+            self._synth(seen, results, path),
+        )
+        d, client = self._voice_dispatcher()
+        await d._speak_reply(("forum", "-100999:4"), -100999, "z" * 60, 4)
+        assert client.voice == [(-100999, b"OggS..", "reply.ogg", "audio/ogg", 4)]
+        assert results == [True]
+        client.voice_mid = None
+        await d._speak_reply(("forum", "-100999:4"), -100999, "z" * 60, 4)
+        assert results == [True, False]
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_or_failing_send_is_contained(
+        self, monkeypatch: Any, tmp_path: Any
+    ) -> None:
+        seen: list[Any] = []
+        results: list[Any] = []
+        monkeypatch.setattr(
+            "kiro_crew.telegram.transport_dispatch.synthesize_and_deliver",
+            self._synth(seen, results, tmp_path / "missing.wav"),
+        )
+        d, client = self._voice_dispatcher()
+        await d._speak_reply(("direct", "1"), 1, "z" * 60, None)
+        assert results == [False] and client.voice == []
+
+        path = tmp_path / "reply.wav"
+        path.write_bytes(b"RIFF")
+        monkeypatch.setattr(
+            "kiro_crew.telegram.transport_dispatch.synthesize_and_deliver",
+            self._synth(seen, results, path),
+        )
+        client.voice_error = OSError("upload refused")
+        await d._speak_reply(("direct", "1"), 1, "z" * 60, None)
+        assert client.sent == []
+
+    @pytest.mark.parametrize(
+        ("name", "mime"),
+        [
+            ("r.ogg", "audio/ogg"),
+            ("r.opus", "audio/ogg"),
+            ("r.mp3", "audio/mpeg"),
+            ("r.wav", "audio/wav"),
+            ("r.m4a", "audio/mp4"),
+            ("R.OGG", "audio/ogg"),
+            ("noext", "application/octet-stream"),
+            ("a.tar.gz", "application/octet-stream"),
+            ("a.flac", "application/octet-stream"),
+        ],
+    )
+    def test_the_mime_table_is_exact(self, tmp_path: Any, name: str, mime: str) -> None:
+        from kiro_crew.telegram.transport_dispatch import _audio_mime
+
+        assert _audio_mime(str(tmp_path / name)) == mime
+
+    def test_reading_returns_the_bytes_or_nothing(self, tmp_path: Any) -> None:
+        from kiro_crew.telegram import transport_dispatch as td
+
+        target = tmp_path / "a.wav"
+        target.write_bytes(b"abc")
+        assert td._read_bytes(str(target)) == b"abc"
+        assert td._read_bytes(str(tmp_path / "nope")) == b""
+        assert td._read_bytes(str(tmp_path)) == b""
+
+    @pytest.mark.asyncio
+    async def test_the_toggle_replies_are_exact(self) -> None:
+        d, client, _ = _dispatcher({1})
+        await d.handle_message(_msg("/voice on"))
+        assert client.sent[-1][0] == "🔊 Voice replies on."
+        await d.handle_message(_msg("/voice  OFF "))
+        assert client.sent[-1][0] == "🔊 Voice replies off."
+        await d.handle_message(_msg("/voice"))
+        assert client.sent[-1][0] == "🔊 Voice replies are *off*. Use `/voice on` or `/voice off`."
+        await d.handle_message(_msg("/voice maybe"))
+        assert d._voice_pref[("direct", "1")] is False
+
+    @pytest.mark.asyncio
+    async def test_a_turn_speaks_after_success_and_before_persist(self) -> None:
+        d, _client, sess = _dispatcher({1})
+        d._voice_pref[("direct", "1")] = True
+        order: list[Any] = []
+        speak = AsyncMock(side_effect=lambda *a: order.append(("speak", list(sess.successes))))
+        d._speak_reply = speak  # type: ignore[method-assign]
+        d._persist_turn = lambda *a, **k: order.append(("persist",))  # type: ignore[method-assign]
+        await d.handle_message(_msg("hello world"))
+        assert speak.await_args.args == (("direct", "1"), 1, "Answer: hello world", None)
+        assert order == [("speak", ["telegram:kirocrew:direct:1"]), ("persist",)]
+
+    @pytest.mark.asyncio
+    async def test_a_forum_turn_speaks_with_an_int_thread(self) -> None:
+        d, _client, _sess = _dispatcher({1}, allow_forum=True, allowed_forum_chat_ids=[-100999])
+        d._voice_pref[("forum", "-100999:4")] = True
+        speak = AsyncMock()
+        d._speak_reply = speak  # type: ignore[method-assign]
+        await d.handle_message(_forum_msg("hello"))
+        assert speak.await_args.args[3] == 4
+
+    @pytest.mark.asyncio
+    async def test_no_voice_when_off(self) -> None:
+        d, _client, _sess = _dispatcher({1})
+        speak = AsyncMock()
+        d._speak_reply = speak  # type: ignore[method-assign]
+        await d.handle_message(_msg("hello"))
+        speak.assert_not_awaited()
+
+
+class TestForumActivationCharacterization:
+    """Whether a forum message addresses this bot, read live per message."""
+
+    def test_the_mode_is_read_live(self) -> None:
+        d, _client, _sess = _dispatcher({1}, allow_forum=True, allowed_forum_chat_ids=[-100999])
+        assert d._activation_outcome(_forum_msg()) is None
+        d.cfg.telegram.forum_activation = "off"
+        _prime_live(d.cfg)
+        assert d._activation_outcome(_forum_msg()) == "denied_activation_off"
+
+    def test_an_unknown_mode_serves(self) -> None:
+        d, _client, _sess = _dispatcher({1}, forum_activation="sometimes")
+        assert d._activation_outcome(_forum_msg()) is None
+
+    def test_an_ordinary_group_is_gated_and_a_neutral_envelope_is_a_dm(self) -> None:
+        from kiro_crew.messaging.transport import InboundMessage
+
+        d, _client, _sess = _dispatcher({1}, forum_activation="off")
+        group = TelegramInboundMessage(
+            channel_type="telegram", user_id="1", conversation_id="-1", text="x", chat_type="group"
+        )
+        assert d._activation_outcome(group) == "denied_activation_off"
+        neutral = InboundMessage(
+            channel_type="telegram", user_id="1", conversation_id="-1", text="x"
+        )
+        assert d._activation_outcome(neutral) is None
+
+    def test_the_mention_rules(self) -> None:
+        from kiro_crew.telegram import transport_dispatch as td
+
+        d, _client, _sess = _dispatcher({1}, forum_activation="mention")
+        d.bot_username = "  @KiroCrewBot "
+        assert d._activation_outcome(_forum_msg("@kirocrewbot hi")) is None
+        assert (
+            d._activation_outcome(_forum_msg("@@kirocrewbot")) == "denied_activation_mention_only"
+        )
+        d.bot_id = 555
+        assert (
+            d._activation_outcome(_forum_msg("x", reply_to=555, has_entities=True, mentions=()))
+            is None
+        )
+        d.bot_username = "KiroCrewBot"
+        assert (
+            d._activation_outcome(_forum_msg("/help@KiroCrewBot"))
+            == "denied_activation_mention_only"
+        )
+        assert td._mention_re("x") is td._mention_re("x")
+
+    @pytest.mark.asyncio
+    async def test_a_mention_drop_is_audited_and_runs_before_commands(
+        self, monkeypatch: Any
+    ) -> None:
+        rows: list[dict[str, Any]] = []
+        monkeypatch.setattr(
+            "kiro_crew.telegram.transport_dispatch.sel",
+            lambda: SimpleNamespace(log_api_access=lambda **kw: rows.append(kw)),
+        )
+        d, client, _sess = _dispatcher(
+            {1}, allow_forum=True, allowed_forum_chat_ids=[-100999], forum_activation="mention"
+        )
+        d.bot_username = "KiroCrewBot"
+        route = AsyncMock()
+        d._session_resume.route = route  # type: ignore[method-assign]
+        await d.handle_message(_forum_msg("/new"))
+        assert rows == [
+            {
+                "caller": "1",
+                "operation": "telegram.inbound",
+                "outcome": "denied_activation_mention_only",
+                "source": "telegram",
+                "resources": "chat=-100999",
+            }
+        ]
+        assert client.sent == [] and d._conv.current_gen(("forum", "-100999:4")) == 0
+        route.assert_not_awaited()
+
+
+class TestStatsAndReplyTargetCharacterization:
+    """What a turn counts, and which message it visibly answers."""
+
+    @staticmethod
+    def _counted(monkeypatch: Any) -> list[str]:
+        seen: list[str] = []
+        recorder = SimpleNamespace(
+            inc_message_received=lambda: seen.append("received"),
+            inc_message_success=lambda: seen.append("success"),
+            inc_message_failed=lambda: seen.append("failed"),
+            summary=lambda: "S",
+        )
+        monkeypatch.setattr("kiro_crew.telegram.transport_dispatch.Stats", lambda: recorder)
+        return seen
+
+    def test_the_counters_per_exit(self, monkeypatch: Any) -> None:
+        seen = self._counted(monkeypatch)
+        d, _client, _sess = _dispatcher({1}, forum_activation="off")
+        asyncio.run(d.handle_message(_forum_msg()))
+        assert seen == ["received"]
+
+        seen.clear()
+        d, _client, _sess = _dispatcher({7})
+        asyncio.run(d.handle_message(_dm("/ping")))
+        assert seen == ["received"]
+
+        seen.clear()
+        d, _client, _sess = _dispatcher({7}, raise_on_get=True)
+        asyncio.run(d.handle_message(_dm("hi")))
+        assert seen == ["received"]
+
+        seen.clear()
+        d, _client, sess = _dispatcher({7})
+        sess.closing = True
+        asyncio.run(d.handle_message(_dm("hi")))
+        assert seen == ["received"]
+
+    def test_governance_bookkeeping_never_leaks(self, monkeypatch: Any) -> None:
+        asked: list[str] = []
+
+        async def _raise(channel: str) -> bool:
+            asked.append(channel)
+            raise RuntimeError("profile store down")
+
+        monkeypatch.setattr(
+            "kiro_crew.telegram.transport_dispatch.channel_inbound_permitted", _raise
+        )
+        d, _client, _sess = _dispatcher({7})
+        with pytest.raises(RuntimeError):
+            asyncio.run(d.handle_message(_dm("hi")))
+        assert d._routing_checks == {} and asked == ["telegram"]
+
+    @pytest.mark.asyncio
+    async def test_which_message_a_turn_quotes(self) -> None:
+        from kiro_crew.telegram.transport_dispatch import TelegramDispatcher
+
+        d, client, _sess = _dispatcher({1})
+        await d.handle_message(_msg("hi"))
+        assert client.reply_targets[0] is None
+
+        d, client, _sess = _dispatcher({1}, allow_forum=True, allowed_forum_chat_ids=[-100999])
+        await d.handle_message(_forum_msg("hi"))
+        assert client.reply_targets[0] == 7 and client.send_threads[0] == 4
+        assert [t for t in client.reply_targets if t] == [7]
+
+        d, client, sess = _dispatcher({1})
+        sess.queued = [("1", "later", _origin(1, 1))]
+        await d._drain_queue(d._session_key(("direct", "1")))
+        assert client.reply_targets[0] is None
+
+        zero = TelegramInboundMessage(
+            channel_type="telegram",
+            user_id="1",
+            conversation_id="-1",
+            text="x",
+            chat_type="supergroup",
+            message_id=0,
+        )
+        assert TelegramDispatcher._reply_target(zero, interpret_commands=True) is None
+        group = TelegramInboundMessage(
+            channel_type="telegram",
+            user_id="1",
+            conversation_id="-1",
+            text="x",
+            chat_type="group",
+            message_id=9,
+        )
+        assert TelegramDispatcher._reply_target(group, interpret_commands=True) == 9
+
+
+class TestAgentPickerCharacterization:
+    """The /agent keyboard, its cut, its inert notice row and every reply."""
+
+    _DEFAULT = "Default (kirocrew)"
+
+    @staticmethod
+    def _with_names(monkeypatch: Any, d: Any, names: list[str]) -> None:
+        monkeypatch.setattr(type(d), "_installed_agent_names", staticmethod(lambda: list(names)))
+
+    def test_each_internal_signal_hides_an_agent_on_its_own(self) -> None:
+        from kiro_crew.telegram.transport_dispatch import _agent_is_internal
+
+        agent = TestAgentPicker._agent
+        assert _agent_is_internal(agent("a", "a.json", owned=True)) is True
+        assert _agent_is_internal(agent("b", "b.json", source="kirocrew")) is True
+        assert _agent_is_internal(agent("c", "app--c.json")) is True
+        assert _agent_is_internal(agent("d--x", "d.json")) is False
+        assert _agent_is_internal(agent("kirocrew-custom", "kirocrew-custom.json")) is False
+        assert _agent_is_internal(agent("p", "Pkg-p.json", source="package")) is False
+
+    def test_names_are_deduplicated_and_listed_with_no_arguments(self) -> None:
+        from kiro_crew.telegram import transport_dispatch as td
+
+        roster = [
+            TestAgentPicker._agent("beta", "beta.json"),
+            TestAgentPicker._agent("alpha", "alpha.json"),
+            TestAgentPicker._agent("alpha", "alpha-2.json"),
+            TestAgentPicker._agent("", "blank.json"),
+        ]
+        calls: list[Any] = []
+        with patch.object(td, "list_agents", lambda *a, **k: calls.append((a, k)) or roster):
+            assert td.TelegramDispatcher._installed_agent_names() == ["alpha", "beta"]
+        assert calls == [((), {})]
+
+    def test_discovery_runs_off_the_loop_and_keeps_its_order(self, monkeypatch: Any) -> None:
+        import threading
+
+        d, client, _sess = _dispatcher({7})
+        threads: list[int] = []
+
+        def _names() -> list[str]:
+            threads.append(threading.get_ident())
+            return ["zeta", "alpha"]
+
+        monkeypatch.setattr(type(d), "_installed_agent_names", staticmethod(_names))
+        asyncio.run(d.handle_message(_dm("/agent")))
+        assert threads and threads[0] != threading.get_ident()
+        labels = [row[0]["text"] for row in client.sent[-1][1]["inline_keyboard"]]
+        assert labels == [f"• {self._DEFAULT}", "zeta", "alpha"]
+
+    def test_the_keyboard_header_and_record_are_exact(self, monkeypatch: Any) -> None:
+        d, client, _sess = _dispatcher({7})
+        self._with_names(monkeypatch, d, ["alpha"])
+        asyncio.run(d.handle_message(_dm("/agent")))
+        text, markup = client.sent[-1]
+        assert text == f"Current agent: {self._DEFAULT}\nPick one:"
+        assert markup["inline_keyboard"] == [
+            [{"text": f"• {self._DEFAULT}", "callback_data": "g:0"}],
+            [{"text": "alpha", "callback_data": "g:1"}],
+        ]
+        picker = d._agent_pickers["7:101"]
+        assert picker.route == ("direct", "7") and picker.session_key == ""
+        assert picker.store_route_preference is False
+        asyncio.run(d.handle_message(_dm("/agent x")))
+        assert client.sent[-1][0] == (
+            "/agent takes no argument — pick from the list.\n\n"
+            f"Current agent: {self._DEFAULT}\nPick one:"
+        )
+        d._agent_pref[("direct", "7")] = "ghost"
+        asyncio.run(d.handle_message(_dm("/agent")))
+        assert client.sent[-1][0] == "Current agent: ghost\nPick one:"
+
+    def test_the_cut_boundary_and_the_inert_notice(self, monkeypatch: Any) -> None:
+        from test_telegram import _press
+
+        d, client, _sess = _dispatcher({7})
+        names = [f"agent{i:03d}" for i in range(24)]
+        self._with_names(monkeypatch, d, names)
+        asyncio.run(d.handle_message(_dm("/agent")))
+        rows = client.sent[-1][1]["inline_keyboard"]
+        assert len(rows) == 25 and not any("not shown" in r[0]["text"] for r in rows)
+
+        d, client, _sess = _dispatcher({7})
+        names = [f"agent{i:03d}" for i in range(25)]
+        self._with_names(monkeypatch, d, names)
+        asyncio.run(d.handle_message(_dm("/agent")))
+        rows = client.sent[-1][1]["inline_keyboard"]
+        assert rows[-1] == [{"text": "… and 1 more not shown", "callback_data": "noop"}]
+        assert d._agent_pickers["7:101"].choices == (
+            (("", self._DEFAULT),) + tuple((n, n) for n in names[:24])
+        )
+        sent_before = len(client.sent)
+        asyncio.run(d.on_callback(_press("noop")))
+        assert client.edits == [] and client.markup_edits == [] and len(client.sent) == sent_before
+        assert "7:101" in d._agent_pickers
+        asyncio.run(d.on_callback(_press("g:25")))
+        assert client.edits[-1][1] == "⌛ This agent list is no longer active — send /agent again."
+
+    def test_each_agent_reply_is_exact(self, monkeypatch: Any) -> None:
+        from test_telegram import _press
+
+        rotated = (
+            "✅ Agent set to {} — this starts a fresh conversation. "
+            "Switch back to return to the previous one."
+        )
+        d, client, sess = _dispatcher({7})
+        self._with_names(monkeypatch, d, ["alpha"])
+        asyncio.run(d.handle_message(_dm("/agent")))
+        asyncio.run(d.on_callback(_press("g:1")))
+        assert client.edits[-1] == (101, rotated.format("alpha"), {"inline_keyboard": []})
+        asyncio.run(d.handle_message(_dm("/agent")))
+        asyncio.run(d.on_callback(_press("g:0", message_id=102)))
+        assert client.edits[-1][1] == rotated.format(self._DEFAULT)
+        assert ("direct", "7") not in d._agent_pref
+
+        d, client, sess = _dispatcher({7})
+        sess._has = False
+        assert asyncio.run(d._apply_agent(("direct", "7"), "alpha")) == "✅ Agent set to alpha."
+        sess._busy = True
+        assert asyncio.run(d._apply_agent(("direct", "7"), "alpha")) == (
+            "⏳ Still working on your last message — send /agent again once it finishes "
+            "to switch to alpha."
+        )
+        d, _client, sess = _dispatcher({7}, default_agent="research")
+        sess._has = False
+        assert asyncio.run(d._apply_agent(("direct", "7"), "")) == (
+            "✅ Agent set to Default (research)."
+        )
+        d.agent = "override"
+        assert asyncio.run(d._apply_agent(("direct", "7"), "")) == (
+            "✅ Agent set to Default (override)."
+        )
+
+    def test_a_busy_refusal_is_still_audited_as_allowed(self, monkeypatch: Any) -> None:
+        from test_telegram import _press
+
+        rows: list[dict[str, Any]] = []
+        monkeypatch.setattr(
+            "kiro_crew.telegram.transport_dispatch.sel",
+            lambda: SimpleNamespace(log_api_access=lambda **kw: rows.append(kw)),
+        )
+        d, client, sess = _dispatcher({7})
+        self._with_names(monkeypatch, d, ["alpha"])
+        asyncio.run(d.handle_message(_dm("/agent")))
+        sess._busy = True
+        asyncio.run(d.on_callback(_press("g:1")))
+        assert [r for r in rows if r["operation"] == "telegram.set_agent"] == [
+            {
+                "caller": "7",
+                "operation": "telegram.set_agent",
+                "outcome": "allowed",
+                "source": "telegram",
+                "resources": "agent=alpha",
+            }
+        ]
+        assert client.edits[-1][1].startswith("⏳ Still working")
+        assert client.edits[-1][2] == {"inline_keyboard": []}
+
+
+class TestServiceAndDashboardCharacterization:
+    """The service-backed commands and the dashboard link, reply by reply."""
+
+    @pytest.mark.parametrize(
+        ("text", "reply"),
+        [
+            ("/cron list", "Cron is not running on this instance."),
+            ("/spawn x", "Subagents are not available on this instance."),
+            ("/task status", "The task runner is not available on this instance."),
+        ],
+    )
+    def test_an_absent_service_says_so(self, text: str, reply: str) -> None:
+        d, client, _sess = _dispatcher({7})
+        asyncio.run(d.handle_message(_dm(text)))
+        assert client.sent[-1][0] == reply
+
+    def test_the_usage_replies_are_exact(self) -> None:
+        d, client, _sess = _dispatcher({7})
+        d.cron_service = MagicMock()
+        asyncio.run(d.handle_message(_dm("/cron")))
+        assert (
+            client.sent[-1][0] == "Usage: /cron list | pause <id> | resume <id> | remove <id>|all"
+        )
+        d.task_runner = MagicMock()
+        asyncio.run(d.handle_message(_dm("/task")))
+        assert client.sent[-1][0] == "Usage: /task run <spec-path> | /task status | /task cancel"
+        d.subagent_manager = MagicMock()
+        asyncio.run(d.handle_message(_dm("/spawn")))
+        assert client.sent[-1][0] == "Usage: /spawn <task>  ·  /spawn list"
+
+    @pytest.fixture
+    def _dashboard(self, monkeypatch: Any) -> dict[str, Any]:
+        import kiro_crew.dashboard.token_auth as token_auth
+
+        state: dict[str, Any] = {"order": [], "minted": []}
+        monkeypatch.delenv("KIROCREW_PORT", raising=False)
+
+        def _mint(user: str, *, ttl_seconds: int) -> str:
+            state["minted"].append((user, ttl_seconds))
+            if state.get("mint_error"):
+                raise state["mint_error"]
+            return "tok123"
+
+        monkeypatch.setattr(token_auth, "generate_token", _mint)
+        monkeypatch.setattr(
+            "kiro_crew.telegram.transport_dispatch.sel",
+            lambda: SimpleNamespace(log_api_access=lambda **kw: state["order"].append(("sel", kw))),
+        )
+        return state
+
+    def _dm_dashboard(self, state: dict[str, Any], text: str, url: str) -> Any:
+        d, client, _sess = _dispatcher({1})
+        d.cfg.dashboard = SimpleNamespace(url=url)
+        real_send = client.send_message
+
+        async def _send(chat_id: int, body: str, **kw: Any) -> int:
+            state["order"].append(("send", body))
+            return await real_send(chat_id, body, **kw)
+
+        client.send_message = _send  # type: ignore[method-assign]
+        asyncio.run(d.handle_message(_msg(text)))
+        return client
+
+    def test_a_dm_gets_a_link(self, _dashboard: dict[str, Any]) -> None:
+        self._dm_dashboard(_dashboard, "/kirocrew dashboard 2h", "https://dash.example:8443")
+        assert _dashboard["minted"] == [("1", 7200)]
+        assert _dashboard["order"] == [
+            (
+                "sel",
+                {
+                    "caller": "1",
+                    "operation": "telegram.dashboard_token",
+                    "outcome": "ok",
+                    "source": "telegram",
+                    "resources": "ttl=7200",
+                },
+            ),
+            ("send", "🔗 Dashboard link (valid 2h):\nhttps://dash.example:8443/?token=tok123"),
+        ]
+
+    def test_the_ttl_is_clamped_and_rendered(self, _dashboard: dict[str, Any]) -> None:
+        for arg, ttl, shown in (("", 3600, "1h"), (" 90m", 5400, "1h 30m"), (" 30h", 72000, "20h")):
+            _dashboard["minted"].clear()
+            client = self._dm_dashboard(
+                _dashboard, f"/kirocrew dashboard{arg}", "https://dash.example"
+            )
+            assert _dashboard["minted"] == [("1", ttl)], arg
+            assert client.sent[-1][0].startswith(f"🔗 Dashboard link (valid {shown}):"), arg
+
+    def test_a_topic_is_refused_without_minting(self, _dashboard: dict[str, Any]) -> None:
+        d, client, _sess = _dispatcher({1}, allow_forum=True, allowed_forum_chat_ids=[-100999])
+        asyncio.run(d.handle_message(_forum_msg("/kirocrew dashboard")))
+        assert client.sent[-1][0] == (
+            "🔒 Dashboard links are only sent in a direct message — DM me `/kirocrew dashboard`."
+        )
+        assert client.send_threads[-1] == 4
+        assert _dashboard["minted"] == [] and _dashboard["order"] == []
+
+    def test_a_mint_failure_is_audited_and_reported(self, _dashboard: dict[str, Any]) -> None:
+        _dashboard["mint_error"] = RuntimeError("boom")
+        client = self._dm_dashboard(_dashboard, "/kirocrew dashboard", "https://dash.example")
+        assert [kw["outcome"] for kind, kw in _dashboard["order"] if kind == "sel"] == ["error"]
+        assert client.sent[-1][0] == "⚠️ Could not generate dashboard link: boom"
+
+
+class TestHostListingAudienceCharacterization:
+    """The host-wide listings: who may receive them, and what a refusal says."""
+
+    @pytest.mark.asyncio
+    async def test_a_topic_refusal_is_exact_and_audited(self, monkeypatch: Any) -> None:
+        rows: list[dict[str, Any]] = []
+        monkeypatch.setattr(
+            "kiro_crew.telegram.transport_dispatch.sel",
+            lambda: SimpleNamespace(log_api_access=lambda **kw: rows.append(kw)),
+        )
+        d, client, _sess = _dispatcher({1}, allow_forum=True, allowed_forum_chat_ids=[-100999])
+        await d.handle_message(_forum_msg("/sessions"))
+        assert client.sent[-1][0] == (
+            "🔒 The conversation list is only sent in a direct message. DM me `/sessions`."
+        )
+        assert client.send_threads[-1] == 4
+        assert rows == [
+            {
+                "caller": "1",
+                "operation": "telegram.sessions_command",
+                "outcome": "denied",
+                "source": "telegram",
+                "resources": "chat=-100999",
+                "error": "shared_topic_audience",
+            }
+        ]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("text", "subject", "cmd"),
+        [
+            ("/cron pause j1", "scheduled job list", "cron"),
+            ("/spawn list", "spawn listing", "spawn"),
+            ("/task status", "task listing", "task"),
+        ],
+    )
+    async def test_each_listing_names_its_subject(self, text: str, subject: str, cmd: str) -> None:
+        d, client, _sess = _dispatcher({1}, allow_forum=True, allowed_forum_chat_ids=[-100999])
+        await d.handle_message(_forum_msg(text))
+        assert (
+            client.sent[-1][0]
+            == f"🔒 The {subject} is only sent in a direct message. DM me `/{cmd}`."
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_multi_owner_dm_refusal_is_exact_and_audited(self, monkeypatch: Any) -> None:
+        rows: list[dict[str, Any]] = []
+        monkeypatch.setattr(
+            "kiro_crew.telegram.transport_dispatch.sel",
+            lambda: SimpleNamespace(log_api_access=lambda **kw: rows.append(kw)),
+        )
+        d, client, _sess = _dispatcher({7, 8})
+        await d.handle_message(_dm("/sessions"))
+        assert client.sent[-1][0] == (
+            "🔒 The conversation list names conversations across this whole install, so it is "
+            "only sent when `telegram.allowed_user_ids` holds a single operator. It currently "
+            "holds several, and the agent cannot tell which of them owns the install."
+        )
+        assert rows == [
+            {
+                "caller": "7",
+                "operation": "telegram.sessions_command",
+                "outcome": "denied",
+                "source": "telegram",
+                "resources": "allowed_identities=2",
+                "error": "no_unambiguous_owner",
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_the_picker_gets_its_arguments(self) -> None:
+        from unittest.mock import call
+
+        d, client, _sess = _dispatcher({7})
+        picker = AsyncMock()
+        d._session_resume.show_picker = picker  # type: ignore[method-assign]
+        await d.handle_message(_dm("/sessions launch"))
+        assert picker.await_args == call(
+            client, 7, 7, "private", None, query="launch", native_key="telegram:kirocrew:direct:7"
+        )
