@@ -3545,6 +3545,22 @@ cannot cover — a root that died before its first scan — and the tracked swee
 cannot either, since nothing was recorded.  Linux only; see
 [acp-client](acp-client.md).
 
+Every `/proc/<pid>/stat` and `status` read on these teardown, sweep and reclaim
+paths is a BYTES read through `platform_compat` (`read_proc_stat`,
+`read_proc_status_int`, `linux_pgroup_members`, `proc_child_map`,
+`get_process_start_identity`), so a process whose name is not UTF-8 -- a
+multibyte script name cut at the kernel's 15 bytes is enough -- is seen like any
+other. That covers the root's exit check (`_pid_exited_but_unreaped`: a zombie
+or a pid that is gone has exited, a present pid whose state cannot be read has
+not), both group scans (`_pgroup_has_member_besides`, `_marked_group_members`,
+which takes each member's start id from the same read that admitted it), the
+session-leader check the orphan-work sweep and the reconciler ask
+(`_linux_session_leader_alive`: only a leader that is gone or reads another
+session, a kernel thread's session 0 included, counts as ended), the parent edges (`get_ppid`, `_is_our_descendant`,
+`_pid_parent_and_token`, `_our_orphan_pids`), the child map, the reconciler's
+process table, the ages (`_pid_age_seconds`, `_linux_pid_age`) and the RSS reads
+the recycle ceilings judge by.
+
 If the gateway crashes, the entries remain in the file for the next startup.
 
 **Detection**: reads `kiro_pids.txt`, processes only `child:parent` lines
