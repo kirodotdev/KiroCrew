@@ -11,7 +11,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { useProvider } from '../../providers'
 import McpBrowserModal from '../../components/McpBrowserModal'
 import McpCustomServerModal from '../../components/McpCustomServerModal'
-import type { McpServer, McpApplyChange, McpScopePresence, McpGlobalScope } from '../../types'
+import type { McpServer, McpApplyChange, McpScopePresence, McpGlobalScope, McpTempRefusal } from '../../types'
 import { useSortableTable } from '../../hooks/useSortableTable'
 import { useScrollEdges } from '../../hooks/useScrollEdges'
 import { fmtDateTime, fmtTime } from '../../i18n/format'
@@ -291,6 +291,14 @@ type McpAuthState = 'sign_in_required' | 'signed_in' | 'unknown'
  * owner of a working server to sign in again. `undefined` therefore falls through
  * to `unknown`, whose wording claims nothing either way.
  */
+/** The row's sentence for a declared-temp refusal the probe reported, one per cause. */
+function tempRefusalNote(r: McpTempRefusal): string {
+  const vars = { key: r.key, path: r.path }
+  if (r.cause === 'sealed') return i18nT('pages.overview.mcpTab.temp_refusal_sealed', vars)
+  if (r.cause === 'unclassifiable') return i18nT('pages.overview.mcpTab.temp_refusal_unclassifiable', vars)
+  return i18nT('pages.overview.mcpTab.temp_refusal_check_failed', vars)
+}
+
 function mcpAuthState(s: McpServer): McpAuthState {
   if (s.status !== 'needs_auth' || !s.authChallenge) return 'unknown'
   if (s.authGrantPresent === true) return 'signed_in'
@@ -875,6 +883,19 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                        `title` a keyboard or touch user never reaches (#13075). */
                     <DisabledWhereLine whereKey={whereKey} file={s.disabledInFile ?? null} reason={s.disabledReason} text={disabledInConfigWhereText} />
                   )}
+                  {s.tempRefusals?.map(r => (
+                    /* The probe still answered with the managed temp, so the status
+                       stays as it is; this line says what was ignored and why. A
+                       failed location check is an error, so it gets the agent hand-off. */
+                    r.cause === 'check-failed' ? (
+                      <ErrorNotice key={r.key} message={tempRefusalNote(r)} askAgent messageClassName="break-all" testId="mcp-temp-refusal-check-failed" />
+                    ) : (
+                      <div key={r.key} className="text-warn text-[12px] break-all">
+                        <AlertTriangle className="lucide-inline" />{' '}
+                        {tempRefusalNote(r)}
+                      </div>
+                    )
+                  ))}
                   {s.status === 'error' && s.error ? (
                     <span className="text-danger text-[12px]">
                       <AlertTriangle className="lucide-inline" /> {s.error}

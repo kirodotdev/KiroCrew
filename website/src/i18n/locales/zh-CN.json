@@ -13030,7 +13030,10 @@
         "sign_in_preparing": "正在准备登录…",
         "sign_in_retry": "重试",
         "sign_in_row_updates_after_probe": "使用上方的“Probe MCP servers”刷新此行。",
-        "sign_in_timeout": "登录未能及时生成批准链接。请重试。"
+        "sign_in_timeout": "登录未能及时生成批准链接。请重试。",
+        "temp_refusal_sealed": "已忽略声明的 {{key}}={{path}}，原因：它位于只读的运行时文件夹内。探测改用了托管的临时文件夹。",
+        "temp_refusal_unclassifiable": "已忽略声明的 {{key}}={{path}}，原因：无法确认它的实际位置。探测改用了托管的临时文件夹。",
+        "temp_refusal_check_failed": "已忽略声明的 {{key}}={{path}}，原因：位置检查失败。探测改用了托管的临时文件夹。"
       },
       "memoryGraphTab": {
         "all_count": "全部（{{count}}）",

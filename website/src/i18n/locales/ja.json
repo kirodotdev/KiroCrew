@@ -13030,7 +13030,10 @@
         "sign_in_preparing": "サインインを準備しています…",
         "sign_in_retry": "もう一度試す",
         "sign_in_row_updates_after_probe": "上部の「Probe MCP servers」を使ってこの行を更新してください。",
-        "sign_in_timeout": "サインインが時間内に承認リンクを生成しませんでした。もう一度お試しください。"
+        "sign_in_timeout": "サインインが時間内に承認リンクを生成しませんでした。もう一度お試しください。",
+        "temp_refusal_sealed": "宣言された {{key}}={{path}} は無視されました。理由: 読み取り専用のランタイムフォルダー内にあります。プローブは代わりに管理された一時フォルダーを使用しました。",
+        "temp_refusal_unclassifiable": "宣言された {{key}}={{path}} は無視されました。理由: 実際の場所を確認できませんでした。プローブは代わりに管理された一時フォルダーを使用しました。",
+        "temp_refusal_check_failed": "宣言された {{key}}={{path}} は無視されました。理由: 場所の確認に失敗しました。プローブは代わりに管理された一時フォルダーを使用しました。"
       },
       "memoryGraphTab": {
         "all_count": "すべて（{{count}}）",

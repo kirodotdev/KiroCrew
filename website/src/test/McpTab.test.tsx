@@ -865,3 +865,40 @@ describe('McpTab disabled-in-config rows', () => {
     await waitFor(() => expect(screen.getByText(/1 pending change/)).toBeInTheDocument())
   })
 })
+
+/**
+ * A probe that refused a spec-declared temp still answers `ok` (it ran
+ * with the managed temp), so the row must say what was ignored and why rather
+ * than leaving that fact in the journal alone.
+ */
+describe('McpTab declared-temp refusal', () => {
+  it('shows the refused key, path and cause on an ok row, and keeps the badge Online', async () => {
+    mockApi.mcpServers.mockResolvedValue([{
+      ...server('tempy'),
+      tempRefusals: [{ key: 'TMPDIR', path: '/data/run/custom-tmp', cause: 'sealed' }],
+    }])
+    renderTab()
+    const note = await screen.findByText(/Declared TMPDIR=\/data\/run\/custom-tmp was ignored/)
+    expect(note).toHaveTextContent('it is inside the read-only runtime folder')
+    expect(note).toHaveTextContent('managed temp folder instead')
+    expect(screen.getByText('Online')).toBeInTheDocument()
+  })
+
+  it('renders a failed location check through ErrorNotice with the agent hand-off', async () => {
+    mockApi.mcpServers.mockResolvedValue([{
+      ...server('tempy'),
+      tempRefusals: [{ key: 'TMP', path: '/data/run/t', cause: 'check-failed' }],
+    }])
+    renderTab()
+    const notice = await screen.findByTestId('mcp-temp-refusal-check-failed')
+    expect(notice).toHaveTextContent('Declared TMP=/data/run/t was ignored because the location check failed.')
+    expect(within(notice).getAllByRole('button').length).toBeGreaterThan(0)
+    expect(screen.getByText('Online')).toBeInTheDocument()
+  })
+
+  it('renders nothing extra for a row with no refusal', async () => {
+    renderTab()
+    await waitFor(() => expect(screen.getByText('alpha', { selector: 'code' })).toBeInTheDocument())
+    expect(screen.queryByText(/was ignored because/)).not.toBeInTheDocument()
+  })
+})

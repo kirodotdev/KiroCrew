@@ -13412,7 +13412,10 @@
         "sign_in_preparing": "Preparazione dell’accesso…",
         "sign_in_retry": "Riprova",
         "sign_in_row_updates_after_probe": "Usa «Probe MCP servers» qui sopra per aggiornare questa riga.",
-        "sign_in_timeout": "L’accesso non ha prodotto un link di approvazione in tempo. Riprova."
+        "sign_in_timeout": "L’accesso non ha prodotto un link di approvazione in tempo. Riprova.",
+        "temp_refusal_sealed": "Il {{key}}={{path}} dichiarato è stato ignorato perché si trova nella cartella di runtime di sola lettura. La verifica ha usato invece la cartella temporanea gestita.",
+        "temp_refusal_unclassifiable": "Il {{key}}={{path}} dichiarato è stato ignorato perché non è stato possibile confermarne la posizione reale. La verifica ha usato invece la cartella temporanea gestita.",
+        "temp_refusal_check_failed": "Il {{key}}={{path}} dichiarato è stato ignorato perché il controllo della posizione non è riuscito. La verifica ha usato invece la cartella temporanea gestita."
       },
       "memoryGraphTab": {
         "all_count": "Tutti ({{count}})",

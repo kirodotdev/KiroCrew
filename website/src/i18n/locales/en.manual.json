@@ -5895,7 +5895,10 @@
         "uninstall_disabled_in_config_help": "Removes this server from every MCP config, including the shared one it is disabled in.",
         "scope_disabled_in_config": "{{label}}: off (disabled in the shared MCP config; change it there)",
         "disabled_count_one": "{{count}} disabled",
-        "disabled_count_other": "{{count}} disabled"
+        "disabled_count_other": "{{count}} disabled",
+        "temp_refusal_sealed": "Declared {{key}}={{path}} was ignored because it is inside the read-only runtime folder. The probe used the managed temp folder instead.",
+        "temp_refusal_unclassifiable": "Declared {{key}}={{path}} was ignored because its real location could not be confirmed. The probe used the managed temp folder instead.",
+        "temp_refusal_check_failed": "Declared {{key}}={{path}} was ignored because the location check failed. The probe used the managed temp folder instead."
       },
       "memoryGraphTab": {
         "all_count": "All ({{count}})",

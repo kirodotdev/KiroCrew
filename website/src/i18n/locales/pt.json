@@ -13412,7 +13412,10 @@
         "sign_in_preparing": "Preparando o login…",
         "sign_in_retry": "Tentar novamente",
         "sign_in_row_updates_after_probe": "Use \"Probe MCP servers\" acima para atualizar esta linha.",
-        "sign_in_timeout": "O login não produziu um link de aprovação a tempo. Tente novamente."
+        "sign_in_timeout": "O login não produziu um link de aprovação a tempo. Tente novamente.",
+        "temp_refusal_sealed": "O {{key}}={{path}} declarado foi ignorado porque está dentro da pasta de execução somente leitura. A verificação usou a pasta temporária gerenciada no lugar.",
+        "temp_refusal_unclassifiable": "O {{key}}={{path}} declarado foi ignorado porque não foi possível confirmar sua localização real. A verificação usou a pasta temporária gerenciada no lugar.",
+        "temp_refusal_check_failed": "O {{key}}={{path}} declarado foi ignorado porque a verificação da localização falhou. A verificação usou a pasta temporária gerenciada no lugar."
       },
       "memoryGraphTab": {
         "all_count": "Todos ({{count}})",

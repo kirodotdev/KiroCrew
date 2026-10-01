@@ -837,6 +837,11 @@ export interface McpScopePresence {
   [scope: string]: boolean
 }
 
+export interface McpTempRefusal {
+  key: string; path: string
+  cause: 'sealed' | 'unclassifiable' | 'check-failed'
+}
+
 export interface McpServer {
   name: string; command: string; args?: string[]
   url?: string
@@ -859,6 +864,9 @@ export interface McpServer {
    *  alongside `authChallenge`; absent is "unknown", which is why the sign-in
    *  wording is gated on an explicit `false`. */
   authGrantPresent?: boolean
+  /** Spec-declared temp keys the probe refused (path already redacted); the
+   *  probe ran with the managed temp instead. Absent when nothing was refused. */
+  tempRefusals?: McpTempRefusal[]
   /** Optional status-enrichment fields supplied by newer runtimes. */
   accountLabel?: string
   connectedSince?: string

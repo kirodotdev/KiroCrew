@@ -13412,7 +13412,10 @@
         "sign_in_preparing": "Preparando el inicio de sesión…",
         "sign_in_retry": "Inténtalo de nuevo",
         "sign_in_row_updates_after_probe": "Usa «Probe MCP servers» arriba para actualizar esta fila.",
-        "sign_in_timeout": "El inicio de sesión no produjo un enlace de aprobación a tiempo. Inténtalo de nuevo."
+        "sign_in_timeout": "El inicio de sesión no produjo un enlace de aprobación a tiempo. Inténtalo de nuevo.",
+        "temp_refusal_sealed": "Se ignoró el {{key}}={{path}} declarado porque está dentro de la carpeta de ejecución de solo lectura. La comprobación usó en su lugar la carpeta temporal gestionada.",
+        "temp_refusal_unclassifiable": "Se ignoró el {{key}}={{path}} declarado porque no se pudo confirmar su ubicación real. La comprobación usó en su lugar la carpeta temporal gestionada.",
+        "temp_refusal_check_failed": "Se ignoró el {{key}}={{path}} declarado porque falló la comprobación de la ubicación. La comprobación usó en su lugar la carpeta temporal gestionada."
       },
       "memoryGraphTab": {
         "all_count": "Todos ({{count}})",

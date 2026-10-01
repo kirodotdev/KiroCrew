@@ -13221,7 +13221,10 @@
         "sign_in_preparing": "Anmeldung wird vorbereitet…",
         "sign_in_retry": "Erneut versuchen",
         "sign_in_row_updates_after_probe": "Verwende „Probe MCP servers“ oben, um diese Zeile zu aktualisieren.",
-        "sign_in_timeout": "Die Anmeldung hat nicht rechtzeitig einen Freigabelink erzeugt. Erneut versuchen."
+        "sign_in_timeout": "Die Anmeldung hat nicht rechtzeitig einen Freigabelink erzeugt. Erneut versuchen.",
+        "temp_refusal_sealed": "Das deklarierte {{key}}={{path}} wurde ignoriert, weil es im schreibgeschützten Laufzeitordner liegt. Die Prüfung hat stattdessen den verwalteten Temp-Ordner verwendet.",
+        "temp_refusal_unclassifiable": "Das deklarierte {{key}}={{path}} wurde ignoriert, weil sein tatsächlicher Ort nicht bestätigt werden konnte. Die Prüfung hat stattdessen den verwalteten Temp-Ordner verwendet.",
+        "temp_refusal_check_failed": "Das deklarierte {{key}}={{path}} wurde ignoriert, weil die Ortsprüfung fehlgeschlagen ist. Die Prüfung hat stattdessen den verwalteten Temp-Ordner verwendet."
       },
       "memoryGraphTab": {
         "all_count": "Alle ({{count}})",

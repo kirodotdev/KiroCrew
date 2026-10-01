@@ -433,6 +433,9 @@ class _ProbeResult:
     # all of its life showing the vaguer wording.
     auth_challenge: bool = False
     auth_grant_present: bool | None = None
+    # The probe's declared-temp refusals (see ``McpServerInfo.temp_refusals``),
+    # cached so the panel keeps showing them for the whole TTL.
+    temp_refusals: list[dict[str, str]] = field(default_factory=list)
     # Fingerprint of the config inputs this answer was probed UNDER, so an entry
     # cannot outlive the configuration that produced it. The cache is keyed on
     # the server NAME alone, and a name is not an identity: editing a command,
@@ -669,6 +672,7 @@ def _cache_probe(server: McpServerInfo) -> None:
         probe_mode=server.probe_mode,
         auth_challenge=server.auth_challenge,
         auth_grant_present=server.auth_grant_present,
+        temp_refusals=[dict(r) for r in server.temp_refusals],
         identity=identity,
     )
 
@@ -920,6 +924,11 @@ class McpServerInfo:
     # None means the lookup could not answer. Only meaningful alongside
     # ``auth_challenge``; see :func:`_runtime_grant_present`.
     auth_grant_present: bool | None = None
+    # Spec-declared temp keys the local probe refused, one dict per key:
+    # ``key``, ``path`` (redacted like the WARNING) and ``cause`` (``sealed``,
+    # ``unclassifiable`` or ``check-failed``). Same facts as the journal line,
+    # so the dashboard row can say the probe ran with the managed temp instead.
+    temp_refusals: list[dict[str, str]] = field(default_factory=list)
 
     @property
     def is_remote(self) -> bool:
@@ -980,6 +989,9 @@ class McpServerInfo:
                 # safe wording, a false would name an action.
                 if self.auth_grant_present is not None:
                     d["authGrantPresent"] = self.auth_grant_present
+        # Omitted when empty, like ``authChallenge``: absent means no refusal.
+        if self.temp_refusals:
+            d["tempRefusals"] = [dict(r) for r in self.temp_refusals]
         if self.disabled_tools:
             d["disabledTools"] = self.disabled_tools
         if self.disabled:
@@ -1768,6 +1780,7 @@ def list_servers() -> list[McpServerInfo]:
         if cached is not None and cached.identity == identity:
             s.auth_challenge = cached.auth_challenge
             s.auth_grant_present = cached.auth_grant_present
+            s.temp_refusals = [dict(r) for r in cached.temp_refusals]
 
     return list(servers.values())
 
@@ -2246,6 +2259,32 @@ async def _probe_on_private_loop(
         raise
 
 
+def _drop_temp_refusals(server: McpServerInfo) -> None:
+    """Clear a skipped probe's refusals on the row AND in the probe cache.
+
+    A skipped probe stands behind no refusal, and ``list_servers`` rehydrates
+    the row from the cache on the next read, so clearing the row alone would
+    bring the stale refusal back.
+    """
+    server.temp_refusals = []
+    cached = _probe_cache.get(server.name)
+    if cached is not None:
+        cached.temp_refusals = []
+
+
+def _redact_temp_refusal_text(text: str) -> str:
+    """The redactor the declared-temp WARNING applies to a path or failure."""
+    return _sanitize_probe_error(ValueError(text))
+
+
+def _temp_refusal_records(refused: dict[str, tuple[str, str]]) -> list[dict[str, str]]:
+    """``McpServerInfo.temp_refusals`` entries for a refused temp declaration."""
+    return [
+        {"key": key, "path": _redact_temp_refusal_text(path), "cause": cause}
+        for key, (path, cause) in sorted(refused.items())
+    ]
+
+
 async def probe_server(
     server: McpServerInfo,
     *,
@@ -2274,7 +2313,12 @@ async def probe_server(
     probe must pass through removes that whole class; callers keep their own
     filters and error surfaces as behaviour and UX, not as the safety property.
     """
+    # This probe is the sole authority for its own temp refusals; a row
+    # rehydrated from the cache must not keep an earlier probe's list on any
+    # exit, including the ones below that never spawn.
+    server.temp_refusals = []
     if server.disabled:
+        _drop_temp_refusals(server)
         server.status = "disabled"
         # Truthy rather than ``is True``: a hand-built McpServerInfo may carry
         # anything here, and any non-empty value should withhold the spawn.
@@ -2448,19 +2492,20 @@ async def probe_server(
             )
             _declared_temp_upper = set(accepted)
             if _sealed_temp:
+                server.temp_refusals = _temp_refusal_records(_sealed_temp)
                 logger.warning(
                     "MCP probe [%s]: ignoring spec-declared %s — %s; probing with the "
                     "managed temp instead",
                     server.name,
                     format_declared_temp_refusals(
                         _sealed_temp,
-                        redactor=lambda path: _sanitize_probe_error(ValueError(path)),
+                        redactor=_redact_temp_refusal_text,
                     ),
                     "; ".join(
                         declared_temp_refusal_reasons(
                             _sealed_temp,
                             failure,
-                            redactor=lambda text: _sanitize_probe_error(ValueError(text)),
+                            redactor=_redact_temp_refusal_text,
                         )
                     ),
                 )
@@ -3051,6 +3096,7 @@ async def probe_all() -> list[McpServerInfo]:
         # to the probe cache -- no probe ran.
         s.status = "disabled"
         s.error = ""
+        _drop_temp_refusals(s)
     # Keep the warn-once ledger bounded by the config rather than by config
     # churn: a command edited to a different missing binary must not retain the
     # superseded string. Runs before the early return so emptying the config
@@ -3087,6 +3133,7 @@ async def probe_all() -> list[McpServerInfo]:
         if s.name in excluded:
             s.status = "outdated"
             s.error = ""
+            _drop_temp_refusals(s)
             return s
         async with sem:
             return await probe_server(s)
