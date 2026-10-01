@@ -1268,6 +1268,30 @@ class TestRunTask:
             for inst in created
         )
 
+    def test_consolidator_gets_the_configured_migrated_flag(
+        self, taskrunner_env, tmp_path, monkeypatch
+    ) -> None:
+        # The live config watcher only fires on change, so the boot value
+        # must reach the consolidator, or markdown memory is rewritten on a
+        # migrated install.
+        from kiro_crew.config import KiroCrewConfig
+
+        cfg = KiroCrewConfig()
+        cfg.memory.migrated = True
+        monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: cfg))
+        seen: list[dict] = []
+        monkeypatch.setattr(
+            cli_server, "HistoryConsolidator", lambda **kw: seen.append(kw) or object()
+        )
+        taskrunner_env["install_runner"](_Result("completed"))
+        args = argparse.Namespace(
+            spec=str(_spec(tmp_path)), no_test=True, fresh=False, timeout=90, name=""
+        )
+        asyncio.run(cli_server._run_task(args))
+        assert [kw.get("migrated") for kw in seen] == [True]
+        # A migrated consolidator writes only to the vector store, so it must get one.
+        assert seen[0].get("vector_store") is taskrunner_env["vector"]
+
     def test_failed_builtin_sync_does_not_gate_the_task(
         self, taskrunner_env, tmp_path, monkeypatch
     ) -> None:

@@ -2680,6 +2680,8 @@ async def _run_task(args: argparse.Namespace) -> None:
         sessions=sessions,
         lesson_store=lessons,
         history_idle_secs=cfg.memory.history_idle_hours * 3600,
+        vector_store=vector_memory,
+        migrated=cfg.memory.migrated,
         skills_loader=skills,
         auto_skills_enabled=cfg.skills.auto_create_from_sessions,
         auto_refine_enabled=cfg.skills.auto_refine_on_deviation,
