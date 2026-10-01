@@ -581,3 +581,159 @@ describe('a restore owns the position while it lands (source guard)', () => {
     expect(leave).not.toContain('pendingRestoreRef.current')
   })
 })
+
+// #11625: a restore that is still only OWED (its row has not hydrated yet) must
+// yield to a reader who moves in the meantime. Landing it later snapped a reader
+// who had gone back to the bottom onto the old row, and because the stale anchor
+// was never cleared, every later entry repeated the jump.
+describe('useVirtualChat: an owed restore yields to the reader', () => {
+  let origRaf: typeof requestAnimationFrame
+  beforeEach(() => {
+    localStorage.clear()
+    origRaf = globalThis.requestAnimationFrame
+    globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) => { cb(0); return 0 }) as typeof requestAnimationFrame
+    // `performance` too: the entry stamp, the hard-input stamp and the hold
+    // deadline are all read from it, so the ORDER entry -> gesture -> arrival is
+    // fixed by the fake clock rather than by real elapsed time.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance', 'Date'] })
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    globalThis.requestAnimationFrame = origRaf
+  })
+
+  /** Rows `lo..49`: the tail page plus however much older history has loaded. */
+  const tail = (lo: number): Item[] => Array.from({ length: 50 - lo }, (_, i) => ({ id: `m${lo + i}` }))
+  const rerender = (view: ReturnType<typeof mount>['view'], el: HTMLDivElement, items: Item[]) =>
+    view.rerender({ items, sessionId: 'sess-stale', getKey, externalScrollerRef: { current: el } })
+
+  it('drops the owed restore when the reader scrolls to the bottom before the row lands', () => {
+    seedHeights('sess-stale', 50, 100)
+    saveScrollAnchor('sess-stale', { key: 'm5', top: 24 })
+    const { el, state, view } = mount('sess-stale', { scrollTop: 0, scrollHeight: 3000, clientHeight: 400 }, tail(20))
+    // Entry: m5 is not in the tail page, so the restore is held.
+    expect(view.result.current.restoreGate).toBe(true)
+
+    act(() => { vi.advanceTimersByTime(50) })
+    // The reader wheels; an older page lands (growth renews the hold on main)...
+    act(() => { el.dispatchEvent(new Event('wheel')) })
+    act(() => {
+      state.scrollHeight = 4000
+      rerender(view, el, tail(10))
+    })
+    // ...and they go back to the bottom, and the debounced save settles there.
+    act(() => {
+      el.dispatchEvent(new WheelEvent('wheel', { deltaY: 100 }))
+      state.scrollTop = state.scrollHeight - state.clientHeight
+      el.dispatchEvent(new Event('scroll'))
+    })
+    act(() => { vi.advanceTimersByTime(250) })
+    expect(localStorage.getItem(`${ANCHOR_KEY_PREFIX}sess-stale`)).toBeNull()
+
+    // The page holding m5 lands. The restore would write 5*100-24 = 476.
+    act(() => {
+      state.scrollHeight = 5000
+      rerender(view, el, tail(0))
+    })
+    act(() => { vi.advanceTimersByTime(250) })
+    expect(el.scrollTop).not.toBe(476)
+    expect(view.result.current.restoreGate).toBe(false)
+    expect(localStorage.getItem(`${ANCHOR_KEY_PREFIX}sess-stale`)).toBeNull()
+  })
+
+  it('does not force-pin on give-up when the reader moved during the hold', () => {
+    seedHeights('sess-stale', 50, 100)
+    saveScrollAnchor('sess-stale', { key: 'gone', top: 0 })
+    const { el, state, view } = mount('sess-stale', { scrollTop: 0, scrollHeight: 3000, clientHeight: 400 }, tail(20))
+    expect(view.result.current.restoreGate).toBe(true)
+
+    act(() => { vi.advanceTimersByTime(50) })
+    act(() => {
+      el.dispatchEvent(new WheelEvent('wheel', { deltaY: 100 }))
+      state.scrollTop = 1000
+      el.dispatchEvent(new Event('scroll'))
+    })
+    // Past the hold: on main the give-up force-pins to 2600.
+    act(() => { vi.advanceTimersByTime(1500) })
+    expect(view.result.current.restoreGate).toBe(false)
+    expect(el.scrollTop).toBe(1000)
+  })
+
+  it('a hard input that moves nothing does not cost the reader the saved position', () => {
+    seedHeights('sess-stale', 50, 100)
+    saveScrollAnchor('sess-stale', { key: 'm5', top: 24 })
+    const { el, state, view } = mount('sess-stale', { scrollTop: 0, scrollHeight: 3000, clientHeight: 400 }, tail(20))
+    act(() => { vi.advanceTimersByTime(50) })
+    // A wheel and a scroll event that leave scrollTop where it was.
+    act(() => {
+      el.dispatchEvent(new Event('wheel'))
+      el.dispatchEvent(new Event('scroll'))
+    })
+    act(() => { vi.advanceTimersByTime(250) })
+    act(() => {
+      state.scrollHeight = 5000
+      rerender(view, el, tail(0))
+    })
+    expect(el.scrollTop).toBe(476)
+    expect(loadScrollAnchor('sess-stale')).toEqual({ key: 'm5', top: 24 })
+  })
+
+  it('a no-op wheel plus our own prepend compensation does not cost the saved position', () => {
+    seedHeights('sess-stale', 50, 100)
+    saveScrollAnchor('sess-stale', { key: 'm5', top: 24 })
+    const { el, state, view } = mount('sess-stale', { scrollTop: 0, scrollHeight: 3000, clientHeight: 400 }, tail(20))
+    act(() => { vi.advanceTimersByTime(50) })
+    // The wheel moves nothing; the older page lands and the hook compensates
+    // the prepend by writing scrollTop itself.
+    act(() => { el.dispatchEvent(new Event('wheel')) })
+    act(() => {
+      state.scrollHeight = 4000
+      rerender(view, el, tail(10))
+    })
+    const compensated = el.scrollTop
+    expect(compensated).not.toBe(0)
+    // That write's scroll event arrives inside the wheel's settle window.
+    act(() => { el.dispatchEvent(new Event('scroll')) })
+    act(() => { vi.advanceTimersByTime(250) })
+    act(() => {
+      state.scrollHeight = 5000
+      rerender(view, el, tail(0))
+    })
+    expect(el.scrollTop).toBe(476)
+    expect(loadScrollAnchor('sess-stale')).toEqual({ key: 'm5', top: 24 })
+  })
+
+  it('a native anchoring shift after a zero-delta wheel does not cost the saved position', () => {
+    seedHeights('sess-stale', 50, 100)
+    saveScrollAnchor('sess-stale', { key: 'm5', top: 24 })
+    const { el, state, view } = mount('sess-stale', { scrollTop: 0, scrollHeight: 3000, clientHeight: 400 }, tail(20))
+    act(() => { vi.advanceTimersByTime(50) })
+    // A wheel that names no direction, then -- inside its settle window -- the
+    // browser moves scrollTop itself (overflow-anchor during hydration).
+    act(() => { el.dispatchEvent(new WheelEvent('wheel', { deltaY: 0 })) })
+    act(() => {
+      state.scrollTop = 700
+      el.dispatchEvent(new Event('scroll'))
+    })
+    act(() => { vi.advanceTimersByTime(250) })
+    act(() => {
+      state.scrollHeight = 5000
+      rerender(view, el, tail(0))
+    })
+    expect(el.scrollTop).toBe(476)
+    expect(loadScrollAnchor('sess-stale')).toEqual({ key: 'm5', top: 24 })
+  })
+
+  it('still lands the restore when the reader did nothing during the hold', () => {
+    seedHeights('sess-stale', 50, 100)
+    saveScrollAnchor('sess-stale', { key: 'm5', top: 24 })
+    const { el, state, view } = mount('sess-stale', { scrollTop: 0, scrollHeight: 3000, clientHeight: 400 }, tail(20))
+    act(() => { vi.advanceTimersByTime(50) })
+    act(() => {
+      state.scrollHeight = 5000
+      rerender(view, el, tail(0))
+    })
+    expect(el.scrollTop).toBe(476)
+    expect(loadScrollAnchor('sess-stale')).toEqual({ key: 'm5', top: 24 })
+  })
+})

@@ -62,11 +62,17 @@ type SetWindowRange = (next: WindowRange | ((prev: WindowRange) => WindowRange))
 export interface FollowState {
   stickRef: Ref<boolean>
   lastWriteTopRef: Ref<number>
+  /** Target of the last programmatic write, whatever its accounting. Only
+   *  writeScrollTop sets it, so the follow handler never re-baselines it. */
+  lastProgrammaticTopRef: Ref<number>
   lastWriteClientHRef: Ref<number>
   smoothPinActiveRef: Ref<boolean>
   prevSmoothTopRef: Ref<number>
   lastUserScrollAtRef: Ref<number>
   lastHardInputAtRef: Ref<number>
+  /** Hard input that named a direction (wheel delta, touch drag, scrolling key).
+   *  A tap, a scrollbar grab or a zero-delta wheel names none and moves nothing. */
+  lastDirectionalInputAtRef: Ref<number>
   lastUpwardInputAtRef: Ref<number>
   lastGrabInputAtRef: Ref<number>
   lastScrollEventAtRef: Ref<number>
@@ -127,6 +133,8 @@ export function useFollowState(followOutput: boolean): FollowState {
   // hardware events and by the smooth-pin grab interrupts, never by scroll
   // events themselves.
   const lastHardInputAtRef = useRef<number>(Number.NEGATIVE_INFINITY)
+  const lastProgrammaticTopRef = useRef<number>(-1)
+  const lastDirectionalInputAtRef = useRef<number>(Number.NEGATIVE_INFINITY)
   // UPWARD-only sibling of lastHardInputAtRef: stamped when the input's own
   // direction was up (wheel up / upward key / upward touch drag), or when a
   // smooth-glide grab moved scrollTop backward (confirmed upward by motion).
@@ -200,6 +208,7 @@ export function useFollowState(followOutput: boolean): FollowState {
     // directionless grab or a downward input must not disable the clamp
     // guard (see lastUpwardInputAtRef).
     if (dir === 'up') lastUpwardInputAtRef.current = performance.now()
+    if (dir === 'up' || dir === 'down') lastDirectionalInputAtRef.current = performance.now()
     // A scrollbar grab arms its own hold (see lastGrabInputAtRef); it is still
     // directionless for the clamp guard above.
     if (dir === 'grab') lastGrabInputAtRef.current = performance.now()
@@ -233,6 +242,7 @@ export function useFollowState(followOutput: boolean): FollowState {
       if (typeof el.scrollTo === 'function') el.scrollTo({ top, behavior })
       else el.scrollTop = top
       lastWriteTopRef.current = accounting === 'pin' ? top : -1
+      lastProgrammaticTopRef.current = top
       lastWriteClientHRef.current = accounting === 'pin' ? el.clientHeight : -1
       // The direction reference must move WITH our own writes, synchronously.
       // A programmatic scroll's event lands asynchronously (and a fake scroller
@@ -304,6 +314,8 @@ export function useFollowState(followOutput: boolean): FollowState {
   return {
     stickRef,
     lastWriteTopRef,
+    lastProgrammaticTopRef,
+    lastDirectionalInputAtRef,
     lastWriteClientHRef,
     smoothPinActiveRef,
     prevSmoothTopRef,

@@ -21,7 +21,7 @@ import {
   type ScrollAnchor,
 } from './ScrollAnchorCache'
 import { captureTopAnchorFrom } from './anchorGeometry'
-import { anchorSettleConverged, computeAtBottom, scrollerCollapsed } from './FollowController'
+import { anchorSettleConverged, computeAtBottom, isSelfScroll, SCROLL_SETTLE_MS, scrollerCollapsed } from './FollowController'
 import { computeJumpWindow, getOffset as getOffsetFn, initialWindow, tailWindow, type HeightGetter, type WindowRange } from './WindowCalculator'
 import type { HeightIndex } from './HeightIndex'
 import type { FollowState, Pinning } from './followPolicy'
@@ -104,6 +104,10 @@ export interface ReadingPositionEntry<T = unknown> {
   settleMeasuringRef: Ref<boolean>
   settleGateRef: Ref<boolean>
   restoreOwnsPosition: () => boolean
+  /** When the current session was last ENTERED (latch time; see readerMovedSinceEntry). */
+  entryAtRef: Ref<number>
+  /** The reader MOVED the scroller after the entry latch: they picked a position. */
+  readerMovedSinceEntry: () => boolean
   restoreEval: number
   setRestoreEval: (update: (n: number) => number) => void
   anchorSaveTimerRef: Ref<ReturnType<typeof setTimeout> | null>
@@ -134,14 +138,14 @@ export function useReadingPositionEntry<T>(ctx: {
   altIdAtIndex: (idx: number) => string | null
   setWindowRange: SetWindowRange
   setIsAtBottom: (next: boolean) => void
-  follow: Pick<FollowState, 'stickRef' | 'lastWriteTopRef' | 'lastWriteClientHRef' | 'lastHardInputAtRef'>
+  follow: Pick<FollowState, 'stickRef' | 'lastWriteTopRef' | 'lastWriteClientHRef' | 'lastHardInputAtRef' | 'lastProgrammaticTopRef' | 'lastDirectionalInputAtRef'>
 }): ReadingPositionEntry<T> {
   const {
     sessionId, itemCount, overscan, initialPlacement, followOutput, bottomThreshold,
     scrollerRef, elIndexRef, itemsRef, getKeyRef, getStableIdRef, getAltIdRef, altIdAtIndex,
     setWindowRange, setIsAtBottom,
   } = ctx
-  const { stickRef, lastWriteTopRef, lastWriteClientHRef, lastHardInputAtRef } = ctx.follow
+  const { stickRef, lastWriteTopRef, lastWriteClientHRef, lastHardInputAtRef, lastProgrammaticTopRef, lastDirectionalInputAtRef } = ctx.follow
 
   // ---- Reading-position anchor (persisted; see ScrollAnchorCache) ----
   //
@@ -206,9 +210,29 @@ export function useReadingPositionEntry<T>(ctx: {
    *  Declared beside the two refs it reads, ahead of every caller: the leave flush is
    *  the earliest of them, and a caller that cannot reach this predicate reaches for
    *  `pendingRestore` instead, which is the defect above. */
-  const restoreOwnsPosition = useCallback(
-    (): boolean => settleGateRef.current || pendingRestoreRef.current !== null,
+  // When the current session was entered (the latch below). A reader who MOVES
+  // the scroller after it has chosen a position while a restore was still only
+  // OWED; landing that restore later snaps them (paged older history, went back
+  // to the bottom) onto the old row (#11625). A hard-input stamp alone is not a
+  // move: a wheel at the end or a tap scrolls nothing, and must not cost the
+  // reader their saved position. So the move is recorded by the scroll path
+  // (scheduleAnchorSave): scrollTop changed within the settle window of a
+  // DIRECTIONAL input stamped after entry (a tap, a scrollbar grab or a
+  // zero-delta wheel names no direction, so the browser's own anchoring shift
+  // after one is not the reader), and not to a target WE wrote (a prepend
+  // compensation lands here too). Checked against lastProgrammaticTopRef, not
+  // lastWriteTopRef: the follow handler runs first and re-baselines the latter
+  // to a reader's own arrival at the end.
+  const entryAtRef = useRef(0)
+  const readerMovedAtRef = useRef(Number.NEGATIVE_INFINITY)
+  const lastSeenTopRef = useRef(-1)
+  const readerMovedSinceEntry = useCallback(
+    (): boolean => readerMovedAtRef.current > entryAtRef.current,
     [],
+  )
+  const restoreOwnsPosition = useCallback(
+    (): boolean => settleGateRef.current || (pendingRestoreRef.current !== null && !readerMovedSinceEntry()),
+    [readerMovedSinceEntry],
   )
   // Bumped whenever the pending restore RESOLVES (applied or expired) so the
   // gate below is never read stale, and by the expiry timer so the effect gets
@@ -247,6 +271,7 @@ export function useReadingPositionEntry<T>(ctx: {
     // height owner, which runs later in this same render.
     pendingRestoreRef.current = loadScrollAnchor(sessionId)
     returnRestoreRef.current = false
+    entryAtRef.current = performance.now()
     if (pendingRestoreRef.current) {
       stickRef.current = false
       restoreDeadlineRef.current = performance.now() + RESTORE_HYDRATE_WAIT_MS
@@ -329,6 +354,7 @@ export function useReadingPositionEntry<T>(ctx: {
     // open-at-bottom contract stands.
     pendingRestoreRef.current = loadScrollAnchor(sessionId)
     returnRestoreRef.current = false
+    entryAtRef.current = performance.now()
     stickRef.current = pendingRestoreRef.current ? false : followOutput
     if (restoreTimerRef.current !== null) {
       clearTimeout(restoreTimerRef.current)
@@ -379,6 +405,20 @@ export function useReadingPositionEntry<T>(ctx: {
   // the return would then read a stale anchor. Same predicates either way --
   // the flush writes exactly what the timer was about to.
   const scheduleAnchorSave = useCallback((flushPending = false) => {
+    const live = scrollerRef.current
+    if (live && !flushPending) {
+      const top = live.scrollTop
+      const now = performance.now()
+      const hardAt = lastDirectionalInputAtRef.current
+      if (
+        lastSeenTopRef.current >= 0 && top !== lastSeenTopRef.current &&
+        hardAt > entryAtRef.current && now - hardAt <= SCROLL_SETTLE_MS &&
+        !isSelfScroll(top, lastProgrammaticTopRef.current)
+      ) {
+        readerMovedAtRef.current = now
+      }
+      lastSeenTopRef.current = top
+    }
     if (flushPending) {
       if (anchorSaveTimerRef.current === null) return
       clearTimeout(anchorSaveTimerRef.current)
@@ -437,7 +477,7 @@ export function useReadingPositionEntry<T>(ctx: {
       anchorSaveTimerRef.current = null
       run()
     }, ANCHOR_SAVE_DEBOUNCE_MS)
-  }, [lastHardInputAtRef, bottomThreshold, scrollerRef, captureTopAnchor, restoreOwnsPosition])
+  }, [lastHardInputAtRef, lastProgrammaticTopRef, lastDirectionalInputAtRef, bottomThreshold, scrollerRef, captureTopAnchor, restoreOwnsPosition])
 
   const restoreGateNow = useCallback(
     (): boolean => !returnRestoreRef.current && (pendingRestoreRef.current != null || settleGateRef.current),
@@ -465,6 +505,8 @@ export function useReadingPositionEntry<T>(ctx: {
     settleMeasuringRef,
     settleGateRef,
     restoreOwnsPosition,
+    entryAtRef,
+    readerMovedSinceEntry,
     restoreEval,
     setRestoreEval,
     anchorSaveTimerRef,
@@ -492,7 +534,7 @@ export function useVisibilityReplacement<T>(ctx: {
   const { sessionId, followOutput, bottomThreshold, overscan, scrollerRef, itemsRef, setWindowRange } = ctx
   const {
     pendingRestoreRef, returnRestoreRef, restoreDeadlineRef, restoreLastCountRef, restoreTimerRef, slotPinDoneRef,
-    restoreOwnsPosition, setRestoreEval, sessionIdRef, captureTopAnchor, scheduleAnchorSave,
+    restoreOwnsPosition, setRestoreEval, sessionIdRef, captureTopAnchor, scheduleAnchorSave, entryAtRef,
   } = ctx.reading
   const { stickRef, lastWriteTopRef, lastWriteClientHRef } = ctx.follow
   const { forcePin } = ctx.pinning
@@ -628,6 +670,7 @@ export function useVisibilityReplacement<T>(ctx: {
         const target = snap.anchor ?? loadScrollAnchor(liveSession)
         pendingRestoreRef.current = target
         returnRestoreRef.current = target != null
+        entryAtRef.current = performance.now()
         stickRef.current = target ? false : followOutput
         restoreDeadlineRef.current = target ? performance.now() + RESTORE_HYDRATE_WAIT_MS : 0
       }
@@ -648,7 +691,7 @@ export function useVisibilityReplacement<T>(ctx: {
   }, [
     sessionId, followOutput, bottomThreshold, overscan, scrollerRef, captureTopAnchor, restoreOwnsPosition, scheduleAnchorSave, forcePin,
     pendingRestoreRef, returnRestoreRef, restoreDeadlineRef, restoreLastCountRef, restoreTimerRef, slotPinDoneRef,
-    setRestoreEval, sessionIdRef, stickRef, lastWriteTopRef, lastWriteClientHRef, itemsRef, setWindowRange,
+    setRestoreEval, sessionIdRef, stickRef, lastWriteTopRef, lastWriteClientHRef, itemsRef, setWindowRange, entryAtRef,
   ])
 }
 
@@ -683,6 +726,7 @@ export function useReadingPositionRestore<T>(ctx: {
   const {
     pendingRestoreRef, returnRestoreRef, restoreDeadlineRef, restoreLastCountRef, restoreTimerRef, slotPinDoneRef,
     settleRafRef, settleMeasuringRef, settleGateRef, restoreEval, setRestoreEval, sessionIdRef,
+    readerMovedSinceEntry, scheduleAnchorSave,
   } = ctx.reading
   const { dropShiftCapture } = ctx.shift
   const { stickRef, lastWriteTopRef, lastWriteClientHRef, lastHardInputAtRef, writeScrollTop } = ctx.follow
@@ -926,6 +970,24 @@ export function useReadingPositionRestore<T>(ctx: {
     if (scrollerRef.current) devWatchScroller(scrollerRef.current, itemCount)
     if (slotPinDoneRef.current === sessionId) return
     const anchor = pendingRestoreRef.current
+    if (anchor && readerMovedSinceEntry()) {
+      // The reader moved while the restore was owed: their position wins. Drop
+      // the restore instead of landing it over them, and do not pin either --
+      // the scroll handler already set `stick` from where they went. The save
+      // (no longer gated by restoreOwnsPosition) clears the stored anchor at the
+      // bottom or records the reader's row, so the next entry does not repeat it.
+      devLog('RESTORE.drop', `${shortId(sessionId)} ${keyShape(anchor.key)} n=${itemCount}`)
+      pendingRestoreRef.current = null
+      returnRestoreRef.current = false
+      if (restoreTimerRef.current !== null) {
+        clearTimeout(restoreTimerRef.current)
+        restoreTimerRef.current = null
+      }
+      slotPinDoneRef.current = sessionId
+      scheduleAnchorSave()
+      setRestoreEval((n) => n + 1)
+      return
+    }
     if (anchor) {
       const idx = itemCount > 0 ? findAnchorIndex(anchor) : -1
       if (idx >= 0) {
