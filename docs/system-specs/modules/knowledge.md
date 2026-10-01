@@ -668,9 +668,12 @@ permissive than the previous but still safe.
 **Invariants preserved across all tiers:**
 - Alias-to-alias matches never trigger reuse (only prevents transitive merges).
 - Entity-type conflicts in Tier 2 and Tier 3 always produce a new entity (not a
-  silent merge).  Tier 1 applies the same guard: a canonical name match with
-  conflicting entity types is rejected and falls through to Tier 2/3 or creates
-  a new entity.
+  silent merge); those tiers normalise missing/empty types to ``'concept'``
+  before comparing.  Tier 1 (canonical-name match) has **no** type guard by
+  design: the same canonical name implies the same real-world entity regardless
+  of the LLM's per-chunk classification, and rejecting on a type mismatch would
+  create an unbounded duplicate row on every re-ingest (no ``UNIQUE(name)``
+  constraint exists and no merge path would close the gap).
 - Ingestion order does not affect the final entity count when a lexical bridge
   exists in the extraction output.
 

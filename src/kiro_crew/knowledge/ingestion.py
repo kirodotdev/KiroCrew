@@ -1603,9 +1603,14 @@ class IngestionPipeline:
             (incoming name ∈ existing aliases) or
             (incoming alias == existing canonical) triggers reuse.
           - Transitive alias chains cannot merge unrelated entities.
-          - Entity-type conflicts always produce a new entity (not a silent
-            merge); all three tiers normalise missing/empty types to
-            ``'concept'`` before comparing.
+          - Entity-type conflicts in Tiers 2 and 3 always produce a new entity
+            (not a silent merge); those tiers normalise missing/empty types to
+            ``'concept'`` before comparing.  Tier 1 (canonical-name match)
+            deliberately has no type guard: same canonical name implies the same
+            real-world entity regardless of how the LLM classified it on a
+            particular chunk, and rejecting on type mismatch would create a
+            duplicate row on every re-ingest because there is no
+            ``UNIQUE(name)`` constraint and no merge path.
 
         When an existing entity is found, enrichment is tier-scoped to prevent
         transitive entity merges:
@@ -1622,6 +1627,8 @@ class IngestionPipeline:
             if not name:
                 continue
 
+            # _coerce_aliases handles null / non-list / non-string alias values
+            # from LLM output safely (returns None when nothing valid survives).
             aliases = _coerce_aliases(ent.get('aliases', []), name) or []
 
             # Tier 1: canonical-only primary lookup (no alias scan).
@@ -1727,11 +1734,12 @@ class IngestionPipeline:
                     enrich_aliases = []
 
                 if enrich_aliases:
-                    # Enrichment is best-effort: the entity and its mention are
-                    # already committed.  Any exception here (invariant
-                    # violation, transient lock timeout, DB error) is logged at
-                    # warning and skipped so that alias enrichment never causes
-                    # the containing document to be rolled back or deleted.
+                    # Enrichment is best-effort: only the entity row is
+                    # committed at this point (add_mention runs after this
+                    # block).  Any exception here (invariant violation,
+                    # transient lock timeout, DB error) is logged at warning
+                    # and skipped so that alias enrichment never causes the
+                    # containing document to be rolled back or deleted.
                     try:
                         self.store.add_entity_aliases(eid, enrich_aliases)
                     except Exception as exc:  # noqa: BLE001
