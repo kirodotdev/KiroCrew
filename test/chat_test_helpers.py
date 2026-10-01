@@ -154,7 +154,7 @@ def _make_state(tmp_path, **kwargs):
     def _mint_nonce():
         return f"nonce-{next(_nonce_counter):04d}"
 
-    def _set_slack_link(key, thread_ts, channel_id):
+    def _set_slack_link(key, thread_ts, channel_id, *, generation=None):
         if thread_ts or channel_id:
             if _slack_links.get(key) != (thread_ts, channel_id) or key not in _slack_nonces:
                 _slack_nonces[key] = _mint_nonce()
@@ -162,6 +162,9 @@ def _make_state(tmp_path, **kwargs):
         else:
             _slack_links.pop(key, None)
             _slack_nonces.pop(key, None)
+        # The real map answers whether the binding stands; a fake that answered
+        # None would read as a refusal to ``DashboardState.link_slack``.
+        return True
 
     def _get_slack_link(key):
         return _slack_links.get(key, (None, None))

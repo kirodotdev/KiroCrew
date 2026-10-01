@@ -329,13 +329,13 @@ class TestHandlerChannelAgent:
             def get_pid(self, key):
                 return None
 
-            async def set_channel(self, key, channel_id):
+            async def set_channel(self, key, channel_id, *, generation=None):
                 pass
 
             def get_session_for_thread(self, thread_ts):
                 return None
 
-            def set_slack_link(self, key, thread_ts, channel_id):
+            def set_slack_link(self, key, thread_ts, channel_id, *, generation=None):
                 pass
 
             def enqueue(self, key, msg_ts, text, **kwargs):

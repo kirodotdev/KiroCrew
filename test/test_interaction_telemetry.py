@@ -260,13 +260,13 @@ class _FakeSessionManager:
     def begin_turn(self, key):
         pass
 
-    async def set_channel(self, key, channel_id):
+    async def set_channel(self, key, channel_id, *, generation=None):
         pass
 
     def get_channel(self, key):
         return None
 
-    def set_slack_link(self, key, thread_ts, channel_id):
+    def set_slack_link(self, key, thread_ts, channel_id, *, generation=None):
         pass
 
     def get_slack_link(self, key):

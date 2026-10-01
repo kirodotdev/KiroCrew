@@ -277,6 +277,24 @@ class SlackEnterpriseGate(Protocol):
 
     def check_message_origin(self, event_team_id: str) -> bool: ...
 
+    def validated_team_id(self) -> str:
+        """The workspace id ``auth.test`` named on the LAST ``validate_enterprise``.
+
+        WIRED: ``slack/gateway.py::_slack_validated_team_id`` reads it right
+        after the gate's ``validate_enterprise`` passed, and binds the persisted
+        Slack destinations to that workspace (sweeping them when the credentials
+        name another one). "" means the pass established NO identity -- the
+        default gate's default-open pass with ``auth.test`` unavailable -- and
+        the orchestrator then REFUSES to publish the client
+        (``workspace_identity_unverified``) rather than trust recorded
+        destinations against credentials nobody matched to a workspace. A gate
+        that keeps its own validation state MUST report the identity it
+        validated here: an edition whose gate omits this method reports no
+        identity, and its Slack connection is refused the same way. v1 method
+        addition (no ``CONTRACT_VERSION`` bump).
+        """
+        ...
+
     def heartbeat_safe_tools(self) -> "frozenset[str]":
         """Extra tool names an edition allows during unattended heartbeat polling.
 

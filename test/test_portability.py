@@ -1480,6 +1480,60 @@ class TestImportReplace:
             os.unlink(str(zip_path))
 
 
+class TestSlackWorkspaceRecordOnTheImportPath:
+    """The record rides only beside the session map, and this path installs
+    neither: an archive root carrying ``slack_workspace.json`` is stripped
+    before the replace (root only), while a USER file of that name inside the
+    workspace tree is exported and imported like any other."""
+
+    def test_root_record_is_stripped_and_a_user_tree_file_survives(
+        self, patched_config_dir, tmp_path
+    ):
+        import zipfile
+
+        source = patched_config_dir
+        (source / "workspace").mkdir(exist_ok=True)
+        (source / "workspace" / "slack_workspace.json").write_text(
+            '{"mine": true}', encoding="utf-8"
+        )
+        with patch("kiro_crew.portability.config_dir", return_value=source):
+            with patch.dict(os.environ, {"KIROCREW_HOME": str(source)}):
+                zip_bytes, _ = create_export_zip()
+        # The export never selects the root record; the user's tree file rides along.
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+            names = zf.namelist()
+        roots = [n for n in names if n.count("/") == 1 and n.endswith("slack_workspace.json")]
+        assert roots == [], roots
+        assert any(n.endswith("workspace/slack_workspace.json") for n in names), names
+
+        # An archive root that carries the record anyway does not install it.
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
+        tmp.close()
+        zip_path = Path(tmp.name)
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as src, zipfile.ZipFile(
+            zip_path, "w"
+        ) as dst:
+            prefix = names[0].split("/", 1)[0]
+            for item in src.infolist():
+                dst.writestr(item, src.read(item))
+            dst.writestr(f"{prefix}/slack_workspace.json", '{"team_id": "TFOREIGN"}')
+        try:
+            target = tmp_path / "target_mc"
+            target.mkdir()
+            (target / "slack_workspace.json").write_text('{"team_id": "TMINE"}', encoding="utf-8")
+            with patch("kiro_crew.portability.config_dir", return_value=target):
+                with patch.dict(os.environ, {"KIROCREW_HOME": str(target)}):
+                    apply_import_zip(zip_path, mode="replace")
+            assert (target / "slack_workspace.json").read_text(encoding="utf-8") == (
+                '{"team_id": "TMINE"}'
+            )
+            assert (target / "workspace" / "slack_workspace.json").read_text(
+                encoding="utf-8"
+            ) == '{"mine": true}'
+        finally:
+            os.unlink(str(zip_path))
+
+
 class TestCrewTemplateWarnings:
     """A bundle never carries ``<kiro home>/agents``: both ends name what that leaves out."""
 

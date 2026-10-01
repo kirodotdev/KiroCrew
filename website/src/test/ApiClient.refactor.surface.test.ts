@@ -177,7 +177,7 @@ const API_KEY_ORDER = [
   'startBrowserView', 'openInBrowser', 'getComputerUseConfig', 'saveComputerUseConfig',
   'getDecisionsConsent', 'getDecisionsProvider', 'saveDecisionsConsent', 'saveDecisionsScope',
   'saveDecisionsHistoryBudget', 'sendDecisionsFeedback', 'saveDecisionsProvider', 'getSlackConfig', 'getSlackManifest', 'saveSlackConfig',
-  'getDiscordConfig', 'saveDiscordConfig', 'getTelegramConfig', 'saveTelegramConfig',
+  'reconnectSlack', 'getDiscordConfig', 'saveDiscordConfig', 'getTelegramConfig', 'saveTelegramConfig',
   'getWeComConfig', 'getFeishuConfig', 'saveFeishuConfig', 'saveWeComConfig',
   'getWebexConfig', 'saveWebexConfig', 'getIMessageConfig', 'saveIMessageConfig',
   'getGovernanceChannels', 'getTeamsConfig', 'saveTeamsConfig', 'getWeixinConfig',

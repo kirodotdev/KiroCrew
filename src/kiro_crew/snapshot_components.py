@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path, PurePosixPath
 from types import ModuleType
+from typing import Any, Callable
 
 from kiro_crew import platform_compat
 from kiro_crew.memory_stores import (
@@ -22,6 +23,7 @@ from kiro_crew.memory_stores import (
     is_host_local_store_state,
     named_store_product_file,
 )
+from kiro_crew.slack.workspace_record import slack_workspace_record_defect
 
 # Files that must always have 0o600 permissions in snapshots and on restore.
 SECURITY_SENSITIVE_FILES: frozenset = frozenset({"sel_hmac.key", "telemetry_salt"})
@@ -181,8 +183,40 @@ COMPONENTS: dict[str, ComponentSpec] = {
     ),
     "config": ComponentSpec(
         policy=SecretPolicy.UNRESOLVED,
-        help="config.json, session_map.json, hooks.json, project_dir, workspace_dir",
-        files=("config.json", "session_map.json", "hooks.json", "project_dir", "workspace_dir"),
+        help=(
+            "config.json, session_map.json, slack_workspace.json, hooks.json, "
+            "project_dir, workspace_dir"
+        ),
+        # `slack_workspace.json` rides BESIDE `session_map.json`, never apart from it:
+        # it names the Slack workspace every persisted thread / channel binding in the
+        # map was written under (`slack.gateway.SLACK_WORKSPACE_STATE_FILENAME`). A
+        # bundle that carried the map without its record would restore workspace-A
+        # destinations onto a host whose credentials name workspace B with nothing
+        # beside them saying so, and the boot's switch detection -- which treats "no
+        # record" as a first boot and adopts whatever the handshake names -- would keep
+        # every stale row. With the record restored too, the first connected handshake
+        # on the new host sees the mismatch and sweeps them before the client is
+        # published. Same component as the map so a selective restore cannot separate
+        # the two.
+        #
+        # And staged in THIS order -- the record BEFORE the map -- because staging
+        # copies the files one after another while the gateway may be mid-switch. A
+        # switch writes the marker, sweeps and flushes the map, then writes the final
+        # record naming the new workspace (`_adopt_slack_workspace`). Map first would
+        # admit the interleaving "map copied before the sweep, record copied after the
+        # adopt": workspace-A links beside a record naming B, which a restore under B
+        # takes for its own and never sweeps. Record first, a copy naming B can only
+        # have been read after the sweep landed, so the map copied afterwards holds no
+        # A link; a record copied earlier names A (or A plus the marker), and the
+        # restore's next handshake under B sees the switch and sweeps.
+        files=(
+            "config.json",
+            "slack_workspace.json",
+            "session_map.json",
+            "hooks.json",
+            "project_dir",
+            "workspace_dir",
+        ),
     ),
     "skills": ComponentSpec(
         policy=SecretPolicy.UNRESOLVED,
@@ -318,6 +352,10 @@ COMPONENT_JSON_OBJECTS: frozenset[str] = frozenset(
         "crons.json",
         "config.json",
         "session_map.json",
+        # Its reader (`slack.gateway._load_slack_links_team_id`) takes anything that is
+        # not an object carrying a string `team_id` as a DAMAGED record and refuses the
+        # Slack boot, so a misshapen restore would silently take Slack down.
+        "slack_workspace.json",
         "hooks.json",
     }
 )
@@ -329,6 +367,31 @@ COMPONENT_JSON_OBJECTS: frozenset[str] = frozenset(
 # and raises halfway through a merge, with live state already partly changed.
 _JSON_OBJECT_LISTS: dict[str, tuple[str, ...]] = {
     "crons.json": ("jobs",),
+}
+
+
+def _slack_workspace_record_defect(parsed: dict[str, Any]) -> str | None:
+    """Why *parsed* is not a Slack workspace record its reader accepts, or None.
+
+    Delegates to ``slack.workspace_record`` -- a leaf module with no imports of
+    its own -- so the snapshot facade does not pull the gateway module onto its
+    path while sharing the gateway loader's exact shape check: a string
+    ``team_id``; an optional, bounded ``pending`` switch marker whose ``swept``
+    rows are each a well-typed link binding. The reader answers "damaged" to
+    anything else and then REFUSES the Slack boot until the file is repaired or
+    removed -- fail-closed, but a restore that installs such a file has taken
+    Slack down and reported success.
+    """
+    return slack_workspace_record_defect(parsed)
+
+
+#: Component files whose reader accepts only ONE shape and treats every other
+#: as damage it refuses to run on. An object-only check would let a restore
+#: install a file that parses and yet shuts the consumer down; each validator
+#: here answers with the defect it found, or None. Consulted on the install
+#: path beside ``_JSON_OBJECT_LISTS``.
+COMPONENT_JSON_VALIDATORS: dict[str, Callable[[dict[str, Any]], str | None]] = {
+    "slack_workspace.json": _slack_workspace_record_defect,
 }
 
 

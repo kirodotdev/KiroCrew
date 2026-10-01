@@ -417,6 +417,39 @@ from kiro_crew.widget_artifacts import register_widgets_off_loop
 
 logger = logging.getLogger(__name__)
 
+#: How long a DASHBOARD turn waits for the Slack client's publication to
+#: settle before it runs without a mirror. A person is waiting on this turn at
+#: "Thinking…", so the bound is the length of a Reconnect's handshake, not the
+#: cron leg's boot-sized one (``GatewayOrchestrator._slack_publication_wait_secs``):
+#: a turn sent while boot is still probing MCP servers runs unmirrored rather
+#: than sitting through the whole probe.
+_SLACK_SETTLE_WAIT_SECS = 15.0
+
+
+async def _settled_slack_client_for_turn(state: Any) -> Any:
+    """The Slack client a dashboard turn mirrors through, once its publication settled.
+
+    ``DashboardState.settled_slack_client`` when the state offers it (duck-typed,
+    for the doubles tests hand in), bounded by :data:`_SLACK_SETTLE_WAIT_SECS`:
+    past the bound the turn proceeds with no mirror client -- the mirror is
+    lost for this turn, logged, and the person's turn is not held hostage to
+    a Slack boot or Reconnect that is taking its time.
+    """
+    settled = getattr(state, "settled_slack_client", None)
+    pending = settled() if callable(settled) else None
+    if not inspect.isawaitable(pending):
+        return getattr(state, "slack_client", None)
+    try:
+        return await asyncio.wait_for(pending, timeout=_SLACK_SETTLE_WAIT_SECS)
+    except asyncio.TimeoutError:
+        logger.warning(
+            "slack: the client's publication did not settle within %.0fs; this dashboard "
+            "turn runs without a Slack mirror",
+            _SLACK_SETTLE_WAIT_SECS,
+        )
+        return None
+
+
 # The synthetic recovery message constants live in chat_utils (single source
 # of truth shared with the queue/merge predicates — is_system_injection must
 # classify them identically to the turn logic here). Re-exported under their
@@ -11813,6 +11846,14 @@ async def _run_chat(
     _mirror_active_task = ""
     _mirror_active_task_title = ""
     _mirror_thread: str | None = ""
+    # The Slack client every mirror send of THIS turn goes through, captured in
+    # the same read as the destination below. ``state.slack_client`` is the
+    # LIVE mirror and a Reconnect replaces it mid-turn -- after a workspace
+    # switch, with a client for a workspace the captured destination does not
+    # belong to. Destination and client are read together and travel together.
+    _mirror_client: Any = None
+    _slack_approval_client: Any = None
+    _slack_approval_channel = ""
     _mirror_task_counter = 0
     _memory_preparation_admitted = False
     # Zero until the marker below is written, so a cancellation that lands during
@@ -13509,18 +13550,43 @@ async def _run_chat(
         # stream, the assistant reply and the stream teardown together. Disconnect
         # is the user saying "not into this conversation", which applies to the
         # answer as much as to the echo — so it is one gate, not four.
-        if state.slack_client and not is_slash and not slack_mirror_is_paused(state, session_key):
+        # The client is read through the settle-wait, not the mirror as it stands:
+        # ``slack_client`` reads None for the whole window in which boot or a
+        # Reconnect has the client withheld while Slack is NOT down, and a turn
+        # that snapshotted it there would mirror nothing for its whole life. Duck-
+        # typed, as the doubles tests hand in as ``state`` need not model it.
+        # The wait is taken ONLY by a turn that has something to post: while the
+        # client is withheld (``slack_client_withheld``, the settle's synchronous
+        # half) the link is read once to decide, and a slash turn, a paused
+        # mirror or an unlinked session never suspends on a Slack boot or
+        # Reconnect it would post nothing through. The destination the turn
+        # USES is read AFTER the wait, never before it: a Reconnect that
+        # switches workspace sweeps every persisted link inside that very
+        # window, and a link read ahead of it would pair a former-workspace
+        # thread with the new workspace's client -- posting into the void, or
+        # into whatever conversation a colliding id names there. Read after the
+        # sweep, a swept link is simply gone and the turn mirrors nothing.
+        _mirror_client = None
+        if not is_slash and not slack_mirror_is_paused(state, session_key):
+            _withheld = getattr(state, "slack_client_withheld", None)
+            if callable(_withheld) and _withheld() is True:
+                _pre_thread, _pre_chan = state.sessions.get_slack_link(session_key)
+                if _pre_thread and _pre_chan:
+                    _mirror_client = await _settled_slack_client_for_turn(state)
+            else:
+                _mirror_client = state.slack_client
+        if _mirror_client:
             _mirror_thread, _mirror_chan = state.sessions.get_slack_link(session_key)
             if _mirror_thread and _mirror_chan:
                 try:
                     if not _is_synthetic:
                         _mirror_msg = _prepare_mirror_msg(_user_msg_for_mirror)
-                        await state.slack_client.post_message(
+                        await _mirror_client.post_message(
                             _mirror_chan, f"💬 _{_mirror_msg}_", _mirror_thread
                         )
                     # Start a stream for real-time tool animations
                     _mirror_stream_ts = (
-                        await state.slack_client.start_stream(
+                        await _mirror_client.start_stream(
                             _mirror_chan, _mirror_thread, initial_text="Thinking…"
                         )
                         or ""
@@ -14335,7 +14401,7 @@ async def _run_chat(
                 if _mirror_stream_ts and not cross_surface_withheld(state, slot):
                     try:
                         if _mirror_active_task:
-                            await state.slack_client.append_task(
+                            await _mirror_client.append_task(
                                 _mirror_chan,
                                 _mirror_stream_ts,
                                 _mirror_active_task,
@@ -14349,7 +14415,7 @@ async def _run_chat(
                         _task_title, _ = redact_credentials(_task_title)
                         _task_title = _task_title[:75]
                         _mirror_active_task_title = _task_title
-                        await state.slack_client.append_task(
+                        await _mirror_client.append_task(
                             _mirror_chan,
                             _mirror_stream_ts,
                             _mirror_active_task,
@@ -16210,6 +16276,28 @@ async def _run_chat(
                 if _command_grantable and _base and _safe_base == _base:
                     perm_meta["base_command"] = _safe_base
                     perm_meta["trust_base_grantable"] = "1"
+                # The client the prompt is mirrored through, resolved the way the
+                # mirror leg resolves its own: while boot or a Reconnect withholds
+                # the client (``slack_client_withheld``) a LINKED slot waits for
+                # the publication to settle, so a prompt raised inside that
+                # window still reaches the Slack-side operator with its buttons
+                # instead of leaving them the mirrored output and no way to
+                # answer. Resolved HERE, before the future is registered below:
+                # the settle is a cancellable await, and every await between
+                # the registration and the ``try``/``finally`` that pops the
+                # future is one a turn ceiling can cancel into a future nothing
+                # resolves. An unlinked slot never waits.
+                _slack_approval_candidate = state.slack_client
+                _withheld = getattr(state, "slack_client_withheld", None)
+                if (
+                    _slack_approval_candidate is None
+                    and slot._slack_linked
+                    and slot._slack_channel
+                    and slot._slack_thread_ts
+                    and callable(_withheld)
+                    and _withheld() is True
+                ):
+                    _slack_approval_candidate = await _settled_slack_client_for_turn(state)
                 # A decline known before the row exists is born into the row. Spec:
                 # docs/system-specs/modules/app-notifications.md, "Sound events" (permission row).
                 if tool_approval_timeout_secs() <= 0:
@@ -16254,7 +16342,7 @@ async def _run_chat(
                     and slot._slack_linked
                     and slot._slack_channel
                     and slot._slack_thread_ts
-                    and state.slack_client
+                    and _slack_approval_candidate
                     # An approval prompt is turn output too, and it asks for a
                     # decision. Posting one into a thread the user disconnected
                     # would solicit an answer where they are no longer looking;
@@ -16262,9 +16350,15 @@ async def _run_chat(
                     and not slack_mirror_is_paused(state, session_key)
                 ):
                     try:
+                        # Client AND channel captured together: a workspace
+                        # switch mid-turn clears the slot's link fields
+                        # (``forget_slack_links``), and the cleanup below must
+                        # still name the channel the prompt was posted in.
+                        _slack_approval_client = _slack_approval_candidate
+                        _slack_approval_channel = slot._slack_channel
                         _slack_approval_ts = await post_linked_approval(
-                            state.slack_client,
-                            slot._slack_channel,
+                            _slack_approval_client,
+                            _slack_approval_channel,
                             slot._slack_thread_ts,
                             event.request_id,
                             session_key,
@@ -16588,10 +16682,10 @@ async def _run_chat(
                     # delete the buttons message now the decision is in.
                     if _slack_approval_ts is not None:
                         try:
-                            resolve_linked_approval(slot._slack_channel, _slack_approval_ts)
-                            if state.slack_client:
-                                await state.slack_client.delete_message(
-                                    slot._slack_channel, _slack_approval_ts
+                            resolve_linked_approval(_slack_approval_channel, _slack_approval_ts)
+                            if _slack_approval_client:
+                                await _slack_approval_client.delete_message(
+                                    _slack_approval_channel, _slack_approval_ts
                                 )
                         except Exception:
                             logger.debug(
@@ -19282,7 +19376,7 @@ async def _run_chat(
         # busier surface open.
         if (
             assistant_text
-            and state.slack_client
+            and _mirror_client
             and _mirror_thread
             and _mirror_chan
             and not cross_surface_withheld(state, slot)
@@ -19302,7 +19396,7 @@ async def _run_chat(
                 _mirror_body, _mirror_options = extract_options(assistant_text)
 
                 for _part in render_for_slack(_mirror_body):
-                    await state.slack_client.post_message(_mirror_chan, _part, _mirror_thread)
+                    await _mirror_client.post_message(_mirror_chan, _part, _mirror_thread)
                 if _mirror_options:
                     # Keep the ts this posts: the control has to be spendable
                     # later, and discarding the ts is what leaves a superseded
@@ -19328,7 +19422,7 @@ async def _run_chat(
                         if getattr(state, "sessions", None)
                         else session_key
                     )
-                    _mirror_ts = await state.slack_client.post_blocks(
+                    _mirror_ts = await _mirror_client.post_blocks(
                         _mirror_chan,
                         _mirror_blocks,
                         "Options",
@@ -21016,14 +21110,14 @@ async def _run_chat(
         # clears it. The nested try/finally makes the release unconditional
         # while preserving the reset-then-release ordering.
         try:
-            if _mirror_stream_ts and state.slack_client and _mirror_chan:
+            if _mirror_stream_ts and _mirror_client and _mirror_chan:
                 try:
                     # Fenced for the same reason the in-progress append is: if that
                     # one was withheld, marking it complete here would publish the
                     # title for the first time. This runs BEFORE the fence is
                     # cleared below, so it still sees the turn's own records.
                     if _mirror_active_task and not cross_surface_withheld(state, slot):
-                        await state.slack_client.append_task(
+                        await _mirror_client.append_task(
                             _mirror_chan,
                             _mirror_stream_ts,
                             _mirror_active_task,
@@ -21033,7 +21127,7 @@ async def _run_chat(
                 except Exception:
                     logger.debug("Task append cleanup failed", exc_info=True)
                 try:
-                    await state.slack_client.stop_stream(_mirror_chan, _mirror_stream_ts)
+                    await _mirror_client.stop_stream(_mirror_chan, _mirror_stream_ts)
                 except Exception:
                     logger.debug("Stream cleanup failed", exc_info=True)
             if _acquired and (needs_session_reset or needs_conversation_discard):

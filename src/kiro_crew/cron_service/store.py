@@ -81,6 +81,35 @@ class CronPendingMismatch(RuntimeError):
     """
 
 
+class _DestinationAny:
+    """The one value of :data:`DESTINATION_ANY`."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "DESTINATION_ANY"
+
+
+#: In an ``expect_destination`` pair, the half the caller does not check: a
+#: workspace switch that copied only a job's channel (a script or command
+#: cron, whose ``thread_ts`` is bound into a secret grant's fingerprint and is
+#: never touched) compares and rewrites the channel alone.
+DESTINATION_ANY = _DestinationAny()
+
+
+class CronDestinationMismatch(RuntimeError):
+    """The job's delivery destination changed after the caller read it.
+
+    Raised inside the locked update when an ``expect_destination``
+    precondition -- the ``(channel, thread_ts)`` pair the caller decided on --
+    does not match the freshly reloaded record. The compare-and-swap behind a
+    Slack workspace switch's cron sweep: the switch clears only a destination
+    that still IS the one it copied, and its undo puts a copy back only where
+    the sweep's clear still stands, so an operator's concurrent edit of the
+    job's channel or thread is never overwritten by either.
+    """
+
+
 class CronStoreBusy(TimeoutError):
     """Raised when a cron-store mutator cannot acquire the store lock in time.
 

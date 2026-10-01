@@ -71,8 +71,8 @@ class _RoutingSessions(FakeSessions):
         self.acquired_keys.append(session_key)
         return await super().get_or_create(session_key, agent=agent, channel_id=channel_id)
 
-    def set_slack_link(self, key, thread_ts, channel_id):
-        super().set_slack_link(key, thread_ts, channel_id)
+    def set_slack_link(self, key, thread_ts, channel_id, *, generation=None):
+        super().set_slack_link(key, thread_ts, channel_id, generation=generation)
         self._thread_index[thread_ts] = key
 
 

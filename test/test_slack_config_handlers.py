@@ -325,6 +325,43 @@ def test_restart_required_only_on_actual_change(tmp_path, monkeypatch) -> None:
     assert body["restart_required"] is True
 
 
+def test_credential_change_flags_reconnect_not_restart(tmp_path, monkeypatch) -> None:
+    """A token/owner write is applied by POST /api/slack/reconnect, not a restart.
+
+    ``reconnect_required`` names the credential write so the panel can offer
+    Reconnect; ``restart_required`` stays reserved for the one config field a
+    running gateway cannot apply (the slash command).
+    """
+    import kiro_crew.dashboard.handlers.messaging as mod
+
+    env = tmp_path / ".env"
+    env.write_text("", encoding="utf-8")
+    cfg = tmp_path / "config.json"
+    cfg.write_text('{"slack": {"command": "kirocrew"}}', encoding="utf-8")
+    monkeypatch.setattr(loader, "env_path", lambda: env)
+    monkeypatch.setattr(loader, "config_path", lambda: cfg)
+    monkeypatch.setattr(mod, "is_direct_local_request", lambda req: True)
+    monkeypatch.delenv("KIROCREW_OWNER_ID", raising=False)
+
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    async def _run(payload):
+        app = web.Application()
+        app.router.add_put("/api/slack/config", mod.api_slack_config_save)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.put("/api/slack/config", json=payload)
+            return await resp.json()
+
+    body = asyncio.run(_run({"owner_id": "U0123ABC456", "command": "kirocrew"}))
+    assert body["reconnect_required"] is True
+    assert body["restart_required"] is False
+    # Config-only change: neither.
+    body = asyncio.run(_run({"reactions_enabled": True}))
+    assert body["reconnect_required"] is False
+    assert body["restart_required"] is False
+
+
 def test_webex_held_env_lock_leaves_legacy_credential_intact(tmp_path, monkeypatch) -> None:
     """When the .env lock is held (concurrent import), _write_env_updates raises
     OSError.  The Webex save handler must NOT purge the legacy config.json

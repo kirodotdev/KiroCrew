@@ -1474,13 +1474,17 @@ class TestResumeChoice:
             "C5",
             "🧵 *My session*\nSession resumed. Continue the conversation in this thread.",
         )
-        resume_orch.sessions.set_slack_link.assert_called_once_with("dashboard_s1", "ts1", "C5")
+        resume_orch.sessions.set_slack_link.assert_called_once_with(
+            "dashboard_s1", "ts1", "C5", generation=None
+        )
 
     @pytest.mark.asyncio
     async def test_dm_mode_opens_dm_and_links(self, resume_orch: MagicMock) -> None:
         await ix._handle_resume_choice(_payload(), _choice(), "C1", "m1", "U1", mode="dm")
         resume_orch.slack.open_dm.assert_awaited_once_with("U1")
-        resume_orch.sessions.set_slack_link.assert_called_once_with("dashboard_s1", "ts1", "D1")
+        resume_orch.sessions.set_slack_link.assert_called_once_with(
+            "dashboard_s1", "ts1", "D1", generation=None
+        )
 
     @pytest.mark.asyncio
     async def test_unknown_mode_returns_without_linking(self, resume_orch: MagicMock) -> None:
@@ -1553,11 +1557,31 @@ class TestResumeChoice:
     @pytest.mark.asyncio
     async def test_dashboard_state_link_is_notified(self, resume_orch: MagicMock) -> None:
         ds = MagicMock()
+        ds._slots = {"slot9": MagicMock(name="slot")}  # the session has an open tab
         resume_orch.dashboard_state = ds
         await ix._handle_resume_choice(
             _payload(), _choice(key="slack:slot9"), "C1", "m1", "U1", mode="dm"
         )
-        ds.link_slack.assert_called_once_with("slot9", "ts1", "D1")
+        ds.link_slack.assert_called_once_with("slot9", "ts1", "D1", generation=None)
+
+    @pytest.mark.asyncio
+    async def test_a_resume_without_an_open_tab_redraws_nothing_and_warns_nothing(
+        self, resume_orch: MagicMock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """No dashboard slot for the session is the ORDINARY resume, not a
+        refused redraw: ``link_slack`` is not asked, and no warning about a
+        refusal is logged."""
+        import logging
+
+        ds = MagicMock()
+        ds._slots = {}
+        resume_orch.dashboard_state = ds
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.slack.interactions"):
+            await ix._handle_resume_choice(
+                _payload(), _choice(key="slack:slot9"), "C1", "m1", "U1", mode="dm"
+            )
+        ds.link_slack.assert_not_called()
+        assert "redraw was refused" not in caplog.text
 
     @pytest.mark.asyncio
     async def test_posts_recent_transcript_context(

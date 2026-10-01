@@ -160,6 +160,7 @@ from kiro_crew.session_lifecycle import (
     consume_stop_declined,
     decline_stop,
 )
+from kiro_crew.slack import affinity as slack_affinity
 from kiro_crew.slack.blocks import build_working_blocks, deprecation_warning_block
 from kiro_crew.slack.client import SlackClientOps
 from kiro_crew.slack.format import (
@@ -841,6 +842,7 @@ async def _apply_privacy_mode(
     sessions: SessionManager,
     reply_ts: str,
     link_thread: bool = True,
+    links_generation: int | None = None,
 ) -> None:
     """Mark a session as *mode* and notify the user (idempotent).
 
@@ -863,8 +865,10 @@ async def _apply_privacy_mode(
         # hand the dashboard mirror one branch to post into. Posting is a
         # separate decision, so the confirmation still lands where the modifier
         # was typed.
+        # Fenced by the turn's receipt generation, like every Slack-turn link
+        # write (see ``SessionManager.set_slack_link``).
         if reply_ts and link_thread:
-            sessions.set_slack_link(session_key, reply_ts, channel)
+            sessions.set_slack_link(session_key, reply_ts, channel, generation=links_generation)
 
     await privacy_mode.apply_mode(
         mode,
@@ -888,6 +892,7 @@ async def maybe_apply_privacy_modifiers(
     sessions: SessionManager,
     reply_ts: str,
     link_thread: bool = True,
+    links_generation: int | None = None,
 ) -> tuple[str, str, bool]:
     """Strip and apply the ``!temporary`` / ``!incognito`` privacy modifiers.
 
@@ -923,7 +928,15 @@ async def maybe_apply_privacy_modifiers(
             continue
         try:
             await _apply_privacy_mode(
-                mode, session_key, user_id, channel, slack, sessions, reply_ts, link_thread
+                mode,
+                session_key,
+                user_id,
+                channel,
+                slack,
+                sessions,
+                reply_ts,
+                link_thread,
+                links_generation=links_generation,
             )
         except privacy_mode.PrivacyModeRefused:
             # Audited and announced by apply_mode; nothing is left to run.
@@ -1561,13 +1574,33 @@ def _reload_orch_cfg(fresh: "KiroCrewConfig | None" = None) -> None:
         _orch_cfg.slack_dm_activation = fresh.slack_dm_activation
 
 
+def _current_owner_id() -> str:
+    """The owner this code path authorizes against.
+
+    Inside an envelope's task context (``init_socket_mode``'s listener binds
+    it; ``_dispatch_queued`` binds the queue entry's) this is the owner the
+    socket that RECEIVED the envelope was built with, whatever a Reconnect has
+    rebound the module global to since: the envelope's sender id belongs to
+    that socket's workspace, and comparing it with another workspace's owner
+    id would grant a colliding id owner privileges (``slack.affinity``) --
+    unless the gateway has REVOKED that socket's authority (a socket it could
+    not close, or whose workspace was never admitted), which makes it nobody.
+    Everywhere else it is the live owner.
+    """
+    bound = slack_affinity.bound_owner()
+    if bound is slack_affinity.UNBOUND:
+        return _owner_id
+    return bound.owner_id  # type: ignore[no-any-return]
+
+
 def is_owner(user_id: str) -> bool:
     """Check if *user_id* is the primary owner (with W/U prefix cross-match)."""
-    if not _owner_id or not user_id:
+    owner_id = _current_owner_id()
+    if not owner_id or not user_id:
         return False
-    if user_id == _owner_id:
+    if user_id == owner_id:
         return True
-    return user_id.replace("W", "U", 1) == _owner_id or user_id.replace("U", "W", 1) == _owner_id
+    return user_id.replace("W", "U", 1) == owner_id or user_id.replace("U", "W", 1) == owner_id
 
 
 def disable_yolo() -> None:
@@ -1720,8 +1753,15 @@ async def _handle_slash_command(
     session_key: str,
     user_id: str,
     conversation_log: ConversationLog | None = None,
+    links_generation: int | None = None,
 ) -> str | None:
-    """Dispatch owner-only ``!commands``.  Returns a string (even empty) if handled, None if not."""
+    """Dispatch owner-only ``!commands``.  Returns a string (even empty) if handled, None if not.
+
+    *links_generation* is the turn's receipt generation (see ``handle_message``);
+    ``!link-to-dashboard`` is the one command here that writes a Slack link, and
+    it presents the generation so a workspace switch during the thread fetch
+    refuses the link instead of republishing a swept destination.
+    """
 
     cmd = cmd_text.split()[0].lower()
 
@@ -2165,7 +2205,9 @@ async def _handle_slash_command(
         # Fetch thread history and import to dashboard
         from kiro_crew.slack.interactions import _import_thread_to_slot
 
-        slot = await _import_thread_to_slot(slack, _dashboard_state, channel, reply_ts)
+        slot = await _import_thread_to_slot(
+            slack, _dashboard_state, channel, reply_ts, links_generation=links_generation
+        )
         if not slot:
             sel().log_tool_invocation(
                 session_key="",
@@ -3163,6 +3205,7 @@ async def handle_message(
     channel_activation: str | None = None,
     had_voice_input: bool = False,
     _compaction_replay: _CompactionReplay | None = None,
+    links_generation: int | None = None,
 ) -> None:
     """Route a Slack message through ACP with streaming and tool approval.
 
@@ -3185,6 +3228,13 @@ async def handle_message(
     session, keeps the same activation and pinning, and can still read the
     attachment files the original text refers to -- their cleanup runs when the
     OUTER call's task ends, after this nested call has returned.
+
+    *links_generation* is the session map's Slack-link generation as of the
+    event's RECEIPT (``events._route_message`` captures it beside the client
+    that received the event). Every Slack-thread binding this turn writes
+    presents it, so a workspace switch that swept the former workspace's
+    destinations while this turn was suspended refuses the write instead of
+    letting the turn re-persist a destination the sweep just retired.
     """
     Stats().inc_message_received()
     _t0 = time.monotonic()
@@ -3332,7 +3382,15 @@ async def handle_message(
 
     # ── !temporary / !incognito privacy modifiers (shared with transport) ──
     text, _cmd_text, _only_modifier = await maybe_apply_privacy_modifiers(
-        text, _cmd_text, session_key, user_id, channel, slack, sessions, reply_ts
+        text,
+        _cmd_text,
+        session_key,
+        user_id,
+        channel,
+        slack,
+        sessions,
+        reply_ts,
+        links_generation=links_generation,
     )
     if _only_modifier:
         return
@@ -3379,6 +3437,7 @@ async def handle_message(
                     session_key,
                     user_id,
                     conversation_log=conversation_log,
+                    links_generation=links_generation,
                 )
                 if reply is not None:
                     return
@@ -3416,6 +3475,7 @@ async def handle_message(
                 session_key,
                 user_id,
                 conversation_log=conversation_log,
+                links_generation=links_generation,
             )
             if reply is not None:
                 return
@@ -3931,7 +3991,7 @@ async def handle_message(
             sessions.get_session_for_thread(reply_ts) or session_key,
         )
         if is_new:
-            await sessions.set_channel(session_key, channel)
+            await sessions.set_channel(session_key, channel, generation=links_generation)
         if thread_owner_key is None and not route_pinned:
             # Self-link: thread index maps the bare Slack thread_ts to this
             # session's canonical key. reply_ts (not session_key) is the true
@@ -3943,7 +4003,10 @@ async def handle_message(
             # routing: a cron or native asker claiming the thread here would
             # evict its real owner, and every later human reply would land in
             # the cron conversation instead.
-            sessions.set_slack_link(session_key, reply_ts, channel)
+            #
+            # Fenced by the receipt generation -- see the docstring: a claim
+            # captured in the former workspace must not land after a switch.
+            sessions.set_slack_link(session_key, reply_ts, channel, generation=links_generation)
         logger.info(
             "🔍 session state: key=%s is_new=%s resumed=%s",
             session_key,
@@ -4810,6 +4873,7 @@ async def handle_message(
                         from_trusted_bot=from_trusted_bot,
                         channel_activation=channel_activation,
                         had_voice_input=had_voice_input,
+                        links_generation=links_generation,
                         _compaction_replay=_CompactionReplay(
                             attempt=_attempt + 1, stop_gen_at_entry=_stop_gen_at_entry
                         ),

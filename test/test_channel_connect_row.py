@@ -46,6 +46,7 @@ def _with_real_storage(state, sm: SessionMap):
     """
     state.sessions.set_slack_link = sm.set_slack_link
     state.sessions.get_slack_link = sm.get_slack_link
+    state.sessions.slack_links_generation = sm.slack_links_generation
     state.sessions.clear_slack_link = sm.clear_slack_link
     state.sessions.set_slack_paused = sm.set_slack_paused
     state.sessions.is_slack_paused = sm.is_slack_paused

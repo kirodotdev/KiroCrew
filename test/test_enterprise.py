@@ -154,6 +154,14 @@ def test_allowlist_rejects_unlisted_enterprise(tmp_path):
     _write_allowlist(tmp_path, ["E_GOOD"])
     with _install_fake_slack_sdk(resp):
         assert enterprise.validate_enterprise("xoxb-token") is False
+    # A REFUSED workspace leaves no cached identity behind: the gateway's
+    # switch detection compares ``validated_team_id()`` with the workspace the
+    # persisted Slack destinations were written under, and a refused
+    # workspace left here would have it sweep them for a workspace that never
+    # connected.
+    assert enterprise.validated_team_id() == ""
+    assert enterprise._validated_enterprise_id == ""
+    assert enterprise._validated_self_bot_id == ""
 
 
 def test_auth_test_failure_reader_exception_fails_closed_not_crash(tmp_path):
@@ -557,6 +565,7 @@ def test_governance_posture_blocks_workspace_outside_policy(tmp_path):
         _write_allowlist(tmp_path, [])
         with _install_fake_slack_sdk(resp):
             assert enterprise.validate_enterprise("xoxb-token") is False
+        assert enterprise.validated_team_id() == ""  # the refusal takes the cache back too
     finally:
         ctx_mod.reset_context()
 
@@ -945,6 +954,40 @@ class TestTrustedBotAdmission:
         assert enterprise.trusted_bot_admission("B_PEER", live) == (True, "")
         live.clear()
         assert enterprise.trusted_bot_admission("B_PEER", live) == (False, "untrusted_bot")
+
+    def test_a_socket_bound_self_id_overrides_the_module_level_one(self):
+        """A Reconnect that switches workspace replaces the module-level self id
+        with the NEW workspace's bot; an event of the FORMER workspace still in
+        its ack suspension is judged against the self id its own socket bound,
+        so the former workspace's own bot never reads as a trusted peer."""
+        enterprise._validated_self_bot_id = "B_NEW_SELF"
+
+        # Former socket: its own bot id is excluded even though the module-level
+        # id names another workspace's bot now.
+        assert enterprise.trusted_bot_admission(
+            "B_OLD_SELF", {"B_OLD_SELF", "B_PEER"}, self_bot_id="B_OLD_SELF"
+        ) == (False, "own_bot_id_never_trusted")
+        assert enterprise.trusted_bot_admission("B_PEER", {"B_PEER"}, self_bot_id="B_OLD_SELF") == (
+            True,
+            "",
+        )
+        # No binding (the transport) reads the module-level id.
+        assert enterprise.trusted_bot_admission("B_OLD_SELF", {"B_OLD_SELF"}) == (True, "")
+        assert enterprise.trusted_bot_admission("B_NEW_SELF", {"B_NEW_SELF"}) == (
+            False,
+            "own_bot_id_never_trusted",
+        )
+
+    def test_an_unbound_socket_self_id_fails_closed(self):
+        """A socket whose workspace was never validated binds "" -- the empty
+        self id fails admission closed exactly as an unverified module-level
+        id does, so the switch to per-socket reading cannot open the gate."""
+        enterprise._validated_self_bot_id = "B_SELF"
+
+        assert enterprise.trusted_bot_admission("B_PEER", {"B_PEER"}, self_bot_id="") == (
+            False,
+            "trusted_bot_requires_verified_self_id",
+        )
 
 
 # --------------------------------------------------------------------------

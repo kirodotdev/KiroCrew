@@ -133,7 +133,7 @@ class TestDashboardStateLinkSlack:
 
         state.sessions.batched_save = batched_save
         state.sessions.set_slack_link = MagicMock(
-            side_effect=lambda *a, **k: depth_at_write.append(depth["n"])
+            side_effect=lambda *a, **k: depth_at_write.append(depth["n"]) or True
         )
         state.get_or_create_slot("s1")
         state.get_or_create_slot("s2")

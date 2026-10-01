@@ -118,25 +118,35 @@ def _capture_subagent_done(gateway):
 
 
 class TestCronCallbackStoresThread:
-    """_cron_callback must store thread_ts and channel after posting to Slack."""
+    """_cron_callback must store thread_ts and channel after posting to Slack --
+    as ONE fenced link write carrying the Slack-link generation read with the
+    client before the post, so a workspace switch landing during the post
+    refuses it instead of restoring the former workspace's destination."""
 
     def test_stores_thread_ts_after_post(self) -> None:
         gateway = _make_gateway()
+        gateway.sessions.slack_links_generation.return_value = 7
         gateway.slack.post_blocks = AsyncMock(return_value="1711957800.001234")
         _run_callback(gateway, _make_job())
-        gateway.sessions.set_thread.assert_awaited_once_with("cron:j1", "1711957800.001234")
+        gateway.sessions.set_slack_link.assert_called_once()
+        args, kwargs = gateway.sessions.set_slack_link.call_args
+        assert args[:2] == ("cron:j1", "1711957800.001234")
+        assert kwargs == {"generation": 7}
 
     def test_stores_channel_after_post(self) -> None:
         gateway = _make_gateway()
+        gateway.sessions.slack_links_generation.return_value = 7
         gateway.slack.post_blocks = AsyncMock(return_value="1711957800.001234")
         _run_callback(gateway, _make_job(channel="C999"))
-        gateway.sessions.set_channel.assert_awaited_once_with("cron:j1", "C999")
+        gateway.sessions.set_slack_link.assert_called_once_with(
+            "cron:j1", "1711957800.001234", "C999", generation=7
+        )
 
     def test_skips_storage_when_post_returns_none(self) -> None:
         gateway = _make_gateway()
         gateway.slack.post_blocks = AsyncMock(return_value=None)
         _run_callback(gateway, _make_job())
-        gateway.sessions.set_thread.assert_not_awaited()
+        gateway.sessions.set_slack_link.assert_not_called()
 
 
 # ── Tests: _subagent_done injects cron results via session ──

@@ -5129,10 +5129,12 @@ async def api_slack_config_get(request: web.Request) -> web.Response:
 async def api_slack_config_save(request: web.Request) -> web.Response:
     """PUT /api/slack/config — persist Slack secrets (.env) + config (config.json).
 
-    Token/owner changes need a gateway restart to reconnect Slack (creds are
-    read at gateway startup); the response returns ``restart_required`` so the
-    UI can surface a hint. Config-only changes take effect on the next message
-    or restart.
+    Token/owner changes do not reach the running socket by themselves (creds
+    are hoisted at gateway startup); the response returns ``reconnect_required``
+    so the UI can offer the fix -- ``POST /api/slack/reconnect`` re-runs the
+    handshake in place, a gateway restart is the fallback. Config-only changes
+    take effect on the next message; the slash command alone still needs a
+    restart, which ``restart_required`` reports.
 
     Serialized with every other config.json writer via the repository-wide
     ``_get_config_lock()`` (also used by the MCP, memory, and agent
@@ -5148,6 +5150,84 @@ async def api_slack_config_save(request: web.Request) -> web.Response:
         # (client gone, gateway shutting down) must not abandon it between its
         # phases -- see ``run_to_completion``.
         return await run_to_completion(_slack_config_save_locked(request))
+
+
+async def api_slack_reconnect(request: web.Request) -> web.Response:
+    """POST /api/slack/reconnect -- re-run the Socket Mode handshake in place.
+
+    Applies credentials the PUT above saved without ``POST /api/restart``:
+    the orchestrator's ``reconnect_slack`` re-reads the credential store,
+    recomputes ``_slack_enabled`` from the tokens now on disk, tears down the
+    old socket client and awaits ``init_socket_mode`` again on the gateway
+    loop (this handler already runs on it). Concurrent calls share one
+    attempt, so a double-click never races two handshakes.
+
+    Same guards as the PUT: dashboard token auth and the CSRF barrier are
+    middleware on every mutating ``/api/`` route, and the direct-local check
+    below keeps a remote or tunneled session from driving the socket the way
+    it is kept from planting tokens. Answers the ``connected`` /
+    ``connect_error`` pair ``GET /api/slack/config`` documents so the panel
+    renders the outcome from one vocabulary; 503
+    when no gateway owns a Slack socket (API-only server), 500 when the
+    credential store could not be read -- in which case the live connection
+    was left untouched.
+
+    The credential read runs under the same ``_get_config_lock()`` as the
+    PUT -- otherwise a Reconnect landing while a save is in flight snapshots
+    the credentials the operator is replacing and hoists them AFTER the save
+    commits, leaving the former owner authorized on the live socket. The
+    orchestrator takes that lock INSIDE its shared attempt, so this handler
+    does not: a lock held here would serialize two concurrent clicks into
+    two full attempts (the second tearing down the socket the first just
+    established) instead of letting them share one. ``run_to_completion``
+    keeps this request attached to the attempt when the client gives up
+    mid-handshake; the attempt itself, and the lock with it, runs to its end
+    regardless.
+    """
+    caller = request.get("user", "dashboard")
+
+    def _deny(msg: str, code: str, status: int) -> web.Response:
+        _sel().log_api_access(
+            caller=caller,
+            operation="slack.reconnect",
+            outcome="denied",
+            source="dashboard",
+            error=msg,
+        )
+        return web.json_response({"error": msg, "code": code}, status=status)
+
+    if not is_direct_local_request(request):
+        return _deny(
+            "read-only from remote sessions (local machine only)",
+            "remote_read_only",
+            403,
+        )
+
+    state: DashboardState = request.app["state"]
+    reconnect = getattr(state, "_slack_reconnect", None)
+    if reconnect is None:
+        return _deny("Slack reconnect unavailable", "slack_reconnect_unavailable", 503)
+
+    try:
+        result = await run_to_completion(reconnect())
+    except Exception:
+        logger.warning("slack reconnect: credential store could not be read", exc_info=True)
+        return _deny(
+            "could not read the saved Slack credentials",
+            "credential_store_unreadable",
+            500,
+        )
+
+    connected = bool(result.get("connected"))
+    connect_error = str(result.get("connect_error", ""))[:120]
+    _sel().log_api_access(
+        caller=caller,
+        operation="slack.reconnect",
+        outcome="ok" if connected else "failed",
+        source="dashboard",
+        error="" if connected else connect_error,
+    )
+    return web.json_response({"connected": connected, "connect_error": connect_error})
 
 
 async def _slack_config_save_locked(request: web.Request) -> web.Response:
@@ -5337,8 +5417,9 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
             # load_credentials() lets os.environ win over .env, so without this a
             # replaced/cleared token would keep being reported as installed by
             # GET until restart, and spawned children would inherit the stale
-            # value. The Slack socket connection itself still reconnects only on
-            # restart, which restart_required below surfaces to the UI.
+            # value. The Slack socket connection itself is re-run only by
+            # POST /api/slack/reconnect (or a restart), which reconnect_required
+            # below tells the UI to offer.
             for key, new_val in env_updates.items():
                 if new_val is None:
                     os.environ.pop(key, None)
@@ -5370,17 +5451,18 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
     # app manifest, so no local reload can make Slack route a new trigger. Every
     # other slack.* field -- including the enterprise allow-list, which the
     # gateway re-reads through its validated reader on a config change -- is
-    # applied live. A credential/owner write still needs one: those live in .env,
-    # which the config watcher does not watch.
+    # applied live. A credential/owner write is reported separately as
+    # ``reconnect_required``: those live in .env, which the config watcher does
+    # not watch, but the running socket can be re-handshaken in place through
+    # POST /api/slack/reconnect -- the UI offers that instead of a restart.
     # Answer only once the watcher has applied the write: a narrowed allow-list
     # is in force before the caller sees "saved", not one poll interval later.
     await _hot_apply_after_write()
     return web.json_response(
         {
             "ok": True,
-            "restart_required": channel_restart_required(
-                "slack", staged.keys(), env_updates=env_updates
-            ),
+            "restart_required": channel_restart_required("slack", staged.keys()),
+            "reconnect_required": bool(env_updates),
             "verify_warning": verify_warning,
         }
     )

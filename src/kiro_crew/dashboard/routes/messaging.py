@@ -22,6 +22,11 @@ def register(app: web.Application) -> None:
     # dashboard's token auth in addition to the direct-local write gate).
     app.router.add_get("/api/slack/config", handlers.api_slack_config_get)
     app.router.add_put("/api/slack/config", handlers.api_slack_config_save)
+    # Applies a saved token/owner change in place (re-runs the Socket Mode
+    # handshake on the gateway loop), so a credential saved through the PUT
+    # above takes effect without POST /api/restart. Same direct-local write
+    # gate as the PUT.
+    app.router.add_post("/api/slack/reconnect", handlers.api_slack_reconnect)
     app.router.add_get("/api/slack/manifest", handlers.api_slack_manifest)
     app.router.add_get("/api/discord/config", handlers.api_discord_config_get)
     app.router.add_put("/api/discord/config", handlers.api_discord_config_save)

@@ -334,6 +334,15 @@ async def api_chat_slot_slack_link(request: web.Request) -> web.Response:
         return web.json_response({"error": "not found"}, status=404)
     if not state.slack_client:
         return web.json_response({"error": "Slack not connected"}, status=503)
+    # The client and the link generation are read TOGETHER, before the first
+    # await: every Slack call below is made through this client, and the link
+    # written at the end presents this generation. A Reconnect that switches
+    # workspace during any of those awaits sweeps the map and bumps the
+    # generation, so the stale write is refused (``SessionMap.set_slack_link``)
+    # instead of persisting a destination minted in the former workspace under
+    # the new one -- a row the no-switch boot would then never sweep.
+    slack = state.slack_client
+    links_generation = state.sessions.slack_links_generation()
     owner_id = getattr(state, "owner_id", None)
     if not owner_id:
         return web.json_response({"error": "owner not configured"}, status=500)
@@ -347,7 +356,7 @@ async def api_chat_slot_slack_link(request: web.Request) -> web.Response:
     existing_ts, existing_chan = state.sessions.get_slack_link(session_key)
     if existing_ts and existing_chan:
         try:
-            await state.slack_client.post_message(
+            await slack.post_message(
                 existing_chan, "🔗 Session linked from dashboard — continuing here.", existing_ts
             )
         except Exception:
@@ -364,7 +373,7 @@ async def api_chat_slot_slack_link(request: web.Request) -> web.Response:
     # back to its dashboard session bidirectionally.
     existing_thread = str(body.get("thread_ts", "") or "")
     if not raw_channel or raw_channel == "dm":
-        target_channel = await state.slack_client.open_dm(owner_id)
+        target_channel = await slack.open_dm(owner_id)
     else:
         target_channel = raw_channel
 
@@ -387,7 +396,7 @@ async def api_chat_slot_slack_link(request: web.Request) -> web.Response:
             )
         if not title:
             title = _ANCHOR_TITLE_DEFAULT
-        thread_ts = await state.slack_client.post_message(
+        thread_ts = await slack.post_message(
             target_channel, f"\U0001f9f5 *{title}*\nSession linked from dashboard."
         )
         if not thread_ts:
@@ -425,7 +434,32 @@ async def api_chat_slot_slack_link(request: web.Request) -> web.Response:
     # while nothing ever told the open tab it had arrived. That same index is
     # what resolves an OPTIONS click on the control replayed below back to this
     # conversation -- without it the click would answer into a separate session.
-    state.link_slack(slot.key, thread_ts, target_channel)
+    if not state.link_slack(slot.key, thread_ts, target_channel, generation=links_generation):
+        # The map refused the write -- a Slack workspace switch holds the link
+        # table while it sweeps the destinations of the former workspace, or
+        # completed while this request awaited and the generation captured
+        # above is stale -- and ``link_slack`` changed nothing on refusal. The
+        # thread posted above lives in the workspace the request started in,
+        # not the one now bound. Answer with that instead of
+        # ``{ok}``: a success here would redraw the slot as linked, backfill the
+        # transcript into a thread no session owns, and be contradicted by the
+        # very next restart. 503 because the condition is transient; the user
+        # retries once the switch has settled.
+        sel().log_api_access(
+            caller="dashboard",
+            operation="chat.slack_link",
+            outcome="refused",
+            source="dashboard",
+            resources=slot.key,
+            error="slack workspace switch in flight",
+        )
+        return web.json_response(
+            {
+                "error": "Slack workspace switch in flight; retry shortly",
+                "code": "slack_workspace_switch_in_flight",
+            },
+            status=503,
+        )
     # Persist before publishing: the map's writer is debounced, and everything
     # below -- the transcript backfilled into the thread, the slots push, the
     # `{ok, thread_ts}` answer -- tells the user the thread is linked. A gateway

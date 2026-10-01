@@ -294,6 +294,8 @@ async def test_api_only_gateway_forwards_existing_context_builder(monkeypatch):
         _test_mode=True,
         conv_log=None,
         _schedule_memory_preparation=lambda: None,
+        _settled_slack_client=AsyncMock(return_value=None),
+        _slack_client_withheld=lambda: False,
         _no_crons=True,
     )
     await GatewayOrchestrator._init_api_server(host)

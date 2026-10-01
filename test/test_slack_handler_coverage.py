@@ -1306,7 +1306,7 @@ class TestPrivacyModifiers:
         assert only is True and cmd == ""
         assert h.is_thread_temporary("t1") is True
         assert "Temporary mode ON" in _texts(slack)
-        sessions.set_slack_link.assert_called_once_with("t1", "t1", "C1")
+        sessions.set_slack_link.assert_called_once_with("t1", "t1", "C1", generation=None)
 
     @pytest.mark.asyncio
     async def test_incognito_only_returns_early(self, slack, sessions, owner):

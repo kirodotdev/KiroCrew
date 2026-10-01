@@ -166,10 +166,10 @@ class FakeSessions:
     async def get_or_create(self, session_key, agent=None, channel_id=None):
         return self._provider, False, False  # (client, is_new, resumed)
 
-    async def set_channel(self, session_key, channel):
+    async def set_channel(self, session_key, channel, *, generation=None):
         return None
 
-    def set_slack_link(self, key, thread_ts, channel_id):
+    def set_slack_link(self, key, thread_ts, channel_id, *, generation=None):
         self.links[key] = (thread_ts, channel_id)
 
     def get_pid(self, session_key):

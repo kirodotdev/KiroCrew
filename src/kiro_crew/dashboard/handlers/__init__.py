@@ -360,6 +360,7 @@ from kiro_crew.dashboard.handlers.messaging import (  # noqa: E402, F401
     api_slack_pins,
     api_slack_profile,
     api_slack_reactions,
+    api_slack_reconnect,
     api_spawn,
     api_spawn_continue,
     api_spawn_delete,

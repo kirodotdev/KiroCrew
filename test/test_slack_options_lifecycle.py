@@ -2216,7 +2216,7 @@ class TestControlPostedAfterTheWindowIsSpent:
 
         src = inspect.getsource(chat_slack.api_chat_slot_slack_link)
         snap = src.find("_prior_owner_keys = slack_options_owner_keys_snapshot(")
-        link = src.find("state.link_slack(slot.key, thread_ts, target_channel)")
+        link = src.find("state.link_slack(slot.key, thread_ts, target_channel, generation=")
         assert snap != -1 and link != -1, "both the snapshot and the link must be present"
         assert snap < link, (
             "resolving after link_slack names the NEW owner, so the previous "

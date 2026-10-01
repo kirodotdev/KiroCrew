@@ -367,7 +367,7 @@ class TestImportThreadToSlot:
 
         assert result is slot
         assert slot.append.call_count == 2
-        ds.link_slack.assert_called_once_with("s1", "100.0", "C1")
+        ds.link_slack.assert_called_once_with("s1", "100.0", "C1", generation=None)
         ds.push_slots_update.assert_called_once()
 
     @pytest.mark.asyncio

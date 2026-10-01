@@ -151,6 +151,8 @@ from kiro_crew.cron_service.store import (  # noqa: F401 -- re-exported
     _FILE_LOCK_POLL_SECS,
     _FILE_LOCK_TIMEOUT_SECS,
     _STORE_VERSION,
+    DESTINATION_ANY,
+    CronDestinationMismatch,
     CronPendingMismatch,
     CronStoreBusy,
     CronStoreUnreadable,
@@ -2013,6 +2015,14 @@ class CronService:
         # instead of resurrecting state the operator withdrew.
         expect_active = kwargs.pop("expect_secret_env", None)
         expect_active_pin = kwargs.pop("expect_secret_env_pin", None)
+        # And for the delivery destination: a ``(channel, thread_ts)`` pair the
+        # record must still carry, compared as stored (falsy is None, the way
+        # ``apply_job_update`` writes both); a half given as ``DESTINATION_ANY``
+        # is not compared. A Slack workspace switch clears a destination it
+        # copied and restores a copy it cleared; an operator's edit in between
+        # must win over both, which only a check under the lock can promise.
+        # ``None`` is no precondition.
+        expect_destination = kwargs.pop("expect_destination", None)
         # Optional OUT-parameter, owned by the caller: a dict this pass fills with
         # ``{"chat_folder_was": <prior folder, possibly "">}`` when the update
         # actually changes ``chat_folder_id``.
@@ -2043,6 +2053,18 @@ class CronService:
                     raise CronPendingMismatch("active grant changed concurrently")
                 if expect_active_pin is not None and job.secret_env_pin != expect_active_pin:
                     raise CronPendingMismatch("active grant pin changed concurrently")
+                if expect_destination is not None:
+                    want_channel, want_thread = expect_destination
+                    for have, want in (
+                        (job.channel, want_channel),
+                        (job.thread_ts, want_thread),
+                    ):
+                        if want is DESTINATION_ANY:
+                            continue
+                        if (have or None) != (want or None):
+                            raise CronDestinationMismatch(
+                                "delivery destination changed concurrently"
+                            )
                 apply_job_update(job, kwargs, chat_folder_out)
                 self._save()
                 logger.info("Updated cron job %s", job_id)

@@ -215,6 +215,14 @@ class DefaultSlackEnterpriseGate:
 
         return enterprise.check_message_origin(event_team_id)
 
+    def validated_team_id(self) -> str:
+        # deferred: see validate_enterprise above. The module caches the id its
+        # own validate_enterprise read from auth.test, so this gate's answer is
+        # that cache; a gate with its own state answers from its own.
+        from kiro_crew.slack import enterprise
+
+        return enterprise.validated_team_id()
+
     def heartbeat_safe_tools(self) -> "frozenset[str]":
         # The public edition adds no tools to the heartbeat allowlist — the set
         # stays exactly the core HEARTBEAT_SAFE_TOOLS. The companion returns its

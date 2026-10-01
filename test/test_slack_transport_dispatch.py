@@ -1779,7 +1779,7 @@ class _LinkCapturingSessions(FakeSessions):
         """
         return [k for k in self.keys if k != BACKGROUND_KEY]
 
-    def set_slack_link(self, key, thread_ts, channel_id):
+    def set_slack_link(self, key, thread_ts, channel_id, *, generation=None):
         # Deliberately NOT delegating to super(): the base fake stores links in a
         # dict under this same attribute, so with the list used here a real link
         # write raised TypeError and the assertions below failed for the wrong

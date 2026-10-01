@@ -72,6 +72,20 @@ EXPORT_EXCLUDE = frozenset(
     }
 )
 
+#: Root-level files an IMPORT never installs, over and above ``EXPORT_EXCLUDE``.
+#: Matched at the archive ROOT only -- never by basename over the user trees,
+#: where a same-named user file would be silently dropped (the beacon note
+#: above). The Slack workspace record travels ONLY beside the session map
+#: (``snapshot_components``: same component, so a restore cannot separate the
+#: two); the portable export never selects either at the root, and an archive
+#: root that carries the record anyway must not install it: onto a home whose
+#: live map survives, a record naming another workspace makes the next
+#: handshake a switch that sweeps every persisted Slack link, and a misshapen
+#: one pins Slack at ``workspace_record_unreadable`` -- and this path validates
+#: neither, since it never installs the ``config`` component's files by their
+#: own checks.
+IMPORT_ROOT_EXCLUDE = EXPORT_EXCLUDE | frozenset({"slack_workspace.json"})
+
 EXCLUDE_DIRS = frozenset(
     {
         "snapshots",
@@ -1072,7 +1086,7 @@ def apply_import_zip(zip_path: Path, mode: str = "merge") -> dict:
 
         if mode == "replace":
             # Strip sensitive files and skills/auto/ from snapshot before replace
-            for excluded_name in EXPORT_EXCLUDE:
+            for excluded_name in IMPORT_ROOT_EXCLUDE:
                 excluded_file = snap / excluded_name
                 if excluded_file.exists():
                     excluded_file.unlink()

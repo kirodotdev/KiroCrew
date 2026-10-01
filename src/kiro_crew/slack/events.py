@@ -16,6 +16,7 @@ processing the same Slack event twice.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 import json
 import logging
@@ -23,7 +24,7 @@ import os
 import re
 import tempfile
 from collections import OrderedDict
-from typing import TYPE_CHECKING, Any, Callable, Coroutine
+from typing import TYPE_CHECKING, Any, Callable, Coroutine, cast
 
 import aiohttp
 from slack_sdk.socket_mode.request import SocketModeRequest
@@ -78,6 +79,7 @@ from kiro_crew.session_lifecycle import (
     hand_queue_to_successor,
 )
 from kiro_crew.skills import SkillsLoader
+from kiro_crew.slack import affinity as slack_affinity
 from kiro_crew.slack.allowlist import prompt_track_channel, send_dashboard_link
 from kiro_crew.slack.blocks import (
     build_stopping_blocks,
@@ -86,7 +88,7 @@ from kiro_crew.slack.blocks import (
     dashboard_link_block,
     voice_config_modal,
 )
-from kiro_crew.slack.enterprise import trusted_bot_admission
+from kiro_crew.slack.enterprise import trusted_bot_admission, validated_self_bot_id
 from kiro_crew.slack.files import (
     VOICE_MEMO_DURATION_UNVERIFIED,
     VOICE_MEMO_FAILED,
@@ -898,8 +900,19 @@ register_slash_command("restart", _handle_restart, "restart the gateway (owner-o
 # ---------------------------------------------------------------------------
 
 
-async def init_socket_mode(orch: GatewayOrchestrator, seen: SeenCache) -> None:
+async def init_socket_mode(
+    orch: GatewayOrchestrator,
+    seen: SeenCache,
+    *,
+    web_api_client: "SlackClientOps | None" = None,
+) -> None:
     """Wire up the Socket Mode client and attach the event listener.
+
+    *web_api_client* is the Web API client this socket answers through. Boot leaves it
+    unset and the listener takes ``orch.slack``; a Reconnect passes its private
+    candidate instead, because it keeps ``orch.slack`` empty until the new
+    workspace is validated and adopted (``_reconnect_slack_once`` step 4), and
+    the socket must still answer through the client that belongs to it.
 
     Does nothing when Slack is disabled (missing tokens or no allowed
     users).  Mutates ``orch._socket_client`` in place.
@@ -932,6 +945,17 @@ async def init_socket_mode(orch: GatewayOrchestrator, seen: SeenCache) -> None:
     set_tracking_channels(orch._tracking_channels)
     set_open_channels(orch._open_channels)
     set_owner_id(orch._owner_id)
+    # The authorization subject THIS socket is built with. Bound to every
+    # envelope it receives beside its client (below), so a turn still in
+    # flight when a Reconnect rebinds the module global to another
+    # workspace's owner keeps authorizing its sender against the owner of the
+    # workspace the sender's id belongs to (``slack.affinity``). Kept on the
+    # orchestrator so the gateway can REVOKE it for a socket it could not
+    # close or whose workspace it never admitted -- the binding outranks the
+    # module globals, so clearing those alone would not reach this socket's
+    # envelopes.
+    received_owner = slack_affinity.SocketAuthority(orch._owner_id)
+    orch._slack_socket_authority = received_owner
     if orch._cfg.agent.dangerously_skip_permissions:
         # grant_declared_yolo walks the profiles dir — blocking, so off-loop.
         await asyncio.to_thread(set_yolo_mode, True)
@@ -952,14 +976,56 @@ async def init_socket_mode(orch: GatewayOrchestrator, seen: SeenCache) -> None:
         orch._slack_enabled = False
         orch.slack = None
         return
+    # The gateway's own bot id in the workspace just validated, bound to THIS
+    # socket's authority beside the owner: the trusted-bot admission below reads
+    # it from the socket the event arrived on, not from the module-level copy a
+    # later Reconnect to another workspace replaces.
+    received_owner.bind_self_bot_id(validated_self_bot_id())
 
     web_client = AsyncWebClient(token=orch._bot_token)
     orch._socket_client = WSSocketModeClient(
         app_token=orch._app_token,
         web_client=web_client,
     )
+    # The Web API client that belongs to THIS socket. Every event the listener
+    # below receives is answered through it -- captured once here and BOUND to
+    # each envelope's task context (``slack.affinity``), not read from
+    # ``orch.slack`` per event, because a Reconnect replaces ``orch.slack``
+    # while work this socket received may still be in flight: a message
+    # mid-routing (``_route_message``), an interaction handler updating its
+    # card, a slash command, the agent turn any of them started and its final
+    # post. Inside the binding ``orch.slack`` resolves to this client -- which
+    # is also how a Reconnect's handlers reach a client while ``orch.slack``
+    # itself is still withheld.
+    received_by = web_api_client if web_api_client is not None else orch.slack
 
-    async def _on_event(client: WSSocketModeClient, req: SocketModeRequest) -> None:
+    async def _on_envelope(client: WSSocketModeClient, req: SocketModeRequest) -> None:
+        # The registered listener: a synchronous binding (no suspension) around
+        # ``_on_event``, so the reserve-before-ack contract ``_on_event`` keeps
+        # is still the first thing that can suspend for this envelope.
+        #
+        # The Slack-link generation is read HERE, before that first suspension,
+        # and handed down: ``_on_event`` suspends on the admission gate and on
+        # the ACK before a message is routed, and a reconnect that validated
+        # another workspace can sweep the persisted destinations in either
+        # gap. A value read after the sweep is the CURRENT one, and the fence
+        # in ``set_slack_link`` would pass this workspace-A event's thread
+        # through under the new client -- exactly the row the sweep removed.
+        # Read at entry, the receipt value is stale by the time the turn links
+        # its thread, and the write is refused.
+        links_generation = _links_generation_at_receipt(orch)
+        with (
+            slack_affinity.client_scope(received_by),
+            slack_affinity.owner_scope(received_owner),
+        ):
+            await _on_event(client, req, links_generation=links_generation)
+
+    async def _on_event(
+        client: WSSocketModeClient,
+        req: SocketModeRequest,
+        *,
+        links_generation: int | None = None,
+    ) -> None:
         # Reserve before the ACK's first suspension. A paused update returns
         # without acknowledging, so Slack retries the whole envelope on the new
         # gateway instead of accepting a card/command that this process cannot
@@ -981,7 +1047,12 @@ async def init_socket_mode(orch: GatewayOrchestrator, seen: SeenCache) -> None:
             return
 
         if req.type == "interactive":
-            t = asyncio.create_task(dispatch_interactive(req.payload or {}))
+            # Same receipt generation the message path carries: a resume or a
+            # link-to-dashboard callback writes a Slack link after its awaits and
+            # must present the generation it was received under.
+            t = asyncio.create_task(
+                dispatch_interactive(req.payload or {}, links_generation=links_generation)
+            )
             orch._handler_tasks.add(t)
             t.add_done_callback(orch._handler_tasks.discard)
             return
@@ -1060,7 +1131,9 @@ async def init_socket_mode(orch: GatewayOrchestrator, seen: SeenCache) -> None:
         # untrusted denial must be audited (not silently subtype-dropped), and
         # a trusted bot's bot_message must pass the subtype gate below.
         _from_trusted_bot, _deny_error = trusted_bot_admission(
-            _bot_id or "", orch._cfg.slack.trusted_bot_ids
+            _bot_id or "",
+            orch._cfg.slack.trusted_bot_ids,
+            self_bot_id=received_owner.self_bot_id,
         )
         if _deny_error:
             sel().log_api_access(
@@ -1101,9 +1174,11 @@ async def init_socket_mode(orch: GatewayOrchestrator, seen: SeenCache) -> None:
             seen,
             is_mention=(event_type == "app_mention"),
             from_trusted_bot=_from_trusted_bot,
+            slack_client=received_by,
+            links_generation=links_generation,
         )
 
-    orch._socket_client.socket_mode_request_listeners.append(_on_event)  # type: ignore[arg-type]
+    orch._socket_client.socket_mode_request_listeners.append(_on_envelope)  # type: ignore[arg-type]
     register_drain("slack", lambda session_key: _drain_slack_queue(orch, session_key))
 
 
@@ -1128,6 +1203,34 @@ async def _drain_slack_queue(orch: GatewayOrchestrator, session_key: str) -> Non
         _spawn_tracked(_drain_slack_queue(orch, session_key))
 
     task.add_done_callback(_after)
+
+
+def _owner_at_receipt() -> slack_affinity.SocketAuthority | None:
+    """The socket authority bound to the current envelope's context, for a queue entry
+    to carry -- the authority itself, so a revocation reaches the queued turn too.
+
+    ``None`` outside any binding (a caller that is not the Socket Mode
+    listener), and the queued turn then authorizes against the live owner.
+    """
+    bound = slack_affinity.bound_owner()
+    return None if bound is slack_affinity.UNBOUND else cast(slack_affinity.SocketAuthority, bound)
+
+
+def _links_generation_at_receipt(orch: GatewayOrchestrator) -> int | None:
+    """The Slack-link generation as of now, for a turn to present when it links its thread.
+
+    Read where a Slack event is RECEIVED (``init_socket_mode``'s listener,
+    before its first await) and carried through ``_route_message`` to every
+    link writer the turn reaches (``set_slack_link``'s *generation*). Duck-typed
+    like ``ensure_channel_team``: the fakes tests hand in as ``sessions`` need
+    not model it, and an un-modelled or non-int value is simply an unfenced
+    write (``None``).
+    """
+    _generation = getattr(orch.sessions, "slack_links_generation", None)
+    value = _generation() if callable(_generation) else None
+    if not isinstance(value, int) or isinstance(value, bool):
+        return None
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -1856,12 +1959,54 @@ async def _dispatch_queued(
     text: str,
     kwargs: dict,
 ) -> None:
-    """Dispatch a queued message — remove ⏳ reaction and call handle_message."""
+    """Dispatch a queued message — remove ⏳ reaction and call handle_message.
+
+    The turn answers through the client that RECEIVED it (``slack_client`` in
+    the queue entry), not through whatever ``orch.slack`` is when the queue
+    drains: ``POST /api/slack/reconnect`` can swap ``orch.slack`` for a client
+    on a different workspace between enqueue and drain, and a reply for
+    workspace A sent through workspace B's client is lost (channel unknown)
+    or, on a colliding channel id, misrouted. Entries written before this key
+    existed fall back to the live client. That client is also BOUND to the
+    dispatch's task context (``slack.affinity``), so every ``orch.slack`` read
+    the turn makes -- in the handler, in the tasks it spawns, in its final
+    post -- resolves to it as well. The entry's ``links_generation`` is the
+    Slack-link generation captured at receipt for the same reason: the turn
+    presents it when it links its thread, so a switch that swept the former
+    workspace's destinations in between refuses the write.
+    """
+    slack = kwargs.get("slack_client") or orch.slack
+    # The owner the receiving socket was built with rides in the entry too
+    # (``owner_id``), so the turn is authorized against the owner of the
+    # workspace its sender's id belongs to, not against whichever owner a
+    # Reconnect has bound since. An entry written before the key existed, or
+    # from an envelope that carried no binding, authorizes against the live
+    # owner as before.
+    owner = kwargs.get("owner_id")
+    scope = (
+        slack_affinity.owner_scope(owner)
+        if isinstance(owner, slack_affinity.SocketAuthority)
+        else contextlib.nullcontext()
+    )
+    with slack_affinity.client_scope(slack), scope:
+        await _dispatch_queued_through(slack, orch, session_key, msg_ts, text, kwargs)
+
+
+async def _dispatch_queued_through(
+    slack: Any,
+    orch: GatewayOrchestrator,
+    session_key: str,
+    msg_ts: str,
+    text: str,
+    kwargs: dict,
+) -> None:
+    """``_dispatch_queued``'s body, run inside the binding to *slack*."""
     channel = kwargs.get("channel", "")
     thread_ts = kwargs.get("thread_ts")
-    if orch.slack:
+    links_generation = kwargs.get("links_generation")
+    if slack:
         try:
-            await orch.slack.remove_reaction(channel, msg_ts, "hourglass_flowing_sand")
+            await slack.remove_reaction(channel, msg_ts, "hourglass_flowing_sand")
         except Exception:
             pass
     # Route the queued follow-up through the SAME gate as the initial message so
@@ -1877,7 +2022,7 @@ async def _dispatch_queued(
     try:
         if _use_transport:
             await handle_message_transport(
-                orch.slack,  # type: ignore[arg-type]
+                slack,  # type: ignore[arg-type]
                 orch.sessions,  # type: ignore[arg-type]
                 channel,
                 text,
@@ -1907,10 +2052,11 @@ async def _dispatch_queued(
                 # immediate dispatch above).
                 from_trusted_bot=bool(kwargs.get("from_trusted_bot", False)),
                 dm_single_session=KiroCrewConfig.load().slack.dm_single_session,
+                links_generation=links_generation,
             )
             return
         await handle_message(
-            orch.slack,  # type: ignore[arg-type]
+            slack,  # type: ignore[arg-type]
             orch.sessions,  # type: ignore[arg-type]
             channel,
             text,
@@ -1928,6 +2074,7 @@ async def _dispatch_queued(
             channel_agent=kwargs.get("agent_override"),
             user_display_name=kwargs.get("user_display_name"),
             from_trusted_bot=bool(kwargs.get("from_trusted_bot", False)),
+            links_generation=links_generation,
         )
     finally:
         # The enqueue path deferred temp-image cleanup to here so the queued
@@ -2151,8 +2298,35 @@ async def _route_message(
     seen: SeenCache,
     is_mention: bool = False,
     from_trusted_bot: bool = False,
+    slack_client: "SlackClientOps | None" = None,
+    links_generation: int | None = None,
 ) -> None:
-    """Validate, dedup, check activation mode, and dispatch an incoming Slack message."""
+    """Validate, dedup, check activation mode, and dispatch an incoming Slack message.
+
+    ``slack_client`` is the Web API client of the socket that RECEIVED this
+    event; the listener ``init_socket_mode`` installs passes it. Every
+    event-scoped Web API call below -- user lookup, denials, file downloads,
+    both immediate dispatch branches and every queued turn -- goes through it,
+    never through ``orch.slack``: routing suspends (the governance gate,
+    ``users.info``, file downloads) and ``POST /api/slack/reconnect`` can swap
+    ``orch.slack`` for a client on another workspace in that gap, so a client
+    sampled at dispatch time could answer a workspace-A message through
+    workspace B. Callers without a socket (tests) fall back to ``orch.slack``
+    as it is on entry.
+
+    ``links_generation`` is the Slack-link generation as of RECEIPT, read by the
+    listener before its first await (``_links_generation_at_receipt``) for the
+    same reason the client is: the turn this event becomes links its thread
+    many awaits from here (admission, the ACK, session acquisition, possibly a
+    whole agent turn), and a reconnect that validated ANOTHER workspace in that
+    gap sweeps the persisted destinations and bumps the generation. Presenting
+    the receipt value to ``set_slack_link`` is what stops the resumed turn from
+    putting a former-workspace thread back under the new client. Callers
+    without a listener (tests) pass none and it is read on entry instead.
+    """
+    received_by = slack_client if slack_client is not None else orch.slack
+    if links_generation is None:
+        links_generation = _links_generation_at_receipt(orch)
     sender_id = event.get("user", "") or (event.get("bot_id", "") if from_trusted_bot else "")
     channel = event.get("channel", "")
     text = event.get("text", "")
@@ -2195,9 +2369,9 @@ async def _route_message(
     # workspace — a participant's, not the channel's, on a Slack Connect
     # shared channel — so it must never seed this cache; resolve the home
     # workspace from conversations_info instead (cached per process).
-    ensure_home_team = getattr(orch.slack, "ensure_channel_team", None)
+    ensure_home_team = getattr(received_by, "ensure_channel_team", None)
     if ensure_home_team is not None:
-        # The seam is duck-typed on purpose: orch.slack may be the real
+        # The seam is duck-typed on purpose: received_by may be the real
         # client, a test double, or a wrapper that implements this hook
         # synchronously or as a coroutine. Accept either; only an awaitable
         # is awaited.
@@ -2429,9 +2603,9 @@ async def _route_message(
     _sender_display: str | None = None
     if orch.channel_history:
         _sender_display = orch.channel_history._user_names.get(sender_id)
-    if not _sender_display and orch.slack and hasattr(orch.slack, "get_user_info"):
+    if not _sender_display and received_by and hasattr(received_by, "get_user_info"):
         try:
-            info = await orch.slack.get_user_info(sender_id)
+            info = await received_by.get_user_info(sender_id)
             _sender_display = info.get("real_name") or sender_id
             if orch.channel_history:
                 orch.channel_history.set_user_name(sender_id, _sender_display)
@@ -2506,9 +2680,9 @@ async def _route_message(
     # Only reached for messages the bot would actually respond to,
     # preventing notification spam in observe/mention channels.
     if not _user_authorized:
-        if orch.slack:
+        if received_by:
             try:
-                await orch.slack.post_ephemeral(
+                await received_by.post_ephemeral(
                     channel,
                     sender_id,
                     "⛔ You are not authorized to use this bot. "
@@ -2528,7 +2702,7 @@ async def _route_message(
     # or unauthorized users.
     _attachment_temp_paths: list[str] = []
     _had_voice_input = False
-    if files and orch.slack and _user_authorized:
+    if files and received_by and _user_authorized:
         memos = [f for f in files if is_voice_memo(f)]
         if memos:
             transcripts: list[str] = []
@@ -2543,7 +2717,7 @@ async def _route_message(
             stt_ok = await asyncio.to_thread(stt_available)
             if stt_ok:
                 transcripts = await _transcribe_with_reaction(
-                    orch.slack,
+                    received_by,
                     channel,
                     msg_ts,
                     orch,
@@ -2619,8 +2793,8 @@ async def _route_message(
                 resources="!stop",
                 error="unauthorized sender",
             )
-            if orch.slack:
-                await orch.slack.post_message(channel, "⛔ Not authorized.", thread_ts or msg_ts)
+            if received_by:
+                await received_by.post_message(channel, "⛔ Not authorized.", thread_ts or msg_ts)
             return
         if not orch.sessions:
             sel().log_tool_invocation(
@@ -2631,8 +2805,8 @@ async def _route_message(
                 outcome="no_session",
                 metadata={"user": sender_id, "channel": channel},
             )
-            if orch.slack:
-                await orch.slack.post_message(channel, "Nothing running.", thread_ts or msg_ts)
+            if received_by:
+                await received_by.post_message(channel, "Nothing running.", thread_ts or msg_ts)
             return
         _flat_stop_key = flat_dm_session_key(
             channel, thread_ts, enabled=_dm_single_session_enabled(orch, channel)
@@ -2691,12 +2865,12 @@ async def _route_message(
             # escalation is a retry that hard-resets the session with this member
             # never told that it would.
             async def _say_declined() -> bool:
-                if not orch.slack:
+                if not received_by:
                     return False
                 # The post hands back the ts of what landed, so a falsy one is a
                 # warning this member never saw and must arm nothing.
                 return bool(
-                    await orch.slack.post_message(
+                    await received_by.post_message(
                         channel, STOP_DECLINED_COMPACTING_TEXT, stop_post_ts
                     )
                 )
@@ -2728,8 +2902,8 @@ async def _route_message(
             pending_at_press = list(orch._pending_queue.pop(session_key, None) or ())
             try:
                 # Post ephemeral "Stopping…" block with Kill Now button
-                if orch.slack:
-                    await orch.slack.post_ephemeral(
+                if received_by:
+                    await received_by.post_ephemeral(
                         channel,
                         sender_id,
                         "Stopping…",
@@ -2738,12 +2912,12 @@ async def _route_message(
                     )
 
                 async def _on_soft() -> None:
-                    if orch.slack:
-                        await orch.slack.post_message(channel, "⏹ Execution stopped.", stop_post_ts)
+                    if received_by:
+                        await received_by.post_message(channel, "⏹ Execution stopped.", stop_post_ts)
 
                 async def _on_hard() -> None:
-                    if orch.slack:
-                        await orch.slack.post_message(
+                    if received_by:
+                        await received_by.post_message(
                             channel, "⛔ Execution stopped — session reset.", stop_post_ts
                         )
 
@@ -2791,12 +2965,12 @@ async def _route_message(
                 # never warned about is a silent reset of their session.
 
                 async def _say_declined_race() -> bool:
-                    if not orch.slack:
+                    if not received_by:
                         return False
                     # The ts of what landed: a falsy one is a warning this
                     # member never saw and must arm nothing.
                     return bool(
-                        await orch.slack.post_message(
+                        await received_by.post_message(
                             channel, STOP_DECLINED_COMPACTING_TEXT, stop_post_ts
                         )
                     )
@@ -2842,8 +3016,8 @@ async def _route_message(
                     active_task.cancel()
             # If stop_turn returned "idle" (no active turn), neither callback
             # fired — dismiss the stale "Stopping…" ephemeral explicitly.
-            if outcome == "idle" and orch.slack:
-                await orch.slack.post_message(channel, "Nothing running.", stop_post_ts)
+            if outcome == "idle" and received_by:
+                await received_by.post_message(channel, "Nothing running.", stop_post_ts)
             sel().log_tool_invocation(
                 session_key=session_key,
                 source="slack",
@@ -2861,8 +3035,8 @@ async def _route_message(
                 outcome="no_session",
                 metadata={"user": sender_id, "channel": channel},
             )
-            if orch.slack:
-                await orch.slack.post_message(channel, "Nothing running.", thread_ts or msg_ts)
+            if received_by:
+                await received_by.post_message(channel, "Nothing running.", thread_ts or msg_ts)
         return
 
     # ── !restart: bang alias for /kirocrew restart — intercept here so it
@@ -2871,8 +3045,8 @@ async def _route_message(
     #    a single source of truth for the restart logic. ──
     if clean_text.strip().lower() == "!restart":
         async def _restart_respond(text: str, **_kw: Any) -> None:
-            if orch.slack:
-                await orch.slack.post_message(channel, text, thread_ts or msg_ts)
+            if received_by:
+                await received_by.post_message(channel, text, thread_ts or msg_ts)
 
         await _handle_restart(orch, sender_id, "", _restart_respond)
         return
@@ -2933,6 +3107,13 @@ async def _route_message(
             image_temp_paths=list(_attachment_temp_paths),
             from_trusted_bot=from_trusted_bot,
             **_SLACK_QUEUE_TAGS,
+            # The client that received this message answers it, even if a
+            # Reconnect swaps orch.slack before the queue drains
+            # (_dispatch_queued). ``received_by`` is the socket's own client,
+            # captured before routing suspended -- see the docstring.
+            slack_client=received_by,
+            links_generation=links_generation,
+            owner_id=_owner_at_receipt(),
         )
         if not _queued:
             # Session object not created yet — stash on orch._pending_queue
@@ -2949,15 +3130,18 @@ async def _route_message(
                         user_display_name=_sender_display,
                         image_temp_paths=list(_attachment_temp_paths),
                         from_trusted_bot=from_trusted_bot,
+                        slack_client=received_by,
+                        links_generation=links_generation,
+                        owner_id=_owner_at_receipt(),
                     ),
                 )
             )
         logger.info(
             "Message %s queued for busy session %s (session_obj=%s)", msg_ts, session_key, _queued
         )
-        if orch.slack:
+        if received_by:
             try:
-                await orch.slack.add_reaction(channel, msg_ts, "hourglass_flowing_sand")
+                await received_by.add_reaction(channel, msg_ts, "hourglass_flowing_sand")
             except Exception:
                 logger.debug("Failed to add queue reaction", exc_info=True)
         # NOTE: do NOT _cleanup_attachment_temps() here — clean_text references
@@ -2977,11 +3161,14 @@ async def _route_message(
         image_temp_paths=list(_attachment_temp_paths),
         from_trusted_bot=from_trusted_bot,
         **_SLACK_QUEUE_TAGS,
+        slack_client=received_by,
+        links_generation=links_generation,
+        owner_id=_owner_at_receipt(),
     ):
         logger.info("Message %s queued for busy session %s", msg_ts, session_key)
-        if orch.slack:
+        if received_by:
             try:
-                await orch.slack.add_reaction(channel, msg_ts, "hourglass_flowing_sand")
+                await received_by.add_reaction(channel, msg_ts, "hourglass_flowing_sand")
             except Exception:
                 logger.debug("Failed to add queue reaction", exc_info=True)
         # See the force=True branch above: cleanup is deferred to
@@ -3010,7 +3197,7 @@ async def _route_message(
     if _use_transport:
         t = asyncio.create_task(
             handle_message_transport(
-                orch.slack,  # type: ignore[arg-type]
+                received_by,  # type: ignore[arg-type]
                 orch.sessions,  # type: ignore[arg-type]
                 channel,
                 clean_text,
@@ -3055,6 +3242,7 @@ async def _route_message(
                 # admits, so replying would ping-pong).
                 from_trusted_bot=from_trusted_bot,
                 dm_single_session=_dm_single_session,
+                links_generation=links_generation,
             )
         )
         orch._session_tasks[session_key] = t
@@ -3095,7 +3283,7 @@ async def _route_message(
     try:
         t = asyncio.create_task(
             handle_message(
-                orch.slack,  # type: ignore[arg-type]
+                received_by,  # type: ignore[arg-type]
                 orch.sessions,  # type: ignore[arg-type]
                 channel,
                 clean_text,
@@ -3115,6 +3303,7 @@ async def _route_message(
                 from_trusted_bot=from_trusted_bot,
                 channel_activation=activation,
                 had_voice_input=_had_voice_input,
+                links_generation=links_generation,
             )
         )
     except Exception:

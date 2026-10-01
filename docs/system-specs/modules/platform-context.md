@@ -948,6 +948,18 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
 - `SlackEnterpriseGate.heartbeat_safe_tools() -> frozenset[str]` — unioned into
   `slack/gateway.py::_is_heartbeat_safe_tool` after the core `HEARTBEAT_SAFE_TOOLS`
   exact-match. Default `frozenset()`. ADD-only; never sourced from config.
+- `SlackEnterpriseGate.validated_team_id() -> str` — the workspace id the gate's
+  last `validate_enterprise` pass established from `auth.test`, read by
+  `slack/gateway.py::_slack_validated_team_id` right after that pass to bind the
+  persisted Slack destinations to the workspace (and sweep them when the
+  credentials name another). The default gate answers from the
+  `slack.enterprise` cache its own validation writes; a gate that keeps its own
+  state MUST report the identity it validated. "" (a pass that named no
+  workspace, or a gate without the method) makes the orchestrator refuse to
+  publish the client (`workspace_identity_unverified`) -- fail-closed, since an
+  identity never established is never recorded and a later credential switch
+  could never be detected. Not a `Default*` no-op: the default gate's
+  default-open pass with `auth.test` unavailable is refused publication too.
 - `AppsLoader.registry_rows() -> List[Dict]` — ADD-only merged by
   `apps/registry_pipeline/sources.py::_load_registry_file` after bundled `app-registry.json`
   (same-`name` core row wins). Default `[]`.
