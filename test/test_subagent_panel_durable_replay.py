@@ -2398,7 +2398,11 @@ class TestADismissalOutlivesTheManager:
 
         monkeypatch.setattr(subagent_module, "record_panel_dismissal_outcome", record)
         manager = SimpleNamespace(
-            _agents={"a1": SimpleNamespace(id="a1", _report_failure_latched=False)},
+            _agents={
+                "a1": SimpleNamespace(
+                    id="a1", _report_failure_latched=False, _ending_claimed=False, done=True
+                )
+            },
             _tasks={},
             _report_owners={},
         )
@@ -2458,7 +2462,11 @@ class TestAFailedDismissalWriteIsNotPublished:
 
     def manager(self):
         return SimpleNamespace(
-            _agents={"a1": SimpleNamespace(id="a1", _report_failure_latched=False)},
+            _agents={
+                "a1": SimpleNamespace(
+                    id="a1", _report_failure_latched=False, _ending_claimed=False, done=True
+                )
+            },
             _tasks={"a1": object()},
             _report_owners={},
         )
@@ -3437,6 +3445,8 @@ class TestTheLiveManagerPathRecordsTheDismissalToo:
                 "live1": SimpleNamespace(
                     id="live1",
                     _report_failure_latched=False,
+                    _ending_claimed=False,
+                    done=True,
                     parent_session_key="dashboard:chat-1",
                 )
             },

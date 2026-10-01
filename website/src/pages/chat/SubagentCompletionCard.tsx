@@ -117,8 +117,8 @@ const SubagentCompletionCard = memo(function SubagentCompletionCard({
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const parsed = parseSubagentCompletionMessage(message)
   const failed = parsed !== null && (parsed.kind === 'single' ? parsed.outcome === 'failed' : parsed.failed > 0)
-  // A restart orphan: the run was cut short but its result survived on disk, so
-  // it warns rather than alarming (failure) or reassuring (success).
+  // A run a gateway restart cut off mid-turn: a fragment of its output is on
+  // disk, so it warns rather than alarming (failure) or reassuring (success).
   const interrupted = parsed !== null && parsed.kind === 'single' && parsed.outcome === 'interrupted'
   // Anything that did not simply succeed opens expanded. The header can only say
   // THAT it failed or was cut short; the reason — an error, or where the orphaned

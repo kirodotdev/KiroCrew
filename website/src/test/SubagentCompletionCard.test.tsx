@@ -74,10 +74,16 @@ describe('subagentCompletion parsing/detection', () => {
     // invented blank separator is what previously let the payload loss pass.
     const shapes: [string, string, string, string][] = [
       [
-        'Agent `53e3e5eb` ⚠️ orphaned by gateway restart',
+        'Agent `53e3e5eb` ✅ finished before gateway restart',
         'Result saved at: `/home/u/.kiro/crew/subagents/53e3e5eb/result.txt`\nUse the read tool to retrieve it.',
+        'ok',
+        'finished before gateway restart',
+      ],
+      [
+        'Agent `53e3e5eb` ⚠️ cut off mid-turn by gateway restart',
+        'Partial output saved at: `/home/u/.kiro/crew/subagents/53e3e5eb/result.txt`',
         'interrupted',
-        'orphaned by gateway restart',
+        'cut off mid-turn by gateway restart',
       ],
       [
         'Agent `53e3e5eb` ❌ lost to gateway restart',
@@ -279,21 +285,20 @@ describe('SubagentCompletionCard rendering', () => {
     expect(screen.queryByTitle('Open in the Subagents panel')).toBeNull()
   })
 
-  it('renders a restart orphan as a warning, expanded, with where the result landed', () => {
+  it('renders a run the restart cut off as a warning, expanded, with where its partial landed', () => {
     // No blank line before the payload — exactly as _notify_orphan composes it.
     const orphan = [
       '[Subagent completion event]',
-      'Agent `53e3e5eb` ⚠️ orphaned by gateway restart',
+      'Agent `53e3e5eb` ⚠️ cut off mid-turn by gateway restart',
       'Task: Add TWO short UI labels to the GERMAN (de) catalog',
-      'Result saved at: `/home/u/.kiro/crew/subagents/53e3e5eb/result.txt`',
-      'Use the read tool to retrieve it.',
+      'Partial output saved at: `/home/u/.kiro/crew/subagents/53e3e5eb/result.txt`',
     ].join('\n')
     renderWithProviders(<SubagentCompletionCard message={msg(orphan)} />, { store: store() })
     expect(screen.getByTestId('glyph-interrupted')).toBeTruthy()
     expect(screen.getByText('Interrupted')).toBeTruthy()
     // Opens expanded: the reader's next question is where the result went.
     expect(screen.getByText('Hide details')).toBeTruthy()
-    expect(screen.getByText(/orphaned by gateway restart/)).toBeTruthy()
+    expect(screen.getByText(/cut off mid-turn by gateway restart/)).toBeTruthy()
     expect(screen.getByText(/result\.txt/)).toBeTruthy()
   })
 
@@ -400,7 +405,7 @@ describe('structured meta path (the #1792 fix)', () => {
   it('carries an orphan note from meta into the payload', () => {
     const orphan = [
       '[Subagent completion event]',
-      'Agent `53e3e5eb` ⚠️ orphaned by gateway restart',
+      'Agent `53e3e5eb` ✅ finished before gateway restart',
       'Task: catalog work',
       'Result saved at: `/home/u/.kiro/crew/subagents/53e3e5eb/result.txt`',
     ].join('\n')
@@ -408,15 +413,15 @@ describe('structured meta path (the #1792 fix)', () => {
       subagentCompletion: {
         kind: 'single',
         agentId: '53e3e5eb',
-        outcome: 'interrupted',
+        outcome: 'ok',
         task: 'catalog work',
-        note: 'orphaned by gateway restart',
+        note: 'finished before gateway restart',
       },
     })!
     expect(p.kind).toBe('single')
     if (p.kind !== 'single') return
-    expect(p.outcome).toBe('interrupted')
-    expect(p.body).toContain('orphaned by gateway restart')
+    expect(p.outcome).toBe('ok')
+    expect(p.body).toContain('finished before gateway restart')
     // The result-path line survives via the no-blank-line agent split.
     expect(p.body).toContain('result.txt')
   })

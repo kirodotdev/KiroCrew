@@ -23,6 +23,7 @@ from .types import (
     QueuedReadUnavailable,
     QueuedRun,
     QueuedRunListing,
+    outcome_task_state,
     tombstone_terminal_state,
 )
 
@@ -362,20 +363,37 @@ class _TaskqBridgeMixin(ManagerComponent):
 
     @staticmethod
     def taskq_artifact_probe(rec: "_taskq.TaskRecord") -> str | None:
-        """What a subagent run's tombstone proves about how it ended, if anything."""
+        """What a subagent run's artifacts prove about how it ended, if anything.
+
+        A readable tombstone decides by its recorded ending, then its cause; an
+        unreadable one says nothing. With no tombstone, or one whose cause
+        proves nothing (``gateway_restart``), the run is done when its result is
+        whole by ``result_is_whole``, the rule the orphan reconcile announces it
+        with, so the row and the parent's notice agree.
+        """
         from kiro_crew import taskq as _taskq
 
         if rec.kind != _taskq.KIND_SUBAGENT:
             return None
         try:
-            from kiro_crew.subagent_persistence import read_tombstone
+            from kiro_crew.subagent_persistence import (
+                _agent_dir,
+                _read_state_at,
+                _read_tombstone_at,
+                result_is_whole,
+            )
 
-            tombstone = read_tombstone(rec.id)
+            folder = _agent_dir(rec.id)
+            tombstone, present = _read_tombstone_at(folder / "tombstone.json")
+            if tombstone is not None:
+                cause = str(tombstone.get("cause") or "")
+                if cause != "gateway_restart":
+                    return tombstone_terminal_state(cause, str(tombstone.get("outcome") or ""))
+            elif present:
+                return None
+            return _taskq.DONE if result_is_whole(_read_state_at(folder) or {}) else None
         except (ValueError, OSError):
             return None
-        if not tombstone:
-            return None
-        return tombstone_terminal_state(str(tombstone.get("cause") or ""))
 
     def taskq_boot_dispatch(self) -> None:
         """Kick the pump once the loop runs, so rows that survived a restart start.
@@ -845,12 +863,7 @@ class _TaskqBridgeMixin(ManagerComponent):
         store = self.taskq_store()
         if store is None:
             return
-        if info.user_stopped:
-            state = _taskq.CANCELLED
-        elif info.error:
-            state = _taskq.FAILED
-        else:
-            state = _taskq.DONE
+        state = outcome_task_state(info.outcome) or _taskq.DONE
         result_ref: str | None = None
         try:
             from kiro_crew.subagent_persistence import agent_dir_for_display

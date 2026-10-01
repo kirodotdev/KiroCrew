@@ -36,13 +36,14 @@ it is removed, so a later reader can verify the guard still earns its place:
 * the cron reaper's gate -> ``test_the_cron_reaper_reports_a_leased_runtime_instead_of_killing_it``
 
 A finished-result signal sits beside the reconciler, because the direction that
-PROTECTS a result is the opposite of the direction that ends a process. The
-completeness flag and the bytes it describes are written in two steps to two
-files, and a restart in that gap must not demote a whole answer to a fragment:
+PROTECTS a result is the opposite of the direction that ends a process. A run
+records ``result_complete`` only after it rewrote ``result.txt`` whole, so the
+flag is the one completeness fact (``result_is_whole``), and the reconcile must
+neither demote a flagged answer to a fragment nor promote an unflagged one:
 
-* the durable-marker rescue -> ``test_the_durable_marker_rescues_a_finished_result_whose_flag_never_wrote``
-* its safe-direction complement -> ``test_a_result_without_either_signal_still_under_claims_as_a_fragment``
-* end to end over the reconcile -> ``test_the_reconcile_calls_a_marker_only_finished_run_orphaned_not_cut_off``
+* the completeness rule -> ``test_a_flagged_result_is_the_agents_answer``
+* its safe-direction complement -> ``test_an_unflagged_result_still_under_claims_as_a_fragment``
+* end to end over the reconcile -> ``test_the_reconcile_announces_a_finished_run_as_finished``
 
 Every one of those pairings is executed, not asserted in prose: the harness named
 in the pull request re-applies each mutation and requires the named test to fail.
@@ -2200,89 +2201,61 @@ async def test_the_orphan_reconcile_withholds_a_leased_pid(agent_root: Path) -> 
 # ── the finished-result completeness signal ──────────────────────────────────
 
 
-def test_the_durable_marker_rescues_a_finished_result_whose_flag_never_wrote(
-    agent_root: Path,
-) -> None:
-    """MUTATION TARGET: the marker clause in ``tombstone_recovery_action``.
+def test_a_flagged_result_is_the_agents_answer(agent_root: Path) -> None:
+    """MUTATION TARGET: the ``result_is_whole`` clause in ``tombstone_recovery_action``.
 
-    ``result.txt`` and the ``result_complete`` flag are written in two steps of
-    the completion path, to two different files: the bytes are capped first, and
-    the flag lands later in ``state.json``. A gateway restart falling in that gap
-    leaves a WHOLE answer on disk with the flag never written. Reading
-    completeness off ``state.json`` alone then classifies that finished answer
-    ``partial_result`` and the parent is told it was cut off mid-turn -- told to
-    read a complete finding as an opening sentence.
-
-    The completion path drops a durable marker in the SAME step it caps
-    ``result.txt``, so the marker is present exactly when the bytes are whole,
-    independent of the later flag write. The classifier treats the marker as
-    equal proof: a finished run is ``result_available`` even when only the marker
-    survived.
+    ``result.txt`` streams in chunk by chunk, so bytes on disk prove only that a
+    token arrived. A run records ``result_complete`` after it rewrote that file
+    whole from memory, which makes the flag the proof: a flagged result is the
+    agent's answer, ``result_available``, never a fragment.
     """
     from kiro_crew.subagent_manager.monitoring import tombstone_recovery_action
-    from kiro_crew.subagent_persistence import (
-        create_agent_folder,
-        mark_result_complete,
-        write_result_chunk,
-    )
+    from kiro_crew.subagent_persistence import create_agent_folder, write_result_chunk
 
-    create_agent_folder("flagless-finished", task="a finished answer")
-    write_result_chunk("flagless-finished", "the whole answer, every byte of it")
-    # The completion path's SAME-step marker landed; the restart fell before the
-    # separate state.json flag write, so result_complete was never recorded.
-    mark_result_complete("flagless-finished")
-    state = {"id": "flagless-finished"}  # no result_complete key -- the lost write
+    create_agent_folder("flagged-finished", task="a finished answer")
+    write_result_chunk("flagged-finished", "the whole answer, every byte of it", fresh=True)
+    state = {"id": "flagged-finished", "result_complete": True}
 
-    assert tombstone_recovery_action("flagless-finished", state) == "result_available", (
-        "a whole answer with its durable marker present is the agent's answer, "
-        "not a fragment, even when the state.json flag write was lost to the restart"
-    )
+    assert (
+        tombstone_recovery_action("flagged-finished", state) == "result_available"
+    ), "a whole answer the run flagged is the agent's answer, not a fragment"
 
 
-def test_a_result_without_either_signal_still_under_claims_as_a_fragment(
-    agent_root: Path,
-) -> None:
-    """The safe direction is preserved: no flag AND no marker is a fragment.
+def test_an_unflagged_result_still_under_claims_as_a_fragment(agent_root: Path) -> None:
+    """The safe direction: bytes the run never flagged are a fragment.
 
-    This is the complement of the rescue above and the reason the marker is a
-    second proof rather than a replacement. A run interrupted mid-stream wrote
-    result bytes but never reached the complete event, so neither the state flag
-    nor the durable marker exists. That genuinely-partial result must still be
-    announced as cut off, never promoted to a whole answer -- under-claiming is
-    correct here, and only a FINISHED run carries either signal.
+    A run interrupted mid-stream wrote result bytes but never recorded
+    ``result_complete``. That genuinely partial result must still be announced
+    as cut off, never promoted to a whole answer.
     """
     from kiro_crew.subagent_manager.monitoring import tombstone_recovery_action
     from kiro_crew.subagent_persistence import create_agent_folder, write_result_chunk
 
     create_agent_folder("truly-partial", task="an interrupted stream")
-    write_result_chunk("truly-partial", "an opening sentence the restart")
-    state = {"id": "truly-partial"}  # never completed: no flag, and no marker was dropped
+    write_result_chunk("truly-partial", "an opening sentence the restart", fresh=True)
+    state = {"id": "truly-partial"}  # never completed: no flag
 
     assert tombstone_recovery_action("truly-partial", state) == "partial_result", (
-        "neither the state flag nor the durable marker is present, so the bytes "
-        "are a genuine fragment and must stay under-claimed"
+        "the run never flagged its result, so the bytes are a genuine fragment "
+        "and must stay under-claimed"
     )
 
 
 @pytest.mark.asyncio
-async def test_the_reconcile_calls_a_marker_only_finished_run_orphaned_not_cut_off(
-    agent_root: Path,
-) -> None:
-    """End to end: the restart-window finished run is announced as a whole result.
+async def test_the_reconcile_announces_a_finished_run_as_finished(agent_root: Path) -> None:
+    """End to end: a run that finished before the restart is announced as finished.
 
-    Drives the real orphan reconcile over a run whose bytes and durable marker
-    are on disk but whose ``state.json`` lost the completeness flag to the
-    restart. The notification must read ``orphaned by gateway restart`` ("Use the
-    read tool to retrieve it"), NOT ``cut off mid-turn`` ("read it as an
-    unfinished fragment"), and the terminal ``recovery_action`` written to the
-    tombstone must be ``result_available``.
+    Drives the real orphan reconcile over a run whose whole answer is on disk
+    and flagged. The notification must read ``finished before gateway restart``
+    ("Use the read tool to retrieve it"), NOT ``cut off mid-turn`` ("read it as
+    an unfinished fragment"), and the terminal ``recovery_action`` written to
+    the tombstone must be ``result_available``.
     """
     from unittest.mock import MagicMock, patch
 
     from kiro_crew.subagent import SubagentManager
     from kiro_crew.subagent_persistence import (
         create_agent_folder,
-        mark_result_complete,
         read_tombstone,
         update_state,
         write_result_chunk,
@@ -2291,13 +2264,13 @@ async def test_the_reconcile_calls_a_marker_only_finished_run_orphaned_not_cut_o
     ro._reset_for_tests()
     manager = SubagentManager(sessions=MagicMock(), ctx_builder=MagicMock())
     create_agent_folder("window-orphan", task="a finished answer caught by a restart")
-    write_result_chunk("window-orphan", "the whole answer, written minutes before the crash")
-    mark_result_complete("window-orphan")
-    # The flag write that follows cap_result_file never landed: state.json has no
-    # result_complete. A dead pid so the reconcile tombstones without a kill, and
-    # an empty parent_session so the real notifier falls through to the digest DM
-    # where its message is observable.
-    update_state("window-orphan", pid=424242, parent_session="")
+    write_result_chunk(
+        "window-orphan", "the whole answer, written minutes before the crash", fresh=True
+    )
+    # A dead pid so the reconcile tombstones without a kill, and an empty
+    # parent_session so the real notifier falls through to the digest DM where
+    # its message is observable.
+    update_state("window-orphan", pid=424242, parent_session="", result_complete=True)
 
     captured: list[str] = []
 
@@ -2313,8 +2286,8 @@ async def test_the_reconcile_calls_a_marker_only_finished_run_orphaned_not_cut_o
     assert captured, "the finished orphan must produce a notification"
     note = captured[0]
     assert (
-        "orphaned by gateway restart" in note
-    ), f"a finished answer rescued by its durable marker is a whole result; got {note!r}"
+        "✅ finished before gateway restart" in note
+    ), f"a finished answer is a whole result; got {note!r}"
     assert "cut off mid-turn" not in note, "the finished answer must not be called a fragment"
     tomb = read_tombstone("window-orphan")
     assert (

@@ -42,22 +42,23 @@ export function hasSubagentCompletionPrefix(content: string): boolean {
 }
 
 /**
- * Per-agent header. Five shapes reach the transcript, and the glyph is the only
+ * Per-agent header. Six shapes reach the transcript, and the glyph is the only
  * element common to all of them:
  *
  *     Agent `53e3e5eb` (kirocrew) completed ✅
  *     Agent `53e3e5eb` ❌
- *     Agent `53e3e5eb` ⚠️ orphaned by gateway restart
+ *     Agent `53e3e5eb` ✅ finished before gateway restart
+ *     Agent `53e3e5eb` ⚠️ cut off mid-turn by gateway restart
  *     Agent `53e3e5eb` ❌ lost to gateway restart
  *     Agent `53e3e5eb` ❌ delivery timed out
  *
- * The last three are composed by the restart-recovery and delivery-timeout paths
+ * The last four are composed by the restart-recovery and delivery-timeout paths
  * in subagent.py, which put the glyph MID-line with an explanation after it — so
  * the glyph cannot be anchored to end-of-line. Everything after the id is
  * captured and scanned for the first glyph instead: the glyph decides the
  * outcome (language-independent, and it does not shift when the backend rewords
  * a status), and any words beside it are carried into the payload rather than
- * dropped, since on those three shapes they are the only explanation there is.
+ * dropped, since on those four shapes they are the only explanation there is.
  */
 const AGENT_HEADER_RE = /^Agent `([^`\n]+)`(?: \(([^)\n]*)\))?([^\n]*)$/m
 const OUTCOME_GLYPH_RE = /[✅❌⏹⚠]/
@@ -77,7 +78,7 @@ const OUTCOME_BY_GLYPH: Record<string, SubagentOutcome> = {
   '✅': 'ok',
   '❌': 'failed',
   '⏹': 'stopped',
-  // A restart orphan: the run did not finish, but its result WAS written to
+  // A run a gateway restart cut off mid-turn: a fragment of its output is on
   // disk, so this is neither a success nor a plain failure.
   '⚠': 'interrupted',
 }
@@ -236,13 +237,13 @@ function splitHeadBody(content: string): { head: string; body: string } {
  * restart-recovery and delivery-timeout paths in subagent.py do NOT — they run the
  * `Task:` line straight into the payload:
  *
- *     Agent `53e3e5eb` ⚠️ orphaned by gateway restart
+ *     Agent `53e3e5eb` ✅ finished before gateway restart
  *     Task: …
  *     Result saved at: `/…/result.txt`
  *     Use the read tool to retrieve it.
  *
  * Anchoring only on the blank line therefore threw away exactly the lines those
- * three shapes exist to deliver — the location of an orphaned result, and whether
+ * four shapes exist to deliver — the location of an orphaned result, and whether
  * a result was captured at all. So when no blank line is present, the boundary is
  * the END OF THE HEADER instead: the marker line, the `Agent …` line, and the
  * optional `Task:` line. The blank-line split stays primary, because the ordinary

@@ -96,7 +96,6 @@ from kiro_crew.context import (
 from kiro_crew.context_management import (
     COMPLETION_KEEP_DEFAULT_CHARS,
     apply_completion_keep,
-    cap_result_file,
     evict_completed_agents,
 )
 from kiro_crew.dashboard.side_readonly_spec import readonly_base_name
@@ -179,6 +178,7 @@ from kiro_crew.stats import Stats
 from kiro_crew.subagent_completion_meta import (
     OUTCOME_FAILED,
     OUTCOME_INTERRUPTED,
+    OUTCOME_OK,
     single_completion_meta,
 )
 from kiro_crew.subagent_cost import (
@@ -217,14 +217,15 @@ from kiro_crew.subagent_persistence import (  # noqa: F401 - read_tombstone reso
     create_agent_folder,
     list_orphans,
     mark_delivered,
-    mark_result_complete,
     prune_stale_tombstones,
     read_state,
     read_tombstone,
     record_panel_dismissal_outcome,
     record_slow_command,
+    result_is_whole,
     settle_delivered_batch,
     update_state,
+    write_finished_result,
     write_result_chunk,
     write_tombstone,
 )
@@ -2851,6 +2852,15 @@ class SubagentInfo:
     # afresh; a second overflow is terminal so a too-large agent cannot loop.
     _context_overflow_retry_used: bool = False
     _force_dedicated: bool = False
+    # The run's completed-ending CLAIM, a one-shot token like ``_finalized``:
+    # taken synchronously by a whole answer (a successful complete event,
+    # post-processed into ``result``) when no stop got there first (``done``,
+    # ``_reap_started``, ``user_stopped``). From then on the ending is
+    # completed whatever lands: every stop path treats the claim as it treats
+    # ``done`` (Stop, a parent end and the reaper do nothing), and a cancel, the
+    # shutdown or the deadline only ends the run's tail early. A respawn would
+    # re-run finished work and a failure would discard a whole answer.
+    _ending_claimed: bool = False
     # True while a cancelled run is draining an in-flight off-loop state.json
     # write worker (every off-loop writer). _run's
     # unexpected-cancel recovery gate reads it: on Python 3.10 a second outer
@@ -4293,10 +4303,8 @@ class SubagentManager:
             return failure_name(exc)
         return None
 
-    async def _notify_orphan(
-        self, agent_id: str, state: dict, recovery: str, has_result: bool
-    ) -> str | None:
-        return await self._monitor._notify_orphan_impl(agent_id, state, recovery, has_result)
+    async def _notify_orphan(self, agent_id: str, state: dict, has_result: bool) -> str | None:
+        return await self._monitor._notify_orphan_impl(agent_id, state, has_result)
 
     async def _try_inject_orphan_notification(
         self, parent_session: str, msg: str, meta: dict | None = None
@@ -4752,6 +4760,11 @@ class SubagentManager:
         info = self._agents.get(agent_id)
         if info is None:
             return "delivered"
+        if info._ending_claimed and not info.done:
+            # Claimed its completed ending and still writing its result (a
+            # bounded wait): ``cancel()`` declined it as done, but its report
+            # does not exist yet, so there is nothing to settle before the pop.
+            return "pending"
         active_reports = tuple(
             task
             for task, report_info in self._report_owners.items()
@@ -6306,6 +6319,34 @@ class SubagentManager:
     async def _write_state_off_loop(self, info: SubagentInfo, what: str, **fields: object) -> bool:
         return await self._run_events._write_state_off_loop_impl(info, what, **fields)
 
+    async def _write_finished_result_off_loop(
+        self, info: SubagentInfo, text: str | None, *, hold_conversation: bool = False
+    ) -> bool:
+        return await self._run_events._write_finished_result_off_loop_impl(
+            info, text, hold_conversation=hold_conversation
+        )
+
+    async def _start_result_file(self, info: SubagentInfo, text: str) -> bool:
+        return await self._run_events._start_result_file_impl(info, text)
+
+    async def _drain_state_writer(
+        self,
+        info: SubagentInfo,
+        what: str,
+        writer: "asyncio.Future[Any]",
+        *,
+        bound: float | None = None,
+    ) -> bool:
+        return await self._run_events._drain_state_writer_impl(info, what, writer, bound=bound)
+
+    def _hold_for_detached_writer(
+        self, info: SubagentInfo, what: str, writer: "asyncio.Future[Any]"
+    ) -> None:
+        self._run_events._hold_for_detached_writer_impl(info, what, writer)
+
+    async def _cap_unclaimed_result(self, info: SubagentInfo) -> None:
+        await self._run_events._cap_unclaimed_result_impl(info)
+
     async def _run_inner(self, info: SubagentInfo, session_key: str) -> None:
         usage = _RunCreditAccounting(info)
         info._credit_accounting = usage
@@ -6649,6 +6690,7 @@ _COMPONENT_GLOBAL_BINDINGS = (
     LivenessOracle,
     OUTCOME_FAILED,
     OUTCOME_INTERRUPTED,
+    OUTCOME_OK,
     PROVIDER_LABEL_DEFAULT,
     Path,
     SUBAGENT_COMPLETION_PREFIX,
@@ -6676,7 +6718,6 @@ _COMPONENT_GLOBAL_BINDINGS = (
     cached_admission_check,
     pressure_level_held,
     read_memory_pressure_level,
-    cap_result_file,
     clear_tombstone,
     compact_cost_log,
     configured_fallback_chain,
@@ -6690,10 +6731,11 @@ _COMPONENT_GLOBAL_BINDINGS = (
     hook_gate_kwargs,
     identity_grant_covers_child,
     has_dashboard_surface,
+    result_is_whole,
+    write_finished_result,
     list_orphans,
     maintenance_executor,
     mark_delivered,
-    mark_result_complete,
     name_grant,
     os,
     platform_compat,

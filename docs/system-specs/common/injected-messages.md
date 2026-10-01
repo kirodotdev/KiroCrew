@@ -172,13 +172,18 @@ never from its error wording):
 The result-path lines are present only when a result file exists. **The result is
 on disk**, so use the `read` tool to retrieve it rather than re-running the work.
 
-Three adjacent variants exist for a gateway restart, same prefix:
-These notices omit usage because an interrupted run has no settled terminal
-billing record:
+Four adjacent variants exist for a gateway restart, same prefix. They omit
+usage because a run the restart caught has no settled terminal billing record:
 
-- `⚠️ orphaned by gateway restart` plus `Result saved at: <path>` and
+- `✅ finished before gateway restart` plus `Result saved at: <path>` and
   `Use the read tool to retrieve it.` — only when the run recorded
-  `result_complete`, i.e. its stream reached the complete event.
+  `result_complete`, which a run that claimed its completed ending does once
+  `result.txt` holds the whole answer (the window this leaves:
+  [subagent](../modules/subagent.md#gateway-restart-reconciliation)). It is a
+  completed run (outcome `ok`) that arrives late.
+- `✅ finished before gateway restart` plus a line saying it finished without
+  writing any text — a run that recorded `result_complete` with no
+  `result.txt` (a tool-only run).
 - `⚠️ cut off mid-turn by gateway restart` plus `Partial output saved at: <path>`
   and a line saying the text stops wherever the restart landed. `result.txt` is
   appended per streamed chunk, so a run killed mid-turn leaves a non-empty file
@@ -192,7 +197,7 @@ billing record:
   that resumes it — see `orphan_resume_hint` in
   [subagent](../modules/subagent.md#gateway-restart-reconciliation).
 
-All three are redacted before any delivery path. When the parent has no open
+All four are redacted before any delivery path. When the parent has no open
 dashboard surface, undelivered notices are batched into a single digest DM rather
 than N pings.
 

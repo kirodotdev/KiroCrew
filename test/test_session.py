@@ -7686,10 +7686,14 @@ class TestParentEndCancelsItsChildren:
                 # A live record is what makes the reap reachable: the drain started this
                 # row, so there is a task to stop rather than a row to unqueue.
                 self._agents = {
-                    # The fields cancel_for_teardown WRITES before the reap, on
-                    # a record shaped like the real one.
+                    # The fields cancel_for_teardown reads and WRITES before the
+                    # reap, on a record shaped like the real one.
                     "started-row": SimpleNamespace(
-                        id="started-row", done=False, _reap_reason="", _stop_origin=""
+                        id="started-row",
+                        done=False,
+                        _ending_claimed=False,
+                        _reap_reason="",
+                        _stop_origin="",
                     )
                 }
                 self._queue = []
@@ -7758,7 +7762,11 @@ class TestParentEndCancelsItsChildren:
             def __init__(self):
                 self._admission = _Admission()
                 # The lingering record: done, and still in ``_agents``.
-                self._agents = {"late-finisher": SimpleNamespace(id="late-finisher", done=True)}
+                self._agents = {
+                    "late-finisher": SimpleNamespace(
+                        id="late-finisher", done=True, _ending_claimed=False
+                    )
+                }
                 self._queue = []
                 self._teardown_cancelled_ids = set()
                 self._followup_watchers: dict = {}
