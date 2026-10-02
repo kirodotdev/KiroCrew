@@ -45,6 +45,8 @@ from collections.abc import Awaitable, Callable, Iterable
 from contextlib import contextmanager
 from typing import Iterator
 
+from kiro_crew.messaging.turn_ceiling import finish_generated_turn
+
 logger = logging.getLogger(__name__)
 
 #: Neutral key naming WHICH CHANNEL recorded a queue entry, written by every producer
@@ -302,6 +304,7 @@ async def drain_until_quiet(
     sequence, and a channel that got the order wrong -- waking under its own queue lock,
     or outside its own marker -- would be a defect with no local symptom.
     """
+    finish_generated_turn()
     with draining(channel, session_key):
         for round_no in range(1, _MAX_WAKE_ROUNDS + 1):
             foreign: set[str] = set()

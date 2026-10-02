@@ -106,6 +106,255 @@ reached no verdict -- fires as before, because a wrongly-quiet tick is silence w
 half-finished work behind it while a wrongly-spent tick costs what every tick costs
 today.
 
+## Automatic goal pursuit
+
+The agent works on an ordinary human request in the current turn. When continued
+work would be useful, `goal(action="suggest")` stores an inactive suggestion with
+an objective and completion criteria. The legacy model action `"start"` also
+creates only a suggestion. Recognition never arms a loop. Only the authenticated
+owner's Start control or an explicit `/goal` command enables continuation.
+Simple questions and small tasks need no suggestion. Investigation and design
+requests retain their requested deliverable as the finish line. Existing
+monitor/watch tasks use those tools directly.
+A messaging-channel session (Slack, Discord, Webex and the other channel keys)
+gets no suggestion guidance and the host refuses its proposals: a channel has no
+Start control, so a suggestion would hold the session's only automation slot with
+no way to accept it. Channel users start a goal with `/goal`. The dashboard's
+Dismiss removes an unstarted suggestion at the revision it rendered.
+
+`monitoring.goal_suggestions` defaults to true and is live configurable. Disabling
+it removes suggestion guidance and refuses new model proposals at the host,
+including after an awaited admission check. It does not stop an existing run or
+disable explicit `/goal`. Recognition reuses the ordinary agent turn and adds no
+classifier request.
+
+Goal pursuit retains the existing session tool gates and sandbox. Its continuation
+prompt preserves `/goal`'s blanket instructions against `git push` and credential
+file reads. Starting a goal grants no additional tool permission.
+
+`NudgeLoop.goal` carries the objective, completion criteria, progress, status and
+evidence in `autonudge.json`. A suggestion uses that same record with
+`status="suggested"`, `active=false`, no deadline and no timer. Reload cannot arm
+it. Start carries the observed generation; changed scope or a later Stop refuses
+a stale Start. The first accepted Start establishes the runtime anchor. Waiting
+for the owner to decide consumes no continuation cycles or runtime.
+
+A goal is an ungated prompt loop, not a structured
+monitor or a second task store. Ready work resumes after one second of idle time;
+an explicitly waiting goal uses a 60-second cadence. Ordinary watches keep their
+existing deadlines. New goals preserve `/goal`'s 50-cycle backstop and zero runtime
+budget (no additional wall-clock cap). These are cycle limits, not token or credit
+guarantees. Existing stored runtime limits and deadlines survive updates and Resume.
+Reaching a backstop pauses work and is not completion.
+
+All four goal text fields use the existing `strip_hidden_unicode` helper before
+credential and URL redaction, including direct creation, revision and reload.
+Its multilingual shaping and internal newline, carriage-return and tab handling
+remain unchanged; direct goal writers do not add NFC normalization.
+
+`GOAL_MAX_OBJECTIVE_CHARS` bounds each objective to 16,000 characters after
+redaction at `GoalState` retention, including revisions and store reloads; the
+goal tool schema advertises and validates the same input limit. Overflow is
+explicitly rejected before mutation, never truncated. This deliberately breaks
+the previously unbounded manual `/goal` contract above that limit while
+preserving full accepted objectives, including the existing 10–12k-character
+cases, through revisions and persistence. Criteria and evidence remain limited
+to eight items of 240 characters, and progress to 600 characters after redaction.
+The goal tool validates list item types and counts and sanitizes their strings;
+item lengths are checked after redaction at retention. Both shared authorizers
+accept a continuation over the generic 8,000-character message cap
+only when its raw text exactly matches `continuation_message(goal)` for the
+supplied typed goal, before normalization or redaction. A mismatched typed
+message is refused. All admission, redaction, generation and critical-audit
+checks still apply. Generic prompt loops keep their existing message cap.
+On reload, the validated typed goal is authoritative for its generated continuation:
+a stale stored message is replaced with `continuation_message(goal)`. Startup attempts
+to persist this repair, and any cleanup of supplied goal text fields, before arming.
+Progress or evidence cleanup also triggers persistence when the continuation is
+already canonical; filling an absent optional field alone does not. If that write
+fails, it logs the failure and keeps the cleaned goal and canonical message in memory
+with the repair still dirty. This repair does
+not reset identity, generation, budgets, deadlines or recorded Stop state. Invalid
+goal rows retain the existing unparsed-row recovery behavior.
+Goal creation and revisions in `autonudge_service/mutations.py` stage their
+candidate under the existing store lock
+and publish it to status and session inspection only after the write succeeds.
+A pending or failed write leaves the last committed goal visible, including a
+terminal goal being replaced; a failed first write exposes no new goal.
+Successful revisions preserve the live loop object's identity. Stop's explicit
+failed-save fallback still pauses the in-memory goal and reports the unsaved warning.
+Session Stop uses that mutation owner to resolve each exact primary or explicitly
+linked goal binding inside
+the same maintenance transaction as creation. It waits for a pending first write
+before selecting and pausing the committed row, so an empty pre-commit lookup cannot
+let the new goal escape Stop. The pause is shielded from requester cancellation.
+Stop acknowledges the saved pause or reports the existing restart-risk warning
+when saving fails; a retry persists the retained in-memory pause. Maintenance
+quiescing still owns its claimed loops, and goal-less or foreign folded rows remain
+untouched.
+The goal tool's directive envelope has its own transport limit; progress and
+status revisions omit the objective rather than resending or truncating it.
+
+`/goal --max N` keeps its 1–50 cycle range and default of 50. `/goal clear`
+removes only the identified typed goal. If the session instead holds a watch,
+monitor, or other goal-less loop, it reports that no goal is armed and preserves
+that record. Those loops remain manageable through their existing controls.
+`off` is ordinary objective text, not a subcommand.
+Starting `/goal <objective>` may replace an unstarted suggestion, while preserving
+an existing watch or unfinished run;
+revise the goal through `goal(action="update")`, or clear it before starting
+another. A completed or ended typed goal can be replaced by a new goal.
+Starting or clearing spends the owner's consent, so `/goal` passes the turn's own
+human provenance (`_directive_user_origin`) as the human request: an app-authored
+or automated `/goal` can only inspect, and is refused before anything changes.
+The success confirmation displays the validated objective returned by the goal consumer.
+New pursuit goals use Stop/Pause/Resume instead of creating sentinel files.
+Stored goal-less loops retain their instruction, sentinel and budget contracts.
+Generic REST edits of a typed goal's instruction or resumption of a finished
+goal return an HTTP 409 with code `autonudge_update_refused`.
+The stored cycle and runtime limits of a typed goal cannot be changed by an
+update; a refused mixed patch changes no fields. Owner-authenticated REST Resume
+and human `goal(action="resume")` keep the same objective, progress and remaining
+budget. Both refuse spent budgets, while a manual pause or approval stall can
+be resumed with budget remaining.
+REST Resume supplies the revision observed by the user as `expected_generation`;
+the existing store mutation lock checks it before changing any state. Missing or
+stale revisions on a typed-goal Resume return HTTP 409; malformed revisions return
+HTTP 400, and zero is valid. A later Stop wins over an earlier Resume request,
+including a Stop received while the goal is already paused. The native goal tool
+retains its existing generation and human-provenance admission checks. Goal-less
+Resume remains compatible.
+The dashboard calls `api.autonudgeResume`, defined in
+`website/src/api/client/monitors.ts` and exposed by the `client.ts` facade.
+It uses the facade's shared PATCH transport and response parser, preserving
+session authentication, error handling and the captured revision.
+
+`monitor_update`, `monitor_stop` and `autonudge_stop` refuse typed goals and
+direct the caller to the goal controls. Generic stop refuses before mutation,
+including paused or terminal goals and candidates found through legacy name
+normalization; it does not reveal the retained goal. Goal-less legacy deletion
+and structured-monitor stop keep their existing behavior.
+Each session has one automation slot for a goal, prompt loop or structured monitor.
+Both store creation paths preserve an unfinished started goal when arming a monitor,
+including a goal paused manually or by a cycle or runtime limit. The explicit
+owner `POST /api/monitors` watch action may replace an inactive `suggested` goal.
+Its internal opt-in defaults off in the shared authorizer and structured store;
+generic loops, workflows, `monitor_start` and `monitor_watch` cannot replace a
+suggestion. A chat directive's session binding and human-turn provenance do not
+prove an explicit owner request to discard it.
+The replacement uses the existing atomic monitor snapshot and credential-activation
+rollback, retaining the suggestion when either write fails. A Start that commits
+first protects the goal; a watch that commits first removes the old goal id, so
+stale goal controls cannot act on the watch. Started goals cannot be updated back
+to `suggested`.
+The refusal directs the caller to start the new automation or watch in another
+session to keep the unfinished goal intact. These checks run before mutation under
+the existing store lock, so an outstanding wake cannot renew or replace a goal
+after the scheduler pauses it. Completed and ended goals retain the existing
+human-started goal replacement path, but do not guarantee watch admission: the
+create-only and stopped-record replacement guards still apply. Goal-less loops keep
+their existing budget-edit, bound-revival and stopped-replacement contracts.
+
+The host admits a suggestion only from an authenticated human turn. A model cannot
+activate a suggestion through resume or status changes. It can revise the
+suggestion, end it, or complete it with evidence when the ordinary turn delivers
+the result. Stop retains its unstarted status and invalidates stale Start requests.
+Manual `/goal` is marked explicitly by its trusted dispatcher; a model payload
+cannot supply that authority.
+That goal's own continuation can update progress or finish with evidence, but
+cannot invent a new user goal, revise its objective or completion criteria, or
+resume a paused one. Any nonhuman mutation containing an `objective` or `criteria`
+key is refused in full, even if the value is unchanged or the action also carries
+progress, evidence or a status change. Consumed human steering can authorize
+those revisions. Updates name the current
+goal id and configuration generation; the commit rechecks identity and the
+producing turn's Stop state under the existing mutation lock. A failed disk write
+rolls back the metadata along with the loop. Completed and ended goals remain
+inspectable until the next human goal replaces them. Existing watches and paused
+goals are preserved; explicit abandonment uses `goal(action="end")`.
+Manual `/goal` carries the runner's live slot and session Stop predicate through
+authorization to that same admission check. Replacement checks admission again
+after awaited provider-credential cleanup, before removing the old row or
+publishing its successor. Refusal retains the old row and restores any provider
+credential grant revoked for the uncommitted replacement.
+During a Discord or Webex goal wake, a human correction gains goal authority
+only after the backend consumption echo matches the registered human steer.
+The same goal can then be explicitly ended; automation steers and write
+acknowledgements cannot authorize abandonment. A later Stop still wins.
+Revisions use the existing update authorizer's critical audit before mutation;
+an unavailable audit store refuses the change.
+
+Dashboard Stop pauses future goal turns and cancels the current response.
+If storage fails during Stop, pursuit stays paused in the running process and
+the save failure is logged. The retained `goal_pause_unsaved` reason, Stop
+response, channel reply, and goal panel disclose that a restart may lose the pause.
+The panel offers retrying the save rather than resuming work. Only a successful
+write acknowledges a saved pause.
+Pause releases the store transaction's lock ownership after either a saved pause
+or a failed save, allowing a later save retry, Resume or Stop to proceed.
+Each failed save retry is acknowledged within the existing single `ErrorNotice`.
+The goal panel requires `ok: true` before treating a Stop request as accepted.
+A refused Stop uses the existing action failure notice; an accepted Stop whose
+status refresh fails remains explicitly unconfirmed.
+Repeated Stop invalidates earlier Resume requests without reviving work or
+resetting progress and limits. Completed and budget-limited goals keep their
+status and stop reasons. Retrying an unsaved pause clears its unsaved marker only
+after the write succeeds. If saving fails, the running process retains the
+refusal of those earlier requests.
+Human steering consumed during an automatic turn can redirect that goal.
+Its ingress provenance and admission remain with the pending steer after the
+write returns, until consumption, requeue or cancellation settles it.
+A broadcast timeout cancels the sender's wait, not the target's pending steer.
+The broadcast retains its nonhuman provenance and captured admission until that
+input settles; consumption does not grant it human goal authority.
+Queue-preserving handovers keep pursuit active; explicit Stop pauses separately.
+An empty or unmatched consumption echo, or an automation-origin steer, cannot
+grant that authority.
+Codex reports consumption only at a clean turn end. If an automatic turn refuses
+a goal action while authenticated human steering is pending, that input moves to
+the existing queue before the terminal echo can discard it. The queued turn keeps
+its original provenance and admission; Stop and queue cancellation still apply.
+Successful goal actions and ordinary human turns keep their existing steering
+behavior.
+The chat's automation control shows a suggestion with a Start action. Its popup
+shows the objective, criteria and actual run limits before activation. Started
+goals show progress, evidence and pause/resume; users steer in the existing chat.
+Turning suggestions off leaves started goals and manual controls available.
+The REST and WebSocket projections carry the same goal metadata.
+In a dashboard session linked to a channel, Pause targets the visible chat slot
+and inspection reads the loop's channel binding.
+Goal admission, slash commands, Stop and pause-save warnings share
+the exact-binding collection in `goal_actions`, consulting existing slot-bound loops
+through the live slot's explicit `linked_session_key`. This prevents a new goal
+from arming beside a legacy loop in that same conversation. The singular
+`goal_loop_for_session` resolver refuses multiple matching records for inspection,
+creation or revision. The authenticated session-monitor endpoint uses this same
+resolver for `monitor_inspect` reads, returning HTTP 409
+`ambiguous_session_automation` if records conflict. Per-turn goal guidance
+contains no retained snapshot and directs state-dependent actions through this
+inspection; a failed read leaves state unknown. Stop pauses every typed goal on
+those explicit bindings, leaves goal-less watches untouched, and reports an
+unsaved pause if any owned goal has one. No inverse mapping is guessed from a normalized slot name: every
+candidate, including the primary dashboard binding, must match the stored key
+exactly. A legacy row without a live explicit link remains inspectable and
+removable by its existing REST id.
+Dashboard and channel Stop callers supply their existing state through the Stop
+seams, including session lifecycle. A trusted channel reconciliation therefore
+does not strand a goal retained under the earlier exact dashboard slot key.
+Stop also follows that explicit link when the channel cannot arm new goals;
+this does not widen goal creation eligibility. Legacy bare Slack timestamps use
+the session layer's existing `canonical_key` shim.
+Multiple owned goals do not prevent cancellation of the current response.
+An approval stall requires an explicit human retry; Resume uses the existing
+retry behavior without granting additional tool permissions. Spent cycle or
+runtime budgets remain a backstop.
+`needs_input` pauses while a required human answer is missing, `waiting` keeps
+checking an existing external operation, and `blocked` records why work cannot
+continue. A final assistant response alone never marks the goal complete.
+Slack goal continuations use the directive-capable turn driver with the existing
+tool gate and approval decider, so their progress and completion reach the same
+consumer as an ordinary human turn.
+
 ## Same-session monitor contract
 
 `monitor_start`, `monitor_update`, and `autonudge_stop` are session directives,

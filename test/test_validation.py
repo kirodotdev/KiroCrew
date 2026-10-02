@@ -10,6 +10,7 @@ from kiro_crew.validation import (
     CRON_ADD_SCHEMA,
     FILE_READ_SCHEMA,
     FILE_WRITE_SCHEMA,
+    GOAL_SCHEMA,
     LEARN_ADD_SCHEMA,
     SEND_MESSAGE_SCHEMA,
     SET_PROJECT_SCHEMA,
@@ -37,6 +38,17 @@ from kiro_crew.validation import (
 # ── String Sanitization ──
 
 
+@pytest.mark.parametrize("field", ["criteria", "evidence"])
+def test_goal_lists_sanitize_each_string_and_enforce_type_and_count(field):
+    args = validate_tool_args(
+        {"action": "start", field: ["AKIA\u200dIOSFODNN7EXAMPLE"] * 8}, GOAL_SCHEMA
+    )
+    assert args[field] == ["AKIAIOSFODNN7EXAMPLE"] * 8
+    for invalid in ([1], ["criterion"] * 9, "criterion"):
+        with pytest.raises(ValidationError):
+            validate_tool_args({"action": "start", field: invalid}, GOAL_SCHEMA)
+
+
 class TestStripHiddenUnicode:
     def test_preserves_normal_text(self):
         assert strip_hidden_unicode("hello world\nfoo") == "hello world\nfoo"
@@ -49,10 +61,7 @@ class TestStripHiddenUnicode:
         # sequences and is required by Arabic / Persian / Indic text. Between
         # two ASCII characters it shapes nothing, so it is dropped there (that
         # is the credential-redaction bypass — see the credential test below).
-        assert (
-            strip_hidden_unicode("\U0001f468\u200d\U0001f469")
-            == "\U0001f468\u200d\U0001f469"
-        )
+        assert strip_hidden_unicode("\U0001f468\u200d\U0001f469") == "\U0001f468\u200d\U0001f469"
         assert strip_hidden_unicode("\u0915\u200d\u0937") == "\u0915\u200d\u0937"
         assert strip_hidden_unicode("a\u200db") == "ab"
 
@@ -421,9 +430,7 @@ class TestValidateToolArgs:
         # config_dir() is rooted at %USERPROFILE%, so rejecting spaces made a
         # script cron impossible for a typical Windows user.
         spaced = "C:\\Users\\John Smith\\.kiro\\crew\\crons\\job.py:run"
-        result = validate_tool_args(
-            {"name": "s", "script": spaced, "every": 300}, CRON_ADD_SCHEMA
-        )
+        result = validate_tool_args({"name": "s", "script": spaced, "every": 300}, CRON_ADD_SCHEMA)
         assert result["script"] == spaced
 
     def test_cron_add_rejects_unc_script_path(self):
@@ -431,9 +438,7 @@ class TestValidateToolArgs:
         # outbound SMB/DNS probe before the crons-root check can reject it.
         for unc in ("\\\\host\\share\\job.py:run", "//host/share/job.py:run"):
             with pytest.raises(ValidationError, match="invalid format"):
-                validate_tool_args(
-                    {"name": "x", "script": unc, "every": 300}, CRON_ADD_SCHEMA
-                )
+                validate_tool_args({"name": "x", "script": unc, "every": 300}, CRON_ADD_SCHEMA)
 
     def test_task_run_valid(self):
         result = validate_tool_args({"spec": "do things"}, TASK_RUN_SCHEMA)
@@ -594,16 +599,19 @@ class TestValidateStringField:
 # ── Channel ID Regex ──
 
 
-@pytest.mark.parametrize("channel_id,valid", [
-    ("C01ABC23DEF", True),   # standard channel
-    ("G01JWUKTY10", True),   # legacy private channel
-    ("D01ABC23DEF", True),   # DM channel
-    ("W01ABC23DEF", True),   # Slack Connect shared channel
-    ("X01ABC23DEF", False),  # invalid prefix
-    ("C", False),            # too short
-    ("c01abc", False),       # lowercase rejected
-    ("", False),             # empty
-])
+@pytest.mark.parametrize(
+    "channel_id,valid",
+    [
+        ("C01ABC23DEF", True),  # standard channel
+        ("G01JWUKTY10", True),  # legacy private channel
+        ("D01ABC23DEF", True),  # DM channel
+        ("W01ABC23DEF", True),  # Slack Connect shared channel
+        ("X01ABC23DEF", False),  # invalid prefix
+        ("C", False),  # too short
+        ("c01abc", False),  # lowercase rejected
+        ("", False),  # empty
+    ],
+)
 def test_channel_id_re(channel_id, valid):
     assert bool(CHANNEL_ID_RE.match(channel_id)) == valid
 
@@ -611,18 +619,21 @@ def test_channel_id_re(channel_id, valid):
 # ── Slack thread_ts Regex (gates an authorization decision) ──
 
 
-@pytest.mark.parametrize("session_key,valid", [
-    ("1781215864.487849", True),       # canonical Slack thread_ts
-    ("1712793600.123456", True),       # 10-digit epoch + 6-digit subsecond
-    ("17812158640.4878490", True),     # 11 digits / 7 subsecond digits OK
-    ("123.45", False),                 # too few digits on both sides
-    ("1781215864", False),             # no subsecond component
-    ("1781215864.4878", False),        # subsecond < 6 digits
-    ("dashboard:chat-1", False),       # prefixed dashboard key
-    ("١٧٨١٢١٥٨٦٤.٤٨٧٨٤٩", False),       # Arabic-Indic digits: \d would match, [0-9] must not
-    ("१७८१२१५८६४.४८७८४९", False),       # Devanagari digits rejected
-    ("", False),                       # empty
-])
+@pytest.mark.parametrize(
+    "session_key,valid",
+    [
+        ("1781215864.487849", True),  # canonical Slack thread_ts
+        ("1712793600.123456", True),  # 10-digit epoch + 6-digit subsecond
+        ("17812158640.4878490", True),  # 11 digits / 7 subsecond digits OK
+        ("123.45", False),  # too few digits on both sides
+        ("1781215864", False),  # no subsecond component
+        ("1781215864.4878", False),  # subsecond < 6 digits
+        ("dashboard:chat-1", False),  # prefixed dashboard key
+        ("١٧٨١٢١٥٨٦٤.٤٨٧٨٤٩", False),  # Arabic-Indic digits: \d would match, [0-9] must not
+        ("१७८१२१५८६४.४८७८४९", False),  # Devanagari digits rejected
+        ("", False),  # empty
+    ],
+)
 def test_slack_thread_ts_re_ascii_only(session_key, valid):
     """The pattern must accept ASCII-digit Slack timestamps and reject
     everything else — including Unicode-digit lookalikes, since the match
@@ -639,9 +650,7 @@ class TestSendMessageSchema:
 
     def test_thread_ts_rejects_garbage(self):
         with pytest.raises(ValidationError):
-            validate_tool_args(
-                {"text": "hi", "thread_ts": "not-a-ts"}, SEND_MESSAGE_SCHEMA
-            )
+            validate_tool_args({"text": "hi", "thread_ts": "not-a-ts"}, SEND_MESSAGE_SCHEMA)
 
     def test_reply_broadcast_valid(self):
         result = validate_tool_args(
@@ -652,9 +661,7 @@ class TestSendMessageSchema:
 
     def test_reply_broadcast_rejects_non_bool(self):
         with pytest.raises(ValidationError):
-            validate_tool_args(
-                {"text": "hi", "reply_broadcast": "yes"}, SEND_MESSAGE_SCHEMA
-            )
+            validate_tool_args({"text": "hi", "reply_broadcast": "yes"}, SEND_MESSAGE_SCHEMA)
 
 
 class TestSetProjectSchema:
@@ -699,12 +706,15 @@ class TestSetProjectSchema:
 
 # ── webapp_metadata bounded validation tests ──
 
+
 class TestWebappMetadataBoundedValidation:
     """Test the nested webapp_metadata validator added for item 5."""
 
     def test_valid_metadata_accepted(self):
         args = {
-            "name": "test", "content": "<h1>hi</h1>", "kind": "webapp",
+            "name": "test",
+            "content": "<h1>hi</h1>",
+            "kind": "webapp",
             "webapp_metadata": {
                 "deploy_target": {
                     "public_url": "https://example.com/demo",
@@ -721,7 +731,9 @@ class TestWebappMetadataBoundedValidation:
 
     def test_invalid_public_url_rejected(self):
         args = {
-            "name": "t", "content": "x", "kind": "webapp",
+            "name": "t",
+            "content": "x",
+            "kind": "webapp",
             "webapp_metadata": {"deploy_target": {"public_url": "ftp://nope"}},
         }
         with pytest.raises(ValidationError, match="http\\(s\\) URL"):
@@ -729,7 +741,9 @@ class TestWebappMetadataBoundedValidation:
 
     def test_invalid_lifecycle_status_rejected(self):
         args = {
-            "name": "t", "content": "x", "kind": "webapp",
+            "name": "t",
+            "content": "x",
+            "kind": "webapp",
             "webapp_metadata": {"lifecycle": {"status": "banana"}},
         }
         with pytest.raises(ValidationError, match="must be one of"):
@@ -737,7 +751,9 @@ class TestWebappMetadataBoundedValidation:
 
     def test_invalid_expires_at_rejected(self):
         args = {
-            "name": "t", "content": "x", "kind": "webapp",
+            "name": "t",
+            "content": "x",
+            "kind": "webapp",
             "webapp_metadata": {"lifecycle": {"expires_at": "not-a-date"}},
         }
         with pytest.raises(ValidationError, match="ISO-8601"):
@@ -745,7 +761,9 @@ class TestWebappMetadataBoundedValidation:
 
     def test_oversized_list_rejected(self):
         args = {
-            "name": "t", "content": "x", "kind": "webapp",
+            "name": "t",
+            "content": "x",
+            "kind": "webapp",
             "webapp_metadata": {"cost": {"items": ["x"] * 51}},
         }
         with pytest.raises(ValidationError, match="exceeds 50"):
@@ -754,7 +772,9 @@ class TestWebappMetadataBoundedValidation:
     def test_absent_fields_tolerated(self):
         """Absent nested fields don't trigger validation errors."""
         args = {
-            "name": "t", "content": "x", "kind": "webapp",
+            "name": "t",
+            "content": "x",
+            "kind": "webapp",
             "webapp_metadata": {},  # all fields absent
         }
         result = validate_tool_args(args, ARTIFACT_SAVE_SCHEMA)
@@ -762,7 +782,9 @@ class TestWebappMetadataBoundedValidation:
 
     def test_invalid_profile_format_rejected(self):
         args = {
-            "name": "t", "content": "x", "kind": "webapp",
+            "name": "t",
+            "content": "x",
+            "kind": "webapp",
             "webapp_metadata": {"deploy_target": {"profile": "evil;rm -rf"}},
         }
         with pytest.raises(ValidationError, match="invalid profile"):
@@ -770,7 +792,9 @@ class TestWebappMetadataBoundedValidation:
 
     def test_invalid_slug_format_rejected(self):
         args = {
-            "name": "t", "content": "x", "kind": "webapp",
+            "name": "t",
+            "content": "x",
+            "kind": "webapp",
             "webapp_metadata": {"deploy_target": {"slug": "HAS_UPPERCASE"}},
         }
         with pytest.raises(ValidationError, match="invalid slug"):
@@ -781,7 +805,9 @@ class TestWebappMetadataBoundedValidation:
     def test_empty_public_url_accepted_for_drafts(self):
         """deploy_target.public_url="" is valid (documented draft state)."""
         args = {
-            "name": "t", "content": "x", "kind": "webapp",
+            "name": "t",
+            "content": "x",
+            "kind": "webapp",
             "webapp_metadata": {
                 "deploy_target": {"public_url": "", "profile": "p", "slug": "my-app"},
                 "lifecycle": {"status": "draft"},
@@ -793,7 +819,9 @@ class TestWebappMetadataBoundedValidation:
     def test_javascript_url_still_rejected(self):
         """javascript: URLs are still rejected (XSS vector)."""
         args = {
-            "name": "t", "content": "x", "kind": "webapp",
+            "name": "t",
+            "content": "x",
+            "kind": "webapp",
             "webapp_metadata": {"deploy_target": {"public_url": "javascript:alert(1)"}},
         }
         with pytest.raises(ValidationError, match="http\\(s\\) URL"):
@@ -801,6 +829,7 @@ class TestWebappMetadataBoundedValidation:
 
 
 # --- deploy_artifact schema tests (item 6 R18) ---
+
 
 class TestDeployArtifactSchema:
     """Test the deploy_artifact MCP tool schema validation."""
@@ -818,17 +847,20 @@ class TestDeployArtifactSchema:
 
     def test_schema_accepts_valid_local_dir(self):
         from kiro_crew.validation import DEPLOY_ARTIFACT_SCHEMA
+
         args = {"site_id": "my-app", "local_dir": "/home/user/app/public"}
         result = validate_tool_args(args, DEPLOY_ARTIFACT_SCHEMA)
         assert result["local_dir"] == "/home/user/app/public"
 
     def test_schema_rejects_missing_site_id(self):
         from kiro_crew.validation import DEPLOY_ARTIFACT_SCHEMA
+
         with pytest.raises(ValidationError, match="site_id"):
             validate_tool_args({"artifact_slug": "x"}, DEPLOY_ARTIFACT_SCHEMA)
 
     def test_schema_accepts_ttl_hours(self):
         from kiro_crew.validation import DEPLOY_ARTIFACT_SCHEMA
+
         args = {"site_id": "s", "artifact_slug": "a", "ttl_hours": 48}
         result = validate_tool_args(args, DEPLOY_ARTIFACT_SCHEMA)
         assert result["ttl_hours"] == 48
@@ -843,10 +875,12 @@ class TestValidateMcpToolArguments:
 
     def _v(self, args, schema):
         from kiro_crew.validation import validate_mcp_tool_arguments
+
         validate_mcp_tool_arguments(args, schema)
 
     def _raises(self, args, schema, fragment):
         from kiro_crew.validation import ValidationError, validate_mcp_tool_arguments
+
         with pytest.raises(ValidationError) as exc:
             validate_mcp_tool_arguments(args, schema)
         assert fragment in str(exc.value)
@@ -883,17 +917,21 @@ class TestValidateMcpToolArguments:
         self._v({}, schema)
         self._raises({"x": 1}, schema, "unknown field")
         # Nested position too.
-        nested = {"type": "object",
-                  "properties": {"o": {"type": "object", "additionalProperties": False}}}
+        nested = {
+            "type": "object",
+            "properties": {"o": {"type": "object", "additionalProperties": False}},
+        }
         self._v({"o": {}}, nested)
         self._raises({"o": {"x": 1}}, nested, "unknown field")
 
     def test_additional_properties_opt_in(self):
-        loose = {"type": "object", "properties": {"a": {"type": "string"}},
-                 "additionalProperties": True}
+        loose = {
+            "type": "object",
+            "properties": {"a": {"type": "string"}},
+            "additionalProperties": True,
+        }
         self._v({"a": "x", "extra": 1}, loose)
-        typed = {"type": "object", "properties": {},
-                 "additionalProperties": {"type": "integer"}}
+        typed = {"type": "object", "properties": {}, "additionalProperties": {"type": "integer"}}
         self._v({"n": 5}, typed)
         self._raises({"n": "s"}, typed, "expected integer")
 
@@ -914,16 +952,14 @@ class TestValidateMcpToolArguments:
     def test_array_items(self):
         schema = {
             "type": "object",
-            "properties": {"xs": {"type": "array", "items": {"type": "integer"},
-                                  "maxItems": 2}},
+            "properties": {"xs": {"type": "array", "items": {"type": "integer"}, "maxItems": 2}},
         }
         self._v({"xs": [1, 2]}, schema)
         self._raises({"xs": [1, 2, 3]}, schema, "exceeds maxItems")
         self._raises({"xs": ["s"]}, schema, "expected integer")
 
     def test_unknown_schema_type_rejects(self):
-        schema = {"type": "object",
-                  "properties": {"a": {"type": "no-such-type"}}}
+        schema = {"type": "object", "properties": {"a": {"type": "no-such-type"}}}
         self._raises({"a": 1}, schema, "expected no-such-type")
 
     def test_unsupported_validation_keywords_reject_fail_closed(self):
@@ -939,14 +975,17 @@ class TestValidateMcpToolArguments:
             schema = {"type": "object", "properties": {"a": {kw: val}}}
             self._raises({"a": 1}, schema, "unsupported validation keyword")
         # Also rejected at the top level.
-        self._raises({}, {"type": "object", "allOf": []},
-                     "unsupported validation keyword")
+        self._raises({}, {"type": "object", "allOf": []}, "unsupported validation keyword")
 
     def test_annotation_keywords_are_ignored(self):
         schema = {
-            "type": "object", "title": "T", "description": "d", "$schema": "s",
-            "properties": {"a": {"type": "string", "format": "uri",
-                                 "default": "x", "examples": ["y"]}},
+            "type": "object",
+            "title": "T",
+            "description": "d",
+            "$schema": "s",
+            "properties": {
+                "a": {"type": "string", "format": "uri", "default": "x", "examples": ["y"]}
+            },
         }
         self._v({"a": "anything"}, schema)
 
@@ -968,17 +1007,16 @@ class TestValidateMcpToolArguments:
         out (or size-caps) and the call fails closed."""
         import time as _time
 
-        evil = {"type": "object",
-                "properties": {"s": {"type": "string", "pattern": r"(a+)+$"}}}
+        evil = {"type": "object", "properties": {"s": {"type": "string", "pattern": r"(a+)+$"}}}
         start = _time.monotonic()
-        self._raises({"s": "a" * 3000 + "b"}, evil,
-                     "could not be safely evaluated")
+        self._raises({"s": "a" * 3000 + "b"}, evil, "could not be safely evaluated")
         assert _time.monotonic() - start < 5.0  # bounded, not exponential
         # Oversized inputs are also refused without running the regex.
-        self._raises({"s": "x" * 5000},
-                     {"type": "object",
-                      "properties": {"s": {"type": "string", "pattern": "x+"}}},
-                     "could not be safely evaluated")
+        self._raises(
+            {"s": "x" * 5000},
+            {"type": "object", "properties": {"s": {"type": "string", "pattern": "x+"}}},
+            "could not be safely evaluated",
+        )
 
     def test_exclusive_bounds_min_items_unique(self):
         schema = {
@@ -1000,18 +1038,17 @@ class TestValidateMcpToolArguments:
         payload: dict = {"k": 1}
         for _ in range(20):
             payload = {"k": payload}
-        self._raises({"deep": payload},
-                     {"type": "object", "additionalProperties": True},
-                     "max nesting depth")
+        self._raises(
+            {"deep": payload}, {"type": "object", "additionalProperties": True}, "max nesting depth"
+        )
 
 
 # ── MCP Apps arg-validation hardening ──
 
+
 def test_boolean_false_subschema_rejects():
     with pytest.raises(ValidationError):
-        validate_mcp_tool_arguments(
-            {"x": 1}, {"type": "object", "properties": {"x": False}}
-        )
+        validate_mcp_tool_arguments({"x": 1}, {"type": "object", "properties": {"x": False}})
 
 
 def test_boolean_true_subschema_accepts_anything():
@@ -1037,9 +1074,7 @@ def test_const_rejects_bool_for_number():
 
 def test_malformed_type_keyword_rejected():
     with pytest.raises(ValidationError, match="malformed"):
-        validate_mcp_tool_arguments(
-            {"x": 1}, {"type": "object", "properties": {"x": {"type": 7}}}
-        )
+        validate_mcp_tool_arguments({"x": 1}, {"type": "object", "properties": {"x": {"type": 7}}})
 
 
 def test_malformed_property_subschema_rejected_fail_closed():
@@ -1076,8 +1111,7 @@ def test_unique_items_distinguishes_bool_from_number():
     with pytest.raises(ValidationError, match="unique"):
         validate_mcp_tool_arguments(
             {"x": [1, 1]},
-            {"type": "object",
-             "properties": {"x": {"type": "array", "uniqueItems": True}}},
+            {"type": "object", "properties": {"x": {"type": "array", "uniqueItems": True}}},
         )
 
 

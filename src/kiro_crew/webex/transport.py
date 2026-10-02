@@ -67,7 +67,8 @@ def _coerce_room_ids(value: object) -> frozenset[str] | None:
     return frozenset(str(r).strip() for r in value if r and str(r).strip())
 
 
-DispatchFn = Callable[[WebexInbound], Awaitable[None]]
+# Live inbound delivery ignores the result; loop callers read delivery outcomes directly.
+DispatchFn = Callable[[WebexInbound], Awaitable[object]]
 
 # Webex room types, named rather than inlined so the gate reads as membership.
 ROOM_DIRECT = "direct"

@@ -132,9 +132,9 @@ class CronHistoryConfig:
 
 @dataclass
 class MonitoringConfig:
-    """Monitor arming preference and finite wall-clock policy.
+    """Goal suggestions, monitor arming preference and finite wall-clock policy.
 
-    The preference changes tool guidance, not eligibility. The runtime ceiling
+    The arming preference changes tool guidance, not eligibility. The runtime ceiling
     is enforced across tools, API mutations and persistence; raising it never
     extends an existing loop's stored budget or creation time.
     """
@@ -147,6 +147,16 @@ class MonitoringConfig:
             "2592000 seconds (30 days). Raising this limit never extends an existing deadline.",
             min=1,
             max=MAX_RUNTIME_CEILING_SECS,
+        ),
+    )
+
+    goal_suggestions: bool = field(
+        default=True,
+        metadata=_meta(
+            "Goal suggestions",
+            "Suggest goals from new human requests. Turning this off disables new "
+            "goal proposals only; running goals, manually created goals and monitoring "
+            "continue. Applies to subsequent requests without a gateway restart.",
         ),
     )
 

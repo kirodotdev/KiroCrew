@@ -3,16 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
 from conftest import MockSlackClient
+from kiro_crew import autonudge, goal_actions
 from kiro_crew.context import ContextBuilder
+from kiro_crew.goal import GOAL_PAUSE_UNSAVED_MESSAGE, GoalState, continuation_message
 from kiro_crew.hooks import HOOK_REPLY, AutoReplyHook, HookManager, HooksConfig
 from kiro_crew.messaging import auto_title
 from kiro_crew.providers.base import LLMEvent
+from kiro_crew.slack import handler as slack_handler
 from kiro_crew.slack.format import CONTINUATION, SLACK_MSG_LIMIT, split_message
 from kiro_crew.slack.handler import (
     _THINKING,
@@ -198,8 +203,9 @@ class FakeSessionManager:
             self.replay_gaps = getattr(self, "replay_gaps", []) + [("close", key)]
         self._gap_open = False
 
-    async def stop_turn(self, key, *, force=False, on_soft=None, on_hard=None):
+    async def stop_turn(self, key, *, force=False, on_soft=None, on_hard=None, goal_state=None):
         """Fake stop_turn that defaults to 'soft' outcome."""
+        assert goal_state is slack_handler.get_dashboard_state()
         outcome = getattr(self, "_stop_outcome", "soft")
         self.removed.append(f"stop_turn:{key}:force={force}")
         if outcome == "soft" and on_soft:
@@ -2033,12 +2039,139 @@ class TestPerThreadAgent:
             _hydrated_sessions.discard("thread1")
 
 
+class TestRetainedGoalFallbackStop:
+    @pytest.fixture
+    def retained_goal(self, tmp_path, monkeypatch, event_loop):
+        service = autonudge.AutoNudgeService(base_dir=tmp_path)
+        monkeypatch.setattr(autonudge, "get_instance", lambda: service)
+        monkeypatch.setattr(service, "_arm_from_deadline", lambda loop: None)
+        control_key = "slack:1.1"
+        alias = "retained-slack-tab"
+        state = SimpleNamespace(
+            _slots={alias: SimpleNamespace(key=alias, linked_session_key=control_key)}
+        )
+        monkeypatch.setattr(slack_handler, "get_dashboard_state", lambda: state)
+        goal = GoalState(objective="Finish the requested report", progress="Draft written")
+        loop = event_loop.run_until_complete(
+            service.add(alias, continuation_message(goal), goal=goal)
+        )
+        foreign = event_loop.run_until_complete(
+            service.add("slack:thread1", continuation_message(goal), goal=goal)
+        )
+        watch = event_loop.run_until_complete(service.add("unrelated-watch", "Continue watching"))
+        sessions = FakeSessionManager()
+        monkeypatch.setattr(sessions, "get_session_for_thread", lambda thread: control_key)
+        monkeypatch.setattr(slack_handler, "_owner_id", "U_OWNER")
+        monkeypatch.setattr(slack_handler, "_allowed_users", {"U_OWNER"})
+        try:
+            yield SimpleNamespace(
+                service=service,
+                state=state,
+                loop=loop,
+                foreign=foreign,
+                watch=watch,
+                sessions=sessions,
+                control_key=control_key,
+            )
+        finally:
+            tasks = list(service._inflight_adds)
+            service.stop()
+            if tasks:
+                event_loop.run_until_complete(
+                    asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), 5)
+                )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("outcome", ["soft", "hard", "idle", "no_session"])
+    @pytest.mark.parametrize("save_fails", [False, True])
+    async def test_suffix_stop_preserves_owner_and_reports_pause(
+        self, retained_goal, monkeypatch, outcome, save_fails
+    ):
+        case = retained_goal
+        slack = MockSlackClient()
+        before = await asyncio.to_thread(case.service._path.read_bytes)
+        generation = case.loop.config_generation
+        foreign_generation = case.foreign.config_generation
+        calls = []
+        monkeypatch.setattr(case.sessions, "has_session", lambda key: outcome != "no_session")
+
+        async def stop_turn(key, *, force=False, on_soft=None, on_hard=None, goal_state=None):
+            calls.append(key)
+            assert key == case.control_key
+            assert goal_state is case.state
+            await goal_actions.pause_session_goal(key, state=goal_state)
+            monkeypatch.setattr(
+                slack_handler, "get_dashboard_state", lambda: SimpleNamespace(_slots={})
+            )
+            if outcome == "soft":
+                await on_soft()
+            elif outcome == "hard":
+                await on_hard()
+            return outcome
+
+        case.sessions.stop_turn = stop_turn
+        if save_fails:
+
+            def fail_write(payload):
+                raise OSError("test pause persistence failure")
+
+            monkeypatch.setattr(case.service, "_write_state", fail_write)
+        await asyncio.wait_for(
+            handle_message(
+                slack, case.sessions, "C1", "!stop please", "thread1", "msg1", "U_OWNER"
+            ),
+            5,
+        )
+
+        reply = {
+            "soft": "⏹ Execution stopped.",
+            "hard": "⛔ Execution stopped — session reset.",
+            "idle": "Nothing running.",
+            "no_session": "Nothing running.",
+        }[outcome]
+        expected = f"{reply}\n\n{GOAL_PAUSE_UNSAVED_MESSAGE}" if save_fails else reply
+        posts = [a[1]["text"] for a in slack.actions if a[0] == "post"]
+        assert posts == [expected]
+        assert calls == ([] if outcome == "no_session" else [case.control_key])
+        assert not case.loop.active
+        assert case.loop.config_generation > generation
+        assert case.loop.goal.objective == "Finish the requested report"
+        assert case.loop.goal.progress == "Draft written"
+        assert case.foreign.active and case.watch.active
+        assert case.foreign.config_generation == foreign_generation
+        stored = await asyncio.to_thread(case.service._path.read_bytes)
+        if save_fails:
+            assert stored == before
+        else:
+            saved = next(row for row in json.loads(stored)["loops"] if row["id"] == case.loop.id)
+            assert saved["active"] is False
+
+    @pytest.mark.asyncio
+    async def test_nonowner_suffix_stop_preserves_goal(self, retained_goal):
+        case = retained_goal
+        slack = MockSlackClient()
+        before = await asyncio.to_thread(case.service._path.read_bytes)
+        generation = case.loop.config_generation
+        await asyncio.wait_for(
+            handle_message(
+                slack, case.sessions, "C1", "!stop please", "thread1", "msg1", "U_OTHER"
+            ),
+            5,
+        )
+        assert case.loop.active
+        assert case.loop.config_generation == generation
+        assert await asyncio.to_thread(case.service._path.read_bytes) == before
+        assert GOAL_PAUSE_UNSAVED_MESSAGE not in str(slack.actions)
+
+
 class TestStopCommand:
     """Tests for the !stop kill switch."""
 
     @pytest.mark.asyncio
-    async def test_stop_kills_active_session(self):
+    async def test_stop_kills_active_session(self, monkeypatch):
         """!stop calls stop_turn and posts confirmation."""
+        dashboard_state = object()
+        monkeypatch.setattr(slack_handler, "get_dashboard_state", lambda: dashboard_state)
         set_owner_id("U_OWNER")
         set_allowed_users({"U_OWNER"})
         slack = MockSlackClient()

@@ -239,6 +239,109 @@ What follows for this spec is that the substrate is not a new subsystem to build
 beside the loop. It is a change to what that one field holds and to which
 readers may look inside it.
 
+Goal suggestions and pursuit use the same `NudgeLoop` with a nullable `goal`
+metadata field and no monitor. Its objective, criteria, progress and completion
+evidence are persisted with the loop. Recognition saves an inactive suggestion;
+only owner Start or an explicit `/goal` command enables continuation. The live
+`monitoring.goal_suggestions` preference disables new proposals while retaining
+existing runs and manual controls. Suggested goals have no timer, and their runtime
+anchor starts only when the owner accepts. Working goals continue one second after
+turn completion; an explicit wait uses a 60-second cadence. These deadlines do
+not change the monitor shapes or their probe scheduling. The session-bound
+`goal` directive and `/goal` share the existing authorizer and cycle budgets;
+the behavior is specified in [babysit-pr-watch.md](babysit-pr-watch.md#automatic-goal-pursuit).
+
+Each session has one automation slot, shared by goals, prompt loops and structured
+monitors. An unfinished started or paused goal retains that slot. An explicit
+owner watch through `POST /api/monitors` may replace an inactive goal whose status
+is `suggested`; the store checks that status under the mutation lock. Generic
+loops, workflows and model directives cannot replace the suggestion. Completing
+or ending a goal does not guarantee watch admission: the existing create-only
+and stopped-record replacement guards still apply.
+
+The composer's per-slot `session-automation` query retains inactive goal details,
+including completion evidence; Redux holds only active legacy loops. Before
+publishing an authoritative `autonudge_state` snapshot into that cache, the
+WebSocket handler cancels older reads of that exact slot. A late REST response
+cannot replace the live evidence, and reads for other slots continue unchanged.
+For typed goals only, the legacy normalizer preserves the existing server revision
+from REST `config_generation` and WebSocket `generation` as `goalGeneration`;
+goal-less records retain their existing normalized shape. Goal-control mutation
+responses cannot replace a newer revision of the same goal, including a saved
+or unsaved Pause/Stop observed while Resume was in flight. Already-observed
+complete or ended goals also remain terminal when a response lacks a revision.
+An older active record cannot be republished into Redux, where it would outrank
+the mutation's subsequent query refetch. An explicitly cleared slot or a different
+current goal also fences mutation callbacks that outlive the control's unmount.
+Resume, including after an approval timeout, sends the captured `goalGeneration`
+as `expected_generation`. The store compares it under its existing mutation lock:
+a missing or stale revision for a typed-goal Resume returns HTTP 409, and a
+malformed revision returns HTTP 400. Zero is a valid revision. A newer Stop
+invalidates the earlier request even if the goal was already paused; an unsaved
+Stop keeps that barrier in the running process. The client refreshes state after
+a refusal but never automatically retries Resume with a newer revision.
+Goal-less loops retain their existing Resume contract.
+An inactive, resumable typed goal without a revision offers Refresh status and
+explains that the refresh confirms its current status before resuming. A failed
+read keeps that read-only action available and reports that the status could not be
+refreshed. A successful read exposes Resume; starting work still requires a
+separate click with the revision just observed.
+
+Typed goals keep the existing composer button and its accessible trigger semantics;
+a decorative chevron makes its details popup discoverable and rotates statically
+with the existing open state. One automation popover stays in a fixed row above
+and outside the manually resized input box, inside the existing collapsible
+composer. Its placement stays the same across empty, manual-loop, watch and
+typed-goal states. That row contains the details trigger and, for a suggestion,
+its explicit Start or Refresh status action. The goal status wraps within the
+available width; the bottom toolbar retains its own row. Width changes preserve
+the mounted trigger and keyboard order without moving the popover between rows.
+The status label also wraps within the popup, including the longer label for an
+unconfirmed pause. The popup labels its list of completion evidence explicitly.
+Required input directs the user to reply in chat without offering Resume. An
+approval timeout has a distinct label and offers Resume through the existing
+resume API, without granting tool permissions.
+Spent goals offer no resume action: guidance names reviewing progress and explicitly
+asking in chat to end the goal and start another for remaining work. The shared
+status label distinguishes "Automatic turn limit reached" from "Time limit reached",
+and the explanation retains automatic turn counts or elapsed wall-clock time.
+Known bounds use locale-aware numbers and
+duration units; a legacy record missing a usable bound still names the exhausted
+unit without guessing a value. This display does not compute remaining time or
+change budget enforcement. Suggested-goal limits use the same "automatic turns"
+term as the exhausted-limit status. Ended goals explain that they cannot resume without
+attributing the ending to the user.
+Blocked goals explain that the blocker must be resolved before resuming.
+An unsaved-pause warning states that work is paused now and a restart may lose that
+pause; the adjacent retry button owns the instruction to save it again. Mutation
+errors name the captured Pause, Resume, or save-retry request, even if live state
+changes before the response. While the current goal still has an unsaved pause,
+a failed save retry uses the complete persistence warning once, with one agent
+link. If that state changes, the captured save-retry failure remains visible
+without asserting that the current goal is still paused.
+A failed refresh after an accepted pause request marks the displayed state as
+unconfirmed and offers a read refresh, without replaying Stop or asserting that
+the pause was saved. Newer authoritative revisions and terminal states take
+precedence over that earlier uncertainty.
+The last-confirmed-status line is display text drawn from the closed set of goal
+labels, not a destructive confirmation prompt; its catalog key has a specific
+operand-quotation exemption for that reason.
+
+On Crew Board, an unsaved pause names the existing Stop current turn action as
+the way to retry saving it and states that this also stops the current turn.
+Coexisting row errors render the retry error and the earlier unsaved-pause warning
+together in one `ErrorNotice`, with one agent hand-off carrying both messages.
+When the row notice has a title, its message renders below that title, keeping
+the failure text readable on narrow screens. The hand-off preserves the retry's
+journal endpoint, HTTP status, code and raw detail when available; without a journal
+entry it still carries both messages. A failed retry retains the warning and retry
+hint; a Stop declined during automatic compaction also remains unconfirmed and
+retains them. Board retries never escalate a compaction decline to a forced Stop.
+A later acknowledged Stop without an unsaved-pause warning clears both.
+If refreshing an already loaded empty board fails, its empty state explicitly
+describes the last loaded version; an initial read failure never claims that the
+board is empty.
+
 ## The seven layers
 
 A monitoring loop is seven concerns, and each one has exactly one owner. The

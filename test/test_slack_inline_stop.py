@@ -150,7 +150,8 @@ class TestHandleInlineStop:
         interactions = setup_interactions
 
         # Make stop_turn invoke on_soft callback (simulating soft stop)
-        async def _invoke_soft(key, on_soft=None, on_hard=None):
+        async def _invoke_soft(key, *, on_soft=None, on_hard=None, goal_state=None):
+            assert goal_state is mock_orch.dashboard_state
             if on_soft:
                 await on_soft()
             return "soft"
@@ -176,7 +177,8 @@ class TestHandleInlineStop:
         """Hard stop invokes on_hard callback with reset message."""
         interactions = setup_interactions
 
-        async def _invoke_hard(key, on_soft=None, on_hard=None):
+        async def _invoke_hard(key, *, on_soft=None, on_hard=None, goal_state=None):
+            assert goal_state is mock_orch.dashboard_state
             if on_hard:
                 await on_hard()
             return "hard"

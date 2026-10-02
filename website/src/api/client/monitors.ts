@@ -24,7 +24,7 @@ export type MonitorWrite = {
 
 export type MonitorResponse = { ok: true; monitor: unknown }
 
-export function createMonitorsEndpoints({ post, patch, j }: ClientTransport) {
+export function createMonitorsEndpoints({ post, patch, del, j }: ClientTransport) {
   const loops = {
     /** All goal loops across sessions — every record the service holds, ACTIVE
      *  OR STOPPED (a stopped loop keeps `active: false` + `stopped_reason`, which
@@ -35,6 +35,18 @@ export function createMonitorsEndpoints({ post, patch, j }: ClientTransport) {
       fetch('/api/autonudge').then(j),
     autonudgeForSlot: (slot: string): Promise<{ enabled: boolean; loop: unknown | null }> =>
       fetch('/api/autonudge/slot/' + encodeURIComponent(slot)).then(j),
+    autonudgeResume: (id: string, expectedGeneration?: number): Promise<{ loop: unknown }> =>
+      patch('/api/autonudge/' + encodeURIComponent(id), {
+        active: true,
+        ...(expectedGeneration === undefined ? {} : { expected_generation: expectedGeneration }),
+      }).then(j),
+    /** Remove an unstarted goal suggestion, only at the revision the popover rendered. */
+    autonudgeDismiss: (id: string, expectedGeneration: number): Promise<{ ok: true }> => {
+      const p = new URLSearchParams()
+      p.set('intent', 'dismiss')
+      p.set('expected_generation', String(expectedGeneration))
+      return del('/api/autonudge/' + encodeURIComponent(id) + '?' + p).then(j)
+    },
     /** Structured monitor records include terminal outcomes for inspection. */
     monitorsList: (): Promise<{ enabled: boolean; monitors: unknown[] }> =>
       fetch('/api/monitors').then(j),

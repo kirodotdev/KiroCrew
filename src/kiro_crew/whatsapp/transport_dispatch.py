@@ -14,6 +14,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew import goal_actions
 from kiro_crew.config import live
 from kiro_crew.config.sections import _normalize_threshold_pair
 from kiro_crew.history import mint_row_mid
@@ -301,6 +302,7 @@ class WhatsAppDispatcher:
         is still coming.
         """
         session_key = self._live_session_key(scope)
+        goal_state = getattr(self, "dashboard_state", None)
         # A repeat within the window after a declined stop is the second press
         # and forces; the first decline records the marker below. Only the
         # operator reaches a command, so the conversation names the presser.
@@ -313,9 +315,11 @@ class WhatsAppDispatcher:
             # other channels' messages; ``stop_turn`` parks them for the
             # successor instead. This channel queues nothing of its own.
             outcome = await (
-                self.sessions.stop_turn(session_key, force=True, preserve_queue=True)
+                self.sessions.stop_turn(
+                    session_key, force=True, preserve_queue=True, goal_state=goal_state
+                )
                 if force
-                else self.sessions.stop_turn(session_key)
+                else self.sessions.stop_turn(session_key, goal_state=goal_state)
             )
         except Exception:  # noqa: BLE001: the queue clear below still applies
             logger.warning("whatsapp: stop_turn failed", exc_info=True)
@@ -330,7 +334,9 @@ class WhatsAppDispatcher:
             )
             return
         stopped = kind in ("soft", "hard")
-        await self._say(scope, STOPPED_TEXT if stopped else STOP_NOTHING_RUNNING_TEXT)
+        reply = STOPPED_TEXT if stopped else STOP_NOTHING_RUNNING_TEXT
+        warning = goal_actions.goal_pause_warning(session_key, state=goal_state)
+        await self._say(scope, f"{reply}\n\n{warning}" if warning else reply)
 
     async def _handle_compact(self, scope: str) -> None:
         """In-place ACP ``/compact`` on this conversation's current session.

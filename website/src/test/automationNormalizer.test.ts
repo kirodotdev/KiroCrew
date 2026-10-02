@@ -39,6 +39,7 @@ describe('automation transport normalizer', () => {
     const record = normalizeAutomationRecord({
       id: 'legacy-1', slot_key: 'chat-1', message: 'Keep going', idle_secs: 60,
       max_cycles: 0, cycle_count: 7, active: true, last_fire_ts: 123,
+      config_generation: 7,
     })
 
     expect(record).toEqual({
@@ -63,6 +64,21 @@ describe('automation transport normalizer', () => {
     expect(normalizeAutomationRecord(base)).not.toHaveProperty('stopSentinelPath')
     // A malformed store value is dropped rather than stringified.
     expect(normalizeAutomationRecord({ ...base, stop_sentinel_path: null })).not.toHaveProperty('stopSentinelPath')
+  })
+
+  it('preserves the same goal revision from REST and WebSocket spellings', () => {
+    const loop = {
+      id: 'goal-1', slot_key: 'chat-1', active: false,
+      goal: { objective: 'Build the feature', criteria: [], progress: '', status: 'paused', evidence: [] },
+    }
+    expect(normalizeAutomationRecord({ ...loop, config_generation: 3 }))
+      .toEqual(normalizeAutomationRecord({ event: 'updated', loop: { ...loop, generation: 3 } }))
+    expect(normalizeAutomationRecord({ ...loop, config_generation: 0 }))
+      .toMatchObject({ goalGeneration: 0 })
+    for (const generation of [undefined, null, -1, 1.5, '3']) {
+      expect(normalizeAutomationRecord({ ...loop, config_generation: generation }))
+        .not.toHaveProperty('goalGeneration')
+    }
   })
 
   it('folds channel session keys into dashboard slot keys', () => {

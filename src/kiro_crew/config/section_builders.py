@@ -182,6 +182,7 @@ def _build_monitoring_config(data: dict, prefer_structured_arming: bool) -> Moni
     return MonitoringConfig(
         prefer_structured_arming=prefer_structured_arming,
         max_runtime_secs=coerce_runtime_ceiling(data.get("max_runtime_secs")),
+        goal_suggestions=_safe_bool(data.get("goal_suggestions"), True),
     )
 
 

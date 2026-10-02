@@ -87,7 +87,7 @@ def _settle_consumed_steers(
     slot: "_ChatSlot",
     snapshot: str,
     state: "DashboardState | None" = None,
-) -> None:
+) -> bool:
     """Settle pending steers covered by a ``steering_consumed`` echo.
 
     The parse-and-match rules live in ``steer_settle.settle_consumed_steers``,
@@ -101,7 +101,7 @@ def _settle_consumed_steers(
 
     """
     if not slot._pending_steers:
-        return
+        return False
     # An empty echo is no evidence of consumption (``steer_settle`` says so in
     # as many words), so nothing settles and every entry stays pending. ``_requeue_unconsumed_steers`` -- wired into
     # ``_run_chat``'s outer finally, so it runs on every turn-exit path --
@@ -196,10 +196,23 @@ def _settle_consumed_steers(
             # cannot rehydrate the stale card.
             state.clear_question_pending(slot.key, blocking=False)
     slot._pending_steers[:] = remaining
-    for settled_msg in set(previous) - set(remaining):
+    settled_messages = set(previous) - set(remaining)
+    origins = getattr(slot, "_steer_user_origin", {})
+    channel_origins = getattr(slot, "_steer_channel_origin", {})
+    admissions = getattr(slot, "_steer_admissions", {})
+    # Only a consumed steer with ingress-recorded human provenance can grant
+    # goal replacement/resume authority to an otherwise automatic turn.
+    consumed_human = bool(snapshot.strip()) and any(
+        origins.get(msg, False) for msg in settled_messages
+    )
+    for settled_msg in settled_messages:
         slot._steer_attachment_meta.pop(settled_msg, None)
         slot._steer_decision_strips.pop(settled_msg, None)
         slot._steer_possibly_delivered.discard(settled_msg)
+        origins.pop(settled_msg, None)
+        channel_origins.pop(settled_msg, None)
+        admissions.pop(settled_msg, None)
+    return consumed_human
 
 
 def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> None:

@@ -59,6 +59,7 @@ from kiro_crew import (
     autonudge_selfarm,
     beacon,
     dep_sync,
+    goal_actions,
     name_grant,
     platform_compat,
     runtime_death,
@@ -6326,7 +6327,7 @@ class GatewayOrchestrator:
             # never assigns TurnUsage.duration_ms, so the row needs this.
             _turn_t0 = time.monotonic()
             _turn_started = True
-            if wake_message is None:
+            if wake_message is None and loop.goal is None:
 
                 def _capture_raw_completion(event: LLMEvent) -> None:
                     if is_monitor_completion_evidence(
@@ -6372,6 +6373,7 @@ class GatewayOrchestrator:
                     directive_consumer=build_directive_consumer(
                         session_key=key,
                         sessions=self.sessions,
+                        self_wake=True,
                     ),
                     monitor_completion=(
                         (
@@ -6392,10 +6394,11 @@ class GatewayOrchestrator:
                     driver.run(full_msg),
                     timeout=_NUDGE_TURN_TIMEOUT,
                 )
-                if _driver_completion_hook is None or not _driver_completion_hook.accepted:
-                    return MonitorDispatchResult.UNAVAILABLE
-                assert _completion_hook is not None
-                _completion_hook.mark_accepted()
+                if wake_message is not None:
+                    if _driver_completion_hook is None or not _driver_completion_hook.accepted:
+                        return MonitorDispatchResult.UNAVAILABLE
+                    assert _completion_hook is not None
+                    _completion_hook.mark_accepted()
             _turn_usage = provider_last_turn_usage(client)
 
             if _raw_dispositions:
@@ -6695,7 +6698,27 @@ class GatewayOrchestrator:
                     if isinstance(dispatch_result, MonitorDispatchResult)
                     else MonitorDispatchResult.UNAVAILABLE
                 )
-            if completion_hook is not None and isinstance(dispatch_result, MonitorDispatchResult):
+            if isinstance(dispatch_result, MonitorDispatchResult):
+                if dispatch_result is MonitorDispatchResult.UNAVAILABLE and completion_hook is None:
+                    # A plain wake hears UNAVAILABLE only from a standing refusal
+                    # (the channels-governance deny). Retried, a goal would stay
+                    # "working" forever without spending a cycle or reaching a
+                    # stop the user can see, so it is marked blocked with the
+                    # reason. A goal-less loop keeps its delivered accounting.
+                    if loop.goal is None:
+                        return True
+                    if self.autonudge_svc is not None:
+                        try:
+                            await goal_actions.block_goal_on_channel_denial(
+                                self.autonudge_svc, loop
+                            )
+                        except Exception:
+                            logger.exception(
+                                "AutoNudge: could not block goal %s on its %s refusal",
+                                loop.id,
+                                channel,
+                            )
+                    return False
                 return dispatch_result is MonitorDispatchResult.DISPATCHED
             return True
         except Exception:
@@ -7542,6 +7565,8 @@ class GatewayOrchestrator:
                     "next_due_ts": loop.next_due_ts,
                     "stopped_reason": loop.stopped_reason,
                 }
+                if loop.goal is not None:
+                    loop_payload.update(goal_actions.goal_snapshot(loop))
                 if is_structured_monitor_loop(loop):
                     assert loop.monitor is not None
                     loop_payload["monitor"] = _redact_monitor_value(

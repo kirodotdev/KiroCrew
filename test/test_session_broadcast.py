@@ -978,15 +978,13 @@ class TestACallerSurfaceThatGoesStaleMidBroadcast:
 class TestTheShieldedSteerDelivery:
     """The per-target bound must not interrupt a steer already in the pipe.
 
-    `steer_into_running_turn` writes six per-text maps and `_pending_steers`
-    BEFORE its RPC and pops them in one reconciliation tail AFTER it, guarding the
-    RPC with `except Exception` -- which does not catch `CancelledError`. So a bare
-    `await` under the budget unwinds through the RPC and skips that tail, while the
-    bytes may already have reached kiro-cli. Nothing else pops those maps
-    (`_settle_consumed_steers` clears only the attachment and decision-strip maps;
-    `_requeue_unconsumed_steers` returns early once settling emptied
-    `_pending_steers`), so the surviving `_steer_delivery_ids` entry refuses that
-    exact text on that slot forever and `retained_steer_count` never falls back.
+    `steer_into_running_turn` registers its per-text maps and `_pending_steers`
+    BEFORE its RPC, guarding the RPC with `except Exception` -- which does not
+    catch `CancelledError`. A bare `await` under the budget skips its reconciliation
+    tail, while the bytes may already have reached kiro-cli. Settlement leaves
+    delivery IDs for that tail, so a stranded ID refuses the same text forever.
+    A completed write retires delivery IDs but keeps the pending steer's origin
+    and admission until consumption, requeue or discard settles that input.
 
     Driven through the REAL `steer_into_running_turn` with a client whose `steer`
     hangs, because the defect IS that `except Exception` gap -- a patched delivery
@@ -1013,16 +1011,24 @@ class TestTheShieldedSteerDelivery:
     async def test_a_budget_cancel_does_not_strand_the_steer_bookkeeping(
         self, tmp_path, monkeypatch
     ):
+        from kiro_crew.dashboard.chat_runner import _settle_consumed_steers
+
         state = _make_state(tmp_path)
         state.broadcast_ws = MagicMock()
         caller = _slot(state, "chat-1")
         target, release = self._target_with_hanging_steer(state, caller)
         monkeypatch.setattr(sc, "BROADCAST_TARGET_ALLOWANCE_SECS", 0.05)
+        text = "stop, the issue was already fixed"
+        prompt = sc._SEND_PROVENANCE.format(caller=caller.key, via=sc.BROADCAST_VIA) + text
+        admission = {
+            **sc.containment_meta(state, target),
+            **sc.send_origin_meta(state, caller.key),
+        }
 
         out = await sc.broadcast_to_targets(
             state,
             caller_session_key=_key(caller),
-            message="stop, the issue was already fixed",
+            message=text,
             mode="steer",
         )
 
@@ -1046,19 +1052,20 @@ class TestTheShieldedSteerDelivery:
             "text is refused on this slot forever"
         )
         assert target._steer_send_ids == {}
+        # The sender's timeout did not cancel the target's pending input.
+        # Preserve its nonhuman provenance and original admission for settlement.
+        assert target._pending_steers == [prompt]
+        assert target._steer_user_origin == {prompt: False}
+        assert target._steer_admissions == {prompt: admission}
+
+        # Consumption retires the pending state without granting human authority.
+        assert (
+            _settle_consumed_steers(target, f"<user_message>\n{prompt}\n</user_message>", state)
+            is False
+        )
+        assert target._pending_steers == []
         assert target._steer_user_origin == {}
         assert target._steer_admissions == {}
-        # `_pending_steers` is NOT asserted empty: the steered tail deliberately
-        # leaves it for the turn, whose `steering_consumed` echo settles it and
-        # whose teardown otherwise degrades it to a visible queue card. Popping it
-        # here would delete a steer the turn may never confirm.
-        assert (
-            target._pending_steers.count(
-                sc._SEND_PROVENANCE.format(caller=caller.key, via=sc.BROADCAST_VIA)
-                + "stop, the issue was already fixed"
-            )
-            == 1
-        )
 
     @pytest.mark.asyncio
     async def test_an_orphaned_delivery_that_comes_back_unavailable_is_queued(
@@ -1122,7 +1129,7 @@ class TestTheShieldedSteerDelivery:
         """The user-visible consequence of the strand, pinned end to end.
 
         The turn settles the steer first, which is the step that exposes the
-        difference: settling pops `_pending_steers` and nothing else, so only the
+        difference: settling leaves the delivery ID for reconciliation, so only the
         delivery's own tail can clear `_steer_delivery_ids`. Stranded, that entry
         answers `STEER_UNAVAILABLE` for this exact text on every later attempt --
         the caller's retry silently becomes a queue card forever.

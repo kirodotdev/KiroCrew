@@ -42,7 +42,7 @@ from typing import TYPE_CHECKING, Any
 # Bindings below that only the ``context_assembly`` owners read stay bound here:
 # callers rebind them on this module, and the owners read them through it at call
 # time, so such a patch still reaches the code that moved.
-from kiro_crew import model_registry, resource_status  # noqa: F401
+from kiro_crew import goal, model_registry, resource_status  # noqa: F401
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.agent import _prompt_path, _shipped_prompt, is_managed_prompt
 from kiro_crew.agent_discovery import agent_skill_globs

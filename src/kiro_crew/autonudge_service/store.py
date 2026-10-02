@@ -179,6 +179,8 @@ class LoopStore:
         # In-memory only: the load path re-mints it unconditionally, so a persisted
         # value could never be honoured and writing one would dirty a clean store.
         payload.pop("goal_token", None)
+        if loop.goal is None:
+            payload.pop("goal", None)
         if loop.monitor is None:
             # Preserve the legacy wire shape instead of eagerly migrating every
             # record the next time an unrelated loop is saved.
