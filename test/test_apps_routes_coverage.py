@@ -3059,7 +3059,7 @@ class TestAppConfig:
     ) -> None:
         _setup_env(tmp_path, monkeypatch)
         _install(tmp_path)
-        async with TestClient(TestServer(_make_app())) as client:
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
             resp = await client.put(
                 f"/api/apps/{APP}/config",
                 data="{",
@@ -3073,7 +3073,7 @@ class TestAppConfig:
     ) -> None:
         _setup_env(tmp_path, monkeypatch)
         _install(tmp_path)
-        async with TestClient(TestServer(_make_app())) as client:
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
             resp = await client.put(f"/api/apps/{APP}/config", json=[1, 2, 3])
             assert resp.status == 400
             assert "JSON object" in (await resp.json())["error"]
@@ -3084,7 +3084,7 @@ class TestAppConfig:
     ) -> None:
         _setup_env(tmp_path, monkeypatch)
         _install(tmp_path)
-        async with TestClient(TestServer(_make_app())) as client:
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
             resp = await client.put(
                 f"/api/apps/{APP}/config", json={"theme": "dark"}
             )

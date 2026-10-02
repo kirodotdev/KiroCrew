@@ -3057,7 +3057,9 @@ async def handle_app_config(request: web.Request) -> web.Response:
 
     Reads/writes ``~/.kiro/crew/apps/{name}/data/config.json``.
     GET returns the current config (empty ``{}`` if none exists).
-    PUT replaces the config with the request body.
+    PUT replaces the config with the request body. A dashboard subject must be
+    the owner to PUT; an app token reaches this handler only inside the scope
+    ``token_auth`` already granted it (its own app, or a manifest grant).
     """
     name = request.match_info["name"]
     info = get_app(name)
@@ -3089,7 +3091,17 @@ async def handle_app_config(request: web.Request) -> web.Response:
         except (json.JSONDecodeError, OSError) as exc:
             return web.json_response({"error": f"failed to read config: {exc}"}, status=500)
 
-    # PUT — write config
+    # PUT — write config.
+    # An app token was already scoped by token_auth's _enforce_app_scope (its own
+    # app via _app_owns_path, a foreign app only with a manifest grant), so only a
+    # dashboard subject (an empty or missing app claim) needs the owner check.
+    if not request.get("app"):
+        from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+        denied = await require_owner_dashboard_request(request, "app_config_write")
+        if denied is not None:
+            return denied
+
     try:
         body = await request.json()
     except Exception:
