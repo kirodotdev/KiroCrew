@@ -2007,6 +2007,13 @@ about the code. Each is a hermeticity gap, and each has one fix:
   "a plain directory" classified as a project and "no launcher anywhere" found one. Confine
   the walk to `tmp_path` at the validator (`launchers_confined_to_tmp`,
   `cap_project_root_walk`) rather than assuming the host's temp root is bare.
+- **A fixed system path is the host's, not the test's.** `service.linux` reads
+  `/etc/kirocrew/kirocrew.env` to decide whether uninstall deletes it, so on a host where
+  a real install left the untouched seed there, a test that pinned only `UNIT_PATH` saw
+  `rm` and `rmdir` it never caused. `test/test_service.py` points `ENV_DIR` and
+  `ENV_FILE_PATH` at an absent `tmp_path` directory for every test; pin every module-level
+  `/etc` (or other absolute) path the code under test reads, not just the one the test is
+  about.
 - **"A port nothing listens on" is a property of the host.** Endpoint agents on managed
   machines intercept loopback connects and answer every port with HTTP 200 (a SOAP envelope
   from `127.0.0.1:1`), so a test that provoked `transfer_unreachable` by POSTing to port 1
