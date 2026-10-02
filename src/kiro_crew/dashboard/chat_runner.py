@@ -171,6 +171,12 @@ from kiro_crew.dashboard.chat_utils import (
     user_text_span,
     with_bounded_redaction_records,
 )
+from kiro_crew.dashboard.collision_derive import derive_repo_context, repo_rel_for
+from kiro_crew.dashboard.collision_notify import (
+    notification_body,
+    samefile_should_notify,
+    sameworktree_should_notify,
+)
 from kiro_crew.dashboard.handlers import (
     MAX_PROMPT_BYTES,
     _find_prompt,
@@ -341,6 +347,7 @@ from kiro_crew.name_grant import (
     shell_command_for_event,
     should_log_decline,
 )
+from kiro_crew.notifications.bus import NotificationPayload
 from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
 from kiro_crew.platform import redact_log_via_context, redact_via_context
 from kiro_crew.providers.base import (
@@ -2390,6 +2397,9 @@ def _context_usage_payload(slot_key: str, client: Any) -> dict[str, Any]:
 # renders these as file-change chips with click-through to a Monaco diff.
 
 _WRITE_COMMANDS = frozenset({"create", "strReplace", "insert"})
+# Cap distinct paths a single turn's collision flush derives, so a pathological
+# write burst cannot fan out unbounded off-loop work (Security-review Medium).
+_MAX_COLLISION_PATHS_PER_FLUSH = 64
 _MAX_SNAPSHOT = 200_000  # cap per-file snapshot to bound message meta size
 # Appended to a snapshot side cut at ``_MAX_SNAPSHOT``, so one stored side is at
 # most ``_MAX_SNAPSHOT`` plus this marker.
@@ -3160,6 +3170,221 @@ def _flush_file_changes(
     slot._file_changes = []
     if isinstance(reply_mids, list):
         reply_mids.clear()
+
+
+async def _flush_collision_writes(state: Any, slot: "_ChatSlot", session: str) -> None:
+    """Drain this turn's file-write paths into the same-file collision index.
+
+    Runs OFF the hot loop (git derivation stats disk / spawns git), on the
+    turn-exit path alongside ``_flush_file_changes``. For each written path it
+    derives (repo_id, repo_rel_path) relative to the session's cwd and records
+    an edit keyed by the session's repo identity. Out-of-tree writes, sensitive
+    paths, and non-repo cwds are dropped (no entry). Never raises into the
+    caller — a derive miss just means no row.
+
+    Write source: the turn's touched paths come from ``slot._file_changes`` (the
+    per-turn snapshot list ``_record_turn_snapshot`` already maintains, one entry
+    per distinct path), NOT a parallel accumulator — so there is one source of
+    truth for "what this turn touched".
+
+    Scope: the collision grouping key is the session's REPO IDENTITY
+    (``ctx.repo_id``), derived FRESH here each turn into a local — NOT a
+    memory/tagging field, and NOT read back from any slot state. Two live
+    sessions in the same repo are collision peers. This derivation is the ONE
+    site a future thin-Project binding would re-source from ``slot.project_id``
+    without touching the leaf indices.
+
+    Design §4.2 Signal 1: the entry is (repo_id, repo_rel_path, session, ts); the
+    DISTINCT-session collision math lives in ``CollisionIndex`` and is evaluated
+    later against live sessions.
+    """
+    # Paths this turn touched come from the single per-turn snapshot list that
+    # _record_turn_snapshot already maintains (one entry per distinct path);
+    # there is no separate accumulator to drain.
+    fc = getattr(slot, "_file_changes", None)
+    if not isinstance(fc, list):
+        return
+    paths = [p for p in (s.get("path") for s in fc if isinstance(s, dict)) if p]
+    index = getattr(state, "collisions", None)
+    if index is None:
+        return
+    worktrees = getattr(state, "worktrees", None)
+    notify_once = getattr(state, "collision_notify_once", None)
+    cwd = getattr(slot, "project", "") or ""
+
+    # Snapshot the live-session set + fork lineage ON THE LOOP (state._slots is
+    # mutated on the loop; reading it in a worker thread would race). live_keys
+    # is each live slot's effective_session_key; forked_from maps a session to
+    # its parent's effective key so the collision math can exclude a fork pair.
+    live_keys: set[str] = set()
+    forked_from: dict[str, str] = {}
+    for _s in list(getattr(state, "_slots", {}).values()):
+        k = effective_session_key(_s)
+        live_keys.add(k)
+        parent = getattr(_s, "forked_from", None)
+        if parent:
+            forked_from[k] = parent
+
+    def _is_fork_pair(a: str, b: str) -> bool:
+        # Symmetric: either is the other's fork parent (design/Signal-1 contract).
+        return forked_from.get(a) == b or forked_from.get(b) == a
+
+    def _derive_record_and_evaluate() -> list[dict]:
+        # ALWAYS sweep expired/dead state first, even on a no-record turn, so a
+        # long-lived process cannot accumulate stale keys/sessions (GPT-review
+        # unbounded-memory class). O(keys)/O(sessions), off-loop.
+        index.prune()
+        if worktrees is not None:
+            worktrees.prune(live_sessions=live_keys)
+        # Derive the cwd's repo identity ONCE (repo_id + repo_root), used for
+        # Signal-1 recording and Signal-2 worktree co-tenancy. A non-repo cwd
+        # yields None, so nothing is recorded and the worktree entry is cleared.
+        ctx = derive_repo_context(cwd) if cwd else None
+        # The collision grouping key, decoupled from any tagging/memory model:
+        # the ONE seam. DERIVE it fresh every turn — never read back any slot
+        # state as the source, or a session that moves from repo X to repo Y
+        # would keep indexing Y's edits under the stale X (Correctness-review).
+        # Today the source is the session's REPO IDENTITY, so two live sessions
+        # in one repo are collision peers with no tag required. When the
+        # thin-Project binding lands it becomes the source at THIS one site (read
+        # slot.project_id first, else ctx.repo_id). A non-repo session resolves
+        # to "" and is never indexed (the index's own contract).
+        scope = ctx.repo_id if ctx is not None else ""
+        if worktrees is not None:
+            worktrees.set_worktree(session, ctx.repo_root if ctx is not None else "")
+        if notify_once is not None:
+            # Bounded-lifecycle sweep of the dedupe store (GPT-review OOM class):
+            # drop signatures whose sessions are all closed.
+            notify_once.prune(live_keys)
+        # Emit the key-eviction overflow once per snapshot: a COUNT-ceiling
+        # eviction silently drops a would-be collision signal, so saying it out
+        # loud here is what keeps the drop from being invisible (AUTOSDE
+        # a-bound-bounds-every-field-it-retains).
+        evicted = index.drain_evicted()
+        if evicted:
+            logger.warning(
+                "collision index evicted %d key(s) at its count ceiling this "
+                "window; a dropped key produces no collision signal",
+                evicted,
+            )
+        # Signal 2 must evaluate even on a NO-WRITE turn: two scoped sessions can
+        # share a tree without either writing this turn, and that race must still
+        # notify (GPT-review). So the guard is "no repo / no notifier", NOT "no
+        # writes". Same-file RECORDING below is what needs writes.
+        if ctx is None or not scope or notify_once is None:
+            return []
+        record = bool(paths)  # this turn has edits to record
+        # Signal 1: record each written path's edit (only when this turn wrote).
+        seen: set[str] = set()
+        contended_rel: set[str] = set()
+        if record:
+            for p in paths:
+                if p in seen:
+                    continue
+                seen.add(p)
+                if len(seen) > _MAX_COLLISION_PATHS_PER_FLUSH:
+                    break
+                try:
+                    if validate_file_path(p) is None:
+                        continue
+                except Exception:
+                    continue
+                rel = repo_rel_for(ctx.repo_root, p)  # pure FS math, no git
+                if rel is None:
+                    continue  # out-of-tree -> drop
+                index.record_edit(
+                    repo_id=ctx.repo_id,
+                    repo_rel_path=rel,
+                    session=session,
+                )
+                contended_rel.add(rel)
+        # ── evaluate + decide notifications (design §4.4) ────────────────────
+        notes: list[dict] = []
+        # Signal 2 first (default-notify, higher severity). ``members`` is the
+        # cotenant set of THIS session's tree; a same-file collision whose
+        # sessions are all within that set is the SAME race and is deduped to
+        # the one same-worktree note below (per-tree, NOT per-turn — a same-file
+        # collision with a session on a DIFFERENT worktree of the repo is a
+        # distinct hazard and must still notify; Correctness-review HIGH).
+        members = (
+            worktrees.cotenants(ctx.repo_root, live_sessions=live_keys, is_fork_pair=_is_fork_pair)
+            if worktrees is not None
+            else frozenset()
+        )
+        if len(members) >= 2:
+            sig = sameworktree_should_notify(
+                worktree_root=ctx.repo_root,
+                sessions=members,
+                notify_once=notify_once,
+            )
+            if sig:
+                notes.append({"signal": "same-worktree", "sessions": len(members)})
+        # Signal 1 (record-first; notify only under suppression, for files THIS
+        # turn touched). Skip a key already covered by the same-worktree note
+        # (its sessions are a subset of that tree's cotenants). ``scope`` is the
+        # repo identity (== ctx.repo_id), the index's grouping key.
+        for key, fsessions in index.contested_files(
+            scope, live_sessions=live_keys, is_fork_pair=_is_fork_pair
+        ):
+            if key.repo_rel_path not in contended_rel:
+                continue  # only files THIS turn touched, not every scoped file
+            if members and set(fsessions) <= set(members):
+                continue  # same race as the same-worktree note -> deduped
+            sig = samefile_should_notify(
+                repo_id=key.repo_id,
+                repo_rel_path=key.repo_rel_path,
+                sessions=fsessions,
+                notify_once=notify_once,
+            )
+            if sig:
+                notes.append({"signal": "same-file", "sessions": len(fsessions)})
+        return notes
+
+    try:
+        pending = await asyncio.to_thread(_derive_record_and_evaluate)
+    except Exception:
+        logger.debug("collision flush failed for session %s", session, exc_info=True)
+        return
+    # Fire notifications back on the loop (design §4.4: body carries only the
+    # signal + session count, no scope value; persists to the unscoped
+    # notifications.jsonl).
+    bus = getattr(state, "notification_bus", None)
+    if not pending or bus is None:
+        return
+    for note in pending:
+        try:
+            bus.push(
+                _collision_notification_payload(
+                    signal=note["signal"],
+                    session_count=note["sessions"],
+                )
+            )
+        except Exception:
+            logger.debug("collision notification push failed", exc_info=True)
+
+
+def _collision_notification_payload(*, signal: str, session_count: int):
+    """Build the collision NotificationPayload. It carries NO scope value —
+    neither the raw scope nor a digest of it — because it lands in the global,
+    unscoped, agent-readable notifications.jsonl and the scope defaults to a
+    repo identity (host/org/repo, or a home-dir path) that is guessable, so a
+    hash of it would be dictionary-attackable. The body states only the signal
+    and session count; the group_key groups by SIGNAL TYPE, so related
+    coordination notes still stack without any scope-derived value persisting.
+    (collision_notify is already a module-load dependency via the signal
+    helpers, and notifications.bus does not import this package, so both names
+    are plain top-level imports — no circular-import deferral is needed.)"""
+    return NotificationPayload(
+        source="system",
+        channel="system.agent",
+        title="Session coordination",
+        body=notification_body(
+            signal=signal,
+            session_count=session_count,
+        ),
+        priority="default",
+        group_key=f"collision:{signal}",
+    )
 
 
 def _attach_turn_stats(
@@ -21268,6 +21493,17 @@ async def _run_chat(
         # clears it. The nested try/finally makes the release unconditional
         # while preserving the reset-then-release ordering.
         try:
+            # Signal 1 collision flush: surfaces same-file/worktree contention
+            # on EVERY exit (cancel/error included), so it must run here. It is
+            # the first await inside THIS try — not above it — precisely because
+            # a CancelledError (BaseException) raised while it is suspended would
+            # otherwise skip the unconditional release in this try's finally and
+            # leak the session permit until gateway restart. Guarded against
+            # ordinary Exception; the finally handles the cancellation case.
+            try:
+                await _flush_collision_writes(state, slot, session_key)  # Signal 1
+            except Exception:
+                logger.debug("_flush_collision_writes failed", exc_info=True)
             if _mirror_stream_ts and state.slack_client and _mirror_chan:
                 try:
                     # Fenced for the same reason the in-progress append is: if that

@@ -233,6 +233,15 @@ PREEXEC_EXEMPT: frozenset[str] = frozenset(
         # correctly rejects this key there.
         "apps/builtins/ops_mission_control/tests/test_ledger_sync_git.py"
         "::test_every_git_invocation_carries_the_identity",
+        # Fixed-shape, read-only git probe: `git -C <cwd> rev-parse|config` with
+        # a 5s timeout, routed through sandboxed_spawn_argv (OS sandbox + scrubbed
+        # env). Only `cwd` (a path) is agent-influenced -- never the program, the
+        # sub-command, or arbitrary child code -- so a fork-bomb / CPU ceiling has
+        # nothing to constrain. A preexec_fn ceiling here is actively wrong: this
+        # runs in a worker thread of the multi-threaded gateway, and preexec_fn
+        # forks that process and runs Python in the child before exec (the
+        # sync-spawn preexec guard forbids it).
+        "dashboard/collision_derive.py::_run_git",
     }
 )
 

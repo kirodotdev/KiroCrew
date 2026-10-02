@@ -48,6 +48,8 @@ from kiro_crew.constants import (  # noqa: F401 -- DENY_CAUSE_* / STEER_NOTICE_B
 )
 from kiro_crew.dashboard.chat_compaction_notice import deliver_channel_compaction_notice
 from kiro_crew.dashboard.chat_tag_grants import seed_default_grants, seed_status_identity_rows
+from kiro_crew.dashboard.collision_index import CollisionIndex
+from kiro_crew.dashboard.collision_notify import NotifyOnce
 from kiro_crew.dashboard.dashboard_persistence import DashboardPersistenceCoordinator
 from kiro_crew.dashboard.folder_repository import FOLDERS_FILE, FolderRepository
 from kiro_crew.dashboard.interaction_coordinator import (
@@ -70,6 +72,7 @@ from kiro_crew.dashboard.slot_queue_repository import (
 from kiro_crew.dashboard.slot_registry import SlotRegistry
 from kiro_crew.dashboard.system_notices import is_system_notice
 from kiro_crew.dashboard.websocket_hub import SLOT_PATCH_WS_FLAG, WebSocketHub
+from kiro_crew.dashboard.worktree_index import WorktreeIndex
 from kiro_crew.deny_guidance import remediation_for
 from kiro_crew.deny_notice import (  # noqa: F401 -- re-exported for dashboard importers
     _DENY_CAUSE_TEXT,
@@ -5839,6 +5842,18 @@ class DashboardState:
             logger.debug("decisions: LLM lane runner not registered", exc_info=True)
         self.crons = crons
         self.lessons = lessons
+        # Same-file collision index (Signal 1). In-memory, process-local runtime
+        # state — NOT a durable store: collision data is recency-windowed and
+        # only meaningful against currently-live sessions, so nothing survives a
+        # restart. Fed off-loop from the per-turn file-write flush, evaluated
+        # and notified there (Signal 2). (A panel reader of this index is future
+        # work — none ships on this branch.)
+        self.collisions = CollisionIndex()
+        # Same-worktree collision index (Signal 2): live session -> worktree_root
+        # co-tenancy, and the per-process notify-once dedupe for both signals.
+        # In-memory/process-local like self.collisions.
+        self.worktrees = WorktreeIndex()
+        self.collision_notify_once = NotifyOnce()
         self.start_time = start_time
         # Published only at the final boot-to-ready boundary in server.py.
         # The socket binds earlier, so /api/ready can truthfully return 503
