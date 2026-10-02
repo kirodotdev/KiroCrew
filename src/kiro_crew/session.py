@@ -3380,6 +3380,10 @@ class SessionManager:
         or None. Legacy Slack sessions surface as a Slack ``ChannelLink``."""
         return self._session_map.get_mirror_link(key)
 
+    def link_epoch(self, key: str) -> int:
+        """The session map's lock-free link epoch for *key* (see ``SessionMap.link_epoch``)."""
+        return self._session_map.link_epoch(key)
+
     def mirror_accepts_inbound(self, key: str) -> bool:
         """True iff this session's mirror is a session-resume (two-way) binding."""
         return self._session_map.mirror_accepts_inbound(key)

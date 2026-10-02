@@ -571,7 +571,33 @@ class SessionMap:
         self._snapshot_seq = 0
         self._written_seq = 0
         self._io_lock = threading.Lock()
+        # Bumped (under ``_MAP_LOCK``) by every write that can ADD a channel link
+        # to a session -- a Slack thread or a mirror binding -- and read lock-free
+        # through :meth:`link_epoch`, so a coroutine can fence "no link was added
+        # to THIS session since I probed" without taking the lock on the event
+        # loop. Kept per session so one session's link write never moves the
+        # fence another session's pending write is holding. Values come from one
+        # map-wide monotonic counter, so a session's entry can be dropped when the
+        # session leaves the map (:meth:`_remove_entry`) without a recreated key
+        # ever reading an epoch a stale probe recorded.
+        self._link_epochs: dict[str, int] = {}
+        self._link_epoch_seq = 0
         self._load()
+
+    def link_epoch(self, key: str) -> int:
+        """A counter that changes whenever a channel link may have been added to *key*.
+
+        Lock-free on purpose (a single dict read): a caller probes the session's
+        links off the loop, keeps the epoch it read BEFORE that probe, and
+        re-checks it inside its own critical section on the loop; a different
+        value means a link write for that session landed in between and the probe
+        is stale. A write to any other session leaves it unchanged.
+        """
+        return self._link_epochs.get(canonical_key(key), 0)
+
+    def _bump_link_epoch(self, key: str) -> None:
+        self._link_epoch_seq += 1
+        self._link_epochs[key] = self._link_epoch_seq
 
     @contextmanager
     def batched_save(self) -> Iterator[None]:
@@ -1262,6 +1288,10 @@ class SessionMap:
         is announced here rather than at each caller — this is the only path by
         which a whole entry leaves the map.
         """
+        # The epoch leaves with the session (see ``_link_epochs``): its values
+        # are map-wide monotonic, so a recreated key still reads differently
+        # from any epoch recorded before the removal.
+        self._link_epochs.pop(key, None)
         entry = self._data.pop(key, None)
         if not entry:
             return
@@ -1620,6 +1650,10 @@ class SessionMap:
                 if evicted:
                     self._save()
                 return
+        # A binding is being added or changed from here on (re-registering the
+        # identical one above is not), so the link epoch moves.
+        self._bump_link_epoch(key)
+        if entry:
             # REBIND: the mute belonged to the binding being replaced, so it goes
             # with it rather than carrying onto a thread the user never muted.
             entry.pop("slack_paused", None)
@@ -1800,6 +1834,7 @@ class SessionMap:
             self.clear_mirror_link(key, reason=reason)
             return
         if link.channel_type == SLACK_NAMESPACE:
+            # The Slack path moves the link epoch itself, and only on a change.
             self.set_slack_link(key, link.thread_id or "", link.channel_id)
             return
         key = canonical_key(key)
@@ -1826,6 +1861,13 @@ class SessionMap:
         same_target = isinstance(previous, dict) and ChannelLink.from_dict(previous) == link
         if not same_target or not entry.get("mirror_nonce"):
             entry["mirror_nonce"] = self._new_binding_nonce()
+        # Re-registering the identical binding (the dispatcher does this on every
+        # inbound turn) is not a new link, so only a changed target or inbound
+        # flag moves the link epoch a pending folder-steering write is fenced on.
+        if entry.get("mirror") != stored or bool(entry.get("mirror_accepts_inbound")) != bool(
+            accepts_inbound
+        ):
+            self._bump_link_epoch(key)
         entry["mirror"] = stored
         if accepts_inbound:
             entry["mirror_accepts_inbound"] = True

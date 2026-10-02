@@ -5,7 +5,7 @@ change its model, reload its agent process, and take another one under itself in
 the sidebar. The tools come from the
 `kirocrew-dashboard` MCP server, so an agent that does not mount that server
 never has them — exactly like any other MCP server. This page is the reference
-for all 28 of its tools, written for the agent that is about to use them.
+for all 29 of its tools, written for the agent that is about to use them.
 
 The server is defined in `src/kiro_crew/mcp_dashboard.py`. Two halves:
 
@@ -15,6 +15,7 @@ The server is defined in `src/kiro_crew/mcp_dashboard.py`. Two halves:
   `session_status`, `session_adopt`, `session_release`. These reach another session.
 - **Sidebar shape** — `chat_folder_tree`, `chat_folder_create`,
   `chat_folder_move`, `chat_folder_move_session`, `chat_folder_file_self`,
+  `chat_folder_steering_set`,
   `chat_tag_list`, `chat_tag_create`, `chat_tag_update`, `chat_tag_assign`,
   `chat_tag_column_list`, `chat_tag_column_create`, `chat_tag_column_move`,
   `chat_session_pin`. These organize what the person sees in the sidebar.
@@ -517,11 +518,12 @@ The sidebar tree the person organizes their sessions in.
 
 | Tool | Arguments | What it does |
 |---|---|---|
-| `chat_folder_tree` | none | Every folder (id, human path, project dir, default agent) with the live sessions nested under it, plus an `(unfiled)` group. Listed in **sidebar order**, not alphabetically |
+| `chat_folder_tree` | none | Every folder (id, human path, project dir, default agent, declared steering directories) with the live sessions nested under it, plus an `(unfiled)` group. Listed in **sidebar order**, not alphabetically |
 | `chat_folder_create` | `name` (required), `parent` | Create a folder. `parent` is an id or a `/`-separated path; missing segments are created (`mkdir -p`). Omit or pass `root` for top level. Creating never moves anything |
 | `chat_folder_move` | `folder` (required), `new_parent`, `before`, `after` | Reparent a folder and/or set its position among siblings. Moves everything inside it; cycle-guarded |
 | `chat_folder_move_session` | `session` (required), `folder` | File another live session into a folder, or omit `folder` to unfile it to the top level |
 | `chat_folder_file_self` | `folder` | File **this** session — the caller — into a folder. Writes only its own placement |
+| `chat_folder_steering_set` | `folder` (required), `steering_dirs` (required) | Replace a folder's **additional steering directories** — the same setting as Folder settings → Additional steering, through the same endpoint. `[]` clears |
 
 Read `chat_folder_tree` before you move anything: it renders folders in the order
 the person actually sees, which is what makes a `before` / `after` anchor safe to
@@ -539,6 +541,53 @@ goal's folder first, then create each worker with
 `folder="<goal>/<worker agent>"`, and the person finds the conductor and every
 worker under one heading. It can write no placement but its own, which is why it
 is safe to grant where `chat_folder_move_session` is withheld.
+
+`chat_folder_steering_set` is how an agent operates the folder's steering the way
+the person does from Folder settings. Every always-inclusion `*.md` under each
+directory is delivered to every session filed in the folder or its subfolders,
+after whatever the ancestor folders declare (steering accumulates root-first;
+`chat_folder_tree` shows each folder's own `steering=[…]`, so the ancestors'
+lines above are the inherited set). The list you pass REPLACES the stored one.
+Each entry must be an absolute path to an existing directory; a sensitive path,
+a duplicate, or more than 16 entries is refused by the endpoint
+(`steering_dirs_invalid`), and native Windows refuses any non-empty list. Only
+the person may declare steering: a steering directory is a host-file read the
+gateway performs on the folder's behalf, and folder permission is not host-file
+permission — so an app or crew-member session is refused at the tool for setting
+and clearing alike (the endpoint's `steering_dirs_forbidden` covers only a non-empty
+list, and would let it clear a folder it owns), a channel- or schedule-bound session is refused at
+the tool before any read, and the verb is accepted only from the person's own
+dashboard tab — for setting and clearing alike, and only while that tab has no
+channel link and only in a conversation no channel message has entered. A
+`dashboard:` key names the slot a turn runs in, not where its words came from: a
+tab linked to a Slack thread (`/kirocrew link-to-dashboard`) keeps its key and
+runs the thread's replies as turns, and a channel-born session is brought back
+by a human reply the same way. Once such a reply is in the conversation, any
+later turn can act on its text — a follow-up turn, a subagent's result, a turn
+you type after unlinking — so the conversation is what gets marked, not the
+turn. The slot records `channel_turn_seen` the moment a channel message (or a
+scheduled job, app or crew-peer turn) is queued or run, and never clears it. It
+is not saved to disk: after a gateway restart, a History resume or an import,
+every restored conversation reads as marked, because the saved transcript can be
+edited and cannot prove a conversation clean. So a tab that worked before a
+restart is refused after it; open a fresh tab for the change. The tool
+refuses on it. A second, independent refusal is the slot's shape: any channel
+link on the caller's own slot refuses the verb even before a reply has
+arrived. Either way the fix is a fresh dashboard tab, or Folder settings →
+Additional steering.
+
+Even from a clean tab, every change the tool asks for waits for the person: an
+approval card appears on the dashboard naming the folder and the directories,
+and nothing is stored until the person clicks Approve. No trust or yolo mode
+answers it, and only the owner's own dashboard session can answer the card, so
+the agent cannot answer its own. A declined card, or one
+left unanswered for 90 seconds, returns `steering_approval_declined`
+and stores nothing. The gates above cannot see a web page or a file the agent
+read into the conversation, so the person's click is what authorizes the
+change. Clearing is not exempted
+because the stored list keeps no prior value: an erased list is config the person
+must retype, and an empty list is an ordinary input from a channel session, not
+a rare one.
 
 Folder moves are metadata only: the session keeps its transcript, its model, and
 any running turn. Archived (history) sessions cannot be moved — bring one back
@@ -650,6 +699,9 @@ dispatch in the same way, because they rearrange the person's board.
 `session_broadcast` is blocked for that reason multiplied by the fleet, and
 `session_status` because its rows carry other sessions' titles — the names of the
 user's private work, in front of whoever is in the thread.
+`chat_folder_steering_set` is on the same list too: it names host directories the
+gateway reads into every later chat in the folder, on words from a thread other
+people are in.
 
 ### Switches and ceilings
 

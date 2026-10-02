@@ -1918,3 +1918,236 @@ class TestALapsedGrantIsNotTornDownTwice:
         _deny("yolo")
         assert override.is_active() is False
         assert seen == ["dashboard"], f"a lapsed grant must not be torn down twice: {seen}"
+
+
+class TestAHumanOnlyApprovalIsAnsweredOnlyByThePerson:
+    """A steering change an agent asks for is authorized by the person's own
+    click on its card: no mode switch sweeps it, and neither the agent's
+    internal credential nor an app may resolve it."""
+
+    async def _park(self, state, *, human_only: bool, approval_id: str):
+        task = asyncio.ensure_future(
+            state.request_approval(
+                approval_id,
+                "chat_folder_steering_set",
+                "chat_folder_steering_set",
+                tool_input="Folder: Org",
+                slot="s1",
+                human_only=human_only,
+            )
+        )
+        for _ in range(20):
+            await asyncio.sleep(0)
+            if approval_id in state._approval_futures:
+                break
+        return task
+
+    @pytest.mark.asyncio
+    async def test_a_yolo_sweep_leaves_a_human_only_card_pending(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        _install_no_policy()
+        state = _make_state(tmp_path)
+        state.get_or_create_slot("s1")
+        person_only = await self._park(state, human_only=True, approval_id="steer-1")
+        ordinary = await self._park(state, human_only=False, approval_id="plain-1")
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/mode", json={"mode": "yolo"})
+            assert resp.status == 200, await resp.text()
+
+        assert await ordinary is True, "contrast: an ordinary card is swept"
+        assert not state._approval_futures["steer-1"].done()
+        person_only.cancel()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("caller", ["internal", "app"])
+    async def test_an_agent_or_app_cannot_answer_it(self, tmp_path, monkeypatch, caller):
+        from kiro_crew.dashboard.chat import api_chat_slot_approve
+        from kiro_crew.dashboard.handlers.sessions import api_approval_resolve
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        recorded: list[dict] = []
+        fake_sel = MagicMock()
+        fake_sel.log_api_access = lambda **kw: recorded.append(kw)
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.sel", lambda: fake_sel)
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.sel", lambda: fake_sel)
+        state = _make_state(tmp_path)
+        state.get_or_create_slot("s1")
+        parked = await self._park(state, human_only=True, approval_id="steer-2")
+
+        @web.middleware
+        async def _as_caller(request: web.Request, handler):
+            request["app"] = "acme" if caller == "app" else ""
+            if caller == "internal":
+                request["internal_auth"] = True
+            request["user"] = "local-app"
+            return await handler(request)
+
+        app = web.Application(middlewares=[_as_caller])
+        app["state"] = state
+        app.router.add_post("/api/chat/slots/{slot}/approve", api_chat_slot_approve)
+        app.router.add_post("/api/approvals/{id}/{action}", api_approval_resolve)
+        async with TestClient(TestServer(app)) as client:
+            slot_resp = await client.post(
+                "/api/chat/slots/s1/approve",
+                json={"action": "approved", "request_id": "steer-2"},
+            )
+            slot_body = await slot_resp.json()
+            route_resp = await client.post("/api/approvals/steer-2/approve")
+            route_body = await route_resp.json()
+        if caller == "internal":
+            assert slot_resp.status == 403
+            assert slot_body["code"] == "approval_person_only"
+        else:
+            assert slot_resp.status in (403, 404)
+        assert route_resp.status == 403
+        assert route_body["code"] == "approval_person_only"
+        # Every person-only refusal is a permission decision, so it is audited.
+        refusals = [kw for kw in recorded if kw.get("source") == "approval_person_only"]
+        assert {kw["resources"] for kw in refusals} == {"steer-2"}
+        slot_refused_here = slot_body.get("code") == "approval_person_only"
+        assert len(refusals) == 1 + int(slot_refused_here)
+        assert all(kw["outcome"] == "denied" for kw in refusals)
+        assert not state._approval_futures["steer-2"].done()
+        parked.cancel()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("subject", ["someone-else", "local-app"])
+    async def test_a_signed_dashboard_session_that_is_not_the_owner_cannot_answer_it(
+        self, tmp_path, monkeypatch, subject
+    ):
+        """With an owner configured, a signed dashboard subject that is not that
+        owner -- another login, or a pre-owner bootstrap session -- is refused on
+        both resolve routes, and the card stays pending for the owner."""
+        from kiro_crew.dashboard.chat import api_chat_slot_approve
+        from kiro_crew.dashboard.handlers.sessions import api_approval_resolve
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.owner_id = "owner-1"
+        state.get_or_create_slot("s1")
+        parked = await self._park(state, human_only=True, approval_id="steer-4")
+
+        @web.middleware
+        async def _as_subject(request: web.Request, handler):
+            request["app"] = ""
+            request["user"] = subject
+            return await handler(request)
+
+        app = web.Application(middlewares=[_as_subject])
+        app["state"] = state
+        app.router.add_post("/api/chat/slots/{slot}/approve", api_chat_slot_approve)
+        app.router.add_post("/api/approvals/{id}/{action}", api_approval_resolve)
+        async with TestClient(TestServer(app)) as client:
+            slot_resp = await client.post(
+                "/api/chat/slots/s1/approve",
+                json={"action": "approved", "request_id": "steer-4"},
+            )
+            route_resp = await client.post("/api/approvals/steer-4/approve")
+            slot_text = await slot_resp.text()
+            route_text = await route_resp.text()
+        # A pre-owner bootstrap session gets the re-authenticate answer; any
+        # other non-owner gets the person-only refusal.
+        refused = (401, 403)
+        assert slot_resp.status in refused, slot_text
+        assert route_resp.status in refused, route_text
+        assert not state._approval_futures["steer-4"].done()
+
+        # Contrast: the configured owner's own session answers it.
+        @web.middleware
+        async def _as_owner(request: web.Request, handler):
+            request["app"] = ""
+            request["user"] = "owner-1"
+            return await handler(request)
+
+        owner_app = web.Application(middlewares=[_as_owner])
+        owner_app["state"] = state
+        owner_app.router.add_post("/api/approvals/{id}/{action}", api_approval_resolve)
+        async with TestClient(TestServer(owner_app)) as client:
+            resp = await client.post("/api/approvals/steer-4/approve")
+            assert resp.status == 200, await resp.text()
+        assert await parked is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("action", ["yolo", "trust", "trust_reads"])
+    async def test_an_agent_action_naming_the_card_has_no_side_effect(
+        self, tmp_path, monkeypatch, action
+    ):
+        """The refusal runs BEFORE the action branches: a yolo or trust action
+        naming the card arms no override and grants no slot trust."""
+        from kiro_crew.dashboard.chat import api_chat_slot_approve
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        parked = await self._park(state, human_only=True, approval_id="steer-3")
+        activations: list[str] = []
+        fake_override = MagicMock()
+        fake_override.activate.side_effect = lambda *a: activations.append("armed") or MagicMock(
+            active=True
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.safety_override", lambda: fake_override
+        )
+        policies: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            state.sessions,
+            "set_approval_policy",
+            lambda key, policy: policies.append((key, policy)),
+        )
+
+        @web.middleware
+        async def _as_agent(request: web.Request, handler):
+            request["internal_auth"] = True
+            request["app"] = ""
+            request["user"] = "local-app"
+            return await handler(request)
+
+        app = web.Application(middlewares=[_as_agent])
+        app["state"] = state
+        app.router.add_post("/api/chat/slots/{slot}/approve", api_chat_slot_approve)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat/slots/s1/approve",
+                json={"action": action, "request_id": "steer-3"},
+            )
+            body = await resp.json()
+        if action == "trust":
+            # Durable trust on a state-level approval is refused by its own
+            # earlier guard; either refusal leaves no side effect.
+            assert resp.status in (400, 403), body
+        else:
+            assert resp.status == 403, body
+            assert body["code"] == "approval_person_only"
+        assert activations == [], "no global override was armed"
+        assert policies == [], "no slot approval policy was written"
+        assert not slot._trust and not slot._trust_reads
+        assert not state._approval_futures["steer-3"].done()
+        parked.cancel()
+
+    @pytest.mark.asyncio
+    async def test_the_persons_click_answers_it(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard.handlers.sessions import api_approval_resolve
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.get_or_create_slot("s1")
+        parked = await self._park(state, human_only=True, approval_id="steer-3")
+
+        app = _make_app(state)
+        app.router.add_post("/api/approvals/{id}/{action}", api_approval_resolve)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/approvals/steer-3/approve")
+            assert resp.status == 200, await resp.text()
+        assert await parked is True
+
+
+def test_the_approval_resolve_route_is_not_an_internal_credential_path():
+    """The agent's MCP credential is the internal secret; the card's resolve
+    route must not accept it."""
+    from kiro_crew.dashboard import server
+    from kiro_crew.dashboard.token_auth import internal_path_matches
+
+    for path in ("/api/approvals", "/api/approvals/steer-1/approve"):
+        assert not internal_path_matches(path, server._STRICT_INTERNAL_API_PATHS)
+        assert not internal_path_matches(path, server._MIXED_INTERNAL_API_PATHS)

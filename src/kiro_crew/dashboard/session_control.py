@@ -1742,6 +1742,75 @@ def _refuse_moved_caller_identity(
         )
 
 
+def _carries_channel_words_in_memory(slot: "_ChatSlot | None") -> bool:
+    """The part of :func:`_caller_carries_channel_words` that reads only the slot.
+
+    The slot's own foreign-words predicate (``carries_foreign_words``: the sticky
+    ``_channel_turn_seen``, ``channel_origin``, a peer steer in flight, a
+    remote-crew transcript), or a link on the slot itself. No session-store read,
+    so it is safe on the event loop.
+    """
+    if slot is None:
+        return False
+    carries = getattr(slot, "carries_foreign_words", None)
+    if callable(carries) and carries():
+        return True
+    if getattr(slot, "_channel_turn_seen", False) or getattr(slot, "channel_origin", False):
+        return True
+    return bool(_channel_link_of(slot))
+
+
+def _caller_carries_channel_words(
+    state: "DashboardState", caller_slot: "_ChatSlot | None", *, mirrored: bool = False
+) -> bool:
+    """Whether channel-authored text may be in *caller_slot*'s conversation.
+
+    The same test ``chat_folder_steering_set`` applies to its own caller, read
+    here so a delivery can pass the mark on: the in-memory facts
+    (:func:`_carries_channel_words_in_memory`) or an outbound mirror in the
+    session store (reachable under the owner-DM exemption). The store read is
+    NOT made here: ``SessionMap``'s accessors hold a threading lock across its
+    disk save, so the caller probes it off the loop (:func:`_probe_mirror_off_loop`)
+    and passes the answer as *mirrored*.
+    """
+    if caller_slot is None:
+        return False
+    return mirrored or _carries_channel_words_in_memory(caller_slot)
+
+
+async def _probe_mirror_off_loop(state: "DashboardState", slot: "_ChatSlot | None") -> bool:
+    """:func:`_has_channel_mirror` for *slot*, run in a worker thread.
+
+    Fails closed like the refusal paths: an unreadable store reads as mirrored.
+    ``False`` without a probe when there is no slot or its in-memory facts
+    already answer.
+    """
+    if slot is None or _carries_channel_words_in_memory(slot):
+        return False
+    return await asyncio.to_thread(_has_channel_mirror, state, slot)
+
+
+async def mark_reader_for_mirrored_target(
+    state: "DashboardState", *, caller_session_key: str, target_slot_key: str
+) -> None:
+    """The mirror half of the read direction of the mark, off the loop.
+
+    :func:`read_messages` marks the reader on the target's in-memory facts
+    synchronously; a target whose only channel reach is an outbound mirror in the
+    session store is judged here, after the read, with the store probe in a
+    worker thread. Called by the async read handler once the read succeeded.
+    """
+    target = state.get_slot(target_slot_key) if target_slot_key else None
+    if target is None:
+        return
+    reader_key = caller_slot_key(state, caller_session_key)
+    reader = state.get_slot(reader_key) if reader_key else None
+    if reader is None or getattr(reader, "_channel_turn_seen", False):
+        return
+    if await _probe_mirror_off_loop(state, target):
+        reader._channel_turn_seen = True
+
+
 def _refuse_ineligible_creator(state: "DashboardState", caller_slot: "_ChatSlot") -> None:
     """Refuse a caller that may not manufacture a session.
 
@@ -6136,6 +6205,13 @@ async def send_to_target(
         await asyncio.to_thread(sel)
     except Exception:  # noqa: BLE001 - a prewarm failure must not fail the send
         logger.warning("session-control SEL prewarm failed", exc_info=True)
+    # The caller's session-store mirror, probed off the loop (the store's reads
+    # hold a threading lock across its disk save) and before the config warm, so
+    # the warm stays the LAST suspension before the synchronous gate. The answer
+    # is bound to this slot object: if the caller key names a different slot by
+    # the time the mark is decided, that reads as mirrored (fail closed).
+    probed_caller = state.get_slot(caller_slot_key(state, caller_session_key) or "")
+    probed_caller_mirrored = await _probe_mirror_off_loop(state, probed_caller)
     await prewarm_enabled_check()
 
     body = message.strip()
@@ -6198,6 +6274,18 @@ async def send_to_target(
     from kiro_crew.dashboard.chat_runner import _run_chat
 
     caller_key = caller_slot_key(state, caller_session_key)
+    # The channel mark travels with the words (see ``_ChatSlot._channel_turn_seen``):
+    # a caller whose conversation channel text has entered -- marked, born to show a
+    # channel transcript, or still linked/mirrored under the owner-DM exemption --
+    # may be relaying those words, so the target is marked on the arm that actually
+    # hands it the text (steer, requeue, queue or run), never on a send that
+    # delivers nothing. Sticky once delivered; never cleared otherwise.
+    caller_now = state.get_slot(caller_key) if caller_key else None
+    carries_channel_words = _caller_carries_channel_words(
+        state,
+        caller_now,
+        mirrored=probed_caller_mirrored or (caller_now is not probed_caller),
+    )
     # Sanitized on the same grounds as the steer path (``chat_delivery`` sanitizes
     # before ``slot.append``): this body comes from ANOTHER session and is persisted
     # into — and broadcast from — the target's transcript, so raw content must never
@@ -6347,23 +6435,40 @@ async def send_to_target(
                 slot.key,
             )
 
-        _steer_task = asyncio.ensure_future(_steer_delivery())
+        # Held BEFORE the RPC for the same reason as the audience fence: a running
+        # turn reads a steer the moment it lands, so the refusal has to be in place
+        # first. Tentative and process-local (the slot projection reads it; it is
+        # never persisted): only a delivered steer turns it into the durable mark,
+        # and releasing it cannot clear a mark any other delivery set meanwhile.
+        if carries_channel_words:
+            slot._channel_marks_in_flight += 1
         try:
-            outcome = await _await_authorized_delivery(asyncio.shield(_steer_task))
-        except asyncio.CancelledError:
-            _retain_orphaned_steer_delivery(
-                _steer_task,
-                slot.key,
-                unavailable_outcome=STEER_UNAVAILABLE,
-                on_unavailable=_queue_after_orphaned_unavailable,
-            )
-            raise
-        steered = outcome == STEER_STEERED
-        # The turn ended while the steer RPC was suspended and its teardown moved
-        # the text onto the queue: it WILL run, and taking the queue arm below
-        # would deliver it a second time. Reported as a queued delivery, which is
-        # what it now is.
-        requeued = outcome == STEER_REQUEUED
+            _steer_task = asyncio.ensure_future(_steer_delivery())
+            try:
+                outcome = await _await_authorized_delivery(asyncio.shield(_steer_task))
+            except asyncio.CancelledError:
+                # The shielded delivery runs on and may still land the text, so the
+                # mark is set now rather than on an outcome this frame never sees.
+                if carries_channel_words:
+                    slot._channel_turn_seen = True
+                _retain_orphaned_steer_delivery(
+                    _steer_task,
+                    slot.key,
+                    unavailable_outcome=STEER_UNAVAILABLE,
+                    on_unavailable=_queue_after_orphaned_unavailable,
+                )
+                raise
+            steered = outcome == STEER_STEERED
+            # The turn ended while the steer RPC was suspended and its teardown moved
+            # the text onto the queue: it WILL run, and taking the queue arm below
+            # would deliver it a second time. Reported as a queued delivery, which is
+            # what it now is.
+            requeued = outcome == STEER_REQUEUED
+            if carries_channel_words and (steered or requeued):
+                slot._channel_turn_seen = True
+        finally:
+            if carries_channel_words:
+                slot._channel_marks_in_flight -= 1
         if requeued and state._slots.get(slot.key) is not slot:
             # The teardown queued this text on THIS slot object, and the key has
             # since stopped resolving to it -- the target was closed and recreated
@@ -6518,6 +6623,10 @@ async def send_to_target(
         # function can reach is ever unattended, and a wrapper would only add a
         # never-taken timeout arm. The composer's own queued path does the same
         # (`server.py` passes `_run_chat` directly).
+        # The delivery point for this arm: the prompt is queued or run by the
+        # call below, so the mark lands immediately before it.
+        if carries_channel_words:
+            slot._channel_turn_seen = True
         started = bool(
             slot.enqueue_or_run_prompt(
                 prompt,
@@ -7482,6 +7591,17 @@ def read_messages(
         outcome="allowed",
         detail={"returned": len(out)},
     )
+    # The read direction of the mark (see ``_ChatSlot._channel_turn_seen``): what a
+    # read returns from a conversation channel words have entered -- its rows, and
+    # its title even when no rows are new -- lands in the CALLER's context, so the
+    # caller is marked on any successful read, the same rule a send applies to its
+    # target. A target reached only through a session-store mirror is judged by
+    # the async caller (``mark_reader_for_mirrored_target``), off the loop.
+    if _carries_channel_words_in_memory(slot):
+        reader_key = caller_slot_key(state, caller_session_key)
+        reader = state.get_slot(reader_key) if reader_key else None
+        if reader is not None:
+            reader._channel_turn_seen = True
     return {
         "ok": True,
         "target": slot.key,
@@ -7635,6 +7755,16 @@ async def read_summary(
             code="target_replaced",
         )
     bounded = _bounded_summary(payload or {})
+    # The read direction of the mark, as in :func:`read_messages`: the summary's
+    # intents, constraints and title are derived from the target's transcript,
+    # so a caller reading them from a conversation channel words have entered
+    # is marked too. The mirror half is judged by the async handler
+    # (``mark_reader_for_mirrored_target``), off the loop.
+    if _carries_channel_words_in_memory(slot):
+        reader_key = caller_slot_key(state, caller_session_key)
+        reader = state.get_slot(reader_key) if reader_key else None
+        if reader is not None:
+            reader._channel_turn_seen = True
 
     _audit(
         caller_session_key=caller_session_key,

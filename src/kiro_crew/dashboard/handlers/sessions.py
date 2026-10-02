@@ -60,6 +60,10 @@ from kiro_crew.dashboard.handlers._shared import (
     guard_owner_surface_routes,
     internal_memory_scope,
 )
+from kiro_crew.dashboard.handlers.source_providers import (
+    is_owner_dashboard_request,
+    stale_owner_session_response,
+)
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.session_memory import SessionMemorySampler
 from kiro_crew.dashboard.state import DashboardState, _normalize_slot_key
@@ -3620,6 +3624,34 @@ async def api_approval_resolve(request: web.Request) -> web.Response:
     action = request.match_info["action"]
     if action not in ("approve", "reject", "reject_once"):
         return web.json_response({"error": "invalid action"}, status=400)
+    record = getattr(state, "_pending_approvals", {}).get(approval_id)
+    if isinstance(record, dict) and record.get("human_only") is True:
+        # Answered only by the person's own click (see ApprovalCoordinator.request):
+        # the owner's own dashboard session, never the agent's internal
+        # credential, an app token, or another signed dashboard subject.
+        if request.get("internal_auth") is True or not is_owner_dashboard_request(request):
+            try:
+                _sel().log_api_access(
+                    caller="internal" if request.get("internal_auth") is True else "dashboard",
+                    operation="approval_resolve",
+                    outcome="denied",
+                    source="approval_person_only",
+                    resources=approval_id,
+                    error="a person-only approval was answered by a non-person caller",
+                )
+            except Exception:
+                logger.warning(
+                    "SEL audit failed for refused person-only approval %s",
+                    approval_id,
+                    exc_info=True,
+                )
+            return stale_owner_session_response(request) or web.json_response(
+                {
+                    "error": "this approval can only be answered by the person",
+                    "code": "approval_person_only",
+                },
+                status=403,
+            )
     if "origin" in request.query:
         # Dynamic Dashboard echoes the inventory record's origin, exact slot and
         # instance. Do not fall through to native futures when that displayed

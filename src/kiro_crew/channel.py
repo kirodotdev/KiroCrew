@@ -192,6 +192,13 @@ CHANNEL_AGENT_BLOCKED_TOOLS: tuple[str, ...] = (
     "chat_tag_column_create",
     "chat_tag_column_move",
     "session_revive",
+    # The one folder verb with reach beyond the sidebar: it names host directories
+    # the gateway reads into every later chat in the folder. A channel agent acts
+    # on words from a thread other people are in, so it is blocked here at the
+    # permission event as well as refused at MCP dispatch (the tool accepts any
+    # call, clearing included, only from a ``dashboard:`` caller) — the same two-layer
+    # containment the session tools have.
+    "chat_folder_steering_set",
     # The four work-ledger tools, blocked for the same containment reason and not
     # for a new one: a channel agent has no dispatch relationship, so it is
     # neither a conductor nor a bound worker and has no business holding one.

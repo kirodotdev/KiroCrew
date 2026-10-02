@@ -85,6 +85,7 @@ from kiro_crew.dashboard.chat_persistence import (
     pin_private_agent_store,
     register_reasoning_effort_values,
     release_prewarmed_session,
+    restore_channel_mark,
     save_slot_off_loop,
 )
 from kiro_crew.dashboard.chat_runner import (
@@ -140,7 +141,10 @@ from kiro_crew.dashboard.chat_utils import (
     tighten_replacement_to_restricted_original as _tighten_replacement_to_restricted_original,
 )
 from kiro_crew.dashboard.handlers._shared import _owner_denial_response, read_bounded_json
-from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+from kiro_crew.dashboard.handlers.source_providers import (
+    is_owner_dashboard_request,
+    stale_owner_session_response,
+)
 from kiro_crew.dashboard.remote_adopt import (
     ADOPT_PEER_MODE_UNKNOWN,
     ADOPT_TARGET_UNKNOWN,
@@ -12932,6 +12936,9 @@ def _hydrate_slot_from_history(
     # runner reads it when selecting the memory binding; the flag is not
     # persisted in the transcript, so it must be set on each hydration.
     slot._memory_assignment_from_history = True
+    # Resume/import rehydrates the transcript, so it rehydrates the channel mark
+    # with it -- sticky, never cleared here (see ``_ChatSlot._channel_turn_seen``).
+    restore_channel_mark(slot, meta)
     # On a member key the pin came from the BINDING at slot creation above and
     # metadata may not override it (same tamperable file the guard refused to
     # trust). On an ordinary key, mode="member" may not ride in either — the
@@ -14435,6 +14442,11 @@ async def api_chat_mode(request: web.Request) -> web.Response:
         if not scoped:
             for aid in list(state._approval_futures):
                 fut = state._approval_futures[aid]
+                record = state._pending_approvals.get(aid)
+                if isinstance(record, dict) and record.get("human_only") is True:
+                    # A card only the person's own click may answer (see
+                    # ``ApprovalCoordinator.request``): no mode switch answers it.
+                    continue
                 if not fut.done():
                     state.resolve_approval(aid, True)
                     try:
@@ -14677,6 +14689,38 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
         state_fut = state._approval_futures.get(request_id) if request_id else None
         if state_fut and not state_fut.done():
             return _deny_trust_pattern(name, request_id, original_action, "approval_not_slot_owned")
+    if not fut or fut.done():
+        human_only_record = state._pending_approvals.get(request_id) if request_id else None
+        if isinstance(human_only_record, dict) and human_only_record.get("human_only") is True:
+            # A card only the person's own click answers (a steering change an
+            # agent asked for): only the owner's own dashboard session may
+            # answer it. Refuse an agent's internal credential, an app's token
+            # and any other signed dashboard subject BEFORE any action branch
+            # runs, so neither approving it nor a side effect of the action (a
+            # yolo arm, a trust grant) is reachable through the card.
+            if request.get("internal_auth") is True or not is_owner_dashboard_request(request):
+                try:
+                    sel().log_api_access(
+                        caller=f"dashboard:{name}",
+                        operation="chat.slot_approve",
+                        outcome="denied",
+                        source="approval_person_only",
+                        resources=request_id,
+                        error="a person-only approval was answered by a non-person caller",
+                    )
+                except Exception:
+                    logger.warning(
+                        "SEL audit failed for refused person-only approval %s",
+                        request_id,
+                        exc_info=True,
+                    )
+                return stale_owner_session_response(request) or web.json_response(
+                    {
+                        "error": "this approval can only be answered by the person",
+                        "code": "approval_person_only",
+                    },
+                    status=403,
+                )
     # Trust: auto-approve remaining tools for this slot. The approval policy MUST
     # be keyed by the OWNER's EFFECTIVE session key — a linked cron/workflow or
     # channel-surfaced slot runs under ``linked_session_key``, not

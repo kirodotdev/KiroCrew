@@ -444,3 +444,45 @@ def test_a_refusal_on_the_recheck_propagates(tmp_path, monkeypatch):
     with pytest.raises(sc.SessionControlError) as exc:
         _read(state, caller)
     assert exc.value.code == "linked_session_target"
+
+
+# ── The read direction of the channel mark, as for session_read_message ──────
+
+
+@pytest.mark.parametrize("taint", ["channel_turn_seen", "channel_origin"])
+def test_reading_a_marked_conversations_summary_marks_the_reader(tmp_path, monkeypatch, taint):
+    """The summary's intents, constraints and title come from the target's
+    transcript, so a reader of a marked conversation is marked too -- the
+    rule ``read_messages`` applies -- or a clean slot could launder channel
+    text into a later ``chat_folder_steering_set``."""
+    _pin_summaries(monkeypatch, True)
+    state, caller, target = _pair(tmp_path)
+    if taint == "channel_turn_seen":
+        target._channel_turn_seen = True
+    else:
+        target.channel_origin = True
+
+    out = _read(state, caller)
+
+    assert out["intents"]
+    assert caller._channel_turn_seen is True
+    assert caller.to_dict()["channel_turn_seen"] is True
+
+
+def test_reading_a_clean_conversations_summary_leaves_the_reader_clean(tmp_path, monkeypatch):
+    _pin_summaries(monkeypatch, True)
+    state, caller, _target = _pair(tmp_path)
+
+    _read(state, caller)
+
+    assert caller._channel_turn_seen is False
+
+
+def test_the_summary_handler_runs_the_off_loop_mirror_mark():
+    """The async summary endpoint completes the read direction for a target
+    reached only through a session-store mirror, as the read endpoint does."""
+    import inspect
+
+    assert "mark_reader_for_mirrored_target" in inspect.getsource(
+        handlers_sc.api_session_control_summary
+    )

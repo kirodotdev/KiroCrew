@@ -90,6 +90,7 @@
     "chat_folder_move": "Move folder",
     "chat_folder_move_session": "Move session to folder",
     "chat_folder_file_self": "File this session",
+    "chat_folder_steering_set": "Set folder steering",
     "chat_session_pin": "Pin session",
     "chat_tag_list": "List tags",
     "chat_tag_create": "Create tag",

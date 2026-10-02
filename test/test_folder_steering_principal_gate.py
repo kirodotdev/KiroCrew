@@ -116,6 +116,34 @@ async def test_member_principal_is_refused_the_same_way(tmp_path, no_disk):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("principal", ["acme", "member:reviewer-store"])
+async def test_a_tool_bound_clear_from_a_non_person_principal_is_refused(principal, no_disk):
+    """``chat_folder_steering_set`` sends a caller binding. Through it a
+    non-person principal may not clear steering either: only the person could
+    have declared it. That holds for a member however its slot is shaped (a
+    member DM, or an ordinary chat bound to the member's own store), because the
+    gate keys on the resolved principal, not on the slot's mode."""
+    own = {
+        "id": "f1",
+        "name": "Radar",
+        "parent_id": None,
+        "order": 0,
+        "owner_app": principal,
+        "steering_dirs": ["/srv/standards"],
+    }
+    state = _state([own])
+    async with TestClient(TestServer(_make_app(state, principal))) as client:
+        resp = await client.patch(
+            "/api/chat/folders/f1",
+            json={"steering_dirs": [], "steering_caller_generation": 1},
+        )
+        assert resp.status == 403, await resp.text()
+        assert (await resp.json())["code"] == "steering_dirs_forbidden"
+    assert state._folders[0]["steering_dirs"] == ["/srv/standards"]
+    assert no_disk == []
+
+
+@pytest.mark.asyncio
 async def test_app_may_still_clear_steering_dirs_on_its_own_folder():
     own = {
         "id": "f1",
