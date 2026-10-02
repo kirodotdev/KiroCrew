@@ -1,6 +1,11 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi, afterEach } from 'vitest'
+import { configureStore } from '@reduxjs/toolkit'
+import dashboardReducer from '../store/dashboardSlice'
+import type { AppDispatch } from '../store'
+import type { ChatSlot } from '../types'
+import { performAgentSlotSwitch } from '../lib/agentSwitch'
 
-import { ApiError } from '../api/client'
+import { ApiError, api } from '../api/client'
 import { agentSwitchFailureMessage, isTurnInFlightError } from '../utils/agentSwitchFeedback'
 import chatReducer, { setAgentSwitchNotice } from '../store/chatSlice'
 
@@ -98,5 +103,40 @@ describe('agent switch failure feedback', () => {
     const repeated = chatReducer(failed, setAgentSwitchNotice('invalid agent name'))
     expect(repeated.agentSwitchNotice).not.toBe(failed.agentSwitchNotice)
     expect(chatReducer(failed, setAgentSwitchNotice(null)).agentSwitchNotice).toBeNull()
+  })
+})
+
+
+describe('committed model reset feedback', () => {
+  afterEach(() => vi.restoreAllMocks())
+
+  it.each([
+    ['pinned', '', true],
+    ['', '', false],
+    ['auto', '', false],
+    ['pinned', 'pinned', false],
+    ['pinned', undefined, false],
+  ])('reports only an explicit pin cleared by the response (%s -> %s)', async (model, next, notice) => {
+    const key = `reset-feedback-${model}-${String(next)}`
+    const store = configureStore({
+      reducer: { dashboard: dashboardReducer, chat: chatReducer },
+      preloadedState: { dashboard: {
+        ...dashboardReducer(undefined, { type: 'init' }),
+        slots: [{ key, agent: 'old', model }] as ChatSlot[],
+      } },
+    })
+    vi.spyOn(api, 'chatSlotAgent').mockResolvedValue({ agent: 'reviewer', model: next })
+    await performAgentSlotSwitch(key, 'reviewer', store.dispatch as AppDispatch)
+    expect(store.getState().chat.agentSwitchNotice?.message ?? null).toBe(
+      notice ? 'Model reset to auto for reviewer.' : null,
+    )
+  })
+
+  it('does not announce a refused switch', async () => {
+    const store = configureStore({ reducer: { dashboard: dashboardReducer, chat: chatReducer } })
+    vi.spyOn(api, 'chatSlotAgent').mockRejectedValue(new Error('refused'))
+    await expect(performAgentSlotSwitch('reset-refused', 'reviewer', store.dispatch as AppDispatch))
+      .rejects.toThrow('refused')
+    expect(store.getState().chat.agentSwitchNotice).toBeNull()
   })
 })

@@ -1,4 +1,7 @@
 {
+  "agentSwitch": {
+    "modelReset": "Modell für {{agent}} auf auto zurückgesetzt."
+  },
   "commandCenter": {
     "automatic_cards": "Automatische Karten für alle Sitzungen",
     "card_limits": "Standardmäßig aus. Das Hintergrundmodell verarbeitet jeweils einen Aufruf. Höchstens ein Versuch pro Sitzung alle {{minutes}} Minuten und insgesamt {{hourly}} Versuche pro Stunde für alle Sitzungen, auch bei Fehlern. Live-Status und Entscheidungen brauchen kein Modell.",

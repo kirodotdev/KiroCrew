@@ -1,4 +1,7 @@
 {
+  "agentSwitch": {
+    "modelReset": "Modello reimpostato su auto per {{agent}}."
+  },
   "commandCenter": {
     "automatic_cards": "Schede automatiche per tutte le sessioni",
     "card_limits": "Disattivate per impostazione predefinita. Il modello in background esegue una chiamata alla volta. Al massimo un tentativo per sessione ogni {{minutes}} minuti e {{hourly}} tentativi all’ora condivisi tra tutte le sessioni, inclusi quelli falliti. Stato in tempo reale e decisioni non usano il modello.",

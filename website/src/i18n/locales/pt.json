@@ -1,4 +1,7 @@
 {
+  "agentSwitch": {
+    "modelReset": "Modelo redefinido para auto para {{agent}}."
+  },
   "commandCenter": {
     "automatic_cards": "Cartões automáticos para todas as sessões",
     "card_limits": "Desativados por padrão. O modelo em segundo plano faz uma chamada por vez. No máximo uma tentativa por sessão a cada {{minutes}} minutos e {{hourly}} tentativas por hora compartilhadas por todas as sessões, incluindo falhas. O estado em tempo real e as decisões não usam o modelo.",

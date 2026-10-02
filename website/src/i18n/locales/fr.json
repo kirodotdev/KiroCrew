@@ -1,4 +1,7 @@
 {
+  "agentSwitch": {
+    "modelReset": "Modèle réinitialisé sur auto pour {{agent}}."
+  },
   "commandCenter": {
     "automatic_cards": "Cartes automatiques pour toutes les sessions",
     "card_limits": "Désactivées par défaut. Le modèle d’arrière-plan traite un appel à la fois. Au maximum un essai par session toutes les {{minutes}} minutes et {{hourly}} essais par heure partagés entre toutes les sessions, échecs compris. L’état en direct et les décisions n’utilisent pas le modèle.",

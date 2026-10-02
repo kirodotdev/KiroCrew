@@ -1,4 +1,7 @@
 {
+  "agentSwitch": {
+    "modelReset": "Model reset to auto for {{agent}}."
+  },
   "commandCenter": {
     "automatic_cards": "Automatic cards for all sessions",
     "card_limits": "Off by default. Uses the background model, one call at a time. At most one attempt per session every {{minutes}} minutes and {{hourly}} attempts per hour shared by all sessions, including failures. Live status and decisions do not use the model.",

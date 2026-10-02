@@ -32,6 +32,7 @@ from chat_test_helpers import _make_state
 from kiro_crew import session_directive
 from kiro_crew.acp._dispatch import _build_tool_call_event, _kiro_mcp_server_name
 from kiro_crew.acp.types import (
+    EVENT_AGENT_SWITCHED,
     EVENT_COMPLETE,
     EVENT_SUBAGENT_ACTIVITY,
     EVENT_SUBAGENT_LIST,
@@ -744,3 +745,38 @@ class TestChatRunnerDirectiveSeam:
             spy = await _drive(state, slot, events, monkeypatch)
         spy.assert_not_called()
         assert "session-directive decode FAILED" in caplog.text
+
+
+class TestInTurnAgentSwitchPreservesTheModelPin:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("same_agent", [False, True])
+    async def test_provider_reported_switch_preserves_the_pin(
+        self, tmp_path, monkeypatch, same_agent
+    ):
+        from kiro_crew.dashboard import chat_runner
+
+        monkeypatch.setattr(chat_runner, "record_provider_agent_switch", MagicMock())
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        state = _stub_state(tmp_path)
+        slot = state.get_or_create_slot("in-turn-switch")
+        # The turn resolves both agent names against the fixture config.
+        others = [n for n in KiroCrewConfig.load().agents if n != slot.agent]
+        assert others, "the fixture must offer a different agent"
+        new_agent = slot.agent if same_agent else others[0]
+        slot.model = "claude-opus-5"
+        slot._fallback_primary_model = "claude-opus-5"
+        gen_before = slot._model_pick_gen
+        await _drive(
+            state,
+            slot,
+            [
+                AcpEvent(kind=EVENT_AGENT_SWITCHED, text=new_agent),
+                AcpEvent(kind=EVENT_COMPLETE),
+            ],
+            monkeypatch,
+        )
+        assert slot.agent == new_agent
+        assert slot.model == "claude-opus-5"
+        assert slot._model_pick_gen == gen_before
+        assert slot._fallback_primary_model == "claude-opus-5"

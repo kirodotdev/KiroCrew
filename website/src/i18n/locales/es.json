@@ -1,4 +1,7 @@
 {
+  "agentSwitch": {
+    "modelReset": "Modelo restablecido a auto para {{agent}}."
+  },
   "commandCenter": {
     "automatic_cards": "Tarjetas automáticas para todas las sesiones",
     "card_limits": "Desactivadas por defecto. El modelo en segundo plano procesa una llamada a la vez. Como máximo un intento por sesión cada {{minutes}} minutos y {{hourly}} intentos por hora entre todas las sesiones, incluidos los fallidos. El estado en vivo y las decisiones no usan el modelo.",

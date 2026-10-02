@@ -1,4 +1,7 @@
 {
+  "agentSwitch": {
+    "modelReset": "{{agent}} 的模型已重置为自动。"
+  },
   "commandCenter": {
     "automatic_cards": "为所有会话自动生成卡片",
     "card_limits": "默认关闭。后台模型一次处理一个调用。每个会话每 {{minutes}} 分钟最多尝试一次，所有会话合计每小时最多尝试 {{hourly}} 次，包含失败的尝试。实时状态和决策不调用模型。",

@@ -1,4 +1,7 @@
 {
+  "agentSwitch": {
+    "modelReset": "{{agent}}의 모델이 auto로 재설정되었습니다."
+  },
   "commandCenter": {
     "automatic_cards": "모든 세션의 카드 자동 생성",
     "card_limits": "기본값은 꺼짐입니다. 백그라운드 모델이 한 번에 하나의 호출을 처리합니다. 세션당 {{minutes}}분에 한 번, 모든 세션을 합쳐 시간당 {{hourly}}회까지 시도하며 실패한 시도도 포함됩니다. 실시간 상태와 결정에는 모델을 사용하지 않습니다.",

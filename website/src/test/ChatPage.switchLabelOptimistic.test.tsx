@@ -51,7 +51,7 @@ vi.mock('../api/client', () => ({
     chatSlotModel: vi.fn().mockResolvedValue({ ok: true, model: 'claude-sonnet-5' }),
     chatSlotProject: vi.fn().mockResolvedValue({ ok: true, project: '/home/user/proj-x' }),
     // The agent switch also names the re-resolved workspace binding.
-    chatSlotAgent: vi.fn().mockResolvedValue({ ok: true, agent: 'researcher', workspace: 'research-ws' }),
+    chatSlotAgent: vi.fn().mockResolvedValue({ ok: true, agent: 'researcher', workspace: 'research-ws', model: '' }),
     recentProjects: vi.fn().mockResolvedValue({ dirs: ['/home/user/proj-x'] }),
     browseDirs: vi.fn().mockResolvedValue({ path: '/home/user', parent: '/home', dirs: [] }),
     projectGit: vi.fn().mockRejectedValue(new Error('not a repo')),
@@ -253,6 +253,7 @@ describe('ChatPage — switch labels update without a slot-list round trip (#452
     const slot = () => store.getState().dashboard.slots.find(s => s.key === 'slot-a')
     await waitFor(() => expect(slot()?.agent).toBe('researcher'))
     expect(slot()?.workspace).toBe('research-ws')
+    expect(slot()?.model).toBe('')
     // …and not because anything re-fetched the slot list (no websocket
     // exists in this harness to push one either).
     expect(vi.mocked(api.chatSlots).mock.calls.length).toBe(slotsFetchesBeforePick)
