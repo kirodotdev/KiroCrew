@@ -46,6 +46,17 @@ _NO_BACKEND = pytest.mark.skipif(
     reason="this host has no OS sandbox backend that carries a caller's masks",
 )
 
+#: Command crons do not run on Windows at all: ``run_command_sandboxed`` resolves a
+#: POSIX ``sh`` through ``_resolve_command_shell`` (never ``$PATH``), finds none on
+#: Windows, and returns a ``_no_command_shell_message`` refusal *before* it ever reaches
+#: ``wrap_argv`` -- so ``seen`` is empty and ``status`` is ``error``. The bundle-readable
+#: contract is about what mask the call site asks ``wrap_argv`` for, which is unreachable
+#: here, so this whole subclass is POSIX-only (the script path has no such restriction).
+_NO_COMMAND_CRON = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="command crons are unsupported on Windows (no POSIX sh), so no spawn is reached",
+)
+
 
 @pytest.fixture(autouse=True)
 def _session_key(monkeypatch):
@@ -140,6 +151,7 @@ class TestAScriptCronNamingTheBundle:
         assert result["status"] == "ok", result
 
 
+@_NO_COMMAND_CRON
 class TestACommandCronRunningBundleCode:
     def test_the_call_site_leaves_the_bundle_readable(self, bundle, monkeypatch):
         seen = _record_spawns(monkeypatch)
