@@ -413,6 +413,7 @@ from kiro_crew.constants import (
     DEFAULT_SPAWN_MIN_MEMORY_GB,
     DEFAULT_SUBAGENT_COST_GB,
     DEFAULT_SUBAGENT_MAX_TURNS,
+    DEFAULT_SUBAGENT_QUEUE_MAX_WAIT_SECS,
     SUBAGENT_TIMEOUT_MAX,
     SUBAGENT_TIMEOUT_MIN,
     SUBAGENT_TIMEOUT_SECS,
@@ -3090,6 +3091,12 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
             else "auto"
         ),
         admit_wait_secs=_safe_int(agent_data.get("admit_wait_secs", 30), 30, 1, 3600),
+        subagent_queue_max_wait_secs=_safe_int(
+            agent_data.get("subagent_queue_max_wait_secs", DEFAULT_SUBAGENT_QUEUE_MAX_WAIT_SECS),
+            DEFAULT_SUBAGENT_QUEUE_MAX_WAIT_SECS,
+            0,
+            86400,
+        ),
         start_collect_timeout_secs=_safe_int(
             agent_data.get("start_collect_timeout_secs", 300), 300, 10, 3600
         ),

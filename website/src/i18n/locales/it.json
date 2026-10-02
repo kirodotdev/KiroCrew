@@ -10916,7 +10916,7 @@
         "adaptive_cap_zero": "in attesa di avvio — gli avvii sono in pausa finché questo computer ha poca memoria o è sovraccarico; riprendono da soli quando si ristabilisce",
         "low_memory": "in attesa di avvio — richiede {{required}} di memoria libera, ora {{available}} liberi; libera memoria per continuare",
         "low_memory_no_figures": "in attesa di avvio — memoria libera insufficiente; libera memoria per continuare",
-        "memory_pressure": "in attesa di avvio — macOS segnala pressione sulla memoria; gli avvii riprendono da soli quando si allenta o quando terminano gli agenti in esecuzione; gli avvii si interrompono quando la pressione dura da 30 minuti"
+        "memory_pressure": "in attesa di avvio — macOS segnala pressione sulla memoria; gli avvii riprendono da soli quando si allenta o quando terminano gli agenti in esecuzione; gli avvii si interrompono quando la pressione supera il limite di attesa"
       },
       "subagentRunCard": {
         "agent_finished_many": "{{count}} agenti completati",

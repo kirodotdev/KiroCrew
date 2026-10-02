@@ -57,6 +57,7 @@
         "task_dispatch_window": 64,
         "task_store_journal_mode": "auto",
         "admit_wait_secs": 30,
+        "subagent_queue_max_wait_secs": 1800,
         "start_collect_timeout_secs": 300,
         "lane_weights": {},
         "child_reserve": 1,
@@ -822,6 +823,20 @@
       "enumValues": null,
       "defaultValue": 30,
       "requiresRestart": true
+    },
+    {
+      "path": "agent.subagent_queue_max_wait_secs",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Subagent Queue Max Wait (seconds)",
+      "help": "How long a subagent waits for free memory before it gives up. Its parent is then told it never started. Waiting for a free slot does not count. 0 waits forever; the most is 86400 (one day).",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 1800
     },
     {
       "path": "agent.start_collect_timeout_secs",

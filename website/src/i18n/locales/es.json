@@ -10916,7 +10916,7 @@
         "adaptive_cap_zero": "esperando para iniciar — los inicios están en pausa mientras este equipo tiene poca memoria o está sobrecargado; se reanudan solos cuando se recupera",
         "low_memory": "esperando para iniciar — necesita {{required}} de memoria libre, ahora hay {{available}} libres; libera memoria para continuar",
         "low_memory_no_figures": "esperando para iniciar — no hay suficiente memoria libre; libera memoria para continuar",
-        "memory_pressure": "esperando para iniciar — macOS informa de presión de memoria; los inicios se reanudan solos cuando disminuya o terminen los agentes en ejecución; los inicios se abandonan cuando la presión dura 30 minutos"
+        "memory_pressure": "esperando para iniciar — macOS informa de presión de memoria; los inicios se reanudan solos cuando disminuya o terminen los agentes en ejecución; los inicios se abandonan cuando la presión supera el límite de espera"
       },
       "subagentRunCard": {
         "agent_finished_many": "{{count}} agentes finalizados",

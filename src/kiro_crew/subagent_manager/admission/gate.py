@@ -13,9 +13,9 @@ if TYPE_CHECKING:
     from ...execution_context import ExecutionContext
     from ...subagent import (
         _PRESSURE_EPISODE_MAX_GAP_SECS,
-        _PRESSURE_HOLD_MAX_WAIT_SECS,
-        _PRESSURE_HOLD_PRUNE_SECS,
+        _PRESSURE_HOLD_PRUNE_FACTOR,
         AGENT_NOT_AVAILABLE_CODE,
+        DEFAULT_SUBAGENT_QUEUE_MAX_WAIT_SECS,
         MEMORY_CAUSE_CGROUP_USAGE_UNREADABLE,
         MEMORY_CAUSE_READ_UNANSWERED,
         MEMORY_PRESSURE_DETAIL,
@@ -1586,9 +1586,11 @@ class _GateMixin(ManagerComponent):
         hold applies, one timer re-pumps every ``MEMORY_PRESSURE_RECHECK_SECS``.
         When it stops applying, the WARNING latch resets and a parent still
         labelled with the pressure reason is relabelled as a capacity wait. A
-        hold that has applied without a break for ``_PRESSURE_HOLD_MAX_WAIT_SECS``
-        marks its episode spent (``_pressure_episode_spent``) until it stops
-        applying, and every row the hold would keep then expires at once.
+        hold that has applied without a break for the live
+        ``agent.subagent_queue_max_wait_secs`` (``taskq_memory_wait_bound_secs``;
+        0 is no bound) marks its episode spent (``_pressure_episode_spent``)
+        until it stops applying, and every row the hold would keep then expires
+        at once.
         """
         mgr = self._manager
         level: int | None = None
@@ -1606,19 +1608,25 @@ class _GateMixin(ManagerComponent):
             # longer than a few recheck intervals is a break nobody observed, so
             # the episode restarts rather than being assumed continuous across it.
             now = time.monotonic()
+            bound = mgr._admission.taskq_memory_wait_bound_secs()
             unobserved = now - mgr._pressure_episode_read_at > _PRESSURE_EPISODE_MAX_GAP_SECS
             mgr._pressure_episode_read_at = now
             since = mgr._pressure_episode_since
             if level is None or unobserved or since is None:
                 mgr._pressure_episode_since = now if level is not None else None
                 mgr._pressure_episode_spent = False
-            elif not mgr._pressure_episode_spent and now - since >= _PRESSURE_HOLD_MAX_WAIT_SECS:
-                mgr._pressure_episode_spent = True
-                logger.warning(
-                    "macOS memory pressure has held subagent starts for %.0fs; root "
-                    "starts it would hold are ended, never started, until it eases",
-                    now - since,
-                )
+            elif bound > 0 and now - since >= bound:
+                if not mgr._pressure_episode_spent:
+                    mgr._pressure_episode_spent = True
+                    logger.warning(
+                        "macOS memory pressure has held subagent starts for %.0fs; root "
+                        "starts it would hold are ended, never started, until it eases",
+                        now - since,
+                    )
+            else:
+                # The bound is live: one raised past the episode, or set to 0 (no
+                # bound), un-spends an episode spent under the earlier value.
+                mgr._pressure_episode_spent = False
         except Exception:
             logger.debug("Subagent memory-pressure hold: reading failed", exc_info=True)
             level = None
@@ -1638,8 +1646,12 @@ class _GateMixin(ManagerComponent):
             # between two of its starts), so only clocks far past any wait are
             # dropped here: rows that left without a registration or a refusal.
             now = time.monotonic()
+            prune_after = _PRESSURE_HOLD_PRUNE_FACTOR * max(
+                mgr._admission.taskq_memory_wait_bound_secs(),
+                float(DEFAULT_SUBAGENT_QUEUE_MAX_WAIT_SECS),
+            )
             for agent_id, since in list(mgr._pressure_holds.items()):
-                if now - since >= _PRESSURE_HOLD_PRUNE_SECS:
+                if now - since >= prune_after:
                     del mgr._pressure_holds[agent_id]
                     mgr._pressure_hold_expired.discard(agent_id)
             return None
@@ -1679,7 +1691,8 @@ class _GateMixin(ManagerComponent):
         """What the hold, applying at *level*, does with root start *agent_id*.
 
         ``"held"`` while it waits; ``"expired"`` once its own wait has run out
-        (``_PRESSURE_HOLD_MAX_WAIT_SECS`` from its first hold) or the episode has
+        (``agent.subagent_queue_max_wait_secs`` from its first hold, read live;
+        0 is no bound) or the episode has
         outlived that bound (``_pressure_episode_spent``): the caller ends it,
         never started (``MEMORY_PRESSURE_NEVER_STARTED``). *available_gb* is the
         floor's figure when the caller read one (negative: unreadable), None
@@ -1694,7 +1707,8 @@ class _GateMixin(ManagerComponent):
         first = agent_id not in mgr._pressure_holds
         since = mgr._pressure_holds.setdefault(agent_id, now)
         name = platform_compat.memory_pressure_name(level)
-        own_wait_ran_out = now - since >= _PRESSURE_HOLD_MAX_WAIT_SECS
+        bound = mgr._admission.taskq_memory_wait_bound_secs()
+        own_wait_ran_out = bound > 0 and now - since >= bound
         if own_wait_ran_out or mgr._pressure_episode_spent:
             if commit_expiry and agent_id not in mgr._pressure_hold_expired:
                 mgr._pressure_hold_expired.add(agent_id)
@@ -1723,7 +1737,7 @@ class _GateMixin(ManagerComponent):
                         agent_id,
                         name,
                         episode_secs or 0.0,
-                        int(_PRESSURE_HOLD_MAX_WAIT_SECS),
+                        int(bound),
                     )
                 expiry: dict[str, Any] = {
                     "memory_pressure_level": level,

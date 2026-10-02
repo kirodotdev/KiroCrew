@@ -492,7 +492,7 @@ now classed `compat`).
 
 | Budget | Runs during | Default | Source |
 |---|---|---|---|
-| queue wait | `queued`, `waiting_infra`, `retry_wait` | unbounded unless `deadline_at` | caller |
+| queue wait | `queued`, `waiting_infra`, `retry_wait` | unbounded unless `deadline_at`; a subagent spawn DEFERRED for memory (floor or posture) 1800s of parked time → `failed` "never started: waiting for memory" (Q10) | caller; `agent.subagent_queue_max_wait_secs` |
 | admit wait | `admitted` waiting on steps 2–4 | 30s → back to `queued` | `agent.admit_wait_secs` |
 | start | `starting`, active only | 90s | `session_start_timeout_secs` |
 | start collect | `recovering` after start timeout | 300s | `agent.start_collect_timeout_secs` |
@@ -774,7 +774,10 @@ Question text is kept as asked; the decision below it is final for this PR.
   (default `auto`) forces either mode.
 - **Q7 (integration).** Four keys the §12 table first proposed have no consumer
   in the shipped code and are NOT added: `agent.wait_deadline_secs` (the wait
-  bound is the per-task `deadline_at` plus `agent.dependency_wait_deadline_secs`),
+  bound is the per-task `deadline_at` plus `agent.dependency_wait_deadline_secs`;
+  a spawn waiting for memory is bounded separately, by
+  `agent.subagent_queue_max_wait_secs`, which arrived with its consumer under
+  Q10),
   `agent.keep_runtime_secs` (residency during a wait is bounded by the existing
   session idle reclaim), `agent.parent_failure_policy` (a per-call
   `on_child_failure` parameter, not a global), `agent.tool_stall_retries`
@@ -830,7 +833,8 @@ Question text is kept as asked; the decision below it is final for this PR.
   while never admitting a start that would leave the host below it?
   **Decision (owner direction, 2026-10-01):** the floor is the memory that must
   remain available AFTER a start, and its default is 2.0 GB. That is the one
-  capacity guarantee; when it does not hold, the spawn waits in the queue. A
+  capacity guarantee; when it does not hold, the spawn waits in the queue, for
+  at most `agent.subagent_queue_max_wait_secs` (Q10). A
   capacity verdict never refuses a spawn that has a queue to wait in (an
   in-memory legacy spawn that has none still refuses until it gains one);
   governance, cwd and memory-identity refusals stay refusals. Each start is
@@ -878,15 +882,17 @@ Question text is kept as asked; the decision below it is final for this PR.
   the floor's macOS reading takes the level as a second input, read through a
   `platform_compat` helper. A vetoed start waits in the queue, and that wait
   is finite under the owner's same-day max-wait direction, which covers every
-  start queued for memory, a vetoed one included: default 1800 s, set by a
-  live-reloadable key `agent.subagent_queue_max_wait_secs` that is not on main
-  yet; on expiry the start gets a delivered terminal "never started: waiting
-  for memory" and leaves its parent's queued count. The text that still
-  describes that wait as unbounded or deadline-only (Q7, Q9's floor rule, §8's
-  queue-wait row, §14.1 W1 and §14.9), and the max wait's own reversal, are
-  updated by the change that adds the key. Grounds: the level is the
-  kernel's own verdict and it lags, so it is a backstop beside the figure,
-  not a replacement for it.
+  start queued for memory, a vetoed one included: default 1800 s, set by the
+  live-reloadable key `agent.subagent_queue_max_wait_secs` (no restart mark);
+  on expiry the start gets a delivered terminal "never started: waiting for
+  memory" and leaves its parent's queued count. Q7, Q9's floor rule, §8's
+  queue-wait row, §14.1 W1 and §14.9 say so. The clock counts the time the
+  row spends parked by its deferrals, and a re-check does not restart it; a
+  row whose deferral lapsed and that now waits only for a slot is not bounded
+  by it, and that slot wait does not count when it is parked again. Reversal:
+  `agent.subagent_queue_max_wait_secs=0` waits without a bound. Grounds: the
+  level is the kernel's own verdict and it lags, so it is a backstop beside
+  the figure, not a replacement for it.
   **Implementation:** [#15876](https://github.com/kirodotdev/KiroCrew/pull/15876),
   whose spec calls the veto the *kernel memory-pressure hold*
   ([subagent.md § Memory guard](../system-specs/modules/subagent.md#memory-guard-what-must-remain-after-the-start)).
@@ -902,9 +908,10 @@ Question text is kept as asked; the decision below it is final for this PR.
     `memory_pressure`), not a store deferral, and no speculative pre-warm is
     admitted while the hold applies.
 
-  At its head `50050c28fc` #15876 bounds the hold with its own fixed
-  constant and carries neither the key nor the terminal above; that half is
-  to match the owner direction before it merges. Reversal:
+  #15876 landed bounding the hold with its own fixed constant, before the
+  key existed. The key arrived with the store deferrals' bound (#16347),
+  which points the hold's bound at it too, so a reload moves both and `0`
+  lifts both. Reversal:
   `agent.spawn_min_memory_gb=0` disables the floor, the reserve and the veto
   together.
 
@@ -939,7 +946,7 @@ never decremented for a process that still exists (SPEC-ADDENDUM §2).
 
 | Kind | Wait | Who detects it | Where state is stored | Quotas released | Real resources still charged | Wake event | Termination on recovery failure |
 |---|---|---|---|---|---|---|---|
-| W1 | `queued` (capacity) | scheduler at accept | task row `state=queued` | none held | none | admission grants slot + budget | caller `deadline_at` → `failed{reason=deadline}`; store write failure → refused at accept |
+| W1 | `queued` (capacity) | scheduler at accept | task row `state=queued` | none held | none | admission grants slot + budget | caller `deadline_at` → `failed{reason=deadline}`; a memory deferral past `agent.subagent_queue_max_wait_secs` → `failed` "never started: waiting for memory", delivered (Q10); store write failure → refused at accept |
 | W2 | `waiting_dependency` (unavailable, 429, backoff) | dependency adapter emitting `DependencySignal` (§14.4); liveness oracle only corroborates | `WaitRecord{kind=at_time or signal, dependency_scope}` + `DependencyCoordinator` schedule (in-memory, rebuilt from rows on boot) | lane slot | runtime residency while the wait is short (the existing session idle reclaim bounds it); beyond that the runtime is idle-reclaimed and only the row remains | coordinator fires `retry_at` or a recovery signal for the scope; re-admission through §4.5 | attempts ≥ `dependency_max_attempts` or wait > `agent.dependency_wait_deadline_secs` (or the task's own `deadline_at`) → `failed{reason=dependency}`; `auth_failed`/`permanent_param_error` → `failed` immediately |
 | W3 | `waiting_children` | parent's blocking `spawn_sub_agents` / workflow barrier, via the execution layer (tool call id), never model text | `WaitRecord{kind=children, ids=[...]}`; children rows carry `parent_id` | lane slot | parent runtime residency (shared-runtime: a session handle; dedicated: full process) for the whole wait (checkpoint-pause, §6, is designed but not built -- Q3) | last awaited child reaches terminal; parent re-admitted through §4.5 | per-call `on_child_failure` (§14.3): `fail_fast` → parent `failed` when a child fails; `collect` → parent wakes with partial set; children cancelled on parent cancel |
 | W4 | `waiting_input` (interactive command, business choice, password) | tool layer: interactive-command classifier (§14.6) or oracle `STUCK_INPUT` (Linux only, §14.9) | `WaitRecord{kind=input}` + the pending tool call id | lane slot | runtime residency (the blocked process is kept; nothing is auto-answered) | user input via dashboard/channel, routed to the tool call; or user cancels that call | `agent.interactive_command_policy="cancel"` cancels the call at the no-progress budget; default `wait` holds until the user acts or `deadline_at` |
@@ -1106,7 +1113,8 @@ session handle, never the runtime shared with unrelated sessions.
 
 Wait budgets are separate from the execution budget (§8): time in W1–W6 does
 not count toward `subagent_timeout_secs`; each wait kind has its own bound
-(`deadline_at`, `dependency_wait_deadline_secs`, coordinator caps, ladder caps). A blocking
+(`deadline_at`, `subagent_queue_max_wait_secs` for a W1 row deferred for memory,
+`dependency_wait_deadline_secs`, coordinator caps, ladder caps). A blocking
 `spawn_sub_agents` expiry returns `still_running` with ids and states (§8) and
 never marks the child failed.
 

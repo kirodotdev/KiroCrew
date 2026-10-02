@@ -10622,7 +10622,7 @@
         "adaptive_cap_zero": "等待开始 — 本机内存不足或负载过高，暂停启动新任务；恢复后会自动继续",
         "low_memory": "等待开始 — 需要 {{required}} 可用内存，当前可用 {{available}}；请释放内存以继续",
         "low_memory_no_figures": "等待开始 — 可用内存不足；请释放内存以继续",
-        "memory_pressure": "等待开始 — macOS 报告内存压力；压力缓解或正在运行的代理完成后会自动恢复启动；压力持续 30 分钟后启动会被放弃"
+        "memory_pressure": "等待开始 — macOS 报告内存压力；压力缓解或正在运行的代理完成后会自动恢复启动；压力持续超过等待上限后启动会被放弃"
       },
       "subagentRunCard": {
         "agent_finished_other": "{{count}} 个代理已完成",

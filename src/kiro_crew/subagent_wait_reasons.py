@@ -14,10 +14,12 @@ taken, or the stagger tick has not elapsed -- and clears on its own within
 seconds. The others can wait for a long time, which is why the UI and every tool
 answer must not describe them as a capacity queue: ``low_memory`` is re-checked
 after the admit wait for as long as the host stays below the bar (a store
-DEFERRAL for a durable row, a stamped window wait for one with no row),
-``adaptive_cap_zero`` waits on the controller's probe, and ``memory_pressure``
-waits in the capacity window, within a bound of its own (subagent.md, *macOS:
-the kernel memory-pressure hold*).
+DEFERRAL for a durable row, a stamped window wait for one with no row), bounded
+by ``agent.subagent_queue_max_wait_secs`` and ended with
+:data:`QUEUED_WAIT_EXPIRED_TEXT`; ``adaptive_cap_zero`` is the manager's pause,
+not the row's, and clears with it; and ``memory_pressure`` waits in the capacity
+window, bounded by the same key (subagent.md, *macOS: the kernel memory-pressure
+hold*).
 
 The memory posture tier (``resource_critical_gb``) is not one of them: spawns
 are not gated on it, only on the floor (``low_memory``). Cron still defers its
@@ -71,6 +73,12 @@ MEMORY_PRESSURE_NEVER_STARTED = (
     "retry once it eases or a running agent finishes"
 )
 
+#: The terminal a deferred spawn ends with once it has waited for memory longer
+#: than ``agent.subagent_queue_max_wait_secs``: its ``error``, delivered to the
+#: parent like any other result. Owner wording; one spelling for the report, the
+#: store row and every test that reads either.
+QUEUED_WAIT_EXPIRED_TEXT = "never started: waiting for memory"
+
 __all__ = [
     "DEFERRED_QUEUED_REASONS",
     "MEMORY_PRESSURE_NEVER_STARTED",
@@ -81,6 +89,7 @@ __all__ = [
     "QUEUED_REASON_CONCURRENCY_LIMIT",
     "QUEUED_REASON_LOW_MEMORY",
     "QUEUED_REASON_MEMORY_PRESSURE",
+    "QUEUED_WAIT_EXPIRED_TEXT",
     "adaptive_pause_text",
 ]
 

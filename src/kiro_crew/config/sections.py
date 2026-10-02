@@ -103,6 +103,9 @@ from kiro_crew.config.service_sections import (  # noqa: F401
 from kiro_crew.constants import DEFAULT_SPAWN_MIN_MEMORY_GB as _DEFAULT_SPAWN_MIN_MEMORY_GB
 from kiro_crew.constants import DEFAULT_SUBAGENT_COST_GB as _DEFAULT_SUBAGENT_COST_GB
 from kiro_crew.constants import DEFAULT_SUBAGENT_MAX_TURNS as _DEFAULT_SUBAGENT_MAX_TURNS
+from kiro_crew.constants import (
+    DEFAULT_SUBAGENT_QUEUE_MAX_WAIT_SECS as _DEFAULT_SUBAGENT_QUEUE_MAX_WAIT_SECS,
+)
 from kiro_crew.constants import SUBAGENT_TIMEOUT_MAX as _SUBAGENT_TIMEOUT_MAX
 from kiro_crew.constants import SUBAGENT_TIMEOUT_MIN as _SUBAGENT_TIMEOUT_MIN
 from kiro_crew.constants import SUBAGENT_TIMEOUT_SECS as _SUBAGENT_TIMEOUT_SECS
@@ -1273,6 +1276,15 @@ class AgentConfig:
             "back to queued, and how long a spawn deferred by the memory posture "
             "gate waits before it is re-checked. Clamped to 1..3600.",
             restart=True,
+        ),
+    )
+    subagent_queue_max_wait_secs: int = field(
+        default=_DEFAULT_SUBAGENT_QUEUE_MAX_WAIT_SECS,
+        metadata=_meta(
+            "Subagent Queue Max Wait (seconds)",
+            "How long a subagent waits for free memory before it gives up. Its "
+            "parent is then told it never started. Waiting for a free slot does not "
+            "count. 0 waits forever; the most is 86400 (one day).",
         ),
     )
     start_collect_timeout_secs: int = field(

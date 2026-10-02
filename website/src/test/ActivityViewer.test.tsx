@@ -792,7 +792,7 @@ describe('ActivityViewer — queued subagents', () => {
     })
     const text = screen.getByTestId('subagent-queued-banner').textContent ?? ''
     expect(text).toBe(
-      '1 waiting to start — macOS reports memory pressure; the starts resume on their own once it eases or the running agents finish; starts give up once the pressure has lasted 30 minutes',
+      '1 waiting to start — macOS reports memory pressure; the starts resume on their own once it eases or the running agents finish; starts give up once the pressure outlasts the wait limit',
     )
     expect(text).not.toMatch(/GB/)
   })
