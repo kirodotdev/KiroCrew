@@ -61,7 +61,7 @@ from kiro_crew.cron import CronStoreBusy, CronStoreUnreadable, lookup_cron_folde
 from kiro_crew.cron_script import resolve_script_path
 from kiro_crew.env import emit_env
 from kiro_crew.executors import maintenance_executor
-from kiro_crew.gateway_lock import GatewayLock, GatewayLockError
+from kiro_crew.gateway_lock import GatewayLock, GatewayLockError, LockFileError
 from kiro_crew.history import ConversationLog
 from kiro_crew.platform.governance import may_skip_gate_now, strip_ungoverned_auto_approve
 from kiro_crew.security import is_sensitive_path
@@ -3610,7 +3610,11 @@ class SessionPointerCleanup:
     ``failed`` covers the case the clear could not PERSIST: the sid clear and the
     suppression flag are both mutations of a file that has to be written, so an
     ENOSPC or a permission error leaves the pointer on disk while the count says
-    nothing was owned. Reported rather than raised — the uninstall itself already
+    nothing was owned. It also covers a lock that could not be used at all
+    (:class:`~kiro_crew.gateway_lock.LockFileError`: ``gateway.lock`` is not a
+    regular file, or it or the home could not be opened, created or measured),
+    because no gateway owns the map then and stopping one would not help. Reported
+    rather than raised — the uninstall itself already
     succeeded, and bookkeeping must not fail it — but not reported as clean either.
     """
 
@@ -3683,6 +3687,13 @@ def discard_app_session_pointers(app_name: str) -> SessionPointerCleanup:
             # property inherited from being off the loop, which a later refactor
             # could change without noticing this depends on it.
             smap.flush()
+    except LockFileError as exc:
+        # Not a gateway owning the map: the lock file itself could not be used
+        # (not a regular file, or an open/create/stat failure), and stopping a
+        # gateway would not help. ``failed`` sends the operator to the log, where
+        # this names the path and the cause.
+        logger.warning("session pointer cleanup for %r could not lock: %s", app_name, exc)
+        return SessionPointerCleanup(failed=True)
     except GatewayLockError:
         logger.info(
             "Left %s's conversation pointers in place: a gateway owns session_map.json "

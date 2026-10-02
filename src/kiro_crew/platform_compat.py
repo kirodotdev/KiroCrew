@@ -6224,8 +6224,22 @@ def process_thread_count(pid: int) -> int | None:
     return None
 
 
-def flock_owner_pid(path: str | os.PathLike) -> int | None:
+def _file_identity(target: str | os.PathLike | os.stat_result) -> os.stat_result | None:
+    """*target* itself when it is already a stat result, else ``os.stat`` of the path."""
+    if isinstance(target, os.stat_result):
+        return target
+    try:
+        return os.stat(target)
+    except OSError:
+        return None
+
+
+def flock_owner_pid(path: str | os.PathLike | os.stat_result) -> int | None:
     """PID recorded against an ``flock`` on *path*, via ``/proc/locks``.
+
+    *path* may instead be a stat result already taken of the file -- the
+    ``fstat`` of a descriptor the caller holds -- which is matched as given
+    rather than by re-resolving a name that may since point elsewhere.
 
     This is the pid that ACQUIRED the lock, which is not always a live process:
     an ``flock`` belongs to the open file description, so when the acquirer dies
@@ -6251,9 +6265,8 @@ def flock_owner_pid(path: str | os.PathLike) -> int | None:
     """
     if sys.platform != "linux":
         return None
-    try:
-        info = os.stat(path)
-    except OSError:
+    info = _file_identity(path)
+    if info is None:
         return None
     want = (os.major(info.st_dev), os.minor(info.st_dev), info.st_ino)
     try:
@@ -6299,8 +6312,10 @@ def parent_pid(pid: int) -> int | None:
         return None
 
 
-def pids_holding_file(path: str | os.PathLike) -> list[int] | None:
+def pids_holding_file(path: str | os.PathLike | os.stat_result) -> list[int] | None:
     """PIDs with an open fd on *path*, matched by inode via ``/proc/*/fd``.
+
+    *path* may be a stat result instead, as for :func:`flock_owner_pid`.
 
     These are CANDIDATE OPENERS, not lock owners. Any process may open the file
     without locking it, and an inherited ``flock`` has no live owner to identify
@@ -6317,9 +6332,8 @@ def pids_holding_file(path: str | os.PathLike) -> list[int] | None:
     """
     if sys.platform != "linux":
         return None
-    try:
-        target = os.stat(path)
-    except OSError:
+    target = _file_identity(path)
+    if target is None:
         return None
     key = (target.st_dev, target.st_ino)
     holders: list[int] = []
@@ -7453,7 +7467,9 @@ def _win_open_without_following(path: str | os.PathLike) -> int:
     )
 
 
-def open_file_no_reparse(path: str | os.PathLike, *, nonblocking: bool = False) -> int:
+def open_file_no_reparse(
+    path: str | os.PathLike, *, nonblocking: bool = False, links_only: bool = False
+) -> int:
     """Open a regular FILE for reading, refusing a reparse point at the final name.
 
     The leaf counterpart to :func:`pin_directory`. ``pin_directory`` freezes the
@@ -7478,6 +7494,11 @@ def open_file_no_reparse(path: str | os.PathLike, *, nonblocking: bool = False) 
     ``nonblocking`` adds ``O_NONBLOCK`` on POSIX so a caller can reject a FIFO
     with ``fstat`` before an open waits for a writer. Regular file reads are
     unaffected. Windows has no POSIX FIFO open; its handle checks stay the same.
+
+    ``links_only`` narrows the Windows refusal to a reparse point that stands for
+    another name (:func:`win_fd_is_link`), so a regular file carrying a
+    cloud-files or dedup tag opens as the file it is. POSIX is unaffected: a
+    link is the only thing ``O_NOFOLLOW`` refuses there.
     """
     if IS_POSIX:
         flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
@@ -7488,7 +7509,7 @@ def open_file_no_reparse(path: str | os.PathLike, *, nonblocking: bool = False) 
     fd = _win_open_without_following(path)
     try:
         attrs = getattr(os.fstat(fd), "st_file_attributes", 0)
-        if attrs & _WIN_FILE_ATTRIBUTE_REPARSE_POINT:
+        if _win_reparse_refused(fd, attrs, links_only=links_only):
             raise OSError(errno.ELOOP, "reparse point at the final component", os.fspath(path))
         if attrs & _WIN_FILE_ATTRIBUTE_DIRECTORY:
             raise IsADirectoryError(errno.EISDIR, "is a directory", os.fspath(path))
@@ -7496,6 +7517,138 @@ def open_file_no_reparse(path: str | os.PathLike, *, nonblocking: bool = False) 
         os.close(fd)
         raise
     return fd
+
+
+#: ``CreateFileW`` arguments only :func:`win_open_no_reparse` uses. A directory is
+#: opened for ``LIST_DIRECTORY`` (data access, so it takes part in sharing) with
+#: read-only sharing; a file read-write, open-or-create, sharing read and write.
+_WIN_FILE_LIST_DIRECTORY = 0x00000001
+_WIN_FILE_SHARE_READ = 0x00000001
+_WIN_OPEN_ALWAYS = 4
+#: ``FILE_INFO_BY_HANDLE_CLASS.FileAttributeTagInfo``.
+_WIN_FILE_ATTRIBUTE_TAG_INFO = 9
+
+
+def win_fd_is_link(fd: int) -> bool:  # pragma: no cover - Windows
+    """Windows: True unless the object open on *fd* is positively not a link.
+
+    Reads the reparse tag of the opened object itself through
+    ``GetFileInformationByHandleEx(FileAttributeTagInfo)``, because ``os.fstat``
+    leaves ``st_reparse_tag`` at zero. A tag with the name-surrogate bit (a
+    symbolic link, a junction) stands for another name, as
+    :func:`lstat_is_name_surrogate` reads it from an ``lstat``; a tag without it
+    (a cloud-files placeholder, a deduplicated file) holds its own data. Fails
+    CLOSED: a tag that cannot be read counts as a link.
+    """
+
+    class _AttributeTagInfo(ctypes.Structure):
+        _fields_ = [("FileAttributes", wintypes.DWORD), ("ReparseTag", wintypes.DWORD)]
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+    kernel.GetFileInformationByHandleEx.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+    ]
+    kernel.GetFileInformationByHandleEx.restype = wintypes.BOOL
+    info = _AttributeTagInfo()
+    try:
+        handle = msvcrt.get_osfhandle(fd)  # type: ignore[attr-defined]
+    except OSError:
+        return True
+    if not kernel.GetFileInformationByHandleEx(
+        handle, _WIN_FILE_ATTRIBUTE_TAG_INFO, ctypes.byref(info), ctypes.sizeof(info)
+    ):
+        return True
+    return bool(info.ReparseTag & _IO_REPARSE_TAG_NAME_SURROGATE)
+
+
+def _win_reparse_refused(fd: int, attributes: int, *, links_only: bool) -> bool:
+    """Whether a Windows open that did not follow a reparse point must refuse *fd*."""
+    if not attributes & _WIN_FILE_ATTRIBUTE_REPARSE_POINT:
+        return False
+    return not links_only or win_fd_is_link(fd)
+
+
+def win_open_no_reparse(
+    path: str | os.PathLike, *, directory: bool, links_only: bool = False
+) -> int:  # pragma: no cover
+    """Windows: open the object at *path* ITSELF, never through a reparse point.
+
+    A file is opened read-write and created when absent; a directory is opened
+    for listing and must already exist. ``FILE_FLAG_OPEN_REPARSE_POINT`` opens a
+    junction or symlink at the name as itself, and the descriptor's own ``fstat``
+    then refuses it with ``ELOOP`` -- so nothing is created, read or written
+    through it. The share mode omits ``FILE_SHARE_DELETE``: while the descriptor
+    lives, the object cannot be renamed or deleted. A directory variant refuses a
+    non-directory with ``NotADirectoryError``. ``links_only`` narrows the refusal
+    to a reparse point that stands for another name, as for
+    :func:`open_file_no_reparse`. The native handle is transferred to a CRT
+    descriptor only on success; release it with ``os.close``.
+    """
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+    kernel.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    kernel.CreateFileW.restype = wintypes.HANDLE
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.CloseHandle.restype = wintypes.BOOL
+    handle = kernel.CreateFileW(
+        os.fspath(path),
+        _WIN_FILE_LIST_DIRECTORY if directory else _WIN_GENERIC_READ | _WIN_GENERIC_WRITE,
+        _WIN_FILE_SHARE_READ if directory else _WIN_FILE_SHARE_READ_WRITE,
+        None,
+        _WIN_OPEN_EXISTING if directory else _WIN_OPEN_ALWAYS,
+        _WIN_FILE_FLAG_BACKUP_SEMANTICS | _WIN_FILE_FLAG_OPEN_REPARSE_POINT,
+        None,
+    )
+    if handle is None or handle == wintypes.HANDLE(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())  # type: ignore[attr-defined]
+    try:
+        fd = msvcrt.open_osfhandle(  # type: ignore[attr-defined]
+            handle, (os.O_RDONLY if directory else os.O_RDWR) | getattr(os, "O_BINARY", 0)
+        )
+    except BaseException:
+        kernel.CloseHandle(handle)
+        raise
+    try:
+        info = os.fstat(fd)
+        if _win_reparse_refused(fd, getattr(info, "st_file_attributes", 0), links_only=links_only):
+            raise OSError(errno.ELOOP, "reparse point at the final component", os.fspath(path))
+        if directory and not stat.S_ISDIR(info.st_mode):
+            raise NotADirectoryError(errno.ENOTDIR, "not a directory", os.fspath(path))
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def open_create_no_reparse(path: str | os.PathLike, mode: int = 0o600) -> int:
+    """Open *path* read-write, creating it when absent, never through a link at the name.
+
+    The read-write, creating counterpart to :func:`open_file_no_reparse`, for a
+    caller that writes a file it also locks. POSIX:
+    :func:`open_create_or_existing` with ``O_NOFOLLOW``, so a link at the final
+    component is refused with ``ELOOP`` and never created through, and the open
+    is race-safe against a sibling creator. Windows:
+    :func:`win_open_no_reparse` with ``links_only``, refusing a link or junction
+    at the name with ``ELOOP`` the same way while a regular file carrying a
+    cloud-files or dedup tag still opens. Never truncates. What was opened is still the
+    caller's to check (``fstat``): a directory, FIFO or socket at the name can
+    open or fail with its own errno. Release the descriptor with ``os.close``.
+    """
+    if IS_POSIX:
+        return platform_lock_compat.open_create_or_existing(
+            path, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), mode
+        )
+    return win_open_no_reparse(path, directory=False, links_only=True)
 
 
 _WIN_FILE_SHARE_READ_WRITE_DELETE = 0x00000001 | 0x00000002 | 0x00000004

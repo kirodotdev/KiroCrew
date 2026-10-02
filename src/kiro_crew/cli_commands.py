@@ -1153,7 +1153,8 @@ def _print_pointer_cleanup(name: str, cleanup: SessionPointerCleanup) -> None:
     installation's first turn resumes the removed app's transcript — and the
     operator who would have to notice that is standing right here, at a command
     that otherwise printed a success tick. The two get different text because they
-    need different actions: stop the gateway, versus fix the storage error.
+    need different actions: stop the gateway, versus fix the storage or lock-file
+    error the log names.
     """
     if cleanup.dropped:
         print(f"   dropped {cleanup.dropped} conversation pointer(s) — a reinstall starts fresh")
@@ -1168,7 +1169,7 @@ def _print_pointer_cleanup(name: str, cleanup: SessionPointerCleanup) -> None:
     elif cleanup.failed:
         print(
             f"   ⚠️  could not clear {name}'s conversation pointers: the session map "
-            f"could not be read or written (see the log for the error). Reinstalling "
+            f"or its lock file could not be used (see the log for the error). Reinstalling "
             f"under this name may resume the removed app's transcript. Fix the cause "
             f"and run `kirocrew app uninstall {name}` again to clear them.",
             file=sys.stderr,

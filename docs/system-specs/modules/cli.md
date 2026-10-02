@@ -1620,7 +1620,21 @@ on crash, and starts on boot. Implemented in `src/kiro_crew/service/`.
     unbounded on a unit without them). Every other refusal exits 1, which the
     unit's `Restart=always` relaunches, because a later attempt can find it
     cleared or because the evidence for standing down is missing: a lock file
-    replaced faster than it can be locked, a home that cannot be opened or
+    replaced faster than it can be locked, a `gateway.lock` that is not a
+    regular file (a symbolic link, including one a dotfile manager placed, a
+    junction, a directory, a FIFO or a socket; the lock never opens through a
+    link, so the refusal says to remove it, and `stop`/`restart` read the same
+    entry as indeterminate rather than as nothing running; a regular file with
+    another hard link is still locked, but its pid stamp is not written, and a
+    stamp is distrusted only while the file has another link: once that link is
+    removed the stamp left in it is trusted again, on every platform, until the
+    next acquire stamps over it, and a `chmod`, `chown`, xattr or ACL change
+    never revokes trust; on Windows a regular file carrying a
+    non-link reparse tag, such as a cloud-files placeholder, is locked as
+    usual), a lock file that cannot be opened or measured or a home that cannot
+    be created (a permission gap, a read-only or full filesystem;
+    `kirocrew app uninstall` reports this as a failed pointer clear, never as a
+    running gateway), a home that cannot be opened or
     measured for directory locks, an flock whose acquirer is gone (a wedged
     inheritor holds it until that process dies), a live acquirer that does not
     hold the port (a sibling still starting, or one shutting down that has

@@ -61,6 +61,36 @@ capability is indeterminate and fails closed. Windows does not need the anchor
 at all, because a Windows gateway's open lock file cannot be deleted out from
 under it.
 
+The lock file is a regular file, never a link
+---------------------------------------------
+Every open of the lock path declines to follow a link at its final component --
+``O_NOFOLLOW`` on POSIX, ``FILE_FLAG_OPEN_REPARSE_POINT`` on Windows
+(:func:`platform_compat.open_create_no_reparse`,
+:func:`platform_compat.open_file_no_reparse`) -- and judges what it opened by that
+descriptor's own ``fstat``; a look at the name only words a refusal that is coming
+anyway. That leaves two dispositions. A regular file is locked as described above;
+on Windows that includes one carrying a reparse tag that is not a link (a
+cloud-files placeholder), since it holds its own data. Anything else at the name
+-- a symbolic link, a junction, a directory, a FIFO, a socket -- is refused with
+:class:`LockPathError`, whose message names the path and says to remove it:
+nothing is created, locked or written through it, and :func:`lock_holder` reports
+it as indeterminate (:class:`LockPathProbeError`) rather than as nobody. Within
+the first disposition, a regular file that also has another hard link (a backup
+taken with ``cp -al``) is locked, but its pid stamp is not written, since that
+would change the other name too. The stamp left in it is therefore not this
+holder's, and the reader distrusts a stamp exactly while the file has another
+link. Removing that link makes the stamp trusted again, including one an
+earlier acquirer left while the current holder skipped stamping; the next
+acquire that stamps replaces it. While the extra link exists the holder is
+named only where the kernel names it (on Windows, which has no such surface,
+the stale-pid reclaim below does not run for a file with another link either).
+Inode times are not consulted: a ``chmod``, ``chown``, xattr or ACL change moves
+the change time exactly as a link does, and on a host whose kernel names no
+lock owner the stamp is the only name the holder has. The
+owner lookups behind a refusal are keyed by the probed descriptor's ``(st_dev,
+st_ino)`` for the same reason. This keeps the lock from acting on an entry it did
+not create; it is not an access-control boundary.
+
 Isolated homes (``--test-mode``/``--seed`` with a distinct ``KIROCREW_HOME``)
 resolve to a different lock file and are unaffected.
 """
@@ -72,6 +102,7 @@ import ipaddress
 import logging
 import os
 import socket
+import stat
 import tempfile
 import time
 from dataclasses import dataclass
@@ -100,7 +131,8 @@ LOCK_FILENAME = "gateway.lock"
 #: ``RestartSec`` against a home that is already served. Every other refusal
 #: keeps exit 1 and IS relaunched, because a later attempt can find it cleared
 #: or because the evidence for standing down is not there: a lock file
-#: replaced faster than it can be locked, a home that cannot be opened or
+#: replaced faster than it can be locked, a lock path that is not a regular
+#: file (:class:`LockPathError`), a home that cannot be opened or
 #: measured for directory locks, an flock whose acquirer is gone (a wedged
 #: inheritor holds it until that process dies), a live acquirer that does not
 #: hold the port (a sibling still starting, or one shutting down that has
@@ -173,6 +205,9 @@ _NO_DIRECTORY_LOCK_ERRNOS = frozenset(
 
 class GatewayLockError(RuntimeError):
     """Raised when another process already owns this ``KIROCREW_HOME``.
+
+    The subclass :class:`LockFileError` is the exception: the lock file itself
+    could not be opened, created or measured, so no other owner is implied.
 
     ``live_holder`` is the serving-holder predicate's answer,
     :attr:`_ServingVerdict.serving` from :meth:`GatewayLock._serving_verdict`:
@@ -307,6 +342,48 @@ def _listener_reaches(listener: platform_compat.PortListener, host: str) -> bool
     return bound == target
 
 
+class LockFileError(GatewayLockError):
+    """Raised when the lock file could not be used at all, whoever else is running.
+
+    A local failure to create the home, or to open or ``fstat`` the lock file
+    (a permission gap, a read-only or full filesystem), and the typed
+    :class:`LockPathError`. Nothing implies that another process owns the home,
+    so a caller must not tell the operator to stop a gateway: ``live_holder``
+    stays False and the message carries the cause.
+    """
+
+    def __init__(self, home: Path, message: str) -> None:
+        super().__init__(home, None, message)
+
+
+class LockPathError(LockFileError):
+    """Raised when the lock path holds something other than a regular file.
+
+    See the module docstring, *The lock file is a regular file, never a link*.
+    No lock is taken and nothing is written; ``live_holder`` stays False, because
+    the remedy the message gives is to remove the entry at the path, not to stop
+    a gateway.
+    """
+
+    def __init__(self, home: Path, path: Path) -> None:
+        self.path = path
+        super().__init__(home, _lock_path_refusal(path))
+
+
+def _lock_path_refusal(path: Path) -> str:
+    """The one sentence every refusal of a non-regular lock path carries."""
+    return (
+        f"{path} is not a regular file, so no gateway lock can be taken on it; remove it, "
+        "then start the gateway again"
+    )
+
+
+#: ``errno`` values with which a no-follow open of the lock path reports that
+#: the entry is not a regular file: a link (``O_NOFOLLOW``, or a Windows reparse
+#: point), a directory, a socket.
+_NOT_REGULAR_ERRNOS = frozenset({errno.ELOOP, errno.EISDIR, errno.ENXIO})
+
+
 @dataclass(frozen=True)
 class _ServingVerdict:
     """The serving-holder predicate's answer about ONE positively identified acquirer.
@@ -387,13 +464,26 @@ class LockProbeError(RuntimeError):
     the pid recorded in the file -- a number ``release`` never clears and the
     kernel reuses -- would let a caller signal an unrelated live process.
     Callers that act on the answer (``kirocrew stop``/``restart``) report this
-    and exit without signalling anything.
+    and exit without signalling anything. A lock path that is not a regular file
+    is the typed subclass :class:`LockPathProbeError`.
     """
 
     def __init__(self, path: Path, cause: OSError) -> None:
         self.path = path
         self.cause = cause
         super().__init__(f"could not determine whether a gateway holds the lock at {path}: {cause}")
+
+
+class LockPathProbeError(LockProbeError):
+    """:func:`lock_holder`'s answer for a lock path that is not a regular file.
+
+    Indeterminate like every :class:`LockProbeError`, so ``stop`` and ``restart``
+    signal nothing and spawn nothing; the message carries
+    :class:`LockPathError`'s remedy, because ``acquire`` refuses on the same entry.
+    """
+
+    def __init__(self, path: Path) -> None:
+        super().__init__(path, OSError(_lock_path_refusal(path)))
 
 
 class GatewayLock:
@@ -435,15 +525,27 @@ class GatewayLock:
         Windows path, and the home directory, which stays reachable by name
         after the lock file is deleted (see the module docstring).
         """
-        self._home.mkdir(parents=True, exist_ok=True)
+        try:
+            self._home.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise LockFileError(
+                self._home, f"could not create {self._home}: {exc.strerror or exc}"
+            ) from exc
         for attempt in range(_IDENTITY_ATTEMPTS):
             if attempt:
                 time.sleep(_RETRY_BACKOFF_SECS)
-            fd = self._open_lock_file()
+            try:
+                fd = self._open_lock_file()
+            except FileNotFoundError:
+                # The name was there and gone again before it could be opened
+                # (a sibling unlinked it): the same lost race as a replaced
+                # inode, so it takes the same bounded retry.
+                continue
             # platform_compat.try_acquire_lock: fcntl.flock LOCK_EX|LOCK_NB on
             # POSIX; msvcrt.locking LK_NBLCK on Windows. Returns True iff acquired.
             if not platform_compat.try_acquire_lock(fd, exclusive=True):
                 recorded = _read_pid(fd)
+                held = _fstat_or_none(fd)
                 os.close(fd)
                 if (
                     not platform_compat.IS_WINDOWS
@@ -458,7 +560,7 @@ class GatewayLock:
                     # orphaned-flock wedge remains held through every bounded
                     # attempt and receives the existing diagnosis below.
                     continue
-                holder, diagnosis, live = self._diagnose(recorded)
+                holder, diagnosis, live = self._diagnose(recorded, held)
                 raise GatewayLockError(self._home, holder, diagnosis, live_holder=live)
             if not _is_same_file(fd, self._path):
                 # The path was unlinked or replaced between the open and the
@@ -503,9 +605,7 @@ class GatewayLock:
 
     def _open_lock_file(self) -> int:
         """Open (creating if absent) the lock file, reclaiming a stale Windows one."""
-        # O_RDWR | O_CREAT without truncation: a failed acquire must leave the
-        # incumbent holder's pid intact so we can name it in the error.
-        fd = os.open(self._path, os.O_RDWR | os.O_CREAT, 0o600)
+        fd = self._open_regular_lock_file()
 
         # Windows stale-PID reclaim: on Windows, msvcrt.locking may leave a
         # lock file that cannot be re-locked after a crash (the OS does not
@@ -528,12 +628,59 @@ class GatewayLock:
                     os.unlink(self._path)
                 except OSError:
                     pass
-                fd = os.open(self._path, os.O_RDWR | os.O_CREAT, 0o600)
+                fd = self._open_regular_lock_file()
+        return fd
+
+    def _open_regular_lock_file(self) -> int:
+        """Open the lock file read-write, creating it if absent; refuse anything else.
+
+        See the module docstring, *The lock file is a regular file, never a
+        link*. No truncation: a failed acquire must leave the incumbent holder's
+        pid intact so the refusal can name it. Every ``OSError`` leaves as a
+        :class:`LockFileError` except ``FileNotFoundError``, the lost race
+        ``acquire`` retries.
+        """
+        try:
+            fd = platform_compat.open_create_no_reparse(self._path, 0o600)
+        except FileNotFoundError:
+            raise
+        except OSError as exc:
+            # The errno decides; a look at the name only picks the wording of a
+            # refusal that is coming either way (a directory on Windows opens
+            # with a plain access error).
+            if exc.errno in _NOT_REGULAR_ERRNOS or _names_non_regular_entry(self._path):
+                raise LockPathError(self._home, self._path) from exc
+            raise LockFileError(
+                self._home, f"could not open {self._path}: {exc.strerror or exc}"
+            ) from exc
+        try:
+            regular = stat.S_ISREG(os.fstat(fd).st_mode)
+        except OSError as exc:
+            os.close(fd)
+            raise LockFileError(
+                self._home, f"could not stat {self._path}: {exc.strerror or exc}"
+            ) from exc
+        if not regular:
+            os.close(fd)
+            raise LockPathError(self._home, self._path)
         return fd
 
     def _stamp_pid(self, fd: int) -> None:
-        """Record this pid in the lock file so it names the most recent acquirer."""
+        """Record this pid in the lock file so it names the most recent acquirer.
+
+        Not written into a file that has another hard link, because that would
+        change the other name too. The lock is still held; the stale bytes stay,
+        and :func:`_read_pid` does not trust them while the extra link exists
+        (see the module docstring).
+        """
         try:
+            if os.fstat(fd).st_nlink > 1:
+                logger.warning(
+                    "acquired gateway lock on %s but did not record pid: %s has another hard link",
+                    self._home,
+                    self._path,
+                )
+                return
             os.ftruncate(fd, 0)
             os.lseek(fd, 0, os.SEEK_SET)
             os.write(fd, f"{os.getpid()}\n".encode())
@@ -587,7 +734,9 @@ class GatewayLock:
 
     # -- diagnostics ------------------------------------------------------
 
-    def _diagnose(self, recorded_pid: int | None) -> tuple[int | None, str | None, bool]:
+    def _diagnose(
+        self, recorded_pid: int | None, held: os.stat_result | None
+    ) -> tuple[int | None, str | None, bool]:
         """Resolve who holds the lock, distinguishing owner from mere opener.
 
         ``/proc/locks`` names the pid that ACQUIRED the flock, authoritatively.
@@ -613,9 +762,14 @@ class GatewayLock:
         that may be reused, so the predicate is never asked about it and even
         alive-and-on-the-port is a strong hint, not the verdict (see
         :meth:`_describe_unidentified_owner`).
+
+        *held* is the ``fstat`` of the descriptor whose lock attempt failed (``None``
+        when even that failed); the owner lookups match it rather than re-resolving
+        the name.
         """
-        owner = platform_compat.flock_owner_pid(self._path)
-        openers = platform_compat.pids_holding_file(self._path)
+        target: Path | os.stat_result = held if held is not None else self._path
+        owner = platform_compat.flock_owner_pid(target)
+        openers = platform_compat.pids_holding_file(target)
         if openers is not None:
             openers = [pid for pid in openers if pid != os.getpid()]
 
@@ -999,7 +1153,10 @@ def lock_holder(home: Path) -> LockHolder:
     without releasing anything -- so both cases fall through to the home anchor
     (:func:`_anchor_holder_or_nobody`) before ``nobody`` is reported. A file
     that exists but cannot be read is still probed, since being unable to read
-    it is not evidence that nobody holds it.
+    it is not evidence that nobody holds it. An entry that is not a regular file
+    is not a lock file at all (see the module docstring) and raises
+    :class:`LockPathProbeError`: ``acquire`` refuses on it, so "nobody" would let
+    ``restart`` spawn a replacement that cannot start.
 
     The file's contents are NOT evidence on their own. ``acquire`` stamps the
     holder's pid but ``release`` never clears it, so after a clean stop the file
@@ -1037,37 +1194,54 @@ def lock_holder(home: Path) -> LockHolder:
     stretched by an extra round trip.
     """
     path = home / LOCK_FILENAME
-    if not path.exists():
+    try:
+        entry = os.lstat(path)
+    except (FileNotFoundError, NotADirectoryError):
         return _anchor_holder_or_nobody(home, path)
-    recorded: int | None = None
+    except OSError as exc:
+        raise LockProbeError(path, exc) from exc
+    if not stat.S_ISREG(entry.st_mode):
+        raise LockPathProbeError(path)
     try:
-        fd = os.open(path, os.O_RDONLY)
-    except OSError:
-        # A file that exists but cannot be opened for reading (a Windows
-        # mandatory lock held by the gateway, a permission gap) is not
-        # evidence of "nobody": the probe below still decides held or free,
-        # and a held lock with no readable pid is reported as indeterminate.
-        pass
-    else:
-        try:
-            recorded = _read_pid(fd)
-        finally:
-            os.close(fd)
-
-    try:
-        held = _lock_is_held(path)
-    except LockProbeError:
-        # The probe could not answer. The one thing that still counts as
-        # positive ownership is the kernel naming a LIVE acquirer.
-        owner = platform_compat.flock_owner_pid(path)
+        fd = _open_probe_descriptor(path)
+    except FileNotFoundError:
+        return _anchor_holder_or_nobody(home, path)
+    except OSError as exc:
+        if exc.errno in _NOT_REGULAR_ERRNOS:
+            raise LockPathProbeError(path) from exc
+        # The probe cannot answer without a descriptor. The one thing that
+        # still counts as positive ownership is the kernel naming a LIVE
+        # acquirer of the regular file classified above.
+        owner = platform_compat.flock_owner_pid(entry)
         if owner is not None and platform_compat.pid_exists(owner):
             return LockHolder(pid=owner, alive=True, source="flock_owner")
-        raise
+        raise LockProbeError(path, exc) from exc
+    try:
+        probed = os.fstat(fd)
+        if not stat.S_ISREG(probed.st_mode):
+            raise LockPathProbeError(path)
+        # A file the gateway holds under a Windows mandatory lock reads as
+        # nothing: not evidence of "nobody", so the probe below still decides
+        # held or free, and a held lock with no readable pid is indeterminate.
+        recorded = _read_pid(fd)
+        try:
+            held = _lock_is_held(fd, path)
+        except LockProbeError:
+            # The probe could not answer. The one thing that still counts as
+            # positive ownership is the kernel naming a LIVE acquirer.
+            owner = platform_compat.flock_owner_pid(probed)
+            if owner is not None and platform_compat.pid_exists(owner):
+                return LockHolder(pid=owner, alive=True, source="flock_owner")
+            raise
+    except OSError as exc:
+        raise LockProbeError(path, exc) from exc
+    finally:
+        os.close(fd)
 
     if not held:
         return _anchor_holder_or_nobody(home, path)
 
-    owner = platform_compat.flock_owner_pid(path)
+    owner = platform_compat.flock_owner_pid(probed)
     if owner is not None:
         if platform_compat.pid_exists(owner):
             return LockHolder(pid=owner, alive=True, source="flock_owner")
@@ -1136,39 +1310,78 @@ def _anchor_holder_or_nobody(home: Path, path: Path) -> LockHolder:
     )
 
 
-def _lock_is_held(path: Path) -> bool:
-    """True when something holds the lock at *path* (i.e. a gateway is running).
+def _lock_is_held(fd: int, path: Path) -> bool:
+    """True when something holds the lock on *fd*, open on *path* (a gateway is running).
 
     Non-destructive: the acquire is only a probe and is released at once, so a
-    real holder is never disturbed. An ``OSError`` from OPENING the file raises
+    real holder is never disturbed. An ``OSError`` from the probe raises
     :class:`LockProbeError` instead of being folded into either answer: the
     callers of :func:`lock_holder` act on the answer (refuse naming the pid,
     profile it), so a false "free" would let them spawn a second writer. A
     failure inside the lock call itself is folded by
     ``platform_compat.try_acquire_lock`` into ``False``, which reads here as
     "held": the conservative answer, since every caller treats a held lock as
-    a reason to refuse rather than to act on the recorded pid.
+    a reason to refuse rather than to act on the recorded pid. *fd* is the
+    caller's no-follow descriptor (see the module docstring), so the inode
+    probed is the one classified, and the caller closes it.
 
     The probe window itself is the one this process could win a race against a
     gateway acquiring at the same instant; it is microseconds wide and the
     gateway's own refusal names this pid, which is the same exposure the
     ``cli_perf`` probe carries.
     """
-    fd: int | None = None
     try:
-        fd = os.open(path, os.O_RDWR)
         if platform_compat.try_acquire_lock(fd, exclusive=True):
             platform_compat.release_lock(fd)
             return False
         return True
     except OSError as exc:
         raise LockProbeError(path, exc) from exc
-    finally:
-        if fd is not None:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
+
+
+#: ``errno`` values with which a read-write open of an existing lock file is
+#: refused for its permissions or its filesystem, not for what it is.
+_WRITE_DENIED_ERRNOS = frozenset({errno.EACCES, errno.EPERM, errno.EROFS})
+
+
+def _open_probe_descriptor(path: Path) -> int:
+    """Open the existing lock file for :func:`lock_holder`'s probe, never through a link.
+
+    POSIX opens read-write with ``O_NOFOLLOW``: some filesystems emulate
+    ``flock`` with record locks (Linux NFS without ``local_lock``), and an
+    exclusive record lock needs a descriptor open for writing, so a read-only
+    probe would read every free lock as held. No ``O_NONBLOCK``, as for every
+    read-write open of the lock (a lease break is waited out), and no
+    ``O_CREAT``: the probe never makes the file. A file this user cannot open
+    for writing (``EACCES``, ``EPERM`` or ``EROFS``: a ``0400`` lock left by
+    another account, a read-only filesystem) is probed through a read-only
+    descriptor instead. Windows opens read-only through
+    ``open_file_no_reparse(links_only=True)``, refusing only a reparse point
+    that is a link. The caller still classifies the descriptor with ``fstat``.
+    """
+    if platform_compat.IS_POSIX:
+        try:
+            return os.open(path, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0))
+        except OSError as exc:
+            if exc.errno not in _WRITE_DENIED_ERRNOS:
+                raise
+    return platform_compat.open_file_no_reparse(path, nonblocking=True, links_only=True)
+
+
+def _names_non_regular_entry(path: Path) -> bool:
+    """True iff something other than a regular file is AT *path*; a link counts as itself."""
+    try:
+        return not stat.S_ISREG(os.lstat(path).st_mode)
+    except OSError:
+        return False
+
+
+def _fstat_or_none(fd: int) -> os.stat_result | None:
+    """``os.fstat`` of *fd*, or ``None`` when even that fails."""
+    try:
+        return os.fstat(fd)
+    except OSError:
+        return None
 
 
 def _is_same_file(fd: int, path: Path) -> bool:
@@ -1176,11 +1389,12 @@ def _is_same_file(fd: int, path: Path) -> bool:
 
     False also when *path* has no inode at all (it is unlinked), because both
     answers mean the same thing to a lock: the descriptor we hold is not what
-    another process opening that name would get.
+    another process opening that name would get. The name is read without
+    following a link, as every open of it is (see the module docstring).
     """
     try:
         held = os.fstat(fd)
-        named = os.stat(path)
+        named = os.lstat(path)
     except OSError:
         return False
     return (held.st_dev, held.st_ino) == (named.st_dev, named.st_ino)
@@ -1301,8 +1515,15 @@ def _port_answers_http(
 
 
 def _read_pid(fd: int) -> int | None:
-    """Best-effort read of the holder pid recorded in the lock file."""
+    """Best-effort read of the holder pid recorded in the lock file.
+
+    ``None`` for a stamp that may not be the holder's: a file with another hard
+    link, into which no stamp is written (see the module docstring). Once that
+    link is gone the stamp is read again.
+    """
     try:
+        if os.fstat(fd).st_nlink > 1:
+            return None
         os.lseek(fd, 0, os.SEEK_SET)
         raw = os.read(fd, 64).decode(errors="replace").strip()
     except OSError:

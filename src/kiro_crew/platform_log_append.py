@@ -54,66 +54,9 @@ _SHARING_RETRY_SECONDS = 0.01
 _DIR_MODE = 0o700
 _FILE_MODE = 0o600
 
-# CreateFile rights/dispositions. A directory pin asks for LIST_DIRECTORY, not
-# just attributes: only data/delete access takes part in Windows sharing, so an
-# attributes-only handle would pin nothing. With read-only sharing, a later
-# write or delete open of the pinned directory fails with ERROR_SHARING_VIOLATION.
-_WIN_LIST_DIRECTORY = 0x1
-_WIN_GENERIC_READ_WRITE = 0xC0000000
-_WIN_SHARE_READ = 0x1
-_WIN_SHARE_READ_WRITE = 0x3
-_WIN_OPEN_EXISTING = 3
-_WIN_OPEN_ALWAYS = 4
-_WIN_BACKUP_SEMANTICS = 0x02000000
-_WIN_OPEN_REPARSE_POINT = 0x00200000
-_WIN_REPARSE_ATTRIBUTE = 0x400
-
-
-def _win_open(path: Path, *, directory: bool) -> int:  # pragma: no cover - Windows
-    """Open the object itself, transferring the native handle only on success."""
-    import msvcrt
-
-    kernel = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
-    kernel.CreateFileW.argtypes = [
-        wintypes.LPCWSTR,
-        wintypes.DWORD,
-        wintypes.DWORD,
-        wintypes.LPVOID,
-        wintypes.DWORD,
-        wintypes.DWORD,
-        wintypes.HANDLE,
-    ]
-    kernel.CreateFileW.restype = wintypes.HANDLE
-    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
-    kernel.CloseHandle.restype = wintypes.BOOL
-    handle = kernel.CreateFileW(
-        str(path),
-        _WIN_LIST_DIRECTORY if directory else _WIN_GENERIC_READ_WRITE,
-        _WIN_SHARE_READ if directory else _WIN_SHARE_READ_WRITE,
-        None,
-        _WIN_OPEN_EXISTING if directory else _WIN_OPEN_ALWAYS,
-        _WIN_BACKUP_SEMANTICS | _WIN_OPEN_REPARSE_POINT,
-        None,
-    )
-    if handle is None or handle == wintypes.HANDLE(-1).value:
-        raise ctypes.WinError(ctypes.get_last_error())  # type: ignore[attr-defined]
-    try:
-        fd = msvcrt.open_osfhandle(  # type: ignore[attr-defined]
-            handle, (os.O_RDONLY if directory else os.O_RDWR) | getattr(os, "O_BINARY", 0)
-        )
-    except BaseException:
-        kernel.CloseHandle(handle)
-        raise
-    try:
-        info = os.fstat(fd)
-        if info.st_file_attributes & _WIN_REPARSE_ATTRIBUTE:  # type: ignore[attr-defined]
-            raise OSError(errno.ELOOP, "log path is a reparse point")
-        if directory and not stat.S_ISDIR(info.st_mode):
-            raise NotADirectoryError("log ancestor is not a directory")
-    except BaseException:
-        os.close(fd)
-        raise
-    return fd
+#: The Windows open of the object itself, never through a reparse point; shared
+#: with the gateway lock (see :func:`platform_compat.win_open_no_reparse`).
+_win_open = platform_compat.win_open_no_reparse
 
 
 def _pin_log_dir(

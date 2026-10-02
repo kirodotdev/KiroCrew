@@ -1115,10 +1115,14 @@ merge, each write being a whole-file rewrite of one snapshot:
   `dropped == 0` is otherwise "owned nothing", "did not try", and "could not write",
   which need different messages — `failed` covers an ENOSPC or permission error on the
   write, where the pointer is still on disk and the default result would have said the
-  app owned nothing. And the CLI prints both non-clear cases to stderr naming the
+  app owned nothing. `failed` also covers a lock that could not be used at all
+  (`LockFileError`: `gateway.lock` is not a regular file, or it or the home could not
+  be opened, created or measured), since no gateway owns the map then and stopping
+  one would not help. And the CLI prints both non-clear cases to stderr naming the
   consequence and the recovery, because the operator who can act on it is standing at
   the command that otherwise printed a success tick; they get different text because
-  they need different actions — stop the gateway, versus fix the storage error. The recovery is re-running
+  they need different actions — stop the gateway, versus fix the storage or lock-file
+  error the log names. The recovery is re-running
   `kirocrew app uninstall <name>` with the gateway stopped, which works because the
   bookkeeping half also runs when `uninstall_app` fails with *not installed* — the
   pointers outlive the app, so that is the one failure whose cleanup is still owed.
