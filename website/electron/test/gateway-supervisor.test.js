@@ -730,6 +730,7 @@ const APP_ARGV = [APP_EXEC_PATH, "--some-flag"];
 
 function staleBundleHarness({
   platform = "darwin",
+  isPackaged = false,
   appExecutableGone = false,
   // Drives the LISTEN-owner probe the handoff runs before it confirms. An
   // ordinary handoff is one where our own successor holds the port, so that is
@@ -788,6 +789,7 @@ function staleBundleHarness({
       kill() { throw new Error("process kill must not run in this harness"); },
     },
     app: {
+      isPackaged,
       // No `relaunch` on purpose: app.relaunch() cannot report a failed re-exec,
       // so the supervisor must never reach for it on this path.
       releaseSingleInstanceLock() { state.lockReleases += 1; },
@@ -1780,17 +1782,65 @@ test("a stale exit while the updater owns the bundle is left alone", async () =>
   assert.deepStrictEqual(state.exits, []);
 });
 
-test("Linux and Windows keep their own stale-asset recovery", async () => {
-  for (const platform of ["linux", "win32"]) {
-    const { supervisor, spawnCalls, state } = staleBundleHarness({ platform });
+test("Linux keeps its service manager's stale-asset recovery", async () => {
+  const { supervisor, spawnCalls, state } = staleBundleHarness({ platform: "linux" });
 
-    await supervisor.start();
-    assert.strictEqual(spawnCalls.length, 1, platform);
-    spawnCalls[0].child.emit("exit", 75, null);
+  await supervisor.start();
+  assert.strictEqual(spawnCalls.length, 1);
+  spawnCalls[0].child.emit("exit", 75, null);
 
-    assert.strictEqual(spawnCalls.length, 1, platform);
-    assert.deepStrictEqual(state.exits, [], platform);
-  }
+  assert.strictEqual(spawnCalls.length, 1);
+  assert.deepStrictEqual(state.exits, []);
+});
+
+test("Windows re-probes after a stale-asset exit and respawns the backend found at the same path", async () => {
+  const { supervisor, spawnCalls, logs, state } = staleBundleHarness({ platform: "win32", isPackaged: true });
+
+  assert.strictEqual(await supervisor.start(), true);
+  assert.strictEqual(spawnCalls[0][0], BUNDLED_BIN);
+  spawnCalls[0].child.emit("exit", 75, null);
+
+  assert.strictEqual(spawnCalls.length, 2);
+  assert.strictEqual(spawnCalls[1][0], BUNDLED_BIN);
+  assert.ok(logs.some((line) => line.includes("stale bundle (exit 75") && line.includes("attempt 1")));
+  assert.deepStrictEqual(state.exits, []);
+});
+
+// The running version's directory was pruned: nothing bundled is left at any
+// probed path. A packaged Windows app must not hand the launch to whatever
+// kirocrew.exe is first on PATH -- that child serves nothing and exits 0,
+// which no recovery reads as a failure.
+test("a packaged Windows app whose bundle was pruned refuses the PATH fallback instead of spawning it", async () => {
+  const { supervisor, spawnCalls, errors, state } = staleBundleHarness({ platform: "win32", isPackaged: true });
+
+  await supervisor.start();
+  state.pruned = true;
+  spawnCalls[0].child.emit("exit", 75, null);
+
+  assert.strictEqual(spawnCalls.length, 1, "nothing is spawned from PATH");
+  assert.ok(errors.some((line) => line.includes("spawn REFUSED: no bundled backend")));
+  assert.ok(state.statuses.some((line) => line.includes("Finishing installation")));
+  assert.deepStrictEqual(state.exits, []);
+});
+
+test("a packaged Windows app that boots with no bundle reports it instead of spawning from PATH", async () => {
+  const { supervisor, spawnCalls, errors, state } = staleBundleHarness({ platform: "win32", isPackaged: true });
+  state.pruned = true;
+
+  assert.strictEqual(await supervisor.start(), false);
+  assert.strictEqual(spawnCalls.length, 0);
+  assert.ok(errors.some((line) => line.includes("spawn REFUSED: no bundled backend")));
+});
+
+// A source checkout finds the developer's own install by name, so only a
+// packaged app gives the PATH fallback up.
+test("an unpackaged Windows launch still falls back to kirocrew.exe on PATH", async () => {
+  const { supervisor, spawnCalls, state } = staleBundleHarness({ platform: "win32", isPackaged: false });
+  state.pruned = true;
+
+  assert.strictEqual(await supervisor.start(), true);
+  assert.strictEqual(spawnCalls.length, 1);
+  assert.strictEqual(spawnCalls[0][0], "kirocrew.exe");
 });
 
 test("a macOS Gatekeeper hint uses the user-facing warning channel", async () => {

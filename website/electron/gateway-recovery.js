@@ -263,7 +263,7 @@ const STALE_ASSET_EXIT_CODE = 75;
 
 /**
  * Decide how the supervisor reacts to a bundled backend that vanished
- * underneath it on macOS.
+ * underneath it on macOS or Windows.
  *
  * Two signals mean "the bundle we spawned from is gone": the gateway exited
  * with STALE_ASSET_EXIT_CODE (its watchdog saw its own assets disappear), or a
@@ -274,7 +274,11 @@ const STALE_ASSET_EXIT_CODE = 75;
  * a launch-time snapshot -- so recovery is a fresh filesystem probe of the same
  * candidate list: when the bundle was swapped at the same path the new backend
  * is found there; when it was pruned the probe falls through to a user-level
- * install or a PATH lookup.
+ * install or a PATH lookup. (A packaged Windows app refuses that PATH lookup
+ * before spawning anything -- see spawnGateway -- so on Windows a prune with
+ * nothing reinstalled at the same path ends at the "installation still
+ * finishing" dialog, whose probe re-runs this same candidate list and starts
+ * the backend once one is back at that path.)
  *
  * The budget is one re-resolve per incident. A second stale signal in the same
  * incident means the probe found nothing usable, so the only remaining move is
@@ -287,9 +291,17 @@ const STALE_ASSET_EXIT_CODE = 75;
  * window between the probe and the restart.)
  *
  * @param {object} o
- * @param {boolean} o.isMac             only macOS swaps bundles under a running
- *                                      app; Linux is restarted by its service
- *                                      manager and Windows stops the app first.
+ * @param {boolean} o.isMac             macOS swaps bundles under a running app.
+ * @param {boolean} [o.isWindows=false]  so does Windows: an install manager that
+ *                                      lays each version down side by side can
+ *                                      prune the running version's directory
+ *                                      without stopping the app. Every
+ *                                      file the shell has mapped (its own
+ *                                      executable, app.asar) survives, because a
+ *                                      running image cannot be deleted there, and
+ *                                      the backend tree goes. Linux stays out:
+ *                                      its service manager restarts the gateway
+ *                                      on exit 75.
  * @param {boolean} o.bundled           the child that failed was the bundled
  *                                      backend. A PATH or dev install that is
  *                                      missing or exits 75 has nothing stale to
@@ -315,6 +327,7 @@ const STALE_ASSET_EXIT_CODE = 75;
  */
 function shouldReresolveBackend({
   isMac,
+  isWindows = false,
   bundled,
   exitCode = null,
   spawnErrorCode = "",
@@ -323,7 +336,7 @@ function shouldReresolveBackend({
   installingUpdate = false,
   relaunchTargetExists = false,
 }) {
-  if (!isMac || quitting || installingUpdate) return "none";
+  if (!(isMac || isWindows) || quitting || installingUpdate) return "none";
   if (!isStaleBundleSignal({ exitCode, spawnErrorCode })) return "none";
   // Past the first attempt the child under judgment is whatever the re-probe
   // found (possibly not bundled), and the incident is already established.
