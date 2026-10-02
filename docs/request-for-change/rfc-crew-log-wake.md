@@ -132,6 +132,19 @@ trigger. A worker's `session_ledger_record` is its own working memory and has
 no binding to a conductor; the work ledger is the reporting channel, and Phase
 2 made that the only one a worker can write toward its conductor.
 
+**Amendment 2026-10-02 — the wake moves onto the crew-log bus.** Owner decision:
+`eager.py` only folds and publishes; every consumer of a fold subscribes on
+`crew_log.bus`. So trigger one's seam moves from a second consumer on the eager
+drain to a KEYED bus subscription: the conductor wake subscribes to
+`FOLD_ADVANCED` for its board (`scope="slot"`, `key=<conductor slot>`,
+`fold="work"`), keeps the returned disposer for the life of its armed loop, and
+starts from the board's current value with `baseline=True` instead of reading the
+board files itself. Everything after the push is unchanged: the binding lookup,
+`fire_now`, the gate and the budget. The non-goal "a general event bus" stands for
+this RFC: the bus is the crew log's own, specified in
+[`crew-log-projection` section 5.2](../system-specs/modules/crew-log-projection.md),
+and this design only subscribes to it.
+
 ### 3.2 Trigger two: a worker session closes
 
 `chat_handlers.close_slot` is the one path a dashboard session is closed

@@ -1834,6 +1834,7 @@ class CrewLogPublisher:
         # newest (revision, seq, value) per (session, fold). See :meth:`_schedule_session`.
         self._pending: "dict[tuple[str, str], tuple[int, int, dict[str, Any]]]" = {}
         self._sessions_armed = False
+        self._bus_disposers: "list[Callable[[], None]]" = []
         self._slot_owners: "OrderedDict[str, str]" = OrderedDict()
         # The newest revision published per (slot, fold), which is what a connecting
         # client is handed as its floor. Written on the fold worker's thread and read on
@@ -1878,46 +1879,106 @@ class CrewLogPublisher:
 
     # -- fold worker thread, via the crew-log bus --------------------------- #
 
+    def subscribe_bus(self) -> None:
+        """Subscribe this publisher to the crew-log bus, replacing any earlier pair.
+
+        TWO keyed subscriptions, one per scope, so each handler receives only its own
+        kind of fold and the bus never hands a slot event to the session path or the
+        reverse. The disposers are KEPT: a second install in the same process (a gateway
+        restarted inside one interpreter) disposes the old pair before subscribing the
+        new one, so this publisher is never called twice for one event.
+        """
+        # boot-path import gate: the bus is imported where the publisher is installed.
+        from kiro_crew.crew_log import bus as crew_log_bus
+
+        for dispose in self._bus_disposers:
+            dispose()
+        self._bus_disposers = [
+            crew_log_bus.subscribe(
+                crew_log_bus.FOLD_ADVANCED, self.on_slot_fold, scope=crew_log_bus.SCOPE_SLOT
+            ),
+            crew_log_bus.subscribe(
+                crew_log_bus.FOLD_ADVANCED,
+                self.on_session_fold,
+                scope=crew_log_bus.SCOPE_SESSION,
+            ),
+        ]
+
+    def unsubscribe_bus(self) -> None:
+        """Drop both bus subscriptions. Idempotent."""
+        disposers, self._bus_disposers = self._bus_disposers, []
+        for dispose in disposers:
+            dispose()
+
     def on_fold_advanced(self, event: Any) -> None:
-        """THE WS EXPORTER: the crew-log bus's first subscriber.
+        """Route one :class:`FoldAdvanced` to the handler for its scope.
+
+        The bus subscriptions call :meth:`on_slot_fold` and :meth:`on_session_fold`
+        directly, already filtered by scope; this is the entry for a caller holding an
+        event of either kind.
+        """
+        scope = str(getattr(event, "scope", "") or "")
+        if scope == "slot":
+            self.on_slot_fold(event)
+        elif scope == "session":
+            self.on_session_fold(event)
+
+    def on_slot_fold(self, event: Any) -> None:
+        """THE WS EXPORTER for a slot fold: one frame per event, no coalesce.
 
         Called on the crew log's FOLD WORKER thread, synchronously inside
         ``bus.publish``. Same shape and same reason as :meth:`notify`: no I/O, no lock,
         hand the frame to the loop that owns the sockets and return. The value arrives
-        already folded -- that is what an eager advance produced -- so there is nothing
-        to read.
-
-        It is a SUBSCRIBER and not a call the folder makes, so the crew log names no
-        dashboard symbol: it publishes, and this registers. Further subscribers are
-        named in ``bus``'s docstring and are not built here.
+        already folded, so there is nothing to read.
 
         NOT COALESCED, which is the folder's doing rather than an omission: it drains its
         whole queue per batch and folds each (key, fold) once, so a turn's burst reaches
         this once per fold it moved.
 
-        A SESSION fold that is not advertised (``class``) is not sent: its one reader
-        asks for it by name, and a browser cannot draw it.
-
         The event is read DEFENSIVELY -- a bus carries whatever a publisher sends, and a
         malformed one must cost this frame rather than the fan-out to the next subscriber.
         """
-        scope = str(getattr(event, "scope", "") or "")
+        unpacked = self._unpack(event)
+        loop = self._loop
+        if unpacked is None or loop is None:
+            return
+        key, fold, revision, _seq, value = unpacked
+        try:
+            self._record_revision(key, fold, revision)
+            loop.call_soon_threadsafe(self._push_fold, key, fold, revision, value)
+        except RuntimeError:
+            logger.debug("crew log fold for %s/%s arrived after the loop closed", key, fold)
+
+    def on_session_fold(self, event: Any) -> None:
+        """THE WS EXPORTER for a session fold: held for the next coalesced send.
+
+        Same thread and same contract as :meth:`on_slot_fold`. A SESSION fold that is
+        not advertised (``class``) is not sent: its one reader asks for it by name, and a
+        browser cannot draw it.
+        """
+        unpacked = self._unpack(event)
+        loop = self._loop
+        if unpacked is None or loop is None:
+            return
+        key, fold, revision, seq, value = unpacked
+        if fold not in _crew_log().PROJECTION_NAMES:
+            return
+        try:
+            loop.call_soon_threadsafe(self._schedule_session, key, fold, revision, seq, value)
+        except RuntimeError:
+            logger.debug("crew log fold for %s/%s arrived after the loop closed", key, fold)
+
+    @staticmethod
+    def _unpack(event: Any) -> "tuple[str, str, int, int, dict[str, Any]] | None":
+        """``(key, fold, revision, seq, value)`` from *event*, or ``None`` if malformed."""
         key = str(getattr(event, "key", "") or "")
         fold = str(getattr(event, "fold", "") or "")
         revision = int(getattr(event, "revision", 0) or 0)
         seq = int(getattr(event, "seq", 0) or 0)
         value = getattr(event, "value", None)
-        loop = self._loop
-        if loop is None or not key or not fold or revision <= 0 or not isinstance(value, dict):
-            return
-        try:
-            if scope == "slot":
-                self._record_revision(key, fold, revision)
-                loop.call_soon_threadsafe(self._push_fold, key, fold, revision, value)
-            elif scope == "session" and fold in _crew_log().PROJECTION_NAMES:
-                loop.call_soon_threadsafe(self._schedule_session, key, fold, revision, seq, value)
-        except RuntimeError:
-            logger.debug("crew log fold for %s/%s arrived after the loop closed", key, fold)
+        if not key or not fold or revision <= 0 or not isinstance(value, dict):
+            return None
+        return key, fold, revision, seq, value
 
     # -- event loop --------------------------------------------------------- #
 
@@ -2250,19 +2311,19 @@ def install_crew_log_publisher(state: Any) -> CrewLogPublisher | None:
     loop = asyncio.get_running_loop()
     if _publisher is not None:
         _publisher.bind(loop, state)
+        _publisher.subscribe_bus()
         return _publisher
-    from kiro_crew.crew_log import bus as crew_log_bus
     from kiro_crew.crew_log import emit as crew_log_emit
 
     _publisher = CrewLogPublisher(state)
     _publisher.bind(loop, state)
     crew_log_emit.add_growth_listener(_publisher.notify)
-    # THE BUS SUBSCRIPTION, and the reason it is here rather than in the folder: this is
-    # the one place the dashboard state exists, so this is where a consumer of a crew-log
-    # event can be attached without the crew log naming the dashboard. Registered under
-    # the same once-per-process rule as the growth listener above -- the growth listener
-    # says a session's file moved, this says a slot's folded value moved and what it is.
-    crew_log_bus.subscribe(crew_log_bus.FOLD_ADVANCED, _publisher.on_fold_advanced)
+    # THE BUS SUBSCRIPTIONS, and the reason they are here rather than in the folder: this
+    # is the one place the dashboard state exists, so this is where a consumer of a
+    # crew-log event can be attached without the crew log naming the dashboard. The
+    # growth listener says a session's file moved; the bus says a fold's value moved and
+    # what it is. A re-install swaps the bus pair through their disposers.
+    _publisher.subscribe_bus()
     return _publisher
 
 

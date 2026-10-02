@@ -1050,6 +1050,13 @@ The read runs on the subscriber's own thread: never the append path and never th
 worker, so a caller on an event loop calls it through `asyncio.to_thread`. A read that
 raises removes the subscription and propagates.
 
+The dashboard's `CrewLogPublisher` holds two scoped subscriptions, one per scope, and
+keeps their disposers so a second install in one process swaps the pair instead of
+doubling it. The conductor wake subscribes the same way, keyed to its board with a
+baseline: [`rfc-crew-log-wake`, amendment 2026-10-02](../../request-for-change/rfc-crew-log-wake.md)
+records the decision that the eager folder only folds and publishes, and consumers
+subscribe.
+
 **Why that needed a revision, and why `seq` could not be it.** A slot fold's `last_seq` is
 the NEWEST unit's own seq by contract, and conductor units are folded before worker units.
 So a conductor-side change on a board with any worker bound leaves that number unmoved, and

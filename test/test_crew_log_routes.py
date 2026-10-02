@@ -1050,6 +1050,45 @@ async def test_installing_the_publisher_registers_exactly_one_growth_listener(mo
         assert len(crew_log_emit._growth_listeners) == 1
 
 
+@pytest.mark.asyncio
+async def test_a_reinstall_swaps_the_bus_subscriptions_rather_than_doubling_them(monkeypatch):
+    """The publisher keeps its two scoped disposers, so a re-install replaces the pair."""
+    from kiro_crew.crew_log import bus as crew_log_bus
+    from kiro_crew.crew_log import emit as crew_log_emit
+
+    monkeypatch.setenv(routes.CREW_LOG_ENV, "1")
+    crew_log_bus.reset_for_tests()
+    try:
+        with (
+            patch.object(routes, "_publisher", None),
+            patch.object(crew_log_emit, "_growth_listeners", []),
+        ):
+            first = routes.install_crew_log_publisher(_Sockets())
+            assert first is not None
+            assert crew_log_bus.subscriber_count(crew_log_bus.FOLD_ADVANCED) == 2
+            with patch.object(routes, "_publisher", first):
+                routes.install_crew_log_publisher(_Sockets())
+            assert crew_log_bus.subscriber_count(crew_log_bus.FOLD_ADVANCED) == 2
+
+            slot_calls: list = []
+            session_calls: list = []
+            monkeypatch.setattr(first, "on_slot_fold", slot_calls.append)
+            monkeypatch.setattr(first, "on_session_fold", session_calls.append)
+            first.subscribe_bus()
+            slot_event = crew_log_bus.FoldAdvanced("slot", "dashboard:1", "work", 1, {}, 1)
+            session_event = crew_log_bus.FoldAdvanced("session", "s-1", "status", 1, {}, 1)
+            crew_log_bus.publish(crew_log_bus.FOLD_ADVANCED, slot_event)
+            crew_log_bus.publish(crew_log_bus.FOLD_ADVANCED, session_event)
+            assert slot_calls == [slot_event]
+            assert session_calls == [session_event]
+
+            first.unsubscribe_bus()
+            first.unsubscribe_bus()
+            assert crew_log_bus.subscriber_count(crew_log_bus.FOLD_ADVANCED) == 0
+    finally:
+        crew_log_bus.reset_for_tests()
+
+
 def test_the_frame_keeps_the_name_the_rfc_gives_it():
     assert routes.FRAME == "session_projection"
 
