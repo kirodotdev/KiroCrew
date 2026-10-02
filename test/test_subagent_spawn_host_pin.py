@@ -34,6 +34,8 @@ import ast
 import functools
 import pathlib
 
+import pytest
+
 _TEST_DIR = pathlib.Path(__file__).resolve().parent
 
 #: The fixture in ``test/conftest.py`` that pins both guards. A rename that
@@ -205,3 +207,25 @@ class TestTheHostPinSurvivesTheTestsOwnPatches:
             f'instead, so leaving the block restores "{_FIXTURE}"\'s readings '
             "rather than the runner's."
         )
+
+
+@pytest.mark.usefixtures(_FIXTURE)
+class TestThePinnedHostIsHealthyNotInfinite:
+    """The pin answers as a real host with that much free memory would.
+
+    A pin that admits whatever floor is asked hides every test whose reserve has
+    outgrown the host: a wave of starts the operator's 8 GB machine would queue
+    reads as admitted here. So the floor is still compared against the pinned
+    figure, and only the reading itself is fixed.
+    """
+
+    def test_a_floor_above_the_pinned_host_is_refused(self) -> None:
+        import kiro_crew.subagent as subagent
+
+        assert subagent.check_memory_available(min_gb=9.0) == (False, 8.0)
+
+    def test_a_floor_the_pinned_host_clears_is_admitted(self) -> None:
+        import kiro_crew.subagent as subagent
+
+        assert subagent.check_memory_available(min_gb=8.0) == (True, 8.0)
+        assert subagent.check_memory_available() == (True, 8.0)

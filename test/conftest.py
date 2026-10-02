@@ -2041,9 +2041,12 @@ def named_cron_caller(monkeypatch):
     return key
 
 
-#: Comfortably clear of both memory guards ``SubagentManager.spawn`` runs: the
-#: absolute floor (``agent.spawn_min_memory_gb``, 2 GB after a start of up to 1 GB) and the posture tier
-#: (``agent.resource_critical_gb``, 2 GB).
+#: Comfortably clear of both memory guards ``SubagentManager.spawn`` runs at
+#: defaults: the absolute floor (``agent.spawn_min_memory_gb``, 2 GB after a
+#: start of up to 1 GB, plus the starts still warming) and the posture tier
+#: (``agent.resource_critical_gb``, 2 GB). A HEALTHY host, not an infinite one:
+#: the floor still compares against this figure, so a test asking for more than
+#: it is refused the way a real 8 GB host would refuse it.
 _HEALTHY_AVAILABLE_GB = 8.0
 
 
@@ -2071,9 +2074,16 @@ def healthy_host_memory(monkeypatch: pytest.MonkeyPatch) -> None:
     this machine, so it still runs the real function and a parser regression
     still goes red. A test that is actually ABOUT either guard patches it in its
     own body, which lands on top of this and reverts to it.
+
+    The pinned host has ``_HEALTHY_AVAILABLE_GB`` free and the floor is still
+    compared against it: ``(8.0 >= min_gb, 8.0)``, the real reader's answer on
+    such a host. Answering ``True`` whatever was asked would let a test pass on
+    a bar no 8 GB machine clears -- a wave whose reserve outgrew the host would
+    read as admitted here and as queued on the operator's.
     """
     import kiro_crew.resource_status as resource_status
     import kiro_crew.subagent as subagent
+    from kiro_crew.constants import DEFAULT_SPAWN_MIN_MEMORY_GB
 
     real_check = subagent.check_memory_available
 
@@ -2081,7 +2091,8 @@ def healthy_host_memory(monkeypatch: pytest.MonkeyPatch) -> None:
         min_gb: float | None = None, path: str | None = None
     ) -> tuple[bool, float]:
         if path is None:
-            return (True, _HEALTHY_AVAILABLE_GB)
+            floor = DEFAULT_SPAWN_MIN_MEMORY_GB if min_gb is None else min_gb
+            return (_HEALTHY_AVAILABLE_GB >= floor, _HEALTHY_AVAILABLE_GB)
         if min_gb is None:
             return real_check(path=path)
         return real_check(min_gb=min_gb, path=path)

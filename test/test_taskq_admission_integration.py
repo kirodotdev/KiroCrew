@@ -312,7 +312,11 @@ async def test_2000_submissions_all_complete_window_never_exceeds_64(quiet) -> N
     the Windows shard's ``--timeout=180`` would otherwise kill the worker, and
     with ``--max-worker-restart=0`` that is a lost run, not a named failure.
     """
-    mgr = await _manager(max_concurrent=8)
+    # Four slots, not eight: every start here is an unsettled dedicated one
+    # (the fake run is never sampled), so eight in flight would owe the floor
+    # plus eight unlearned starts -- more than the pinned 8 GB host has, and the
+    # burst would park behind the memory guard instead of draining. Four fit.
+    mgr = await _manager(max_concurrent=4)
     store: TaskStore = mgr._taskq
     assert store.window == 64
     peak_window = {"n": 0}

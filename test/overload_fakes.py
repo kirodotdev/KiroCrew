@@ -240,11 +240,17 @@ class ManagerHarness:
         self._patch = patch.object(SubagentManager, "_run", new=_run)
         self._patch.start()
         # Pin the host-memory readings ``SubagentManager.spawn`` consults, the
-        # same way conftest's ``healthy_host_memory`` fixture does: the
-        # harness is the fake host, so a memory-pressured runner must not turn
-        # a spawn into a refusal that surfaces as a bare KeyError one line on.
+        # same way conftest's ``healthy_host_memory`` fixture does: an 8 GB
+        # host that honours the floor it is asked about. The harness is the
+        # fake host, so a memory-pressured runner must not turn a spawn into a
+        # refusal that surfaces as a bare KeyError one line on.
         import kiro_crew.resource_status as resource_status
         import kiro_crew.subagent as subagent_mod
+        from kiro_crew.constants import DEFAULT_SPAWN_MIN_MEMORY_GB
+
+        def _host(min_gb: float | None = None, **_kw: Any) -> tuple[bool, float]:
+            floor = DEFAULT_SPAWN_MIN_MEMORY_GB if min_gb is None else min_gb
+            return 8.0 >= floor, 8.0
 
         def _admit() -> resource_status.AdmissionDecision:
             return resource_status.AdmissionDecision(
@@ -252,7 +258,7 @@ class ManagerHarness:
             )
 
         self._memory_patches = [
-            patch.object(subagent_mod, "check_memory_available", lambda *a, **k: (True, 8.0)),
+            patch.object(subagent_mod, "check_memory_available", _host),
             patch.object(subagent_mod, "cached_admission_check", _admit),
         ]
         for mp in self._memory_patches:

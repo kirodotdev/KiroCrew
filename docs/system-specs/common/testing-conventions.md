@@ -3966,6 +3966,14 @@ those tests still run the real function and a parser regression still goes red. 
 test that is actually ABOUT either guard patches it in its own body, which lands on
 top of the fixture and reverts to it.
 
+The pinned host is healthy, not infinite: it reads 8 GB free and still compares
+the floor it is asked about against that figure, `(8.0 >= min_gb, 8.0)`, so a
+test whose wave of unsettled starts outgrows an 8 GB host is queued here exactly
+as it would be on one. Size such a test's concurrency to fit the pinned host (the
+floor plus one dedicated start per unsettled row), or patch the reading in its
+body; never widen the pin back to an unconditional admit. `overload_fakes`'s
+`ManagerHarness` pins the same 8 GB host the same way.
+
 Opt-in rather than autouse, because the pin is not free of consequence: the tests
 that drive the probe with no `path` and stub `safe_read_file` underneath it —
 `test_subagent_coverage.py::TestCheckMemoryAvailable` — never reach their own stub
