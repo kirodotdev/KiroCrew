@@ -814,7 +814,7 @@ packages at all.
 | `permissions.cron` | boolean | Can create cron jobs |
 | `permissions.memory` | string | Memory access: `""` (none), `"app-scoped"`, or `"shared"` |
 | `permissions.network` | boolean | Can make external network requests |
-| `permissions.sessionApproval` | boolean | Controls existing local user sessions: send messages (including generated response-option choices), approve or deny pending tool requests, and change approval modes within the limits below |
+| `permissions.sessionApproval` | boolean | Controls existing local user sessions: send messages (including generated response-option choices, but not a change to the session's agent binding, persona settings, or a harness slash command), approve or deny pending tool requests, and change approval modes within the limits below |
 | `permissions.spawn` | boolean | May start a background agent through the host's subagent manager (`ctx.spawn`) |
 | `permissions.jobs` | boolean | May run durable background work through `ctx.jobs` and the app-owned `_jobs/*` routes |
 | `permissions.exposeToApps` | string[] | App names (or `"*"`) allowed to request cross-app visibility into this app's slots/subagents |

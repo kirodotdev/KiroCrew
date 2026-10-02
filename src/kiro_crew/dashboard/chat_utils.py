@@ -372,6 +372,15 @@ def _redact_tool_field(text: str | None, *, limit: int = _MAX_TOOL_FIELD) -> str
     return text
 
 
+#: Wire frame pushed onto ``slot._pending`` at a turn's end, before the queue
+#: drain or the cycle's end writes anything (``chat_runner._mark_turn_end``); a
+#: recovery the ending turn queued for itself is the same turn and gets none.
+#: ``done`` marks the end of the whole queue cycle; this marks the end of one
+#: turn, which is where an app's stream on a user's session stops
+#: (``chat_handlers.api_chat``). Never a row: other readers skip it.
+TURN_END_WIRE_CLS = "turn_end"
+
+
 def _build_stream_chunk(msg: dict, *, include_row_meta: bool = False) -> str:
     """Build a JSON SSE chunk from a slot message, with meta redaction for permissions.
 
@@ -3983,13 +3992,23 @@ def carries_attachments(item: dict) -> bool:
     return any(isinstance(meta.get(k), list) and meta.get(k) for k in ATTACHMENT_META_KEYS)
 
 
+def _stamped_turn_actor(item: dict) -> Any:
+    """The turn actor stamped on a queue entry's meta, or ``""`` for none."""
+    # circular import: chat_delivery imports this module at load.
+    from kiro_crew.dashboard.chat_delivery import TURN_ACTOR_META_KEY
+
+    meta = item.get("meta")
+    return meta.get(TURN_ACTOR_META_KEY, "") if isinstance(meta, dict) else ""
+
+
 def _dequeue_next_message(slot, merge_enabled: bool) -> tuple:
     """Drain the queue: merge non-cron messages or pop the first one.
 
     A merge run stops at a system injection, at an attachment-bearing entry
-    (see :func:`carries_attachments`) and at a possibly-delivered steer
-    (``STEER_POSSIBLY_DELIVERED_META``); either of the last two at the head of
-    the queue pops alone.
+    (see :func:`carries_attachments`), at a possibly-delivered steer
+    (``STEER_POSSIBLY_DELIVERED_META``) and where the stamped turn actor
+    changes, so an app's queued send never folds into the user's own words; an
+    entry that starts no run pops alone.
     """
     if merge_enabled and len(slot._queue) > 1:
         to_merge: list[dict] = []
@@ -4001,6 +4020,8 @@ def _dequeue_next_message(slot, merge_enabled: bool) -> tuple:
                 # messages never written to any pipe may already have run.
                 or (item.get("meta") or {}).get(STEER_POSSIBLY_DELIVERED_META)
             ):
+                break
+            if to_merge and _stamped_turn_actor(item) != _stamped_turn_actor(to_merge[0]):
                 break
             to_merge.append(item)
         if len(to_merge) > 1:

@@ -18,7 +18,11 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 from kiro_crew.config.loader import AUTOCOMPACT_PCT_MAX, AUTOCOMPACT_PCT_MIN
-from kiro_crew.dashboard.chat_title import _TITLE_ORIGINS, _rehydrated_refresh_mark
+from kiro_crew.dashboard.chat_title import (
+    _TITLE_ORIGINS,
+    _counts_as_user_turn,
+    _rehydrated_refresh_mark,
+)
 from kiro_crew.dashboard.state import _MAX_DISMISSED_SOURCE_LINKS
 
 if TYPE_CHECKING:
@@ -96,14 +100,15 @@ def _rebase_rehydrated_refresh_mark(slot: _ChatSlot) -> None:
     The window is the latest 500 rows, so the slot's user count restarts below the
     count the persisted mark was taken at, and the opt-in refresh cadence
     (``dashboard.title_refresh_every_turns``) would otherwise stay silent until
-    the count climbed past that mark again. Counts user rows over
-    ``slot.messages`` exactly as ``maybe_refresh_title`` does, so the two agree
-    on what a turn is. See ``chat_title._rehydrated_refresh_mark`` for the
-    floor that keeps a spent built-in milestone spent.
+    the count climbed past that mark again. Counts user turns over
+    ``slot.messages`` with ``maybe_refresh_title``'s own predicate
+    (``chat_title._counts_as_user_turn``), so the two agree on what a turn is.
+    See ``chat_title._rehydrated_refresh_mark`` for the floor that keeps a spent
+    built-in milestone spent.
     """
     if not slot._title_refresh_mark:
         return
-    user_count = sum(1 for m in slot.messages if m.get("role") == "user")
+    user_count = sum(1 for m in slot.messages if _counts_as_user_turn(slot, m))
     slot._title_refresh_mark = _rehydrated_refresh_mark(slot._title_refresh_mark, user_count)
 
 
