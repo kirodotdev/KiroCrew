@@ -11,6 +11,7 @@ warm runtime is the set_mode bracket's job, not this file's.
 from __future__ import annotations
 
 import gc
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -81,10 +82,228 @@ def test_a_view_resolves_after_the_boot_drain_removed_alias_and_sidecar(native_t
     assert projection.source_agent_name(stored) == "custom"
 
 
-def test_the_view_ledger_keeps_only_its_newest_admissible_entries(tmp_path, monkeypatch):
+def _pre_ledger_backlog(agents, project, count, spec=None):
+    """*count* released views of "custom", each alias with its sidecar, and NO ledger.
+
+    The tree a build that predates the ledger left: every version is held while the
+    next is published, so no spawn prunes it, then all are released at once.
+    """
+    held = []
+    for n in range(count):
+        version = {**(spec or {"name": "custom"}), "description": f"v{n}"}
+        (agents / "custom.json").write_text(json.dumps(version), encoding="utf-8")
+        held.append(projection.prepare_native_skill_projection(project))
+    views = [prepared.agent("custom") for prepared in held]
+    del held
+    gc.collect()
+    metadata = agents / projection._PROJECTION_METADATA_DIR_NAME
+    (metadata / projection._VIEW_LEDGER_NAME).unlink()
+    projection._VIEW_SOURCES.clear()
+    return views, metadata
+
+
+def test_the_boot_drain_records_a_backlog_in_one_ledger_write(native_tree, monkeypatch):
+    agents, project = native_tree
+    views, metadata = _pre_ledger_backlog(agents, project, 7)
+    # Half lost their alias to an external cleanup; the drain retires those
+    # sidecars through the orphan sweep, and the rest as whole pairs.
+    for view in views[::2]:
+        (agents / f"{view}.json").unlink()
+    writes = []
+    real_write = projection._record_view_ledger_entries
+
+    def counted(metadata_dir, entries):
+        writes.append(dict(entries))
+        return real_write(metadata_dir, entries)
+
+    monkeypatch.setattr(projection, "_record_view_ledger_entries", counted)
+    monkeypatch.setattr(projection, "_DRAIN_BATCH_PAUSE_SECS", 0)
+
+    assert projection.drain_stale_aliases() == 3
+    assert not any((metadata / f"{view}.json").exists() for view in views)
+    # One write for the prune's pairs and one for the sweep's orphans, not one per view.
+    assert len(writes) == 2
+    assert projection._read_view_ledger(metadata) == {view: "custom" for view in views}
+    assert all(projection.source_agent_name(view) == "custom" for view in views)
+
+
+@pytest.mark.parametrize("alias_removed", [True, False])
+def test_a_sidecar_the_ledger_cannot_take_is_kept_and_its_alias_goes(
+    native_tree, monkeypatch, alias_removed
+):
+    agents, project = native_tree
+    (view,), metadata = _pre_ledger_backlog(agents, project, 1)
+    if alias_removed:
+        (agents / f"{view}.json").unlink()
+
+    def refused(metadata_dir, entries):
+        raise OSError("read-only metadata directory")
+
+    monkeypatch.setattr(projection, "_record_view_ledger_entries", refused)
+    monkeypatch.setattr(projection, "_DRAIN_BATCH_PAUSE_SECS", 0)
+
+    # The alias, the file kiro-cli pays for, still goes; the sidecar, the only
+    # record of the view's agent, stays and answers on its own.
+    assert projection.drain_stale_aliases() == (0 if alias_removed else 1)
+    assert (metadata / f"{view}.json").is_file()
+    assert not (agents / f"{view}.json").exists()
+    assert projection.source_agent_name(view) == "custom"
+
+
+def test_a_ledger_that_already_holds_the_views_is_not_rewritten(tmp_path, monkeypatch):
+    agents = tmp_path / "agents"
+    metadata = agents / projection._PROJECTION_METADATA_DIR_NAME
+    metadata.mkdir(parents=True)
+    projection._record_view_ledger_entries(metadata, {VIEW: "custom"})
+    writes = []
+    monkeypatch.setattr(projection, "atomic_write", lambda *a, **k: writes.append(a))
+    ledger = projection._ViewLedgerWrites(agents, "home")
+    assert ledger.retain_many({VIEW: "custom"})
+    assert ledger.retain(VIEW, {"x-kirocrew-agent": "custom"})
+    # A record naming no admissible agent has nothing to keep.
+    assert ledger.retain(OTHER_VIEW, {"x-kirocrew-agent": OTHER_VIEW})
+    assert writes == []
+
+
+def test_the_look_ahead_records_only_this_homes_views(tmp_path):
+    agents = tmp_path / "agents"
+    metadata = agents / projection._PROJECTION_METADATA_DIR_NAME
+    metadata.mkdir(parents=True)
+    names = ["kirocrew-skill-view-" + f"{n:024x}" for n in range(3)]
+    homes = ["mine", "theirs", "mine"]
+    for name, home in zip(names, homes):
+        (metadata / f"{name}.json").write_text(
+            '{"x-kirocrew-managed": "skill-view", "x-kirocrew-home": "%s", '
+            '"x-kirocrew-agent": "agent-%s"}' % (home, name[-1]),
+            encoding="utf-8",
+        )
+    ledger = projection._ViewLedgerWrites(agents, "mine")
+    ledger.look_ahead([agents / f"{name}.json" for name in names], 0)
+    assert ledger.retain(names[0], {"x-kirocrew-agent": "agent-0"})
+    # One write covered the window; another home's view took no slot.
+    assert projection._read_view_ledger(metadata) == {names[0]: "agent-0", names[2]: "agent-2"}
+
+
+def test_a_reserialized_pair_the_ledger_cannot_take_keeps_its_sidecar(native_tree, monkeypatch):
+    agents, project = native_tree
+    spec = {
+        "name": "custom",
+        "resources": ["skill://catalog/s/SKILL.md"],
+        "mcpServers": {"injected": {"command": "helper", "env": {"TOKEN": "v1"}}},
+    }
+    (view,), metadata = _pre_ledger_backlog(agents, project, 1, spec)
+    alias = agents / f"{view}.json"
+    # The alias bytes moved, so the drain takes the re-serialized pair path.
+    alias.write_text(alias.read_text(encoding="utf-8").replace('"v1"', '"v2"'), encoding="utf-8")
+
+    def refused(metadata_dir, entries):
+        raise OSError("read-only metadata directory")
+
+    monkeypatch.setattr(projection, "_record_view_ledger_entries", refused)
+    monkeypatch.setattr(projection, "_DRAIN_BATCH_PAUSE_SECS", 0)
+
+    assert projection.drain_stale_aliases() == 1
+    assert not alias.exists() and (metadata / f"{view}.json").is_file()
+    assert projection.source_agent_name(view) == "custom"
+
+
+def test_the_bound_drops_redundant_entries_then_the_oldest_retired_ones(
+    tmp_path, monkeypatch, caplog
+):
+    monkeypatch.setattr(projection, "_VIEW_SOURCES_MAX", 2)
+    monkeypatch.setattr(projection, "_LEDGER_EVICTION_WARNED", False)
+    names = ["kirocrew-skill-view-" + f"{n:024x}" for n in range(4)]
+    projection._record_view_ledger_entries(tmp_path, {names[0]: "a", names[1]: "b"})
+    # names[0]'s sidecar is present but unreadable, so it answers for nothing;
+    # names[1]'s still maps it to "b", so that entry is redundant and goes first,
+    # although names[0] is older.
+    (tmp_path / f"{names[0]}.json").write_text("not json", encoding="utf-8")
+    (tmp_path / f"{names[1]}.json").write_text(
+        '{"x-kirocrew-managed": "skill-view", "x-kirocrew-agent": "b"}', encoding="utf-8"
+    )
+    held = projection._record_view_ledger_entries(tmp_path, {names[2]: "c"})
+    assert held == {names[0]: "a", names[2]: "c"}
+    # Full of views nothing else records: the oldest goes, the new pair is held
+    # (a full ledger never stops a sweep), and the loss is said out loud.
+    with caplog.at_level("WARNING", logger=projection.logger.name):
+        held = projection._record_view_ledger_entries(tmp_path, {names[3]: "d"})
+    assert held == {names[2]: "c", names[3]: "d"}
+    assert "dropped the 1 oldest retired view name" in caplog.text
+    # A ledger already past the bound (one written under a larger bound) is
+    # trimmed back to it, oldest first, the next time anything is written.
+    monkeypatch.setattr(projection, "_VIEW_SOURCES_MAX", 1)
+    assert projection._record_view_ledger_entries(tmp_path, {}) == {names[3]: "d"}
+
+
+def test_a_batch_rewrites_its_held_pairs_so_the_bound_cannot_evict_them(tmp_path, monkeypatch):
+    monkeypatch.setattr(projection, "_VIEW_SOURCES_MAX", 2)
+    names = ["kirocrew-skill-view-" + f"{n:024x}" for n in range(3)]
+    metadata = tmp_path / "agents" / projection._PROJECTION_METADATA_DIR_NAME
+    metadata.mkdir(parents=True)
+    projection._record_view_ledger_entries(metadata, {names[0]: "a", names[1]: "b"})
+    ledger = projection._ViewLedgerWrites(tmp_path / "agents", "home")
+    # names[0] is held but the oldest entry; adding names[2] alone would evict it
+    # while the sweep is about to delete its sidecar.
+    assert ledger.retain_many({names[0]: "a", names[2]: "c"})
+    assert projection._read_view_ledger(metadata) == {names[0]: "a", names[2]: "c"}
+    # A batch larger than the bound cannot all be held, so none of it may go.
+    monkeypatch.setattr(projection, "_VIEW_SOURCES_MAX", 1)
+    assert not projection._ViewLedgerWrites(tmp_path / "agents", "home").retain_many(
+        {names[1]: "b", names[2]: "c"}
+    )
+    assert projection._read_view_ledger(metadata) == {names[2]: "c"}
+
+
+def test_a_refused_write_is_not_retried_for_every_candidate(tmp_path, monkeypatch):
+    metadata = tmp_path / "agents" / projection._PROJECTION_METADATA_DIR_NAME
+    metadata.mkdir(parents=True)
+    calls = []
+
+    def refused(metadata_dir, entries):
+        calls.append(entries)
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(projection, "_record_view_ledger_entries", refused)
+    ledger = projection._ViewLedgerWrites(tmp_path / "agents", "home")
+    names = ["kirocrew-skill-view-" + f"{n:024x}" for n in range(3)]
+    assert not any([ledger.retain(name, {"x-kirocrew-agent": "a"}) for name in names])
+    assert len(calls) == 1
+    assert not ledger.retain_many({names[0]: "a"})
+    assert len(calls) == 1
+
+
+def test_the_orphan_sweep_unlinks_nothing_past_its_deadline(native_tree, monkeypatch):
+    agents, project = native_tree
+    views, metadata = _pre_ledger_backlog(agents, project, 2)
+    for view in views:
+        (agents / f"{view}.json").unlink()
+    crew_home_id = projection.data_home().absolute().as_posix()
+    # The deadline runs out while the batch's ledger write is in flight: the
+    # batch is recorded, and nothing is unlinked past the deadline.
+    spent = []
+    real_write = projection._record_view_ledger_entries
+
+    def slow_write(metadata_dir, entries):
+        spent.append(True)
+        return real_write(metadata_dir, entries)
+
+    monkeypatch.setattr(projection, "_record_view_ledger_entries", slow_write)
+    monkeypatch.setattr(projection.time, "monotonic", lambda: 100.0 if spent else 0.0)
+    assert projection._sweep_orphan_sidecars(agents, crew_home_id, skip=set(), deadline=50.0) == 0
+    assert spent and projection._read_view_ledger(metadata) == {view: "custom" for view in views}
+    assert all((metadata / f"{view}.json").is_file() for view in views)
+
+
+def test_the_view_ledger_keeps_its_newest_admissible_entries_over_redundant_ones(
+    tmp_path, monkeypatch
+):
     monkeypatch.setattr(projection, "_VIEW_SOURCES_MAX", 2)
     names = ["kirocrew-skill-view-" + f"{n:024x}" for n in range(3)]
     projection._record_view_ledger(tmp_path, {"a": names[0], "b": names[1]})
+    # The oldest view's sidecar still answers for it, so the bound may drop it.
+    (tmp_path / f"{names[0]}.json").write_text(
+        '{"x-kirocrew-managed": "skill-view", "x-kirocrew-agent": "a"}', encoding="utf-8"
+    )
     projection._record_view_ledger(tmp_path, {"c": names[2], "x" * 10_000: VIEW})
     assert projection._read_view_ledger(tmp_path) == {names[1]: "b", names[2]: "c"}
     (tmp_path / projection._VIEW_LEDGER_NAME).write_text(
