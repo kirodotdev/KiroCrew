@@ -31,9 +31,9 @@ path parameter, with ``STAND_IN`` substituted for each ``{token}`` (or the
 
 * GUARDED, again -- without credentials every one of them answers 401 or
   403, the mutating ones with no body, so the guard is proven to run before
-  any handler could act. The six that answer otherwise are ``UNGUARDED_OTHER``
-  with the status and the reason (URL-token routes, the PWA asset route, an
-  idempotent logout, an inbound webhook with its own signature auth).
+  any handler could act. The routes that answer otherwise are ``UNGUARDED_OTHER``
+  with the status and the reason (URL-token routes, the PWA and build asset
+  routes, an idempotent logout, an inbound webhook with its own signature auth).
 * UNKNOWN ID -- with credentials, every parameterized GET asked for an id
   that does not exist answers below 500: 404 is the contract, 403/400/200
   are how some routes say it, a 5xx never is. ``HELD_OPEN_PARAM`` carries the
@@ -132,6 +132,20 @@ UNGUARDED_OTHER: dict[tuple[str, str], tuple[int, str]] = {
         200,
         "PWA asset route (manifest, service worker, icons), fetched by the browser before "
         "login; an asset the build does not ship falls through to the SPA shell",
+    ),
+    ("GET", "/assets/{tail}"): (
+        404,
+        "build chunks the login page loads before any session (token_auth bypass); "
+        "the stand-in names no file",
+    ),
+    ("GET", "/fonts/{tail}"): (
+        404,
+        "self-hosted fonts the login page loads before any session (token_auth bypass); "
+        "the stand-in names no file",
+    ),
+    ("GET", "/vendor/{tail}"): (
+        404,
+        "import-map shims, public like /assets (token_auth bypass); the stand-in names no file",
     ),
     ("GET", "/browser-view/{tail}"): (
         404,
