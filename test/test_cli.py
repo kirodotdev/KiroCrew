@@ -6634,12 +6634,9 @@ class TestDoctorEmbeddings:
     def _hermetic_config(self, monkeypatch):
         """Pin config to a pristine default (see ``_pin_default_config``)."""
         _pin_default_config(monkeypatch)
-        # LLAMA_CPP_LIB_PATH selects between two mutually exclusive diagnoses: name the
-        # missing bundled libs, or blame the operator's override directory. Which branch a
-        # test exercises is therefore part of its scenario, not an ambient property of the
-        # host — and the variable is easy to inherit, because the real loader sets it to its
-        # own bundled libs dir the first time embeddings load. Cleared per test; the tests
-        # that exercise the override branch set it themselves.
+        # LLAMA_CPP_LIB_PATH selects between two mutually exclusive diagnoses:
+        # the bundled tree or an operator override. Each test owns whether the
+        # live environment or the startup-removal record supplies that value.
         monkeypatch.delenv("LLAMA_CPP_LIB_PATH", raising=False)
 
     @staticmethod
@@ -6651,51 +6648,28 @@ class TestDoctorEmbeddings:
         model_present: bool,
         platform_supported: bool = True,
         missing_libs: dict | None = None,
-        loader_setdefaults: str = "",
         lib_path_override: str | None = None,
+        dropped_lib_path: str | None = None,
     ):
-        """Run _doctor with the embeddings runtime/model state stubbed.
+        """Run _doctor with the embedding and library-path state stubbed.
 
-        ``loader_setdefaults`` reproduces the real loader's side effect of
-        ``setdefault``-ing LLAMA_CPP_LIB_PATH to its own bundled libs dir, which
-        is what makes reading that var after the load call ambiguous.
-
-        ``lib_path_override`` controls the LLAMA_CPP_LIB_PATH the doctor sees:
-        ``None`` (default) CLEARS it — the var LEAKS between tests otherwise,
-        because both the ``loader_setdefaults`` path and the real embeddings
-        loader plant it via ``os.environ.setdefault`` (invisible to
-        monkeypatch teardown), so whichever test ran first in the pytest
-        worker poisoned override-sensitive assertions (shard-layout-dependent
-        CI failures). A string sets the override deliberately, via monkeypatch
-        so it is restored on teardown.
+        ``lib_path_override`` controls the live environment. ``dropped_lib_path``
+        controls the startup record used when the variable is absent.
         """
         agent_file = tmp_path / "kirocrew.json"
         _healthy_agent_file(agent_file)
         import kiro_crew.cli_doctor as doc
 
         if lib_path_override is None:
-            # setenv FIRST so monkeypatch records a teardown action even when
-            # the var is ABSENT: delenv(raising=False) on a missing var
-            # registers nothing, so the loader_setdefaults path's direct
-            # os.environ.setdefault would still leak into later tests in
-            # workers where the var was never set (GPT review). The
-            # setenv+delenv pair restores the original state either way.
+            # The setenv+delenv pair records absence for teardown even when the
+            # inherited process environment did not contain the variable.
             monkeypatch.setenv("LLAMA_CPP_LIB_PATH", "")
             monkeypatch.delenv("LLAMA_CPP_LIB_PATH", raising=False)
         else:
             monkeypatch.setenv("LLAMA_CPP_LIB_PATH", lib_path_override)
 
-        def _load():
-            if loader_setdefaults:
-                # Through monkeypatch, not a bare os.environ write: the real loader's
-                # setdefault is a process-wide mutation, and reproducing it literally leaked
-                # the variable into every later test in the same worker, flipping them onto
-                # the override branch depending on distribution order.
-                if "LLAMA_CPP_LIB_PATH" not in os.environ:
-                    monkeypatch.setenv("LLAMA_CPP_LIB_PATH", loader_setdefaults)
-            return object if runtime_ok else None
-
-        monkeypatch.setattr(doc, "_load_llama_class", _load)
+        monkeypatch.setattr(doc, "dropped_inherited_lib_path", lambda: dropped_lib_path)
+        monkeypatch.setattr(doc, "_load_llama_class", lambda: object if runtime_ok else None)
         monkeypatch.setattr(
             doc, "_platform_libs_dirname", lambda: "macos_arm64" if platform_supported else None
         )
@@ -6785,33 +6759,64 @@ class TestDoctorEmbeddings:
         assert "Missing native libs" not in out
         assert "reinstall Kiro Crew" not in out
 
-    def test_doctor_does_not_mistake_the_loaders_own_setdefault_for_an_override(
-        self, tmp_path, capsys, monkeypatch
+    @pytest.mark.parametrize("value_source", ["environment", "startup-record"])
+    def test_doctor_does_not_mistake_an_inherited_bundled_path_for_an_override(
+        self, tmp_path, capsys, monkeypatch, value_source: str
     ):
-        """A complete payload that fails to import is not reported as overridden.
-
-        `_load_llama_class()` `setdefault`s LLAMA_CPP_LIB_PATH to its OWN bundled
-        libs dir, so reading the var AFTER that call cannot distinguish "operator
-        set it" from "the loader just set it to the bundle" — which produced the
-        self-contradiction "the libs load from <bundled path>, not the bundled
-        tree". Doctor must sample the environment before the load.
-        """
-        monkeypatch.delenv("LLAMA_CPP_LIB_PATH", raising=False)
-        # Libs ARE missing, so reading the var too late suppresses the real
-        # packaging diagnosis and prints the override note in its place. With no
-        # missing libs both branches stay silent and the bug is invisible.
+        """The live and recorded forms both diagnose this install's bundled tree."""
+        inherited = (
+            "/opt/kirocrew/0.7.9/lib/python3.12/site-packages/kiro_crew/_vendor/"
+            "llama_cpp_libs/macos_arm64"
+        )
         self._run_doctor(
             tmp_path,
             monkeypatch,
             runtime_ok=False,
             model_present=False,
             missing_libs={"macos_arm64": ["libllama.dylib"]},
-            loader_setdefaults="/bundled/_vendor/llama_cpp_libs/x",
+            lib_path_override=inherited if value_source == "environment" else None,
+            dropped_lib_path=inherited if value_source == "startup-record" else None,
         )
         out = capsys.readouterr().out
 
         assert "not the bundled tree" not in out
         assert "Missing native libs for macos_arm64: libllama.dylib" in out
+        assert f"LLAMA_CPP_LIB_PATH={inherited}" in out
+        if value_source == "startup-record":
+            assert "inherited from another Kiro Crew process and removed at startup" in out
+        else:
+            assert "is ignored; this install uses its own bundled tree" in out
+        assert "point it at a directory of your own" in out
+
+    @pytest.mark.parametrize("value_source", ["environment", "startup-record"])
+    def test_doctor_reports_an_empty_lib_path_as_unset_not_inherited(
+        self, tmp_path, capsys, monkeypatch, value_source: str
+    ):
+        """An empty value is reported as unset on either path, never as inherited.
+
+        The startup record only establishes that the variable was empty and
+        removed; a live empty value is simply treated as unset. Neither may
+        claim it came from another Kiro Crew process.
+        """
+        self._run_doctor(
+            tmp_path,
+            monkeypatch,
+            runtime_ok=True,
+            model_present=True,
+            lib_path_override="" if value_source == "environment" else None,
+            dropped_lib_path="" if value_source == "startup-record" else None,
+        )
+        out = capsys.readouterr().out
+
+        assert "lib path:    ⏹ LLAMA_CPP_LIB_PATH=(empty)" in out
+        assert "inherited from another Kiro Crew process" not in out
+        if value_source == "startup-record":
+            assert "was empty and removed at startup; treated as unset." in out
+            assert "is empty, so it is treated as unset." not in out
+        else:
+            assert "is empty, so it is treated as unset." in out
+            assert "was empty and removed at startup; treated as unset." not in out
+        assert "point it at a directory of your own" in out
 
     def test_doctor_unsupported_platform_is_not_an_issue(self, tmp_path, capsys, monkeypatch):
         """No vendored libs for this platform = designed degradation, not a doctor failure."""

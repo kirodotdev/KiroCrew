@@ -44,10 +44,15 @@ from __future__ import annotations
 
 # System-trust injection is process-local and must run before imports below can
 # create or cache an SSLContext. Environment-only CA settings are inherited
-# from GatewayManager, but Security.framework-backed contexts are not.
+# from GatewayManager, but Security.framework-backed contexts are not. The
+# inherited llama.cpp path is removed before any thread or child process exists
+# because a concurrent environment snapshot can observe a removal between
+# enumerating and reading the key.
+from kiro_crew._llama_lib_path import drop_inherited_lib_path
 from kiro_crew._ssl_compat import _ensure_ssl_certs
 
 _ensure_ssl_certs()
+drop_inherited_lib_path()
 
 import asyncio
 import contextlib
