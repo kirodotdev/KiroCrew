@@ -4532,7 +4532,10 @@ Two rules close it:
 * When the product refuses a feature on some host, a test of that feature gates on the
   product's OWN refusal probe -- here `cron_script._resolve_command_shell() is None` --
   not on `sys.platform`. The skip then tracks the product: a host that starts running
-  command crons is held to the pin again.
+  command crons is held to the pin again. Run the probe under the SAME patches the test
+  body uses: unpatched, this one spawns through the real `wrap_argv`, which raises on a
+  POSIX host with no sandbox backend, so the probe reads that host as shell-less and
+  the skip stands the pin down on exactly the host it was written for.
 * A test whose docstring or name says "every host" / "all platforms" is run on Windows
   before it merges: locally (`-n0` on one file is seconds) or by reading the
   `Backend Tests (Windows)` shards of its own round. A recorder or spy that asserts it
