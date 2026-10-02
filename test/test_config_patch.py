@@ -664,6 +664,48 @@ class TestIntValidator:
             resp = await _patch(c, "session.timeout_secs", "abc")
             assert resp.status == 400
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", [True, False])
+    async def test_int_bool_returns_400_and_stores_nothing(self, tmp_config, value) -> None:
+        # ``bool`` subclasses ``int``: without an explicit refusal ``int(True)``
+        # is 1, and a 1 MB RSS ceiling would recycle every idle session.
+        async with TestClient(TestServer(_make_app())) as c:
+            resp = await _patch(c, "session.watchdog_rss_max_mb", value)
+            assert resp.status == 400
+            assert "must be an integer" in (await resp.json())["error"]
+        stored = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert "watchdog_rss_max_mb" not in stored.get("session", {})
+
+    @pytest.mark.asyncio
+    async def test_int_fractional_float_returns_400_and_stores_nothing(self, tmp_config) -> None:
+        # ``int(1.5)`` is 1: without an explicit refusal a JSON ``1.5`` would
+        # store a 1 MB RSS ceiling, the same silent truncation as ``int(True)``.
+        async with TestClient(TestServer(_make_app())) as c:
+            resp = await _patch(c, "session.watchdog_rss_max_mb", 1.5)
+            assert resp.status == 400
+            assert "must be an integer" in (await resp.json())["error"]
+        stored = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert "watchdog_rss_max_mb" not in stored.get("session", {})
+
+    @pytest.mark.asyncio
+    async def test_int_whole_float_saves_as_int(self, tmp_config) -> None:
+        # A whole-number float carries no fraction to lose, so it is accepted
+        # and stored as the integer it names.
+        async with TestClient(TestServer(_make_app())) as c:
+            resp = await _patch(c, "session.watchdog_rss_max_mb", 2048.0)
+            assert resp.status == 200
+        stored = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert stored["session"]["watchdog_rss_max_mb"] == 2048
+        assert isinstance(stored["session"]["watchdog_rss_max_mb"], int)
+
+    @pytest.mark.asyncio
+    async def test_int_watchdog_rss_plain_int_saves(self, tmp_config) -> None:
+        async with TestClient(TestServer(_make_app())) as c:
+            resp = await _patch(c, "session.watchdog_rss_max_mb", 2048)
+            assert resp.status == 200
+        stored = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert stored["session"]["watchdog_rss_max_mb"] == 2048
+
 
 # ── Float validator ──────────────────────────────────────────────────────
 
@@ -686,6 +728,19 @@ class TestFloatValidator:
         async with TestClient(TestServer(_make_app())) as c:
             resp = await _patch(c, "session.autocompact_pct", 95.0)
             assert resp.status == 400
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", [True, False])
+    async def test_float_bool_returns_400_and_stores_nothing(self, tmp_config, value) -> None:
+        # ``bool`` subclasses ``int``: without an explicit refusal ``float(True)``
+        # is 1.0 and a JSON ``true`` would be stored as a number.
+        async with TestClient(TestServer(_make_app())) as c:
+            resp = await _patch(c, "session.autocompact_pct", value)
+            assert resp.status == 400
+            assert "must be a number" in (await resp.json())["error"]
+        stored = json.loads(tmp_config.read_text(encoding="utf-8"))
+        # The seeded value survives: the refusal stored neither 1.0 nor 0.0.
+        assert stored["session"]["autocompact_pct"] == _seed_config()["session"]["autocompact_pct"]
 
     @pytest.mark.asyncio
     async def test_float_nan_returns_400(self, tmp_config) -> None:

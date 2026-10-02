@@ -305,6 +305,51 @@ describe('KiroCrewCfgTab — numeric rows', () => {
     })
   })
 
+  it('shows the memory limit default and the meaning of 0 without opening the InfoTip', async () => {
+    // The default, the consequence and "0 = no limit" decide what a user types, so they
+    // sit under the label as plain text; the InfoTip carries the long form.
+    await renderTab()
+    const note = screen.getByText(
+      'Default 1536 MiB. Over it, an idle session restarts and stops running work; chat is kept. Raise it to keep long background jobs alive. 0 = no limit.',
+    )
+    expect(note).toBeInTheDocument()
+    // Same row as the field: the note is a sibling of the label, not a
+    // free-floating paragraph somewhere else on the card.
+    const row = num('Idle Session RAM Limit').closest('.flex.justify-between') as HTMLElement
+    expect(row).toContainElement(note)
+    // The long form stays in the tooltip, which is closed by default.
+    expect(screen.queryByText(/Range: 0–262144 MiB/)).toBeNull()
+  })
+
+  it('saves only a plain integer: exponent and decimal forms are refused', async () => {
+    // parseInt would have read `1e3` and `1.5` as 1 and saved it; the row must
+    // flag the draft instead and leave the stored value alone.
+    const updated = clone()
+    updated.session = { ...updated.session, watchdog_rss_max_mb: 2048 }
+    seed(CFG, updated)
+
+    await renderTab()
+    const input = num('Idle Session RAM Limit')
+
+    fireEvent.change(input, { target: { value: '1e3' } })
+    fireEvent.blur(input)
+    expect(screen.getByText('invalid')).toBeInTheDocument()
+    expect(input.value).toBe('1e3')
+    expect(vi.mocked(api).patchConfig).not.toHaveBeenCalled()
+
+    fireEvent.change(input, { target: { value: '1.5' } })
+    fireEvent.blur(input)
+    expect(screen.getByText('invalid')).toBeInTheDocument()
+    expect(vi.mocked(api).patchConfig).not.toHaveBeenCalled()
+
+    fireEvent.change(input, { target: { value: '2048' } })
+    fireEvent.blur(input)
+    await waitFor(() => {
+      expect(vi.mocked(api).patchConfig).toHaveBeenCalledWith('session.watchdog_rss_max_mb', 2048)
+    })
+    expect(screen.queryByText('invalid')).toBeNull()
+  })
+
   it('does not patch when the committed value equals the current one', async () => {
     await renderTab()
     const input = num('Pool Size')

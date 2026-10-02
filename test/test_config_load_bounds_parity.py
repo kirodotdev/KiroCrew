@@ -161,7 +161,7 @@ def test_the_write_table_reads_its_bounds_from_the_loader_constants() -> None:
     share named constants. This is NOT tautological: it fails the moment someone
     re-hardcodes a literal in either place.
     """
-    from kiro_crew.config import loader
+    from kiro_crew.config import loader, sections
 
     expected = {
         "agent.soft_stop_budget_secs": (loader.SOFT_STOP_BUDGET_MIN, loader.SOFT_STOP_BUDGET_MAX),
@@ -171,6 +171,10 @@ def test_the_write_table_reads_its_bounds_from_the_loader_constants() -> None:
         ),
         "session.timeout_secs": (loader.SESSION_TIMEOUT_MIN, loader.SESSION_TIMEOUT_MAX),
         "session.pool_ttl_secs": (loader.POOL_TTL_SECS_MIN, loader.POOL_TTL_SECS_MAX),
+        "session.watchdog_rss_max_mb": (
+            sections.WATCHDOG_RSS_MAX_MB_MIN,
+            sections.WATCHDOG_RSS_MAX_MB_MAX,
+        ),
         "dashboard.mcp_probe_timeout_secs": (
             loader.MCP_PROBE_TIMEOUT_MIN,
             loader.MCP_PROBE_TIMEOUT_MAX,

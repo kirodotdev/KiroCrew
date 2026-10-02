@@ -1612,7 +1612,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Watchdog RSS Limit (MiB)",
-      "help": "Recycle a session when its process tree resident memory exceeds this many MiB (default 1536). 0 disables. Busy sessions (turn in flight) are never recycled.",
+      "help": "Restart an idle session when its process tree resident memory exceeds this many MiB (default 1536), and recycle the persistent background session when its tree reaches it; the chat is kept, running work stops. Turns in flight are never recycled. 0 disables; range 0-262144. Shown on Developer > Config as Idle Session RAM Limit.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 1536
