@@ -24,6 +24,16 @@ function bootScript(): string {
   return html.slice(start, end)
 }
 
+/** The body script that wires "Clear cache and retry". */
+function retryScript(): string {
+  const html = readFileSync(INDEX_PATH, 'utf8')
+  const start = html.indexOf('var kcRetry')
+  expect(start).toBeGreaterThan(-1)
+  const end = html.indexOf('</scr' + 'ipt>', start)
+  expect(end).toBeGreaterThan(start)
+  return html.slice(start, end)
+}
+
 /** The panel's opening tag, straight out of the shell markup. */
 function panelTag(): string {
   const html = readFileSync(INDEX_PATH, 'utf8')
@@ -140,10 +150,66 @@ function harness(opts: { rootHasChildren: boolean; embedded: boolean }) {
      * Fire the shape a module that LOADED and then threw produces: a plain error
      * event whose target is the window, carrying no element and no URL.
      */
-    throwDuringEval() {
+    throwDuringEval(event: Record<string, unknown> = {}) {
       expect(listener).not.toBeNull()
-      listener!({ target: win, message: 'e is not a constructor' })
+      listener!({ target: win, message: 'e is not a constructor', ...event })
       while (timers.length > 0) timers.shift()!()
+    },
+    /**
+     * Run the body's retry wiring against this same window, click the button,
+     * and report what it fetched before it reloaded.
+     */
+    async clickRetry() {
+      const fetched: Array<{ url: string; init: Record<string, unknown> | undefined }> = []
+      const events: string[] = []
+      let bodyDone: () => void = () => {}
+      let onClick: (() => void) | null = null
+      const button = Object.assign(nodes['boot-failure-retry'], {
+        disabled: false,
+        addEventListener: (_kind: string, fn: () => void) => {
+          onClick = fn
+        },
+      })
+      const doc = { getElementById: (id: string) => (id === 'boot-failure-retry' ? button : null) }
+      const retryWin = Object.assign(win, {
+        location: { href: 'https://host.example/', origin: 'https://host.example' },
+        fetch: (url: string, init?: Record<string, unknown>) => {
+          fetched.push({ url, init })
+          events.push('fetch')
+          // Headers first, body later -- as a real fetch settles.
+          return Promise.resolve({
+            ok: true,
+            arrayBuffer: () =>
+              new Promise((resolve) => {
+                bodyDone = () => {
+                  events.push('body')
+                  resolve(new ArrayBuffer(0))
+                }
+              }),
+          })
+        },
+      })
+      const location = {
+        href: 'https://host.example/',
+        origin: 'https://host.example',
+        reload: () => {
+          events.push('reload')
+        },
+      }
+      new Function('window', 'document', 'navigator', 'location', retryScript())(
+        retryWin,
+        doc,
+        {},
+        location,
+      )
+      expect(onClick).not.toBeNull()
+      onClick!()
+      for (let i = 0; i < 20; i++) await Promise.resolve()
+      const label = button.textContent
+      const beforeBody = [...events]
+      bodyDone()
+      for (let i = 0; i < 20; i++) await Promise.resolve()
+      return { fetched, events, beforeBody, label }
     },
     /** Whether the shell registered an unhandledrejection listener at all. */
     hasRejectionListener: () => rejectionListener !== null,
@@ -221,6 +287,57 @@ describe('the shell reveals a failure panel when the bundle never runs', () => {
     // hedges about the only button it offers.
     expect(h.nodes['boot-failure-next-fetch'].hidden).toBe(true)
     expect(h.nodes['boot-failure-next-build'].hidden).toBe(false)
+  })
+
+  it('names the script a startup parse error came from', () => {
+    // "Invalid or unexpected token" alone does not say WHICH of a few hundred
+    // chunks failed to parse, and that is the one fact that tells a truncated
+    // download apart from a broken build. The engine reports it on the event.
+    const h = harness({ rootHasChildren: false, embedded: false })
+    h.throwDuringEval({
+      message: 'Uncaught SyntaxError: Invalid or unexpected token',
+      filename: 'https://host.example/assets/App-AbC123.js?v=1',
+      lineno: 1,
+      colno: 20481,
+    })
+    expect(h.nodes['boot-failure-detail'].textContent).toBe(
+      'Startup error: Uncaught SyntaxError: Invalid or unexpected token' +
+        ' (in /assets/App-AbC123.js:1:20481)'
+    )
+  })
+
+  it('refetches the script that failed past the HTTP cache before it reloads', async () => {
+    // Hashed assets are served `immutable` for a year, so a chunk that arrived
+    // cut short is replayed from the HTTP cache on every reload. Dropping the
+    // service worker and CacheStorage does not touch that cache; a
+    // `cache: 'reload'` fetch of the same URL is what replaces the entry.
+    const h = harness({ rootHasChildren: false, embedded: false })
+    h.throwDuringEval({
+      message: 'Uncaught SyntaxError: Invalid or unexpected token',
+      filename: 'https://host.example/assets/App-AbC123.js',
+      lineno: 1,
+      colno: 20481,
+    })
+    const { fetched, events, beforeBody, label } = await h.clickRetry()
+    expect(fetched).toEqual([
+      {
+        url: 'https://host.example/assets/App-AbC123.js',
+        init: { cache: 'reload', credentials: 'same-origin' },
+      },
+    ])
+    // Not at the headers: a reload then would abort the body mid-transfer and
+    // leave the truncated entry in place.
+    expect(beforeBody).toEqual(['fetch'])
+    expect(events).toEqual(['fetch', 'body', 'reload'])
+    expect(label).toBe('Re-downloading the broken file...')
+  })
+
+  it('refetches a module that failed to load, too, and never a foreign URL', async () => {
+    const h = harness({ rootHasChildren: false, embedded: false })
+    h.failModule('https://host.example/assets/vendor-react-XYZ.js')
+    h.throwDuringEval({ filename: 'https://cdn.other.example/x.js' })
+    const { fetched } = await h.clickRetry()
+    expect(fetched.map((f) => f.url)).toEqual(['https://host.example/assets/vendor-react-XYZ.js'])
   })
 
   it('does not arm on an unhandled rejection, which has no named producer here', () => {
