@@ -559,6 +559,8 @@
     "pages.developer.featurePreviewsTab.decisions_runtime_running": "Status once the local model server is answering.",
     "pages.developer.featurePreviewsTab.decisions_runtime_running_off": "Status line for a local model whose server runs while the Decisions consent switch is off; 'Decisions' names that switch.",
     "pages.developer.featurePreviewsTab.decisions_runtime_error": "Error shown when the local model could not be downloaded, installed or started.",
-    "pages.developer.featurePreviewsTab.decisions_runtime_retry": "Button that retries downloading and starting the local model."
+    "pages.developer.featurePreviewsTab.decisions_runtime_retry": "Button that retries downloading and starting the local model.",
+    "apps.papyrus.page.paper_name": "Field label for the name a paper is LISTED under. Not a filename and not the paper's directory: renaming here changes only the displayed name.",
+    "apps.papyrus.page.rename_paper": "Verb on the button that edits the name a paper is listed under. {{name}} is the paper's current displayed name."
   }
 }
