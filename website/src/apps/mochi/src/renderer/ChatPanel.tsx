@@ -2301,6 +2301,14 @@ export const Bubble = React.memo<{ message: ChatMessage; onOption?: (text: strin
                       `grep "a b" f` while granting the two-space string. The
                       budget clamp above is a layout decision for this narrow
                       column; collapsing whitespace earns nothing anywhere. */}
+                  {/* The 256-char clamp on this label is deliberate, and it is
+                      where the pet differs from the dashboard, which renders the
+                      exact-command label whole. This column is a narrow
+                      frameless window whose width the app sets, so a multi-KB
+                      command would wrap to over a hundred lines with no way to
+                      widen it. This is a pointer surface and the button's
+                      title carries the whole command, so hovering reads the
+                      middle the clamp elides. */}
                   <span style={{ minWidth: 0, overflowWrap: 'anywhere', whiteSpace: 'pre-wrap' }}>
                     {i18nT('apps.mochi.approval.trust_this_command', { cmd: truncateCommandLabel(req.fullCommand) })}
                   </span></button>
