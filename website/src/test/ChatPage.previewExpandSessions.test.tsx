@@ -255,3 +255,24 @@ describe('ChatPage — mobile session drawer inside preview expand mode', () => 
     expect(screen.getByTestId('sessions-drawer')).toBeInTheDocument()
   })
 })
+
+// A width saved in board view (#14853) can be wider than SIDEBAR_MAX. The
+// collapsed sidebar's recents flyout is a session list, so it stays at most
+// SIDEBAR_MAX wide even when ChatSidebar is not mounted to report its seat.
+describe('ChatPage — the collapsed sessions flyout with a wide saved width', () => {
+  beforeEach(() => {
+    Object.defineProperty(window, 'innerWidth', { writable: true, configurable: true, value: 3440 })
+    localStorage.clear()
+    __resetPanelTabs()
+  })
+
+  it('opens no wider than 1400 px', async () => {
+    localStorage.setItem('mc-sidebar-width', '2884')
+    renderChat()
+    fireEvent.click(screen.getByRole('button', { name: 'Hide sessions sidebar' }))
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Show sessions sidebar' }), { key: 'ArrowDown' })
+    const menu = await screen.findByRole('menu')
+    expect(menu.style.width).toBe('1400px')
+    expect(localStorage.getItem('mc-sidebar-width')).toBe('2884')
+  })
+})
