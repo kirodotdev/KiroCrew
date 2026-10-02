@@ -7371,21 +7371,18 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
     # enforcement point. Resolved off-thread (profile resolution may read from
     # disk); every decision is SEL-audited by the probe itself.
     from kiro_crew.dashboard import social_share
-    from kiro_crew.decisions.capability import is_decisions_denied
+    from kiro_crew.decisions.capability import denied_sides
 
     social_share_denied = await asyncio.to_thread(social_share.is_share_denied)
     # Same shape, same reason: the Decisions feature-preview card is drawn only when
     # the ceiling permits the seam, and this endpoint is the only place the dashboard
     # can learn that. Presentation, not the control -- the consent PUT and the gate's
     # own consent read are the two chokepoints (``decisions/capability.py``). The card
-    # is drawn while EITHER row permits: a fleet that withdraws hosted Jev but allows
-    # a local model (``capabilities.decisions_local``) still needs the card to pick one.
-    # Both rows evaluated in one hop, never short-circuited: each evaluation writes
-    # its own governance_decision row, and which rows appear must not depend on
-    # the other row's answer.
-    hosted_denied, local_denied = await asyncio.to_thread(
-        lambda: (is_decisions_denied(), is_decisions_denied(local=True))
-    )
+    # is drawn while EITHER side permits: a fleet that allows hosted Jev but withdraws
+    # local models (``capabilities.decisions_local``) still needs the card. A pinned
+    # ``capabilities.decisions`` deny covers the local side too, so it hides the card.
+    # Both rows evaluated in one hop, each audited once, never short-circuited.
+    hosted_denied, local_denied = await asyncio.to_thread(denied_sides)
     decisions_denied = hosted_denied and local_denied
     return web.json_response(
         {

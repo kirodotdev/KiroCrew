@@ -2882,7 +2882,13 @@ change, mirroring the rows above).
 **A local preset has its own row: `capabilities.decisions_local`.** The row above
 exists because the seam's state reaches a paid third party; a local preset model
 (`decisions/local_models.py`) answers on this machine and sends nothing off it, so a
-fleet that pins hosted Jev off for egress does not thereby withdraw a local model.
+fleet that permits hosted Jev may still want to withdraw local models on its own.
+The local row only NARROWS: a local preset is permitted only while BOTH
+`capabilities.decisions` and `capabilities.decisions_local` permit
+(`capability.is_decisions_denied(local=True)` evaluates the hosted row first). Before
+this row existed, pinning `capabilities.decisions` off withdrew the whole seam, local
+models included, and an upgrade keeps that reach: the hosted row permits while
+absent, so a denial there is always an explicit pin (or the fail-closed degrade).
 `capabilities.decisions_local` (`capability_default=True`, data only) governs the seam
 only while the gateway's own runtime runs the configured preset on its port
 (`capability.is_local_preset`, the runtime's attestation: `config.json` has other
@@ -2895,8 +2901,9 @@ chokepoints select the row from the configured provider and the runtime, never f
 the request. `PUT /api/decisions/provider`
 refuses a switch to a withdrawn side with `403 decisions_capability_denied`, and its
 `GET` reports `hosted_permitted` / `local_permitted` so the picker greys that side
-out. `decisions_enabled` is `true` while EITHER row permits, so the card is withheld
-only when both are pinned off. A fleet that wants no local model pins this row too.
+out. `decisions_enabled` is `true` while EITHER side permits, so the card is withheld
+only when `capabilities.decisions` is pinned off (which covers both sides) or both
+rows are. A fleet that permits hosted Jev but wants no local model pins this row.
 
 **Two chokepoints, because either alone is a half-control.**
 `PUT /api/decisions/consent` refuses an ENABLING write with

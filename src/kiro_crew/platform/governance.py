@@ -1597,10 +1597,10 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     "capabilities.decisions": ScopeSpec(CAPABILITY, capability_default=True),
     # The same seam answered by a LOCAL PRESET model on this machine
     # (``decisions/local_models.py``) instead of hosted Jev. Nothing leaves the
-    # machine and nothing is spent, which is the whole reason the row above exists,
-    # so a fleet that pins ``capabilities.decisions`` off for egress does not also
-    # withdraw a local model; a fleet that does not want local models either pins
-    # THIS row off. Same two chokepoints and the same fail-closed probe
+    # machine and nothing is spent, so a fleet that permits hosted Jev can still
+    # withdraw local models by pinning THIS row off. It only narrows: a pinned
+    # ``capabilities.decisions`` deny still withdraws local models too, as it did
+    # before this row existed. Same two chokepoints and the same fail-closed probe
     # (``decisions/capability.py``), selected by whether the configured provider is
     # a route-built preset address -- a hand-written loopback address can be a
     # tunnel to hosted Jev and stays under the row above. Default True: an omitted

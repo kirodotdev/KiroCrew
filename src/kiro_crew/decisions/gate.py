@@ -270,9 +270,9 @@ _capability_denied_warned = False
 def _capability_denied(session_key: str | None, *, local: bool = False) -> bool:
     """Whether the governance ceiling withdraws the seam. Filesystem IO.
 
-    *local* selects ``capabilities.decisions_local`` over ``capabilities.decisions``:
-    true when the configured provider is a local preset, so a fleet that withdraws
-    hosted Jev for egress still lets a model on this machine answer.
+    *local* adds ``capabilities.decisions_local`` to ``capabilities.decisions``:
+    true when the configured provider is a local preset, so a fleet that permits
+    hosted Jev can still withdraw a model on this machine. A hosted deny covers it.
 
     *session_key* is the turn's own identity, which is what a profile binds on, so a
     profile bound to THIS surface is consulted rather than a dashboard one. It is
@@ -296,7 +296,11 @@ def _capability_denied(session_key: str | None, *, local: bool = False) -> bool:
         logger.warning(
             "decisions: the seam is withdrawn by governance (%s); nothing is sent "
             "even though consent is on",
-            "capabilities.decisions_local" if local else "capabilities.decisions",
+            (
+                "capabilities.decisions or capabilities.decisions_local"
+                if local
+                else "capabilities.decisions"
+            ),
         )
     return True
 

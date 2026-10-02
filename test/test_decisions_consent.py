@@ -1035,19 +1035,52 @@ class TestCapabilityCeiling:
         assert {r["scope"] for r in governance_rows} == {"capabilities.decisions"}
         assert {r["session_key"] for r in governance_rows} == {"dashboard:ui"}
 
-    def test_pinning_hosted_jev_off_leaves_a_local_model_permitted(self, ceiling, governance_rows):
-        """A fleet that pins ``capabilities.decisions`` off does so for egress to a
-        paid third party; a local preset sends nothing off the machine, so its own row
-        decides it, and a fleet can pin that one too."""
+    def test_a_pinned_hosted_deny_also_withdraws_a_local_model(self, ceiling, governance_rows):
+        """Before ``capabilities.decisions_local`` existed, pinning
+        ``capabilities.decisions`` off withdrew the whole seam, local models included.
+        An upgrade must not widen that pin: the local row only narrows, so the hosted
+        deny still covers a local preset. Both rows are still evaluated and audited,
+        so the trail does not depend on which row answered."""
         from kiro_crew.decisions.capability import is_decisions_denied
 
         ceiling(_PIN_DOC)
-        assert is_decisions_denied() is True
-        assert is_decisions_denied(local=True) is False
-        assert [r["scope"] for r in governance_rows] == [
-            "capabilities.decisions",
-            "capabilities.decisions_local",
+        assert is_decisions_denied(local=True) is True
+        assert [(r["scope"], r["outcome"]) for r in governance_rows] == [
+            ("capabilities.decisions", "denied"),
+            ("capabilities.decisions_local", "allowed"),
         ]
+        # Even a policy that names the local row permitted cannot widen past it.
+        ceiling(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "capabilities": {
+                    "decisions": {"enabled": False},
+                    "decisions_local": {"enabled": True},
+                },
+            }
+        )
+        assert is_decisions_denied(local=True) is True
+        assert is_decisions_denied() is True
+
+    def test_no_pin_keeps_local_models_permitted(self, governance_rows):
+        """The owner's default is unchanged: with nothing pinned, both rows permit,
+        and the local answer records both rows it consulted."""
+        from kiro_crew.decisions.capability import is_decisions_denied
+
+        assert is_decisions_denied(local=True) is False
+        assert is_decisions_denied() is False
+        assert [(r["scope"], r["outcome"]) for r in governance_rows] == [
+            ("capabilities.decisions", "allowed"),
+            ("capabilities.decisions_local", "allowed"),
+            ("capabilities.decisions", "allowed"),
+        ]
+
+    def test_a_local_pin_withdraws_local_models_only(self, ceiling):
+        """The local row narrows: a fleet that permits hosted Jev can still withdraw
+        local models, and that pin leaves hosted Jev alone."""
+        from kiro_crew.decisions.capability import is_decisions_denied
+
         ceiling(
             {
                 "version": 1,
@@ -1060,6 +1093,23 @@ class TestCapabilityCeiling:
         )
         assert is_decisions_denied(local=True) is True
         assert is_decisions_denied() is False
+
+    def test_the_send_path_honours_a_hosted_pin_for_a_running_preset(self, monkeypatch, ceiling):
+        """The gate's keystone read is the chokepoint every decision funnels through:
+        a preset this gateway runs and attests still sends nothing under a hosted pin."""
+        from types import SimpleNamespace
+
+        from kiro_crew.decisions import consent, gate
+
+        endpoint = "http://127.0.0.1:8102/v1/systemone"
+        self._runtime(monkeypatch, preset="plumb-4b", state="running", port=8102)
+        monkeypatch.setattr(consent, "load_state", lambda: {"enabled": True, "endpoint": endpoint})
+        cfg = SimpleNamespace(
+            decisions=SimpleNamespace(provider=SimpleNamespace(endpoint=endpoint, model="plumb-4b"))
+        )
+        assert gate._consented_for(cfg) is True
+        ceiling(_PIN_DOC)
+        assert gate._consented_for(cfg) is False
 
     def test_only_a_route_built_preset_has_a_presets_shape(self):
         """A hand-written loopback address can be a tunnel to hosted Jev, so only the
@@ -1169,6 +1219,44 @@ class TestCapabilityCeiling:
         assert governance_rows[0]["outcome"] == "denied"
         assert governance_rows[0]["tool_name"] == capability.AUDIT_TOOL
         assert "fail-closed" in governance_rows[0]["reason"]
+
+    def test_a_policy_swap_between_the_two_rows_denies_local(self, monkeypatch, governance_rows):
+        """The hosted and local rows are two evaluations. If the governance answer
+        moves between them (a central-policy install, a profile reload), the pair may
+        mix snapshots: the old hosted permit with the new local permit. The local side
+        must fail closed for that call, audited, rather than run past a fresh deny."""
+        from kiro_crew.decisions import capability
+
+        generation = iter([1, 2])
+        monkeypatch.setattr(capability, "governance_answer_generation", lambda: next(generation))
+        monkeypatch.setattr(
+            capability, "vet_and_audit", lambda *_a, **_k: MagicMock(permitted=True)
+        )
+        assert capability.denied_sides() == (False, True)
+        assert [(r["scope"], r["outcome"]) for r in governance_rows] == [
+            ("capabilities.decisions_local", "denied"),
+        ]
+
+        # A steady generation keeps today's permit.
+        monkeypatch.setattr(capability, "governance_answer_generation", lambda: 7)
+        assert capability.denied_sides() == (False, False)
+
+        # A swap landing DURING the hosted row (after its snapshot read, before the
+        # local row) is inside the bracket too: the generation is read before the
+        # hosted row, after the profile store was primed.
+        state = {"gen": 10}
+
+        def _hosted_then_swap(scope, *_a, **_k):
+            if scope == capability.DECISIONS_SCOPE:
+                state["gen"] += 1  # a central-policy install lands mid-row
+            return MagicMock(permitted=True)
+
+        primed: list[bool] = []
+        monkeypatch.setattr(capability, "poll_profiles_fresh", lambda: primed.append(True))
+        monkeypatch.setattr(capability, "governance_answer_generation", lambda: state["gen"])
+        monkeypatch.setattr(capability, "vet_and_audit", _hosted_then_swap)
+        assert capability.denied_sides() == (False, True)
+        assert primed == [True]
 
     # ── chokepoint (a): the consent PUT ───────────────────────────────
 
@@ -1340,8 +1428,22 @@ class TestCapabilityCeiling:
         resp = await api_dashboard_config(make_mocked_request("GET", "/api/dashboard/config"))
         assert json.loads(resp.text)["decisions_enabled"] is True
 
-        # Hosted Jev pinned off still leaves a local model to choose, so the card stays.
+        # A pinned hosted deny covers local models too, so nothing is left to choose.
         ceiling(_PIN_DOC)
+        resp = await api_dashboard_config(make_mocked_request("GET", "/api/dashboard/config"))
+        assert json.loads(resp.text)["decisions_enabled"] is False
+
+        # Hosted Jev permitted with only the local row pinned keeps the card.
+        ceiling(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "capabilities": {
+                    "decisions": {"enabled": True},
+                    "decisions_local": {"enabled": False},
+                },
+            }
+        )
         resp = await api_dashboard_config(make_mocked_request("GET", "/api/dashboard/config"))
         assert json.loads(resp.text)["decisions_enabled"] is True
 
