@@ -44,8 +44,8 @@ The loop agent re-reads `GOAL.md` + `LOOP.md` every cycle. That's the
 ## Prerequisites
 
 **`kanban-md` CLI** — required for the board operations the loop agent runs
-every cycle (`kanban-md pick`, `create`, `move`, `handoff`). It is a
-single-binary Go tool from
+every cycle (its `list`, `pick`, `create`, `move`, `edit` and `handoff`
+subcommands). It is a single-binary Go tool from
 [github.com/antopolskiy/kanban-md](https://github.com/antopolskiy/kanban-md).
 
 Install (pick one):
@@ -68,8 +68,11 @@ Verify:
 command -v kanban-md
 ```
 
-The loop needs the `pick`, `create`, `move`, and `handoff` verbs; check for those
-rather than a version number.
+The loop's commands were written for and checked against kanban-md 0.37.0; the
+cycle uses its `list`, `pick`, `create`, `move`, `edit` and `handoff` subcommands.
+If a newer kanban-md rejects one with `unknown flag`, compare that subcommand's
+`--help` output with the command; the `self-nudge-loop` skill's commands and its
+test are where they are kept in step.
 
 If `kanban-md` is not on PATH, the scaffold skips `board/` creation and
 prints a warning. Install the CLI before arming a goal loop; this skill requires
@@ -111,7 +114,10 @@ The nudge written by this skill instructs the agent to, every cycle:
 
 1. **STOP / DoD checks first** — if STOP exists or all DoD criteria met, call
    `autonudge_stop` and stop.
-2. **Claim work** — `kanban-md pick` the next unblocked todo. If none, go to 3.
+2. **Resume or claim work** — `kanban-md --dir <BOARD> list --claimed-by loop-<project> --json`;
+   resume a held card if any (a blocked one: release it as described under
+   "not stop conditions" below and pick instead), otherwise `kanban-md --dir <BOARD> pick --claim loop-<project> --status todo`
+   to claim the next unblocked todo. Keep the same project claimant every cycle. If none, go to 3.
 3. **Discover issues** — run the discovery sources from GOAL.md. For each
    finding not already on the board, `kanban-md create`. Then pick.
 4. **Execute one atomic step** on the claimed card (≤5 tool calls).
@@ -119,8 +125,10 @@ The nudge written by this skill instructs the agent to, every cycle:
    `session_ledger_record` with the phase, `next` as a concrete intent, and any
    approach tried and rejected. The ledger survives context compaction; a card's
    Cycle Log does not. On resume, read `session_ledger_read` before re-deriving
-   state from the board. Move the card to Review when it is ready for human
-   approval.
+   state from the board. When the card is ready for human approval, move it to
+   Review with `kanban-md --dir <BOARD> handoff <id> --claim loop-<project> --note "<summary>" --release`
+   (`--release` drops the claim so the next cycle's `--claimed-by` scan does
+   not resume a card already in Review).
 6. **DM the user** — one-line progress tick via `send_message`.
 
 ## Operating invariants
@@ -161,7 +169,9 @@ of things that are NOT stop conditions:
 - "I don't know how" → read code, grep, check logs, try a smaller probe,
   add a research card to the board, read a skill for context
 - A card seems blocked → split it, unblock dependencies, or mark the
-  blocker explicit and pick a different card
+  blocker explicit with `kanban-md --dir <BOARD> edit <id> --block "<reason>" --release`
+  (it drops the claim, so the `--claimed-by` resume scan stops returning the
+  card) and pick a different card
 - A tool returned an error → read the error, correct the invocation, retry
 - The goal feels unreachable → re-read GOAL.md, decompose into smaller
   cards, run discovery again

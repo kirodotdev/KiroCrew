@@ -68,11 +68,12 @@ When all five are true, agent posts the DoD checklist with ticks, calls \`autonu
 
 1. \`ls $STOP_PATH\` → must say "No such file".
 2. Click the 🎯 "Set a goal" (bullseye) icon in the composer toolbar.
-3. Popover — **all four fields** (no blanks):
-   - Nudge: paste from §"Ready-to-paste nudge" below
-   - Idle seconds: \`60\`
-   - Max cycles: \`30\`
-   - Stop sentinel path: \`$STOP_PATH\`
+3. Popover — fill all three inputs:
+   - Goal description: paste from §"Ready-to-paste nudge" below
+   - Seconds between nudges: \`60\`
+   - Max cycles (0 = ∞): \`30\`
+
+   The popover has no stop-file input: a loop armed here gets its own stop file from the service. Put \`{{STOP_FILE}}\` in the goal text where the loop should learn that path. The nudge's first check also halts on \`$STOP_PATH\`; arm via REST (below) to make it the service's stop file.
 4. **Start loop**.
 
 ## Start the loop (REST)
@@ -119,8 +120,8 @@ STOP / EXIT CHECKS (every cycle, in order, before anything else):
 BOARD (skip this block if no kanban-md board in use):
    BOARD=$BOARD_PATH
 3. kanban-md --dir \$BOARD list --status todo --json
-4. kanban-md --dir \$BOARD pick --assignee loop-<cycle_n>
-5. If pick returns nothing and a dep-met backlog card exists: kanban-md --dir \$BOARD move <id> --status todo ; then pick.
+4. kanban-md --dir \$BOARD list --claimed-by "loop-$PROJECT" --json; resume a held card if any; if the held card is blocked, drop it: kanban-md --dir \$BOARD edit <id> --block "<reason>" --release; then pick instead; otherwise kanban-md --dir \$BOARD pick --claim "loop-$PROJECT" --status todo
+5. If pick returns nothing and a dep-met backlog card exists: kanban-md --dir \$BOARD move <id> todo ; then pick.
 6. If everything blocked AND you already posted a blocker this arming: autonudge_stop(reason="all blocked"), stop.
 
 EXECUTE (<=5 tool calls per cycle, hard cap):
@@ -130,11 +131,11 @@ EXECUTE (<=5 tool calls per cycle, hard cap):
 10. Cookie-jar auth: http.cookiejar.MozillaCookieJar(path).load() + urllib opener, OR curl -b <cookie-jar> -f -s. NEVER read a credential/cookie file as text. NEVER echo cookie contents in any error — scrub exceptions to type(e).__name__.
 
 RECORD:
-11. Append progress to the claimed card (kanban-md edit --add-body) or to a Cycle Log section in LOOP.md.
+11. Append progress to the claimed card (kanban-md --dir \$BOARD edit <id> --claim "loop-$PROJECT" --append-body "<note>") or to a Cycle Log section in LOOP.md.
 12. DM the owner a tick via send_message (owner DM is default — no channel arg). Template:
     "🎯 $PROJECT cycle-<n> · <task-id>  Done: <1-line>  Next: <1-line>  Status: <col>"
     One DM per productive cycle. Skip halted / no-op cycles.
-13. If task complete: handoff to Review (NOT Done — human approves Done).
+13. If task complete: kanban-md --dir \$BOARD handoff <id> --claim "loop-$PROJECT" --note "<summary>" --release to Review (NOT Done — human approves Done).
 
 STAY SILENT in the chat panel unless: DoD met, hard blocker needs user decision, or STOP sentinel tripped.
 (send_message DMs are expected every productive cycle — that is the progress channel, not the chat.)
@@ -149,7 +150,7 @@ One cycle = one step.
 |---|---|---|
 | Agent self-halt via \`autonudge_stop\` | next cycle | Cleanest. Works unattended. |
 | UI 🎯 → Stop loop | instant | Fastest manual. |
-| \`touch $STOP_PATH\` | <=60s | Agent halts and calls autonudge_stop; service honors sentinel. |
+| \`touch $STOP_PATH\` | <=60s | Agent halts and calls autonudge_stop; a REST-armed loop's service honors it too. |
 | \`max_cycles: 30\` reached | bounded | Loop deactivates (not removed). Re-arm via PATCH/UI. |
 | REST DELETE \`/api/autonudge/{loop_id}\` | instant | Clean removal. |
 

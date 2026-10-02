@@ -185,20 +185,22 @@ When all true: agent posts the DoD checklist with ticks, calls `autonudge_stop(r
 
 If the project has a `kanban-md` board, the nudge MUST instruct the agent to drive it via the CLI (atomic `flock`ed writes), never via `strReplace` on task `.md` files.
 
-Minimal kanban-md ops the agent needs:
+Minimal kanban-md ops the agent needs (keep `loop-<project>` unchanged across cycles):
 
 ```bash
 BOARD=<abs path to board dir>
-kanban-md --dir $BOARD list --status todo --json   # read
-kanban-md --dir $BOARD pick --assignee loop-<n>    # atomic claim next unblocked todo
-kanban-md --dir $BOARD show <id>                   # read spec
-kanban-md --dir $BOARD edit <id> --add-body "…"    # append progress note
-kanban-md --dir $BOARD handoff <id> --notes "…"    # move to review + notes
+kanban-md --dir $BOARD list --status todo --json                       # read
+kanban-md --dir $BOARD list --claimed-by loop-<project> --json         # resume a held card if any
+kanban-md --dir $BOARD pick --claim loop-<project> --status todo        # only if no held card
+kanban-md --dir $BOARD edit <id> --block "…" --release                # held card is blocked: mark it, drop the claim, pick instead
+kanban-md --dir $BOARD show <id>                                      # read spec
+kanban-md --dir $BOARD edit <id> --claim loop-<project> --append-body "…" # append progress note
+kanban-md --dir $BOARD handoff <id> --claim loop-<project> --note "…" --release # move to review + release
 ```
 
 ### 4. Hardened nudge template
 
-Replace `<PROJECT>`, `<ANCHOR>`, `<STOP_PATH>`, and `<BOARD_PATH>` for your project. This template encodes all failure mitigations above.
+Replace `<PROJECT>`, `<project>`, `<ANCHOR>`, `<STOP_PATH>`, and `<BOARD_PATH>` for your project. This template encodes all failure mitigations above.
 
 ```
 Continue the <PROJECT> loop.
@@ -210,8 +212,8 @@ STOP / EXIT CHECKS (every cycle, in order, before anything else):
 
 BOARD (skip this block if the project has no kanban-md board):
 3. `kanban-md --dir <BOARD_PATH> list --status todo --json` — read todo column.
-4. `kanban-md --dir <BOARD_PATH> pick --assignee loop-<cycle_n>` — atomic claim of next unblocked todo.
-5. If pick returns nothing and a dep-met backlog card exists, promote: `kanban-md --dir <BOARD_PATH> move <id> --status todo` then pick.
+4. `kanban-md --dir <BOARD_PATH> list --claimed-by loop-<project> --json` — resume a held card if any; if the held card is blocked, `kanban-md --dir <BOARD_PATH> edit <id> --block "<reason>" --release` (drops the claim so this scan stops returning it) and pick instead; otherwise `kanban-md --dir <BOARD_PATH> pick --claim loop-<project> --status todo`. Keep the same project claimant every cycle.
+5. If pick returns nothing and a dep-met backlog card exists, promote: `kanban-md --dir <BOARD_PATH> move <id> todo` then pick.
 6. If everything blocked AND you already posted a blocker this arming: autonudge_stop(reason="all blocked") and stop.
 
 EXECUTE (≤5 tool calls per cycle, hard cap):
@@ -221,9 +223,9 @@ EXECUTE (≤5 tool calls per cycle, hard cap):
 10. Cookie-jar auth: http.cookiejar.MozillaCookieJar(path).load() + urllib opener, OR `curl -b <cookie-jar> -f -s`. NEVER read a credential/cookie file as text. NEVER echo cookie contents in any error — scrub exceptions to type(e).__name__.
 
 RECORD:
-11. Append progress to the claimed card (kanban-md edit --add-body) or to the anchor doc's Cycle Log section.
+11. Append progress to the claimed card (`kanban-md --dir <BOARD_PATH> edit <id> --claim loop-<project> --append-body "<note>"`) or to the anchor doc's Cycle Log section.
 12. Notify only on a real phase boundary, blocker, threshold crossing, or completion. Use `send_message` with the intended destination when conversational delivery is required; an omitted destination produces a dashboard notification, not an owner DM. Do not emit a routine per-cycle tick.
-13. If task complete: handoff to Review (NOT Done — human approves Done).
+13. If task complete: `kanban-md --dir <BOARD_PATH> handoff <id> --claim loop-<project> --note "<summary>" --release` to Review (NOT Done — human approves Done). `--release` drops the claim so the next cycle does not resume a card already in Review.
 
 STAY SILENT in the chat panel unless:
 - Phase boundary reached / DoD met (then autonudge_stop + summary).
