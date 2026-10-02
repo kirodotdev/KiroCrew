@@ -253,6 +253,10 @@ PrSearchError = github_client.PrSearchError
 # of GhCliError, so it must be caught BEFORE the generic clause or it lands in the
 # 502 branch it exists to avoid.
 GhInvalidInputError = github_client.GhInvalidInputError
+# The provider accepted a merge request and then declined to merge (its rules said
+# no). Also a GhCliError subclass, caught before the generic clause for the same
+# reason, so it maps to merge_not_allowed rather than to a 502.
+GhMergeRefusedError = github_client.GhMergeRefusedError
 
 
 def _account_key(request: web.Request) -> provider.RepoKey:

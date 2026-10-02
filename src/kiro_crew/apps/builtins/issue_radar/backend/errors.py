@@ -119,6 +119,20 @@ class ProviderInvalidInputError(ProviderCliError):
         self.values = list(values or [])
 
 
+class ProviderMergeRefusedError(ProviderCliError):
+    """Raised when the provider ACCEPTED a merge request and then declined to merge.
+
+    GitHub's asynchronous merge API answers a PR that is closed or a draft with
+    HTTP 400, and reports a merge its rules refuse as a ``failed`` result on the
+    poll rather than as an HTTP error. Both are the repository's own policy
+    answering, not a broken upstream, so the route maps this to its
+    ``merge_not_allowed`` 409 instead of the generic 502. The message is the
+    provider's reason when it gave one, sanitized.
+
+    A subclass of :class:`ProviderCliError` so existing handlers still catch it.
+    """
+
+
 class PrSearchError(ValueError):
     """Raised when a pull/merge-request search query is not expressible against
     the target provider."""
