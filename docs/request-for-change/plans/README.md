@@ -11,5 +11,6 @@ that, and read the **State** column here for whether a plan is being worked.
 |---|---|---|
 | [2026-08-22-durable-run-coordinator.md](2026-08-22-durable-run-coordinator.md) | [rfc-durable-run-coordinator.md](../rfc-durable-run-coordinator.md) | **Obsolete.** 0 of 52 checklist steps are done. The RFC is superseded by `rfc-overload-resilience.md`; its durable store now ships as `src/kiro_crew/taskq/`. |
 | [2026-08-27-agentcore-identity-gateway.md](2026-08-27-agentcore-identity-gateway.md) | [rfc-agentcore-identity-gateway.md](../rfc-agentcore-identity-gateway.md) | **Partial on main.** 11 of 29 checklist steps are marked done, but current code contains only the AWS-free core seam (`platform/agentcore_schema.py`, `AgentIdentityProvider`, public Default, and governance row); later AWS/IAM/Gateway work is absent. |
+| [2026-09-23-outbound-instance-transport.md](2026-09-23-outbound-instance-transport.md) | [rfc-outbound-instance-transport.md](../rfc-outbound-instance-transport.md) | **Unstarted.** 0 of 6 phases done at `18f9984b0`: `src/kiro_crew/instances/transports/` has zero hits and `CONNECTION_METHODS` carries no `outbound` entry. Phase 2 is a pure refactor of a seam three methods already branch on, and must land green before phase 3 begins. |
 
 Indexed from [../README.md](../README.md).
