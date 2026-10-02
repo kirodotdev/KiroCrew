@@ -901,9 +901,9 @@ def get_lessons_context(
 ) -> str:
     """Format lessons for prompt injection, most relevant first.
 
-    Lessons are ranked against *query_text* using the same hybrid
-    vector + keyword score as :meth:`get_semantic_context` when the query has a
-    vector, and by rarity-weighted word overlap when it has none (see
+    Lessons are ranked against *query_text* by rarity-weighted word overlap:
+    on the same 0.6/0.4 hybrid scale as :meth:`get_semantic_context` when the
+    query has a vector, and on that overlap alone when it has none (see
     ``rank_lessons``), then emitted until *cap* characters are used. Ranking is
     relevance-only — neither ``source`` nor ``confidence`` contributes — so an
     unrelated user-taught rule cannot displace a relevant inferred one.
@@ -1327,19 +1327,29 @@ def rank_lessons(
     arrives newest-first, so equal scores keep recency order and a query
     that matches nothing degrades to plain recency.
 
-    A query with no vector -- a startup render whose first message was not
-    embedded, and any recall whose embed is unavailable -- is scored by
-    :func:`_lexical_lesson_scores`, not by the capped overlap count the
-    hybrid score takes as its keyword half.
+    One keyword measure serves both cases: the rarity-weighted overlap of
+    :func:`_lexical_lesson_scores`. A query with no vector -- a startup render
+    whose first message was not embedded, and any recall whose embed is
+    unavailable -- is ordered by that score alone.
 
-    With a query vector, every row takes the same keyword half,
-    ``_keyword_score(overlap)``, as the semantic scan does, and its vector
-    term is the cosine clamped at 0: a row with no stored vector comparable
-    with the query's, or at a cosine at or below 0, has a vector term of 0.
-    One measure for every row means a row whose cosine rises above 0 can
-    never score lower than it did at 0. When no row has a positive vector
-    term the query vector says nothing about any row, and the ranking is the
-    one a query with no vector produces, through the same code.
+    With a query vector, every row takes that same score, divided by the
+    weight of a token only one row carries and capped at 1.0, as its keyword
+    half, and its vector term is the cosine clamped at 0: a row with no stored
+    vector comparable with the query's, or at a cosine at or below 0, has a
+    vector term of 0. Two consequences follow from one measure. Within one
+    ranking a row's keyword half does not depend on its own cosine, so a row
+    whose cosine rises above 0 can only score higher than it did at 0; across
+    the two branches only the ORDER is comparable, since the no-vector branch
+    ranks on the unscaled overlap and this one on the 0.6/0.4 hybrid of its
+    scaled form. And the rows the vector cannot rank keep exactly the order
+    they have with no vector, including where two of them saturate the keyword
+    half, since the tie-break below is that same score -- so the first row an
+    embedding backfill reaches does not reshuffle the rows behind it.
+
+    The capped overlap count the semantic scan uses as its keyword half is not
+    used here: it reaches 1.0 at ten shared tokens, which a long first message
+    clears against most stored rules, so it would leave the keyword half a
+    near-constant offset for them and rank them on the vector term alone.
 
     Rows whose hybrid scores tie exactly are ordered by the rarity-weighted
     lexical score before recency; rows still tied after it keep the caller's
@@ -1371,15 +1381,30 @@ def rank_lessons(
         # row -- keep the caller's newest-first order.
         order = sorted(range(len(entries)), key=lambda index: -lexical[index])
         return [entries[index] for index in order]
-    query_words = _text_scoring._stem_words(request_words)
-    scored: list[float] = []
-    for index, (_, text) in enumerate(entries):
-        # Every row is scored on the same 0.6/0.4 scale, as the semantic scan
-        # does. Only the rendered text is matched. A lesson key is
-        # ``lesson.<md5hash>``, which carries no words, so there is no key
-        # term to weight here the way get_semantic_context() weights its own.
-        keyword = _text_scoring._keyword_score(len(query_words & row_tokens(text.lower())))
-        scored.append(_text_scoring._hybrid_score(keyword, vectors[index], query_has_vector=True))
+    # One keyword measure for every row, with a vector or without one: the
+    # rarity-weighted overlap above, divided by the weight of a token only one
+    # row carries. That overlap is already divided by the square root of the
+    # row's distinct words, so a row of ``size`` of them reaches a full keyword
+    # half at about ``sqrt(size)`` such tokens -- one for a one-word row, three
+    # for a nine-word one -- and the cap below is reachable rather than
+    # ornamental. The capped overlap count cannot serve here: it saturates at
+    # ten shared tokens, which a long first message clears against most rows
+    # (measured on an 897-rule store with each rule's own text as the request:
+    # the median row with any overlap sat AT the cap and 64% of them did; a
+    # six-word request put none there), leaving the keyword half a
+    # near-constant 0.4 offset rather than a measure. Only the rendered text is
+    # matched: a lesson key is ``lesson.<md5hash>``, which carries no words, so
+    # there is no key term to weight here the way get_semantic_context()
+    # weights its own.
+    single_row_weight = _rarity_weight(len(entries), 1)
+    scored = [
+        _text_scoring._hybrid_score(
+            min(1.0, lexical[index] / single_row_weight),
+            vectors[index],
+            query_has_vector=True,
+        )
+        for index in range(len(entries))
+    ]
     # An exact tie on the hybrid score is broken by the rarity-weighted lexical
     # score before recency. ``sorted`` is stable: rows tied on both keep the
     # caller's newest-first order.
@@ -1398,13 +1423,14 @@ def _lexical_lesson_scores(
     (``log((N + 1) / (df + 0.5))``), and the sum is divided by the square root
     of the row's number of distinct words.
 
-    The hybrid score's keyword half, ``_keyword_score``, saturates at ten shared
-    tokens, so a long first message would tie nearly every stored rule at the top
-    and the stable sort would return newest-first. A distinctive term counts for
-    far more than a common one; a token carried by nearly every row weighs close
-    to nothing (about ``0.5 / N``). The length factor discounts incidental overlap
-    in a long row, the same correction ``history_search.search_sessions`` makes
-    for long sessions.
+    The capped overlap count the semantic scan uses as its keyword half,
+    ``_keyword_score``, is not used here: it saturates at ten shared tokens, which
+    a long first message clears against most stored rules, so it would tie them at
+    the top and the stable sort would return newest-first. A distinctive term
+    counts for far more than a common one; a token carried by nearly every row
+    weighs close to nothing (about ``0.5 / N``). The length factor discounts
+    incidental overlap in a long row, the same correction
+    ``history_search.search_sessions`` makes for long sessions.
 
     Every weight is positive, since ``df <= N``, so any overlap still outranks
     none: ordering is unchanged for a zero-overlap row, and the findings tier's
@@ -1454,11 +1480,23 @@ def _shared_lesson_stems(
     return shared_by_row, sizes, document_frequency
 
 
+def _rarity_weight(rows: int, count: int) -> float:
+    """``log((rows + 1) / (count + 0.5))``: one token's weight at document frequency *count*.
+
+    ``count=1`` is the heaviest a token can weigh -- carried by one of *rows*
+    rows -- which is the reference ``rank_lessons`` divides by to bound its
+    keyword half. The bound is not reached by one such token on every row: the
+    overlap it scales is already divided by the square root of the row's
+    distinct words, so a one-word row carrying it reaches 1.0 while a row of
+    ``size`` distinct words reaches ``1 / sqrt(size)``, and the cap is for the
+    row that carries several.
+    """
+    return math.log((rows + 1) / (count + 0.5))
+
+
 def _rarity_weights(rows: int, document_frequency: dict[str, int]) -> dict[str, float]:
     """``log((N + 1) / (df + 0.5))`` per token: the fewer of the *rows* carry it, the heavier."""
-    return {
-        token: math.log((rows + 1) / (count + 0.5)) for token, count in document_frequency.items()
-    }
+    return {token: _rarity_weight(rows, count) for token, count in document_frequency.items()}
 
 
 def any_lesson_overlap(
