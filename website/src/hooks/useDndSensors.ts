@@ -1,3 +1,4 @@
+import { useMemo } from 'react'
 import {
   KeyboardSensor,
   MouseSensor,
@@ -23,6 +24,12 @@ import { sortableKeyboardCoordinates } from '@dnd-kit/sortable'
  * visible on a desktop.
  */
 const TOUCH_HOLD_ACTIVATION = { delay: 250, tolerance: 5 } as const
+
+/* Module constants, so `useSensor` (which memoises on its options object) hands
+ * back the same descriptor on every render. See useDndSensors for why that
+ * identity matters. */
+const TOUCH_OPTIONS = { activationConstraint: TOUCH_HOLD_ACTIVATION }
+const KEYBOARD_OPTIONS = { coordinateGetter: sortableKeyboardCoordinates }
 
 export interface DndSensorOptions {
   /**
@@ -66,17 +73,22 @@ export interface DndSensorOptions {
  * code and loses the explanation is the one that gets "simplified" back to a
  * single PointerSensor.
  *
- * The descriptor array is rebuilt on every render, exactly as it was at the
- * three call sites before this hook existed: `useSensor` memoises on its
- * options object, and that object is a literal. Do not build anything on its
- * identity.
+ * The descriptor array keeps its identity across renders (it changes only with
+ * `distance` or `keyboard`), and that is load-bearing. `DndContext` derives its
+ * activators from the sensors array and puts them in the context every
+ * `useDraggable` reads, so a fresh array per render re-renders EVERY draggable
+ * on every render of the surface, straight past any `memo()` boundary above
+ * it. In the chat sidebar that is every mounted session row rebuilding its
+ * menus on every sidebar commit, which is what made New Chat in a full folder
+ * lag.
  */
 export function useDndSensors({ distance, keyboard = false }: DndSensorOptions): SensorDescriptor<SensorOptions>[] {
-  const mouse = useSensor(MouseSensor, { activationConstraint: { distance } })
-  const touch = useSensor(TouchSensor, { activationConstraint: TOUCH_HOLD_ACTIVATION })
+  const mouseOptions = useMemo(() => ({ activationConstraint: { distance } }), [distance])
+  const mouse = useSensor(MouseSensor, mouseOptions)
+  const touch = useSensor(TouchSensor, TOUCH_OPTIONS)
   // Called unconditionally -- hooks cannot be skipped - and passed as `null`
   // when unwanted. `useSensors` filters null descriptors itself, so this is the
   // library's own supported shape for an optional sensor.
-  const keyboardSensor = useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+  const keyboardSensor = useSensor(KeyboardSensor, KEYBOARD_OPTIONS)
   return useSensors(mouse, touch, keyboard ? keyboardSensor : null)
 }

@@ -396,12 +396,10 @@ describe('selectSidebarWorkflowActive — hostile session keys', () => {
  * extraction honest — the resolution has to live INSIDE the memoized row, so a
  * future refactor that moves the row body again cannot quietly drop it.
  *
- * Note on the re-tint case: `installedAgents` is an ARRAY prop on the row, so
- * under memo's default shallow compare a new array identity re-renders every
- * row, not just the affected one. That is the existing prop contract, so this
- * pins the CORRECTNESS claim (the tint updates) and deliberately does not
- * assert single-row isolation, which would require passing a pre-resolved
- * per-row primitive instead.
+ * The shell resolves each row's agent facts to per-row primitives, so the
+ * roster array never reaches the row; single-row isolation on a roster change
+ * is pinned in the "page props" suite below. This suite pins the CORRECTNESS
+ * claims (which colour wins).
  */
 const AGENT_TINT = '#123456'
 const AGENT_TINT_EDITED = '#654321'
@@ -495,5 +493,72 @@ describe('chat sidebar — agent default session colour', () => {
     expect(tintOf(rowFor('k-inherit'))).toBe(AGENT_TINT_EDITED)
     // …while a session carrying its own colour is unmoved by the agent edit.
     expect(tintOf(rowFor('k-own'))).toBe(SESSION_TINT)
+  })
+})
+
+/**
+ * Row props that used to move for EVERY row on a New Chat, re-rendering the
+ * whole mounted list each time. Both come from the page: the agent roster
+ * (scoped to the active session, emptied then refilled on every switch) and
+ * the source-reveal handler (rebuilt when its own inputs change).
+ */
+describe('chat sidebar — page props that must not re-render every row', () => {
+  function renderStateful(initialAgents: ReturnType<typeof painterAgents>) {
+    const slots = [
+      slot('k-inherit', { agent: 'painter' }),
+      slot('k-plain'),
+      slot('k-other'),
+    ]
+    const { wrap } = renderSidebarWithSlots(slots)
+    const set: { agents?: (a: ReturnType<typeof painterAgents>) => void; open?: (f: () => boolean) => void } = {}
+    function Harness() {
+      const [agents, setAgents] = React.useState(initialAgents)
+      const [openSource, setOpenSource] = React.useState<() => boolean>(() => () => true)
+      set.agents = setAgents
+      set.open = (f) => setOpenSource(() => f)
+      return (
+        <ChatSidebar
+          slots={slots} activeSlot={null} unreadSlots={EMPTY_UNREAD}
+          history={EMPTY_HISTORY} historyHasMore={false} defaultAgent="" installedAgents={agents}
+          onOpenSource={openSource}
+        />
+      )
+    }
+    render(wrap(<Harness />))
+    return set
+  }
+
+  it('a roster emptied and refilled with the same agents re-renders no rows and keeps the tint', () => {
+    const set = renderStateful(painterAgents(AGENT_TINT))
+    expect(tintOf(rowFor('k-inherit'))).toBe(AGENT_TINT)
+    for (const k of Object.keys(counts)) delete counts[k]
+
+    // What useAgents does on every session switch: clear, then refill with a
+    // fresh array from the refetch.
+    act(() => { set.agents!([]) })
+    expect(tintOf(rowFor('k-inherit'))).toBe(AGENT_TINT)
+    act(() => { set.agents!(painterAgents(AGENT_TINT)) })
+
+    expect(counts).toEqual({})
+    expect(tintOf(rowFor('k-inherit'))).toBe(AGENT_TINT)
+  })
+
+  it('a new roster that changes one agent re-renders only that agent\'s rows', () => {
+    const set = renderStateful(painterAgents(AGENT_TINT))
+    for (const k of Object.keys(counts)) delete counts[k]
+
+    act(() => { set.agents!(painterAgents(AGENT_TINT_EDITED)) })
+
+    expect(Object.keys(counts)).toEqual(['k-inherit'])
+    expect(tintOf(rowFor('k-inherit'))).toBe(AGENT_TINT_EDITED)
+  })
+
+  it('a new onOpenSource identity re-renders no rows', () => {
+    const set = renderStateful(painterAgents(AGENT_TINT))
+    for (const k of Object.keys(counts)) delete counts[k]
+
+    act(() => { set.open!(() => false) })
+
+    expect(counts).toEqual({})
   })
 })

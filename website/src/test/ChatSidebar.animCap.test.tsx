@@ -6,6 +6,7 @@
  * The shared framer mock maps `layoutId` -> `data-layout-id`, which is what
  * these assertions read.
  */
+import { StrictMode } from 'react'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -73,7 +74,7 @@ function mkSlots(n: number) {
 
 type FixtureSlot = ReturnType<typeof mkSlots>[number]
 
-function renderSidebar(slots: FixtureSlot[]) {
+function renderSidebar(slots: FixtureSlot[], opts: { folders?: unknown[]; strict?: boolean } = {}) {
   const store = createTestStore({
     dashboard: {
       status: {}, connected: true, slots, approvalMode: 'normal',
@@ -84,9 +85,9 @@ function renderSidebar(slots: FixtureSlot[]) {
     } as never,
     chat: { activeSlot: null, slotStatusDetail: {} } as never,
   })
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
-  qc.setQueryData(['chat-folders'], [])
-  return render(
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, refetchOnMount: false }, mutations: { retry: false } } })
+  qc.setQueryData(['chat-folders'], opts.folders ?? [])
+  const tree = (
     <QueryClientProvider client={qc}>
       <Provider store={store}>
         <ThemeProvider>
@@ -98,8 +99,9 @@ function renderSidebar(slots: FixtureSlot[]) {
           </MemoryRouter>
         </ThemeProvider>
       </Provider>
-    </QueryClientProvider>,
+    </QueryClientProvider>
   )
+  return render(opts.strict ? <StrictMode>{tree}</StrictMode> : tree)
 }
 
 beforeEach(() => localStorage.clear())
@@ -122,6 +124,26 @@ describe('sidebar layout-projection window', () => {
         expect(el.getAttribute('data-layout')).toBe('false')
       }
     }
+  })
+
+  // Folder rows are rendered by a CHILD (SortableFolderBlock calls
+  // renderFolderBlock from its own render), which React may render again on
+  // its own: dnd-kit re-renders it when it re-measures a droppable, and
+  // StrictMode renders it twice. The repeat call must stamp the rows exactly as
+  // the first did. A running per-render counter handed the repeat call stamps
+  // past the window, so every row in the folder lost its projection (and, in
+  // production, re-rendered twice for nothing). StrictMode is the deterministic
+  // way to get that repeat call in jsdom.
+  it('keeps folder rows inside the window when their block renders again', () => {
+    const total = SIDEBAR_DISPLACEMENT_WINDOW + 10
+    const folder = { id: 'fbig', name: 'Big', order: 0, collapsed: false, created_at: 1 }
+    const slots = mkSlots(total).map(s => ({ ...s, folder_id: 'fbig' }))
+    renderSidebar(slots, { folders: [folder], strict: true })
+    const rows = rowWrappers()
+    expect(rows.length).toBe(total)
+    const enrolled = rows.filter(el => /^slot-/.test(el.getAttribute('data-layout-id') ?? ''))
+    expect(enrolled).toHaveLength(SIDEBAR_DISPLACEMENT_WINDOW)
+    expect(enrolled).toEqual(rows.slice(0, SIDEBAR_DISPLACEMENT_WINDOW))
   })
 })
 

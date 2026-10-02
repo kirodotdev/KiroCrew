@@ -848,7 +848,15 @@ interface SessionRowProps {
   mode?: string
   isMobile: boolean
   colorMode: string
-  installedAgents: AgentInfo[]
+  /** The row's agent (its own, else the default) is a package agent, which the
+   *  meta line tints. A per-row primitive rather than the roster array, so a
+   *  roster refetch (a new array per fetch, and a cleared one on every session
+   *  switch) re-renders only the rows whose answer actually moved. */
+  agentIsPackage: boolean
+  /** The row's OWN agent's `session_color`, unvalidated (the row checks it).
+   *  Undefined for a row with no agent of its own. Per-row for the same reason
+   *  as `agentIsPackage`. */
+  agentSessionColor: string | undefined
   tagById: Record<string, ChatTag>
   paletteColors: string[]
   boost: PaletteBoost
@@ -930,11 +938,35 @@ function adoptFailureText(err: unknown, crewName: string): string {
  *  per-slot state (status line, goal loop, queued sub-agents, workflow runs)
  *  is subscribed to HERE, slot-scoped, so a background event re-renders only
  *  the row it belongs to. */
+/** The runs-elsewhere chip of a remote-EXECUTED local row, with the peer's
+ *  display name read from the SHARED ['instances'] cache. Its own component so
+ *  the query observer exists only on rows that are actually bound: an observer
+ *  in every row, even a disabled one, re-registers its options on every row
+ *  render, and each registration is a query-cache event every cache listener
+ *  answers — a per-row cost a full folder pays on each sidebar commit. Falls
+ *  back to the instance id: it is less friendly but it is true, and a blank chip
+ *  would claim the session runs somewhere unnamed. */
+function ExecutorCrewChip({ instanceId }: { instanceId: string }) {
+  const { data } = useQuery({
+    queryKey: ['instances'],
+    queryFn: () => api.listInstances(),
+    enabled: !!instanceId,
+  })
+  const name = data?.instances?.find(i => i.id === instanceId)?.name || instanceId
+  return (
+    <RemoteCrewChip
+      name={name}
+      label={i18nT('pages.chatSidebar.on_instance', { name })}
+      title={i18nT('pages.chatSidebar.runs_on_crew', { name })}
+    />
+  )
+}
+
 const SessionRow = memo(function SessionRow({
   slot: s, showDivider, scope, navScope, holdContainer, conductor, isActive, connected, isOut, isPinned, isUnread, isRunning,
   recent, recentTintCount, subagentCount, subagentApprovalCount, digitBadge,
   isRenaming, renamingHere, renameValue, revealFlash, dragInFlight, activeDraggedKey, activeDraggedPinnedIndex, pinnedOrderIndex, pinnedReorderEnabled, onPinnedKeyboardReorder, rowAnimEnabled,
-  defaultAgent, mode, isMobile, colorMode, installedAgents, tagById, paletteColors, boost, boostFor,
+  defaultAgent, mode, isMobile, colorMode, agentIsPackage, agentSessionColor, tagById, paletteColors, boost, boostFor,
   renameInputRef, onRenameStart, onRenameChange, onRenameCommit, onRenameCancel,
   onDuplicate, onCloseSession, onMenuCloseAutoFocus, onSelectSlot, onOpenSlotInNewTab, onOpenSource, onAdoptPeerSession, adoptPending, adoptError,
   onOpenElsewhere,
@@ -966,18 +998,6 @@ const SessionRow = memo(function SessionRow({
   // i18nT strings must re-translate even when no prop moves.
   const langGen = useLanguageGeneration()
   const dispatch = useAppDispatch()
-  // The peer's display name for the runs-elsewhere chip. Read from the SHARED
-  // ['instances'] cache and enabled only for a row that is actually bound, so a
-  // peerless install never issues the query. Falls back to the instance id: it is
-  // less friendly but it is true, and a blank chip would claim the session runs
-  // somewhere unnamed.
-  const remoteCrewQuery = useQuery({
-    queryKey: ['instances'],
-    queryFn: () => api.listInstances(),
-    enabled: s.executor === 'remote' && !!s.instance_id,
-  })
-  const remoteCrewName =
-    remoteCrewQuery.data?.instances?.find(i => i.id === s.instance_id)?.name || s.instance_id || ''
   const ime = useImeGuard()
   const simplifiedToolNames = useSimplifiedToolNames()
   const uiLang = useLanguage().resolved
@@ -1130,10 +1150,7 @@ const SessionRow = memo(function SessionRow({
     // and optimistically-added state that predates this field.
     const effectiveAgent = s.effective_agent ?? ''
     const agentDiverged = effectiveAgent !== '' && effectiveAgent !== agentName
-    const agentMeta = installedAgents.find(a => a.name === agentName)
-    const isPackageAgent = agentMeta?.source === 'package'
-    const isBuiltin = agentMeta?.source === 'builtin'
-    const agentColor = isPackageAgent ? 'text-[var(--aim)]' : isBuiltin ? 'text-muted' : 'text-muted'
+    const agentColor = agentIsPackage ? 'text-[var(--aim)]' : 'text-muted'
     // The meta line's second slot shows the session's TAGS, not a value derived
     // from the project path. The auto-tagger already labels each session with its
     // project, so those tags ARE the context the row needs; deriving a label
@@ -1623,7 +1640,7 @@ const SessionRow = memo(function SessionRow({
     // is edited. An explicit per-session color_hex/color_index still wins.
     const agentHex = (!customHex && ci == null && s.agent)
       ? (() => {
-          const c = installedAgents.find(a => a.name === s.agent)?.session_color
+          const c = agentSessionColor
           return typeof c === 'string' && /^#[0-9a-f]{6}$/i.test(c) ? c : null
         })()
       : null
@@ -2123,13 +2140,7 @@ const SessionRow = memo(function SessionRow({
                *  is first on a federated search row: it qualifies the whole row,
                *  so a user scanning the list should meet it before the per-session
                *  flags that only make sense once you know where the session is. */}
-              {s.executor === 'remote' && (
-                <RemoteCrewChip
-                  name={remoteCrewName}
-                  label={i18nT('pages.chatSidebar.on_instance', { name: remoteCrewName })}
-                  title={i18nT('pages.chatSidebar.runs_on_crew', { name: remoteCrewName })}
-                />
-              )}
+              {s.executor === 'remote' && <ExecutorCrewChip instanceId={s.instance_id || ''} />}
               {s.memory_mode === 'incognito' && <span className="text-muted" title={i18nT('pages.chatSidebar.incognito_no_memory_writes')}><EyeOff size={10} /></span>}
               {s.memory_mode === 'temporary' && <span className="text-aim" title={i18nT('pages.chatSidebar.temporary_no_memory_reads_or_writes')}><VenetianMask size={10} /></span>}
               {/* Trailing meta grouped under ONE ml-auto: two sibling auto
@@ -2893,6 +2904,38 @@ function ChatSidebar({
   const { data: mcCfg, status: mcCfgStatus, error: mcCfgError, errorUpdatedAt: mcCfgErrorUpdatedAt } = useQuery({ queryKey: ['kirocrewConfig'], queryFn: () => api.kirocrewConfig() })
   const recentTintCount = clampTintCount(mcCfg?.dashboard?.recent_tint_count)
   const recentRank = useMemo(() => computeRecentRank(localSlots, recentTintCount), [localSlots, recentTintCount])
+  // Rows read two facts about their agent; resolving them here hands each row a
+  // primitive instead of the roster array (see SessionRowProps.agentIsPackage).
+  // First entry wins, matching the `find` the rows used to run.
+  //
+  // The roster the page passes is scoped to the ACTIVE session, and useAgents
+  // empties it for the length of the refetch on every session switch (so a
+  // picker never offers the previous scope's agents). Rows describe every
+  // session, not the active one, so that transient empty list is held over
+  // rather than read as "no agents": otherwise every agent-tinted row drops its
+  // tint and re-renders twice per switch, which in a full folder is the whole
+  // mounted list, twice, on every New Chat.
+  const heldAgentsRef = useRef(installedAgents)
+  if (installedAgents.length > 0) heldAgentsRef.current = installedAgents
+  const rowAgents = installedAgents.length > 0 ? installedAgents : heldAgentsRef.current
+  const agentByName = useMemo(() => {
+    const m = new Map<string, AgentInfo>()
+    for (const a of rowAgents) if (!m.has(a.name)) m.set(a.name, a)
+    return m
+  }, [rowAgents])
+  // The caller's source-reveal handler is rebuilt whenever its own inputs move,
+  // and every row takes it as a prop, so a new identity re-renders every row.
+  // Rows only ever CALL it, so they get a stable forwarder to the latest one;
+  // its presence still tracks the caller's, which the chips read as "can reveal".
+  const onOpenSourceRef = useRef(onOpenSource)
+  onOpenSourceRef.current = onOpenSource
+  const hasOpenSource = !!onOpenSource
+  const stableOpenSource = useMemo(
+    () => (hasOpenSource
+      ? (slotKey: string, link: { url: string; kind: 'change' | 'issue' }) => onOpenSourceRef.current?.(slotKey, link) ?? false
+      : undefined),
+    [hasOpenSource],
+  )
 
   const {
     folderSortRead, folderSortMode, folderCompare, folderReorderable, folderDragWithheld, folderReorderHint,
@@ -3602,7 +3645,20 @@ function ChatSidebar({
     startsAutomaticSection, reorderPinnedByKeyboard,
   } = usePinnedKeyboardReorder({ searchRanked, pinned, pinnedOrder, slotFolders, reorderPinned })
 
-  let sessionRowOrderStamp = 0
+  // Stamps are keyed by (scope, row) and remembered for this render's closure.
+  // Folder blocks are rendered by a CHILD (SortableFolderBlock /
+  // SortableSubfolderBlock call `renderFolderBlock` from their own render), and
+  // dnd-kit re-renders those children on its own, e.g. when it re-measures a
+  // droppable after a row mounts. That deferred call runs after this render's
+  // pass has stamped every row, so a running counter would hand every row in
+  // the block the clamped stamp: all of them re-render with row animation off,
+  // then again when the next shell render restores the real stamps. Reusing the
+  // stamp the pass already assigned keeps the deferred render's row props
+  // identical, so the rows bail out of it.
+  // Keyed scope -> row identity; `sessionRowStampCount` is the running total
+  // across scopes, which is what the clamp counts.
+  const sessionRowStamps = new Map<string, Map<string, number>>()
+  let sessionRowStampCount = 0
   const renderSessionRow = (s: Slot, _indent: number, showDivider: boolean, scope = 'list', navScope = scope, holdContainer = navScope, conductor?: ConductorRowExtras) => {
     // Every per-slot lookup below is keyed by LOCAL slot key, and a peer key can
     // be byte-identical to a local one, so each is masked on `isPeer` rather than
@@ -3624,7 +3680,17 @@ function ChatSidebar({
       : undefined
     // Clamped, not raw: rows past the window share a stamp and bail out of a
     // displacement above them (see SIDEBAR_DISPLACEMENT_WINDOW).
-    const orderStamp = Math.min(sessionRowOrderStamp++, SIDEBAR_DISPLACEMENT_WINDOW)
+    let scopeStamps = sessionRowStamps.get(scope)
+    if (!scopeStamps) {
+      scopeStamps = new Map<string, number>()
+      sessionRowStamps.set(scope, scopeStamps)
+    }
+    let orderStamp = scopeStamps.get(rowIdentity)
+    if (orderStamp === undefined) {
+      orderStamp = Math.min(sessionRowStampCount, SIDEBAR_DISPLACEMENT_WINDOW)
+      sessionRowStampCount += 1
+      scopeStamps.set(rowIdentity, orderStamp)
+    }
     const isActive = isActiveRow(s)
     const revealing = !isPeer && revealFlash?.kind === 'session' && revealFlash.key === s.key
     // Windowed: far from the viewport the row renders as a cheap stub (see
@@ -3669,7 +3735,9 @@ function ChatSidebar({
         // Framer's projection registry bounded at every total list size.
         rowAnimEnabled={rowAnimEnabled && orderStamp < SIDEBAR_DISPLACEMENT_WINDOW && !staticRows}
         defaultAgent={defaultAgent} mode={mode} isMobile={isMobile} colorMode={colorMode}
-        installedAgents={installedAgents} tagById={tagById}
+        agentIsPackage={agentByName.get(s.agent || defaultAgent || '')?.source === 'package'}
+        agentSessionColor={s.agent ? agentByName.get(s.agent)?.session_color : undefined}
+        tagById={tagById}
         paletteColors={paletteColors} boost={boost} boostFor={boostFor}
         renameInputRef={renameInputRef}
         onRenameStart={onRenameStart} onRenameChange={onRenameChange}
@@ -3677,7 +3745,7 @@ function ChatSidebar({
         onDuplicate={sessionActions.duplicate} onCloseSession={sessionActions.close}
         onMenuCloseAutoFocus={onMenuCloseAutoFocus} onSelectSlot={onSelectSlot}
         onOpenElsewhere={openElsewhere}
-        onOpenSlotInNewTab={onOpenSlotInNewTab} onOpenSource={onOpenSource}
+        onOpenSlotInNewTab={onOpenSlotInNewTab} onOpenSource={stableOpenSource}
       />
       </WindowedSessionRow>
     )
