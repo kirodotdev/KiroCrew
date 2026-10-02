@@ -5536,6 +5536,21 @@ class TestStrayStdoutLines:
         assert any("non-object capabilities" in r.getMessage() for r in caplog.records)
 
     @pytest.mark.asyncio
+    async def test_prime_refuses_a_ready_backend_that_died_while_it_waited(self) -> None:
+        backend = _make_backend()
+        backend._init_state = "in_flight"
+
+        async def _ready_then_dead() -> None:
+            backend._init_state = "ready"
+            backend._dead_reason = "stdout EOF"
+            backend._init_done_event.set()
+
+        resolver = asyncio.create_task(_ready_then_dead())
+        with pytest.raises(BackendGone, match="stdout EOF"):
+            await backend.prime_initialize({"method": "initialize", "id": 1}, timeout=10)
+        await resolver
+
+    @pytest.mark.asyncio
     async def test_the_pre_init_reader_skips_stray_lines_and_initializes(self) -> None:
         result: dict[str, Any] = {"capabilities": {}}
         backend = _make_backend()
