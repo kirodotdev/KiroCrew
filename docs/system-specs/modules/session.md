@@ -3644,9 +3644,13 @@ a trust root on its own; publication therefore also writes a
 - **Consumers**: STRICT identity resolvers accept the direct
   `KIROCREW_HOST_PID` → mapping lookup only via
   `session_pid_sig.verify_session_pid`, which fails closed to `""` on a
-  missing/short key, missing files, or MAC mismatch. Their remaining callers
-  are the computer-use MCP tools (`mcp_computer.py`, for audit attribution)
-  and the dashboard messaging-identity path (`dashboard/handlers/messaging.py`).
+  missing/short key, missing files, or MAC mismatch, and never raises: the MAC
+  is compared as bytes, so a sidecar whose text is not a hex MAC (non-ASCII
+  included) is a mismatch. A `str` pid the path conversion refuses (a NUL, an
+  unencodable surrogate) is a missing file; any other malformed pid reaches the
+  MAC and is a mismatch. Their remaining callers are the computer-use MCP tools
+  (`mcp_computer.py`, for audit attribution) and the dashboard
+  messaging-identity path (`dashboard/handlers/messaging.py`).
   The former state-mutating session-bound tools that resolved identity here —
   `monitor_start`, `monitor_update`, `autonudge_stop`, `set_project` (plus
   `suggest_followup` and `ask_question`) — became STATELESS directive-return

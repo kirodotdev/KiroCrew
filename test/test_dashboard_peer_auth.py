@@ -134,6 +134,29 @@ def test_signed_only_refuses_forged_unsigned_mapping(
     assert key == ""
 
 
+@pytest.mark.parametrize("sidecar", ["é" * 64, "0" * 63 + "é"])
+def test_signed_only_reports_a_non_hex_sidecar_as_unverifiable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sidecar: str
+) -> None:
+    """A sidecar holding non-ASCII text is a MAC mismatch the walk carries out.
+
+    It must not raise: ``resolve_peer_tenancy`` catches only ``OSError``, so a
+    ``TypeError`` from comparing the MAC as ``str`` would reach the middleware's
+    resolver guard and read as "no mapping anywhere" -- the degrade arm --
+    instead of the token demand an untrustable mapping gets.
+    """
+    from kiro_crew import session_pid_sig as sps
+
+    monkeypatch.setattr(sps, "_load_hmac_key", lambda: b"K" * 32)
+    (tmp_path / "session_pid_50.txt").write_text("dashboard:chat-victim", encoding="utf-8")
+    (tmp_path / "session_pid_50.sig").write_text(sidecar, encoding="utf-8")
+    tenancy = resolve_peer_tenancy(
+        50, config_dir_fn=lambda: tmp_path, ppid_fn=_ppid_map({50: 1}), signed_only=True
+    )
+    assert tenancy.session_key == ""
+    assert tenancy.unverifiable is True
+
+
 def test_signed_only_accepts_gateway_signed_mapping(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

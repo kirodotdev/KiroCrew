@@ -2543,11 +2543,16 @@ async def api_update_revalidate(request: web.Request) -> web.Response:
     # non-ASCII character, and this header is attacker-controllable on the
     # tokenless bypass path, so a str compare would turn an auditable 403 into an
     # unaudited 500. Encoding both sides makes a non-ASCII secret an ordinary
-    # constant-time mismatch instead.
+    # constant-time mismatch instead. ``surrogatepass`` because aiohttp decodes a
+    # header value with ``surrogateescape``, so a non-UTF-8 byte arrives as a lone
+    # surrogate, which a strict encode refuses by raising -- the same 500.
     if (
         not expected
         or not provided
-        or not hmac.compare_digest(str(expected).encode("utf-8"), provided.encode("utf-8"))
+        or not hmac.compare_digest(
+            str(expected).encode("utf-8", "surrogatepass"),
+            provided.encode("utf-8", "surrogatepass"),
+        )
     ):
         await _audit_update_event(
             request, operation="update.revalidate", outcome="denied", resources="invalid-secret"

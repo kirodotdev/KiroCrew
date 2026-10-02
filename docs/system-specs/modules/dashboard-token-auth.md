@@ -614,7 +614,10 @@ either auth flavor can grant (see `_verify_unix_peer`):
    distinguishes a full membership from a short one. A 1:1 pid is unchanged and
    requires no token.
 6. A mapping exists in the ancestry and its **MAC does not verify** → the same
-   token demand as step 5, `peer_session_unattested` on failure. The pair is two
+   token demand as step 5, `peer_session_unattested` on failure. That includes a
+   `.sig` whose text is not a hex MAC at all: the resolver compares the MAC as
+   BYTES, so non-ASCII sidecar text is an ordinary mismatch here rather than an
+   exception the resolver guard would turn into "unresolvable". The pair is two
    files replaced separately, so a body-changing republication is briefly visible
    as a new `.txt` beside the previous `.sig`; that reads as a mismatch for a
    body nobody forged, and it is indistinguishable from forgery. Because a
