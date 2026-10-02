@@ -368,6 +368,8 @@ class TestWhatThisSetGrants:
         "session_end_wait",
         "session_set_model",
         "session_reload",
+        # Retitles a session the caller created; spends one titling call.
+        "session_generate_title",
         "session_close",
         "session_revive",
         "session_send",

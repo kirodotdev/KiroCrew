@@ -1,17 +1,17 @@
 # Session Control — driving another session
 
 One chat session can open, fork, seed, watch, stop, close and revive another one,
-change its model, reload its agent process, and take another one under itself in
+change its model, reload its agent process or regenerate its title, and take another one under itself in
 the sidebar. The tools come from the
 `kirocrew-dashboard` MCP server, so an agent that does not mount that server
 never has them — exactly like any other MCP server. This page is the reference
-for all 28 of its tools, written for the agent that is about to use them.
+for all 29 of its tools, written for the agent that is about to use them.
 
 The server is defined in `src/kiro_crew/mcp_dashboard.py`. Two halves:
 
 - **Session control** — `session_create`, `session_fork`, `session_send`,
   `session_read_message`, `session_summary`, `session_stop`, `session_end_wait`,
-  `session_set_model`, `session_reload`, `session_close`, `session_revive`, `session_broadcast`,
+  `session_set_model`, `session_reload`, `session_generate_title`, `session_close`, `session_revive`, `session_broadcast`,
   `session_status`, `session_adopt`, `session_release`. These reach another session.
 - **Sidebar shape** — `chat_folder_tree`, `chat_folder_create`,
   `chat_folder_move`, `chat_folder_move_session`, `chat_folder_file_self`,
@@ -479,6 +479,37 @@ If the old process fails while shutting down after it was removed, the reload
 still counts as done: the notice is written, the process starts again, and the
 reply carries a `warning`. A failure before anything was removed answers
 `reload_failed`, and nothing was torn down.
+### `session_generate_title`
+
+| Argument | Required | Meaning |
+|---|---|---|
+| `target` | yes | Session key or exact title of a session you created |
+
+Regenerates the target's sidebar title from its recent transcript. It runs the
+code behind the sidebar's "Regenerate title" action, so it costs one model call
+on the titling model, and the call waits for that model. The reply carries the
+new title, or the current one with a note when the model had nothing better.
+
+The new title replaces the current one, including a title someone set by hand,
+exactly as the sidebar action does. It stays an automatic title, so the
+background refresh may revise it later. A rename that lands while the model
+call runs wins, and the call then reports the title unchanged. If the target is
+closed while the call runs, the call answers `target_replaced` and the session
+keeps its previous title: the title is written to history before the session
+shows it, a close that has begun refuses that write, and a close's own save
+records the title the session still shows. The access check runs again once the model answers, so a
+target that became channel-linked or mirrored meanwhile is not retitled either,
+and the call returns that refusal. If the history write fails, the live session
+keeps and shows the new title (its next save writes it) and the call answers
+`title_persist_failed` instead of success.
+
+Only sessions the calling session created are reachable (`not_creator`), for
+every kind of caller, and never the caller itself (`self_target`). The other
+refusals are the ones `session_stop` gets. One call per target every 5 minutes,
+counted from when a call is admitted: a repeat inside that window is refused
+with `title_rate_limited` and spends nothing. If the tool call times out, the
+title can still land; a retry is refused for 5 minutes from when the first call
+was admitted, which is longer than the tool's 120-second wait.
 
 ### `session_revive`
 
@@ -615,6 +646,8 @@ gateway-issued key counts. Refusals you should expect, by code:
 | `linked_session_target` / `mirrored_target` | A channel-linked or channel-mirrored session is out of scope — reaching it would cross into a thread other people read |
 | `session_control_disabled` | `agent.session_control` is off in config |
 | `create_rate_limited` | Per-caller creation budget spent — a fork spends the same budget |
+| `target_replaced` | Title generation only: the target was closed while its title was being generated; the title was discarded and the session keeps its previous one |
+| `title_rate_limited` | Title generation only: that target was retitled less than 5 minutes ago. Nothing was spent |
 | `target_busy` | Model change and reload: the target has a turn, queued messages (reload) or sub-agents in flight, so nothing was changed |
 | `target_changed_during_reload` | Reload: the target left your reach while its process was being reset. The process was reset; no reload notice was written |
 | `reload_failed` | Reload: the teardown failed before the target's process was removed. Nothing was torn down |

@@ -6,7 +6,8 @@ import asyncio
 import logging
 import re
 import unicodedata
-from typing import Any
+from collections.abc import Callable
+from typing import Any, NamedTuple
 
 from aiohttp import web
 
@@ -847,8 +848,19 @@ async def _generate_refreshed_title(
     return title
 
 
-async def _persist_title(state: DashboardState, slot: _ChatSlot) -> bool:
+async def _persist_title(
+    state: DashboardState,
+    slot: _ChatSlot,
+    *,
+    still_current: Callable[[], bool] | None = None,
+    title_fields: dict[str, Any] | None = None,
+) -> bool:
     """Save the slot title (and its provenance) to the conversation history file.
+
+    ``title_fields``, when given, is written instead of the slot's own title
+    fields, so a caller can make a title durable BEFORE it shows on the slot
+    (``regenerate_title`` does, so a close that saves the slot mid-write keeps
+    the previous title rather than one the call then reports as discarded).
 
     ``update_metadata`` -> ``_locked`` (cross-process flock acquire +
     ``os.close``) is blocking-on-loop-prohibited, so the write is dispatched to
@@ -866,6 +878,12 @@ async def _persist_title(state: DashboardState, slot: _ChatSlot) -> bool:
     could reload either), ``False`` when the off-thread write failed. Callers
     that must not proceed on a non-durable mark (the refresh's token budget)
     check the result; best-effort callers ignore it.
+
+    ``still_current``, when given, is checked under the transcript lock right
+    before the write commits; ``False`` refuses the write and returns ``False``.
+    ``regenerate_title`` passes "this slot is still the live one" so a session
+    closed and recreated under the same key during the write does not receive
+    the old session's title.
 
     WRITE-ORDER GUARD: two concurrent persists (a background titler's and a
     manual rename's) race on worker threads, and flock acquisition order is
@@ -900,18 +918,30 @@ async def _persist_title(state: DashboardState, slot: _ChatSlot) -> bool:
                 "under the ratcheted line without tightening the live replacement",
                 slot.key,
             )
+    start_epoch = slot._title_epoch
     while True:
         epoch = slot._title_epoch
-        fields: dict[str, Any] = {"title": slot.title}
-        origin = slot._title_origin
-        if origin in _TITLE_ORIGINS:
-            fields["title_origin"] = origin
-        if slot._title_refresh_mark:
-            fields["title_refresh_mark"] = slot._title_refresh_mark
-        # Written unconditionally (unlike the mark, which only grows): the flag
-        # goes True -> False when the early refresh consumes it, and a stale
-        # True on disk would re-arm the early milestone on every restart.
-        fields["title_low_signal"] = slot._title_low_signal
+        fields: dict[str, Any]
+        if title_fields is not None and epoch == start_epoch:
+            # The caller applies these to the slot only after the write, so the
+            # slot still holds the previous title here. A rename that lands
+            # during the write moves the epoch, and the next pass writes the
+            # slot's own (renamed) values instead.
+            fields = dict(title_fields)
+            if slot._title_refresh_mark:
+                fields.setdefault("title_refresh_mark", slot._title_refresh_mark)
+        else:
+            fields = {"title": slot.title}
+            origin = slot._title_origin
+            if origin in _TITLE_ORIGINS:
+                fields["title_origin"] = origin
+            if slot._title_refresh_mark:
+                fields["title_refresh_mark"] = slot._title_refresh_mark
+            # Written unconditionally (unlike the mark, which only grows): the
+            # flag goes True -> False when the early refresh consumes it, and a
+            # stale True on disk would re-arm the early milestone on every
+            # restart.
+            fields["title_low_signal"] = slot._title_low_signal
         # An upsert can be the FIRST write of this session's line: the on-send
         # titling attempt runs before the turn-end save and before the periodic
         # flush. A restricted slot's line must never exist without its mode, and
@@ -920,6 +950,8 @@ async def _persist_title(state: DashboardState, slot: _ChatSlot) -> bool:
         # leaves an ordinary line's mode to the transcript save.
 
         def _fold_memory_mode(metadata: dict) -> bool:
+            if still_current is not None and not still_current():
+                return False
             retained_mode = stricter_memory_mode(
                 canonical_memory_mode(metadata.get("memory_mode")), slot_mode
             )
@@ -944,7 +976,7 @@ async def _persist_title(state: DashboardState, slot: _ChatSlot) -> bool:
                 )
                 return False
             apply_pending_slot_memory_mode(state, pending_mode_slot)
-            logger.debug("Persisted title %r for slot %s", slot.title, slot.key)
+            logger.debug("Persisted title %r for slot %s", fields.get("title"), slot.key)
         except Exception:
             logger.debug("Failed to persist title for slot %s", slot.key)
             await restore_replacement_if_handover_did_not_land(
@@ -1333,6 +1365,53 @@ async def api_chat_slot_generate_title(request: web.Request) -> web.Response:
         return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
 
     logger.info("Manual title generation requested for slot %s", name)
+    result = await regenerate_title(state, slot)
+    return web.json_response({"ok": True, "title": result.title})
+
+
+class RegeneratedTitle(NamedTuple):
+    """What :func:`regenerate_title` applied, and whether it reached disk."""
+
+    title: str
+    saved: bool
+
+
+async def regenerate_title(
+    state: DashboardState,
+    slot: _ChatSlot,
+    *,
+    still_allowed: Callable[[], bool] | None = None,
+) -> RegeneratedTitle:
+    """Generate a new title for *slot* from its recent transcript and apply it.
+
+    The sidebar's "Regenerate title" action and the ``session_generate_title``
+    MCP verb both run this. It spends ONE background one-liner call on the
+    titling model and waits for it, so it returns only once the model answered.
+    The generated name replaces whatever title the slot had, a hand-set one
+    included, and leaves the title origin "auto" so the background refresh may
+    revise it later.
+
+    Returns the title it applied, or ``""`` when nothing was applied, and whether
+    the applied title reached the history file (``saved``). Nothing is applied when
+    the model
+    had no usable reply and the heuristic fallback was only the placeholder, a
+    manual rename landed while the call was in flight and outranks it, or the
+    session was closed during the call (possibly replaced under the same key).
+
+    When the history write fails the live slot keeps the new title and the sidebar
+    is updated, as the sidebar rename does; the next full save writes it.
+    ``saved`` is ``False`` so a caller that reports success can say so.
+
+    ``still_allowed`` is a synchronous re-check a caller with its own access rule
+    passes in. It runs after the model call, and again inside the write guard on
+    the write's worker thread under the transcript lock, so it must be safe off
+    the event loop; a ``False`` at either point discards the title.
+
+    A close that begins after the write committed gets the slot's previous title
+    written back, so a close that aborts leaves the history line matching the
+    live session.
+    """
+    name = slot.key
     fallback_is_placeholder = False
     epoch = slot._title_epoch
     try:
@@ -1366,35 +1445,122 @@ async def api_chat_slot_generate_title(request: web.Request) -> web.Response:
             "for slot %s; keeping it",
             name,
         )
-        return web.json_response({"ok": True, "title": ""})
+        return RegeneratedTitle("", True)
+    # The session may have been closed during the await, and a new one opened under
+    # the same key. Persisting now would write this title into the successor's
+    # history, and the push would retitle the successor's sidebar row. A close
+    # still under way counts too: its archival save is coming, and the title must
+    # not reach it.
+    if state._slots.get(name) is not slot or slot.is_closing:
+        logger.info(
+            "Manual title generation: slot %s was closed or replaced during "
+            "generation; discarding the title",
+            name,
+        )
+        return RegeneratedTitle("", True)
+    if still_allowed is not None and not still_allowed():
+        logger.info(
+            "Manual title generation: slot %s went out of the caller's reach during "
+            "generation; discarding the title",
+            name,
+        )
+        return RegeneratedTitle("", True)
 
     if title and not fallback_is_placeholder:
-        slot.title = title
-        slot._titled = True
-        # Still an LLM-generated name, so it stays refreshable ("auto"). The
-        # epoch bump makes any in-flight background attempt stand down instead
-        # of clobbering the title the user just asked for.
-        slot._title_origin = _TITLE_ORIGIN_AUTO
-        # Generated from the recent conversational tail, so it is not a
-        # first-message echo — the early low-signal refresh must not re-fire.
-        slot._title_low_signal = False
+        # WRITE FIRST, SHOW SECOND. The history line gets the title before the
+        # slot does, so a close that starts during the write saves the slot with
+        # its PREVIOUS title (a close's archival save rewrites the title from the
+        # slot under the transcript lock, after any write of ours that committed
+        # before the close began), and ``still_current`` refuses our write once
+        # the close has begun. Either way a discarded title reaches no archive.
+        #
+        # The epoch bump happens now, before the write, so an in-flight
+        # background attempt stands down instead of clobbering the title the user
+        # just asked for; a rename landing during the write bumps it again and
+        # wins below.
         slot._title_epoch += 1
         epoch = slot._title_epoch
-        await _persist_title(state, slot)
-        # RE-CHECK after the persist await, mirroring the refresh path: a rename
-        # landing during the write has already pushed ITS name, so pushing our
-        # now-stale local ``title`` would overwrite it in the sidebar (the disk
-        # is already correct via the persist loop; this guards the broadcast).
+        pending = {
+            "title": title,
+            # Still an LLM-generated name, so it stays refreshable ("auto").
+            "title_origin": _TITLE_ORIGIN_AUTO,
+            # Generated from the recent conversational tail, so it is not a
+            # first-message echo; the early low-signal refresh must not re-fire.
+            "title_low_signal": False,
+        }
+        refused: list[bool] = []
+
+        def _commit_guard() -> bool:
+            # Runs on the write's worker thread under the transcript lock, right
+            # before the commit. The access re-check belongs here, not only before
+            # the write: a target that became channel-linked or mirrored while the
+            # write waited for the lock must not get a durable title either.
+            if state._slots.get(name) is not slot or slot.is_closing:
+                refused.append(True)
+                return False
+            if still_allowed is not None and not still_allowed():
+                refused.append(True)
+                return False
+            return True
+
+        saved = await _persist_title(
+            state,
+            slot,
+            still_current=_commit_guard,
+            title_fields=pending,
+        )
+        if refused:
+            logger.info(
+                "Manual title generation: slot %s was closed, replaced or put out of "
+                "reach before the write committed; discarding the title",
+                name,
+            )
+            return RegeneratedTitle("", True)
+        # A close that began after the write committed: its archival save reads
+        # the slot's (previous) title, but a close that ABORTS leaves the new
+        # title on disk while the live session shows the old one. Writing the
+        # slot's own values back makes the history line match the slot in every
+        # outcome. Only while this slot still owns the key: a successor opened
+        # under it may share the history line, and must not get this write.
+        if state._slots.get(name) is slot and slot.is_closing:
+            await _persist_title(state, slot, still_current=lambda: state._slots.get(name) is slot)
+        # A session closed (or closed and recreated under this key) during the
+        # write: neither the slot nor any sidebar row gets this title.
+        if state._slots.get(name) is not slot or slot.is_closing:
+            logger.info(
+                "Manual title generation: slot %s was closed or replaced during "
+                "persist; discarding the title",
+                name,
+            )
+            return RegeneratedTitle("", True)
+        # A rename landing during the write has already pushed ITS name, and the
+        # persist loop re-wrote the history line with it; ours stands down.
         if slot._title_epoch != epoch:
             logger.info(
                 "Manual title generation: explicit title landed during persist "
                 "for slot %s; keeping it",
                 name,
             )
-            return web.json_response({"ok": True, "title": ""})
+            return RegeneratedTitle("", True)
+        # No suspension from the checks above to here.
+        slot.title = title
+        slot._titled = True
+        slot._title_origin = _TITLE_ORIGIN_AUTO
+        slot._title_low_signal = False
         state.push_slot_title(slot.key, title)
+        # An ordinary save queued on the transcript lock may have committed after
+        # our write and before the slot showed the title, writing the previous
+        # one back. Writing the slot's own values now closes that window: from
+        # here every save reads the new title from the slot.
+        if saved:
+            saved = await _persist_title(
+                state,
+                slot,
+                still_current=lambda: state._slots.get(name) is slot and not slot.is_closing,
+            ) or (state._slots.get(name) is not slot or slot.is_closing)
+        return RegeneratedTitle(title, saved)
 
-    return web.json_response({"ok": True, "title": "" if fallback_is_placeholder else title})
+    return RegeneratedTitle("", True)
 
 
 async def api_chat_slot_rename(request: web.Request) -> web.Response:

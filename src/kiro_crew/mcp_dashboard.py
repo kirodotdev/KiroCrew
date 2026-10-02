@@ -122,6 +122,7 @@ from kiro_crew.validation import (
     SESSION_CREATE_SCHEMA,
     SESSION_END_WAIT_SCHEMA,
     SESSION_FORK_SCHEMA,
+    SESSION_GENERATE_TITLE_SCHEMA,
     SESSION_READ_MESSAGE_SCHEMA,
     SESSION_RELEASE_SCHEMA,
     SESSION_RELOAD_SCHEMA,
@@ -152,6 +153,7 @@ SESSION_CONTROL_TOOLS: tuple[str, ...] = (
     "session_end_wait",
     "session_set_model",
     "session_reload",
+    "session_generate_title",
     "session_close",
     "session_revive",
     "session_send",
@@ -759,6 +761,31 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "or attached sub-agents fail with 'session busy, not reloaded' and "
                 "nothing changes. You cannot reload yourself, and the agent, model and "
                 "workspace stay as they are."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": "Session key from list_sessions, or its exact title.",
+                    },
+                },
+                "required": ["target"],
+            },
+        },
+        {
+            "name": "session_generate_title",
+            "description": (
+                "Regenerate the sidebar title of a live session YOU created, from its "
+                "recent transcript, the same as the sidebar's 'Regenerate title' action. "
+                "Costs one model call on the titling model and waits for it, so the "
+                "reply carries the new title (or the unchanged one when the model had "
+                "nothing better). The new title replaces the current one, including a "
+                "title someone set by hand, and the automatic titler may revise it "
+                "later. Only sessions this session created are reachable, never your "
+                "own. One call per session every 5 minutes; a repeat inside that window "
+                "is refused and spends nothing. To set an exact title instead, rename "
+                "the session."
             ),
             "inputSchema": {
                 "type": "object",
@@ -2543,6 +2570,26 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             f"\U0001f504 `{target}` is relaunching its agent process with the conversation "
             "kept. Its transcript shows the reload notice."
         )
+
+    if name == "session_generate_title":
+        args = validate_tool_args(args, SESSION_GENERATE_TITLE_SCHEMA)
+        # The route waits for one titling model call, so allow it longer than the
+        # default 30s. A transport timeout does not undo the call: the title can
+        # still land, and the target's 300 s generation budget (create_rate_limit) refuses a
+        # retry for longer than this wait.
+        resp = _post(
+            "/api/session-control/generate-title",
+            {"target": args["target"]},
+            session_key=caller_key,
+            timeout=120,
+        )
+        if resp.get("error"):
+            return redact(f"Error: could not generate a title for that session: {resp['error']}")
+        target = resp.get("target", args["target"])
+        title = resp.get("title", "")
+        if resp.get("changed"):
+            return redact(f"Retitled `{target}` to {title!r}.")
+        return redact(f"`{target}` keeps its title {title!r}; the model offered nothing new.")
 
     if name == "session_close":
         args = validate_tool_args(args, SESSION_CLOSE_SCHEMA)

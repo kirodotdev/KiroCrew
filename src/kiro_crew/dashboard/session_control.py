@@ -81,6 +81,7 @@ from kiro_crew.dashboard.chat_persistence import (
     _recent_session_slot_name,
     save_slot_off_loop,
 )
+from kiro_crew.dashboard.chat_title import regenerate_title
 from kiro_crew.dashboard.chat_utils import (
     _history_key_for,
     _normalize_model,
@@ -89,7 +90,9 @@ from kiro_crew.dashboard.chat_utils import (
     slot_history_key,
 )
 from kiro_crew.dashboard.create_rate_limit import (
+    GENERATE_TITLE,
     SESSION_CREATE,
+    WINDOW_SECS,
     allow_create,
     has_create_budget,
 )
@@ -4753,6 +4756,146 @@ async def set_model_target(
         detail={"model": model_name or "auto", "stage": "pending"},
     )
     return {"ok": True, "target": slot_key, "model": model_name, "pending": True}
+
+
+def _admit_generate_title(slot_key: str) -> None:
+    """Spend *slot_key*'s one title generation for this window, or refuse."""
+    if not allow_create(GENERATE_TITLE, slot_key):
+        window = int(WINDOW_SECS)
+        raise SessionControlError(
+            f"{slot_key!r} had its title generated within the last {window} seconds; "
+            "try again later",
+            status=429,
+            code="title_rate_limited",
+        )
+
+
+async def generate_title_target(
+    state: "DashboardState",
+    *,
+    caller_session_key: str,
+    target: str,
+    caller_fenced: bool | None = None,
+) -> dict[str, Any]:
+    """Regenerate *target*'s sidebar title from its transcript.
+
+    Runs :func:`chat_title.regenerate_title`, the sidebar's "Regenerate title"
+    code, so the result is the one a person clicking it would get: one background
+    one-liner call on the titling model, awaited before this returns, and a new
+    name that replaces the current one (a hand-set title included, as the sidebar
+    does) and stays "auto" so the background refresh may revise it.
+
+    Reach is narrower than :func:`stop_target`'s. After every
+    :func:`authorize_target` rule, the target must be a session the caller
+    created (``_created_by``), for every caller class: the verb spends a model
+    call to relabel a session, and a session the person opened is theirs to name.
+    The self-target refusal is kept for the same reason.
+
+    One call per target per ``create_rate_limit.WINDOW_SECS`` (300 s), counted
+    from when a call is admitted, so a loop cannot spend titling calls on the same
+    session back to back. A refused call spends nothing and does not restart the
+    window.
+
+    ``caller_fenced`` has the meaning :func:`stop_target` documents.
+    """
+    try:
+        await asyncio.to_thread(sel)
+    except Exception:  # noqa: BLE001 - a prewarm failure must not fail the call
+        logger.warning("session-control SEL prewarm failed", exc_info=True)
+    await prewarm_enabled_check()
+
+    operation = "generate_title"
+    slot = authorize_target(
+        state,
+        caller_session_key=caller_session_key,
+        target=target,
+        operation=operation,
+        precomputed_ownership_fenced=caller_fenced,
+    )
+    caller_key = caller_slot_key(state, caller_session_key)
+    with _audit_denials(
+        caller_session_key=caller_session_key, operation=operation, slot_key=slot.key
+    ):
+        if _created_by_other(slot, caller_key):
+            raise SessionControlError(
+                "session_generate_title only reaches sessions this session created",
+                status=403,
+                code="not_creator",
+            )
+        _admit_generate_title(slot.key)
+    previous = slot.title
+    lost: list[SessionControlError] = []
+
+    def _still_allowed() -> bool:
+        # The model call suspends and the write waits for a lock, so the gate is
+        # re-run after the model answers and again inside the write's locked guard
+        # (on its worker thread, as ``_has_channel_mirror`` already runs elsewhere):
+        # a target linked to a channel or mirrored in the meantime is not retitled
+        # (``regenerate_title`` itself drops a slot replaced under the same key).
+        # The creator rule applies to every caller here, so the fence is passed as
+        # already settled and the switch read skipped: neither reads config.
+        try:
+            authorize_target(
+                state,
+                caller_session_key=caller_session_key,
+                target=slot.key,
+                operation=operation,
+                skip_enabled_check=True,
+                precomputed_ownership_fenced=True,
+            )
+        except SessionControlError as exc:
+            lost.append(exc)
+            return False
+        return True
+
+    result = await regenerate_title(state, slot, still_allowed=_still_allowed)
+    title = result.title
+    # An applied title (non-empty) stays applied even if a close began after it was
+    # shown: the close's own save writes it. Only a discarded one is a replacement.
+    if not lost and not title and (state._slots.get(slot.key) is not slot or slot.is_closing):
+        lost.append(
+            SessionControlError(
+                f"{slot.key!r} was closed while its title was being generated; the "
+                "new title was discarded and the session keeps its previous title",
+                status=409,
+                code="target_replaced",
+            )
+        )
+    if lost:
+        # ``authorize_target`` audited its own refusal; the replaced case is
+        # audited here.
+        with _audit_denials(
+            caller_session_key=caller_session_key, operation=operation, slot_key=slot.key
+        ):
+            raise lost[0]
+    if not result.saved:
+        _audit(
+            caller_session_key=caller_session_key,
+            operation=operation,
+            slot_key=slot.key,
+            outcome="error",
+            detail={"applied": True, "reason": "title_persist_failed"},
+        )
+        raise SessionControlError(
+            f"{slot.key!r} now shows the new title, but it could not be saved yet; "
+            "the session's next save writes it, and until then a restart brings back "
+            "the previous title",
+            status=500,
+            code="title_persist_failed",
+        )
+    _audit(
+        caller_session_key=caller_session_key,
+        operation=operation,
+        slot_key=slot.key,
+        outcome="allowed",
+        detail={"applied": bool(title)},
+    )
+    return {
+        "ok": True,
+        "target": slot.key,
+        "title": title or slot.title,
+        "changed": bool(title) and title != previous,
+    }
 
 
 @dataclass(frozen=True)

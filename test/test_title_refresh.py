@@ -421,7 +421,7 @@ class TestManualRegenerateRaceGuard:
         async def _generate(_sessions, _prompt, **_kw):
             return "Model suggestion"
 
-        async def _rename_during_persist(_state, _slot):
+        async def _rename_during_persist(_state, _slot, **_kw):
             slot.title = "User chosen name"
             slot._title_origin = _TITLE_ORIGIN_USER
             slot._title_epoch += 1
