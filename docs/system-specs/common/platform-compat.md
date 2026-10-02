@@ -266,6 +266,17 @@ covers the open alone, so no partial write is ever replayed. No additional worke
 is spawned; a stalled filesystem syscall itself is not cancellable by either
 deadline.
 
+A DELETE meets the same transient hold. When `pod down` removes a pod's Task
+Scheduler `.cmd` wrapper, the pod's own processes are already drained, but a
+process the backend does not own (the Task Scheduler service finishing with the
+action file, an indexer or AV scanner) can still have it open, and the delete
+fails with `[WinError 32]`. `pod.windows._unlink_waiting_out_sharing` retries that
+one error under a bounded deadline and re-raises it unchanged once the deadline
+passes, so a real leak still fails closed; every other error raises at once. A
+teardown that deletes a file another process may have just used follows the same
+rule: retry `ERROR_SHARING_VIOLATION` only, with a deadline, never any
+`PermissionError`.
+
 On write failure, rollback removes only the bytes counted for that append when
 the file has exactly the expected size. Existing bytes or unrelated growth are
 never truncated. A pre-existing torn tail, including one left by failed rollback

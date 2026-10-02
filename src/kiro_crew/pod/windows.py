@@ -123,6 +123,45 @@ STOP_TIMEOUT_SECS = 15.0
 #: Margin used by the producer's handoff-marker refresh.
 _HANDOFF_FRESHNESS_MARGIN_SECS = 5.0
 
+#: Windows ``ERROR_SHARING_VIOLATION``: another process has the file open.
+_WIN_ERROR_SHARING_VIOLATION = 32
+
+#: How long ``stop`` keeps retrying the task wrapper's delete while some other
+#: process still has it open. The pod's own processes are already drained by then;
+#: what is left is a short hold by a process this backend does not own (the Task
+#: Scheduler service finishing with the action file, an indexer or AV scanner).
+#: Those holds last milliseconds to a few seconds, so the bound is a ceiling, and
+#: a hold that outlives it still fails closed exactly as before.
+_SCRIPT_UNLINK_TIMEOUT_SECS = 10.0
+_SCRIPT_UNLINK_RETRY_SECS = 0.1
+
+
+def _unlink_waiting_out_sharing(
+    path: Path,
+    *,
+    timeout: float = _SCRIPT_UNLINK_TIMEOUT_SECS,
+    interval: float = _SCRIPT_UNLINK_RETRY_SECS,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+) -> None:
+    """``path.unlink(missing_ok=True)``, retrying only a sharing violation.
+
+    Any other error, and a sharing violation still present at *timeout*, raises as
+    the bare unlink would, so ``stop`` keeps its fail-closed answer.
+    """
+    deadline = clock() + timeout
+    while True:
+        try:
+            path.unlink(missing_ok=True)
+            return
+        except PermissionError as exc:
+            if getattr(exc, "winerror", None) != _WIN_ERROR_SHARING_VIOLATION:
+                raise
+            if clock() >= deadline:
+                raise
+        sleep(interval)
+
+
 #: How long :func:`supervise_gateway` waits for a restart successor to claim the
 #: pod's gateway sidecar after the process it supervised exits. Bounds how long a
 #: pod can report itself alive after its LAST gateway is gone, so it is a
@@ -763,7 +802,7 @@ def stop(
         deleted = schtasks("/Delete", "/TN", task_name(cfg, name), "/F")
         if deleted.returncode != 0 and task_exists(cfg, name):
             raise OSError("the drained pod's scheduled task could not be deleted")
-        task_script_path(cfg, name).unlink(missing_ok=True)
+        _unlink_waiting_out_sharing(task_script_path(cfg, name))
         # Supervisor cleanup is best-effort; authoritative teardown must surface
         # errors so its durable receipt remains available for a later retry.
         handoff_marker_path(cfg, name).unlink(missing_ok=True)
