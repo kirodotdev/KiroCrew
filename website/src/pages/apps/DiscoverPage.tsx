@@ -127,6 +127,7 @@ function DiscoverPageBody() {
   const [query, setQuery] = useState('')
   const [category, setCategory] = useState<Category | 'all'>('all')
   const [source, setSource] = useState<string | null>(null)
+  const [installedOnly, setInstalledOnly] = useState(false)
   const [sort, setSort] = useState<'name' | 'category'>('name')
   const [sourcesOpen, setSourcesOpen] = useState(false)
   const [successMsg, setSuccessMsg] = useState('')
@@ -298,12 +299,23 @@ function DiscoverPageBody() {
     return categories.map(row => ({ ...row, count: counts.get(row.category) || 0 }))
   }, [categories, sourceBrowse])
 
+  /* The install-state facet narrows the registry shelf only: an installed
+     app the catalog does not list is never added here (Library lists it). */
+  const categoryBrowse = useMemo(
+    () => sourceBrowse.filter(a => category === 'all' || categoryFor(a.tags) === category),
+    [sourceBrowse, category],
+  )
+  const installedBrowse = useMemo(
+    () => categoryBrowse.filter(a => installedByName.has(a.name)),
+    [categoryBrowse, installedByName],
+  )
+
   const filteredBrowse = useMemo(() => {
-    const list = sourceBrowse.filter(a => category === 'all' || categoryFor(a.tags) === category)
+    const list = [...(installedOnly ? installedBrowse : categoryBrowse)]
     return list.sort((a, b) => sort === 'category'
       ? compareText(categoryFor(a.tags), categoryFor(b.tags)) || compareText(a.displayName, b.displayName)
       : compareText(a.displayName, b.displayName))
-  }, [sourceBrowse, category, sort])
+  }, [categoryBrowse, installedBrowse, installedOnly, sort])
 
   /* Editorial placements survive category picks, but not a search or source
      filter: unrelated featured apps would contradict the selected source. */
@@ -617,6 +629,9 @@ function DiscoverPageBody() {
                   total={sourceBrowse.length}
                   selected={category}
                   onSelect={setCategory}
+                  installedOnly={installedOnly}
+                  installedCount={installedBrowse.length}
+                  onSelectInstalledOnly={setInstalledOnly}
                   sources={sources}
                   selectedSource={source}
                   onSelectSource={setSource}

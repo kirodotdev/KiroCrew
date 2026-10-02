@@ -5999,7 +5999,10 @@
         "first_party": "Oficial",
         "sources": "FONTES",
         "curated_reviewed_by_the_kiro_crew_team": "Revisado pela equipe do {{productName}}",
-        "community_listed_not_vetted_by_the_kiro_crew_team": "Publicado pela comunidade, não validado pela equipe do {{productName}}"
+        "community_listed_not_vetted_by_the_kiro_crew_team": "Publicado pela comunidade, não validado pela equipe do {{productName}}",
+        "install_state": "ESTADO DE INSTALAÇÃO",
+        "all_install_states": "Todos",
+        "installed": "Instalados"
       },
       "featuredSpotlight": {
         "collection": "COLEÇÃO",

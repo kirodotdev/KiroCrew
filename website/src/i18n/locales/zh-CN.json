@@ -5815,7 +5815,10 @@
         "first_party": "第一方",
         "sources": "来源",
         "curated_reviewed_by_the_kiro_crew_team": "已由 {{productName}} 团队审核",
-        "community_listed_not_vetted_by_the_kiro_crew_team": "社区收录，未经 {{productName}} 团队核实"
+        "community_listed_not_vetted_by_the_kiro_crew_team": "社区收录，未经 {{productName}} 团队核实",
+        "install_state": "安装状态",
+        "all_install_states": "全部",
+        "installed": "已安装"
       },
       "featuredSpotlight": {
         "collection": "合集",

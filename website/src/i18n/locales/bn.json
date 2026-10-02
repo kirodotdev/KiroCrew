@@ -5907,7 +5907,10 @@
         "first_party": "ফার্স্ট-পার্টি",
         "sources": "সোর্স",
         "curated_reviewed_by_the_kiro_crew_team": "{{productName}} টিম পর্যালোচনা করেছে",
-        "community_listed_not_vetted_by_the_kiro_crew_team": "কমিউনিটি তালিকাভুক্ত, {{productName}} টিম যাচাই করেনি"
+        "community_listed_not_vetted_by_the_kiro_crew_team": "কমিউনিটি তালিকাভুক্ত, {{productName}} টিম যাচাই করেনি",
+        "install_state": "ইনস্টলের অবস্থা",
+        "all_install_states": "সব",
+        "installed": "ইনস্টল করা আছে"
       },
       "featuredSpotlight": {
         "collection": "সংকলন",

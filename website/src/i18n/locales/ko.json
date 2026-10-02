@@ -5788,7 +5788,10 @@
         "first_party": "자체 제공",
         "sources": "소스",
         "curated_reviewed_by_the_kiro_crew_team": "{{productName}} 팀이 검토함",
-        "community_listed_not_vetted_by_the_kiro_crew_team": "커뮤니티 등록, {{productName}} 팀이 검증하지 않음"
+        "community_listed_not_vetted_by_the_kiro_crew_team": "커뮤니티 등록, {{productName}} 팀이 검증하지 않음",
+        "install_state": "설치 상태",
+        "all_install_states": "전체",
+        "installed": "설치됨"
       },
       "featuredSpotlight": {
         "collection": "컬렉션",
