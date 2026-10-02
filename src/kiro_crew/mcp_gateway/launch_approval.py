@@ -71,8 +71,16 @@ _VERSION = 1
 _MAX_SERVER_RECORDS = 512
 #: Maximum total argv entries retained for operator display, including its marker.
 _MAX_DISPLAY_ARGS = 32
-#: Maximum characters retained in one display argv entry.
-_MAX_DISPLAY_ARG_CHARS = 512
+#: Maximum characters retained across one whole display list -- an argv or a
+#: declared environment -- including its partial marker. The budget is the
+#: list's, not each entry's: a launch may pass one long value and still be
+#: readable in full, and only a list this large is cut. The ceiling is
+#: deliberately the product the retired per-entry cap allowed
+#: (32 entries x 512 characters), so no stored record grows.
+_MAX_DISPLAY_TOTAL_CHARS = 16384
+#: Characters held back from :data:`_MAX_DISPLAY_TOTAL_CHARS` for the marker that
+#: says a display was cut, and the ceiling on that marker.
+_MAX_DISPLAY_MARKER_CHARS = 64
 #: Maximum characters retained in one operator-facing server name. A server
 #: whose stem is longer is not stored at all, so its launch stays unapproved.
 _MAX_NAME_CHARS = 256
@@ -490,27 +498,41 @@ def _bounded_name(value: Any) -> str:
 def _bounded_display_argv_with_completeness(
     launch: tuple[Any, Iterable[Any]],
 ) -> tuple[list[str], bool]:
-    """Redact and bound one argv, returning whether the display is complete."""
+    """Redact and bound one argv, returning whether the display is complete.
+
+    The budget is the whole list's characters, not each entry's. A per-entry cap
+    cuts the display of a launch that passes one long value -- every skill
+    directory in a single ``--skill-paths``, say -- even when its whole argv is
+    a fraction of what the display may hold. The cut display is then
+    unapprovable, so that server's backend can never leave the sandbox and each
+    session starts its own copy. A total budget shows such a launch whole and
+    still refuses one genuinely too large to read.
+    """
     from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
     raw = [launch[0], *launch[1]]
     safe: list[str] = []
+    # The marker's room is held back, so the list that fills its budget can
+    # still say it was cut.
+    remaining = _MAX_DISPLAY_TOTAL_CHARS - _MAX_DISPLAY_MARKER_CHARS
     cut = False
     for value in raw[:_MAX_DISPLAY_ARGS]:
         text, _ = redact_exfiltration_urls(str(value))
         text, _ = redact_credentials(text)
-        if len(text) > _MAX_DISPLAY_ARG_CHARS:
-            text = text[: _MAX_DISPLAY_ARG_CHARS - 1] + "…"
+        if len(text) > remaining:
+            safe.append(text[: max(0, remaining - 1)] + "…")
             cut = True
+            break
+        remaining -= len(text)
         safe.append(text)
-    dropped = max(0, len(raw) - _MAX_DISPLAY_ARGS)
+    dropped = max(0, len(raw) - len(safe))
     partial = cut or bool(dropped)
     if partial:
         if len(safe) >= _MAX_DISPLAY_ARGS:
             safe.pop()
             dropped += 1
         marker = "…(partial)" if not dropped else f"…(+{dropped} args; partial)"
-        safe.append(marker[:_MAX_DISPLAY_ARG_CHARS])
+        safe.append(marker[:_MAX_DISPLAY_MARKER_CHARS])
     return safe, not partial
 
 
