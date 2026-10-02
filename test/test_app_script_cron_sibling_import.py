@@ -168,6 +168,10 @@ class TestACommandCronRunningBundleCode:
 
     @_NO_BACKEND
     def test_the_real_sandbox_runs_it(self, bundle):
+        # Nothing is patched here, so the real probe answers: a host whose shell fails
+        # it refuses command crons, and there is no run to check.
+        if cron_script._resolve_command_shell() is None:
+            pytest.skip("this host refuses command crons: no POSIX shell to run them")
         result = run_command_sandboxed(_command(bundle), timeout=120, job_id="job-sibling")
 
         assert result["status"] == "ok", result
