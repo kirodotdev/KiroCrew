@@ -737,6 +737,42 @@ async def test_state_failure_is_generic_and_credential_free(monkeypatch) -> None
 
 
 @pytest.mark.asyncio
+async def test_state_names_an_unreadable_config(monkeypatch, tmp_path) -> None:
+    """A config.json the gateway cannot parse is the one failure the user can fix.
+
+    It is also self-perpetuating: the loader reads the same unparseable file as
+    defaults, so ``import_onboarded`` comes back false and first run reopens on
+    every load, while the fail-closed write behind every exit refuses. The
+    response has to say which of those it is, or the UI can only print a
+    generic retry message for a failure no retry clears.
+    """
+    module = _handler_module()
+    audit = _AuditLog()
+    config = tmp_path / "config.json"
+    # Cut off mid-document, as a torn hand edit leaves it: unreadable, not
+    # empty, so the fail-closed write must refuse rather than replace it.
+    original = b'{"dashboard": {"import_onboarded": fal'
+    config.write_bytes(original)
+    monkeypatch.setattr("kiro_crew.config.loader.config_path", lambda: config)
+    monkeypatch.setattr(module, "_sel", lambda: audit)
+
+    async with TestClient(TestServer(_make_app(module))) as client:
+        response = await client.put(
+            "/api/onboarding/import/state",
+            json={"completed": True},
+            headers={"X-Test-User": "owner"},
+        )
+        response_body = await response.json()
+
+    assert response.status == 500
+    assert response_body == {"error": "request failed", "code": "config_unreadable"}
+    assert audit.events[-1]["error"] == "config_unreadable"
+    # Fail closed: the unreadable file is left exactly as it was.
+    assert config.read_bytes() == original
+    assert str(tmp_path) not in str(response_body)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "strategy",
     ["obliterate", "SKIP", "", 1, True],

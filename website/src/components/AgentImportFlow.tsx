@@ -134,6 +134,16 @@ function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback
 }
 
+/** The completed-flag write's failure, in the reader's language. One code gets
+ *  its own sentence: `config_unreadable` is the gateway refusing to rewrite a
+ *  config.json it cannot parse, which no retry clears and the user can fix. */
+function completionErrorMessage(error: unknown): string {
+  if (error instanceof ApiError && parseErrorCode(error.body) === 'config_unreadable') {
+    return i18nT('components.agentImportFlow.config_unreadable_onboarding_state')
+  }
+  return errorMessage(error, i18nT('components.agentImportFlow.could_not_save_onboarding_state'))
+}
+
 // Animated "Importing…" label — cycles the trailing dots between ".", ".." and
 // "..." while an import is in flight. The dots span reserves width so the
 // button doesn't jitter as they grow.
@@ -168,6 +178,9 @@ export default function AgentImportFlow({
   const [selectedSources, setSelectedSources] = useState<Set<string>>(new Set())
   const [strategy, setStrategy] = useState<AgentImportConflictStrategy>('skip')
   const [selectedCategories, setSelectedCategories] = useState<Record<string, Set<string>>>({})
+  // Which exit the last failed completed-flag write was for, so "Continue
+  // without saving" takes the user where they were going, not somewhere else.
+  const [failedExit, setFailedExit] = useState<'complete' | 'skipAll' | null>(null)
   // The focus trap queries the dialog element. Inside a persistent shell host
   // the dialog is host-owned, so use its ref; standalone we own it locally.
   const shellHost = useContext(OnboardingShellContext)
@@ -216,6 +229,8 @@ export default function AgentImportFlow({
     setStrategy('skip')
     applyMutation.reset()
     completionMutation.reset()
+    skipAllMutation.reset()
+    setFailedExit(null)
     if (refresh) setScanGeneration(value => value + 1)
   }
 
@@ -249,6 +264,7 @@ export default function AgentImportFlow({
       setOpen(false)
       onComplete()
     },
+    onError: () => setFailedExit('complete'),
   })
   const skipAllMutation = useMutation({
     mutationFn: () => api.onboardingImportState({ completed: true }),
@@ -257,6 +273,7 @@ export default function AgentImportFlow({
       if (onSkipAll) onSkipAll()
       else onComplete()
     },
+    onError: () => setFailedExit('skipAll'),
   })
 
   useEffect(() => {
@@ -412,7 +429,32 @@ export default function AgentImportFlow({
   // header control, or Escape) would leave the dialog open with no feedback at
   // all — the user presses Escape, nothing happens, and nothing says why.
   const completionError = completionMutation.error ?? skipAllMutation.error
+  const completionMessage = completionError ? completionErrorMessage(completionError) : ''
+  // The way out when the flag will not save. Without it the flow was a trap:
+  // every exit, "Skip all" and Escape included, re-sent the same PUT, and a
+  // failure no retry clears (an unparseable config.json, which also reads the
+  // flag as false and reopens this flow on every load) left the whole dashboard
+  // behind this dialog. Leaving is local to this page load; the server still
+  // has the flag unset, so the flow is offered again once the write can land.
+  const leaveWithoutSaving = () => {
+    setOpen(false)
+    if (failedExit === 'skipAll' && onSkipAll) onSkipAll()
+    else onComplete()
+  }
   const isBusy = completionMutation.isPending || applyMutation.isPending || skipAllMutation.isPending
+  // Disabled while ANY request is in flight, like every sibling control: leaving
+  // mid-import would unmount the flow before its results (and any conflict to
+  // resolve) are shown.
+  const completionFooter = completionError && failedExit ? (
+    <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
+      <Btn type="button" disabled={isBusy} onClick={leaveWithoutSaving}>
+        {i18nT('components.agentImportFlow.close_setup_for_now')}
+      </Btn>
+      <span className="text-xs text-muted">
+        {i18nT('components.agentImportFlow.close_setup_for_now_hint')}
+      </span>
+    </div>
+  ) : null
   const hasSelection = applyPayload.sources.length > 0
 
   // Per-stage navigation buttons, rendered in the shared pinned footer bar
@@ -467,7 +509,11 @@ export default function AgentImportFlow({
           onClick={() => completionMutation.mutate()}
         >
           {completionMutation.isPending && <Loader2 className="lucide-inline animate-spin" />}
-          {i18nT('components.agentImportFlow.continue')}
+          {/* After a failed write this button re-sends the same write, so it says
+              so; the way out without one is the notice's own button. */}
+          {completionMutation.isError
+            ? i18nT('components.agentImportFlow.try_again')
+            : i18nT('components.agentImportFlow.continue')}
         </SendBtn>
       </>
     )
@@ -534,12 +580,24 @@ export default function AgentImportFlow({
           <h1 ref={headingRef} tabIndex={-1} className="mt-4 text-2xl font-semibold text-text-strong outline-hidden">
             {i18nT('components.agentImportFlow.we_could_not_scan_agent_setup')}
           </h1>
-          {/* Scan-failed state: no selections exist yet, so the hand-off loses nothing. */}
+          {/* Scan-failed state: no selections exist yet, so the hand-off loses
+              nothing. ONE notice, even when Skip all / Escape then fail to save:
+              the save failure joins this notice as a second line with the way out,
+              rather than a second red box and a second ask-agent link for what
+              the reader sees as one stuck screen. The hand-off closes the modal,
+              or the chat it opens would sit underneath it. */}
           <ErrorNotice
             askAgent
+            onHandoff={() => setOpen(false)}
             testId="agent-import-scan-error"
             className="mt-2 max-w-lg text-left"
             message={errorMessage(scanQuery.error, i18nT('components.agentImportFlow.the_gateway_returned_an_unexpected_error'))}
+            footer={completionMessage ? (
+              <div data-testid="agent-import-completion-error">
+                <p className="mt-2">{completionMessage}</p>
+                {completionFooter}
+              </div>
+            ) : null}
           />
           <SendBtn type="button" className="mt-5" onClick={() => scanQuery.refetch()}>
             <RefreshCw className="lucide-inline" /> {i18nT('components.agentImportFlow.try_again')}
@@ -598,7 +656,8 @@ export default function AgentImportFlow({
             askAgent
             testId="agent-import-completion-error"
             className="mt-4 max-w-lg text-left"
-            message={completionError ? errorMessage(completionError, i18nT('components.agentImportFlow.could_not_save_onboarding_state')) : ''}
+            message={completionMessage}
+            footer={completionFooter}
           />
         </div>
       )
@@ -627,7 +686,8 @@ export default function AgentImportFlow({
             askAgent
             testId="agent-import-completion-error"
             className="mt-4 max-w-lg text-left"
-            message={completionError ? errorMessage(completionError, i18nT('components.agentImportFlow.could_not_save_onboarding_state')) : ''}
+            message={completionMessage}
+            footer={completionFooter}
           />
         </div>
       )
@@ -653,7 +713,8 @@ export default function AgentImportFlow({
           <ErrorNotice
             testId="agent-import-completion-error"
             className="mb-4"
-            message={completionError ? errorMessage(completionError, i18nT('components.agentImportFlow.could_not_save_onboarding_state')) : ''}
+            message={completionMessage}
+            footer={completionFooter}
           />
           <div className="space-y-3">
             {sources.map(source => {
@@ -698,7 +759,8 @@ export default function AgentImportFlow({
           <ErrorNotice
             testId="agent-import-completion-error"
             className="mb-4"
-            message={completionError ? errorMessage(completionError, i18nT('components.agentImportFlow.could_not_save_onboarding_state')) : ''}
+            message={completionMessage}
+            footer={completionFooter}
           />
           <div className="space-y-5">
             {sources.filter(source => selectedSources.has(source.id)).map(source => (
@@ -760,7 +822,8 @@ export default function AgentImportFlow({
           <ErrorNotice
             testId="agent-import-completion-error"
             className="mb-4"
-            message={completionError ? errorMessage(completionError, i18nT('components.agentImportFlow.could_not_save_onboarding_state')) : ''}
+            message={completionMessage}
+            footer={completionFooter}
           />
           <section className="rounded-lg border border-ok/30 bg-ok-subtle p-4">
             <h2 className="flex items-center gap-2 text-sm font-semibold text-text-strong">
@@ -879,7 +942,8 @@ export default function AgentImportFlow({
           askAgent
           testId="agent-import-completion-error"
           className="mt-5"
-          message={completionError ? errorMessage(completionError, i18nT('components.agentImportFlow.could_not_save_onboarding_state')) : ''}
+          message={completionMessage}
+          footer={completionFooter}
         />
       </>
     )
