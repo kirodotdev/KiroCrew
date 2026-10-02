@@ -26,7 +26,7 @@ Files:
 | Module | Owns |
 |---|---|
 | `model.py` | `TaskRecord`, the state vocabulary (`STATES`), the one validated `TRANSITIONS` table, `check_transition`, side-effect classes, lease/backoff constants. |
-| `store.py` | `TaskStore`: open/journal selection, write-before-ack `accept`, atomic `claim`, generation-fenced writes, `cancel` (from anywhere non-terminal, or conditional on `only_from` / `generation`), `defer`, `task_events`, the window reads. `TaskStoreUnavailable`. Network-filesystem detection. |
+| `store.py` | `TaskStore`: open/journal selection, write-before-ack `accept`, atomic `claim`, generation-fenced writes, `cancel` (from anywhere non-terminal, or conditional on `only_from` / `generation`), `defer` and `deferred_longer_than`, `task_events`, the window reads. `TaskStoreUnavailable`. Network-filesystem detection. |
 | `migrate.py` | Schema versioning (`SCHEMA_VERSION`, `apply_schema`) and the idempotent legacy import. |
 | `reconcile.py` | `reconcile_on_boot`: settle every row a dead incarnation still owned. |
 | `__init__.py` | `open_default_store(home)`: open, import, reconcile, in that order. |
@@ -894,6 +894,20 @@ posture tier off entirely. The macOS kernel memory-pressure hold is not a deferr
 is a capacity-style wait in the window (subagent.md), and the runner lane,
 cron and workflow `ctx.agent` gates deliberately do not read the kernel level;
 only the subagent gate acts on it.
+
+The wait is finite. `deferred_longer_than(kind, bound, *, exclude_ids, limit)`
+is the one read that measures it: `queued` rows still parked (`next_run_at` in
+the future) that have spent *bound* seconds parked in their current wait, oldest
+first. The current wait is the `deferred` events after the row's last `claimed`
+or `transition` event (the closers the queued listing applies); each one parks
+the row from its `ts` to its `until`, cut short by the next deferral or by now,
+and a gap between a lapsed deferral and the next one (the row eligible, waiting
+to be picked) is not counted. Every re-check appends one more `deferred` event,
+so a re-check never restarts the clock, and the newest event alone says nothing
+about how long the row has waited. The subagent adapter fails each row it returns past
+`agent.subagent_queue_max_wait_secs` with a generation-fenced `finish` and
+reports `never started: waiting for memory`
+([subagent.md](subagent.md) § Durable task queue).
 
 ## Journal mode and network filesystems
 

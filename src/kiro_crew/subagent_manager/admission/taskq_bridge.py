@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Collection, Mapping
 
 from kiro_crew.subagent_wait_reasons import (
     QUEUED_REASON_ADAPTIVE_CAP_ZERO,
+    QUEUED_WAIT_EXPIRED_TEXT,
     RESUMING_AFTER_RESTART,
     RESUMING_RETRY,
     adaptive_pause_text,
@@ -57,6 +58,12 @@ _OVERDUE_WAKE_WARN_EVERY_SECS = 60.0
 #: listing that stopped here says so (``QueuedRunListing.partial``), since a
 #: cut-off tail otherwise reads as spawns that were never accepted.
 QUEUED_LISTING_CAP = 100
+
+#: How long a parent's retirement stamp (``taskq_mark_parent_retired``) is kept:
+#: the ceiling of ``agent.subagent_queue_max_wait_secs`` (the loader clamps it to
+#: 0..86400), so a row of a retired parent that waits out the longest bound still
+#: finds the stamp when it ends.
+_RETIRED_PARENT_TTL_SECS = 86400.0
 
 #: The events that close a deferral: a claim or a state change after the
 #: ``deferred`` event means the sentence does not describe the row's current wait.
@@ -701,6 +708,151 @@ class _TaskqBridgeMixin(ManagerComponent):
         )
         return point.queued
 
+    # ── the max wait of a memory deferral (``agent.subagent_queue_max_wait_secs``) ──
+    #
+    # Every re-park above writes ``now + admit_wait``, so on its own a deferral
+    # renews itself for as long as the host stays short. The bound ends it: a row
+    # parked by the memory floor or the posture gate that has spent the bound
+    # PARKED (``TaskStore.deferred_longer_than``) is failed in the store and
+    # reported to its parent as ``QUEUED_WAIT_EXPIRED_TEXT``. The pump runs the
+    # sweep at the END of a pass, after the pass has re-parked what it
+    # re-checked, so a row whose re-check still found the host short is caught in
+    # the same pass. A row whose deferral merely lapsed waits for a slot, not for
+    # memory: it is not parked, so it is left alone, and the time it spends that
+    # way never counts toward the bound once it is parked again.
+
+    def taskq_memory_wait_bound_secs(self) -> float:
+        """The live bound, in seconds; 0 means no bound.
+
+        One reader for both memory waits: this sweep's store deferrals and the
+        macOS kernel memory-pressure hold (``_memory_pressure_holds``), which
+        holds non-durable starts too, so it is the manager's value, not the store's.
+        """
+        return float(getattr(self._manager, "_subagent_queue_max_wait_secs", 0) or 0)
+
+    def _memory_wait_exclusions(self) -> list[str]:
+        """Rows the sweep must not end: a live run, an accept in flight, a pop in flight.
+
+        Read on the loop, which owns these sets. Window rows are NOT excluded: a
+        row there is still only queued, and ending it drops its entry too.
+        """
+        admitting = list(getattr(self._manager, "_admitting_ids", ()) or ())
+        dispatching = list(getattr(self._manager, "_dispatching_ids", ()) or ())
+        return [*self._live_run_ids(), *admitting, *dispatching]
+
+    @staticmethod
+    def _expire_memory_waits_db(
+        store: "_taskq.TaskStore", bound: float, exclude_ids: list[str]
+    ) -> "list[_taskq.TaskRecord]":
+        """Store half of the sweep (writer thread): fail each row past the bound.
+
+        The read and every write share this one writer-thread call, and each
+        write is fenced by the generation the read returned, so a row a claim
+        took in between is refused rather than failed under its new owner.
+        Returns the rows whose failure landed.
+        """
+        from kiro_crew import taskq as _taskq
+
+        ended: list[_taskq.TaskRecord] = []
+        for rec in store.deferred_longer_than(_taskq.KIND_SUBAGENT, bound, exclude_ids=exclude_ids):
+            if store.finish(
+                rec.id, _taskq.FAILED, generation=rec.generation, error=QUEUED_WAIT_EXPIRED_TEXT
+            ):
+                ended.append(rec)
+        return ended
+
+    def taskq_expire_memory_waits(self) -> int:
+        """End every memory-deferred row past the bound; how many ended (inline twin).
+
+        For the inline pump (no off-loop pump). Without a running loop nothing is
+        ended, since the terminal report it owes needs one.
+        """
+        from kiro_crew import taskq as _taskq
+
+        store = self.taskq_store()
+        bound = self.taskq_memory_wait_bound_secs()
+        if store is None or bound <= 0:
+            return 0
+        try:
+            _asyncio.get_running_loop()
+        except RuntimeError:
+            return 0
+        try:
+            ended = self._expire_memory_waits_db(store, bound, self._memory_wait_exclusions())
+        except _taskq.TaskStoreUnavailable:
+            _glue_logger.debug("taskq: memory-wait expiry failed", exc_info=True)
+            return 0
+        self._report_memory_waits_expired(ended, bound)
+        return len(ended)
+
+    async def taskq_expire_memory_waits_async(self) -> int:
+        """:meth:`taskq_expire_memory_waits` with its store half on the writer thread."""
+        from kiro_crew import taskq as _taskq
+
+        store = self.taskq_store()
+        bound = self.taskq_memory_wait_bound_secs()
+        if store is None or bound <= 0:
+            return 0
+        try:
+            ended = await store.run(
+                self._expire_memory_waits_db, store, bound, self._memory_wait_exclusions()
+            )
+        except _taskq.TaskStoreUnavailable:
+            _glue_logger.debug("taskq: memory-wait expiry failed", exc_info=True)
+            return 0
+        self._report_memory_waits_expired(ended, bound)
+        return len(ended)
+
+    def _report_memory_waits_expired(self, ended: "list[_taskq.TaskRecord]", bound: float) -> None:
+        """Loop half: drop each ended row's window entry and report it.
+
+        The report is the queued-stop report with the expiry as its ``error``, so
+        batch accounting, the digest, a waiting parent's wake and the re-published
+        queued depth take the path a stopped queued row already takes. A row its parent's conversation
+        accepted BEFORE that conversation ended (:meth:`taskq_mark_parent_retired`)
+        is reported to the dashboard but never injected: the injector creates a
+        session when none is live, which would rebuild the conversation that
+        ended. A successor's own rows under the same key are reported as usual.
+        """
+        manager = self._manager
+        retired = getattr(manager, "_retired_parents", None) or {}
+        for rec in ended:
+            params = dict(rec.params)
+            parent = rec.session_key or str(params.get("parent_session_key") or "")
+            params["_preassigned_id"] = rec.id
+            params["parent_session_key"] = parent
+            _glue_logger.warning(
+                "taskq: subagent %s waited for memory longer than %.0fs; ending it (%s)",
+                rec.id,
+                bound,
+                QUEUED_WAIT_EXPIRED_TEXT,
+            )
+            retired_at = retired.get(parent)
+            if retired_at is not None and rec.created_at <= retired_at:
+                manager._teardown_cancelled_ids.add(rec.id)
+            entry = manager._unqueue(rec.id, stored=params, store_cancelled=True)
+            manager._report_queued_stop(entry or params, error=QUEUED_WAIT_EXPIRED_TEXT)
+
+    def taskq_mark_parent_retired(self, parent_session_key: str) -> None:
+        """Record that *parent_session_key*'s conversation ended, on the store clock.
+
+        Its rows still in the store are named by no teardown snapshot (they have
+        no in-memory entry), so this stamp is what keeps a later end of one of
+        them from injecting into the retired conversation. Entries older than
+        :data:`_RETIRED_PARENT_TTL_SECS` are dropped on each mark.
+        """
+        if not parent_session_key:
+            return
+        store = self.taskq_store()
+        now = store.now() if store is not None else _time.time()
+        retired = getattr(self._manager, "_retired_parents", None)
+        if retired is None:
+            retired = {}
+            setattr(self._manager, "_retired_parents", retired)
+        for key in [k for k, at in retired.items() if at < now - _RETIRED_PARENT_TTL_SECS]:
+            del retired[key]
+        retired[parent_session_key] = now
+
     async def taskq_should_window_async(self, agent_id: str) -> bool:
         """:meth:`taskq_should_window` with its store count on the writer thread."""
         from kiro_crew import taskq as _taskq
@@ -905,7 +1057,9 @@ class _TaskqBridgeMixin(ManagerComponent):
                 # be read in the log, never a run whose outcome no one hears.
                 _glue_logger.warning("taskq: settle of %s raised", info.id, exc_info=True)
             else:
-                self.taskq_report_refused_settle(store, info.id, state, ok)
+                self.taskq_report_refused_settle(
+                    store, info.id, state, ok, never_claimed=not info._taskq_generation
+                )
                 # The one refusal that is another owner's outcome to report; see
                 # the comment on the propagation below.
                 if not ok and self.taskq_superseded_by_live_owner(
@@ -940,7 +1094,14 @@ class _TaskqBridgeMixin(ManagerComponent):
                 _glue_logger.warning("taskq: settle of %s raised", info.id, exc_info=True)
             else:
                 if not ok:
-                    await store.run(self.taskq_report_refused_settle, store, info.id, state, ok)
+                    await store.run(
+                        self.taskq_report_refused_settle,
+                        store,
+                        info.id,
+                        state,
+                        ok,
+                        never_claimed=not info._taskq_generation,
+                    )
                     superseded = False
                     try:
                         superseded = bool(
@@ -1014,7 +1175,12 @@ class _TaskqBridgeMixin(ManagerComponent):
 
     @staticmethod
     def taskq_report_refused_settle(
-        store: "_taskq.TaskStore", agent_id: str, state: str, committed: bool
+        store: "_taskq.TaskStore",
+        agent_id: str,
+        state: str,
+        committed: bool,
+        *,
+        never_claimed: bool = False,
     ) -> None:
         """Say out loud that a run's terminal write did NOT commit.
 
@@ -1030,6 +1196,13 @@ class _TaskqBridgeMixin(ManagerComponent):
         accept what this run finished as, and any terminal it WOULD accept
         (``failed``, ``cancelled``) would report a run that succeeded as one
         that did not.
+
+        One refusal is quiet: a record that never held a claim (*never_claimed*,
+        the synthetic record of a queued stop or of the memory wait's expiry)
+        whose row already holds exactly *state*. Its owner wrote that terminal
+        before reporting it, so nothing was lost. A CLAIMED run finding its
+        state already written is still a warning: that is a newer owner having
+        settled the same row, and this line is the only sign of the overlap.
         """
         from kiro_crew import taskq as _taskq
 
@@ -1039,6 +1212,9 @@ class _TaskqBridgeMixin(ManagerComponent):
             current = store.state_of(agent_id)
         except _taskq.TaskStoreUnavailable:
             current = None
+        if never_claimed and current == state:
+            _glue_logger.debug("taskq: %s was already %s before its settle", agent_id, state)
+            return
         _glue_logger.warning(
             "taskq: terminal write %s -> %s did not commit; the row is %s",
             agent_id,

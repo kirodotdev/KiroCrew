@@ -567,6 +567,28 @@ def test_a_refused_terminal_write_is_said_out_loud_with_the_rows_real_state(
     assert caplog.records == []
 
 
+def test_a_same_state_refusal_is_quiet_only_for_a_record_that_never_claimed(
+    store: TaskStore, clock: Clock, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A row already holding the state being written lost nothing when its
+    reporter never claimed it (a queued stop, the memory wait's expiry: the
+    terminal was written before the report). For a CLAIMED run the same refusal
+    is a newer owner having settled the row, and the warning is its only trace."""
+    generation = _admitted_row(store)
+    assert store.advance("sa-1", m.RUNNING, generation=generation)
+    assert store.finish("sa-1", m.DONE, generation=generation)
+
+    with caplog.at_level(logging.DEBUG, logger="kiro_crew.subagent_manager.admission"):
+        _TaskqBridgeMixin.taskq_report_refused_settle(store, "sa-1", m.DONE, False)
+    assert [r.levelno for r in caplog.records] == [logging.WARNING]
+    caplog.clear()
+    with caplog.at_level(logging.DEBUG, logger="kiro_crew.subagent_manager.admission"):
+        _TaskqBridgeMixin.taskq_report_refused_settle(
+            store, "sa-1", m.DONE, False, never_claimed=True
+        )
+    assert [r.levelno for r in caplog.records] == [logging.DEBUG]
+
+
 def _settle_bridge(store: TaskStore) -> object:
     """``taskq_settle`` and the report it owes, over one store and nothing else.
 

@@ -169,6 +169,9 @@ _UNSTARTED: frozenset[str] = CLAIMABLE | {ADMITTED}
 _SQL_UNSTARTED = "(" + ",".join(f"'{s}'" for s in sorted(_UNSTARTED)) + ")"
 #: The ``children_only`` filter the dispatch reads and their wake share: nested rows.
 _SQL_CHILD_ONLY = " AND parent_id IS NOT NULL AND parent_id <> ''"
+#: Ids per ``IN (...)`` list in a multi-row event read: under the 999
+#: host-parameter ceiling of an older SQLite build.
+_EVENT_ID_CHUNK = 500
 
 
 class _CorruptStore(Exception):
@@ -911,6 +914,84 @@ class TaskStore:
                 kind=str(r["kind"]),
                 data=data if isinstance(data, dict) else {},
             )
+        return out
+
+    @_typed_read
+    def deferred_longer_than(
+        self,
+        kind: str,
+        bound: float,
+        *,
+        exclude_ids: Sequence[str] = (),
+        limit: int = 64,
+    ) -> list[TaskRecord]:
+        """``queued`` rows of *kind* parked by :meth:`defer` NOW that have spent *bound* seconds parked.
+
+        Oldest first, at most *limit*. Parked now means ``next_run_at`` is still
+        in the future: a row whose deferral has lapsed is eligible again and waits
+        for whatever picks it, which is not a deferral.
+
+        The time counted is the time the row was actually PARKED in its current
+        wait: each ``deferred`` event after the row's last ``claimed`` or
+        ``transition`` event (the closers the queued listing applies too,
+        ``_defer_details`` in the admission bridge) parks it from its ``ts`` to
+        its ``until``, cut short by the next deferral or by now. A gap between a
+        lapsed deferral and the next one is NOT counted: the row was eligible
+        then and waited for a slot to be re-checked in, not for memory. So a row
+        that was held back once and then queued behind a full cap is measured by
+        its parked time alone, while a row the host keeps short (re-checked every
+        admit wait) accrues almost all of its wall-clock time. Every re-check
+        appends one more event, so the clock is never restarted by one; a claim
+        or a re-queue ends the wait and the next deferral starts a new one.
+        """
+        excl_sql, excl_args = self._exclusion(exclude_ids)
+        now = self.now()
+        cutoff = now - float(bound)
+        with self._lock:
+            conn = self._c()
+            # The SQL keeps only rows whose current wait BEGAN at or before the
+            # cutoff -- necessary, since parked time never exceeds the time since
+            # the first deferral -- so the event walk below reads only rows that
+            # could be past the bound.
+            rows = conn.execute(
+                "SELECT * FROM tasks WHERE kind=? AND state=? AND next_run_at>?"
+                f"{excl_sql} AND (SELECT MIN(d.ts) FROM task_events d "
+                "WHERE d.task_id=tasks.id AND d.kind='deferred' AND d.seq > "
+                "COALESCE((SELECT MAX(c.seq) FROM task_events c WHERE c.task_id=tasks.id "
+                "AND c.kind IN ('claimed', 'transition')), 0)) <= ? "
+                "ORDER BY created_at, rowid",
+                [kind, QUEUED, now, *excl_args, cutoff],
+            ).fetchall()
+            records = [TaskRecord.from_row(r) for r in rows]
+            parked: dict[str, list[tuple[float, float]]] = {rec.id: [] for rec in records}
+            ids = list(parked)
+            for i in range(0, len(ids), _EVENT_ID_CHUNK):
+                chunk = ids[i : i + _EVENT_ID_CHUNK]
+                marks = ", ".join("?" for _ in chunk)
+                for ev in conn.execute(
+                    "SELECT e.task_id, e.ts, e.data_json FROM task_events e "
+                    f"WHERE e.task_id IN ({marks}) AND e.kind='deferred' AND e.seq > "
+                    "COALESCE((SELECT MAX(c.seq) FROM task_events c WHERE c.task_id=e.task_id "
+                    "AND c.kind IN ('claimed', 'transition')), 0) ORDER BY e.task_id, e.seq",
+                    chunk,
+                ).fetchall():
+                    try:
+                        data = json.loads(ev["data_json"])
+                        until = float(data["until"])
+                    except (TypeError, ValueError, KeyError):
+                        until = float(ev["ts"])
+                    parked[str(ev["task_id"])].append((float(ev["ts"]), until))
+        out: list[TaskRecord] = []
+        for rec in records:
+            spans = parked[rec.id]
+            total = 0.0
+            for n, (ts, until) in enumerate(spans):
+                end = spans[n + 1][0] if n + 1 < len(spans) else now
+                total += max(0.0, min(until, end, now) - ts)
+            if total >= float(bound):
+                out.append(rec)
+                if len(out) >= int(limit):
+                    break
         return out
 
     @staticmethod

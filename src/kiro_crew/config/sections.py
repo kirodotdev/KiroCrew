@@ -103,6 +103,9 @@ from kiro_crew.config.service_sections import (  # noqa: F401
 from kiro_crew.constants import DEFAULT_SPAWN_MIN_MEMORY_GB as _DEFAULT_SPAWN_MIN_MEMORY_GB
 from kiro_crew.constants import DEFAULT_SUBAGENT_COST_GB as _DEFAULT_SUBAGENT_COST_GB
 from kiro_crew.constants import DEFAULT_SUBAGENT_MAX_TURNS as _DEFAULT_SUBAGENT_MAX_TURNS
+from kiro_crew.constants import (
+    DEFAULT_SUBAGENT_QUEUE_MAX_WAIT_SECS as _DEFAULT_SUBAGENT_QUEUE_MAX_WAIT_SECS,
+)
 from kiro_crew.constants import SUBAGENT_TIMEOUT_MAX as _SUBAGENT_TIMEOUT_MAX
 from kiro_crew.constants import SUBAGENT_TIMEOUT_MIN as _SUBAGENT_TIMEOUT_MIN
 from kiro_crew.constants import SUBAGENT_TIMEOUT_SECS as _SUBAGENT_TIMEOUT_SECS
@@ -1273,6 +1276,19 @@ class AgentConfig:
             "back to queued, and how long a spawn deferred by the memory posture "
             "gate waits before it is re-checked. Clamped to 1..3600.",
             restart=True,
+        ),
+    )
+    subagent_queue_max_wait_secs: int = field(
+        default=_DEFAULT_SUBAGENT_QUEUE_MAX_WAIT_SECS,
+        metadata=_meta(
+            "Subagent Queue Max Wait (seconds)",
+            "Longest a subagent spawn may wait in the queue for memory (deferred by "
+            "spawn_min_memory_gb or by the posture admission gate), counted as the "
+            "time it has been held back. Past it the spawn ends with 'never started: "
+            "waiting for memory', delivered to its parent like any other result, and "
+            "leaves the parent's queued count. Time spent waiting only for a free "
+            "slot is not counted. The macOS memory-pressure hold ends a held start "
+            "after the same time. 0 waits without a bound. Clamped to 0..86400.",
         ),
     )
     start_collect_timeout_secs: int = field(

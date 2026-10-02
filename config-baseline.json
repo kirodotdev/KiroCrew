@@ -57,6 +57,7 @@
         "task_dispatch_window": 64,
         "task_store_journal_mode": "auto",
         "admit_wait_secs": 30,
+        "subagent_queue_max_wait_secs": 1800,
         "start_collect_timeout_secs": 300,
         "lane_weights": {},
         "child_reserve": 1,
@@ -822,6 +823,20 @@
       "enumValues": null,
       "defaultValue": 30,
       "requiresRestart": true
+    },
+    {
+      "path": "agent.subagent_queue_max_wait_secs",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Subagent Queue Max Wait (seconds)",
+      "help": "Longest a subagent spawn may wait in the queue for memory (deferred by spawn_min_memory_gb or by the posture admission gate), counted as the time it has been held back. Past it the spawn ends with 'never started: waiting for memory', delivered to its parent like any other result, and leaves the parent's queued count. Time spent waiting only for a free slot is not counted. The macOS memory-pressure hold ends a held start after the same time. 0 waits without a bound. Clamped to 0..86400.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 1800
     },
     {
       "path": "agent.start_collect_timeout_secs",

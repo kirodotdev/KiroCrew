@@ -21,7 +21,9 @@ _glue_logger = _logging.getLogger(__name__)
 #: Longest a start may spend queued for start permits, in total, before it is reaped
 #: as never started. The startup clock pauses while a start is queued, so without a
 #: bound a start parked behind holders that no watchdog bounds would wait forever.
-#: Shares one owner with ``agent.subagent_queue_max_wait_secs`` once that lands.
+#: Not ``agent.subagent_queue_max_wait_secs``: that key bounds a spawn deferred for
+#: memory before it starts, and this caps a started run's wait for permits, which is
+#: a capacity wait and is deliberately not counted as a memory wait.
 _START_QUEUE_MAX_SECS = 1800.0
 
 

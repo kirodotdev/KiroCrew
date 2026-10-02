@@ -231,6 +231,13 @@ DEFAULT_SUBAGENT_MAX_TURNS = 1000
 # them and leave the others behind.
 DEFAULT_SPAWN_MIN_MEMORY_GB = 2.0
 
+# Default of ``agent.subagent_queue_max_wait_secs``: how long a spawn the memory
+# floor or the posture gate keeps deferring may wait before it ends with the
+# delivered terminal ``never started: waiting for memory``. Finite by owner
+# decision (a memory wait is never unbounded); one number for the config default,
+# the loader fallback and the manager's boot value.
+DEFAULT_SUBAGENT_QUEUE_MAX_WAIT_SECS = 1800
+
 # Default of ``agent.subagent_cost_gb``: the least a dedicated subagent start is
 # priced at, and the auto cap's per-agent fallback. Same one-source reason.
 DEFAULT_SUBAGENT_COST_GB = 0.5
