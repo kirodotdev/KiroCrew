@@ -183,3 +183,180 @@ def test_removed_names_come_from_every_prune_marker(tmp_path, monkeypatch):
     (tmp_path / mig.PRUNE_MARKER).write_text('{"removed": ["new", 3, ""], "kept": ["k"]}')
     (tmp_path / "crewmate_prune_migrated.json").write_text("not json")
     assert mig.removed_crewmate_names() == frozenset({"old", "new"})
+
+
+# ── The first send of a resumed chat ──
+#
+# Resuming an old chat bound to a pruned crewmate sends through the
+# ``created_in_send`` branch of ``api_chat``, which republishes the agent
+# selection through ``bind_session_execution``. Its compare-and-set took the
+# EXPECTED record from the decoder, which re-reads the pruned shape as its
+# template, and compared it with the STORED bytes, which still say ``member``.
+# The two never matched, so every such chat refused its first message with
+# "session changed during admission"; a resend passed only because the slot
+# then existed and the branch was skipped.
+
+
+def _seed_pruned_chat(key: str, *, memory_mode: str = "persistent") -> dict:
+    from kiro_crew.history import ConversationLog
+
+    log = ConversationLog()
+    log.append(key, "user", "hello from before the prune", agent="synced-agent")
+    log.append(key, "assistant", "hi", agent="synced-agent")
+    record = _record()
+    record[ec.EXECUTION_CONTEXT_KEY]["memory_mode"] = memory_mode
+    log.update_metadata(
+        key,
+        {
+            **record,
+            "agent": "synced-agent",
+            "memory_store": "default",
+            "memory_mode": memory_mode,
+        },
+    )
+    return record[ec.EXECUTION_CONTEXT_KEY]
+
+
+def _stored_carrier(key: str) -> dict:
+    from kiro_crew.history import ConversationLog
+
+    metadata, readable = ConversationLog().get_metadata_status(key)
+    assert readable
+    return metadata[ec.EXECUTION_CONTEXT_KEY]
+
+
+@pytest.fixture
+def pruned_installed(monkeypatch):
+    """The prune removed ``synced-agent``; its agent file is still installed."""
+    monkeypatch.setattr(
+        "kiro_crew.crewmate_prune_migration.removed_crewmate_names",
+        lambda: frozenset({"synced-agent"}),
+    )
+    monkeypatch.setattr(
+        "kiro_crew.config.loader._materialized_kiro_agent",
+        lambda name, project_dir=None: name if name in ("synced-agent", "kirocrew") else "",
+    )
+    cfg = KiroCrewConfig.load()
+    assert "synced-agent" not in cfg.agents
+    cfg.save()
+
+
+@pytest.mark.asyncio
+async def test_first_send_on_a_resumed_pruned_crewmate_chat_is_admitted(
+    tmp_path, monkeypatch, pruned_installed
+):
+    """POST /api/chat on an old pruned-crewmate chat is admitted the first time."""
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+    from chat_test_helpers import drain_background_tasks
+    from dashboard_owner_helpers import as_owner
+    from test_chat_agent_selection import _turn_state
+
+    from kiro_crew.dashboard import chat_handlers
+
+    key = "dashboard:old-chat"
+    stored = _seed_pruned_chat(key)
+    assert ec.read_session_execution(key).selection_kind == "template"
+    state = _turn_state(tmp_path, monkeypatch)
+    assert "old-chat" not in state._slots
+    app = web.Application()
+    app["state"] = state
+    app.router.add_post("/api/chat", chat_handlers.api_chat)
+    async with TestClient(TestServer(as_owner(app))) as client:
+        response = await client.post(
+            "/api/chat?ws=1", json={"slot": "old-chat", "message": "first send after the prune"}
+        )
+        body = await response.text()
+        assert response.status == 200, body
+        assert "session changed during admission" not in body
+        await drain_background_tasks(state)
+    # The turn reached the provider, and the selection the send recorded was
+    # committed by the compare-and-set rather than refused by it.
+    state.sessions.get_or_create.assert_awaited()
+    published = _stored_carrier(key)
+    assert published != stored
+    assert published["selection_revision"]
+
+
+def test_bind_admits_the_pruned_record_it_read(pruned_installed):
+    """The CAS compares the decoded record with the decoded record it read."""
+    key = "dashboard:old-chat"
+    _seed_pruned_chat(key)
+    prior = ec.read_session_execution(key)
+    assert prior.selection_kind == "template"
+    execution = replace(prior, selection_revision="next")
+    ec.bind_session_execution(key, execution, replace_existing=True, expected=prior)
+    assert _stored_carrier(key) == execution.to_record()
+
+
+def test_bind_admits_a_restricted_pruned_record(pruned_installed):
+    """The privacy-tightening CAS has the same shape and the same answer."""
+    key = "dashboard:old-chat"
+    _seed_pruned_chat(key)
+    prior = ec.read_session_execution(key)
+    ec.bind_session_execution(
+        key, prior.with_mode("incognito"), replace_existing=True, expected=prior
+    )
+    assert _stored_carrier(key)["memory_mode"] == "incognito"
+
+
+@pytest.mark.parametrize(
+    "concurrent",
+    [
+        pytest.param({"selection_revision": "other-writer"}, id="revision"),
+        pytest.param({"template_id": "kirocrew", "selection_name": "kirocrew"}, id="template"),
+        pytest.param({"selection_kind": "template"}, id="adopted-by-another-writer-then-moved"),
+    ],
+)
+def test_bind_still_refuses_a_real_concurrent_change(pruned_installed, monkeypatch, concurrent):
+    """A record another writer changed between the read and the CAS is refused."""
+    from kiro_crew.history import ConversationLog
+
+    key = "dashboard:old-chat"
+    _seed_pruned_chat(key)
+    prior = ec.read_session_execution(key)
+    original = ConversationLog.update_metadata_if
+    raced = []
+
+    def racing(self, session_key, fields, predicate, *args, **kwargs):
+        if not raced:
+            raced.append(True)
+            carrier = dict(_stored_carrier(session_key))
+            carrier.update(concurrent)
+            if concurrent == {"selection_kind": "template"}:
+                carrier["selection_revision"] = "moved"
+            ConversationLog().update_metadata(session_key, {ec.EXECUTION_CONTEXT_KEY: carrier})
+        return original(self, session_key, fields, predicate, *args, **kwargs)
+
+    monkeypatch.setattr(ConversationLog, "update_metadata_if", racing)
+    with pytest.raises(ValueError, match="session changed during admission"):
+        ec.bind_session_execution(
+            key, replace(prior, selection_revision="mine"), replace_existing=True, expected=prior
+        )
+    assert raced
+    assert _stored_carrier(key)["selection_revision"] != "mine"
+
+
+def test_restricted_bind_still_refuses_a_real_concurrent_change(pruned_installed, monkeypatch):
+    from kiro_crew.history import ConversationLog
+
+    key = "dashboard:old-chat"
+    _seed_pruned_chat(key)
+    prior = ec.read_session_execution(key)
+    original = ConversationLog.update_metadata_if
+    raced = []
+
+    def racing(self, session_key, fields, predicate, *args, **kwargs):
+        if not raced:
+            raced.append(True)
+            carrier = dict(_stored_carrier(session_key), selection_revision="other-writer")
+            ConversationLog().update_metadata(session_key, {ec.EXECUTION_CONTEXT_KEY: carrier})
+        return original(self, session_key, fields, predicate, *args, **kwargs)
+
+    monkeypatch.setattr(ConversationLog, "update_metadata_if", racing)
+    with pytest.raises(ValueError, match="session changed during privacy tightening"):
+        ec.bind_session_execution(
+            key, prior.with_mode("incognito"), replace_existing=True, expected=prior
+        )
+    assert raced
+    assert _stored_carrier(key)["memory_mode"] == "persistent"
