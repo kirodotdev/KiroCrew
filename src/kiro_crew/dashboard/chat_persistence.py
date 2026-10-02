@@ -826,6 +826,39 @@ def _validate_reasoning_effort(raw: object, *, persisted_marker: bool = False) -
     return ""
 
 
+def _restore_model_fields(slot: Any, meta: dict, *, cfg: Any, effort_marker: bool = False) -> bool:
+    """Apply the persisted ``model`` and ``reasoning_effort`` to *slot*.
+
+    Shared by every path that hydrates a slot from a transcript -- the two
+    restart loaders, History resume, and channel surfacing
+    (:func:`kiro_crew.dashboard.channel_slots.surface_channel_session`) -- so
+    they cannot drift apart.
+    A path that skips this leaves ``slot.model`` empty, and the next save
+    writes that empty value over the model the user picked.
+
+    *cfg* is the already-loaded restore config, or None. Its provider
+    canonicalizes a pre-migration claude_code provider id to the dropdown
+    key (no-op for other providers); it is read only when a model is set.
+    *effort_marker* is the off-loop ``_has_validated_effort_marker`` read for
+    this effort value.
+    Returns True when the metadata carried a model, so a caller can fall
+    back to the agent's default model when it did not.
+    """
+    raw_model = meta.get("model")
+    # Metadata is agent-writable: a non-string model is dropped, not hashed.
+    has_model = isinstance(raw_model, str) and bool(raw_model)
+    if has_model and isinstance(raw_model, str):
+        provider = cfg.agent.provider if cfg else ""
+        slot.model = model_registry.canonicalize_for_provider(_normalize_model(raw_model), provider)
+    # `jev_route` is deliberately not read here: it is an owner pick that can
+    # spend money, and transcript metadata is agent-writable.
+    if meta.get("reasoning_effort"):
+        slot.reasoning_effort = _validate_reasoning_effort(
+            meta["reasoning_effort"], persisted_marker=effort_marker
+        )
+    return has_model
+
+
 #: Retired session modes. A slot persisted under one of these comes back as a
 #: PLAIN chat: the transcript is untouched and still renders; there is no
 #: mode-specific dispatch for it, because the mode itself is gone.
@@ -2102,16 +2135,16 @@ def _rehydrate_slot_from_history(
                 if _prefetched_agent is not None
                 else _restored_agent_name(str(meta.get("linked_session_key") or history_key), meta)
             )
-        if meta.get("model"):
-            # _normalize_model handles deprecation renames. For claude_code sessions,
-            # also map a pre-migration raw provider id back to the canonical key so it
-            # matches the canonical-keyed dropdown (no-op for other providers). Reuse
-            # the already-loaded _restore_cfg provider — no second config load.
-            _prov = _restore_cfg.agent.provider if _restore_cfg else ""
-            slot.model = model_registry.canonicalize_for_provider(
-                _normalize_model(meta["model"]), _prov
+        # Reuse the already-loaded _restore_cfg provider — no second config load.
+        if (
+            not _restore_model_fields(
+                slot,
+                meta,
+                cfg=_restore_cfg,
+                effort_marker=_prefetched_effort_marker,
             )
-        elif slot.agent:
+            and slot.agent
+        ):
             try:
                 mc = _restore_cfg.agents.get(slot.agent) if _restore_cfg else None
                 kiro_name = mc.kiro_agent if mc and mc.kiro_agent else slot.agent
@@ -2129,10 +2162,6 @@ def _rehydrate_slot_from_history(
         # gateway-authored lineage. The flag lives in memory only: a restart leaves
         # the slot on its persisted model -- the documented refusal -- and the owner
         # re-picks "Auto (Jev)" to route again.
-        if meta.get("reasoning_effort"):
-            slot.reasoning_effort = _validate_reasoning_effort(
-                meta["reasoning_effort"], persisted_marker=_prefetched_effort_marker
-            )
         if meta.get("autocompact_pct") is not None:
             slot.autocompact_pct = _validate_autocompact_pct(meta["autocompact_pct"])
         _restore_dismissed_source_links(slot, meta.get("dismissed_source_links"))
@@ -2795,27 +2824,21 @@ def _apply_recent_session(
                 str(meta.get("linked_session_key") or slot_transcript_key(slot_name)), meta
             )
         )
-    if meta.get("model"):
-        # Canonicalize a pre-migration claude_code provider id to the
-        # canonical dropdown key (no-op for other providers); reuse the
-        # already-loaded _restore_cfg provider.
-        _prov = _restore_cfg.agent.provider if _restore_cfg else ""
-        slot.model = model_registry.canonicalize_for_provider(
-            _normalize_model(meta["model"]), _prov
+    if (
+        not _restore_model_fields(
+            slot,
+            meta,
+            cfg=_restore_cfg,
+            effort_marker=effort_marker,
         )
-    elif slot.agent:
+        and slot.agent
+    ):
         try:
             mc = _restore_cfg.agents.get(slot.agent) if _restore_cfg else None
             kiro_name = mc.kiro_agent if mc and mc.kiro_agent else slot.agent
             slot.model = kiro_model_map.get(kiro_name, "")
         except Exception:
             logger.debug("Failed to resolve model for restored slot %s", slot_name, exc_info=True)
-    # `jev_route` is neither written nor read here, for the reason the rehydrate
-    # path above states: it is an owner pick, and this file is agent-writable.
-    if meta.get("reasoning_effort"):
-        slot.reasoning_effort = _validate_reasoning_effort(
-            meta["reasoning_effort"], persisted_marker=effort_marker
-        )
     if meta.get("autocompact_pct") is not None:
         slot.autocompact_pct = _validate_autocompact_pct(meta["autocompact_pct"])
     _restore_dismissed_source_links(slot, meta.get("dismissed_source_links"))

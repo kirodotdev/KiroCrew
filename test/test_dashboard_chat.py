@@ -4280,6 +4280,58 @@ class TestHistorySaveOnClose:
         )
 
     @pytest.mark.asyncio
+    async def test_resume_restores_model_and_reasoning_effort(self, tmp_path, monkeypatch):
+        """Resuming from History must bring back the model and effort the user picked.
+
+        The restart loaders restore both; resume did not, so a reopened session
+        ran on the default model, and its next save wrote ``model: ""`` over the
+        pick on disk.
+        """
+        from kiro_crew.dashboard.chat import _save_slot_to_history
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        log = state.conversation_log
+        log.append("dashboard:modeled1", "user", "hello")
+        log.update_metadata(
+            "dashboard:modeled1", {"model": "test-model-x", "reasoning_effort": "high"}
+        )
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/modeled1/resume", json={"key": "dashboard:modeled1"}
+            )
+            assert resp.status == 200
+
+        slot = state._slots["modeled1"]
+        assert slot.model == "test-model-x"
+        assert slot.reasoning_effort == "high"
+
+        slot.append("user", "next turn")
+        slot.drain()
+        _save_slot_to_history(state, slot)
+        meta = log._read_metadata("dashboard:modeled1")
+        assert meta.get("model") == "test-model-x", "save after resume erased the model"
+        assert meta.get("reasoning_effort") == "high"
+
+    @pytest.mark.asyncio
+    async def test_resume_ignores_a_non_string_model(self, tmp_path, monkeypatch):
+        """A non-string ``model`` in transcript metadata must not crash resume."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        log = state.conversation_log
+        log.append("dashboard:badmodel1", "user", "hello")
+        log.update_metadata("dashboard:badmodel1", {"model": {"x": 1}})
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/badmodel1/resume", json={"key": "dashboard:badmodel1"}
+            )
+            assert resp.status == 200
+
+        assert state._slots["badmodel1"].model != {"x": 1}
+
+    @pytest.mark.asyncio
     async def test_no_save_for_unchanged_resumed_session(self, tmp_path, monkeypatch):
         """Resumed session closed without new messages should not re-save."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)

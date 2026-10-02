@@ -66,6 +66,8 @@ from kiro_crew.dashboard.chat_persistence import (
     COLOR_HEX_RE,
     _attach_variants,
     _coerce_requested_mode,
+    _has_validated_effort_marker,
+    _load_restore_cfg,
     _local_turn_generation,
     _local_turn_prompt,
     _rebase_rehydrated_refresh_mark,
@@ -73,6 +75,7 @@ from kiro_crew.dashboard.chat_persistence import (
     _rehydrate_slot_title,
     _remember_reasoning_effort_for_restore,
     _restore_dismissed_source_links,
+    _restore_model_fields,
     _restored_agent_name,
     _restored_mode,
     _validate_autocompact_pct,
@@ -13478,6 +13481,13 @@ async def resume_slot_from_history(
     restored_agent = await asyncio.to_thread(
         _restored_agent_name, _resume_session_identity(state, history_key), meta
     )
+    # The model restore needs the provider (config.json) and the effort marker
+    # (a file under the config dir). Both are disk reads, so they are taken here,
+    # off the loop, before the synchronous construction below.
+    _prefetched_effort = meta.get("reasoning_effort")
+    restore_cfg, effort_marker = await asyncio.to_thread(
+        lambda: (_load_restore_cfg(), _has_validated_effort_marker(_prefetched_effort))
+    )
     # Re-check after the await: a concurrent resume can publish the slot while we
     # are suspended, and the publish below would skip the ownership gate above.
     resume_outcome = await _live_slot_for_resume(
@@ -13801,6 +13811,17 @@ async def resume_slot_from_history(
         # Restore the protected choice read before construction, not the
         # editable transcript's provisional agent name.
         slot.agent = restored_agent
+    # Same model + effort restore as the restart loaders. Without it the resumed
+    # slot runs on the default model, and its next save writes ``model: ""``
+    # over the user's pick. Resume only: import deliberately does not carry a
+    # model (see session_transfer). The marker was read for the pre-await
+    # snapshot, so it only vouches for an unchanged effort value.
+    _restore_model_fields(
+        slot,
+        meta,
+        cfg=restore_cfg,
+        effort_marker=effort_marker and meta.get("reasoning_effort") == _prefetched_effort,
+    )
     if containment is not None and not getattr(slot, "_app", "") and post_read_meta.get("app"):
         # The hook reads the slot's own fields; ``_app`` comes from the request
         # (none here), so the line's app scope is restored onto the built slot
