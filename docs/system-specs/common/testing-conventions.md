@@ -3974,6 +3974,13 @@ while not observed():
 Where a test wants a timeout to *expire*, set it to `0` rather than a small value: the
 same branch is reached with no clock dependency at all.
 
+**`wait_for` on a subagent run cancels it, and the run can swallow the cancel.** A run
+cancelled before its first tool call takes the one-shot auto-continue branch: it returns
+normally with neither `done` nor `error` set, so `asyncio.wait_for(manager._tasks[id])`
+returns as if the run had finished and the next assertion reads state that was never
+written (`call_args` is `None`). Wait with `asyncio.wait({task}, timeout=...)`, which never
+cancels, then assert `info.done and not info._cancel_retry_used` with `_stop_reason(info)`.
+
 Two snapshots from different kernel accounting sources are this class too. Compare them
 with a bounded, measured slack, and keep allocation-growth observations in the failure
 message because a long-lived allocator may serve a probe from resident memory. Set the
