@@ -24,6 +24,7 @@ unreachable in production because the caller's `X-Internal-Secret` is ignored.
 | `session_end_wait` | `POST /api/session-control/end-wait` | Wake a session the caller CREATED from the `wait` tool early, keeping its turn; any other target is refused `not_creator`, for every caller class |
 | `session_set_model` | `POST /api/session-control/set-model` | Record a pending model pick on an idle session; `apply_pending_model_pick` commits it at the start of the target's next turn after re-running `authorize_target` in the same synchronous step. A busy target is refused with `target_busy` and keeps its model |
 | `session_reload` | `POST /api/session-control/reload` | Relaunch the agent process of an idle session the caller created, through `chat_handlers.reload_slot_session` (shared with the tab menu's Reload session). The transcript is kept and gets one notice naming the caller. Self, remote-crew and busy targets (turn running or starting, queued messages, sub-agents) are refused |
+| `session_set_autocompact` | `POST /api/session-control/autocompact` | Read (no `pct`), set or clear (`pct: null`) a session's compaction-threshold override. `authorize_target` with `allow_self`, then a creator check for every caller class; the write is `chat_handlers.commit_slot_autocompact`, the per-slot autocompact route's own transaction, with the gate re-run after each await |
 | `session_close` | `POST /api/session-control/close` | Close (archive) another session, as the tab ✕ does — heavier than stop, and recoverable rather than a delete |
 | `session_revive` | `POST /api/session-control/revive` | Bring an archived session back into the live sidebar, as clicking it in the History tab does — the mirror of close, optionally filing it into a folder |
 | `session_send` | `POST /api/session-control/send` | Deliver a message that another session runs as its next turn, or cut it into the turn already running (`steer`) |
@@ -636,8 +637,10 @@ Two rules give a member caller its shape:
 
 Ordinary (non-member) callers are untouched: they still require the switch.
 The exceptions are `session_end_wait`, whose own creator fence (below, "Ending
-a wait early") binds every caller class, owner sessions included, and
-`session_reload`, whose creator fence binds every caller class the same way.
+a wait early") binds every caller class, owner sessions included,
+`session_reload`, whose creator fence binds every caller class the same way,
+and `session_set_autocompact`'s creator check: any caller may reach only its
+own session or one it created.
 
 #### The strict-internal surface admits a member DM slot, not every scoped caller
 

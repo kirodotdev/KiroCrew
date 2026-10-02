@@ -127,6 +127,7 @@ from kiro_crew.validation import (
     SESSION_RELOAD_SCHEMA,
     SESSION_REVIVE_SCHEMA,
     SESSION_SEND_SCHEMA,
+    SESSION_SET_AUTOCOMPACT_SCHEMA,
     SESSION_SET_MODEL_SCHEMA,
     SESSION_STATUS_SCHEMA,
     SESSION_STOP_SCHEMA,
@@ -152,6 +153,7 @@ SESSION_CONTROL_TOOLS: tuple[str, ...] = (
     "session_end_wait",
     "session_set_model",
     "session_reload",
+    "session_set_autocompact",
     "session_close",
     "session_revive",
     "session_send",
@@ -766,6 +768,41 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     "target": {
                         "type": "string",
                         "description": "Session key from list_sessions, or its exact title.",
+                    },
+                },
+                "required": ["target"],
+            },
+        },
+        {
+            "name": "session_set_autocompact",
+            "description": (
+                "Read or change one session's auto-compact threshold: the context-window "
+                "percentage at which its conversation is compacted between turns. Omit "
+                "``pct`` to read the current override, the global default and the "
+                "allowed range; pass a number in that range to set the override; pass "
+                "null to clear it so the session follows the global default again. The "
+                "change applies from the target's next between-turn check and survives "
+                "gateway restarts. ``target`` may be your own session (a long-running "
+                "conductor can raise its own threshold; the current turn is not "
+                "interrupted) or a session you created; any other session is refused. "
+                "The global threshold cannot be changed here."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": (
+                            "Session key from list_sessions or session_create, or its "
+                            "exact title. Your own session key works too."
+                        ),
+                    },
+                    "pct": {
+                        "type": ["number", "null"],
+                        "description": (
+                            "Threshold percentage (the dashboard slider's range, e.g. "
+                            "5-90), or null to clear the override. Omit to read."
+                        ),
                     },
                 },
                 "required": ["target"],
@@ -2543,6 +2580,56 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             f"\U0001f504 `{target}` is relaunching its agent process with the conversation "
             "kept. Its transcript shows the reload notice."
         )
+
+    if name == "session_set_autocompact":
+        args = validate_tool_args(args, SESSION_SET_AUTOCOMPACT_SCHEMA)
+        # Channel containment is enforced HERE, as for chat_session_pin: the
+        # CHANNEL_AGENT_BLOCKED_TOOLS name match runs only at the permission
+        # prompt, which an auto-approved call never reaches, and the route
+        # admits an owner-DM channel caller. A channel agent acts on thread
+        # text other people wrote, so it may not retune when a session
+        # compacts, even one it created.
+        if caller_key.startswith("channel:"):
+            try:
+                sel().log_tool_invocation(
+                    session_key=caller_key,
+                    source="mcp",
+                    tool_name=name,
+                    tool_kind=SERVER_NAME,
+                    outcome="rejected_blocked_tool",
+                )
+            except Exception:
+                # Stdio-silent: stderr would corrupt the JSON-RPC stream. The
+                # refusal below holds either way.
+                pass
+            return (
+                "Error: session_set_autocompact is not available to channel agents — "
+                "a channel agent acts on thread text other people wrote."
+            )
+        body: dict[str, Any] = {"target": args["target"]}
+        writing = "pct" in args
+        if writing:
+            body["pct"] = args["pct"]
+        resp = _post("/api/session-control/autocompact", body, session_key=caller_key)
+        if resp.get("error"):
+            verb = "change" if writing else "read"
+            return redact(f"Error: could not {verb} that session's threshold: {resp['error']}")
+        target = resp.get("target", args["target"])
+        pct = resp.get("pct")
+        global_pct = resp.get("global_pct")
+        lo, hi = resp.get("min"), resp.get("max")
+        tail = ""
+        if isinstance(lo, (int, float)) and isinstance(hi, (int, float)):
+            tail = f" (allowed range {lo:g}-{hi:g})"
+        follows = "follows the global default"
+        if isinstance(global_pct, (int, float)):
+            follows += f" ({global_pct:g}%)"
+        now = f"{pct:g}%" if isinstance(pct, (int, float)) else follows
+        if not writing:
+            return redact(f"`{target}` auto-compact threshold: {now}{tail}.")
+        if pct is None:
+            return redact(f"Cleared `{target}`'s threshold override; it now {follows}.")
+        return redact(f"Set `{target}`'s auto-compact threshold to {now}{tail}.")
 
     if name == "session_close":
         args = validate_tool_args(args, SESSION_CLOSE_SCHEMA)

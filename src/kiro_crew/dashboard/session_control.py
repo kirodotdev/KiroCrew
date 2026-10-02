@@ -3506,9 +3506,11 @@ def authorize_target(
     member) the fence is evaluated inline as before.
 
     ``allow_self`` waives the self-target refusal, and with it the ownership fence for
-    that one case. Exactly one verb passes it: a release, where the target itself is a
+    that one case. Two verbs pass it. A release, where the target itself is a
     legitimate caller because a session taken over must not depend on its holder still
-    running to get out. It waives nothing else -- an ephemeral, app-scoped or
+    running to get out. And ``session_set_autocompact``, where a long-running session
+    raises its own compaction threshold; that verb applies its own creator check to
+    every other target. It waives nothing else -- an ephemeral, app-scoped or
     channel-linked caller is still refused, and a target that is not the caller is
     still judged by every rule above.
     """
@@ -7656,4 +7658,159 @@ async def read_summary(
         "stale": stale,
         "generated_at": (payload or {}).get("generated_at"),
         **bounded,
+    }
+
+
+#: ``pct`` argument value meaning "read, do not write". A JSON ``null`` already
+#: means "clear the override", so the read needs a value no caller can send.
+AUTOCOMPACT_READ = object()
+
+
+async def autocompact_target(
+    state: "DashboardState",
+    *,
+    caller_session_key: str,
+    target: str,
+    pct: Any = AUTOCOMPACT_READ,
+    caller_fenced: bool | None = None,
+) -> dict[str, Any]:
+    """Read, set or clear *target*'s per-session auto-compact threshold.
+
+    ``pct`` omitted (:data:`AUTOCOMPACT_READ`) reads; ``None`` clears the
+    override back to the global; a number in the dashboard slider's range sets
+    it. The global threshold is not reachable from here.
+
+    Scope is narrower than ``set_model``'s: the caller's OWN session, or a
+    session it created, whatever its ownership-fence class. ``authorize_target``
+    runs first (identity, workspace, channel link and mirror refusals), with
+    ``allow_self`` so a long-running conductor can raise its own threshold;
+    then the creator check applies to every other target. Addressing itself
+    mid-turn is safe: the override feeds only the between-turn compaction
+    check, so the current turn finishes on the old value and the next check
+    reads the new one.
+
+    The write is the route's own transaction
+    (:func:`~kiro_crew.dashboard.chat_handlers.commit_slot_autocompact`), with
+    this gate re-run synchronously after each of its awaits.
+    """
+    # Deferred for the same import cycle `stop_target` documents.
+    from aiohttp import web
+
+    from kiro_crew.config.loader import (
+        AUTOCOMPACT_PCT_MAX,
+        AUTOCOMPACT_PCT_MIN,
+        published_autocompact_pct,
+    )
+    from kiro_crew.dashboard.chat_handlers import commit_slot_autocompact, parse_autocompact_pct
+
+    reading = pct is AUTOCOMPACT_READ
+    # Validated before any gate, as `set_model_target` does, so a malformed
+    # value never reads as an access decision.
+    value: float | None = None
+    if not reading:
+        value, invalid = parse_autocompact_pct(pct)
+        if invalid is not None:
+            raise SessionControlError(invalid["error"], code=invalid["code"], status=400)
+    operation = "autocompact_read" if reading else "set_autocompact"
+
+    try:
+        await asyncio.to_thread(sel)
+    except Exception:  # noqa: BLE001 - a prewarm failure must not fail the call
+        logger.warning("session-control SEL prewarm failed", exc_info=True)
+    await prewarm_enabled_check()
+    caller_key = caller_slot_key(state, caller_session_key)
+    if caller_fenced is None:
+        caller_fenced = bool(caller_key) and _caller_is_ownership_fenced(state, caller_key)
+
+    def _require_creator(slot: "_ChatSlot") -> "_ChatSlot":
+        # Every caller class, fenced or not: this verb's own narrower rule.
+        if slot.key != caller_key and _created_by_other(slot, caller_key):
+            raise SessionControlError(
+                "only your own session or one you created can have its threshold "
+                "read or changed",
+                code="not_creator",
+                status=403,
+            )
+        return slot
+
+    def _authorize(*, recheck: bool, name: str) -> "_ChatSlot":
+        return authorize_target(
+            state,
+            caller_session_key=caller_session_key,
+            target=name,
+            operation=operation,
+            skip_enabled_check=recheck,
+            precomputed_ownership_fenced=caller_fenced,
+            allow_self=True,
+        )
+
+    # `authorize_target` records its own refusals; the `_audit_denials` region
+    # records the creator refusal, which needs the resolved slot to be about.
+    slot = _authorize(recheck=False, name=target)
+    slot_key = slot.key
+    with _audit_denials(
+        caller_session_key=caller_session_key, operation=operation, slot_key=slot_key
+    ):
+        _require_creator(slot)
+        if slot.is_remote or slot.executor == "remote":
+            raise SessionControlError(
+                "that session runs on a remote crew, where this threshold is not applied",
+                code="remote_target_unsupported",
+                status=409,
+            )
+        limits = {"min": AUTOCOMPACT_PCT_MIN, "max": AUTOCOMPACT_PCT_MAX}
+        if reading:
+            _audit(
+                caller_session_key=caller_session_key,
+                operation=operation,
+                slot_key=slot_key,
+                outcome="allowed",
+            )
+            return {
+                "ok": True,
+                "target": slot_key,
+                "pct": slot.autocompact_pct,
+                "global_pct": published_autocompact_pct(),
+                **limits,
+            }
+
+        def _reauthorize() -> "web.Response | None":
+            try:
+                live = _require_creator(_authorize(recheck=True, name=slot_key))
+            except SessionControlError as exc:
+                return web.json_response(
+                    {"error": exc.message, "code": exc.code}, status=exc.status
+                )
+            if live is not slot:
+                return web.json_response(
+                    {"error": "session was deleted or rebound", "code": "session_gone"},
+                    status=409,
+                )
+            return None
+
+        resp = await commit_slot_autocompact(state, slot, slot_key, value, reauthorize=_reauthorize)
+        try:
+            body = json.loads(resp.text or "{}")
+        except ValueError:
+            body = {}
+        if resp.status != 200 or not body.get("ok"):
+            raise SessionControlError(
+                str(body.get("error") or "threshold not changed"),
+                code=str(body.get("code") or "persist_failed"),
+                status=resp.status if resp.status >= 400 else 500,
+            )
+
+    _audit(
+        caller_session_key=caller_session_key,
+        operation=operation,
+        slot_key=slot_key,
+        outcome="allowed",
+        detail={"pct": body.get("pct")},
+    )
+    return {
+        "ok": True,
+        "target": slot_key,
+        "pct": body.get("pct"),
+        "global_pct": body.get("global_pct"),
+        **limits,
     }

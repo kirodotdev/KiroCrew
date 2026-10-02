@@ -10383,36 +10383,152 @@ async def api_chat_slot_autocompact(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "pct is required (number or null)", "code": "pct_required"}, status=400
         )
-    pct = body["pct"]
-    if pct is not None:
-        # bool is an int subclass; True would otherwise read as 1.0 and be
-        # rejected by range, but reject it explicitly for a clear error.
-        if isinstance(pct, bool) or not isinstance(pct, (int, float)):
-            return web.json_response(
-                {"error": "pct must be a number or null", "code": "pct_not_a_number"}, status=400
-            )
+    pct, invalid = parse_autocompact_pct(body["pct"])
+    if invalid is not None:
+        return web.json_response({"error": invalid["error"], "code": invalid["code"]}, status=400)
+    return await commit_slot_autocompact(
+        state,
+        slot,
+        name,
+        pct,
+        reauthorize=lambda: _reauthorize_after_await(
+            state, slot, name, request_app, "slot_autocompact"
+        ),
+    )
+
+
+def parse_autocompact_pct(raw: Any) -> tuple[float | None, dict[str, str] | None]:
+    """Validate a per-session threshold value: ``(pct, None)`` or ``(None, error)``.
+
+    ``None`` is a valid value (clear the override back to the global). The error
+    is the ``{"error", "code"}`` body the autocompact route returns with a 400;
+    ``session_set_autocompact`` raises the same pair, so both surfaces refuse
+    exactly the same inputs with the same codes.
+    """
+    if raw is None:
+        return None, None
+    # bool is an int subclass; True would otherwise read as 1.0 and be
+    # rejected by range, but reject it explicitly for a clear error.
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None, {"error": "pct must be a number or null", "code": "pct_not_a_number"}
+    try:
+        pct = float(raw)
+    except OverflowError:
+        # An int too large for a float; out of range by definition.
+        return None, {"error": "pct must be a finite number", "code": "pct_not_finite"}
+    if pct != pct:  # NaN
+        return None, {"error": "pct must be a finite number", "code": "pct_not_finite"}
+    if not (AUTOCOMPACT_PCT_MIN <= pct <= AUTOCOMPACT_PCT_MAX):
+        return None, {
+            "error": (f"pct must be between {AUTOCOMPACT_PCT_MIN:g} and {AUTOCOMPACT_PCT_MAX:g}"),
+            "code": "pct_out_of_range",
+        }
+    return pct, None
+
+
+# Identity marker for a committed metadata line that was read and carries no
+# created_at (a legacy or corrupt-healed line), distinct from "unreadable".
+_LEGACY_NO_CREATED_AT = object()
+
+# Guarded rollback writes tried before falling back to the dirty-slot flush.
+_ROLLBACK_ATTEMPTS = 3
+
+
+async def _undo_committed_autocompact(
+    state: DashboardState,
+    slot: _ChatSlot,
+    name: str,
+    prior_pct: float | None,
+    mirrored: list,
+    history_key: str,
+    committed_pct: float | None,
+    committed_created_at: object,
+) -> None:
+    """Undo a threshold write that committed durably and was then refused.
+
+    Restores the requesting slot's field and every mirrored alias still on the
+    committed transcript, then writes *prior_pct* back into that transcript's
+    metadata. ``require_existing`` keeps the compensating write from recreating
+    a transcript deleted in the meantime, and the guard only accepts the SAME
+    record this request committed to: its ``created_at`` must still be
+    *committed_created_at* and its threshold still *committed_pct*. A
+    transcript deleted and recreated under the same key carries a fresh
+    ``created_at`` and must not receive this request's stale prior value. A
+    legacy line read with no ``created_at`` is recorded as
+    ``_LEGACY_NO_CREATED_AT`` and matches only a line that still has none. An
+    unreadable identity (``None``) fails the guard rather than guessing. The
+    guarded write is retried directly and is the ONLY durable write: no slot
+    is marked dirty, because the periodic flush writes slot fields whole and
+    skips this identity check for a line with no ``created_at``, so a dirty
+    mark could land the restored value on a same-key replacement. If every
+    attempt is unconfirmed, the refused value stays on disk until the next
+    edit of this session's threshold.
+    """
+    # Every slot still on the committed transcript gets prior_pct, the value
+    # written back below, so a later save of any sibling agrees with the
+    # restored durable record. None is marked dirty (see docstring).
+    for other, _other_prior in mirrored:
+        if slot_history_key(other) == history_key:
+            other.autocompact_pct = prior_pct
+    slot.autocompact_pct = prior_pct
+    log = state.conversation_log
+    if not log:
+        return
+
+    def _same_committed_record(meta: dict) -> bool:
+        if committed_created_at is None:
+            return False
+        if committed_created_at is _LEGACY_NO_CREATED_AT:
+            same_identity = not meta.get("created_at")
+        else:
+            same_identity = meta.get("created_at") == committed_created_at
+        return same_identity and meta.get("autocompact_pct") == committed_pct
+
+    # Retry the guarded write directly: the predicate is idempotent, and the
+    # dirty-slot flush is not a safe fallback (it skips a slot with no
+    # messages, a rebound slot's flush lands on a different file, and it has
+    # no identity check for a line without created_at).
+    restored = False
+    for attempt in range(_ROLLBACK_ATTEMPTS):
         try:
-            pct = float(pct)
-        except OverflowError:
-            # An int too large for a float; out of range by definition.
-            return web.json_response(
-                {"error": "pct must be a finite number", "code": "pct_not_finite"}, status=400
+            restored = await asyncio.to_thread(
+                log.update_metadata_if,
+                history_key,
+                {"autocompact_pct": prior_pct},
+                _same_committed_record,
+                require_existing=True,
             )
-        if pct != pct:  # NaN
-            return web.json_response(
-                {"error": "pct must be a finite number", "code": "pct_not_finite"}, status=400
+        except Exception:
+            restored = False
+            logger.exception(
+                "Slot %s autocompact_pct rollback persist failed (attempt %d)", name, attempt + 1
             )
-        if not (AUTOCOMPACT_PCT_MIN <= pct <= AUTOCOMPACT_PCT_MAX):
-            return web.json_response(
-                {
-                    "error": (
-                        f"pct must be between {AUTOCOMPACT_PCT_MIN:g} "
-                        f"and {AUTOCOMPACT_PCT_MAX:g}"
-                    ),
-                    "code": "pct_out_of_range",
-                },
-                status=400,
-            )
+        if restored:
+            break
+    if not restored:
+        # False is a deleted or replaced transcript (nothing of ours to
+        # restore) or a metadata line unreadable on every attempt. Neither is
+        # handed to the flush; see the docstring.
+        logger.warning("Slot %s autocompact_pct rollback not confirmed", name)
+
+
+async def commit_slot_autocompact(
+    state: DashboardState,
+    slot: _ChatSlot,
+    name: str,
+    pct: float | None,
+    *,
+    reauthorize: Callable[[], web.Response | None],
+) -> web.Response:
+    """Set (or clear, ``None``) *slot*'s threshold override, durably, then live.
+
+    The write half of ``api_chat_slot_autocompact``, shared with
+    ``session_set_autocompact`` so the transaction below exists once. *pct* is
+    already validated (:func:`parse_autocompact_pct`). *reauthorize* is the
+    caller's own gate, re-run synchronously after every await in the span; it
+    returns the refusal response, or ``None`` to proceed. The route passes its
+    app-ownership re-check; session control passes ``authorize_target``.
+    """
     # Persist via the same forced-save mechanism every other slot-metadata
     # route uses (tags / folders / pin: save_slot_off_loop(force=True) -- the
     # empty-window merge for message-less slots, the full save otherwise;
@@ -10437,7 +10553,7 @@ async def api_chat_slot_autocompact(request: web.Request) -> web.Response:
     # TRANSCRIPT so two alias slots resolving onto one file serialize too.
     locked_history_key = slot_history_key(slot)
     async with _autocompact_txn_lock(locked_history_key):
-        stale = _reauthorize_after_await(state, slot, name, request_app, "slot_autocompact")
+        stale = reauthorize()
         if stale is not None:
             return stale
         # Pin the write to the transcript this authorization decision covered:
@@ -10457,6 +10573,10 @@ async def api_chat_slot_autocompact(request: web.Request) -> web.Response:
             )
         prior_pct = slot.autocompact_pct
         slot.autocompact_pct = pct
+        # Alias siblings this request mirrors the committed value onto, with
+        # their priors, so every refusal after the commit can undo the mirror.
+        mirrored: list = []
+        committed_created_at: object = None
         if state.conversation_log:
             try:
                 applied = await save_slot_off_loop(
@@ -10499,7 +10619,6 @@ async def api_chat_slot_autocompact(request: web.Request) -> web.Response:
             # reauthorization is about to deny. Snapshot values() — the event
             # loop may mutate the dict between iterations. Priors are recorded
             # so the confirm-save failure paths below can undo the mirror.
-            mirrored: list = []
             for other in list(state._slots.values()):
                 if other is not slot and slot_history_key(other) == authorized_history_key:
                     mirrored.append((other, other.autocompact_pct))
@@ -10541,25 +10660,61 @@ async def api_chat_slot_autocompact(request: web.Request) -> web.Response:
                 return web.json_response(
                     {"error": "session was deleted or rebound", "code": "session_gone"}, status=409
                 )
+            # Record WHICH durable record this commit landed on, so a rollback
+            # after a refusal below can tell it apart from a replacement
+            # transcript recreated under the same key (fresh created_at).
+            # Read after the confirmed save, still inside the txn lock. A
+            # failed or unreadable read leaves None, which the rollback treats
+            # as "cannot prove identity" and defers to the flush.
+            try:
+                meta, readable = await asyncio.to_thread(
+                    state.conversation_log.get_metadata_status, authorized_history_key
+                )
+                if readable and meta.get("autocompact_pct") == pct:
+                    # A legacy line carries no created_at; record that it was
+                    # READ as such, distinct from an unreadable identity (None).
+                    # A same-key replacement always gets a fresh created_at, so
+                    # it still cannot match the legacy marker.
+                    committed_created_at = meta.get("created_at") or _LEGACY_NO_CREATED_AT
+            except Exception:
+                logger.exception("Slot %s autocompact_pct identity read failed", name)
         # INVARIANT for this handler: every write is immediately preceded by an
         # authorization decision with NO await between them. The persist await is
         # a rebind window (same mechanism as the body read), so re-decide before
-        # the live override mutation; the slot-field change above rolls back for
-        # a rebound slot, whose successor re-derives its state on restore.
-        stale = _reauthorize_after_await(state, slot, name, request_app, "slot_autocompact")
+        # the live override mutation. A refusal here comes AFTER the durable
+        # commit, so it must undo that commit too, not just the slot field: a
+        # refused threshold left on disk would be restored at the next hydrate.
+        stale = reauthorize()
         if stale is not None:
-            slot.autocompact_pct = prior_pct
+            await _undo_committed_autocompact(
+                state,
+                slot,
+                name,
+                prior_pct,
+                mirrored,
+                authorized_history_key,
+                pct,
+                committed_created_at,
+            )
             return stale
         # Reauthorization can PASS after a rebind the pin never saw: a rebind
         # landing after the save's internal routing read leaves the durable
         # write correctly on the authorized transcript while the slot now
         # resolves to a different session the caller may also own. Seeding the
         # live map from effective_session_key(slot) would then apply the
-        # threshold to a session whose transcript never received it. Refuse:
-        # the committed transcript's siblings were mirrored above and its live
-        # override re-seeds on hydration; this slot's successor re-derives.
+        # threshold to a session whose transcript never received it. Refuse,
+        # and undo the commit on the authorized transcript as above.
         if slot_history_key(slot) != authorized_history_key:
-            slot.autocompact_pct = prior_pct
+            await _undo_committed_autocompact(
+                state,
+                slot,
+                name,
+                prior_pct,
+                mirrored,
+                authorized_history_key,
+                pct,
+                committed_created_at,
+            )
             return web.json_response(
                 {"error": "session was deleted or rebound", "code": "session_gone"}, status=409
             )

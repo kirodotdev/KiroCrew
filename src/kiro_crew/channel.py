@@ -155,6 +155,9 @@ CHANNEL_AGENT_BLOCKED_TOOLS: tuple[str, ...] = (
     # Reload relaunches another session's agent process; same containment
     # reason as stop.
     "session_reload",
+    # Changing a session's compaction threshold decides when its context is
+    # summarized away; a channel agent acts on thread text other people wrote.
+    "session_set_autocompact",
     "session_send",
     "session_read_message",
     # A digest of the same transcript `session_read_message` returns, so it is
