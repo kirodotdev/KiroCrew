@@ -40,6 +40,7 @@ def _build_launcher_script(
     extra_visible_dirs: tuple[str, ...] = (),
     extra_private_dirs: tuple[str, ...] = (),
     extra_private_dir_ids: tuple[tuple[str, int, int], ...] = (),
+    extra_readonly_private_dirs: tuple[str, ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
     extra_expose_files: tuple[str, ...] = (),
     fail_closed_file_masks: tuple[tuple[str, int, int], ...] = (),
@@ -79,6 +80,7 @@ def _build_launcher_script(
         _md_notebook_degraded_mask_dirs,
         _pod_os_home_targets,
         _private_window_spellings,
+        _readonly_window_spellings,
         _relocated_crew_targets,
         _relocated_policy_cache_dirs,
         _resolved_kiro_agents_targets,
@@ -160,6 +162,9 @@ def _build_launcher_script(
         (_fold_crew_home_alias(p, crew_home_aliases), dev, ino)
         for p, dev, ino in extra_private_dir_ids
     )
+    extra_readonly_private_dirs = tuple(
+        _fold_crew_home_alias(path, crew_home_aliases) for path in extra_readonly_private_dirs
+    )
     extra_hidden_dir_ids = tuple(
         (_fold_crew_home_alias(p, crew_home_aliases), dev, ino)
         for p, dev, ino in extra_hidden_dir_ids
@@ -232,8 +237,17 @@ def _build_launcher_script(
     # without relying on how subpath treats a non-directory.
     dirs_json = json.dumps(list(dict.fromkeys(hidden_dirs)))
     readonly_json = json.dumps(list(dict.fromkeys(readonly_dirs)))
-    private_json = json.dumps(
-        _private_window_spellings(extra_private_dirs, hidden_dirs, remasks_contained_targets=True)
+    private_windows = _private_window_spellings(
+        extra_private_dirs, hidden_dirs, remasks_contained_targets=True
+    )
+    private_json = json.dumps(private_windows)
+    # The windows the caller asked to have sealed read-only, as the subset of the ADMITTED
+    # windows: filtered through the same gate and spelled the same way, so the child's
+    # membership test below compares like with like. Normalised on both sides, because
+    # the gate returns ``abspath`` spellings and a caller may not. An entry that names no
+    # admitted window is inert -- there is no bind for it to seal.
+    readonly_windows_json = json.dumps(
+        _readonly_window_spellings(extra_readonly_private_dirs, private_windows)
     )
     # Identities the PRODUCER took when it approved each window, serialized and never
     # re-derived: this function runs on the gateway's event loop, where
@@ -1253,6 +1267,7 @@ SENSITIVE_DIRS = {dirs_json}
 SENSITIVE_DIR_IDS = {hidden_ids_json}
 PRIVATE_DIRS = {private_json}
 PRIVATE_DIR_IDS = {private_ids_json}
+READONLY_WINDOWS = frozenset({readonly_windows_json})
 READONLY_DIRS = {readonly_json}
 WRITABLE_DIRS = {writable_json}
 SENSITIVE_FILES = {files_json}
@@ -1737,6 +1752,22 @@ def main():
                 _mount_or_die(_private_stage[p].encode(), p.encode(), _MS_BIND,
                               "opening private window %s" % p)
                 _BOUND_WINDOWS.add(p.rstrip("/"))
+                # A READ-ONLY window (an app bundle's code, which the child imports
+                # but must not rewrite) is the bind just placed, remounted MS_RDONLY --
+                # the same two-step the READONLY_DIRS seal uses, for the same reason:
+                # MS_RDONLY is ignored on the initial MS_BIND, so without the remount
+                # the window would be writable, and the locked nosuid/nodev/noexec
+                # bits are re-asserted or the kernel refuses the remount. The remount
+                # names the window PATH, which resolves to the mount this child placed
+                # a moment ago inside a stand-in it created itself, so no other writer
+                # can have put a different object there. Fail-closed: a seal that
+                # cannot be placed ends the spawn rather than leaving the window
+                # writable, which is the exposure the caller asked to withhold.
+                if p.rstrip("/") in READONLY_WINDOWS:
+                    _mount_or_die(p.encode(), p.encode(),
+                                  _MS_REMOUNT | _MS_BIND | _MS_RDONLY
+                                  | _locked_mount_flags(p.encode()),
+                                  "sealing read-only window %s" % p)
             # A window may CONTAIN a masked leaf -- ``apps/meetings/data`` holds the
             # masked ``apps/meetings/data/edits`` -- and the bind above just replaced
             # the empty stand-in that covered it with the real tree. Re-apply those

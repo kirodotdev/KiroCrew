@@ -1319,6 +1319,28 @@ def _private_window_spellings(
     return list(dict.fromkeys(windows))
 
 
+def _readonly_window_spellings(
+    extra_readonly_private_dirs: tuple[str, ...],
+    private_windows: list[str],
+) -> list[str]:
+    """The admitted *private_windows* the caller asked to have sealed READ-ONLY.
+
+    A read-only window is not a third kind of path but a property of a window
+    :func:`_private_window_spellings` already admitted, so the answer is a subset of its
+    output and is spelled exactly as that output is: the backends test membership by
+    string, and a spelling that drifted (a trailing separator, a relative component)
+    would seal nothing while reporting nothing. Both sides are normalised the way the gate
+    normalises, ``abspath`` with the trailing separator removed.
+
+    An entry naming no admitted window is dropped in silence. There is no bind for it to
+    seal, and the gate has already said why the window itself was withheld -- the parent's
+    mask covers the path, which is stricter than read-only. Order and duplicates follow
+    *private_windows*, so the two lists line up for a reader of the generated program.
+    """
+    wanted = {os.path.abspath(raw).rstrip(os.sep) for raw in extra_readonly_private_dirs}
+    return [w for w in private_windows if os.path.abspath(w).rstrip(os.sep) in wanted]
+
+
 def carveout_shadowed_by_foreign_mask(path: str, mode: str = "standard") -> bool:
     """Whether carving *path* out of the sandbox masks would unmask a foreign tree.
 
@@ -3355,65 +3377,23 @@ def _an_app_secret_is_aliased(apps_tree: str, names: list[str]) -> bool:
     return False
 
 
-def app_data_window_targets(apps_tree: str) -> tuple[AppDataWindow, ...]:
-    """Each installed app's ``data`` directory under *apps_tree*, as private windows.
+def _admitted_app_window_names(apps_tree: str) -> list[str] | None:
+    """The app directory names under *apps_tree* that may carry a window this spawn.
 
-    A caller that masks the whole apps tree to withhold every ``.app_secret`` also
-    covers ``apps/<app>/data``, which :func:`kiro_crew.apps.manager.app_data_dir`
-    documents as an app's persistence root. On Linux the mask binds a WRITABLE empty
-    directory over the tree, so a child writing there is told the write succeeded and
-    the bytes are discarded when the namespace goes away -- success with no data and no
-    error to notice. ``extra_private_dirs`` is the primitive for that shape: it keeps
-    the parent's mask and every sibling denied and re-exposes just these directories on
-    their real inodes at their real paths, read-write.
+    One admission for every window kind a cron spawn opens into the masked apps tree --
+    the read-write ``data`` windows of :func:`app_data_window_targets` and the read-only
+    code windows of :func:`app_code_window_targets` -- so the two cannot disagree about
+    which entries are apps, how many are retained, or whether a credential is aliased.
+    The alias question in particular is answered for the WHOLE tree: a hard link from an
+    ``.app_secret`` into any window re-exposes the credential through that window
+    whether the window is writable or not, so a positive answer withholds every kind.
 
-    ``extra_visible_dirs`` is the wrong primitive here even though it reads like the
-    right one. ``_hidden_path_contains_visible_path`` cancels a mask entry that CONTAINS
-    a visible path, so carving one app's data out would lift the mask off the whole tree
-    and hand the child every OTHER app's credential -- the exposure the mask exists to
-    close.
-
-    The returned paths are joined onto the caller's own *apps_tree* string, so each one
-    matches that mask entry under the purely lexical ``startswith`` test
-    :func:`_private_window_spellings` applies. A caller masking a different spelling of
-    the same tree gets no window from this function, which withholds a view rather than
-    lifting a mask.
-
-    Each directory is CREATED when absent, for the reason
-    :func:`materialize_caller_masked_dir` gives about the mask loop: the launcher's
-    ``PRIVATE_DIRS`` loop is guarded on ``isdir`` too, so a window whose directory does
-    not exist yet is skipped in silence and the parent's mask covers the path -- an app
-    whose first-ever write happens inside a cron child would lose exactly that write.
-
-    Creating a directory makes WHICH entries count as apps load-bearing, so the entry's
-    name has to have the shape the app contract issues --
-    :data:`kiro_crew.apps.manifest.KEBAB_RE`, which every admission path enforces. The
-    apps tree also holds the manager's own dot-prefixed lifecycle move-asides, and
-    creating inside one of those writes into a tree the next restore moves onto an app's
-    real persistence root. A name differing from an installed app's only by case matters
-    for a second reason: on a case-insensitive filesystem it resolves to that app's
-    directory, while the tier-collision test below compares path text, so the lowercase
-    rule is what keeps that comparison sufficient. The contract's RESERVED and unportable
-    names are admitted here, because nothing revalidates the name of an app already
-    installed: refusing one would withhold a live app's window and silently discard its
-    cron writes.
-
-    DEGRADES, never raises. A per-app problem -- a link squatting the app directory or
-    the ``data`` name, a plain file at either, a create that fails, a parked lifecycle
-    copy of that app's data waiting to be restored, or a data tree the
-    tier masks in its own right -- withholds that ONE
-    window and leaves its app's data masked, which is the fail-closed direction. The
-    alternative, refusing the spawn, lets one app's on-disk layout stop every cron on
-    the host, and the reasoning :func:`carveout_chain_has_planted_link` states applies
-    unchanged: an unverifiable path earns no view.
-
-    Returns ``()`` when the tree does not exist or cannot be listed, when it holds more
-    app-shaped directories than :data:`MAX_APP_DATA_WINDOWS` (a name dropped before the
-    alias pass runs is a credential left unchecked), or when any admitted app's
-    ``.app_secret`` is reachable under a second name -- leaving the caller's mask the
-    only thing this spawn carries.
+    Returns the admitted names, unsorted, or ``None`` where no window of any kind may
+    open this spawn: the tree cannot be listed, it holds more app-shaped directories
+    than :data:`MAX_APP_DATA_WINDOWS`, or an admitted app's ``.app_secret`` is reachable
+    under a second name. ``None`` rather than an empty list, because an empty tree is
+    not a refusal and a caller may want to tell the two apart.
     """
-    hidden_targets = _crew_hidden_sandbox_targets()
     # circular import: sandbox is a low-level dependency, and ``kiro_crew.apps`` reaches
     # back into it -- the dev-fleet bridge imports the spawn helpers at module level --
     # so binding the contract at call time keeps the package graph acyclic.
@@ -3489,7 +3469,7 @@ def app_data_window_targets(apps_tree: str) -> tuple[AppDataWindow, ...]:
             safe_terminal_line(apps_tree),
             safe_terminal_line(str(exc)),
         )
-        return ()
+        return None
     if refused_past_cap:
         # WITHHOLD EVERYTHING, not the overflow. The cap drops a name before it is
         # scanned, so the alias pass below never consults a dropped app's
@@ -3507,10 +3487,79 @@ def app_data_window_targets(apps_tree: str) -> tuple[AppDataWindow, ...]:
             MAX_APP_DATA_WINDOWS,
             refused_past_cap,
         )
-        return ()
+        return None
     if _an_app_secret_is_aliased(apps_tree, admitted):
-        return ()
+        return None
+    return admitted
 
+
+def app_data_window_targets(apps_tree: str) -> tuple[AppDataWindow, ...]:
+    """Each installed app's ``data`` directory under *apps_tree*, as private windows.
+
+    A caller that masks the whole apps tree to withhold every ``.app_secret`` also
+    covers ``apps/<app>/data``, which :func:`kiro_crew.apps.manager.app_data_dir`
+    documents as an app's persistence root. On Linux the mask binds a WRITABLE empty
+    directory over the tree, so a child writing there is told the write succeeded and
+    the bytes are discarded when the namespace goes away -- success with no data and no
+    error to notice. ``extra_private_dirs`` is the primitive for that shape: it keeps
+    the parent's mask and every sibling denied and re-exposes just these directories on
+    their real inodes at their real paths, read-write.
+
+    ``extra_visible_dirs`` is the wrong primitive here even though it reads like the
+    right one. ``_hidden_path_contains_visible_path`` cancels a mask entry that CONTAINS
+    a visible path, so carving one app's data out would lift the mask off the whole tree
+    and hand the child every OTHER app's credential -- the exposure the mask exists to
+    close.
+
+    The returned paths are joined onto the caller's own *apps_tree* string, so each one
+    matches that mask entry under the purely lexical ``startswith`` test
+    :func:`_private_window_spellings` applies. A caller masking a different spelling of
+    the same tree gets no window from this function, which withholds a view rather than
+    lifting a mask.
+
+    Each directory is CREATED when absent, for the reason
+    :func:`materialize_caller_masked_dir` gives about the mask loop: the launcher's
+    ``PRIVATE_DIRS`` loop is guarded on ``isdir`` too, so a window whose directory does
+    not exist yet is skipped in silence and the parent's mask covers the path -- an app
+    whose first-ever write happens inside a cron child would lose exactly that write.
+
+    Creating a directory makes WHICH entries count as apps load-bearing, so the entry's
+    name has to have the shape the app contract issues --
+    :data:`kiro_crew.apps.manifest.KEBAB_RE`, which every admission path enforces. The
+    apps tree also holds the manager's own dot-prefixed lifecycle move-asides, and
+    creating inside one of those writes into a tree the next restore moves onto an app's
+    real persistence root. A name differing from an installed app's only by case matters
+    for a second reason: on a case-insensitive filesystem it resolves to that app's
+    directory, while the tier-collision test below compares path text, so the lowercase
+    rule is what keeps that comparison sufficient. The contract's RESERVED and unportable
+    names are admitted here, because nothing revalidates the name of an app already
+    installed: refusing one would withhold a live app's window and silently discard its
+    cron writes.
+
+    DEGRADES, never raises. A per-app problem -- a link squatting the app directory or
+    the ``data`` name, a plain file at either, a create that fails, a parked lifecycle
+    copy of that app's data waiting to be restored, or a data tree the
+    tier masks in its own right -- withholds that ONE
+    window and leaves its app's data masked, which is the fail-closed direction. The
+    alternative, refusing the spawn, lets one app's on-disk layout stop every cron on
+    the host, and the reasoning :func:`carveout_chain_has_planted_link` states applies
+    unchanged: an unverifiable path earns no view.
+
+    Returns ``()`` when the tree does not exist or cannot be listed, when it holds more
+    app-shaped directories than :data:`MAX_APP_DATA_WINDOWS` (a name dropped before the
+    alias pass runs is a credential left unchecked), or when any admitted app's
+    ``.app_secret`` is reachable under a second name -- leaving the caller's mask the
+    only thing this spawn carries.
+    """
+    admitted = _admitted_app_window_names(apps_tree)
+    if admitted is None:
+        return ()
+    return _app_data_windows_for(apps_tree, admitted)
+
+
+def _app_data_windows_for(apps_tree: str, admitted: list[str]) -> tuple[AppDataWindow, ...]:
+    """The ``data`` windows for the *admitted* app names; see :func:`app_data_window_targets`."""
+    hidden_targets = _crew_hidden_sandbox_targets()
     windows: list[AppDataWindow] = []
     for name in sorted(admitted):
         window = os.path.join(apps_tree, name, "data")
@@ -3600,6 +3649,146 @@ def app_data_window_targets(apps_tree: str) -> tuple[AppDataWindow, ...]:
         # what makes the comparison mean anything.
         windows.append(AppDataWindow(window, window_dev, window_ino))
     return tuple(windows)
+
+
+#: The directories of an installed app's bundle that hold its IMPORTABLE code, by name.
+#: ``backend`` is where the app contract puts a backend entry point
+#: (``manifest.entryPoint``, e.g. ``backend/app.py``); ``src`` is the src-layout
+#: convention an app's own Python package is shipped under. A script cron an app
+#: registers from ``on_startup`` sits under ``crons/`` and ``sys.path``-inserts one of
+#: these before importing the app's package. Fixed names, not a listing of the bundle: a
+#: listing would make the window set agent-shaped (any directory an agent creates in the
+#: bundle would earn one) and need a bound of its own, while two named leaves per app are
+#: bounded by construction. ``data`` is deliberately absent -- it is the read-write window
+#: :func:`app_data_window_targets` already opens.
+APP_CODE_WINDOW_LEAVES: tuple[str, ...] = ("backend", "src")
+
+
+def app_code_window_targets(apps_tree: str) -> tuple[AppDataWindow, ...]:
+    """Each installed app's code directories under *apps_tree*, as READ-ONLY windows.
+
+    The mask over the apps tree withholds every ``.app_secret``, and with it everything
+    else in each bundle -- including the directories an app's own script crons import
+    from. An app that registers its crons from ``on_startup`` (the only route, since a
+    manifest cannot declare a script cron) ships a shim under ``crons/`` that puts
+    ``apps/<app>/backend`` or ``apps/<app>/src`` on ``sys.path`` and imports the app's
+    package from there. Behind the mask that import resolves against an empty directory
+    and the job fails with ``ModuleNotFoundError`` on every fire, until it auto-pauses.
+
+    These windows re-expose exactly those directories, on their real inodes, through the
+    same primitive the data windows use -- so the mask and every ``.app_secret`` stay
+    denied and every sibling app stays hidden. Unlike the data windows they are READ-ONLY,
+    and the caller must say so (``extra_readonly_private_dirs``): the code here is what the
+    app's own backend executes with the app's credential in reach, so a script cron able
+    to WRITE it could plant code that runs as the app -- the capability the mask exists to
+    withhold, reached by another route. Importing needs reads alone. CPython tolerates an
+    unwritable source directory: a ``__pycache__`` write that fails is skipped, not raised.
+
+    Unlike the data windows nothing here is CREATED. A data directory that does not exist
+    yet is one the app's first cron write would otherwise lose; an absent code directory
+    is simply a layout this app does not use, and creating it would plant an empty
+    importable directory in every bundle on every spawn.
+
+    Admission is :func:`_admitted_app_window_names`, shared with the data windows, so
+    one answer covers both kinds -- in particular the alias refusal, which a read-only
+    window does not soften: a hard link from a secret into a code directory is read
+    through the window whether or not it can be written.
+
+    DEGRADES, never raises, per directory: a link at the leaf (its target is outside
+    anything this function can bound), a plain file, an unreadable entry, or a directory
+    the tier masks in its own right withholds that ONE window, and the mask keeps covering
+    the path. The identity travels with the window the way the data windows' does: one
+    no-follow ``lstat`` settles type and inode together, and the child refuses a window
+    whose inode is no longer the one approved. Returns ``()`` wherever the admission
+    helper withholds every window.
+    """
+    admitted = _admitted_app_window_names(apps_tree)
+    if admitted is None:
+        return ()
+    return _app_code_windows_for(apps_tree, admitted)
+
+
+def _app_code_windows_for(apps_tree: str, admitted: list[str]) -> tuple[AppDataWindow, ...]:
+    """The code windows for the *admitted* app names; see :func:`app_code_window_targets`."""
+    hidden_targets = _crew_hidden_sandbox_targets()
+    windows: list[AppDataWindow] = []
+    for name in sorted(admitted):
+        for leaf in APP_CODE_WINDOW_LEAVES:
+            window = os.path.join(apps_tree, name, leaf)
+            if _window_is_a_hidden_target(window, hidden_targets):
+                logger.debug(
+                    "no code window for %s/%s: the window IS a directory the tier masks "
+                    "in its own right, which stays masked",
+                    safe_terminal_line(name),
+                    leaf,
+                )
+                continue
+            try:
+                st = os.lstat(window)
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                logger.debug(
+                    "no code window for %s/%s: %s",
+                    safe_terminal_line(name),
+                    leaf,
+                    safe_terminal_line(str(exc)),
+                )
+                continue
+            # NO-FOLLOW, and a real directory or nothing. A link at the name has a target
+            # this function cannot bound -- it may name another app's bundle, or a tree
+            # outside the mask altogether -- and the child's ``O_NOFOLLOW`` open would
+            # refuse it anyway; declining here keeps that refusal from costing the spawn.
+            if not stat.S_ISDIR(st.st_mode):
+                logger.debug(
+                    "no code window for %s/%s: not a directory (a link or a plain file)",
+                    safe_terminal_line(name),
+                    leaf,
+                )
+                continue
+            windows.append(AppDataWindow(window, st.st_dev, st.st_ino))
+    return tuple(windows)
+
+
+class AppBundleWindows(NamedTuple):
+    """The windows one cron spawn opens into the masked apps tree, by kind.
+
+    ``data`` is re-exposed read-write (:func:`app_data_window_targets`); ``code`` is
+    re-exposed read-only (:func:`app_code_window_targets`) and the caller passes those
+    paths on as ``extra_readonly_private_dirs`` beside the full window set.
+    """
+
+    data: tuple[AppDataWindow, ...]
+    code: tuple[AppDataWindow, ...]
+
+    @property
+    def all(self) -> tuple[AppDataWindow, ...]:
+        """Every window, for ``extra_private_dirs`` / ``extra_private_dir_ids``."""
+        return self.data + self.code
+
+    @property
+    def readonly_paths(self) -> tuple[str, ...]:
+        """The code windows' paths, for ``extra_readonly_private_dirs``."""
+        return tuple(window.path for window in self.code)
+
+
+def app_bundle_window_targets(apps_tree: str) -> AppBundleWindows:
+    """Both window kinds for one spawn, from ONE admission of the apps tree.
+
+    The two producers above share :func:`_admitted_app_window_names`, and a caller that
+    opens both kinds should ask it once: the admission lists the tree and runs one
+    ``lstat`` per admitted app's credential, and its alias refusal is a SECURITY warning that
+    would otherwise be logged twice per spawn. An empty tree, a tree past the bound and
+    an aliased credential all yield two empty tuples -- the caller's mask is then the only
+    thing the spawn carries, for every kind.
+    """
+    admitted = _admitted_app_window_names(apps_tree)
+    if admitted is None:
+        return AppBundleWindows((), ())
+    return AppBundleWindows(
+        _app_data_windows_for(apps_tree, admitted),
+        _app_code_windows_for(apps_tree, admitted),
+    )
 
 
 def _first_linked_component_below(root: str, leaf: str) -> str | None:
@@ -8191,6 +8380,7 @@ def namespace_argv(
     extra_visible_dirs: tuple[str, ...] = (),
     extra_private_dirs: tuple[str, ...] = (),
     extra_private_dir_ids: tuple[tuple[str, int, int], ...] = (),
+    extra_readonly_private_dirs: tuple[str, ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
     extra_expose_files: tuple[str, ...] = (),
 ) -> list[str]:
@@ -8334,6 +8524,7 @@ def namespace_argv(
         extra_visible_dirs=extra_visible_dirs,
         extra_private_dirs=extra_private_dirs,
         extra_private_dir_ids=extra_private_dir_ids,
+        extra_readonly_private_dirs=extra_readonly_private_dirs,
         extra_writable_dirs=extra_writable_dirs,
         extra_expose_files=extra_expose_files,
         required_mask_targets=tuple(_required_targets),
@@ -8932,6 +9123,7 @@ def sandbox_exec_argv(
     extra_visible_dirs: tuple[str, ...] = (),
     extra_private_dirs: tuple[str, ...] = (),
     extra_private_dir_ids: tuple[tuple[str, int, int], ...] = (),
+    extra_readonly_private_dirs: tuple[str, ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
     extra_expose_files: tuple[str, ...] = (),
 ) -> tuple[list[str], str | None]:
@@ -9065,6 +9257,7 @@ def sandbox_exec_argv(
         extra_hidden_dirs=extra_hidden_dirs + tuple(m.path for m in alias_masks),
         extra_visible_dirs=extra_visible_dirs,
         extra_private_dirs=extra_private_dirs,
+        extra_readonly_private_dirs=extra_readonly_private_dirs,
         extra_writable_dirs=extra_writable_dirs,
         extra_expose_files=extra_expose_files,
     )
@@ -10710,6 +10903,7 @@ def wrap_argv(
     extra_visible_dirs: tuple[str, ...] = (),
     extra_private_dirs: tuple[str, ...] = (),
     extra_private_dir_ids: tuple[tuple[str, int, int], ...] = (),
+    extra_readonly_private_dirs: tuple[str, ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
     extra_expose_files: tuple[str, ...] = (),
     is_kiro_cli: bool | None = None,
@@ -10728,6 +10922,12 @@ def wrap_argv(
         extra_private_dirs: The spawn's OWN directories inside a hidden tree
             (its ``agent_scratch`` dir under the masked scratch root). Re-exposed
             read-write as a window; the parent's mask and every sibling stay hidden.
+        extra_readonly_private_dirs: The subset of ``extra_private_dirs`` to
+            re-expose READ-ONLY (an app bundle's code directories, which a cron
+            child imports but must not rewrite). Linux remounts the bound window
+            ``MS_RDONLY``; Seatbelt keeps the write and hardlink denies blanket over
+            the tree and carves the window out of the read deny alone. Compared by
+            normalised path; an entry naming no admitted window is inert.
         extra_expose_files: Absolute files to keep READABLE inside dirs that
             ``extra_hidden_dirs`` hides. Linux restores a read-only COPY via
             the launcher's ``EXPOSE_FILES`` primitive (cc mode's mechanism
@@ -11068,6 +11268,7 @@ def wrap_argv(
                     extra_visible_dirs=extra_visible_dirs,
                     extra_private_dirs=extra_private_dirs,
                     extra_private_dir_ids=extra_private_dir_ids,
+                    extra_readonly_private_dirs=extra_readonly_private_dirs,
                     extra_writable_dirs=extra_writable_dirs,
                     extra_expose_files=extra_expose_files,
                 )
@@ -11111,6 +11312,7 @@ def wrap_argv(
                 extra_visible_dirs=extra_visible_dirs,
                 extra_private_dirs=extra_private_dirs,
                 extra_private_dir_ids=extra_private_dir_ids,
+                extra_readonly_private_dirs=extra_readonly_private_dirs,
                 extra_writable_dirs=extra_writable_dirs,
                 extra_expose_files=extra_expose_files,
             )
@@ -11145,6 +11347,7 @@ def wrap_argv(
                 extra_visible_dirs=extra_visible_dirs,
                 extra_private_dirs=extra_private_dirs,
                 extra_private_dir_ids=extra_private_dir_ids,
+                extra_readonly_private_dirs=extra_readonly_private_dirs,
                 extra_writable_dirs=extra_writable_dirs,
                 extra_expose_files=extra_expose_files,
             )
@@ -11450,6 +11653,7 @@ async def wrap_argv_async(
     extra_hidden_dirs: tuple[str, ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
     extra_private_dirs: tuple[str, ...] = (),
+    extra_readonly_private_dirs: tuple[str, ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
     extra_expose_files: tuple[str, ...] = (),
     is_kiro_cli: bool | None = None,
@@ -11477,6 +11681,8 @@ async def wrap_argv_async(
         options["extra_visible_dirs"] = extra_visible_dirs
     if extra_private_dirs:
         options["extra_private_dirs"] = extra_private_dirs
+    if extra_readonly_private_dirs:
+        options["extra_readonly_private_dirs"] = extra_readonly_private_dirs
     if extra_writable_dirs:
         options["extra_writable_dirs"] = extra_writable_dirs
     if extra_expose_files:
@@ -11618,6 +11824,7 @@ def sandboxed_spawn_argv(
     extra_hidden_dirs: tuple[str, ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
     extra_private_dirs: tuple[str, ...] = (),
+    extra_readonly_private_dirs: tuple[str, ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
     first_party_fixed_argv: bool = False,
     is_kiro_cli: bool | None = None,
@@ -11650,6 +11857,12 @@ def sandboxed_spawn_argv(
         extra_private_dirs: The spawn's OWN directories inside a hidden tree
             (its ``agent_scratch`` dir under the masked scratch root). Re-exposed
             read-write as a window; the parent's mask and every sibling stay hidden.
+        extra_readonly_private_dirs: The subset of ``extra_private_dirs`` to
+            re-expose READ-ONLY (an app bundle's code directories, which a cron
+            child imports but must not rewrite). Linux remounts the bound window
+            ``MS_RDONLY``; Seatbelt keeps the write and hardlink denies blanket over
+            the tree and carves the window out of the read deny alone. Compared by
+            normalised path; an entry naming no admitted window is inert.
         extra_writable_dirs: Self-derived scratch directories inside the sealed
             runtime parent that the child must be able to write — see
             :func:`wrap_argv`. Validated; refused candidates degrade to the
@@ -11846,6 +12059,7 @@ async def sandboxed_spawn_argv_async(
     extra_hidden_dirs: tuple[str, ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
     extra_private_dirs: tuple[str, ...] = (),
+    extra_readonly_private_dirs: tuple[str, ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
     first_party_fixed_argv: bool = False,
     executor: ThreadPoolExecutor | None = None,
@@ -11870,6 +12084,8 @@ async def sandboxed_spawn_argv_async(
         options["extra_visible_dirs"] = extra_visible_dirs
     if extra_private_dirs:
         options["extra_private_dirs"] = extra_private_dirs
+    if extra_readonly_private_dirs:
+        options["extra_readonly_private_dirs"] = extra_readonly_private_dirs
     if extra_writable_dirs:
         options["extra_writable_dirs"] = extra_writable_dirs
     if first_party_fixed_argv:

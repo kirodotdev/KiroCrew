@@ -38,6 +38,7 @@ def _build_seatbelt_profile(
     extra_hidden_dirs: tuple[str, ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
     extra_private_dirs: tuple[str, ...] = (),
+    extra_readonly_private_dirs: tuple[str, ...] = (),
     extra_writable_dirs: tuple[str, ...] = (),
     extra_expose_files: tuple[str, ...] = (),
 ) -> str:
@@ -56,6 +57,7 @@ def _build_seatbelt_profile(
         _md_notebook_degraded_mask_dirs,
         _pod_os_home_targets,
         _private_window_spellings,
+        _readonly_window_spellings,
         _relocated_crew_targets,
         _relocated_policy_cache_dirs,
         _resolved_kiro_agents_targets,
@@ -116,16 +118,30 @@ def _build_seatbelt_profile(
         + list(_voice_runtime_sandbox_paths())
     )
     private_windows = _private_window_spellings(extra_private_dirs, masked_targets)
+    # The windows the caller asked to keep READ-ONLY, as a subset of the admitted ones
+    # (same spelling, same gate). Such a window is carved out of the read deny alone;
+    # the write and hardlink denies stay blanket over it, the shape an exposed file
+    # gets. Mirrors the Linux launcher's MS_RDONLY remount of the same window.
+    readonly_windows = set(_readonly_window_spellings(extra_readonly_private_dirs, private_windows))
     for target in masked_targets:
         windows = [w for w in private_windows if w.startswith(target.rstrip("/") + "/")]
         if windows:
             # A private window (the spawn's own scratch) inside a masked tree:
             # deny the tree except the window, in every direction, so siblings
             # stay hidden while the process keeps read-write on its own dir.
-            exceptions = " ".join(f"(require-not (subpath {json.dumps(w)}))" for w in windows)
-            predicate = f"(require-all (subpath {json.dumps(target)}) {exceptions})"
-            for operation in ("file-read*", "file-write*", "file-link"):
-                rules.append(f"(deny {operation} {predicate})")
+            # A read-only window is excepted from the read deny only.
+            writable = [w for w in windows if w not in readonly_windows]
+            subpath = f"(subpath {json.dumps(target)})"
+            read_exceptions = " ".join(f"(require-not (subpath {json.dumps(w)}))" for w in windows)
+            rules.append(f"(deny file-read* (require-all {subpath} {read_exceptions}))")
+            write_exceptions = "".join(
+                f" (require-not (subpath {json.dumps(w)}))" for w in writable
+            )
+            for operation in ("file-write*", "file-link"):
+                if write_exceptions:
+                    rules.append(f"(deny {operation} (require-all {subpath}{write_exceptions}))")
+                else:
+                    rules.append(f"(deny {operation} {subpath})")
             continue
         if _hidden_path_contains_visible_path(
             target, extra_visible_dirs
@@ -237,6 +253,9 @@ def _build_seatbelt_profile(
     # PROPER descendant and the ``(literal …)`` denies emitted for the target
     # cannot reach it.
     extra_private_windows = _private_window_spellings(extra_private_dirs, extra_hidden_targets)
+    extra_readonly_windows = set(
+        _readonly_window_spellings(extra_readonly_private_dirs, extra_private_windows)
+    )
     # Read-only carve-outs inside an extra-hidden dir (the enforced adapter's
     # ``~/.aws/config``). READ only: the write and hardlink denies below stay
     # blanket over the subpath, exactly as the ``.ssh/known_hosts`` carve-out
@@ -264,8 +283,20 @@ def _build_seatbelt_profile(
             )
             subpath = f"(subpath {json.dumps(target)})"
             rules.append(f"(deny file-read* (require-all {subpath} {read_exceptions}))")
+            # A READ-ONLY window (an app bundle's code the cron child imports) is in
+            # the read exceptions above and in none of these: the write and hardlink
+            # denies stay blanket over it, as they do over an exposed file. When every
+            # window in the tree is read-only the deny is the plain subpath, which is
+            # the rule the tree would carry with no window at all.
+            writable = [w for w in windows if w not in extra_readonly_windows]
+            write_exceptions = " ".join(
+                f"(require-not (subpath {json.dumps(w)}))" for w in writable
+            )
             for operation in ("file-write*", "file-link"):
-                rules.append(f"(deny {operation} (require-all {subpath} {window_exceptions}))")
+                if write_exceptions:
+                    rules.append(f"(deny {operation} (require-all {subpath} {write_exceptions}))")
+                else:
+                    rules.append(f"(deny {operation} {subpath})")
             continue
         if _hidden_path_contains_visible_path(target, extra_visible_dirs):
             continue

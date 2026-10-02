@@ -244,3 +244,143 @@ class TestTwoWindowsInTheScratchMask:
         """The first-process shape (no tree to inherit) still gets exactly one window."""
         _hidden, _files, windows = _launcher_view(extra_private_dirs=(_OWN_SCRATCH,))
         assert windows == [_OWN_SCRATCH]
+
+
+_CODE = os.path.join(_BUNDLE, "src")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX backends only")
+class TestAReadOnlyWindowInsideACallerMask:
+    """``extra_readonly_private_dirs`` names the subset of a spawn's windows that come
+    back READ-ONLY: an app bundle's code directory, which a cron child imports but must
+    not be able to rewrite, since the app's own backend later executes it with the app's
+    credential in reach. The data window beside it stays read-write. Both builders express
+    that: the launcher seals the bound window ``MS_RDONLY`` and Seatbelt carves it out of
+    the read deny alone."""
+
+    _KWARGS = {
+        "extra_hidden_dirs": (_APPS,),
+        "extra_private_dirs": (_DATA, _CODE),
+        "extra_readonly_private_dirs": (_CODE,),
+    }
+
+    @staticmethod
+    def _launcher_readonly(**kwargs: object) -> tuple[list[str], list[str]]:
+        script = sandbox._build_launcher_script("cc", **kwargs)  # type: ignore[arg-type]
+        windows = json.loads(re.search(r"PRIVATE_DIRS = (\[.*?\])\n", script, re.S).group(1))
+        readonly = json.loads(
+            re.search(r"READONLY_WINDOWS = frozenset\((\[.*?\])\)\n", script, re.S).group(1)
+        )
+        return windows, readonly
+
+    def test_the_launcher_names_the_read_only_window_and_no_other(self) -> None:
+        windows, readonly = self._launcher_readonly(**self._KWARGS)
+        assert windows == [_DATA, _CODE]
+        assert readonly == [_CODE]
+
+    def test_the_launcher_seals_the_window_after_binding_it(self) -> None:
+        """The seal is a remount of the bind just placed: it has to follow the bind, and it
+        has to be the two-step the READONLY_DIRS seal uses (``MS_RDONLY`` is ignored on the
+        initial ``MS_BIND``), with the locked bits re-asserted or the kernel refuses it."""
+        script = sandbox._build_launcher_script("cc", **self._KWARGS)  # type: ignore[arg-type]
+        bind = script.index('"opening private window %s" % p')
+        seal = script.index('"sealing read-only window %s" % p')
+        assert bind < seal
+        sealing = script[bind:seal]
+        assert "READONLY_WINDOWS" in sealing
+        assert "_MS_REMOUNT | _MS_BIND | _MS_RDONLY" in sealing
+        assert "_locked_mount_flags(p.encode())" in sealing
+        assert "_mount_or_die(" in sealing, "a seal that cannot be placed must end the spawn"
+
+    def test_the_seal_is_the_bound_windows_own_spelling(self) -> None:
+        """The child tests membership by string, so the set is spelled the way the admitted
+        windows are: a trailing separator on the caller's side is folded, and an entry
+        naming no admitted window seals nothing rather than failing the spawn."""
+        windows, readonly = self._launcher_readonly(
+            extra_hidden_dirs=(_APPS,),
+            extra_private_dirs=(_DATA, _CODE),
+            extra_readonly_private_dirs=(_CODE + os.sep, os.path.join(_HOME, "elsewhere")),
+        )
+        assert windows == [_DATA, _CODE]
+        assert readonly == [_CODE]
+
+    def test_a_read_only_entry_that_is_not_a_window_is_inert(self) -> None:
+        """A window the gate withheld stays MASKED, which is stricter than read-only; the
+        read-only request must not resurrect it."""
+        windows, readonly = self._launcher_readonly(
+            extra_hidden_dirs=(_APPS,),
+            extra_private_dirs=(_DATA,),
+            extra_readonly_private_dirs=(_CODE, _APPS),
+        )
+        assert windows == [_DATA]
+        assert readonly == []
+
+    def test_seatbelt_carves_the_window_out_of_the_read_deny_alone(self) -> None:
+        lines = _seatbelt(**self._KWARGS)
+        except_code = f"(require-not (subpath {json.dumps(_CODE)}))"
+        except_data = f"(require-not (subpath {json.dumps(_DATA)}))"
+        reads = _rules_for(lines, "file-read*", _APPS)
+        assert any(except_code in ln and except_data in ln for ln in reads), reads
+        for operation in ("file-write*", "file-link"):
+            matching = _rules_for(lines, operation, _APPS)
+            assert matching, operation
+            assert all(ln.lstrip().startswith("(deny") for ln in matching), operation
+            # The data window keeps its write exception; the code window gets none.
+            assert any(except_data in ln for ln in matching), (operation, matching)
+            assert not any(except_code in ln for ln in matching), (operation, matching)
+
+    def test_seatbelt_denies_writes_blanket_when_every_window_is_read_only(self) -> None:
+        """With no writable window the write deny is the plain subpath -- the rule the
+        tree carries with no window at all -- rather than an empty ``require-all``."""
+        lines = _seatbelt(
+            extra_hidden_dirs=(_APPS,),
+            extra_private_dirs=(_CODE,),
+            extra_readonly_private_dirs=(_CODE,),
+        )
+        subpath = f"(subpath {json.dumps(_APPS)})"
+        for operation in ("file-write*", "file-link"):
+            matching = _rules_for(lines, operation, _APPS)
+            assert matching == [f"(deny {operation} {subpath})"], (operation, matching)
+        assert any(
+            f"(require-not (subpath {json.dumps(_CODE)}))" in ln
+            for ln in _rules_for(lines, "file-read*", _APPS)
+        )
+
+    def test_seatbelt_honours_it_inside_a_tier_mask_too(self) -> None:
+        """The tier loop renders windows through the same split, so a read-only window in
+        a tree the tier masks (the scratch root) is read-excepted and write-denied."""
+        lines = _seatbelt(
+            extra_private_dirs=(_OWN_SCRATCH, _TREE_SCRATCH),
+            extra_readonly_private_dirs=(_TREE_SCRATCH,),
+        )
+        except_own = f"(require-not (subpath {json.dumps(_OWN_SCRATCH)}))"
+        except_tree = f"(require-not (subpath {json.dumps(_TREE_SCRATCH)}))"
+        reads = _rules_for(lines, "file-read*", _SCRATCH)
+        assert any(except_own in ln and except_tree in ln for ln in reads), reads
+        for operation in ("file-write*", "file-link"):
+            matching = _rules_for(lines, operation, _SCRATCH)
+            assert any(except_own in ln for ln in matching), (operation, matching)
+            assert not any(except_tree in ln for ln in matching), (operation, matching)
+
+    def test_a_spawn_naming_no_read_only_window_renders_as_before(self) -> None:
+        """The new keyword is additive: a caller that passes none gets the byte-identical
+        read-write rendering on both backends."""
+        before = {"extra_hidden_dirs": (_APPS,), "extra_private_dirs": (_DATA,)}
+        after = dict(before, extra_readonly_private_dirs=())
+        assert _seatbelt(**before) == _seatbelt(**after)
+        assert sandbox._build_launcher_script("cc", **before) == sandbox._build_launcher_script(  # type: ignore[arg-type]
+            "cc", **after
+        )
+
+    def test_both_backends_agree_on_which_window_is_read_only(self) -> None:
+        _windows, readonly = self._launcher_readonly(**self._KWARGS)
+        lines = _seatbelt(**self._KWARGS)
+        write_excepted = {
+            w
+            for w in (_DATA, _CODE)
+            if any(
+                f"(require-not (subpath {json.dumps(w)}))" in ln
+                for ln in _rules_for(lines, "file-write*", _APPS)
+            )
+        }
+        assert set(readonly) == {_DATA, _CODE} - write_excepted == {_CODE}

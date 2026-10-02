@@ -221,6 +221,7 @@ def _run(
     sensitive_dirs: list[str] | None = None,
     readonly_dirs: list[str] | None = None,
     private_dir_ids: dict[str, list[int]] | None = None,
+    readonly_windows: list[str] | None = None,
 ) -> tuple[_FakeLibc, str | None]:
     """Run the mount region. Returns ``(fake_libc, refusal_message_or_None)``.
 
@@ -290,6 +291,9 @@ def _run(
         # Read by the staging loop for every window that sits under a mask root. Empty
         # here: these cases vouch for no window identity, so the child stages by name.
         "PRIVATE_DIR_IDS": dict(private_dir_ids or {}),
+        # The windows to seal MS_RDONLY once bound. Empty by default: a seal is one more
+        # mount, which would shift the call numbering above.
+        "READONLY_WINDOWS": frozenset(readonly_windows or ()),
         "READONLY_DIRS": [str(cache)] if readonly_dirs is None else list(readonly_dirs),
         # Empty by default so the six-site call numbering above stays stable;
         # the carve-out tests inject their own entry.
@@ -535,6 +539,81 @@ def test_a_window_whose_identity_matches_is_staged(tmp_path: Path) -> None:
 
 
 @_LINUX_WINDOW_ONLY
+def test_a_read_only_window_is_sealed_right_after_it_is_bound(tmp_path: Path) -> None:
+    """A window named in ``READONLY_WINDOWS`` gets the READONLY_DIRS two-step on its own
+    path -- the bind onto the stand-in, then a ``MS_REMOUNT | MS_BIND | MS_RDONLY`` of that
+    bind -- and nothing else in the region is renumbered for a spawn that names none."""
+    window = tmp_path / "home" / ".aws" / "alpha" / "src"
+    window.mkdir(parents=True)
+    real = os.lstat(window)
+
+    libc, refusal = _run(
+        tmp_path,
+        fail_at=None,
+        private_dirs=[str(window)],
+        private_dir_ids={str(window): [real.st_dev, real.st_ino]},
+        readonly_windows=[str(window)],
+    )
+
+    assert refusal is None, f"a read-only window was refused: {refusal}"
+    target = str(window).encode()
+    on_window = [(s_, flags) for s_, t, flags in libc.calls if t == target]
+    assert len(on_window) == 2, f"expected the bind then the seal on the window, got {on_window}"
+    (_bind_src, bind_flags), (seal_src, seal_flags) = on_window
+    assert bind_flags == 4096, "the first mount on the window is its plain bind"
+    assert seal_src == target, "the seal remounts the window over itself"
+    assert seal_flags & (32 | 4096 | 1) == (32 | 4096 | 1), hex(seal_flags)
+
+
+@_LINUX_WINDOW_ONLY
+def test_a_read_write_window_is_not_sealed(tmp_path: Path) -> None:
+    """The control: a window the caller did not name stays the read-write bind it was."""
+    window = tmp_path / "home" / ".aws" / "alpha" / "data"
+    window.mkdir(parents=True)
+    real = os.lstat(window)
+
+    libc, refusal = _run(
+        tmp_path,
+        fail_at=None,
+        private_dirs=[str(window)],
+        private_dir_ids={str(window): [real.st_dev, real.st_ino]},
+    )
+
+    assert refusal is None
+    target = str(window).encode()
+    on_window = [flags for _s, t, flags in libc.calls if t == target]
+    assert on_window == [4096], on_window
+
+
+@_LINUX_WINDOW_ONLY
+def test_a_seal_that_cannot_be_placed_refuses_the_spawn(tmp_path: Path) -> None:
+    """Fail-closed: a read-only window left writable is the exposure the caller asked to
+    withhold, so a failed seal ends the spawn rather than degrading to read-write."""
+
+    def _case(root: Path) -> tuple[dict, bytes]:
+        window = root / "home" / ".aws" / "alpha" / "src"
+        window.mkdir(parents=True)
+        real = os.lstat(window)
+        kwargs = dict(
+            private_dirs=[str(window)],
+            private_dir_ids={str(window): [real.st_dev, real.st_ino]},
+            readonly_windows=[str(window)],
+        )
+        return kwargs, str(window).encode()
+
+    # Find the seal's ordinal with a clean run, then fail exactly that call on a fresh
+    # root laid out the same way (the harness builds its fixture tree once per root).
+    first, target = _case(tmp_path / "probe")
+    libc, _ = _run(tmp_path / "probe", fail_at=None, **first)
+    seal_ordinal = [i for i, (_s, t, f) in enumerate(libc.calls, 1) if t == target and f & 32][0]
+
+    second, _target = _case(tmp_path / "run")
+    _libc, refusal = _run(tmp_path / "run", fail_at=seal_ordinal, **second)
+
+    assert refusal is not None and "sealing read-only window" in refusal, refusal
+
+
+@_LINUX_WINDOW_ONLY
 def test_a_window_no_one_vouched_for_is_skipped_not_refused(tmp_path: Path) -> None:
     """The second control: absence of an identity is not a mismatch.
 
@@ -576,13 +655,14 @@ def test_every_tier_routes_all_eight_mounts_through_the_guard() -> None:
         assert raw == collections.Counter(
             _PERMITTED_RAW_MOUNTS
         ), f"{level}: unchecked mount call(s): {dict(raw)}"
-        # 1 def + 10 call sites: propagation, credential dirs, the read-only
+        # 1 def + 11 call sites: propagation, credential dirs, the read-only
         # bind and its sealing remount, sensitive files and the read-only seal
         # on an unreadable mask, ~/.ssh, the private window's two -- staging its real contents out before the parent is
         # masked, then binding them onto the placeholder inside the stand-in --
         # and the nested re-mask that re-hides a masked leaf sitting INSIDE such
-        # a window, applied after the window is bound.
-        assert script.count("_mount_or_die(") == 11
+        # a window, applied after the window is bound -- plus the MS_RDONLY remount
+        # that seals a READ-ONLY window right after it is bound.
+        assert script.count("_mount_or_die(") == 12
 
 
 # --------------------------------------------------------------------------

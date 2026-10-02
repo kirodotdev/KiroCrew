@@ -225,6 +225,23 @@ def _private_windows(host: _Host) -> dict[str, Any]:
     }
 
 
+def _readonly_windows(host: _Host) -> dict[str, Any]:
+    """One read-write window (an app's ``data``) and one read-only window (its ``src``)
+    in the same masked tree, so the digest sees both shapes side by side, plus a
+    read-only entry that names no admitted window and must be inert."""
+    apps = host.crew / "apps"
+    data = apps / "alpha" / "data"
+    code = apps / "alpha" / "src"
+    data.mkdir(parents=True)
+    code.mkdir(parents=True)
+    return {
+        "extra_hidden_dirs": (str(apps),),
+        "extra_private_dirs": (str(data), str(code)),
+        "extra_private_dir_ids": ((str(data), 11, 12), (str(code), 15, 16)),
+        "extra_readonly_private_dirs": (str(code) + os.sep, str(host.crew / "elsewhere")),
+    }
+
+
 def _identities(host: _Host) -> dict[str, Any]:
     masked = host.crew / "apps"
     return {
@@ -287,6 +304,7 @@ _LAUNCHER_CASES: dict[str, tuple[str, _Setup | None, _Kwargs | None]] = {
     "standard-refused-carveouts": ("standard", None, _refused_carveouts),
     "standard-hidden-and-visible": ("standard", None, _hidden_and_visible),
     "cc-private-windows": ("cc", None, _private_windows),
+    "cc-readonly-windows": ("cc", None, _readonly_windows),
     "strict-identities": ("strict", None, _identities),
     "strict-crew-home-alias": ("strict", None, _crew_home_alias),
     "cc-expose": ("cc", None, _expose),
@@ -311,37 +329,44 @@ _PROFILE_CASES: dict[str, tuple[str, _Setup | None, _Kwargs | None]] = {
         None,
         lambda h: {k: v for k, v in _private_windows(h).items() if not k.endswith("_ids")},
     ),
+    "cc-readonly-windows": (
+        "cc",
+        None,
+        lambda h: {k: v for k, v in _readonly_windows(h).items() if not k.endswith("_ids")},
+    ),
     "strict-expose": ("strict", None, _expose),
 }
 
 _LAUNCHER_DIGESTS: dict[str, str] = {
-    "cc": "17e38235a1ec1a10eefe133a7fc78a931a7bdc0524d134e070dd76036a0c93f7",
-    "cc-carveout": "dd09d10bf3f57690946869e7b625e77b5c23fe19170161c2dd219c1f99ad8265",
-    "cc-expose": "ef5094d3e25af43b51cd9f9ad12cbfd3e9b9012f032920dfa8ea1e44ed7ab607",
-    "cc-private-windows": "e819912153ed873385febcf62cdd2ae6f35211bd972c8f9986085261523cd9ef",
-    "cc-python-env-ssh-sock": "ae907e8484a7b1208ff3d9eaabc8d1bfec1f60d43ada3ed3ee9df1e465bf52ea",
-    "standard": "61f3f7e63cc7b86d4c0de2cd793fb251fae83c5efb8eab3cee3afcf326f6b53a",
-    "standard-carveout": "e4bd416fb54d89f417f4d55584da8bd02d34020eae8bf165f11c062108600687",
-    "standard-default-home": "fbd2a34a4125f4b91b54d9fa770e873e12eaa7bd715c430b1f173940a8b7d081",
-    "standard-hidden-and-visible": "642f919317a435c6e4c1de23562242fe180fbdd7102e756ae99ac25a9f9a4305",
-    "standard-notebook-chain": "d0d8b7c85fbe9d9d6b3fe93571a35737e845a256e5a3a645b06f746b39156f83",
-    "standard-pod": "5d063a24c633f5aa29006aca4a556492867738a497df74fecda4a2f9fb765974",
-    "standard-refused-carveouts": "61f3f7e63cc7b86d4c0de2cd793fb251fae83c5efb8eab3cee3afcf326f6b53a",
-    "strict": "f033639b6b1b27c8501d9d36a46a600bd086009aa6bb76f85dcfc55ef9ac231d",
-    "strict-carveout": "286d2d13b13008b51076d854be7c16c267341277e20b8706026f01452f65c2b8",
-    "strict-crew-home-alias": "5f3f239a17b0cff8a457f128f3cc6f049092b2f2d2ca4059e4e3ee96747dcf1c",
-    "strict-default-home": "e4355e3bd7cc5dfb7f59d24eea3a08e8ea286832fee35629c0c76866bc53650c",
-    "strict-expose": "9cf67920d331c57cd335e50c98fc5965fa29cc3d01f9aba0965fb11ae2774796",
-    "strict-identities": "35699a92929e74a82ecd7962f05192c5be8708315c207aa0f07ac2f80475918f",
-    "strict-no-accept-new": "301ea1cb15af6188d321d1a674a49d36032c951905f0cd9b145030faffbf7177",
-    "strict-pod": "9dbb4bd57ba5f9c438052ad8dd87448bb7b2f64e3154242e35214fe9497b1b46",
-    "strict-python-env-ssh-sock": "f0385266ea4394f95a2f40dbeff19c14b59379d6bf5dcfd64cef501334f177e4",
-    "strict-symlinked-home": "5c1a03c9754c1cd6a773b1630f9f20029b06d3046ea530e5caeb2967b849524b",
+    "cc": "20fdb795461102024266cd711c75b957666fa6813067d46fcad2ae0c5bb0bbe7",
+    "cc-carveout": "6091900f42f2e9e09b2bbb860a1c2e394d34eb96804101da6d1a1e8a37997b10",
+    "cc-expose": "babf49d64200426a54fcd05e0c43f1b4a89872a95e871f3eb565e5c3ad4c876d",
+    "cc-private-windows": "c0df839158d2041746beb3b1d79ba9279301a3fd048eb5ddd3b161492c4b172d",
+    "cc-readonly-windows": "2b0f1ddaa6d048967ce82b8bdb3ade658112c244350dff68ed67c5a051a33117",
+    "cc-python-env-ssh-sock": "fddd3a8724f7865a7780b2cbbf8acd28a898f94f5e3118f96e4e489964cde691",
+    "standard": "9664519592533662da2dee15b423a9fa0607b52b3d649930eeeed6004401488b",
+    "standard-carveout": "d91804bc193502335b376e39bfa62e892b08ff1c85e9846d58195bd0439a0896",
+    "standard-default-home": "ba42d055738ebb1f7323e7aebbd3105140db6a4ebd08b7231f43ea38803955e7",
+    "standard-hidden-and-visible": "5ac0250f456a72231f3c11375214aa94403b3859688741212c6289d2af6aa189",
+    "standard-notebook-chain": "c613233f74a36ad7dd4e741be89603350105f5868639da375ffe90c2a2e907ee",
+    "standard-pod": "8b746835baec83bd054b75ed830a2f717ac5e5dd40cfaa510c0e131c7a59b196",
+    "standard-refused-carveouts": "9664519592533662da2dee15b423a9fa0607b52b3d649930eeeed6004401488b",
+    "strict": "9babb830b425c8b9910a750391450679d4afd5b23ac38eaa657c2d7ddda4d319",
+    "strict-carveout": "aa7ba9b7aef9a87ffb0ca35b69fa93c747a4b0a97512af2b059a2798fcbc4cf3",
+    "strict-crew-home-alias": "af931a59f03708f0dac24b6f2674622826502a502d89af2e23d5783d952da96e",
+    "strict-default-home": "b776649495d26b068499a7f24628d214d270b5792100a86641174b80c7e52818",
+    "strict-expose": "20c3e01e868c1e83d45d942ab2860eb964ee627090f33a74d87046f6ad612543",
+    "strict-identities": "e1052408c7fb6bfa0605d439eac9c97cff79b2bd0bf116b6073e584933da4495",
+    "strict-no-accept-new": "bf526cbc1f85addb306a67d931645dafadc72ee4f6b9916bfad7ffcadab13f56",
+    "strict-pod": "c065685c02eacb05a0f1e27fe19c0d1a27bd07357894a07dc8324dfd5dbc8027",
+    "strict-python-env-ssh-sock": "b636d64313716f03feebe96c0a697eed35412f4518ab7d12e6a9640351b2d1e6",
+    "strict-symlinked-home": "f776bad2ddc14b77391220c95b753e417234f1d036c26e9465792c868c3f98d2",
 }
 
 _PROFILE_DIGESTS: dict[str, str] = {
     "cc": "ff0989ba3f35397dfe5e6c724ea13195e59a4d4f20e7358ecb9d88de3688d5d1",
     "cc-private-windows": "2f5276fe50362cf2c8162b20a97b5439328b78b82f0a7fcfc1461e65c190be71",
+    "cc-readonly-windows": "a4b12d4fd9aa099dd0230e9d07b00a05c6076cea9dbcfa5868feb8d55815a09a",
     "standard": "7ff81e62faba059966ec6643c7bfdbb71985d2eacc03b03c07e46a110e250669",
     "standard-carveout": "2afae4a5c908df82ca0f8abc638bad8564b733d260baf08a750b12dcf427d6f2",
     "standard-hidden-and-visible": "532b032826e530f431ce4e0fc498b0ed2f489f22af97eb7c541a171d57b5a532",

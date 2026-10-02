@@ -54,10 +54,11 @@ from kiro_crew.sandbox import (
     _AGENT_DENIED_ENV_KEYS,
     CANONICAL_TEMP_KEYS,
     CRON_SCRIPT_CHILD_ENV,
+    AppBundleWindows,
     SandboxCeilingUnsealable,
     SandboxUnavailableError,
     aliased_app_secret_ids,
-    app_data_window_targets,
+    app_bundle_window_targets,
     cgroup_scope_argv,
     credential_mask_applies,
     masked_dir_identity,
@@ -2278,9 +2279,18 @@ def run_script_sandboxed(
             # window an app script cron's writes there report success and are discarded.
             # A window keeps the mask and every ``.app_secret`` denied and re-exposes
             # only the data directories on their real inodes.
-            apps_windows = app_data_window_targets(apps_tree)
+            #
+            # It also covers ``apps/<app>/backend`` and ``apps/<app>/src``, which is where
+            # an app's own script crons import the app's package from: the shim under
+            # ``crons/`` puts one of them on ``sys.path``, and behind the mask the import
+            # found an empty directory and failed with ``ModuleNotFoundError`` on every
+            # fire until the job auto-paused. Those directories come back as READ-ONLY
+            # windows: importing needs reads alone, and the code is what the app's own
+            # backend later executes with the app's credential in reach, so a writable
+            # window would let a model-supplied script act as the app by another route.
+            bundle_windows = app_bundle_window_targets(apps_tree)
         else:
-            apps_windows = ()
+            bundle_windows = AppBundleWindows((), ())
             apps_mask_ids = ()
         sandboxed_argv, sandbox_cleanup = wrap_argv(
             argv,
@@ -2298,8 +2308,9 @@ def run_script_sandboxed(
             # its own process and would stat an empty directory. Non-empty exactly when this
             # spawn masks the tree.
             extra_alias_credential_ids=(aliased_app_secret_ids(apps_tree) if apps_mask_ids else ()),
-            extra_private_dirs=tuple(window.path for window in apps_windows),
-            extra_private_dir_ids=tuple(apps_windows),
+            extra_private_dirs=tuple(window.path for window in bundle_windows.all),
+            extra_private_dir_ids=tuple(bundle_windows.all),
+            extra_readonly_private_dirs=bundle_windows.readonly_paths,
         )
         if stdin_payload is not None and sandboxed_argv == argv:
             # On a host with no OS sandbox backend, the unsandboxed-exec
@@ -2845,12 +2856,14 @@ def run_command_sandboxed(
                 refuse_if_an_app_secret_is_linked(apps_tree)
             except SandboxCeilingUnsealable as exc:
                 return {"status": "error", "output": f"❌ {exc}", "exit_code": -1}
-            # Same window as the script path, for the same reason: the mask covers each
+            # Same windows as the script path, for the same reasons: the mask covers each
             # app's documented ``data`` root with a writable empty bind, so a command
-            # writing there would be told it succeeded and lose the bytes.
-            apps_windows = app_data_window_targets(apps_tree)
+            # writing there would be told it succeeded and lose the bytes; and it covers
+            # each app's code directories, which a command that runs an app's own module
+            # needs to read -- read-only, since the same trust reading applies.
+            bundle_windows = app_bundle_window_targets(apps_tree)
         else:
-            apps_windows = ()
+            bundle_windows = AppBundleWindows((), ())
             apps_mask_ids = ()
         sandboxed_argv, sandbox_cleanup = wrap_argv(
             argv,
@@ -2862,8 +2875,9 @@ def run_command_sandboxed(
             # per-app secrets, and the inodes are read here because the child cannot see
             # them through its own mask.
             extra_alias_credential_ids=(aliased_app_secret_ids(apps_tree) if apps_mask_ids else ()),
-            extra_private_dirs=tuple(window.path for window in apps_windows),
-            extra_private_dir_ids=tuple(apps_windows),
+            extra_private_dirs=tuple(window.path for window in bundle_windows.all),
+            extra_private_dir_ids=tuple(bundle_windows.all),
+            extra_readonly_private_dirs=bundle_windows.readonly_paths,
         )
         sandboxed_argv = cgroup_scope_argv(sandboxed_argv)  # cgroup DoS ceiling
         clean_env = _clean_cron_env()

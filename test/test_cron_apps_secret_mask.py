@@ -1644,11 +1644,22 @@ class TestAnAppNameCannotForgeTheOperatorsLog:
         argument list raw is the regression, and it cannot be caught by calling the
         function once the contract refuses every name that would prove it.
 
-        BOTH spellings the function uses, so renaming the loop variable cannot retire the
+        BOTH spellings the functions use, so renaming the loop variable cannot retire the
         pin by making its search term stale: the directory entry during the bounded read
         (``entry.name``) and the admitted name during the window pass (``name``).
+
+        The enumeration and the two window passes are three functions now, and the pin
+        covers each: the admission helper both producers share, the data pass and the
+        code pass.
         """
-        source = inspect.getsource(sandbox.app_data_window_targets)
+        source = "\n".join(
+            inspect.getsource(fn)
+            for fn in (
+                sandbox._admitted_app_window_names,
+                sandbox._app_data_windows_for,
+                sandbox._app_code_windows_for,
+            )
+        )
         calls = re.findall(r"logger\.\w+\((?:[^()]|\([^()]*\))*\)", source, re.DOTALL)
         spellings = (r"entry\.name", r"name")
         naming = [
@@ -1956,7 +1967,7 @@ class TestTheWindowIsCreatedThroughADescriptorNotAPath:
 
     def test_the_producer_creates_through_the_descriptor_and_does_not_re_lookup(self):
         """Structural: the window path must not create or identify by path any more."""
-        source = inspect.getsource(sandbox.app_data_window_targets)
+        source = inspect.getsource(sandbox._app_data_windows_for)
 
         assert "materialize_app_data_window(apps_tree, name)" in source
         assert "materialize_caller_masked_dir(" not in source
@@ -2082,8 +2093,12 @@ class TestTheEnumerationBoundsWhatItRetains:
         assert _window_paths(apps) == (str(apps / longest / "data"),)
 
     def test_the_bound_is_one_named_constant_not_a_literal(self):
-        """Two literals bounding one population is the defect, whatever the numbers."""
-        source = inspect.getsource(sandbox.app_data_window_targets)
+        """Two literals bounding one population is the defect, whatever the numbers.
+
+        The enumeration lives in the admission helper both window producers share, so
+        that is the body the bound has to appear in.
+        """
+        source = inspect.getsource(sandbox._admitted_app_window_names)
 
         assert "MAX_APP_DATA_WINDOWS" in source
         assert "MAX_APP_NAME_CHARS" in source
@@ -2283,3 +2298,249 @@ class TestAnAliasedAppSecretWithholdsEveryWindow:
         os.link(str(secret), str(apps / "app-000" / "data" / "alias"))
 
         assert _window_paths(apps) == ()
+
+
+def _code_window_paths(apps_tree: object) -> tuple[str, ...]:
+    return tuple(w.path for w in sandbox.app_code_window_targets(str(apps_tree)))
+
+
+class TestEachInstalledAppKeepsItsCodeImportable:
+    """Masking the tree also covered ``apps/<app>/backend`` and ``apps/<app>/src``.
+
+    Those are the directories an app's own script crons import the app's package from:
+    the shim under ``crons/`` puts one of them on ``sys.path``, and behind the mask the
+    import resolved against an empty directory and failed with ``ModuleNotFoundError`` on
+    every fire until the job auto-paused. The code directories come back as windows the
+    way ``data`` does -- the mask and every ``.app_secret`` stay denied -- but READ-ONLY:
+    a model-supplied script that could write the code the app's own backend executes
+    could act as the app, which is what the mask exists to withhold.
+    """
+
+    @staticmethod
+    def _install(tmp_path: Path, **layout: tuple[str, ...]) -> Path:
+        apps = tmp_path / ".kirocrew" / "apps"
+        for name, leaves in layout.items():
+            (apps / name).mkdir(parents=True, exist_ok=True)
+            (apps / name / ".app_secret").write_text("secret", encoding="utf-8")
+            for leaf in leaves:
+                (apps / name / leaf).mkdir(parents=True, exist_ok=True)
+        return apps
+
+    @_POSIX_ONLY
+    def test_an_ungranted_script_run_re_exposes_each_apps_code_read_only(
+        self, tmp_path, monkeypatch
+    ):
+        apps = self._install(tmp_path, alpha=("src",), beta=("backend",), gamma=())
+        recorder = _record(monkeypatch)
+        script = _make_script(tmp_path)
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            run_script_sandboxed(f"{script}:run", "job1", timeout=30)
+
+        assert str(apps) in recorder.hidden
+        assert recorder.windows == [
+            str(apps / "alpha" / "data"),
+            str(apps / "beta" / "data"),
+            str(apps / "gamma" / "data"),
+            str(apps / "alpha" / "src"),
+            str(apps / "beta" / "backend"),
+        ]
+        assert recorder.kwargs["extra_readonly_private_dirs"] == (
+            str(apps / "alpha" / "src"),
+            str(apps / "beta" / "backend"),
+        )
+
+    @_POSIX_ONLY
+    def test_a_command_run_gets_the_same_view(self, tmp_path, monkeypatch):
+        apps = self._install(tmp_path, alpha=("src", "backend"))
+        recorder = _record(monkeypatch)
+        monkeypatch.setattr("kiro_crew.cron_script._resolve_command_shell", lambda: "/bin/sh")
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            run_command_sandboxed("echo hi", timeout=30, job_id="job1")
+
+        assert recorder.windows == [
+            str(apps / "alpha" / "data"),
+            str(apps / "alpha" / "backend"),
+            str(apps / "alpha" / "src"),
+        ]
+        assert recorder.kwargs["extra_readonly_private_dirs"] == (
+            str(apps / "alpha" / "backend"),
+            str(apps / "alpha" / "src"),
+        )
+
+    @_POSIX_ONLY
+    def test_the_data_window_stays_writable(self, tmp_path, monkeypatch):
+        """Only the code directories are read-only; ``data`` is the app's persistence root
+        and its writes are the reason that window exists."""
+        apps = self._install(tmp_path, alpha=("src",))
+        recorder = _record(monkeypatch)
+        script = _make_script(tmp_path)
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            run_script_sandboxed(f"{script}:run", "job1", timeout=30)
+
+        assert str(apps / "alpha" / "data") in recorder.windows
+        assert str(apps / "alpha" / "data") not in recorder.kwargs["extra_readonly_private_dirs"]
+
+    @_POSIX_ONLY
+    def test_every_read_only_entry_is_one_of_the_windows(self, tmp_path, monkeypatch):
+        """Read-only is a property of an admitted window, not a path of its own."""
+        self._install(tmp_path, alpha=("src",), beta=("backend",))
+        recorder = _record(monkeypatch)
+        script = _make_script(tmp_path)
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            run_script_sandboxed(f"{script}:run", "job1", timeout=30)
+
+        readonly = set(recorder.kwargs["extra_readonly_private_dirs"])
+        assert readonly and readonly <= set(recorder.windows)
+        ids = {path for path, _dev, _ino in recorder.kwargs["extra_private_dir_ids"]}
+        assert readonly <= ids, "a read-only window carries its identity like any other"
+
+    @_POSIX_ONLY
+    def test_a_host_carrying_no_mask_opens_no_code_window(self, tmp_path, monkeypatch):
+        self._install(tmp_path, alpha=("src",))
+        recorder = _record(monkeypatch, mask_applies=False)
+        script = _make_script(tmp_path)
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            run_script_sandboxed(f"{script}:run", "job1", timeout=30)
+
+        assert recorder.windows == []
+        assert recorder.kwargs["extra_readonly_private_dirs"] == ()
+
+    def test_no_code_window_names_a_credential(self, tmp_path):
+        apps = self._install(tmp_path, alpha=("src", "backend"), beta=("backend",))
+        for window in _code_window_paths(apps):
+            assert not window.endswith(".app_secret")
+            assert not os.path.exists(os.path.join(window, ".app_secret"))
+            assert os.path.basename(window) in sandbox.APP_CODE_WINDOW_LEAVES
+
+    def test_only_the_named_code_leaves_earn_a_window(self, tmp_path):
+        """Fixed names, not a listing of the bundle: an agent-created directory in the
+        bundle earns nothing, and the bundle root (where ``.app_secret`` sits) never does."""
+        apps = self._install(tmp_path, alpha=("src", "lib", "node_modules", "backend"))
+        assert _code_window_paths(apps) == (
+            str(apps / "alpha" / "backend"),
+            str(apps / "alpha" / "src"),
+        )
+
+    def test_an_absent_code_directory_is_not_created(self, tmp_path):
+        """Unlike ``data``, an absent code directory is a layout the app does not use."""
+        apps = self._install(tmp_path, alpha=())
+        assert _code_window_paths(apps) == ()
+        assert not (apps / "alpha" / "src").exists()
+        assert not (apps / "alpha" / "backend").exists()
+        # The data window IS still created for the same app, as before.
+        assert _window_paths(apps) == (str(apps / "alpha" / "data"),)
+
+    def test_a_link_at_the_code_name_earns_no_window(self, tmp_path):
+        """Its target is outside anything this producer can bound."""
+        apps = self._install(tmp_path, alpha=(), beta=("src",))
+        os.symlink(str(apps / "beta" / "src"), str(apps / "alpha" / "src"))
+        assert _code_window_paths(apps) == (str(apps / "beta" / "src"),)
+
+    def test_a_plain_file_at_the_code_name_earns_no_window(self, tmp_path):
+        apps = self._install(tmp_path, alpha=())
+        (apps / "alpha" / "src").write_text("not a directory\n", encoding="utf-8")
+        assert _code_window_paths(apps) == ()
+
+    def test_a_code_window_carries_the_identity_of_the_real_directory(self, tmp_path):
+        apps = self._install(tmp_path, alpha=("backend",))
+        real = os.lstat(apps / "alpha" / "backend")
+        (window,) = sandbox.app_code_window_targets(str(apps))
+        assert (window.path, window.dev, window.ino) == (
+            str(apps / "alpha" / "backend"),
+            real.st_dev,
+            real.st_ino,
+        )
+
+    def test_a_tier_masked_code_directory_gets_no_window(self, tmp_path, monkeypatch):
+        """A directory the tier masks in its own right stays masked, as a data tree does."""
+        apps = self._install(tmp_path, alpha=("src",), beta=("src",))
+        masked = str(apps / "alpha" / "src")
+        monkeypatch.setattr(sandbox, "_crew_hidden_sandbox_targets", lambda: {masked})
+        assert _code_window_paths(apps) == (str(apps / "beta" / "src"),)
+
+    def test_an_aliased_secret_withholds_the_code_windows_too(self, tmp_path):
+        """Read-only does not soften the alias refusal: a hard link from a secret into a
+        code directory is READ through the window, which is the whole exposure."""
+        apps = self._install(tmp_path, alpha=("src",), beta=("src",))
+        os.link(str(apps / "alpha" / ".app_secret"), str(apps / "alpha" / "src" / "conf.py"))
+        assert _code_window_paths(apps) == ()
+        assert _window_paths(apps) == ()
+
+    def test_the_bound_withholds_the_code_windows_too(self, tmp_path):
+        apps = tmp_path / ".kirocrew" / "apps"
+        for i in range(sandbox.MAX_APP_DATA_WINDOWS + 1):
+            (apps / ("app-%03d" % i) / "src").mkdir(parents=True)
+        assert _code_window_paths(apps) == ()
+
+    def test_a_missing_or_unlistable_tree_yields_nothing(self, tmp_path):
+        assert _code_window_paths(tmp_path / "absent") == ()
+
+
+class TestTheCronSpawnAdmitsTheAppsTreeOnce:
+    """Both window kinds come from ONE admission of the apps tree.
+
+    The admission lists the tree and runs one ``lstat`` per admitted app's credential, and
+    its alias refusal is a SECURITY warning; asking twice per spawn would double both.
+    """
+
+    def test_the_combined_producer_admits_once(self, tmp_path, monkeypatch):
+        apps = tmp_path / ".kirocrew" / "apps"
+        (apps / "alpha" / "src").mkdir(parents=True)
+        calls = []
+        real = sandbox._admitted_app_window_names
+
+        def counting(tree):
+            calls.append(tree)
+            return real(tree)
+
+        monkeypatch.setattr(sandbox, "_admitted_app_window_names", counting)
+        windows = sandbox.app_bundle_window_targets(str(apps))
+
+        assert calls == [str(apps)]
+        assert tuple(w.path for w in windows.data) == (str(apps / "alpha" / "data"),)
+        assert tuple(w.path for w in windows.code) == (str(apps / "alpha" / "src"),)
+        assert windows.all == windows.data + windows.code
+        assert windows.readonly_paths == (str(apps / "alpha" / "src"),)
+
+    def test_the_combined_producer_agrees_with_the_two_standalone_ones(self, tmp_path):
+        apps = tmp_path / ".kirocrew" / "apps"
+        (apps / "alpha" / "src").mkdir(parents=True)
+        (apps / "beta" / "backend").mkdir(parents=True)
+        (apps / "beta" / "data").mkdir(parents=True)
+        combined = sandbox.app_bundle_window_targets(str(apps))
+        assert combined.data == sandbox.app_data_window_targets(str(apps))
+        assert combined.code == sandbox.app_code_window_targets(str(apps))
+
+    def test_a_withheld_admission_yields_two_empty_kinds(self, tmp_path, caplog):
+        apps = tmp_path / ".kirocrew" / "apps"
+        (apps / "alpha" / "src").mkdir(parents=True)
+        secret = apps / "alpha" / ".app_secret"
+        secret.write_text("bearer", encoding="utf-8")
+        os.link(str(secret), str(apps / "alpha" / "src" / "alias"))
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.sandbox"):
+            windows = sandbox.app_bundle_window_targets(str(apps))
+
+        assert windows == sandbox.AppBundleWindows((), ())
+        said = [
+            r.getMessage()
+            for r in caplog.records
+            if "withholding every app data window" in r.getMessage()
+        ]
+        assert len(said) == 1, said
+
+    @_POSIX_ONLY
+    def test_the_script_spawn_admits_once(self, tmp_path, monkeypatch):
+        apps = tmp_path / ".kirocrew" / "apps"
+        (apps / "alpha" / "src").mkdir(parents=True)
+        calls = []
+        real = sandbox._admitted_app_window_names
+        monkeypatch.setattr(
+            sandbox, "_admitted_app_window_names", lambda tree: (calls.append(tree), real(tree))[1]
+        )
+        _record(monkeypatch)
+        script = _make_script(tmp_path)
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            run_script_sandboxed(f"{script}:run", "job1", timeout=30)
+
+        assert calls == [str(apps)]
