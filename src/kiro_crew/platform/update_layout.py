@@ -11,6 +11,7 @@ import os
 import re
 from typing import NamedTuple
 
+from kiro_crew.atomic_write import atomic_write
 from kiro_crew.beacon import distribution
 from kiro_crew.config.paths import data_home
 from kiro_crew.platform.update_capability import (
@@ -136,7 +137,7 @@ def set_release_channel(channel: str) -> str:
     ``ValueError``; nothing unvalidated ever reaches the file, and
     :func:`release_channel` re-validates on read as defence in depth.
 
-    Written via a temp file + ``os.replace`` so a crash or a full disk cannot
+    Written through :func:`atomic_write` so a crash or a full disk cannot
     leave a half-written channel name behind — a truncated value would silently
     fall back to ``stable`` and move the install off its lane. The byte format is
     ``<channel>\\n``, matching what ``cli.sh`` writes, so the two writers stay
@@ -150,19 +151,7 @@ def set_release_channel(channel: str) -> str:
         raise ValueError(
             f"unknown release channel {channel!r} (expected one of {RELEASE_CHANNELS})"
         )
-    target = data_home() / "channel"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_name(f"{target.name}.{os.getpid()}.tmp")
-    try:
-        tmp.write_text(f"{normalized}\n", encoding="utf-8")
-        os.replace(tmp, target)
-    finally:
-        # A failed replace leaves the temp file behind; an orphan in the data
-        # home would be read by nothing but is still litter.
-        try:
-            tmp.unlink()
-        except OSError:
-            pass
+    atomic_write(data_home() / "channel", f"{normalized}\n")
     return normalized
 
 

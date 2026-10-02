@@ -3750,7 +3750,9 @@ class TestAKeptCrewLogIsNotLeftExcluded:
         excluded: list[tuple[str, tuple[str, ...]]] = []
         given_back: list[tuple[str, tuple[str, ...]]] = []
 
-        def _exclude(slot_key, units):
+        def _exclude(slot_key, units, **kwargs):
+            # Past the unlink there is nothing left to refuse.
+            assert kwargs == {"refusable": False}
             excluded.append((slot_key, tuple(units)))
             return session_ledger.SlotExclusion(tuple(units), False)
 
@@ -3819,7 +3821,7 @@ class TestAKeptCrewLogIsNotLeftExcluded:
 
         given_back: list = []
 
-        def _exclude(slot_key, units):
+        def _exclude(slot_key, units, **_k):
             if slot_key == "chat-8":
                 raise session_ledger.LedgerExclusionError("unwritable")
             return session_ledger.SlotExclusion(tuple(units), False)

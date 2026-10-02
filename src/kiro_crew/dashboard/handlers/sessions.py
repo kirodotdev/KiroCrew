@@ -3282,7 +3282,8 @@ def _remove_session_crew_logs(
 
     try:
         for slot_key, units in taken.items():
-            recorded = session_ledger.exclude_units(slot_key, tuple(units))
+            # The transcript is already unlinked, so nothing is left to refuse.
+            recorded = session_ledger.exclude_units(slot_key, tuple(units), refusable=False)
             added[slot_key] = set(getattr(recorded, "added", ()) or ())
     except session_ledger.LedgerExclusionError:
         logger.error(

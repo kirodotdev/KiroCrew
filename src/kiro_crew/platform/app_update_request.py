@@ -32,14 +32,14 @@ from __future__ import annotations
 import json
 import logging
 import math
-import os
 import secrets
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable
 
+from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import data_home
 from kiro_crew.platform_compat import make_owner_only_dir
 
@@ -171,27 +171,7 @@ class AppUpdateRequests:
     def _write(self, req: AppUpdateRequest) -> None:
         path = self._path()
         make_owner_only_dir(path.parent)
-        tmp = path.with_name(f"{path.name}.{req.request_id}.tmp")
-        try:
-            fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump(
-                    {
-                        "request_id": req.request_id,
-                        "target_version": req.target_version,
-                        "requested_by": req.requested_by,
-                        "armed_at": req.armed_at,
-                        "expires_at": req.expires_at,
-                    },
-                    handle,
-                )
-            os.replace(tmp, path)
-        except OSError:
-            try:
-                tmp.unlink(missing_ok=True)
-            except OSError:
-                pass
-            raise
+        atomic_write(path, json.dumps(asdict(req)), mode=0o600)
 
     def _unlink(self) -> None:
         try:
