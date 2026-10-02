@@ -2104,6 +2104,9 @@ class TestLinuxServiceScopes:
         # remedy's layout under tmp_path, so a test that writes there owns the
         # file by path and one that writes elsewhere owns it by the marker.
         monkeypatch.setattr(svc_linux, "UNIT_PATH", tmp_path / "absent" / _UNIT)
+        # The overrides file is absent too; never inherit the host's seed.
+        monkeypatch.setattr(svc_linux, "ENV_DIR", tmp_path / "etc" / "kirocrew")
+        monkeypatch.setattr(svc_linux, "ENV_FILE_PATH", svc_linux.ENV_DIR / "kirocrew.env")
         monkeypatch.setattr(
             svc_linux, "user_unit_file_path", lambda: tmp_path / ".config" / "systemd" / "user" / _UNIT
         )

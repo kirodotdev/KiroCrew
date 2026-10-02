@@ -250,18 +250,32 @@ class TestShimRetryEndToEnd:
     async def test_target_appearing_inside_the_retry_window_is_executed(self, tmp_path):
         """The defect: the CLI binary is briefly absent mid-spawn, then reappears."""
         target = tmp_path / "late-bird"
+        prepared = tmp_path / ".late-bird-ready"
+        prepared.write_text("#!/bin/sh\nexit 0\n")
+        prepared.chmod(0o755)
+        publication_errors: list[Exception] = []
 
         def create_target() -> None:
-            target.write_text("#!/bin/sh\nexit 0\n")
-            target.chmod(0o755)
+            try:
+                prepared.replace(target)
+            except Exception as exc:
+                publication_errors.append(exc)
 
-        threading.Timer(0.3, create_target).start()
+        assert not target.exists(), "the target must be absent when the shim starts"
+        timer = threading.Timer(0.3, create_target)
         proc = await asyncio.create_subprocess_exec(*spawn_shim_argv(), str(target))
         try:
+            timer.start()
             rc = await asyncio.wait_for(proc.wait(), timeout=30)
         finally:
+            timer.cancel()
+            if timer.ident is not None:
+                await asyncio.to_thread(timer.join, 5)
             if proc.returncode is None:
                 proc.kill()
+                await asyncio.wait_for(proc.wait(), timeout=5)
+        assert not timer.is_alive(), "the executable publisher survived cleanup"
+        assert not publication_errors, f"executable publication failed: {publication_errors}"
         assert rc == 0
 
 

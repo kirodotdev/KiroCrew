@@ -120,6 +120,19 @@ before cancelling, not infer entry from a short sleep. Keep the worker's wait
 bounded, release it in `finally`, and await the cancelled task's write drain;
 assertions must still prove the lock stays held and the real write completes.
 
+SQLite contention tests open the writer's own connection before taking the holder's
+transaction, observe its actual `BEGIN IMMEDIATE`, and require completion to remain
+pending while the lock is held. Release the holder before awaiting completion and
+assert the persisted row: `sync` can swallow a failed write. Do not compare a real
+clock delta with the requested sleep duration. Bound every handshake and join, release
+the holder in `finally`, and close each thread's connection on that thread.
+
+A delayed executable fixture must be absent or ready to execute at its public path.
+Write and chmod a private sibling first, then atomically rename it into place. Writing
+the public path before chmod exposes a non-executable file to the real child; EACCES
+must remain terminal, not become another retry case. Assert initial absence and the
+child's successful exit, and cancel/join the publisher and reap the child on failure.
+
 The same handshake applies when the cancel comes from a PRODUCTION deadline rather
 than the test. `run_with_recall_deadline` arms its timer the moment it is awaited;
 `run_in_embed_pool` hands the job to a thread the OS still has to schedule. A test
@@ -384,6 +397,15 @@ patching stdlib `Popen` underneath it still runs executable resolution and can f
 before reaching the stub on a host without the AWS CLI. Keep the caller's action
 guards and result/interrupt assertions real; launcher enforcement belongs in the
 launcher's own tests.
+
+A reader mock that publishes a competing result must intercept only the operation
+under test. Member-resume tests capture and delegate `read_dm_binding_for_slot`,
+leave its first read unchanged, and publish one live slot during its second, late
+read. Patching `read_dm_binding` also intercepts event-log migration, whose reads
+can make the fake append another message. Assert both slot-specific reads, one
+winner publication, the returned winner's identity and HTTP 200. Keep real event
+logging enabled and drain it off the loop with a bounded wait while the patch is
+still active before asserting that history contains exactly one copy.
 
 Config binding tests unrelated to memory provision real private stores for named
 members through `provision_member_memory`. Only the reserved `default` assistant
@@ -835,6 +857,12 @@ measures, never above.
 
 ## Rules
 
+- Remote Crew chaining cases using a real `HopPortGuard` obtain a kernel-selected
+  loopback port with `bind(("127.0.0.1", 0))`; fake-only cases retain inert guards
+  and their fake port band. The released port is only a hint: tests still exercise
+  the production handoff, assert real ownership and cross-process bind refusal,
+  and close real guards in `finally`.
+
 - **Host-floor patches use `_floor_monkeypatch`, never the test's shared
   `monkeypatch`.** The rootdir fixtures keep path redirects, service guards,
   download/telemetry switches and policy/preload scrubs on a private undo stack.
@@ -1266,6 +1294,28 @@ measures, never above.
   is the shape) or resolve the tool to its real executable before building the env. Do
   NOT drop the `HOME` substitution to fix it — that is usually a blast-radius bound
   somebody chose on purpose.
+
+- **A child must use the tool the fixture discovered.** In
+  `test_ai_review_workflows.py`, keep the temporary `gh`/`sleep` stub directory
+  first, the directory of `shutil.which("jq")` next, and Unix defaults last.
+  Putting defaults before the discovered directory can select an older system
+  jq that misparses adjacent JSON pages. Keep the adversarial input and the
+  missing-tool skip; check other commands used by consumers before promoting a
+  directory that also contains sibling tools.
+
+- **Bootstrap fixtures must match the child's libc target.** In
+  `test_playwright_cli_installer.py`, `_expected_node_base` uses native
+  `os.confstr("CS_GNU_LIBC_VERSION")` on Linux/x64 to select `glibc-217` below
+  glibc 2.28. OS and architecture alone give the fake mirror the wrong archive,
+  failing before checksum and cleanup assertions. Keep the real platform tool
+  outputs and verification assertions.
+
+- **Pin discovery inputs beyond the mocked call.** A test controlling
+  `shutil.which` must also pin explicit candidate locations consulted first
+  (`TestPySpy`). Service fixtures modeling absent files must move `ENV_DIR` and
+  `ENV_FILE_PATH` under `tmp_path` alongside `UNIT_PATH`; a host's untouched seed
+  can otherwise add legitimate uninstall cleanup calls. Preserve the candidate
+  discovery and edited/untouched-seed assertions.
 
 - **A spawn that can outlive the test gets a process-GROUP reap, not `kill()`.** A child
   is routinely a wrapper that forks, so killing the direct pid reaps the wrapper and
