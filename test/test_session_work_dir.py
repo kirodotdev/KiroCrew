@@ -645,6 +645,18 @@ class TestRetainedGatewayPids:
         with pytest.raises(OSError):
             session_pid.retained_gateway_pids()
 
+    def test_a_ledger_with_a_damaged_line_raises_rather_than_dropping_its_gateway(
+        self, ledger: Path
+    ) -> None:
+        """MUTATION TARGET: the gateway on a line that is not UTF-8 is lost, never "gone".
+
+        Dropping it would let the predecessor sweep reclaim a live gateway's run
+        directories; raising makes every caller sweep nothing.
+        """
+        ledger.write_bytes(b"111:222\n4\xff21:333\n")
+        with pytest.raises(OSError):
+            session_pid.retained_gateway_pids()
+
 
 class TestGatewayWiring:
     """The gateway sweeps predecessors at boot, after the ledger reap, before writers."""

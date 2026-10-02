@@ -7847,7 +7847,10 @@ def _linux_peak_rss_bytes() -> int | None:
     """
     global _LINUX_PEAK_RSS_FLOOR
     try:
-        peak = _peak_rss_from_status(_LINUX_STATUS_PATH.read_text(encoding="utf-8"))
+        # ``errors="replace"``: the ``Name:`` line is this process's raw comm.
+        peak = _peak_rss_from_status(
+            _LINUX_STATUS_PATH.read_text(encoding="utf-8", errors="replace")
+        )
     except (OSError, ValueError):
         return None
     if peak is None:
@@ -8320,8 +8323,7 @@ def _linux_proc_root(proc_root: "Path | None") -> "Path | None":
 def read_proc_stat(pid: int, *, proc_root: "Path | None" = None) -> "ProcStat | None":
     """*pid*'s ``/proc/<pid>/stat`` from ONE bytes read, or None. Linux only.
 
-    The stat reader new code uses; the text-mode readers that predate it are
-    being moved onto it. It never decodes ``comm`` (see :func:`_stat_tokens`): a
+    The stat reader new code uses. It never decodes ``comm`` (see :func:`_stat_tokens`): a
     text read raises ``UnicodeDecodeError`` on a process whose name is not
     UTF-8, which an ``except OSError`` does not catch. Every field comes from the
     same read, so a caller needing several never mixes two processes behind a

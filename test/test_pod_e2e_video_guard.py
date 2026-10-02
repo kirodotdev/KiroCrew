@@ -25,6 +25,7 @@ import types
 from pathlib import Path
 
 import pytest
+from non_utf8_comm import comm_is_settable, renamed_child
 
 from conftest import _find_posix_test_shell
 
@@ -219,6 +220,15 @@ def test_descendant_pids_finds_a_grandchild(driver):
     finally:
         child.kill()
         child.wait(timeout=10)
+
+
+@pytest.mark.skipif(not comm_is_settable(), reason="renames a real Linux process")
+def test_descendant_pids_walks_past_a_name_that_is_not_utf8(driver):
+    """Each stat is read as bytes, so the walk passes through a name that is not UTF-8."""
+    with renamed_child(with_grandchild=True) as (child, grandchild):
+        pids = driver._descendant_pids(os.getpid())
+        assert child in pids
+        assert grandchild in pids
 
 
 @pytest.mark.skipif(not hasattr(signal, "SIGTERM"), reason="POSIX only")

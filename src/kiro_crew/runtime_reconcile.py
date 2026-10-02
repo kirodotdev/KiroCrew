@@ -351,7 +351,7 @@ def _session_pid_entry_owners() -> dict[int, tuple[int, str | None, str]]:
         with session_pid._session_pid_file_lock():
             if not path.exists():
                 return owners
-            lines = path.read_text(encoding="utf-8").splitlines()
+            lines = session_pid._read_pid_file_text(path).splitlines()
     except OSError:
         logger.warning("runtime_reconcile: could not read %s", path, exc_info=True)
         return owners
@@ -395,7 +395,7 @@ def _retract_session_rows(rows: Iterable[str]) -> None:
         with session_pid._session_pid_file_lock():
             if not path.exists():
                 return
-            lines = path.read_text(encoding="utf-8").splitlines()
+            lines = session_pid._read_pid_file_text(path).splitlines()
             kept = [ln for ln in lines if ln.strip() and ln.strip() not in doomed]
             session_pid._rewrite_pid_file(path, "\n".join(kept) + "\n" if kept else "")
     except OSError:
@@ -434,7 +434,7 @@ def _descendant_pid_rows() -> dict[int, tuple[str, ...]]:
         with session_pid._pid_file_lock():
             if not path.exists():
                 return rows
-            lines = path.read_text(encoding="utf-8").splitlines()
+            lines = session_pid._read_pid_file_text(path).splitlines()
     except OSError:
         logger.warning("runtime_reconcile: could not read %s", path, exc_info=True)
         return rows
@@ -477,7 +477,7 @@ def _retract_descendant_rows(rows: Iterable[str]) -> None:
         with session_pid._pid_file_lock():
             if not path.exists():
                 return
-            lines = path.read_text(encoding="utf-8").splitlines()
+            lines = session_pid._read_pid_file_text(path).splitlines()
             kept = [ln for ln in lines if ln.strip() and ln.strip() not in doomed]
             session_pid._rewrite_pid_file(path, "\n".join(kept) + "\n" if kept else "")
     except OSError:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import os
 import pathlib
 import shlex
@@ -5162,6 +5163,64 @@ class TestPollTerminalTitles:
         assert sess.last_title == "vim"
         ws.send_str.assert_awaited_once()
         assert json.loads(ws.send_str.call_args.args[0]) == {"type": "title", "text": "vim"}
+
+    @pytest.mark.asyncio
+    async def test_one_session_that_raises_does_not_end_the_poller(self):
+        """The poller is shared: a probe that raises for one terminal is logged,
+        and every other terminal still gets its frame."""
+        bad_ws, good_ws = AsyncMock(), AsyncMock()
+        bad_ws.closed = good_ws.closed = False
+        bad = _make_session(session_id="bad", ws=bad_ws)
+        good = _make_session(session_id="good", ws=good_ws)
+        state = MagicMock()
+        state._terminal_sessions = {"bad": bad, "good": good}
+
+        def title(sess):
+            if sess is bad:
+                raise UnicodeDecodeError("utf-8", b"\xe7", 0, 1, "invalid continuation byte")
+            return "vim"
+
+        with patch.object(terminal, "_session_title", side_effect=title), \
+             patch.object(terminal, "_session_cwd", return_value=None), \
+             patch("asyncio.sleep", side_effect=[None, asyncio.CancelledError]):
+            await terminal.poll_terminal_titles({"state": state})
+        assert good.last_title == "vim"
+        good_ws.send_str.assert_awaited_once()
+        bad_ws.send_str.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_session_that_keeps_failing_warns_once_per_streak(self, caplog):
+        """A probe that fails on every dirty tick logs one WARNING, not one per
+        tick; a clean poll re-arms it for the next failure."""
+        ws = AsyncMock()
+        ws.closed = False
+        sess = _make_session(session_id="s", ws=ws)
+        state = MagicMock()
+        state._terminal_sessions = {"s": sess}
+        outcomes = iter([True, True, True, False, True])
+
+        def title(_sess):
+            if next(outcomes):
+                raise OSError("probe failed")
+            return "vim"
+
+        ticks = iter(range(5))
+
+        async def sleep(_secs):
+            if next(ticks, None) is None:
+                raise asyncio.CancelledError
+            sess.frames_dirty = True  # the terminal wrote since the last tick
+
+        with patch.object(terminal, "_session_title", side_effect=title), \
+             patch.object(terminal, "_session_cwd", return_value=None), \
+             patch("asyncio.sleep", side_effect=sleep), \
+             caplog.at_level(logging.DEBUG, logger=terminal.logger.name):
+            await terminal.poll_terminal_titles({"state": state})
+        levels = [r.levelno for r in caplog.records if "poll failed" in r.getMessage()]
+        assert levels == [
+            logging.WARNING, logging.DEBUG, logging.DEBUG, logging.WARNING
+        ]
+        assert sess.poll_warned is True
 
     @pytest.mark.asyncio
     async def test_skips_when_title_unchanged(self):

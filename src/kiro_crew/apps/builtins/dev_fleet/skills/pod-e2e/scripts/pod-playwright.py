@@ -163,9 +163,10 @@ def _descendant_pids(root: int) -> list[int]:
         if not entry.name.isdigit():
             continue
         try:
-            stat = (entry / "stat").read_text()
-            # comm can contain ')' — ppid is the field right after the last ')'
-            ppid = int(stat[stat.rindex(")") + 1:].split()[1])
+            # Bytes: comm may contain ')' and need not be UTF-8 -- ppid is the
+            # field right after the last ')'
+            stat = (entry / "stat").read_bytes()
+            ppid = int(stat[stat.rindex(b")") + 1:].split()[1])
         except (OSError, ValueError, IndexError):
             continue
         children.setdefault(ppid, []).append(int(entry.name))

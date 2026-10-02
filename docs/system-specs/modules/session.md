@@ -3561,6 +3561,24 @@ session, a kernel thread's session 0 included, counts as ended), the parent edge
 process table, the ages (`_pid_age_seconds`, `_linux_pid_age`) and the RSS reads
 the recycle ceilings judge by.
 
+The two PID tracking files hold ASCII only, so a byte in one that is not UTF-8
+is damage. Every read of them, `runtime_reconcile`'s row capture and retraction
+included, goes through `_read_pid_file_text`. A file that fails a strict decode is
+decoded again with `errors="replace"`, and the first such read in a process logs
+a WARNING. The strict decode, not a U+FFFD in the text, decides that: a rewrite
+stores the replacement character as valid UTF-8, so the file is then valid
+UTF-8 holding a malformed row, and it is not reported again. The damaged field fails its parse and gets that reader's malformed-entry
+rule. The tracked snapshot (`_read_tracked_agent_pids`) reports itself
+incomplete whenever ANY line carries a U+FFFD, so no kill is authorized from it
+and the reconciler refuses the pass: a start-id token is never parsed as a
+number, so a damaged one would otherwise read as a recycled pid and retract the
+row of a live runtime. For the same reason every sweep that compares a recorded
+token with the live one (the boot sweep, the periodic scan and kill phases, the
+child-pid sweep and the session-root sweep) treats a token carrying U+FFFD as an
+unreadable identity, neither a match nor a mismatch: the row is retained, neither
+killed nor pruned (`_recorded_token_is_damaged`). No reader, including the
+`cleanup_orphaned_sessions` boot sweep, lets a decode error escape.
+
 If the gateway crashes, the entries remain in the file for the next startup.
 
 **Detection**: reads `kiro_pids.txt`, processes only `child:parent` lines
