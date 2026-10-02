@@ -909,7 +909,9 @@ The details below describe the Kiro and Claude paths implemented directly here:
     global MCP settings through the bounded sensitive-path reader. A refused,
     unreadable or malformed settings file withholds these overrides, preserving
     native restrictions; only an absent settings file, or one that is empty or
-    holds only JSON whitespace (space, tab, CR, LF), contributes no restrictions.
+    holds only JSON whitespace (space, tab, CR, LF), with or without a single
+    leading UTF-8 byte-order mark, contributes no restrictions. A document behind
+    that same BOM is parsed normally.
     kiro-cli loads
     servers from the agent config (respects `mcpServers` in the agent's config
     file). Non-kirocrew agents (e.g. AIM-installed) load only their own

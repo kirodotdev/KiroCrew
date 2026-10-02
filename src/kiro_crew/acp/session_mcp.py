@@ -74,6 +74,7 @@ otherwise easy to argue backwards:
 from __future__ import annotations
 
 import asyncio
+import codecs
 import json
 import logging
 import time
@@ -285,9 +286,11 @@ _JSON_WHITESPACE = b" \t\n\r"
 def _read_mcp_settings(path: Path) -> dict[str, Any]:
     """Read settings through the credential gate; only absence or emptiness means no restrictions.
 
-    A file that is empty or holds only JSON whitespace (space, tab, CR, LF) reads
-    as ``{}``, like an absent one: it declares nothing, so there is no restriction
-    to fail closed on. Any other byte leaves it to the parser, which fails closed.
+    A file that is empty or holds only JSON whitespace (space, tab, CR, LF), with
+    or without a single leading UTF-8 byte-order mark, reads as ``{}``, like an
+    absent one: it declares nothing, so there is no restriction to fail closed on.
+    The same single leading BOM ahead of a document is dropped and the document
+    is parsed normally. Any other byte leaves it to the parser, which fails closed.
 
     Off the event loop, a gated read that fails transiently is retried (see
     :data:`_SETTINGS_READ_BACKOFF_SECS`): the first attempt, one immediate
@@ -340,6 +343,9 @@ def _read_mcp_settings(path: Path) -> dict[str, Any]:
         refusal = "MCP settings could not be safely read"
     else:
         raise ValueError(refusal)
+    # Windows editors commonly save UTF-8 with a byte-order mark. Drop it before
+    # the emptiness test so a BOM-only file reads as the empty file it is.
+    raw = raw.removeprefix(codecs.BOM_UTF8)
     if not raw.strip(_JSON_WHITESPACE):
         # A 0-byte or whitespace-only file declares no server, so it carries no
         # restriction to keep authoritative: it reads as absent, the same "no
