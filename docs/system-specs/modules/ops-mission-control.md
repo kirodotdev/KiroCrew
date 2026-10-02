@@ -1357,10 +1357,12 @@ to answer and cannot, which is an off-shift VOTE (the same reading a raise gets)
 refuse every manual action. That asymmetry is the general shape: when a decision reads one fenced
 and one unfenced input, the fenced one has to arbitrate.
 
-\#8 is fixed by PLACEMENT, like the schedule: the index joins `_WRITE_PROTECTED_HOME_PATHS` and
-`_WRITE_PROTECTED_BASH_LEAVES`, so the agent's file and shell tools cannot rewrite it while every
-instance still READS it (it is the board). Resolving the signal server-side — the fix used for the
-same defect on `/incident/claim` — cannot help here, because the store IS the server's copy.
+\#8 is fixed at the file-tool boundary by PLACEMENT, like the schedule: the index joins
+`security._WRITE_PROTECTED_HOME_PATHS`, so file-edit tools cannot rewrite it while every
+instance still READS it (it is the board). The shell-command gate matches no paths;
+shell protection requires an OS seal, not this file-tool entry. Resolving the signal
+server-side — the fix used for the same defect on `/incident/claim` — cannot help here,
+because the store IS the server's copy.
 
 \#6 needs no fence — it is not a writable input at all, which is why it is worth listing beside
 the five that are: the audit question "what does this refusal depend on?" has an answer that is

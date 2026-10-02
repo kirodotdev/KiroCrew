@@ -71,9 +71,14 @@ logger = logging.getLogger("kirocrew.decisions.local_runtime")
 #: read-only, so an agent cannot plant a link the gateway then downloads through.
 WEIGHTS_SUBDIR = Path("decisions") / "models"
 #: Each preset's environment and server log. The sandboxed uv and the server write
-#: here, so it cannot be read-only; the gateway writes into it only through
-#: :func:`_refuse_links` and exclusive, no-follow opens.
-WORK_SUBDIR = Path("models") / "decisions"
+#: here, so the runtime's own spawns are handed this preset's directory as a
+#: writable carve-out (``extra_writable_dirs``) out of the ``run`` seal, the same
+#: shape the MCP probe's ``run/mcp-tmp/<probe>`` TMPDIR uses. It cannot live under
+#: ``models``: that leaf is READONLY in every sandbox mode and a private window
+#: opens only inside a HIDDEN tree, so uv and the server would meet EROFS there.
+#: The gateway writes into it only through :func:`_refuse_links` and exclusive,
+#: no-follow opens.
+WORK_SUBDIR = Path("run") / "decisions"
 
 #: Launchers and dependency locks ship beside this module.
 SERVERS_DIR = Path(__file__).resolve().parent / "local_servers"
@@ -657,13 +662,15 @@ def _sandboxed_run(
 ) -> tuple[int, str]:
     """Run *argv* under the shared sandbox with a scrubbed environment.
 
-    *own_dir* is the preset's directory, re-exposed read-write: it may sit inside
-    a tree the sandbox hides, and the environment has to be written there. A set
+    *own_dir* is the preset's directory, carved back out of the ``run`` seal
+    read-write: it sits inside the sealed runtime parent, and the environment has
+    to be written there. The caller creates it first, because the carve-out
+    validator refuses a candidate that is not an existing real directory. A set
     *stop* ends the command early, so a deactivation or a gateway shutdown never
     leaves an installer writing into an environment a later run rebuilds.
     """
     wrapped, env, cleanup = sandboxed_spawn_argv(
-        argv, mode="strict", strip_python_env=True, extra_private_dirs=(str(own_dir),)
+        argv, mode="strict", strip_python_env=True, extra_writable_dirs=(str(own_dir),)
     )
     name = Path(argv[0]).name
     try:
@@ -717,13 +724,15 @@ def _sandboxed_spawn(
 
     Returns the handle and the sandbox's temp launcher/profile, which the caller
     unlinks once the handle is reaped. *extra_env* is added to the scrubbed
-    environment, after the scrub.
+    environment, after the scrub. *own_dir* is carved out of the ``run`` seal
+    read-write and is created BEFORE the wrap: the carve-out validator resolves
+    each candidate and refuses one that is not an existing real directory.
     """
+    log_path.parent.mkdir(parents=True, exist_ok=True)
     wrapped, env, cleanup = sandboxed_spawn_argv(
-        argv, mode="strict", strip_python_env=True, extra_private_dirs=(str(own_dir),)
+        argv, mode="strict", strip_python_env=True, extra_writable_dirs=(str(own_dir),)
     )
     env = {**env, **extra_env}
-    log_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         with os.fdopen(_open_log(own_dir, log_path), "ab") as log:
             proc = popen_limited(  # noqa: S603 - fixed argv, no request-derived values

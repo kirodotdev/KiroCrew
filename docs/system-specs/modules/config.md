@@ -2436,10 +2436,10 @@ leaf on `security._CREW_SECRET_LEAVES`):
 The absence is deliberate and the precedent is `denied_commands.json`:
 `is_sensitive_write_path("~/.kiro/crew/config.json")` is `True` (the *tool* path is
 protected), but `is_sensitive_bash_command("echo x > ~/.kiro/crew/config.json")` is
-`None` — `config.json` is not among `_WRITE_PROTECTED_BASH_LEAVES` (which fences
-only a few specific control files elsewhere under the home). A config
-toggle would therefore be flippable by a prompt-injected agent through any shell
-redirect.
+`None` — the shell-command gate matches no paths. File tools are governed by
+`security._WRITE_PROTECTED_HOME_PATHS`, and the OS read-only seal in `sandbox.py`
+covers `config.json` only for a sandboxed shell, so outside the sandbox a config
+toggle would be flippable by a prompt-injected agent through any shell redirect.
 
 - **`enabled`** — the primary enable for full desktop observation plus input
   synthesis. A security ceiling, so it goes where the agent can neither read nor

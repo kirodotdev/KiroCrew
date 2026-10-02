@@ -513,6 +513,11 @@ class WhisperEngine:
                     model.name, (time.monotonic() - hash_started) * 1000.0
                 )
             if path is None:
+                status = getattr(models.store(), "status", None) or {}
+                if status.get("refused") and status.get("model") == model.name:
+                    # Not "not downloaded": the bytes are present and pinned, and a
+                    # download would not help. The detail names the file and the remedy.
+                    return Availability(False, CODE_IMPORT_FAILED, str(status.get("error", "")))
                 return Availability(
                     False,
                     CODE_MODEL_MISSING,

@@ -321,7 +321,12 @@ class TestLeafOnlyPopulationIsRecorded:
     #: launch fingerprints; ``mcp/resolved`` holds executables substituted for an
     #: approved launch. Each sits beside writable siblings, so no parent stand-in
     #: can hold it.
-    EXPECTED: dict[str, int] = {"standard": 262, "cc": 269, "strict": 270}
+    #:
+    #: ``models`` holds downloaded weights and the speech decoder, sealed read-only
+    #: so a sandboxed shell cannot swap the bytes between a loader's digest check
+    #: and its reopen. A data-home root leaf, three entries per tier, held by its
+    #: own name for the same reason as the root leaves above.
+    EXPECTED: dict[str, int] = {"standard": 265, "cc": 272, "strict": 273}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:

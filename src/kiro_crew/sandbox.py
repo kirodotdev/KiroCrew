@@ -579,6 +579,38 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # day-file written later is visible), and every legitimate writer is the
     # gateway, outside the sandbox. Nothing writes a decision row from inside one.
     "decisions",
+    # Downloaded model weights and the speech decoder store (``embeddings.models_dir``,
+    # ``stt.models.models_dir``, ``stt.decoder.store_dir``). An input to a trust
+    # decision: each loader checks a pinned sha256 and then reopens the file by name,
+    # so a writable directory leaves a window to swap the bytes between the check and
+    # the open. ``security.paths`` already refuses the agent's file-edit tool here;
+    # this seal is the load-bearing half against a sandboxed shell, which that gate
+    # never sees. A symlink or junction at the name is refused: a bind would seal its
+    # referent and leave the name replaceable in the writable data home. Keep weights
+    # as real files under models/; to put them on another disk, relocate the whole
+    # data home (KIROCREW_HOME), so the seal covers them. READONLY rather than hidden,
+    # because the in-sandbox knowledge embedder loads its GGUF from here.
+    # Every writer -- the embedding and speech downloaders, the decoder fetch and the
+    # speech loader's crash marker -- runs in the gateway, outside the sandbox. A
+    # sandboxed spawn that needs a writable directory of its own cannot be given one
+    # beneath this leaf: a private window opens only inside a HIDDEN tree. Such a
+    # directory belongs under ``run`` as an ``extra_writable_dirs`` carve-out, as the
+    # decision runtime's ``run/decisions/<id>`` does.
+    # The seal covers paths, so check the live home's bounded set of loader files on
+    # every spawn that builds a new sandbox boundary, and every delegated Kiro
+    # hand-off; a nested spawn inherits an outer boundary that was checked when it
+    # was built. That is the namespace and Seatbelt backends below, and the
+    # hand-off. Refuse symlinks and junctions at every component from models down:
+    # a bind seals the referent while the name stays replaceable in a writable
+    # parent. A hard link on a loader file is judged at the LOADER instead, on a
+    # descriptor: ``stt.models.ModelStore._verified_on_disk`` (digest, then reopen) and
+    # ``embeddings._model_file_stamp_unaliased`` (no digest; the stamp ties the mapped
+    # inode to the judged one) ask :func:`require_unaliased_model_file`, so an aliased
+    # file fails that one load rather than every sandboxed spawn
+    # on a host whose files legitimately carry a second name (stow, chezmoi,
+    # ``rsync --link-dest``). Non-loader names (including download staging) and
+    # non-live homes are untouched.
+    "models",
     # The hosts a reader allowed long-query links for, per workspace. Every entry
     # relaxes the exfiltration check for that host, so a writable list lets a
     # prompt-injected agent allow the host it wants to send conversation data to.
@@ -934,6 +966,11 @@ _CREW_CHILD_READABLE_LEAVES: tuple[str, ...] = (
     # outside the sandbox, and nothing writes a decision row from inside one. Also off
     # the read-gate floor, so the mask never covered it either way.
     "decisions",
+    # Model weights and the speech decoder. No credential, and the in-sandbox
+    # knowledge embedder reads the GGUF here. The risk is a write, answered by the
+    # read-only seal. Off the read-gate floor too (only edits are refused), so the
+    # mask never covered it.
+    "models",
     # Allowed hosts for the exfiltration check. Host names, not credentials; the
     # risk is a write, answered by the read-only seal.
     "redaction-allow",
@@ -1523,6 +1560,14 @@ _CREW_PRECREATE_READONLY_DIR_LEAVES: tuple[str, ...] = (
     # which is the state of every install that has never sampled a decision, and
     # leaves exactly the name an agent would create in order to forge a verdict.
     "decisions",
+    # Downloaded model weights, on the same argument. (1) Every reader resolves a
+    # weight or decoder FILE by name and treats a missing file as not installed, so
+    # an empty directory reads as no model, exactly as an absent one does. (2) The
+    # directory bind is live, so a file the gateway downloads later is seen. Without
+    # this entry the seal skips the directory on every install that has not finished
+    # its first download, which is the window a sandboxed shell would use to swap
+    # the bytes the loaders verify.
+    "models",
     # The redaction allow-list, on the same argument: no file means no host
     # allowed, which is what an empty directory means too, and the bind is live.
     "redaction-allow",
@@ -1546,6 +1591,7 @@ _CREW_NOFOLLOW_READONLY_DIR_LEAVES: tuple[str, ...] = (
     "subagents",
     "member-memory-bindings",
     "decisions",
+    "models",
     "redaction-allow",
     "pi-gate",
     "mcp-launch-approvals",
@@ -1601,6 +1647,11 @@ _DELEGATED_OVERLAP_LEAF_REASONS: "dict[str, tuple[str, str]]" = {
         "sealed decision log",
         "the agent could append a feedback row the owner's summary counts as a "
         "verdict nobody gave",
+    ),
+    "models": (
+        "sealed model weights",
+        "the agent could swap the weights a digest-pinned loader verifies before it "
+        "reopens them by name",
     ),
     "redaction-allow": (
         "sealed redaction allow-list",
@@ -2273,6 +2324,70 @@ def _refuse_if_symlink_leaf(target: str) -> None:
         )
 
 
+def _refuse_aliased_model_descendants() -> None:
+    """Check only the live home's bounded set of loader paths, without reading bytes.
+
+    Both backend seals cover paths, not inodes. A delegated Kiro hand-off applies
+    no seal of Kiro Crew's and reaches neither backend builder, so the check runs
+    before that hand-off too. Run on every spawn that builds a new sandbox
+    boundary, and every delegated Kiro hand-off; a nested spawn inherits an outer
+    boundary that was checked when it was built. Concretely: the Linux namespace
+    and macOS Seatbelt backends, and a delegated Kiro hand-off on macOS or
+    Windows -- never on an unconfined spawn, which seals nothing for an alias to
+    defeat. Refuse a symlink or junction at any component from ``models`` through
+    a loader file, without following or removing it. A HARD LINK is not judged
+    here: it is judged at each loader, on a descriptor, through
+    :func:`require_unaliased_model_file` (``stt.models.ModelStore._verified_on_disk``
+    for whisper, ``embeddings._model_file_stamp_unaliased`` for the GGUF). That is both
+    the narrower blast radius
+    -- one load fails rather than every sandboxed spawn on a host whose files
+    legitimately carry a second name -- and the stronger answer, because a
+    descriptor ties the judgement to the inode the bytes came from while a name
+    check here and an ``open`` in the loader are two separate resolutions. Missing
+    files are normal during download/replace; other stat errors warn and skip that
+    file.
+    Non-loader names (including download staging) and non-live homes are untouched.
+    """
+    # circular import (pre-emptive, layering): embeddings and stt.models import this
+    # module lazily at load time, and a module-scope import here would pull both model
+    # subsystems into every importer of the sandbox.
+    from kiro_crew.embeddings import _GGUF_FILENAME
+    from kiro_crew.stt import decoder, models
+
+    root = str(config_dir())
+    loader_paths: list[tuple[str, ...]] = [("models", _GGUF_FILENAME)]
+    loader_paths.extend(("models", "whisper", model.filename) for model in models.CATALOG)
+    artifact = decoder.artifact_for()
+    if artifact is not None:
+        loader_paths.append(("models", decoder._STORE_DIRNAME, artifact.filename))
+    for parts in loader_paths:
+        target = root
+        for part in parts:
+            target = os.path.join(target, part)
+            try:
+                info = os.lstat(target)
+            except FileNotFoundError:
+                break
+            except OSError as exc:
+                logger.warning(
+                    "sandbox: cannot stat the sealed model path %s: %s; skipping this loader file.",
+                    safe_terminal_line(target),
+                    safe_terminal_line(str(exc)),
+                )
+                break
+            if stat.S_ISLNK(info.st_mode) or platform_compat.lstat_is_name_surrogate(info):
+                pointed_at = "(unreadable)"
+                with contextlib.suppress(OSError):
+                    pointed_at = os.readlink(target)
+                raise SandboxCeilingUnsealable(
+                    f"the sealed model path {safe_terminal_line(target)} is a SYMLINK or "
+                    f"JUNCTION -> {safe_terminal_line(pointed_at)}. The seal covers paths, "
+                    "so its target could remain writable outside the model tree. Keep the "
+                    "weights as real files under models/; to put them on another disk, "
+                    "relocate the whole data home (KIROCREW_HOME), so the seal covers them."
+                )
+
+
 def _require_real_dir_nofollow(target: str) -> None:
     """Confirm *target* is a real directory with NO-FOLLOW semantics, else refuse.
 
@@ -2307,7 +2422,12 @@ def _require_real_dir_nofollow(target: str) -> None:
 
 
 def _require_real_file_nofollow(
-    target: str, *, harm: str, remedy: str, fd: "int | None" = None
+    target: str,
+    *,
+    harm: str,
+    remedy: str,
+    fd: "int | None" = None,
+    subject: str = "strict governance ceiling",
 ) -> None:
     """Confirm *target* is a lone regular file, else refuse. For strict file leaves only.
 
@@ -2356,42 +2476,43 @@ def _require_real_file_nofollow(
     ``open`` time with ``ELOOP``, and ``fstat`` on an ordinary descriptor never reports
     ``S_IFLNK`` in any case. Callers therefore keep the by-name form as well, which is what
     still produces the symlink refusal and its remedy.
+
+    *subject* names the KIND of file in the refusal, because the sentences are read by an
+    operator who has to find the thing being described. It defaults to the governance
+    ceilings this was written for; a caller guarding a file that is not a ceiling passes its
+    own noun rather than sending that operator looking for a policy document.
     """
     if fd is not None:
         try:
             info = os.fstat(fd)
         except OSError as exc:
-            raise SandboxCeilingUnsealable(
-                f"cannot stat the strict governance ceiling {target}: {exc}"
-            ) from exc
+            raise SandboxCeilingUnsealable(f"cannot stat the {subject} {target}: {exc}") from exc
     else:
         try:
             info = os.lstat(target)
         except FileNotFoundError:
             return
         except OSError as exc:
-            raise SandboxCeilingUnsealable(
-                f"cannot stat the strict governance ceiling {target}: {exc}"
-            ) from exc
+            raise SandboxCeilingUnsealable(f"cannot stat the {subject} {target}: {exc}") from exc
         if stat.S_ISLNK(info.st_mode):
             pointed_at = "(unreadable)"
             with contextlib.suppress(OSError):
                 pointed_at = os.readlink(target)
             raise SandboxCeilingUnsealable(
-                f"the strict governance ceiling {target} is a SYMLINK -> {pointed_at}. The seal "
+                f"the {subject} {target} is a SYMLINK -> {pointed_at}. The seal "
                 "binds the file it resolves to while the link name stays in a writable "
                 f"directory, so a sandboxed process could replace the name and {harm}. {remedy}"
             )
     if not stat.S_ISREG(info.st_mode):
         raise SandboxCeilingUnsealable(
-            f"cannot seal {target}: it is not a regular file, so the read-only bind would "
+            f"the {subject} {target} is not a regular file, so the read-only bind would "
             f"not cover what a reader resolves there. {remedy}"
         )
     if info.st_nlink > 1:
         raise SandboxCeilingUnsealable(
-            f"the strict governance ceiling {target} has {info.st_nlink} hardlinks. A bind "
+            f"the {subject} {target} has {info.st_nlink} hardlinks. A bind "
             "mount seals a MOUNT, not an inode, so a write through the other name reaches "
-            f"the very inode this ceiling exposes and can {harm}. {remedy}"
+            f"the very inode this seal exposes and can {harm}. {remedy}"
         )
 
 
@@ -2775,6 +2896,51 @@ def require_unaliased_launch_state(path: str, *, fd: "int | None" = None) -> Non
             "finds your instance again."
         ),
         fd=fd,
+    )
+
+
+def require_unaliased_model_file(path: str, *, fd: int) -> None:
+    """Refuse an alias-backed loader file at the point a loader is about to trust it.
+
+    PUBLIC, and called from ``embeddings._model_file_stamp_unaliased`` before llama.cpp maps
+    the bundled GGUF, and from ``stt.models.ModelStore._verified_on_disk`` -- the single gate
+    for "there is already a usable file here", which hashes the file and then hands its PATH
+    to a native loader that reopens it. That gap is the whole exposure: a second name on the
+    same inode is a writable handle onto bytes the digest already blessed, and the ``models``
+    seal covers paths, so no mount or Seatbelt rule names the alias. The GGUF has no
+    digest at load, which makes the same alias worse rather than harmless: nothing else
+    stands between a write through it and the next load.
+
+    Takes a DESCRIPTOR and nothing else, which is what makes this a check rather than a
+    check-then-use. The judgement lands on the inode the digest was computed from, so a swap
+    at the name between the hash and this call cannot put un-judged content in front of the
+    loader. There is deliberately no by-name mode: ``O_NOFOLLOW`` on the loader's own open
+    already refuses a symlinked leaf, reported as this same exception, and the spawn-path check
+    (:func:`_refuse_aliased_model_descendants`) is what refuses a symlink or junction at the
+    directory components above it.
+
+    Refuses the LOAD, not the spawn. The blast radius of refusing here is one model load on a
+    host whose weights carry a second name; refusing on the spawn path would cost every
+    sandboxed spawn on that host, which is the whole box for one file's exposure.
+
+    What this does NOT close: an alias that existed earlier, was written through, and was
+    unlinked before the hash leaves a lone regular file holding forged bytes, and no
+    ``fstat`` rule can see that an inode once had a second name. The seal and the file-write
+    gate are what keep the agent from creating the alias at all; this is what stops bytes
+    being consumed through one that already exists.
+    """
+    _require_real_file_nofollow(
+        path,
+        harm=(
+            "replace the verified weights with bytes no digest covered, which the loader "
+            "then reopens by name and uses for every later request"
+        ),
+        remedy=(
+            "Replace the link with a plain copy: copy it to a temporary name in the same "
+            "directory, then rename that copy over this path."
+        ),
+        fd=fd,
+        subject="verified model file",
     )
 
 
@@ -7452,6 +7618,7 @@ def namespace_argv(
     # with a keystone the seal could not cover.
     _required_targets: list[str] = []
     _materialize_sealable_ceilings(_required_targets)
+    _refuse_aliased_model_descendants()
     # The mask loop has the same guard (``isdir``), so the on-demand hidden
     # directories get the same treatment for the same reason.
     _materialize_maskable_dirs(_required_targets)
@@ -7615,13 +7782,28 @@ def _writable_carveout_spellings(
 ) -> list[str]:
     """Validate write carve-outs against the sandbox's own seals.
 
-    ``extra_writable_dirs`` exists for exactly one purpose: a caller that hands
-    a child its private scratch directory INSIDE the sealed runtime parent
+    ``extra_writable_dirs`` is NOT general-purpose: it exists for a caller that
+    hands a child its OWN self-derived directory INSIDE the sealed runtime parent
     (``<data home>/run``, kept read-only via :func:`_voice_runtime_parent_paths`)
-    needs that one directory writable — the MCP probe's ``TMPDIR`` lives at
-    ``run/mcp-tmp/<probe>`` and a Bun-packaged server must extract its native
-    module there before it can answer the handshake. Everything else stays
-    sealed.
+    and needs that one directory writable. Three uses, and they are the
+    enumeration:
+
+    * ``run/mcp-tmp/<probe>`` — the MCP probe's private ``TMPDIR``; a
+      Bun-packaged server must extract its native module there before it can
+      answer the handshake;
+    * ``run/mcp-resolve/<digest>`` — the npm resolver's private install prefix
+      (``mcp_gateway.resolve_once._staging_spec_dir``), where ``npm install
+      --prefix`` builds a tree that is then published into ``mcp/resolved``; the
+      install runs third-party lifecycle scripts, so the writable window is the
+      staging prefix and never the published store;
+    * ``run/decisions/<id>`` — the local decision runtime's own work dir
+      (``decisions.local_runtime.WORK_SUBDIR``), holding the preset's uv
+      environment and ``server.log``; the sandboxed uv and the model server both
+      write there, and it cannot live under ``models`` because that leaf is
+      READONLY and a private window opens only inside a HIDDEN tree.
+
+    Everything else stays sealed. A fourth caller is a decision, not a parameter
+    reuse: read the scope notes below before adding one.
 
     Both sandbox backends apply the carve-out with override semantics (Seatbelt
     is last-match-wins; the Linux launcher remounts a fresh bind read-write), so
@@ -8085,6 +8267,12 @@ def _delegate_to_kiro_internal_sandbox(
     """
 
     global _kiro_delegation_warned
+    # The public backend builders validate their own paths. Delegation reaches
+    # neither builder, so check here, BEFORE the audit below: a refused hand-off
+    # must not leave a "delegated" record for a spawn that never happened. Keep it
+    # outside the audit's catch-all so a model refusal propagates rather than
+    # becoming the fallback; a macOS fallback re-checks in its own builder.
+    _refuse_aliased_model_descendants()
     try:
         # circular import (pre-emptive, layering): sandbox.py is a low-level
         # leaf imported at module level by many modules including subprocess
@@ -8184,6 +8372,8 @@ def sandbox_exec_argv(
     if resolved_argv:
         resolved_argv[0] = _resolve_agent_executable(resolved_argv[0])
 
+    # Seatbelt's path denies cannot cover an alias outside the model tree either.
+    _refuse_aliased_model_descendants()
     # A pre-upgrade md-notebook staging temp holding the PAT sits at a name this profile
     # never denies (it names the state leaves and the staging directory, not an arbitrary
     # ``*.tmp`` sibling), so removing it is NOT Linux-only work. File materialisation
@@ -10033,6 +10223,12 @@ def wrap_argv(
         # doesn't apply) or non-kiro spawns, "off" means genuinely unconfined.
         kiro_spawn_off = _spawns_kiro_cli(argv) if is_kiro_cli is None else is_kiro_cli
         if sys.platform == "darwin" and kiro_spawn_off and kiro_internal_sandbox_enabled():
+            # This off-mode spawn delegates to kiro-cli's own sandbox, which seals
+            # nothing of Kiro Crew's, so cover the model loader paths here before
+            # returning its argv -- the two backend builders are not reached. An
+            # unconfined off-mode spawn (Linux, or non-kiro) runs no check: with no
+            # seal there is nothing for a models alias to defeat.
+            _refuse_aliased_model_descendants()
             # Delegation is valid: kiro-cli's sandbox IS active. Apply env scrub
             # (same as _delegate_to_kiro_internal_sandbox) but WITHOUT the
             # seatbelt fallback on SEL failure — mode="off" must never produce a

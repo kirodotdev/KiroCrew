@@ -47,6 +47,7 @@ bytes.
 from __future__ import annotations
 
 import asyncio
+import errno
 import hashlib
 import logging
 import os
@@ -54,6 +55,7 @@ import tempfile
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
+from types import ModuleType
 from typing import Callable
 
 from kiro_crew.atomic_write import replace_with_retry
@@ -80,6 +82,11 @@ SKIP_DOWNLOAD_ENV = "KIROCREW_SKIP_MODEL_DOWNLOAD"
 #: the progress callback are not per-packet work, small enough that a cancelled
 #: download stops promptly.
 _CHUNK_BYTES = 1 << 20
+
+#: ``0`` where the platform has no such flag, so one ``open`` call covers both.
+#: ``O_NOFOLLOW`` is POSIX-only and ``O_BINARY`` is Windows-only.
+_O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+_O_BINARY = getattr(os, "O_BINARY", 0)
 
 #: Suffix for the staging file. Staged inside the TARGET directory so the final
 #: step is a same-filesystem ``os.replace`` and therefore atomic; a staging area
@@ -283,6 +290,64 @@ def _sha256_file(path: Path) -> str:
                 break
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _open_verified_nofollow(path: Path, sandbox: ModuleType) -> int:
+    """Open *path* for the trust check without following a symlinked leaf.
+
+    ``O_NOFOLLOW`` refuses a symlink at the leaf with ``ELOOP`` (``EMLINK`` on some BSDs).
+    That is the same refusal the spawn path makes for a symlinked component, so it is
+    raised the same way, as ``SandboxCeilingUnsealable`` naming the file and the remedy,
+    rather than as an ``OSError`` that would abort voice preparation with nothing the
+    operator can act on. Any other open error propagates unchanged.
+    """
+    try:
+        return os.open(path, os.O_RDONLY | _O_NOFOLLOW | _O_BINARY)
+    except OSError as exc:
+        if exc.errno not in (errno.ELOOP, errno.EMLINK) and not os.path.islink(path):
+            raise
+        shown = sandbox.safe_terminal_line(str(path))
+        raise sandbox.SandboxCeilingUnsealable(
+            f"the verified model file {shown} is a SYMLINK. The seal "
+            "covers paths, so its target could remain writable outside the model tree. "
+            "Keep the weights as real files under models/; to put them on another disk, "
+            "relocate the whole data home (KIROCREW_HOME), so the seal covers them."
+        ) from exc
+
+
+def _sha256_verified_file(path: Path) -> str:
+    """Digest *path* and judge the very descriptor the bytes came from. Blocking.
+
+    Separate from :func:`_sha256_file`, which the download paths use on a staging file
+    this process just created with an exclusive open: a staging name cannot carry an
+    operator's second link, and the decoder store shares that function too. This one is
+    for the trust check on a file that was ALREADY on disk, where the alias question is
+    live.
+
+    One ``open`` for both answers, which is the point: hashing a name and then asking
+    about that name are two resolutions with a swap window between them, so the digest
+    would describe one inode and the refusal another. ``O_NOFOLLOW`` because a symlinked
+    leaf must fail here rather than resolve somewhere the seal does not cover.
+    """
+    # Imported here, not at module scope: this keeps the sandbox module out of the stt
+    # import graph, mirroring the lazy direction sandbox itself uses for stt.
+    from kiro_crew import sandbox
+
+    fd = _open_verified_nofollow(path, sandbox)
+    try:
+        digest = hashlib.sha256()
+        while True:
+            chunk = os.read(fd, _CHUNK_BYTES)
+            if not chunk:
+                break
+            digest.update(chunk)
+        # After the read, so the answer is about the inode whose bytes were consumed.
+        # Raises SandboxCeilingUnsealable, which is NOT a failed digest: it refuses the
+        # load rather than returning a verdict the caller would answer with a download.
+        sandbox.require_unaliased_model_file(str(path), fd=fd)
+        return digest.hexdigest()
+    finally:
+        os.close(fd)
 
 
 def stream_pinned_payload(
@@ -510,8 +575,8 @@ class ModelStore:
         "a concurrent caller finished while we waited" branch returning the file
         unverified, which is the same hole through the other door.
         """
-        accepted = await self._accept_existing(model)
-        if accepted is not None:
+        accepted, refused = await self._accept_existing_or_refuse(model)
+        if accepted is not None or refused:
             return accepted
         if os.environ.get(SKIP_DOWNLOAD_ENV) == "1":
             logger.info("%s=1, not downloading whisper model %s", SKIP_DOWNLOAD_ENV, model.name)
@@ -522,8 +587,8 @@ class ModelStore:
         async with self._lock:
             # A concurrent caller may have completed it while we waited, and its file
             # gets the same check ours would have.
-            accepted = await self._accept_existing(model)
-            if accepted is not None:
+            accepted, refused = await self._accept_existing_or_refuse(model)
+            if accepted is not None or refused:
                 return accepted
             self._set(step="downloading", model=model.name, total=model.size_bytes)
             try:
@@ -541,6 +606,28 @@ class ModelStore:
             self._set(step="ready", model=model.name, total=model.size_bytes)
             self._start_decoder_autofetch()
             return path
+
+    async def _accept_existing_or_refuse(self, model: WhisperModel) -> tuple[Path | None, bool]:
+        """:meth:`_accept_existing`, with an aliased file reported instead of raised.
+
+        Returns ``(path, refused)``. A file reachable under a second hard link is refused
+        at load (see :meth:`_verified_on_disk`). ``ensure`` promises ``None`` rather than
+        an exception into a websocket handler, so the refusal becomes a
+        ``failed`` status (flagged ``refused``) carrying the message that names the file
+        and the remedy, which the settings page shows as it shows any failure, and ``ensure``
+        stops there without downloading: the bytes are the pinned ones, and only the
+        operator can remove the second name.
+        """
+        # Imported here, not at module scope: this keeps the sandbox module out of the
+        # stt import graph, mirroring the lazy direction sandbox itself uses for stt.
+        from kiro_crew.sandbox import SandboxCeilingUnsealable
+
+        try:
+            return await self._accept_existing(model), False
+        except SandboxCeilingUnsealable as exc:
+            logger.error("Refusing to load whisper model %s: %s", model.name, exc)
+            self._set(step="failed", model=model.name, error=str(exc), refused=True)
+            return None, True
 
     async def _accept_existing(self, model: WhisperModel) -> Path | None:
         """The on-disk path if *model* is present AND matches its pin, else ``None``.
@@ -565,12 +652,13 @@ class ModelStore:
 
         `is_present` deliberately tests only the size: it answers "must this be
         downloaded", and it is on the path of a UI poll. But size alone is not a
-        trust check, and the models directory is fenced by nothing -- neither
-        `is_sensitive_path` nor `is_sensitive_write_path` covers it, and a plain
-        ``cp`` over the weights is an allowed bash command. So an agent could replace
-        them with a same-size file and every later session would transcribe the user's
-        speech through weights of its choosing, persistently and with nothing to show
-        it had happened.
+        trust check. The agent's file-edit tool is refused under ``models``
+        (``security.paths._WRITE_PROTECTED_HOME_PATHS``) and a sandboxed shell meets the
+        read-only seal (``sandbox._CREW_READONLY_LEAVES``), but an unsandboxed process, a
+        file swapped before a seal existed, or a second name in a writable tree can still
+        replace the weights with a same-size file, and every later session would
+        transcribe the user's speech through weights of its choosing, persistently and
+        with nothing to show it had happened.
 
         Verified on EVERY call, with no metadata cache. A first version memoised the
         result against the file's size and mtime, which does not hold: `os.utime` is
@@ -584,18 +672,33 @@ class ModelStore:
         resident model is already loaded from bytes that passed, and the next thing
         that could load different ones is the next load.
 
-        A file that fails is deleted, so the caller's download path replaces it rather
-        than reporting voice as broken.
+        A file reachable under a SECOND HARD LINK refuses this load instead, and does
+        not reach the digest comparison at all. A digest answers "these bytes are the
+        pinned ones"; it cannot answer "and they will still be these bytes when the
+        native loader reopens this path by name", and an alias is exactly a writable
+        handle onto the inode that just passed. Asked about the DESCRIPTOR the bytes
+        were read from (``sandbox.require_unaliased_model_file``), so the inode judged
+        and the inode hashed are one resolution rather than two. It refuses rather than
+        returning ``False``: ``False`` means "download over it", which would hand an
+        operator a silent multi-gigabyte transfer as the report of a condition only they
+        can fix, and the file is deliberately left untouched -- a hard link is ordinary
+        for a dotfile manager or a deduplicating backup, so deleting one name of the
+        operator's own file is not this gate's call to make.
+
+        A file that fails the DIGEST is deleted, so the caller's download path replaces
+        it rather than reporting voice as broken.
 
         Deliberately diverging from `embeddings`, which documents the same size-only
         trade for its own GGUF. That reasoning ("a sha256 over ~600MB on every boot
         buys almost nothing") weighed a corrupted download, not a writable directory
-        and an agent with a shell.
+        and an agent with a shell. The alias question does not arise there either: with
+        no digest at load there is no verified-then-reopened window for a second name to
+        slip into.
         """
         path = model_path(model)
         if not path.is_file():
             return False
-        actual = await asyncio.to_thread(_sha256_file, path)
+        actual = await asyncio.to_thread(_sha256_verified_file, path)
         if actual == model.sha256:
             return True
         logger.error(
@@ -623,6 +726,7 @@ class ModelStore:
         done: int = 0,
         total: int = 0,
         error: str = "",
+        refused: bool = False,
     ) -> None:
         self.status = {
             "step": step,
@@ -631,6 +735,10 @@ class ModelStore:
             "total_bytes": total,
             "error": error,
         }
+        if refused:
+            # Present only on a load-time alias refusal, so every other status keeps its
+            # shape. The engine reads it to report the refusal rather than "not downloaded".
+            self.status["refused"] = True
 
 
 _store: ModelStore | None = None

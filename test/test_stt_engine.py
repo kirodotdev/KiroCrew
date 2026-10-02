@@ -522,14 +522,14 @@ async def test_the_digest_is_read_once_per_load_not_once_per_session(monkeypatch
     (tmp_path / model.filename).write_bytes(payload)
 
     hashes = 0
-    real = models._sha256_file
+    real = models._sha256_verified_file
 
     def _counting(path):
         nonlocal hashes
         hashes += 1
         return real(path)
 
-    monkeypatch.setattr(models, "_sha256_file", _counting)
+    monkeypatch.setattr(models, "_sha256_verified_file", _counting)
     monkeypatch.setattr(models, "store", lambda: models.ModelStore())
     monkeypatch.setattr(
         engine_mod.WhisperEngine, "_build_model", staticmethod(lambda key: _FakeModel())
@@ -852,6 +852,33 @@ async def test_a_missing_model_reports_its_code_rather_than_raising(monkeypatch,
     result = await eng.ensure_loaded("base", "en")
     assert not result.ok
     assert result.code == engine_mod.CODE_MODEL_MISSING
+    assert not eng.loaded
+
+
+@pytest.mark.asyncio
+async def test_a_refused_model_reports_the_refusal_not_a_missing_download(monkeypatch):
+    # A hard-linked weights file is refused at load. The bytes are present and pinned,
+    # so "not downloaded" would send the operator to a download that cannot help.
+    monkeypatch.setattr(engine_mod, "probe", lambda: engine_mod.Availability(True))
+    refusal = "the verified model file /x/ggml-base.bin has 2 hardlinks"
+
+    async def _ensure(_model):
+        return None
+
+    store = type(
+        "S",
+        (),
+        {
+            "ensure": staticmethod(_ensure),
+            "status": {"step": "failed", "model": "base", "error": refusal, "refused": True},
+        },
+    )()
+    monkeypatch.setattr(models, "store", lambda: store)
+    eng = engine_mod.WhisperEngine()
+    result = await eng.ensure_loaded("base", "en")
+    assert not result.ok
+    assert result.code != engine_mod.CODE_MODEL_MISSING
+    assert result.detail == refusal
     assert not eng.loaded
 
 

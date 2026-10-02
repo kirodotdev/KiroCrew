@@ -19,6 +19,7 @@ import json
 import os
 import re
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -199,6 +200,11 @@ class TestKeystonesAreSealedInEveryMode:
         # this list asserts makes "the owner chooses the image, never the agent" true
         # rather than intended.
         "cloud.json",
+        # Downloaded model weights and the speech decoder. Each loader checks a pinned
+        # digest and then reopens the file by name, so a sandboxed shell able to write
+        # here could swap the bytes in between. The file-edit gate refuses the edit;
+        # only the kernel denial asserted here refuses the shell's.
+        "models",
     )
 
     @_POSIX_ONLY
@@ -228,6 +234,54 @@ class TestKeystonesAreSealedInEveryMode:
         assert f'(deny file-link (subpath "{target}"))' in profile
         assert f'(deny file-read* (subpath "{target}"))' not in profile
 
+    def test_the_model_weights_seal_has_a_target_on_a_fresh_install(self) -> None:
+        """Linux binds only a path that exists, and ``models`` is absent until the first
+        download finishes, so without pre-creation the seal above would be skipped for
+        every sandbox started before then -- the window it exists to close.
+        """
+        assert "models" in sandbox._CREW_PRECREATE_READONLY_DIR_LEAVES
+
+    @_POSIX_ONLY
+    def test_a_symlinked_models_leaf_refuses_the_spawn(self, tmp_path, monkeypatch):
+        target = tmp_path / "models"
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        target.symlink_to(outside, target_is_directory=True)
+        monkeypatch.setattr(sandbox, "_sealable_absent_ceilings", lambda: ([str(target)], []))
+
+        with pytest.raises(sandbox.SandboxCeilingUnsealable):
+            sandbox._materialize_sealable_ceilings()
+
+        assert target.is_symlink(), "the operator must replace the refused link"
+
+    def test_a_real_models_directory_is_accepted(self, tmp_path, monkeypatch):
+        target = tmp_path / "models"
+        target.mkdir()
+        weights = target / "weights.gguf"
+        weights.write_bytes(b"gateway-owned weights")
+        monkeypatch.setattr(sandbox, "_sealable_absent_ceilings", lambda: ([str(target)], []))
+
+        assert sandbox._materialize_sealable_ceilings() == []
+        assert weights.read_bytes() == b"gateway-owned weights"
+
+    @pytest.mark.parametrize("platform", ("darwin", "win32"))
+    def test_delegated_models_overlap_uses_its_named_reason(self, tmp_path, monkeypatch, platform):
+        home = tmp_path / "crew"
+        target = home / "models"
+        target.mkdir(parents=True)
+        monkeypatch.setattr(sandbox, "config_dir", lambda: home)
+        monkeypatch.setattr(sandbox, "_resolved_kiro_agents_targets", lambda: [])
+        monkeypatch.setattr(sandbox, "kiro_internal_sandbox_enabled", lambda: True)
+        monkeypatch.setattr(sandbox.sys, "platform", platform)
+
+        assert "models" in sandbox._CREW_NOFOLLOW_READONLY_DIR_LEAVES
+        assert "models" in sandbox._DELEGATED_OVERLAP_LEAF_REASONS
+        reason = sandbox.delegated_workspace_exposes_sealed_target(str(target))
+        assert reason is not None
+        assert "sealed model weights" in reason
+        assert "digest-pinned loader" in reason
+        assert sandbox.delegated_workspace_exposes_sealed_target(str(tmp_path / "project")) is None
+
     @_POSIX_ONLY
     @pytest.mark.parametrize("mode", _MODES)
     def test_the_seal_survives_a_file_shaped_ceiling(self, mode: str) -> None:
@@ -244,6 +298,863 @@ class TestKeystonesAreSealedInEveryMode:
         assert "_pin_mount_path(target, _any_kind)" in loop
         assert "stat.S_ISDIR" not in loop
         assert "_MS_REMOUNT | _MS_BIND | _MS_RDONLY" in loop
+
+
+@_POSIX_ONLY
+class TestModelLoaderPaths:
+    @pytest.fixture
+    def crew(self, tmp_path, monkeypatch):
+        from kiro_crew import embeddings
+        from kiro_crew.stt import models
+
+        root = tmp_path / "crew home"
+        root.mkdir()
+        for module in (sandbox, embeddings, models):
+            monkeypatch.setattr(module, "config_dir", lambda: root)
+        monkeypatch.setattr(sandbox, "_masked_crew_home_roots", lambda: [str(root)])
+        return root
+
+    @pytest.fixture
+    def loader_files(self, crew):
+        from kiro_crew import embeddings
+        from kiro_crew.stt import decoder, models
+
+        paths = [embeddings.default_model_path()]
+        paths.extend(models.model_path(model) for model in models.CATALOG)
+        installed = decoder.installed_path()
+        if installed is not None:
+            paths.append(installed)
+        return paths
+
+    @pytest.mark.parametrize("loader_index", range(6))
+    def test_loader_file_symlink_refuses_without_reading_or_removing_it(
+        self, crew, loader_files, tmp_path, monkeypatch, loader_index
+    ):
+        from pathlib import Path
+
+        if loader_index >= len(loader_files):
+            pytest.skip("no pinned decoder for this platform")
+        target = tmp_path / "outside"
+        target.write_bytes(b"original")
+        real_lstat = os.lstat
+        link = loader_files[loader_index]
+        link.parent.mkdir(parents=True, exist_ok=True)
+        link.symlink_to(target)
+
+        def lstat(path, *args, **kwargs):
+            assert os.fspath(path) != str(target), "inspected the link's target"
+            return real_lstat(path, *args, **kwargs)
+
+        def no_open(*args, **kwargs):
+            pytest.fail("read model bytes during metadata-only check")
+
+        with monkeypatch.context() as patcher:
+            patcher.setattr(sandbox.os, "lstat", lstat)
+            patcher.setattr(Path, "open", no_open)
+            patcher.setattr("builtins.open", no_open)
+            with pytest.raises(sandbox.SandboxCeilingUnsealable) as exc:
+                sandbox._refuse_aliased_model_descendants()
+        assert str(link) in str(exc.value)
+        assert str(target) in str(exc.value)
+        assert "SYMLINK" in str(exc.value)
+        assert link.is_symlink()
+        assert target.read_bytes() == b"original"
+
+    @pytest.mark.parametrize("component", ("models", "whisper", "ffmpeg"))
+    def test_intermediate_symlink_refuses(self, crew, tmp_path, monkeypatch, component):
+        from kiro_crew.stt import decoder
+
+        # Pin a supported platform so the decoder directory is always a loader ancestor.
+        artifact = decoder.ARTIFACTS[0]
+        monkeypatch.setattr(decoder, "artifact_for", lambda: artifact)
+        target = tmp_path / "outside"
+        target.mkdir()
+        link = crew / "models"
+        if component != "models":
+            link.mkdir()
+            link /= component
+        link.symlink_to(target, target_is_directory=True)
+        real_lstat = os.lstat
+
+        def lstat(path, *args, **kwargs):
+            assert not os.fspath(path).startswith(str(link) + os.sep), "followed a link"
+            return real_lstat(path, *args, **kwargs)
+
+        with monkeypatch.context() as patcher:
+            patcher.setattr(sandbox.os, "lstat", lstat)
+            with pytest.raises(sandbox.SandboxCeilingUnsealable) as exc:
+                sandbox._refuse_aliased_model_descendants()
+        assert str(link) in str(exc.value)
+        assert str(target) in str(exc.value)
+        assert link.is_symlink()
+
+    @pytest.mark.parametrize("component", ("models", "whisper", "weights"))
+    def test_name_surrogate_refuses_without_reading_or_removing_it(
+        self, crew, loader_files, monkeypatch, component
+    ):
+        from pathlib import Path
+
+        weights = loader_files[1]
+        weights.parent.mkdir(parents=True)
+        weights.write_bytes(b"original")
+        linked = {"models": crew / "models", "whisper": weights.parent, "weights": weights}[
+            component
+        ]
+        before = linked.lstat()
+        real_lstat = os.lstat
+        inspected = []
+
+        def lstat(path, *args, **kwargs):
+            inspected.append(os.fspath(path))
+            return real_lstat(path, *args, **kwargs)
+
+        def no_open(*args, **kwargs):
+            pytest.fail("read model bytes during metadata-only check")
+
+        with monkeypatch.context() as patcher:
+            # A junction's lstat mode is a directory, not S_IFLNK. Select just
+            # this entry by identity so the same test runs on a POSIX host.
+            patcher.setattr(
+                sandbox.platform_compat,
+                "lstat_is_name_surrogate",
+                lambda info: (info.st_dev, info.st_ino) == (before.st_dev, before.st_ino),
+            )
+            patcher.setattr(sandbox.os, "lstat", lstat)
+            patcher.setattr(sandbox.os, "open", no_open)
+            patcher.setattr(Path, "open", no_open)
+            patcher.setattr("builtins.open", no_open)
+            with pytest.raises(sandbox.SandboxCeilingUnsealable) as exc:
+                sandbox._refuse_aliased_model_descendants()
+        message = str(exc.value)
+        assert str(linked) in message
+        assert "JUNCTION" in message
+        assert "KIROCREW_HOME" in message
+        assert "bind mount" not in message
+        assert str(linked) in inspected
+        assert not any(path.startswith(str(linked) + os.sep) for path in inspected)
+        after = linked.lstat()
+        assert (after.st_dev, after.st_ino) == (before.st_dev, before.st_ino)
+        assert weights.read_bytes() == b"original"
+
+    def test_non_surrogate_loader_paths_pass(self, crew, loader_files, monkeypatch):
+        from unittest.mock import patch
+
+        for path in loader_files:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"original")
+        with patch.object(
+            sandbox.platform_compat, "lstat_is_name_surrogate", return_value=False
+        ) as surrogate:
+            sandbox._refuse_aliased_model_descendants()
+        assert surrogate.call_count >= len(loader_files)
+        assert all(path.read_bytes() == b"original" for path in loader_files)
+
+    def test_non_loader_symlink_passes(self, crew):
+        link = crew / "models" / "whisper" / "scratch"
+        link.parent.mkdir(parents=True)
+        link.symlink_to("missing")
+
+        sandbox._refuse_aliased_model_descendants()
+
+        assert link.is_symlink()
+
+    @pytest.mark.parametrize("alias_kind", ("hardlink", "symlink"))
+    def test_an_aliased_gguf_fails_the_embedder_load_not_the_spawn(
+        self, crew, loader_files, tmp_path, monkeypatch, alias_kind
+    ):
+        # The GGUF has no digest at load, so a second name in a writable tree is the
+        # whole exposure. The embedder refuses to hand llama.cpp the path; the spawn path
+        # still admits the hard link (the symlink is refused there, at the component).
+        from kiro_crew import embeddings
+
+        gguf = loader_files[0]
+        gguf.parent.mkdir(parents=True)
+        payload = b"\0" * (embeddings._GGUF_MIN_BYTES + 1)
+        outside = tmp_path / "workspace-alias.gguf"
+        if alias_kind == "hardlink":
+            gguf.write_bytes(payload)
+            os.link(gguf, outside)
+        else:
+            outside.write_bytes(payload)
+            gguf.symlink_to(outside)
+        opened: list = []
+
+        class _Tripwire:
+            def __init__(self, **kwargs):
+                opened.append(kwargs.get("model_path"))
+
+        monkeypatch.setattr(embeddings, "_load_llama_class", lambda: _Tripwire)
+        embedder = embeddings.LlamaCppEmbedder(model_path=gguf, dim=1024, model_id="x:1")
+        embedder.wait_ready(timeout=5)
+
+        assert embedder.is_ready() is False
+        assert opened == [], "llama.cpp must never be handed an aliased GGUF"
+        assert outside.read_bytes() == payload
+        if alias_kind == "hardlink":
+            sandbox._refuse_aliased_model_descendants()
+        else:
+            with pytest.raises(sandbox.SandboxCeilingUnsealable):
+                sandbox._refuse_aliased_model_descendants()
+
+    def test_a_lone_gguf_still_reaches_the_loader(self, crew, loader_files, monkeypatch):
+        from kiro_crew import embeddings
+
+        gguf = loader_files[0]
+        gguf.parent.mkdir(parents=True)
+        gguf.write_bytes(b"\0" * (embeddings._GGUF_MIN_BYTES + 1))
+        opened: list = []
+
+        class _Tripwire:
+            def __init__(self, **kwargs):
+                opened.append(kwargs.get("model_path"))
+                raise RuntimeError("stop after the handoff")
+
+        monkeypatch.setattr(embeddings, "_load_llama_class", lambda: _Tripwire)
+        monkeypatch.setattr(
+            embeddings,
+            "_model_context_policy",
+            lambda path: SimpleNamespace(n_ctx=embeddings._N_CTX, n_batch=512, n_ubatch=512),
+        )
+        embedder = embeddings.LlamaCppEmbedder(model_path=gguf, dim=1024, model_id="x:1")
+        embedder.wait_ready(timeout=5)
+
+        assert opened == [str(gguf)]
+
+    @pytest.mark.parametrize("loader_index", range(6))
+    def test_hardlinked_loader_file_does_not_refuse_the_spawn(
+        self, crew, loader_files, tmp_path, loader_index
+    ):
+        # A second name on a loader file is judged at the LOADER, on the descriptor the
+        # digest was computed from, so the spawn path must let it through: refusing here
+        # costs every sandboxed spawn on a host whose weights legitimately carry a second
+        # name (stow, chezmoi, ``rsync --link-dest``, ``jdupes -L``).
+        if loader_index >= len(loader_files):
+            pytest.skip("no pinned decoder for this platform")
+        outside = tmp_path / "weights"
+        outside.write_bytes(b"original")
+        linked = loader_files[loader_index]
+        linked.parent.mkdir(parents=True, exist_ok=True)
+        os.link(outside, linked)
+        before = linked.stat()
+
+        sandbox._refuse_aliased_model_descendants()
+
+        assert linked.samefile(outside)
+        assert linked.stat().st_nlink == before.st_nlink
+        assert linked.read_bytes() == outside.read_bytes() == b"original"
+
+    def test_non_loader_hardlink_passes(self, crew, tmp_path):
+        outside = tmp_path / "weights"
+        outside.write_bytes(b"original")
+        linked = crew / "models" / "whisper" / "scratch"
+        linked.parent.mkdir(parents=True)
+        os.link(outside, linked)
+
+        sandbox._refuse_aliased_model_descendants()
+
+        assert linked.samefile(outside)
+        assert linked.read_bytes() == b"original"
+
+    def test_non_live_loader_symlink_passes(self, crew, loader_files, tmp_path, monkeypatch):
+        unused = tmp_path / "unused home"
+        monkeypatch.setattr(sandbox, "_masked_crew_home_roots", lambda: [str(crew), str(unused)])
+        outside = tmp_path / "weights"
+        outside.write_bytes(b"original")
+        linked = unused / loader_files[0].relative_to(crew)
+        linked.parent.mkdir(parents=True)
+        linked.symlink_to(outside)
+
+        sandbox._refuse_aliased_model_descendants()
+
+        assert linked.is_symlink()
+        assert outside.read_bytes() == b"original"
+
+    @pytest.fixture
+    def wrap_branch(self, crew, tmp_path, monkeypatch):
+        from pathlib import Path
+        from unittest.mock import MagicMock
+
+        host_home = tmp_path / "host"
+        host_home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: host_home)
+        monkeypatch.setattr(sandbox, "_governance_sandbox_floor", lambda: "")
+        monkeypatch.setattr(sandbox, "_warn_aliased_strict_leaves", lambda: None)
+        monkeypatch.setattr(sandbox, "_resolve_agent_executable", lambda path: path)
+        monkeypatch.setattr(sandbox, "_materialize_sealable_ceilings", lambda *args: [])
+        monkeypatch.setattr(sandbox, "_sandbox_env_unset_args", lambda *args: [])
+        monkeypatch.setattr(sandbox, "_allow_unsandboxed_exec", lambda: True)
+        monkeypatch.setattr(sandbox, "_macos_sandbox_state", lambda: None)
+        monkeypatch.setattr("kiro_crew.sel.sel", lambda: MagicMock())
+        monkeypatch.setattr(sandbox, "cgroup_scope_argv", lambda argv: argv)
+        monkeypatch.setattr(sandbox, "cgroup_scope_bus_env", lambda env: (env, ()))
+
+        def configure(branch):
+            platform = "win32" if branch == "windows-delegated" else "darwin"
+            if branch in ("namespace", "off-linux", "off-nonkiro", "nested", "none"):
+                platform = "linux"
+            monkeypatch.setattr(sandbox.sys, "platform", platform)
+            monkeypatch.setattr(sandbox, "_inside_kirocrew_sandbox", lambda: branch == "nested")
+            monkeypatch.setattr(sandbox, "kiro_internal_sandbox_enabled", lambda: True)
+            backend = {"namespace": "namespace", "seatbelt": "sandbox-exec"}.get(branch, "none")
+            monkeypatch.setattr(sandbox, "detect_backend", lambda **kwargs: backend)
+            off = branch in ("off-linux", "off-nonkiro", "darwin-off-delegated")
+            # off-nonkiro is a non-kiro argv so even on macOS it stays unconfined;
+            # every other branch names kiro-cli so delegation can engage.
+            argv = ["python3", "-m", "worker"] if branch == "off-nonkiro" else ["kiro-cli", "acp"]
+            return argv, {
+                "mode": "off" if off else "standard",
+                "is_kiro_cli": "delegated" in branch,
+            }
+
+        return configure
+
+    # Branches that apply a Kiro Crew seal or delegate to a Kiro sandbox, so the
+    # model loader paths are checked; and the unconfined branches that are not.
+    _CHECKED_BRANCHES = (
+        "darwin-delegated",
+        "windows-delegated",
+        "darwin-off-delegated",
+        "namespace",
+        "seatbelt",
+    )
+    _UNCHECKED_BRANCHES = ("off-linux", "off-nonkiro", "none", "nested")
+
+    @pytest.mark.parametrize("branch", _CHECKED_BRANCHES)
+    def test_every_sealed_branch_refuses_loader_symlink(
+        self, crew, loader_files, tmp_path, wrap_branch, branch
+    ):
+        outside = tmp_path / "weights"
+        outside.write_bytes(b"original")
+        linked = loader_files[0]
+        linked.parent.mkdir(parents=True)
+        linked.symlink_to(outside)
+        argv, options = wrap_branch(branch)
+
+        with pytest.raises(sandbox.SandboxCeilingUnsealable) as exc:
+            sandbox.wrap_argv(argv, **options)
+
+        assert str(linked) in str(exc.value)
+        assert linked.is_symlink()
+        assert linked.read_bytes() == outside.read_bytes() == b"original"
+
+    @pytest.mark.parametrize("branch", _CHECKED_BRANCHES)
+    def test_every_sealed_branch_admits_a_hardlinked_loader_file(
+        self, crew, loader_files, tmp_path, wrap_branch, branch
+    ):
+        # The load-time guard is what judges a second name, so a sealed spawn must still
+        # be buildable on a host whose weights carry one.
+        outside = tmp_path / "weights"
+        outside.write_bytes(b"original")
+        linked = loader_files[0]
+        linked.parent.mkdir(parents=True)
+        os.link(outside, linked)
+        argv, options = wrap_branch(branch)
+
+        _, cleanup = sandbox.wrap_argv(argv, **options)
+
+        if cleanup is not None:
+            os.unlink(cleanup)
+        assert linked.samefile(outside)
+        assert linked.read_bytes() == outside.read_bytes() == b"original"
+
+    @pytest.mark.parametrize("branch", _UNCHECKED_BRANCHES)
+    @pytest.mark.parametrize("alias_kind", ("symlink", "hardlink"))
+    def test_unconfined_branches_do_not_refuse_loader_alias(
+        self, crew, loader_files, tmp_path, wrap_branch, branch, alias_kind
+    ):
+        # No Kiro Crew seal and no delegated sandbox: nothing confines a models
+        # write, so a symlinked or hard-linked loader file must not newly refuse
+        # the spawn (that would brick sandbox-off / no-backend hosts).
+        outside = tmp_path / "weights"
+        outside.write_bytes(b"original")
+        linked = loader_files[0]
+        linked.parent.mkdir(parents=True)
+        if alias_kind == "symlink":
+            linked.symlink_to(outside)
+        else:
+            os.link(outside, linked)
+        argv, options = wrap_branch(branch)
+
+        argv_out, cleanup = sandbox.wrap_argv(argv, **options)
+
+        assert cleanup is None
+        assert argv_out[-len(argv) :] == argv
+        assert linked.is_symlink() if alias_kind == "symlink" else linked.samefile(outside)
+
+    @pytest.mark.parametrize("branch", _CHECKED_BRANCHES)
+    def test_every_sealed_branch_checks_models_once(self, crew, wrap_branch, monkeypatch, branch):
+        from unittest.mock import patch
+
+        argv, options = wrap_branch(branch)
+        with patch.object(
+            sandbox,
+            "_refuse_aliased_model_descendants",
+            wraps=sandbox._refuse_aliased_model_descendants,
+        ) as checked:
+            _, cleanup = sandbox.wrap_argv(argv, **options)
+        if cleanup is not None:
+            os.unlink(cleanup)
+        checked.assert_called_once_with()
+
+    @pytest.mark.parametrize("branch", _UNCHECKED_BRANCHES)
+    def test_unconfined_branches_never_check_models(self, crew, wrap_branch, branch):
+        from unittest.mock import patch
+
+        argv, options = wrap_branch(branch)
+        with patch.object(sandbox, "_refuse_aliased_model_descendants") as checked:
+            sandbox.wrap_argv(argv, **options)
+        checked.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "entry", ("wrap_argv_async", "sandboxed_spawn_argv", "sandboxed_spawn_argv_async")
+    )
+    async def test_spawn_entry_points_check_models_once(self, crew, wrap_branch, entry):
+        import asyncio
+        from unittest.mock import patch
+
+        _, options = wrap_branch("namespace")
+        # sandboxed_spawn_argv_async has no Kiro classification argument.
+        options.pop("is_kiro_cli")
+        with patch.object(
+            sandbox,
+            "_refuse_aliased_model_descendants",
+            wraps=sandbox._refuse_aliased_model_descendants,
+        ) as checked:
+            prepare = getattr(sandbox, entry)
+            if entry == "sandboxed_spawn_argv":
+                result = await asyncio.to_thread(prepare, ["agent"], **options)
+            else:
+                result = await prepare(["agent"], **options)
+        if result[-1] is not None:
+            os.unlink(result[-1])
+        checked.assert_called_once_with()
+
+    def test_failed_darwin_delegation_checks_models_before_audit_and_on_seatbelt_fallback(
+        self, crew, wrap_branch, monkeypatch
+    ):
+        # The hand-off checks before its audit; when the audit then fails, macOS
+        # falls back to its own Seatbelt, whose builder checks the model paths
+        # again. Both are metadata-only, so the rare fallback costs one extra pass.
+        from unittest.mock import MagicMock, patch
+
+        argv, options = wrap_branch("darwin-delegated")
+        audit = MagicMock()
+        audit.log_tool_invocation.side_effect = RuntimeError("audit unavailable")
+        monkeypatch.setattr("kiro_crew.sel.sel", lambda: audit)
+        with patch.object(
+            sandbox,
+            "_refuse_aliased_model_descendants",
+            wraps=sandbox._refuse_aliased_model_descendants,
+        ) as checked:
+            _, cleanup = sandbox.wrap_argv(argv, **options)
+        if cleanup is not None:
+            os.unlink(cleanup)
+        assert checked.call_count == 2
+
+    def test_failed_windows_delegation_checks_models_then_fails_closed(
+        self, crew, wrap_branch, monkeypatch
+    ):
+        # Windows has no Kiro Crew backend, so a failed delegation audit falls
+        # through to the no-backend policy and fail-closes. The model check runs
+        # once, before the audit, as on every delegated hand-off.
+        from unittest.mock import MagicMock, patch
+
+        argv, options = wrap_branch("windows-delegated")
+        monkeypatch.setattr(sandbox, "_allow_unsandboxed_exec", lambda: False)
+        audit = MagicMock()
+        audit.log_tool_invocation.side_effect = RuntimeError("audit unavailable")
+        monkeypatch.setattr("kiro_crew.sel.sel", lambda: audit)
+        with patch.object(sandbox, "_refuse_aliased_model_descendants") as checked:
+            with pytest.raises(sandbox.SandboxUnavailableError):
+                sandbox.wrap_argv(argv, **options)
+        checked.assert_called_once_with()
+
+    @pytest.mark.parametrize("branch", ("darwin-delegated", "windows-delegated"))
+    def test_refused_delegation_writes_no_delegated_audit_record(
+        self, crew, loader_files, tmp_path, wrap_branch, monkeypatch, branch
+    ):
+        # A refused hand-off never happened, so the tamper-evident SEL log must not
+        # assert that it did: the model check runs before the "delegated" record.
+        from unittest.mock import MagicMock
+
+        outside = tmp_path / "weights"
+        outside.write_bytes(b"original")
+        linked = loader_files[0]
+        linked.parent.mkdir(parents=True)
+        linked.symlink_to(outside)
+        argv, options = wrap_branch(branch)
+        audit = MagicMock()
+        monkeypatch.setattr("kiro_crew.sel.sel", lambda: audit)
+
+        with pytest.raises(sandbox.SandboxCeilingUnsealable):
+            sandbox.wrap_argv(argv, **options)
+
+        delegated = [
+            call
+            for call in audit.log_tool_invocation.call_args_list
+            if call.kwargs.get("outcome") == "delegated"
+        ]
+        assert delegated == []
+
+    def test_bounded_metadata_only_check(self, crew, loader_files, monkeypatch):
+        for path in loader_files:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"original")
+        real_lstat = os.lstat
+        inspected = []
+
+        def lstat(path, *args, **kwargs):
+            inspected.append(os.fspath(path))
+            return real_lstat(path, *args, **kwargs)
+
+        def no_enumeration(*args, **kwargs):
+            pytest.fail("model check must not enumerate directories")
+
+        with monkeypatch.context() as patcher:
+            patcher.setattr(sandbox.os, "lstat", lstat)
+            patcher.setattr(sandbox.os, "scandir", no_enumeration)
+            patcher.setattr(sandbox.os, "walk", no_enumeration)
+            sandbox._refuse_aliased_model_descendants()
+        expected = {
+            str(crew.joinpath(*path.relative_to(crew).parts[:depth]))
+            for path in loader_files
+            for depth in range(1, len(path.relative_to(crew).parts) + 1)
+        }
+        assert set(inspected) == expected
+        assert len(inspected) <= sum(len(path.relative_to(crew).parts) for path in loader_files)
+
+    def test_missing_tree_passes_without_creating_it(self, crew):
+        sandbox._refuse_aliased_model_descendants()
+        assert not (crew / "models").exists()
+
+    @pytest.mark.parametrize("failure", (PermissionError, FileNotFoundError))
+    @pytest.mark.parametrize("intermediate", (False, True))
+    def test_lstat_failure_skips_file(
+        self, crew, loader_files, monkeypatch, caplog, failure, intermediate
+    ):
+        import logging
+
+        weights = loader_files[1]
+        weights.parent.mkdir(parents=True)
+        weights.write_bytes(b"original")
+        failing = weights.parent if intermediate else weights
+        real_lstat = os.lstat
+        inspected = []
+
+        def lstat(path, *args, **kwargs):
+            inspected.append(os.fspath(path))
+            if os.fspath(path) == str(failing):
+                raise failure("cannot inspect\nmodel\x1b[31m")
+            return real_lstat(path, *args, **kwargs)
+
+        with monkeypatch.context() as patcher:
+            patcher.setattr(sandbox.os, "lstat", lstat)
+            with caplog.at_level(logging.WARNING, logger=sandbox.__name__):
+                sandbox._refuse_aliased_model_descendants()
+        assert str(failing) in inspected
+        if intermediate:
+            assert str(weights) not in inspected
+        messages = [
+            record.getMessage() for record in caplog.records if record.name == sandbox.__name__
+        ]
+        if failure is FileNotFoundError:
+            assert not messages
+        else:
+            assert any(str(failing) in message for message in messages)
+            assert all("\n" not in message and "\x1b" not in message for message in messages)
+
+    def test_symlink_diagnostic_escapes_terminal_controls(self, crew, loader_files, monkeypatch):
+        unusual = crew / "line\nbreak\x1b[31m"
+        monkeypatch.setattr(sandbox, "config_dir", lambda: unusual)
+        link = unusual / loader_files[0].relative_to(crew)
+        link.parent.mkdir(parents=True)
+        link.symlink_to("missing\n\x1b[31mtarget")
+
+        with pytest.raises(sandbox.SandboxCeilingUnsealable) as exc:
+            sandbox._refuse_aliased_model_descendants()
+
+        assert "\n" not in str(exc.value)
+        assert "\x1b" not in str(exc.value)
+        assert "target" in str(exc.value)
+        assert link.is_symlink()
+
+    @pytest.mark.parametrize("backend", ("namespace_argv", "sandbox_exec_argv"))
+    @pytest.mark.parametrize("live", (False, True), ids=("non-live", "live"))
+    def test_both_backends_check_only_live_home(
+        self, crew, loader_files, tmp_path, monkeypatch, backend, live
+    ):
+        from pathlib import Path
+
+        host_home = tmp_path / "host"
+        host_home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: host_home)
+        legacy = host_home / ".kirocrew"
+        monkeypatch.setattr(sandbox, "_masked_crew_home_roots", lambda: [str(crew), str(legacy)])
+        monkeypatch.setattr(sandbox, "_resolve_agent_executable", lambda path: path)
+        monkeypatch.setattr(sandbox, "_materialize_sealable_ceilings", lambda *args: [])
+        root = crew if live else legacy
+        alias = root / loader_files[1].relative_to(crew)
+        alias.parent.mkdir(parents=True)
+        outside = tmp_path / "outside"
+        outside.write_bytes(b"original")
+        alias.symlink_to(outside)
+
+        if live:
+            with pytest.raises(sandbox.SandboxCeilingUnsealable) as exc:
+                getattr(sandbox, backend)(["agent"])
+            assert str(alias) in str(exc.value)
+        else:
+            assert getattr(sandbox, backend)(["agent"])
+        assert alias.is_symlink()
+        assert outside.read_bytes() == b"original"
+
+
+@_POSIX_ONLY
+class TestTheWhisperLoaderRefusesAnAliasedFile:
+    """The hard-link half of the models rule, judged where the loader verifies bytes.
+
+    ``ModelStore._verified_on_disk`` hashes a file already on disk and then hands its
+    PATH to a native loader that reopens it by name. A second hard link is a writable
+    handle onto the inode that just passed the digest, and the ``models`` seal covers
+    paths, so no mount or Seatbelt rule names the alias. The refusal therefore lands
+    here rather than on the spawn path: one load fails instead of every sandboxed spawn
+    on a host whose weights legitimately carry a second name.
+    """
+
+    @pytest.fixture
+    def pinned(self, tmp_path, monkeypatch):
+        """A crew home holding one whisper file whose digest matches its catalogue pin."""
+        import dataclasses
+        import hashlib
+
+        from kiro_crew.stt import models
+
+        root = tmp_path / "crew home"
+        monkeypatch.setattr(models, "config_dir", lambda: root)
+        payload = b"pinned whisper weights"
+        model = dataclasses.replace(
+            models.CATALOG[0],
+            size_bytes=len(payload),
+            sha256=hashlib.sha256(payload).hexdigest(),
+        )
+        path = models.model_path(model)
+        path.parent.mkdir(parents=True)
+        path.write_bytes(payload)
+        return models.ModelStore(), model, path, payload
+
+    @pytest.mark.asyncio
+    async def test_a_lone_regular_file_verifies(self, pinned):
+        store, model, path, payload = pinned
+
+        assert await store._verified_on_disk(model) is True
+        assert path.read_bytes() == payload
+
+    @pytest.mark.asyncio
+    async def test_ensure_reports_the_refusal_without_raising_or_downloading(
+        self, pinned, tmp_path, monkeypatch
+    ):
+        # ``ensure`` promises None, not an exception into a websocket handler. The
+        # refusal surfaces as a failed status the settings page shows, naming the file,
+        # and no download replaces the operator's file.
+        from kiro_crew.stt import models
+
+        store, model, path, payload = pinned
+        os.link(path, tmp_path / "alias")
+        monkeypatch.setattr(
+            models,
+            "_download_blocking",
+            lambda *a, **k: pytest.fail("a refused file must not be downloaded over"),
+        )
+
+        assert await store.ensure(model) is None
+
+        assert store.status["step"] == "failed"
+        assert store.status.get("refused") is True
+        assert str(path) in str(store.status["error"])
+        assert path.read_bytes() == payload
+
+    @pytest.mark.asyncio
+    async def test_a_symlinked_file_is_reported_as_refused_not_raised(
+        self, pinned, tmp_path, monkeypatch
+    ):
+        # A correct-size symlink passes every following stat, so only the O_NOFOLLOW open
+        # sees it. That refusal must come back as the documented refused status rather
+        # than an OSError out of a websocket handler, and the link must be left in place.
+        from kiro_crew.stt import models
+
+        store, model, path, payload = pinned
+        target = tmp_path / "shared-cache-weights.bin"
+        target.write_bytes(payload)
+        path.unlink()
+        path.symlink_to(target)
+        monkeypatch.setattr(
+            models,
+            "_download_blocking",
+            lambda *a, **k: pytest.fail("a refused file must not be downloaded over"),
+        )
+
+        assert await store.ensure(model) is None
+
+        assert store.status["step"] == "failed"
+        assert store.status.get("refused") is True
+        assert str(path) in str(store.status["error"])
+        assert "SYMLINK" in str(store.status["error"])
+        assert path.is_symlink()
+        assert target.read_bytes() == payload
+
+    @pytest.mark.asyncio
+    async def test_a_plain_status_carries_no_refused_key(self, pinned):
+        store, model, _, _ = pinned
+        store._set(step="downloading", model=model.name)
+
+        assert "refused" not in store.status
+
+    @pytest.mark.asyncio
+    async def test_a_hardlinked_file_refuses_the_load_and_keeps_the_bytes(self, pinned, tmp_path):
+        store, model, path, payload = pinned
+        alias = tmp_path / "alias"
+        os.link(path, alias)
+        before = path.stat()
+
+        with pytest.raises(sandbox.SandboxCeilingUnsealable) as exc:
+            await store._verified_on_disk(model)
+
+        message = str(exc.value)
+        assert str(path) in message, "the refusal must name the file the operator has to fix"
+        assert "plain copy" in message
+        # Refusing is not a failed digest, so the file keeps its bytes, its inode and
+        # both of its names: a hard link is ordinary for a dotfile manager or a
+        # deduplicating backup, and deleting one name of the operator's own file is
+        # not this gate's call.
+        assert path.is_file()
+        assert path.read_bytes() == alias.read_bytes() == payload
+        assert (path.stat().st_ino, path.stat().st_nlink) == (before.st_ino, before.st_nlink)
+
+    @pytest.mark.asyncio
+    async def test_without_the_guard_the_aliased_file_is_trusted(
+        self, pinned, tmp_path, monkeypatch
+    ):
+        # Negative control: with the descriptor check stubbed out, the digest alone
+        # accepts the aliased file. That is what the assertion above is worth.
+        store, model, path, _ = pinned
+        os.link(path, tmp_path / "alias")
+        monkeypatch.setattr(sandbox, "require_unaliased_model_file", lambda path, *, fd: None)
+
+        assert await store._verified_on_disk(model) is True
+
+    @pytest.mark.asyncio
+    async def test_the_digest_is_read_from_the_descriptor_that_is_judged(self, pinned):
+        # The point of the fd form: one ``open`` answers both questions, so the inode
+        # hashed and the inode judged cannot be two resolutions with a swap between.
+        store, model, path, _ = pinned
+        seen = {}
+
+        real = sandbox.require_unaliased_model_file
+
+        def record(target, *, fd):
+            seen["judged"] = os.fstat(fd)[:4]
+            return real(target, fd=fd)
+
+        from kiro_crew.stt import models
+
+        with pytest.MonkeyPatch.context() as patcher:
+            patcher.setattr(models, "_sha256_file", _unreachable)
+            patcher.setattr(sandbox, "require_unaliased_model_file", record)
+            assert await store._verified_on_disk(model) is True
+
+        opened = path.stat()
+        assert seen["judged"][:4] == (opened.st_mode, opened.st_ino, opened.st_dev, opened.st_nlink)
+
+
+def _unreachable(*args, **kwargs):
+    raise AssertionError("the load-time check must hash the descriptor it judges, not a name")
+
+
+def _sandbox_spawn_unavailable() -> str:
+    """Why a real sandboxed spawn cannot run here, or ``""`` when one can.
+
+    Asked inside the test rather than at module scope: resolving the governance floor
+    needs a composed platform context, which the gateway installs and a bare test
+    collection does not, and a module-level probe would turn that into a collection
+    error for every test in this file.
+    """
+    try:
+        if not sandbox.credential_mask_applies("standard"):
+            return "this host has no OS sandbox backend that carries a caller's masks"
+    except Exception as exc:  # noqa: BLE001 - any failure here means "cannot spawn for real"
+        return f"cannot resolve the sandbox floor outside a composed platform context: {exc}"
+    return ""
+
+
+_CHILD_LINK_PROBE = """
+import errno
+import os
+import sys
+
+sealed, cross, inside = sys.argv[1], sys.argv[2], sys.argv[3]
+for label, alias in (("cross", cross), ("inside", inside)):
+    try:
+        os.link(sealed, alias)
+    except OSError as exc:
+        print(label + "=" + errno.errorcode.get(exc.errno, str(exc.errno)))
+    else:
+        print(label + "=CREATED")
+"""
+
+
+@_POSIX_ONLY
+class TestASandboxedChildCannotMintAnAliasOfASealedLoaderFile:
+    """What the kernel answers a sandboxed ``link(2)`` on a sealed loader file.
+
+    The load-time refusal is a backstop for an alias that already exists -- one an
+    operator's own backup or dotfile manager left. This pins the prior question: whether
+    a sandboxed shell can CREATE one. Both answers come from the real backend, so this
+    runs only on a host that has one and skips with its reason elsewhere.
+    """
+
+    def test_the_backend_denies_both_destinations(self, tmp_path, monkeypatch):
+        import subprocess
+        import sys as _sys
+
+        reason = _sandbox_spawn_unavailable()
+        if reason:
+            pytest.skip(reason)
+        from kiro_crew import embeddings
+        from kiro_crew.stt import models
+
+        root = tmp_path / "crew home"
+        sealed = root / "models" / embeddings._GGUF_FILENAME
+        sealed.parent.mkdir(parents=True)
+        sealed.write_bytes(b"pinned weights")
+        for module in (sandbox, embeddings, models):
+            monkeypatch.setattr(module, "config_dir", lambda: root)
+        monkeypatch.setenv("KIROCREW_HOME", str(root))
+        cross = tmp_path / "cross-mount-alias"
+        inside = sealed.parent / "inside-seal-alias"
+
+        argv, env, cleanup = sandbox.sandboxed_spawn_argv(
+            [_sys.executable, "-c", _CHILD_LINK_PROBE, str(sealed), str(cross), str(inside)],
+            mode="standard",
+            strip_python_env=True,
+        )
+        try:
+            done = subprocess.run(
+                argv, env=env, capture_output=True, text=True, encoding="utf-8", timeout=120
+            )
+        finally:
+            if cleanup is not None:
+                os.unlink(cleanup)
+
+        answers = dict(line.split("=", 1) for line in done.stdout.split() if line.count("=") == 1)
+        assert answers, f"the child printed no verdict: {done.stdout!r} {done.stderr!r}"
+        # A destination on another mount cannot hold a link to this inode at all; one
+        # inside the seal is refused by the read-only mount (or by the path rule, which
+        # reports a permission errno instead).
+        assert answers.get("cross") == "EXDEV", answers
+        assert answers.get("inside") in {"EROFS", "EPERM", "EACCES"}, answers
+        assert not cross.exists()
+        assert not inside.exists()
 
 
 class TestSecretsAreMaskedInEveryMode:
@@ -1087,3 +1998,71 @@ class TestAPodChildsRemappedHomeIsMasked:
         assert "_pod_os_home_targets(" in launcher
         seatbelt = inspect.getsource(sandbox._build_seatbelt_profile)
         assert "_pod_os_home_targets(" in seatbelt
+
+
+class TestTheModelsSealRefusesAWritableCarveout:
+    """``models`` is READONLY, so no spawn may carve a writable window under it.
+
+    The seal's whole point is that a sandboxed spawn needing a writable directory
+    of its own cannot get one beneath this leaf -- a private window
+    (``extra_private_dirs``) opens only inside a HIDDEN tree, and
+    ``extra_writable_dirs`` may punch through the runtime parent's seal and
+    nothing else. The local decision runtime is the caller that learned this: its
+    work root moved to ``run/decisions/<id>`` (``local_runtime.WORK_SUBDIR``)
+    because ``models/decisions/<id>`` met ``EROFS`` under this seal. These two
+    cases pin both halves of that answer, so a future move back is caught here
+    rather than by a model that silently stops activating.
+    """
+
+    def _relocated_home(self, monkeypatch, tmp_path):
+        home = tmp_path / "crew-home"
+        home.mkdir()
+        monkeypatch.setattr(sandbox, "config_dir", lambda: home)
+        return home
+
+    @staticmethod
+    def _carved(profile: str, path) -> bool:
+        lexical = os.path.normpath(str(path))
+        spellings = dict.fromkeys((lexical, os.path.realpath(lexical)))
+        return all(f'(allow file-write* (subpath "{s}"))' in profile for s in spellings)
+
+    def test_the_decision_work_dir_under_run_is_approved(self, monkeypatch, tmp_path) -> None:
+        home = self._relocated_home(monkeypatch, tmp_path)
+        own = home / "run" / "decisions" / "laya"
+        own.mkdir(parents=True)
+
+        profile = sandbox._build_seatbelt_profile("strict", extra_writable_dirs=(str(own),))
+
+        assert self._carved(profile, own)
+
+    def test_the_same_dir_under_the_models_seal_is_refused(self, monkeypatch, tmp_path) -> None:
+        home = self._relocated_home(monkeypatch, tmp_path)
+        under_models = home / "models" / "decisions" / "laya"
+        under_models.mkdir(parents=True)
+
+        profile = sandbox._build_seatbelt_profile(
+            "strict", extra_writable_dirs=(str(under_models),)
+        )
+
+        assert not self._carved(profile, under_models)
+        # Nothing else gained a window either: the validator skips the candidate
+        # rather than degrading it to a narrower carve-out.
+        assert "(allow file-write*" not in profile
+
+    @_POSIX_ONLY
+    @pytest.mark.parametrize(
+        ("leaf", "approved"),
+        [(os.path.join("run", "decisions"), True), (os.path.join("models", "decisions"), False)],
+    )
+    def test_the_linux_launcher_agrees_with_seatbelt(
+        self, monkeypatch, tmp_path, leaf: str, approved: bool
+    ) -> None:
+        home = self._relocated_home(monkeypatch, tmp_path)
+        own = home / leaf / "laya"
+        own.mkdir(parents=True)
+
+        script = sandbox._build_launcher_script("strict", extra_writable_dirs=(str(own),))
+
+        match = re.search(r"WRITABLE_DIRS = (\[.*?\])\n", script, re.S)
+        assert match, "WRITABLE_DIRS missing from the launcher"
+        assert (os.path.normpath(str(own)) in json.loads(match.group(1))) is approved
