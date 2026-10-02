@@ -1211,6 +1211,20 @@ def _require_fresh_worker_spec(work_dir: str | Path | None) -> None:
     mirror_path = agents_dir / _WORKER_AGENT_FILENAME
     _refuse_foreign_worker_spec(mirror_path, agent_mod._read_spec_capped(mirror_path))
     if not _derived_spec_matches_default(agent):
+        # Attributed for the same reason as the foreign-spec refusal above, and
+        # ahead of the re-derive rather than after it: where this data home does
+        # not own the agents directory the write is refused, and because
+        # ``rederive_worker_agent`` never raises, that refusal would arrive as
+        # "could not be re-derived" -- a permanent dispatch outage described as a
+        # generation mismatch, with nothing naming the directory or the remedy.
+        if agent_mod._declined_foreign_spec_write(mirror_path):
+            raise DerivedSpecStale(
+                f"{mirror_path} mirrors an older generation of {default_path}, and this "
+                f"instance's data home does not own {agents_dir}, so the mirror cannot be "
+                "re-derived; refusing to start the worker rather than run grants absent "
+                "from the default agent. To let this instance own its specs, remove the "
+                "stale kirocrew*.json specs from that directory and restart"
+            )
         agent_mod.logger.info(
             "Worker spec predates the default agent spec; re-deriving before spawn"
         )

@@ -17,6 +17,7 @@ import re
 
 from aiohttp import web
 
+from kiro_crew.agent import SharedAgentHomeRefused
 from kiro_crew.dashboard.handlers.mcp import (
     _find_server_spec_anywhere,
     _get_mcp_lock,
@@ -426,7 +427,18 @@ async def _install_via_capability(request: web.Request, server_id: str) -> web.R
     # circular import: agents/mcp import sibling handler modules at call time.
     from kiro_crew.dashboard.handlers._shared import _capability_manager
     from kiro_crew.dashboard.handlers.agents import _get_config_lock
-    from kiro_crew.dashboard.handlers.mcp import _sync_mcp_to_agent
+    from kiro_crew.dashboard.handlers.mcp import (
+        _agent_home_not_owned,
+        _agent_home_not_owned_response,
+        _sync_mcp_to_agent,
+    )
+
+    # Ownership BEFORE the first mutation: the package manager runs ahead of
+    # the spec write, so a refusal reached only at the write leaves the package
+    # installed while the spec declares none of it.
+    not_owned = await asyncio.to_thread(_agent_home_not_owned, server_id)
+    if not_owned is not None:
+        return not_owned
 
     res = await _capability_manager().install_mcp(server_id)
     if not res.ok:
@@ -444,7 +456,13 @@ async def _install_via_capability(request: web.Request, server_id: str) -> web.R
         # Off the loop: _sync_mcp_to_agent takes bridges' synchronous _mcp_lock
         # for a full kirocrew.json RMW; a direct call would freeze the gateway if
         # app registration holds that lock. Same offload as api_capability_mcp_install.
-        await asyncio.to_thread(_sync_mcp_to_agent, server_id, True)
+        try:
+            await asyncio.to_thread(_sync_mcp_to_agent, server_id, True)
+        except SharedAgentHomeRefused:
+            # Ownership flipped DURING the install above: the preflight ran
+            # before it. Answered as the refusal it is, like every other write
+            # failure on this path.
+            return _agent_home_not_owned_response(server_id)
     state = request.app["state"]
     state.push_refresh("agents")
 

@@ -1408,7 +1408,11 @@ def test_a_hard_stop_between_the_row_and_the_file_leaves_only_a_harmless_row(mon
     class _HardStop(BaseException):
         pass
 
+    # Both writers are patched: the manifest row goes through the guarded
+    # primitive and the spec through the authorized entry point, and this test
+    # needs the first to land and the second to die.
     real_write = mint._agent._atomic_json_write
+    real_spec_write = mint._agent.write_owner_derived_spec
 
     def _die_on_the_spec(path, data, *a, **k):
         # Only the spec publish dies; the manifest write must still land, which is
@@ -1417,7 +1421,13 @@ def test_a_hard_stop_between_the_row_and_the_file_leaves_only_a_harmless_row(mon
             raise _HardStop()
         return real_write(path, data, *a, **k)
 
+    def _die_on_the_spec_write(path, data, *a, **k):
+        if Path(path).name.startswith("kirocrew-mint-"):
+            raise _HardStop()
+        return real_spec_write(path, data, *a, **k)
+
     monkeypatch.setattr(mint._agent, "_atomic_json_write", _die_on_the_spec)
+    monkeypatch.setattr(mint._agent, "write_owner_derived_spec", _die_on_the_spec_write)
     with pytest.raises(_HardStop):
         mint._write_mint_agent_spec("notion")
 
@@ -2167,6 +2177,7 @@ _FS_ATTRS = frozenset(
         "scandir",
         "home",
         "_atomic_json_write",
+        "write_owner_derived_spec",
         "_load_json",
         "kiro_agents_dir_path",
         # Reaches the filesystem through the SEL singleton (see ``sel`` below):

@@ -13,6 +13,7 @@ if TYPE_CHECKING:
         _MAX_CAPABILITY_PACKAGE_LEN,
         _VALID_CAPABILITY_PACKAGE_RE,
         DashboardState,
+        SharedAgentHomeRefused,
         _capability_manager,
         _err500,
         _get_config_lock,
@@ -88,6 +89,16 @@ async def api_capability_mcp_install(request: web.Request) -> web.Response:
     server_id = body.get("server_id", "").strip()
     if not server_id:
         return web.json_response({"error": "server_id required"}, status=400)
+    # Ownership BEFORE the first mutation: the package manager runs ahead of
+    # the spec write, so a refusal reached only at the write leaves the
+    # package installed while the spec still declares none of it.
+    from kiro_crew.dashboard.handlers.mcp import (  # noqa: E402 circular: mcp imports agents
+        _agent_home_not_owned,
+    )
+
+    not_owned = await asyncio.to_thread(_agent_home_not_owned, server_id)
+    if not_owned is not None:
+        return not_owned
     mgr = _capability_manager()
     if not mgr.available():
         return web.json_response({"error": _CAPABILITY_UNAVAILABLE}, status=503)
@@ -104,7 +115,17 @@ async def api_capability_mcp_install(request: web.Request) -> web.Response:
             # _mcp_lock and does a full RMW of kirocrew.json. If a concurrent app
             # registration holds that lock, a direct call would block the gateway
             # loop until it releases. Every other caller offloads — match it.
-            await asyncio.to_thread(_sync_mcp_to_agent, server_id, True)
+            try:
+                await asyncio.to_thread(_sync_mcp_to_agent, server_id, True)
+            except SharedAgentHomeRefused:
+                # Reached only when ownership flipped DURING the package call
+                # above: the preflight ran before it. Answered as the refusal it
+                # is, like every other write failure on this path.
+                from kiro_crew.dashboard.handlers.mcp import (  # noqa: E402 circular
+                    _agent_home_not_owned_response,
+                )
+
+                return _agent_home_not_owned_response(server_id)
         state: DashboardState = request.app["state"]
         state.push_refresh("agents")
         return web.json_response({"ok": True, "server_id": server_id})
@@ -124,6 +145,16 @@ async def api_capability_mcp_uninstall(request: web.Request) -> web.Response:
     server_id = body.get("server_id", "").strip()
     if not server_id:
         return web.json_response({"error": "server_id required"}, status=400)
+    # Ownership BEFORE the first mutation: the package manager runs ahead of
+    # the spec write, so a refusal reached only at the write leaves the
+    # package uninstalled while the spec still mounts it.
+    from kiro_crew.dashboard.handlers.mcp import (  # noqa: E402 circular: mcp imports agents
+        _agent_home_not_owned,
+    )
+
+    not_owned = await asyncio.to_thread(_agent_home_not_owned, server_id)
+    if not_owned is not None:
+        return not_owned
     mgr = _capability_manager()
     if not mgr.available():
         return web.json_response({"error": _CAPABILITY_UNAVAILABLE}, status=503)
@@ -140,7 +171,17 @@ async def api_capability_mcp_uninstall(request: web.Request) -> web.Response:
         async with _get_config_lock():
             # Off the loop for the same reason as install: the synchronous
             # _mcp_lock RMW must not block the gateway if app registration holds it.
-            await asyncio.to_thread(lambda: _sync_mcp_to_agent(server_id, False, remove=True))
+            try:
+                await asyncio.to_thread(lambda: _sync_mcp_to_agent(server_id, False, remove=True))
+            except SharedAgentHomeRefused:
+                # Reached only when ownership flipped DURING the package call
+                # above: the preflight ran before it. Answered as the refusal it
+                # is, like every other write failure on this path.
+                from kiro_crew.dashboard.handlers.mcp import (  # noqa: E402 circular
+                    _agent_home_not_owned_response,
+                )
+
+                return _agent_home_not_owned_response(server_id)
         state: DashboardState = request.app["state"]
         state.push_refresh("agents")
         return web.json_response({"ok": True, "server_id": server_id})

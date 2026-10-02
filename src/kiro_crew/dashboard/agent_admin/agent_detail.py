@@ -18,9 +18,11 @@ if TYPE_CHECKING:
         TEMPLATE_DEFINITION_KEYS,
         CapabilityError,
         DashboardState,
+        SharedAgentHomeRefused,
         SkillCatalogSnapshot,
         _AmbiguousTemplateName,
         _atomic_json_write,
+        _declined_foreign_spec_write,
         _get_config_lock,
         _is_confirmed_managed_dashboard_author,
         _read_agent_spec,
@@ -368,6 +370,17 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                         # _write_spec_file and the PUT handler). Returns the
                         # skills the WRITTEN spec maps, for the reply.
                         with agents_spec_lock(f.parent):
+                            # Ownership BEFORE any bookkeeping, and inside this
+                            # lock: the model branch below writes a per-home
+                            # sidecar, and the spec write that can refuse comes
+                            # after it. Refusing only there answered 409 with
+                            # the sidecar already flipped, so the pin recorded a
+                            # model the spec on disk never carried. Asked here
+                            # the request mutates nothing at all.
+                            if _declined_foreign_spec_write(f):
+                                raise SharedAgentHomeRefused(
+                                    f"{f} belongs to another Kiro Crew data home"
+                                )
                             # The pre-lock ambiguity check re-run where it
                             # decides: a second claimant that landed after the
                             # scan (a package install) must refuse, not let
@@ -467,6 +480,25 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                                 "error": f"'{name}' matches more than one template file; "
                                 "rename one first.",
                                 "code": "ambiguous_template_name",
+                            },
+                            status=409,
+                        )
+                    except SharedAgentHomeRefused:
+                        # The edit was DISCARDED, so it must not be reported as
+                        # saved. This instance's data home does not own the
+                        # agents directory the template lives in, so writing
+                        # would re-pin another gateway's spec to this one's venv
+                        # and home. 409: the state on disk belongs to a
+                        # different owner, which retrying cannot change —
+                        # the remedy is to give this instance its own
+                        # KIRO_HOME, and the gateway log names the directory.
+                        return web.json_response(
+                            {
+                                "error": (
+                                    f"'{name}' is owned by another Kiro Crew data home; "
+                                    "this instance will not rewrite it."
+                                ),
+                                "code": "agent_home_not_owned",
                             },
                             status=409,
                         )
