@@ -727,6 +727,31 @@ from the gateway environment (the operator's shell and the crew `.env`), which
 no agent can write. A sidecar publication failure drops every rebind from that
 pass, so gatewayd refuses the changed expansion and the next boot retries. A
 changed command, argument or declared env text is still refused.
+Both halves of the fingerprint fold exactly three gateway-computed spellings
+(`hashing.install_aliases`), each in the ONE slot the gateway's own writer
+(`apps/bridges.py`) emits it in: `sys.executable` (what the rewriter substitutes
+for a manifest's bare `python3` and for the `kirocrew` host CLI) folds only as
+the command, the absolute path of the `deps_boot` shim folds only as an argument
+(`hashing.launch_token_bytes`, which takes the slot's role from the caller), and
+the directory holding the `kiro_crew` package folds only as an `os.pathsep`
+segment of the declared `PYTHONPATH` (`hashing.env_value_bytes`, which takes the
+key). Each hashes by role rather than by the versioned directory a release places
+it in, so the approval survives the upgrade that moves that install. Matching is
+raw-string equality -- no containment, no case folding, no path parsing -- so an
+agent-written token is folded only when it is byte-identical to a string the
+gateway computed from its own interpreter and package location AND sits where
+the gateway puts it; any other spelling, including a case variant or a sibling
+file under the same prefix, and the same spelling in any other slot (the package
+directory as a `--plugin-root` value, or under another env key), hashes
+literally and is a changed launch exactly as before. Every process that hashes a launch (the rewriter, gatewayd, the broker stub) computes the table from itself and they agree because they run from one install; the one spelling they can disagree on is Windows' 8.3 short name, which the stub is launched through when the install path holds a space (`rewriter._cmd_safe_command`), so on Windows each of the three also enters under its long name (`GetLongPathNameW` of the process's own path, never of a token; no link is followed). The release that introduces this encoding
+changes the digest of every such launch once: an approval recorded by an earlier
+release reads as `changed_needs_reapproval` on first start and needs one
+re-approve in **Settings → MCP Management**; on a versioned install that is the
+same release that would have forced it anyway. No pre-encoding digest is
+accepted afterwards. Two installs sharing one data home (the desktop app and a
+dev venv, say) therefore admit each other's approvals of a `python3`-pinned
+launch, since each reads the alias as its own interpreter; that widens nothing,
+because each gateway already runs as the user on that interpreter.
 An absent or empty store approves nothing. A stub
 without a matching fingerprint stays on the session's unpooled, sandboxed launch
 path. A queued cold spawn reloads the store after admission and resolves the same

@@ -28,6 +28,20 @@ records operator-approved fingerprints for stubbed MCP launches. A fingerprint
 covers the declared environment text, so a changed `${VAR}` value keeps an
 approved launch approved only when the environment sidecar publishes; a failed
 sidecar pass persists no rebind. A changed declared text does not keep approval.
+A command, argument or declared-env path segment that is byte-identical to one
+of three spellings the gateway computes from itself -- `sys.executable`, the
+`deps_boot` shim path, the `kiro_crew` package's parent directory -- is hashed by
+role, so the approval names the gateway's own interpreter and package rather than
+the versioned directory a release places them in. Each folds only in its own
+slot: the interpreter only as the command, the shim only as an argument, the
+package directory only as a `PYTHONPATH` segment; the same string anywhere else
+hashes as written. There is no prefix containment
+and no case folding: a token either IS one of those strings or hashes as written,
+so no agent-chosen spelling reaches a different file through the fold. The
+encoding opens with a byte no UTF-8 token can contain, so no spelled-out argv or
+env value collides with it. An approval of such a launch recorded before the
+encoding existed is refused once as `changed_needs_reapproval` and re-approved
+by the operator; the store never admits the pre-encoding digest.
 The residual: `${VAR}` values come from the gateway environment, so an
 unsealed source of it (such as a writable shell rc file) changes an approved
 launch's values silently instead of surfacing as a refusal.
