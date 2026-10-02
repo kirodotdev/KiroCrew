@@ -3132,6 +3132,19 @@ class AcpRuntime:
             pid = process.pid
             try:
                 await platform_compat.terminate_windows_asyncio_tree(process)
+            except platform_compat.WindowsTreeDrainPending as exc:
+                # Pending, not lost: every pin is in the pending registry and the
+                # cleanup sweep resumes this drain. One line, because a traceback
+                # here reads as the crash and buries the failure that asked for
+                # this kill. Still raised, so the caller retains.
+                logger.warning(
+                    "AcpRuntime Windows tree for PID %s did not finish one bounded drain "
+                    "pass (%d member(s) pending cleanup); its handles stay pinned and the "
+                    "cleanup sweep keeps reaping it",
+                    pid,
+                    exc.pending,
+                )
+                raise
             except (OSError, asyncio.TimeoutError):
                 logger.warning(
                     "AcpRuntime Windows tree cleanup incomplete for PID %s; retaining process",

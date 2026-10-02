@@ -25,6 +25,7 @@ from kiro_crew.acp.client import (
     resolve_pin_spelling_on,
     sandbox_init_failure_for_runtime,
 )
+from kiro_crew.acp.mcp_session_report import sanitize_sink_text
 from kiro_crew.acp.runtime import AcpRuntime, AcpRuntimeError
 from kiro_crew.acp.session_handle import (
     _READ_PATH_PROBE_DEADLINE_SECS,
@@ -357,6 +358,9 @@ def _read_cli_overlay(work_dir: Path) -> dict[str, str]:
 # so the new gateway resumes LOSSLESSLY. If the lock never clears we fall back
 # to a fresh session + KiroCrew history replay (see _start_kiro_runtime_impl).
 _RESUME_MAX_ATTEMPTS = 4  # total session/load attempts before fresh fallback
+# Bound on the setup failure's own text in the failed-setup warning: enough for
+# an RPC error's message, short enough that one line stays one line.
+_SETUP_FAILURE_LOG_CAP = 300
 _RESUME_BACKOFF_BASE_S = 1.0  # backoff = base * 2**attempt → 1s, 2s, 4s between attempts
 # Substrings (matched case-insensitively) of a session/load error that name a
 # TRANSIENT native-lock condition — one that clears once the previous holder
@@ -1505,10 +1509,24 @@ class AcpProvider(LLMProvider):
             live_tree = runtime.work_scratch_dir
             if isinstance(live_tree, Path):
                 self._shared_scratch = live_tree
-        except BaseException:
+        except BaseException as setup_exc:
             # No provider owns the runtime yet — kill it so a failed session
             # setup doesn't leak an orphaned kiro-cli process. Best-effort:
             # the cleanup kill must not mask the original exception.
+            if isinstance(setup_exc, Exception):
+                # Named here, before the cleanup, because the kill's own lines
+                # (its attribution, and on Windows a tree still draining) are
+                # otherwise the only trace a repeating setup failure leaves at
+                # the gateway's WARNING level. A cancellation is not a failure.
+                # The text can be backend-authored (an RPC error frame), so it is
+                # redacted and folded to one printable, bounded line: a newline or
+                # an escape sequence in it must not forge or recolor a log line.
+                logger.warning(
+                    "Kiro session setup failed on runtime PID %s (%s: %s); killing the runtime",
+                    runtime.pid,
+                    type(setup_exc).__name__,
+                    sanitize_sink_text(str(setup_exc), _SETUP_FAILURE_LOG_CAP),
+                )
             try:
                 await runtime.kill(expected=True, reason="failed session setup cleanup")
             except Exception:

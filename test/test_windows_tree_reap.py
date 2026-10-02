@@ -122,6 +122,46 @@ def test_a_successful_terminate_return_is_not_an_exit_proof(kernel, monkeypatch)
     assert pc._PENDING_WINDOWS_TREE_CLEANUPS[(100, 10)].handles == {100: 1000, 200: 2000}
 
 
+def test_a_tree_slower_than_one_pass_is_named_pending_and_the_sweep_still_reaps_it(
+    kernel, monkeypatch, tmp_path
+):
+    """A slow drain is a bounded, typed outcome, not a lost tree.
+
+    The members are signalled but have not exited when the pass's deadline
+    passes. The pass must end with the one exception type a caller can report
+    as "still draining" (an OSError, so every existing handler still sees it),
+    naming the root and how many members remain, with every pin left in the
+    registry. When the members do exit, the maintenance sweep finishes the
+    same drain and closes each pin exactly once.
+    """
+    from kiro_crew import session_pid
+
+    monkeypatch.setattr(session_pid, "config_dir", lambda: tmp_path)
+    monkeypatch.setattr(
+        pc, "terminate_process_handle", lambda handle: kernel.killed.append(handle) or True
+    )
+
+    with pytest.raises(pc.WindowsTreeDrainPending) as raised:
+        pc.terminate_windows_process_tree_owned(1000)
+
+    assert isinstance(raised.value, OSError)
+    assert raised.value.pending == 2
+    assert "did not drain before the deadline" in str(raised.value)
+    assert "root pid 100" in str(raised.value)
+    assert kernel.killed == [1000, 2000]
+    assert kernel.closed == []
+    assert pc._PENDING_WINDOWS_TREE_CLEANUPS[(100, 10)].handles == {100: 1000, 200: 2000}
+
+    for handle in (1000, 2000):
+        pid, created, _ = kernel.identities[handle]
+        kernel.identities[handle] = (pid, created, created + 100)
+
+    assert session_pid.cleanup_orphaned_session_roots() == 1
+    assert sorted(kernel.closed) == [1000, 2000]
+    assert pc._PENDING_WINDOWS_TREE_CLEANUPS == {}
+    assert pc._WINDOWS_TREE_ADMISSIONS == set(), "a reaped tree kept its admission"
+
+
 def test_scan_error_preserves_failure_and_retains_owned_descendant_handles(kernel, monkeypatch):
     scan = pc.descendant_termination_handles
 

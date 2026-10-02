@@ -4575,6 +4575,30 @@ class _WindowsTreeOverflow(WindowsCleanupCapacityError):
     """A snapshot/identity bound prevented complete lineage observation."""
 
 
+class WindowsTreeDrainPending(OSError):
+    """An owned tree outlived one bounded drain pass and stays pinned for the sweep.
+
+    Not a refusal and not a lost tree. Every exact handle stays in
+    ``_PENDING_WINDOWS_TREE_CLEANUPS``, including members discovered too late in
+    the pass to be signalled yet, and
+    :func:`retry_pending_windows_process_trees` resumes the drain from the
+    members this pass already confirmed. A slow host meets it routinely: each
+    member's pass is two identity reads and two Toolhelp snapshots, so a large
+    agent tree on a loaded machine can spend the whole budget observing exits
+    that are already under way. It is an ``OSError`` so every caller that treats
+    an unconfirmed drain as a failed kill keeps doing so; a caller that only
+    reports the outcome can name it in one line instead of a traceback.
+    """
+
+    def __init__(self, *, root_pid: int, pending: int) -> None:
+        super().__init__(
+            "Windows process tree did not drain before the deadline "
+            f"(root pid {root_pid}, {pending} member(s) pending cleanup; "
+            "retained for the cleanup sweep)"
+        )
+        self.pending = pending
+
+
 class _PendingWindowsTreeCleanup:
     """One reservation, from before physical spawn through verified retirement."""
 
@@ -4810,7 +4834,10 @@ def _drain_windows_process_tree(state: _PendingWindowsTreeCleanup) -> bool:
             if pid in state.terminally_scanned:
                 continue
             if time.monotonic() >= deadline:
-                raise OSError("Windows process tree did not drain before the deadline")
+                raise WindowsTreeDrainPending(
+                    root_pid=state.root_pid,
+                    pending=len(set(state.handles) - state.terminally_scanned),
+                )
             before = _windows_process_handle_identity(handle)
             if before is None or before[0] != pid:
                 raise OSError(f"Windows process-tree identity unreadable: {pid}")

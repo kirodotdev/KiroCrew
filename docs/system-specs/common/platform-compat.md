@@ -516,6 +516,20 @@ an empty tree; ACP retains the original process and PID tracking when the owning
 call does not complete, while the transferred exact handles remain independently
 retryable after provider/client references are dropped.
 
+A pass that runs out of its bounded budget (`_WINDOWS_TREE_REAP_TIMEOUT_SECS`)
+before every member is confirmed raises `WindowsTreeDrainPending`. Members
+discovered too late in the pass to be signalled count as pending too. It is an
+`OSError`, so every caller that treats an unconfirmed drain as a failed kill keeps
+doing so. It names the root and the number of members still pending. The tree is
+not lost: its pins stay in the pending state, and the maintenance sweep resumes the
+drain from the members already confirmed. A slow host meets this routinely,
+because each member's pass costs two identity reads and two Toolhelp snapshots.
+`AcpRuntime` therefore logs it as one WARNING line, not a traceback, and still
+raises. A failed kiro session setup logs its original failure at WARNING before the
+cleanup kill, redacted and folded to one bounded printable line, because that text
+can come from the backend. Without that line, the cleanup's own output would be
+the only trace of a repeating setup failure.
+
 This does not reconstruct an intermediary that exited before any available
 handle observed it, and the completeness a successful drain asserts is therefore
 scoped to the members it retains: the pinned root plus every descendant some
