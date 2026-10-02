@@ -1977,32 +1977,14 @@ async def api_cron_run(request: web.Request) -> web.Response:
     job = await state.crons.get_job_async(job_id)
     if not job:
         return web.json_response({"error": "job not found"}, status=404)
-    # Reject if a run is already in flight: a second overlapping run would
-    # orphan the prior task's handle (nothing could track, cancel
-    # or join it). The check-and-claim below is atomic: there is no await between
-    # the guard, run_job's claim and attach_run_task, so the single-threaded
-    # event loop cannot interleave a second request into this critical section.
-    # (The lookup above awaits, so two concurrent requests can both reach the
-    # guard — but only one can pass it, because the guard and the claim are not
-    # separated by an await.)
-    #
-    # A tracked task that has already finished is NOT a run in flight, whatever
-    # the claim says: a run whose task ends without reaching
-    # _run_job_isolated's finally leaves its claim stored with nothing on that
-    # path to release it, and this guard alone would then refuse every manual
-    # run of the job until the reaper sweep meets the finished task (it does
-    # the same release, once a sweep). Drop such leftovers first; the call is
-    # synchronous, so the check-and-claim stays await-free, and a task still
-    # running keeps the 409 below.
-    state.crons.discard_finished_run(job_id)
-    if state.crons.is_running(job_id):
+    # trigger_run is the one check-and-claim section every on-loop trigger
+    # shares (CronSDK.run_job_async calls it too); see its docstring for why
+    # each step is there. It is await-free, so although the lookup above awaits
+    # and two concurrent requests can both reach it, only one can pass its
+    # guard. None means a run is already in flight, and refusing it keeps the
+    # first run's handle trackable.
+    if state.crons.trigger_run(job_id) is None:
         return web.json_response({"error": "job is already running"}, status=409)
-    # run_job claims the job synchronously while the call is evaluated; the
-    # wrapper task is handed to the claim on the same line so cancel() can
-    # reach a run still parked in its store refresh.
-    task = asyncio.create_task(state.crons.run_job(job_id))
-    state.crons.attach_run_task(job_id, task)
-    state.push_refresh("crons")
     safe_name = redact_credentials(redact_exfiltration_urls(job.name)[0])[0]
     return web.json_response({"ok": True, "name": safe_name})
 
