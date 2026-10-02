@@ -1192,7 +1192,6 @@ def is_denied(
     # cost flat -- one import-system lookup per owner, not one per name read.
     _rules = _submodule("denied_rules")
     _argv = _submodule("argv_floor")
-    _shell = _submodule("shell_normalizer")
     _diag = _submodule("diagnostics")
 
     lower = tool_name.lower()
@@ -1445,6 +1444,42 @@ def is_denied(
                 component="argv-floor",
             )
 
+    # ── Pattern passes (shared with the synthesized tier's ``segments=True``) ──
+    pattern_denial = _deny_pattern_passes(tool_name, lower, all_patterns, _reason)
+    if pattern_denial is not None:
+        return pattern_denial
+    # All windows cleared the deny passes — the input is allowed.  If it was a
+    # feature-branch push, emit the deferred allow audit now (final outcome).
+    #
+    # The RAW input is audited, never ``lower``.  ``lower`` exists for MATCHING;
+    # nothing matched on an allow, so the case fold buys the record nothing and
+    # costs it two things.  Faithfulness: branch names and remote URLs are
+    # case-sensitive, so folding records a push to ``Feature-ABC`` as a push to
+    # ``feature-abc``.  And redaction: the credential scrubber inside
+    # ``redact_and_truncate`` matches an AWS key ID case-SENSITIVELY on purpose
+    # (widening it would false-positive on ordinary prose — ``asia`` is a word —
+    # across every egress surface; see ``credential_patterns``), so a key handed
+    # in already case-folded slips past the pre-slice redaction, gets cut by the
+    # 200-char clip, and the surviving prefix is short enough to escape SEL's own
+    # any-case write-path net too — a partial key persisting in the durable log.
+    if push_allow_pending:
+        _schedule_push_allow_audit(tool_name)
+    return None
+
+
+def _deny_pattern_passes(
+    tool_name: str,
+    lower: str,
+    all_patterns: list[tuple[str, bool]],
+    reason: "Callable[[str], str]",
+) -> str | None:
+    """Run :func:`is_denied`'s whole-string and per-segment passes over *all_patterns*.
+
+    Exceptions and the perm-verb narrowing apply as there; no floor runs here.
+    """
+    _rules = _submodule("denied_rules")
+    _shell = _submodule("shell_normalizer")
+
     # Memoizes the argv-structural mention walk per view: the same view is asked
     # about once per matching pattern, and every opted-in pattern can match.
     mention_cache: dict[str, bool] = {}
@@ -1457,8 +1492,8 @@ def is_denied(
     # The regex tier matches the FULL, untruncated string via ``_DenyMatcher``
     # (linear-time, no length bound — see the ReDoS-mitigation notes above), so
     # a destructive needle at any offset within a single un-separated segment is
-    # caught here.  ``_is_git_publish`` / the always-on floors also run on the
-    # full string before this point.
+    # caught here.  In ``is_denied``, ``_is_git_publish`` / the always-on floors
+    # also run on the full string before this call.
     for pattern, is_regex in all_patterns:
         if _rules._deny_pattern_matches(pattern, lower, is_regex):
             exceptions = _rules._DENY_EXCEPTIONS.get(pattern, [])
@@ -1480,7 +1515,7 @@ def is_denied(
                     whole_string_exception_match = True
             if not whole_string_exception_match:
                 _emit_deny_event(tool_name, pattern, lower)
-                return _reason(pattern)
+                return reason(pattern)
 
     # ── Pass 2: per-segment (re-)evaluation ──
     # Split into segments and check each.  This runs UNCONDITIONALLY: besides
@@ -1564,30 +1599,14 @@ def is_denied(
                             tool_name, pattern, _perm_verb_mechanism_for(pattern)
                         ):
                             _emit_deny_event(tool_name, pattern, view, raw_segment=seg_lower)
-                            return _reason(pattern)
+                            return reason(pattern)
                         # Exception granted for this pattern on this segment;
                         # continue to evaluate any remaining patterns against
                         # the same segment (a different pattern without an
                         # exception must still cause a deny).
                         continue
                     _emit_deny_event(tool_name, pattern, view, raw_segment=seg_lower)
-                    return _reason(pattern)
-    # All windows cleared the deny passes — the input is allowed.  If it was a
-    # feature-branch push, emit the deferred allow audit now (final outcome).
-    #
-    # The RAW input is audited, never ``lower``.  ``lower`` exists for MATCHING;
-    # nothing matched on an allow, so the case fold buys the record nothing and
-    # costs it two things.  Faithfulness: branch names and remote URLs are
-    # case-sensitive, so folding records a push to ``Feature-ABC`` as a push to
-    # ``feature-abc``.  And redaction: the credential scrubber inside
-    # ``redact_and_truncate`` matches an AWS key ID case-SENSITIVELY on purpose
-    # (widening it would false-positive on ordinary prose — ``asia`` is a word —
-    # across every egress surface; see ``credential_patterns``), so a key handed
-    # in already case-folded slips past the pre-slice redaction, gets cut by the
-    # 200-char clip, and the surviving prefix is short enough to escape SEL's own
-    # any-case write-path net too — a partial key persisting in the durable log.
-    if push_allow_pending:
-        _schedule_push_allow_audit(tool_name)
+                    return reason(pattern)
     return None
 
 
@@ -1597,6 +1616,7 @@ def is_denied_synthesized_target(
     *,
     extra_patterns: list[str] | None = None,
     reason_notes: dict[str, str] | None = None,
+    segments: bool = False,
 ) -> str | None:
     """Evaluate a SYNTHESIZED target against the patterns that participate in one.
 
@@ -1641,6 +1661,12 @@ def is_denied_synthesized_target(
       splitting it only manufactures pseudo-commands out of path substrings -- the same
       collision class, one layer down.
 
+    ``segments=True`` is for a shell title kiro-cli cut short, judged as SENT by the
+    operator's own rules (``hooks.untruncated_shell_title``).  That text is a command
+    line and a rule may be anchored to one chained command of it, so both of
+    :func:`is_denied`'s pattern passes run (``_deny_pattern_passes``); the floors,
+    which misread the cut end, still do not.
+
     Args:
         target: The synthesized target, e.g. ``"file-search path=/srv max_depth=3"``.
         patterns: Regex-tier patterns that participate (the operator's own).  ``None``
@@ -1648,6 +1674,7 @@ def is_denied_synthesized_target(
             to every built-in, which would be the opposite of this tier's contract.
         extra_patterns: Glob-tier patterns that participate (``auto_deny_tools``).
         reason_notes: Optional ``{pattern: operator note}`` map, presentation only.
+        segments: Also run the per-segment pass (see above).  Default ``False``.
 
     Returns:
         Denial reason string (mentioning the matched pattern), or ``None`` if allowed.
@@ -1660,6 +1687,13 @@ def is_denied_synthesized_target(
     all_patterns: list[tuple[str, bool]] = [(p, True) for p in list(patterns or [])] + [
         (p, False) for p in list(extra_patterns or [])
     ]
+    if segments:
+        return _deny_pattern_passes(
+            target,
+            lower,
+            all_patterns,
+            lambda matched: _denied_rules._deny_reason(matched, reason_notes),
+        )
     for pattern, is_regex in all_patterns:
         if not _denied_rules._deny_pattern_matches(pattern, lower, is_regex):
             continue

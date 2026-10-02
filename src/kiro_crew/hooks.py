@@ -1015,13 +1015,23 @@ class HookManager:
         # Strip display prefixes (e.g. "Running: ls *" → "ls *") so config
         # patterns like "ls" or "rm *" match without the prefix.
         normalized = _normalize_tool_name(tool_name)
+        # What the deny tiers judge in the title's place. A title in kiro-cli's
+        # cut shape (a leading slice of the command plus ``...``) is
+        # judged uncut (``untruncated_shell_title``): the cut is display
+        # truncation, and a structural rule read its end as the command's end.
+        # Every other title, and every title of a call with no command, is judged
+        # verbatim. A rebuilt title's sent form still meets the operator's own
+        # deny rules (after the deny loop below). The grant tiers further down
+        # keep reading ``tool_name`` / ``normalized``.
+        judged_title = untruncated_shell_title(tool_name, command)
+        judged_normalized = _normalize_tool_name(judged_title)
 
         # Security checks run against the raw command (when available) AND the
         # display title. The command is the ground truth for shell tools; the
         # title is retained so non-shell tools (whose identifier IS the title)
         # stay gated and so a dangerous title can't slip through behind a
         # benign command.
-        security_targets = [normalized]
+        security_targets = [judged_normalized]
         if command and command not in security_targets:
             security_targets.append(command)
 
@@ -1216,7 +1226,7 @@ class HookManager:
         authority = ctx.security
         denied_regexes = self._effective_denied(ctx)
         denied_notes = self._denied_notes()
-        deny_targets = [normalized, tool_name]
+        deny_targets = [judged_normalized, judged_title]
         # The canonical ``mcp__<server>__<tool>`` identity, when kiro-cli supplied
         # BOTH trusted ``_meta.kiro`` fields. ``select_tool_title`` prefers the
         # model's prose ``description``, so ``tool_name`` for an MCP call may be
@@ -1273,7 +1283,7 @@ class HookManager:
         # form of it, and feeding it there would widen matching by accident
         # instead of by grammar.
         governance_mcp_ref = mcp_identity_ref(mcp_server_name, mcp_tool_name)
-        if command:
+        if command and command not in deny_targets:
             deny_targets.append(command)
         for target in deny_targets:
             reason = authority.is_denied(
@@ -1284,6 +1294,33 @@ class HookManager:
             )
             if reason:
                 return ToolHookResult.deny(reason)
+        # The title kiro-cli actually SENT, when ``judged_title`` rebuilt it. The
+        # rebuild is for the shipped rules, whose shell-syntax reading (the
+        # git-publish floor, an end-anchored built-in) takes the cut end for the
+        # command's end. An operator's own rule is another matter: it may be
+        # written against the very string kiro-cli displayed, ``...`` included,
+        # and judging only the rebuilt title would retire it without a word. So
+        # the sent title is ALSO judged by every rule the operator authored --
+        # their enabled regexes, their ``auto_deny_tools`` globs and the
+        # companion overlay -- and by no shipped rule or floor. It goes through
+        # ``is_denied_synthesized_target(..., segments=True)``: the operator's
+        # patterns only, through ``is_denied``'s whole-string AND per-segment
+        # passes, and no shipped rule or shell-syntax floor. A cut title is a
+        # command line, so a rule anchored to one chained command of it still
+        # meets that command; the floors are what misread the cut end.
+        # Additive: a deny here can only deny.
+        if judged_title != tool_name:
+            operator_regexes = self.operator_denied_regexes()
+            for shown in dict.fromkeys((normalized, tool_name)):
+                reason = authority.is_denied_synthesized_target(
+                    shown,
+                    operator_regexes,
+                    extra_patterns=self._config.auto_deny_tools,
+                    reason_notes=denied_notes,
+                    segments=True,
+                )
+                if reason:
+                    return ToolHookResult.deny(reason)
         # The user's own ``auto_deny_tools`` GLOBS, and only those, are also
         # matched against the identity in the ``@server/tool`` spelling the
         # approve loop below uses (plus ``Running: @server/tool`` and the bare
@@ -1662,6 +1699,19 @@ class HookManager:
         return resolve_effective_denied_regexes(
             self._config, current_context(), include_governance_pins=include_governance_pins
         )
+
+    def operator_denied_regexes(self) -> list[str]:
+        """The operator's own enabled ``user_added`` regexes, and nothing else.
+
+        The part of :meth:`effective_denied_regexes` the operator authored: no
+        shipped built-in and no governance pin. Always a list, never ``None``,
+        because ``security.is_denied`` reads ``None`` as "every built-in". It
+        judges the title kiro-cli sent when ``untruncated_shell_title`` rebuilt
+        it -- here in ``on_tool_call`` and in ``llm_helpers._resolve_permission``
+        -- where a shipped rule only misreads the cut but an operator's rule may
+        have been written against exactly that text.
+        """
+        return [p.pattern for p in self._config.denied_commands_user_added if p.enabled]
 
 
 # ACP semantic tool kinds treated as read-only for the non-shell auto-approve
@@ -2242,6 +2292,10 @@ def _audit_governance(session_key: str, agent: str, tool_name: str, decision: ob
 # Display prefixes that kiro-cli ACP adds to tool titles
 _TOOL_TITLE_PREFIXES = ("Running: ", "Reading ")
 
+# The marker kiro-cli appends when it cuts a long shell call's title (today
+# after the command's first 197 characters; see ``untruncated_shell_title``).
+_TITLE_TRUNCATION_MARKER = "..."
+
 # ACP semantic tool kind for a file write/edit (fs_write / code). The kind that
 # carries a real target path in ``raw_params['path']`` and maps to the
 # ``filesystem.write`` scope. Used to gate the write-only config-file protection
@@ -2595,6 +2649,50 @@ def _normalize_tool_name(tool_name: str) -> str:
         if tool_name.startswith(prefix):
             return tool_name[len(prefix) :]
     return tool_name
+
+
+def untruncated_shell_title(tool_name: str, command: str | None) -> str:
+    """The title the deny tiers judge for a call whose raw *command* is known.
+
+    kiro-cli titles a shell call ``Running: <command>`` and cuts a long command
+    to its first 197 characters plus ``...``. The cut lands wherever character
+    197 falls, and a structural rule reads the end of what is left as the end of
+    the command: a push whose branch starts past the cut, its title ending
+    inside a ``--force-with-lease`` value, reads as a push that names no branch,
+    and the git-publish floor refuses a push that names one.
+
+    Only a cut-shaped title is rebuilt: without its display prefix it must be a
+    non-empty leading slice of *command*, shorter than *command*, followed by
+    ``...``. The slice length is not pinned to kiro-cli's 197, so a release that
+    moves the cut does not silently bring the over-block back. Such a title is
+    returned uncut -- the same display prefix followed by the whole command --
+    so a long command is judged exactly as a short one already is, and the
+    prefixed form still meets a deny glob written against it
+    (``Running: git push*``). Every character the cut title shows is in the
+    command, which the tiers judge anyway, so the only verdict the rebuild
+    removes is one that the cut's own end earns. The callers also judge the
+    title as sent, by the operator's own rules only
+    (``HookManager.operator_denied_regexes``), since an operator may have
+    written a rule against exactly the cut text kiro-cli displayed.
+
+    Every other title is returned unchanged and keeps its own verdict, including
+    one that begins the command without the marker (a model-authored
+    ``terraform apply`` over ``terraform apply -auto-approve``) and a slice
+    taken from anywhere but the start: judging it verbatim is what keeps a
+    dangerous title from hiding behind a benign command and keeps a rule that
+    matches the title alone firing. Without a recovered *command* -- a non-shell
+    tool, whose identifier is the title -- the title is returned unchanged too.
+    """
+    if not command:
+        return tool_name
+    shown = _normalize_tool_name(tool_name)
+    if not shown.endswith(_TITLE_TRUNCATION_MARKER):
+        return tool_name
+    kept = shown[: -len(_TITLE_TRUNCATION_MARKER)]
+    if not kept or len(kept) >= len(command) or not command.startswith(kept):
+        return tool_name
+    display_prefix = tool_name[: len(tool_name) - len(shown)]
+    return display_prefix + command
 
 
 def _context_matches(matcher: str, mode: str, context: str) -> bool:
