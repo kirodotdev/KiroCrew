@@ -74,6 +74,7 @@ from kiro_crew.agent_sdk.spec_hooks import (
     reproject_claimed_session,
     session_agent,
 )
+from kiro_crew.agent_sdk.tool_search import resume_takes_tool_search_replay
 from kiro_crew.autonudge import get_instance
 from kiro_crew.autonudge_authz import normalize_banner
 from kiro_crew.config.loader import (
@@ -306,6 +307,7 @@ from kiro_crew.members import (
     is_dispatchable_member_name,
     member_lifecycle,
     record_activity,
+    select_provider_backend,
 )
 from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.messaging.commands import compact_unsupported_reply
@@ -7715,6 +7717,24 @@ async def _eager_spawn(
                         slot.key,
                     )
                     return
+            # A resume the provider answers with a fresh session plus replay
+            # (Tool Search on, kiro backend, direct dashboard key) can only
+            # come back ``resumed=False`` and be refused -- after a whole
+            # runtime was spawned and torn down. Ask the provider's own
+            # decision before anything exists; the first real turn takes the
+            # same fresh-session path it always does. The backend is the
+            # factory's own selection for this key, and the prefetch allocates
+            # with no channel identity.
+            if allow_resume and resume_takes_tool_search_replay(
+                tool_search=cfg.agent.tool_search,
+                backend=select_provider_backend(
+                    session_key, cfg.agent.member_acp_backend, cfg.agent.acp_backend
+                ),
+                channel_id=None,
+                session_key=session_key,
+            ):
+                logger.info("Eager spawn: %s left to first turn (tool-search replay)", session_key)
+                return
             # Off the loop: the resolve globs and reads agent JSON (see
             # _default_session_model). It converts every resolver error,
             # StopIteration included, to "" inside the worker.

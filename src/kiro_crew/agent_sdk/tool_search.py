@@ -34,6 +34,8 @@ import copy
 from dataclasses import dataclass
 from typing import Any
 
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_KIRO
+
 __all__ = [
     "TOOL_SEARCH_DEFAULT_MIN_PCT",
     "TOOL_SEARCH_DEFAULT_MIN_TOKENS",
@@ -42,6 +44,7 @@ __all__ = [
     "clamp_min_pct",
     "clamp_min_tokens",
     "kas_client_meta_settings",
+    "resume_takes_tool_search_replay",
     "spec_grants_tool_search",
     "with_client_meta_settings",
 ]
@@ -122,6 +125,48 @@ def spec_grants_tool_search(spec: dict[str, Any] | None) -> bool:
         return False
     entries = {t for t in raw if isinstance(t, str)}
     return bool(entries & {"*", "@builtin", TOOL_SEARCH_LOADER_TOOL})
+
+
+def resume_takes_tool_search_replay(
+    *,
+    tool_search: bool | None,
+    backend: str,
+    channel_id: str | None,
+    session_key: object,
+) -> bool:
+    """Whether a resume of this session is a fresh session plus conversation replay.
+
+    A direct dashboard kiro-cli session with Tool Search on cannot restore its
+    transcript through native ``session/load``: the loaded transcript comes back
+    without Tool Search's activated schemas, so the next inference cannot invoke
+    a tool the loader reports as loaded. The provider rebuilds that registry in a
+    fresh native session and preserves the Kiro Crew conversation with a replay
+    instead (``providers.acp._start_kiro_runtime_impl``). A linked channel
+    identity (``channel_id``) and every non-dashboard key keep native resume.
+
+    This is the ONE definition of that decision, and it is pure on purpose: the
+    resume prefetch (``chat_runner._eager_spawn``) asks it before any runtime
+    exists, because a speculative load the provider replaces with a replay can
+    only come back ``resumed=False`` and be refused after a full spawn. It lives
+    here, below both callers, because the dashboard may not import the ACP layer
+    (``scripts/check_agent_sdk_boundary.py``) and the provider must not copy the
+    rule. Whether a resume is attempted at all (a persisted sid, persistent
+    memory) is the caller's precondition; this answers only which shape the
+    resume takes.
+    """
+    # Function-level on purpose: ``kiro_crew.messaging`` imports its driver, which
+    # imports ``kiro_crew.acp``, whose runtime imports THIS module -- a top-level
+    # import here fails with a partially initialized module whenever this module
+    # is the first of the three to load.
+    from kiro_crew.messaging.link import telemetry_channel_of
+
+    return (
+        tool_search is True
+        and backend == ACP_BACKEND_KIRO
+        and not channel_id
+        and telemetry_channel_of(session_key if isinstance(session_key, str) else None)
+        == "dashboard"
+    )
 
 
 def kas_client_meta_settings(

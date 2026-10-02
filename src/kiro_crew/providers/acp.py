@@ -77,6 +77,7 @@ from kiro_crew.agent_sdk.tool_search import (
     ToolSearchSettings,
     clamp_min_pct,
     clamp_min_tokens,
+    resume_takes_tool_search_replay,
 )
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import kiro_sessions_dir
@@ -1130,7 +1131,9 @@ class AcpProvider(LLMProvider):
         # fresh native session rebuilds that registry, while
         # ``_history_replay_needed`` preserves the Kiro Crew conversation. Linked
         # Slack and other channel dispatchers keep native resume until they own
-        # the same replay-lease contract end to end.
+        # the same replay-lease contract end to end. The decision itself is
+        # ``agent_sdk.tool_search.resume_takes_tool_search_replay``, shared with
+        # the resume prefetch (the dashboard may not import this layer).
         resume_sid = (
             getattr(self._client, "_resume_session_id", "")
             if self.memory_mode == "persistent"
@@ -1138,13 +1141,11 @@ class AcpProvider(LLMProvider):
         )
         session_key = getattr(self._client, "_session_key", None)
         channel_id = getattr(self._client, "_channel_id", None)
-        if (
-            resume_sid
-            and self._tool_search is True
-            and self._client.backend == ACP_BACKEND_KIRO
-            and not channel_id
-            and telemetry_channel_of(session_key if isinstance(session_key, str) else None)
-            == "dashboard"
+        if resume_sid and resume_takes_tool_search_replay(
+            tool_search=self._tool_search,
+            backend=self._client.backend,
+            channel_id=channel_id,
+            session_key=session_key,
         ):
             logger.info(
                 "Tool Search is enabled; replacing native session/load for %s "
