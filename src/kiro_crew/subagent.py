@@ -2951,6 +2951,7 @@ class _ReportFailureSnapshot:
     _stop_origin: str
     outcome: str
     partial: bool
+    queued: bool
     agent: str
     silent: bool
     conversation_key: str
@@ -2987,6 +2988,7 @@ class _ReportFailureSnapshot:
             _stop_origin=bounded(info._stop_origin),
             outcome=info.outcome,
             partial=bool(info.partial),
+            queued=bool(info.queued),
             agent=bounded(info.agent),
             silent=bool(info.silent),
             conversation_key=bounded(info.conversation_key),
@@ -3061,6 +3063,7 @@ class _ReportFailureSnapshot:
             stop_reason=self.stop_reason,
             stop_class=self.stop_class,
             partial=self.partial,
+            queued=self.queued,
         )
         info._report_failure_latched = True
         return info

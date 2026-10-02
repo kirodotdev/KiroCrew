@@ -574,9 +574,20 @@ made; no gate reads it back. Two consumers:
   `reason` and, for the memory kinds, `available_gb` / `required_gb` beside
   `queued`. The label is remembered per parent (`_queue_wait`) so the drain's,
   the claim path's (once a claimed row registers, so a started row leaves the
-  count) and the cancel path's re-emits — which carry no verdict of their own —
-  keep it, and
+  count), the cancel path's and the reconciling re-emits — which carry no
+  verdict of their own — keep it, and
   forgotten at depth 0, where the event is once again the bare `{"queued": 0}`.
+  The count is pushed, not polled, and the client otherwise resets it only from
+  a reconnect's snapshot, so two points re-publish the authoritative depth
+  whether or not it changed: every terminal report of a run that started
+  (right after its `subagent_done`) and every `cancel_for_parent` (Stop all),
+  including one that stopped nothing. A queued-stop terminal — the synthetic
+  record of a row stopped before it started — does not re-publish: the stop
+  that removed the row already did, and its bulk caller ends with the trailing
+  re-publish, so a Stop all over N waiting rows costs one reconciling frame
+  rather than N+1. A frame the client missed or received out of order
+  therefore cannot leave "N waiting to start" on the card once the wave has
+  settled.
   One label per parent, last writer wins: it is the verdict on the most recent
   row the gate judged for that parent, not a per-row ledger. A parent holding a
   memory-deferred row and then a capacity-queued one shows `concurrency_limit`
@@ -1058,7 +1069,12 @@ authentication middleware's app claim is denied on the same fail-closed path.
 This bulk control remains a dashboard-only capability. The server resolves that
 slot's effective session key, including channel-linked chats, rather than
 accepting a client-supplied parent key. The in-chat Stop all control uses this
-endpoint and remains available for queued-only waves.
+endpoint and remains available for queued-only waves. It always ends by
+re-publishing the parent's queued depth (`_republish_queue_depth`), so pressing
+it on a card whose count has gone stale repairs the card even when there was
+nothing left to stop. Each row it unqueues publishes the depth once, from
+`_unqueue`, whether the row sat in the in-memory window or only in the store;
+the synthetic queued-stop terminal that follows adds no frame of its own.
 
 ### `cancel_for_boundary(parent_session_key, boundary_owner) -> (running, queued)`
 The dashboard captures and reserves the stage's full parent set before stopping

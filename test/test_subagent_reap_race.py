@@ -834,6 +834,7 @@ async def test_retained_report_payload_caps_text_bytes_and_redelivers(monkeypatc
         error="error🙂" * 100,
         user_stopped=True,
         partial=True,
+        queued=True,
         agent="reviewer",
         silent=True,
         conversation_key="subagent:origin",
@@ -870,6 +871,7 @@ async def test_retained_report_payload_caps_text_bytes_and_redelivers(monkeypatc
     assert retained.user_stopped is info.user_stopped is True
     assert retained._stage_boundary_cancelled is info._stage_boundary_cancelled is True
     assert retained.partial is info.partial is True
+    assert retained.queued is info.queued is True
     assert retained.result_path == info.result_path
     assert retained.result_truncated is info.result_truncated is True
     assert retained.agent == info.agent
@@ -900,6 +902,7 @@ async def test_retained_report_payload_caps_text_bytes_and_redelivers(monkeypatc
     assert redelivered.user_stopped is info.user_stopped
     assert redelivered._stage_boundary_cancelled is info._stage_boundary_cancelled
     assert redelivered.partial is info.partial
+    assert redelivered.queued is info.queued
     assert redelivered.result_path == info.result_path
     assert redelivered.result_truncated is info.result_truncated
     assert redelivered.agent == info.agent
