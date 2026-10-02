@@ -4519,6 +4519,42 @@ failure. The four extra skips ARE the capability-gated tests standing aside, whi
 proves the runner lacked the capability and the one failure was the test that forgot
 to stand aside with them. No log spelunking required.
 
+### A test that says "every host" but was never run on Windows
+
+`test/test_app_script_cron_sibling_import.py` claimed its recorder cases run "on every
+host". The command-cron case does not: on Windows `run_command_sandboxed` refuses every
+command cron before it spawns (there is no POSIX shell, by design), so the recorder
+stayed empty and the case failed with `AssertionError: []` on every Windows shard of
+every pull request. It was not a flake: it failed the same way every time, locally too.
+
+Two rules close it:
+
+* When the product refuses a feature on some host, a test of that feature gates on the
+  product's OWN refusal probe -- here `cron_script._resolve_command_shell() is None` --
+  not on `sys.platform`. The skip then tracks the product: a host that starts running
+  command crons is held to the pin again.
+* A test whose docstring or name says "every host" / "all platforms" is run on Windows
+  before it merges: locally (`-n0` on one file is seconds) or by reading the
+  `Backend Tests (Windows)` shards of its own round. A recorder or spy that asserts it
+  saw a call is the shape to watch for: on a host that refuses early it sees nothing.
+
+### A frozen list of a surface other branches keep growing
+
+`test/test_context_composition_contract.py` pins the full signature of
+`ContextBuilder.build_message` as a string. A refactor branch recorded the list; a
+feature branch cut from an older base added one keyword. Each was green alone; on main
+together they were red on every platform and every later pull request inherited it.
+Rerunning cannot fix it, which is how to tell it from a flake: the same assertion fails
+on every head built on that main.
+
+A snapshot of a hot surface pins what callers depend on, not every byte. The signature
+tests compare through `_frozen_view`, which drops a NEW keyword-only parameter that has
+a default (no caller can feel it) and keeps everything else -- a removed, renamed,
+reordered or retyped parameter, a new positional or required one, a changed return
+annotation -- red. `test_only_a_compatible_addition_is_tolerated` proves each of those
+still reds. Use the same shape for any new pin over a surface that ordinary feature
+work grows; a byte-exact pin is right only for a surface nobody else edits.
+
 ## Keeping the suite fast
 
 The measured runs above exceeded 100k tests. At that scale, setup overhead rather

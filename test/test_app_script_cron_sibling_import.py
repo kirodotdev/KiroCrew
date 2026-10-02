@@ -7,7 +7,9 @@ able to read the bundle it runs from, whether the job is a script cron naming th
 apps tree (even one that re-exposes each app's ``data/``) hides the code and every module
 it imports, and every such cron then fails before its first line.
 
-Two cases per exec path. The first runs on every host: it replaces ``wrap_argv`` with a
+Two cases per exec path. The first runs on every host that runs that kind of cron (a
+host with no POSIX shell refuses command crons outright, so the command cases stand
+aside there): it replaces ``wrap_argv`` with a
 passthrough that records what the call site asked the sandbox to hide, runs the real
 child, and requires that no hidden directory covers the bundle without a window
 re-exposing it. The second runs where this host can carry a caller's masks for real
@@ -26,7 +28,7 @@ from typing import Any
 
 import pytest
 
-from kiro_crew import sandbox
+from kiro_crew import cron_script, sandbox
 from kiro_crew.cron_script import run_command_sandboxed, run_script_sandboxed
 
 APP = "sibling-app"
@@ -141,6 +143,18 @@ class TestAScriptCronNamingTheBundle:
 
 
 class TestACommandCronRunningBundleCode:
+    @pytest.fixture(autouse=True)
+    def _command_crons_run_here(self):
+        """A host with no POSIX shell refuses every command cron before it spawns.
+
+        Windows is that host by design (``_no_command_shell_message``): nothing reaches
+        ``wrap_argv``, so there is no mask to check. Gate on the product's own probe,
+        not on the platform name, so a host that does run command crons is still held
+        to the pin.
+        """
+        if cron_script._resolve_command_shell() is None:
+            pytest.skip("this host refuses command crons: no POSIX shell to run them")
+
     def test_the_call_site_leaves_the_bundle_readable(self, bundle, monkeypatch):
         seen = _record_spawns(monkeypatch)
 

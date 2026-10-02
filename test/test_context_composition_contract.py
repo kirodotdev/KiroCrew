@@ -1549,6 +1549,27 @@ OWNER_MODULES = frozenset(
 )
 
 
+def _frozen_view(live: inspect.Signature, frozen: str) -> str:
+    """Render ``live`` as the frozen string would see it, minus compatible additions.
+
+    The frozen strings pin what callers depend on. A parameter a later change adds
+    as keyword-only WITH a default breaks no caller, so it is dropped from the live
+    side before the comparison; anything else -- a removed, renamed, reordered or
+    retyped parameter, a new positional one, a new required one, a changed return
+    annotation -- still renders differently and reds. Without this, a branch that
+    grows ``build_message`` by one keyword and a branch that records the list one
+    keyword earlier are each green alone and red together on main.
+    """
+    kept = [
+        p
+        for p in live.parameters.values()
+        if p.kind is not inspect.Parameter.KEYWORD_ONLY
+        or p.default is inspect.Parameter.empty
+        or re.search(rf"(?:\(|, ){re.escape(p.name)}(?=[:=,)])", frozen)
+    ]
+    return str(live.replace(parameters=kept))
+
+
 def _owner_sources() -> dict[str, str]:
     return {
         path.stem: path.read_text(encoding="utf-8")
@@ -1620,17 +1641,42 @@ class TestSurface:
         for name, raw in vars(ctx.ContextBuilder).items():
             if name.startswith("__") and name != "__init__":
                 continue
+            frozen = _BUILDER_MEMBERS.get(name, ("", ""))[1]
             if isinstance(raw, staticmethod):
-                current[name] = ("static", str(inspect.signature(raw.__func__)))
+                current[name] = ("static", _frozen_view(inspect.signature(raw.__func__), frozen))
             elif callable(raw):
-                current[name] = ("method", str(inspect.signature(raw)))
+                current[name] = ("method", _frozen_view(inspect.signature(raw), frozen))
             else:
                 current[name] = ("attr", repr(raw))
         assert current == _BUILDER_MEMBERS
 
     def test_public_functions_keep_their_signatures(self) -> None:
-        current = {name: str(inspect.signature(getattr(ctx, name))) for name in _PUBLIC_SIGNATURES}
+        current = {
+            name: _frozen_view(inspect.signature(getattr(ctx, name)), frozen)
+            for name, frozen in _PUBLIC_SIGNATURES.items()
+        }
         assert current == _PUBLIC_SIGNATURES
+
+    def test_only_a_compatible_addition_is_tolerated(self) -> None:
+        """The tolerance above must not swallow a change a caller would feel."""
+
+        def base(self, a: str, *, b: int = 0) -> str: ...
+
+        frozen = str(inspect.signature(base))
+
+        def added_optional_keyword(self, a: str, *, b: int = 0, c: int = 1) -> str: ...
+
+        def added_required_keyword(self, a: str, *, b: int = 0, c: int) -> str: ...
+
+        def added_positional(self, a: str, c: int = 1, *, b: int = 0) -> str: ...
+
+        def renamed(self, a: str, *, bb: int = 0) -> str: ...
+
+        def retyped_return(self, a: str, *, b: int = 0) -> int: ...
+
+        assert _frozen_view(inspect.signature(added_optional_keyword), frozen) == frozen
+        for broken in (added_required_keyword, added_positional, renamed, retyped_return):
+            assert _frozen_view(inspect.signature(broken), frozen) != frozen, broken.__name__
 
     def test_moved_classes_keep_their_owner_module(self) -> None:
         assert ctx._ResolvedCaps.__module__ == f"{OWNER_PACKAGE}.budget"
