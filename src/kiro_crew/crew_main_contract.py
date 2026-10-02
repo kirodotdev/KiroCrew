@@ -520,15 +520,7 @@ def _usage_fields(
     tokens = fold.get("tokens")
     total_tokens = tokens.get("total") if isinstance(tokens, Mapping) else None
     return {
-        "credits": (
-            NOT_RECORDED
-            if not isinstance(charge, (int, float)) or isinstance(charge, bool)
-            else (
-                UNREADABLE
-                if _credits(charge) is None
-                else f"{_credits(charge)} credits billed to this crew"
-            )
-        ),
+        "credits": _crew_credits(charge),
         "credits_subagents": _subagent_credits(subagent),
         "tokens": _tokens(total_tokens, turns_completed),
     }
@@ -552,6 +544,15 @@ def _tokens(total: object, turns_completed: int | None) -> str:
     if _count(total) == 0 and turns_completed:
         return "no tokens reported"
     return _plain(total, "token measured", "tokens measured")
+
+
+def _crew_credits(charge: object) -> str:
+    """The crew's whole charge, or why there is no number for it."""
+    if not isinstance(charge, (int, float)) or isinstance(charge, bool):
+        return NOT_RECORDED
+    if _credits(charge) is None:
+        return UNREADABLE
+    return f"{_credits(charge)} credits billed to this crew"
 
 
 def _subagent_credits(bucket: object) -> str:
