@@ -1602,17 +1602,16 @@ class AutoNudgeService:
                         self._arm_from_deadline(loop)
             global _INSTANCE
             _INSTANCE = self
-        # The crew-log bus subscription that pulls a work-ledger loop forward when its
-        # board's ``work`` fold advances. Registered HERE because this service owns the
-        # loops it fires -- the bus's rule is that a consumer subscribes where its state
-        # exists. Once per process: the bus has no unsubscribe, and a restart inside one
-        # process must not fire twice per event. Function-local import to keep
-        # ``conductor_wake`` off this module's import graph: it imports ``autonudge``
-        # back (for ``get_instance``), and a module-level import here would close that
-        # cycle.
+        # The crew-log bus subscriptions that pull a work-ledger loop forward when its
+        # board's ``work`` fold advances: one keyed subscription per watched board,
+        # following this service's loop table. Installed HERE because this service owns
+        # the loops it fires -- the bus's rule is that a consumer subscribes where its
+        # state exists. Function-local import to keep ``conductor_wake`` off this
+        # module's import graph: it imports ``autonudge`` back (for ``get_instance``),
+        # and a module-level import here would close that cycle.
         from kiro_crew import conductor_wake
 
-        conductor_wake.subscribe_to_crew_log()
+        conductor_wake.install(self)
         # The reconciler is the timer-driven backstop for a loop stranded
         # active-but-unarmed (see _reconcile_forever). Spawned outside the
         # maintenance lock: it takes no locks of its own and its first pass is
@@ -1653,13 +1652,12 @@ class AutoNudgeService:
         global _INSTANCE
         if _INSTANCE is self:
             _INSTANCE = None
-            # The crew-log subscriber's registry is bounded by this service's loop
-            # table; with the table gone the boards it retained have nothing to fire,
-            # so they go with it. The subscription itself stays: it is once per process
-            # and a later start() re-fills the registry from the bus and the prime.
+            # The crew-log subscriptions and the boards they filled are bounded by this
+            # service's loop table; with the table gone they have nothing to fire, so
+            # they are disposed with it. A later start() joins them again.
             from kiro_crew import conductor_wake
 
-            conductor_wake.forget_boards()
+            conductor_wake.dispose_all()
 
     async def _persist_locked(self) -> None:
         """Snapshot under the service lock and write on a worker thread.
