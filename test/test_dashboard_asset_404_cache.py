@@ -2,9 +2,11 @@
 
 The unit tests in ``test_dashboard_security_headers.py`` feed
 ``_apply_security_headers`` a ``web.Response`` whose status is already final,
-so they cannot see this bug: aiohttp's ``FileResponse`` (what ``add_static``
-returns) is constructed with status 200 and only discovers the file is missing
-inside ``prepare()`` -- AFTER every middleware has run. The middleware therefore
+so they cannot see this bug: aiohttp's ``FileResponse`` is constructed with
+status 200 and only discovers the file is missing inside ``prepare()`` -- AFTER
+every middleware has run. The dist routes check the file before returning one,
+but a file removed between that check and ``prepare()`` (a stage sweeping the
+tree it was in) still takes this path. The middleware therefore
 stamps ``public, max-age=31536000, immutable`` on what becomes a 404, and
 Chromium stores that 404 for a year under the request URL. Because lucide icon
 chunks keep the same content hash across releases, a 404 cached while a gateway
@@ -13,8 +15,8 @@ that imports the same chunk: the ``<script type=module>`` fails silently and the
 pane never boots. Observed on the desktop app's remote-crew panes (one origin
 stuck for days while its siblings on other ports loaded fine).
 
-These tests drive a real ``add_static`` mount through the real middleware and a
-real ``TestClient`` so the headers asserted are the ones that went on the wire.
+These tests drive the real dist routes through the real middleware and a real
+``TestClient`` so the headers asserted are the ones that went on the wire.
 """
 
 from __future__ import annotations
@@ -66,6 +68,18 @@ async def test_missing_hashed_asset_is_not_cached(tmp_path: Path) -> None:
         assert "no-store" in cc, cc
         assert resp.headers.get("Pragma") == "no-cache"
         assert resp.headers.get("Expires") == "0"
+
+
+@pytest.mark.asyncio
+async def test_an_asset_swept_after_it_was_found_is_not_cached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The race the finalizer still covers: found, then removed before prepare()."""
+    monkeypatch.setattr(srv, "_resolve_dist_file", lambda *_a: tmp_path / "swept.js")
+    async with TestClient(TestServer(_make_app(_dist(tmp_path)))) as client:
+        resp = await client.get("/assets/check-BiXj6uGO.js")
+        assert resp.status == 404
+        assert "immutable" not in resp.headers["Cache-Control"]
 
 
 @pytest.mark.asyncio
@@ -144,11 +158,14 @@ async def test_missing_worker_asset_is_downgraded_to_no_store(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
-async def test_without_finalizer_the_404_is_immutable(tmp_path: Path) -> None:
-    """Pins the mechanism this file exists for: with only the middleware, the
-    missing-file 404 really does leave with ``immutable``. If aiohttp ever
-    moves the existence check back before the handler returns, this test
-    fails and the finalizer can be retired."""
+async def test_without_finalizer_the_404_is_immutable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pins the mechanism this file exists for: with only the middleware, a
+    file that vanishes after the route found it really does leave as a 404
+    with ``immutable``. If aiohttp ever moves the existence check back before
+    the handler returns, this test fails and the finalizer can be retired."""
+    monkeypatch.setattr(srv, "_resolve_dist_file", lambda *_a: tmp_path / "swept.js")
     app = web.Application()
     srv._register_dist_static_routes(app, _dist(tmp_path))
 

@@ -15,7 +15,7 @@ import sys
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from importlib import import_module
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import TYPE_CHECKING, Any, NamedTuple
 from urllib.parse import quote
 
@@ -1694,8 +1694,15 @@ def discover_app_window_entries(windows_root: Path) -> list[tuple[str, Path]]:
     return out
 
 
-def _window_entry_handler(entry: Path) -> Callable[[web.Request], Awaitable[web.FileResponse]]:
-    """A handler that serves ONE enumerated window file.
+def _window_entry_handler(
+    dist_dir: Path, entry: str
+) -> Callable[[web.Request], Awaitable[web.StreamResponse]]:
+    """A handler that serves ONE enumerated window file, ``src/apps/<entry>``.
+
+    The file is resolved through ``dist_dir`` per request
+    (:func:`_resolve_dist_file`), like every other build route, so a staging
+    step that re-points ``static/dist`` does not leave the window on a tree that
+    has since been swept.
 
     A factory rather than the usual default-argument idiom
     (``async def h(req, _file=entry)``). Both avoid the late-binding capture bug
@@ -1708,10 +1715,83 @@ def _window_entry_handler(entry: Path) -> Callable[[web.Request], Awaitable[web.
     reaches the filesystem.
     """
 
-    async def _serve(_request: web.Request) -> web.FileResponse:
-        return web.FileResponse(entry)
+    async def _serve(_request: web.Request) -> web.StreamResponse:
+        return await _serve_dist_file(dist_dir, _APP_WINDOWS_SUBDIR, entry)
 
     return _serve
+
+
+#: Where Vite mirrors each app's standalone window entries inside the build.
+_APP_WINDOWS_SUBDIR = "src/apps"
+
+
+def _resolve_dist_file(dist_dir: Path, subdir: str, tail: str) -> Path | None:
+    """The file ``tail`` names under ``dist_dir/subdir``, or ``None``.
+
+    ``dist_dir`` is resolved HERE, per request, not at registration: on a
+    source checkout ``static/dist`` is a link that staging re-points (to
+    ``website/dist``, or to a fresh immutable copy), and a route resolved once at
+    startup would keep serving the old target while ``index.html`` -- read
+    through ``static/dist`` per request -- references the new one's chunks.
+
+    Confined like aiohttp's ``add_static`` with ``follow_symlinks=False``: the
+    resolved file must sit inside the resolved directory, so ``..`` and a link
+    inside the build that points out of it answer ``None``. A tail that is
+    absolute, or carries a drive or a UNC anchor, is refused before any
+    filesystem call, as aiohttp's static handler refuses it: on Windows,
+    resolving a UNC tail would already reach for that network share.
+    ``/assets`` falls back to the build root when the build has no ``assets/``
+    directory, as its static mount always did.
+    """
+    if _is_anchored(tail):
+        return None
+    base = dist_dir / subdir
+    if subdir == "assets" and not base.is_dir():
+        base = dist_dir
+    try:
+        root = base.resolve(strict=True)
+        path = (root / tail).resolve(strict=True)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if root not in path.parents or not path.is_file():
+        return None
+    return path
+
+
+def _is_anchored(tail: str) -> bool:
+    """Whether ``tail`` names a root, a drive or a UNC share on either platform."""
+    return tail.startswith(("/", "\\")) or bool(PureWindowsPath(tail).anchor)
+
+
+def _dist_file_handler(
+    dist_dir: Path, subdir: str
+) -> Callable[[web.Request], Awaitable[web.StreamResponse]]:
+    """A GET/HEAD handler serving ``dist_dir/subdir`` through :func:`_resolve_dist_file`.
+
+    The resolution is a handful of ``lstat`` calls per request, run off the event
+    loop as aiohttp's own static handler does (:func:`_serve_dist_file`).
+    """
+
+    async def _serve(request: web.Request) -> web.StreamResponse:
+        return await _serve_dist_file(dist_dir, subdir, request.match_info["tail"])
+
+    return _serve
+
+
+async def _serve_dist_file(dist_dir: Path, subdir: str, tail: str) -> web.StreamResponse:
+    """Resolve ``tail`` off the event loop and serve it, or a no-store 404.
+
+    ``web.FileResponse`` still picks a precompressed ``.br``/``.gz`` sibling and
+    answers ranges and conditional requests.
+    """
+    path = await asyncio.get_running_loop().run_in_executor(
+        None, _resolve_dist_file, dist_dir, subdir, tail
+    )
+    if path is None:
+        # Returned, not raised, so the header middleware still marks it
+        # no-store: a cached 404 for a hashed chunk outlives the gap.
+        return web.Response(status=404, text="404: Not Found")
+    return web.FileResponse(path)
 
 
 def _register_dist_static_routes(app: web.Application, dist_dir: Path) -> None:
@@ -1719,47 +1799,34 @@ def _register_dist_static_routes(app: web.Application, dist_dir: Path) -> None:
 
     Extracted from ``start_dashboard`` so the route wiring (which subdirectories
     of the build get served at which prefix) is unit-testable without standing
-    up the full gateway. Each optional subdirectory is mounted only when present.
+    up the full gateway. Every prefix is registered whether or not the build has
+    that subdirectory yet, and resolved per request
+    (:func:`_resolve_dist_file`): a build that lands after the gateway started,
+    or a staging step that re-points ``static/dist``, is served at once. App
+    window entries are the exception: they are enumerated here, at start, so a
+    window first built after start has no route until a restart.
     """
-    app.router.add_static(
-        "/assets",
-        dist_dir / "assets" if (dist_dir / "assets").is_dir() else dist_dir,
-        show_index=False,
-        append_version=True,
-    )
-    if (dist_dir / "sprites").is_dir():
-        app.router.add_static("/sprites", dist_dir / "sprites", show_index=False)
-    # Self-hosted fonts (AWS Diatype family) live at dist/fonts/ and are
-    # referenced by absolute url('/fonts/...') in @font-face. Without this
-    # route they fall through to the SPA fallback (index.html), and the
-    # browser reports "invalid sfntVersion" trying to parse HTML as a font.
-    if (dist_dir / "fonts").is_dir():
-        app.router.add_static("/fonts", dist_dir / "fonts", show_index=False)
-    # Vendor shims for the app import map (react, react-dom, react/jsx-runtime)
-    if (dist_dir / "vendor").is_dir():
-        app.router.add_static(
-            "/vendor",
-            dist_dir / "vendor",
-            show_index=False,
-            append_version=False,  # stable URLs, no cache-busting
-        )
-        # PNA/CORS preflight, forward-compat: add_static registers GET/HEAD
-        # only, so a private-network preflight OPTIONS would 405 and fail the
-        # widget iframe's runtime load closed if Chrome starts sending one for
-        # this initiator class (today it blocks at the CORS layer without a
-        # preflight — see _vendor_preflight_handler).
-        app.router.add_route("OPTIONS", "/vendor/{tail:.*}", _vendor_preflight_handler)
-    # App Store brand assets — builtin app icons + hero images live at
-    # dist/app-assets/ and are referenced by absolute url('/app-assets/...')
-    # from each builtin's app.json (iconUrl / heroImage / heroImageDark).
-    # These resolve in the Vite dev server (public/ served at root) but, once
-    # the gateway serves the built dist/, they need an explicit mount: without
-    # it the request falls through to the SPA fallback (index.html) and the
-    # App Store <img> tags try to parse HTML as an image → onError placeholder
-    # (generic lucide icon / "KIROCREW" hero). Stable, un-hashed filenames, so
-    # no append_version cache-busting.
-    if (dist_dir / "app-assets").is_dir():
-        app.router.add_static("/app-assets", dist_dir / "app-assets", show_index=False)
+    # Each build subdirectory at its own prefix; without a route each would fall
+    # through to the SPA fallback, and the browser would parse index.html as a
+    # module, a font or an image. Literal paths, so the shell-exclusion drift
+    # guard (test_token_auth) sees every one.
+    # Vite's content-hashed chunks.
+    app.router.add_get("/assets/{tail:.+}", _dist_file_handler(dist_dir, "assets"))
+    app.router.add_get("/sprites/{tail:.+}", _dist_file_handler(dist_dir, "sprites"))
+    # The self-hosted AWS Diatype family, referenced by absolute
+    # url('/fonts/...') in @font-face ("invalid sfntVersion" without it).
+    app.router.add_get("/fonts/{tail:.+}", _dist_file_handler(dist_dir, "fonts"))
+    # Vendor shims for the app import map (react, react-dom, react/jsx-runtime).
+    app.router.add_get("/vendor/{tail:.+}", _dist_file_handler(dist_dir, "vendor"))
+    # App Store brand assets: builtin app icons and hero images, referenced by
+    # absolute url('/app-assets/...') from each builtin's app.json.
+    app.router.add_get("/app-assets/{tail:.+}", _dist_file_handler(dist_dir, "app-assets"))
+    # PNA/CORS preflight for /vendor, forward-compat: a private-network
+    # preflight OPTIONS would otherwise 405 and fail the widget iframe's runtime
+    # load closed if Chrome starts sending one for this initiator class (today
+    # it blocks at the CORS layer without a preflight — see
+    # _vendor_preflight_handler).
+    app.router.add_route("OPTIONS", "/vendor/{tail:.*}", _vendor_preflight_handler)
 
     # App window entries — separate Vite bundles an app ships as standalone
     # HTML windows, loaded by a shell window rather than the SPA router. The
@@ -1782,10 +1849,11 @@ def _register_dist_static_routes(app: web.Application, dist_dir: Path) -> None:
     # A missing entry is not a small failure: the SPA fallback would answer
     # with the dashboard shell, so the window would open showing a full
     # dashboard instead of its own UI.
-    windows_root = dist_dir / "src" / "apps"
+    windows_root = dist_dir / _APP_WINDOWS_SUBDIR
     window_paths: list[str] = []
     for route_path, entry in discover_app_window_entries(windows_root):
-        app.router.add_get(route_path, _window_entry_handler(entry))
+        rel = f"{entry.parent.name}/{entry.name}"
+        app.router.add_get(route_path, _window_entry_handler(dist_dir, rel))
         window_paths.append(route_path)
     register_app_window_paths(window_paths)
     logger.info("Serving React build from %s", dist_dir)
@@ -6095,9 +6163,9 @@ async def start_dashboard(
         app.on_startup.append(_contrib_startup)
         app.on_cleanup.append(_contrib_shutdown)
 
-        # Static files — prefer React dist/ build, fall back to legacy static/
-        if _DIST_DIR.is_dir():
-            _register_dist_static_routes(app, _DIST_DIR)
+        # Static files — the React dist/ build, registered whether or not it is
+        # built yet (each route resolves static/dist per request), then static/.
+        _register_dist_static_routes(app, _DIST_DIR)
         if _STATIC_DIR.is_dir():
             app.router.add_static(
                 "/static",
