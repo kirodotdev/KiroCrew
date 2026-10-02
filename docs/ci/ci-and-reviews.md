@@ -94,19 +94,19 @@ Three structural facts explain most of the rest:
   did. `merge-queue-readiness.yml` -- a `merge_group`-only workflow whose
   single job is named `PR Readiness`, the ruleset's required check -- waits for
   those six runs on the group's commit and passes only when all six did, within
-  a 150-minute budget covering `ci.yml`'s 100-minute longest chain of job caps
-  plus a rerun. A run that concludes without success has its failed jobs rerun
-  (`gh run rerun --failed`, which is why the job holds `actions: write`), up to
-  twice per workflow, and fails the check only when its third attempt still does
-  not succeed: about 15% of approved heads fail their first try, mostly Windows
-  backend shards and lost runners, and every ejection rebuilds each group queued
-  behind it, so the retry has to happen before the check fails. A failed CI run
-  is held until Fast Gate's latest run has succeeded, because CI's
-  `await-fast-gate` fails at once on a failed gate and a rerun before the gate
-  recovers would spend CI's attempts on it. A failed API
-  call, a read or a rerun request, is retried until the budget runs out and never
-  spends a rerun; only a run still absent after the five-minute appear window,
-  or one whose last attempt failed, fails the check. Each tick reads ONE runs listing for the
+  a 120-minute budget covering `ci.yml`'s 100-minute longest chain of job caps
+  plus pickup slack. The first verdict is final: a run that concludes without
+  success fails the check on the tick that reads it, with no rerun and no wait
+  for the lanes still running, and the job holds only `actions: read`. A rerun
+  inside the queue would hold every group queued behind this one for the
+  rerun's whole duration -- a CI rerun is ~40 minutes -- and two of them push a
+  failing group's ejection past the point where main has moved and every group
+  is rebuilt, so the failing group is never ejected and the green groups behind
+  it never land. A flaky shard therefore costs the pull request a re-queue, and
+  the groups behind it one rebuild; a group that fails costs them nothing. A
+  failed API call is retried until the budget runs out; only a run still absent
+  after the five-minute appear window, or one that concluded without success,
+  fails the check. Each tick reads ONE runs listing for the
   commit, not one per workflow, every 60 s while a run may still be appearing
   and every 180 s once all six are seen: the installation token is shared by
   every workflow, and 40 queued groups then cost ~800 calls an hour instead of
@@ -960,8 +960,7 @@ Details worth knowing:
     label whose attempt suffix is stale, and CodeBuild's documentation does not
     say whether it honours that. (It did on CI run 36831273812: attempts 2 and 3
     of a `--failed` rerun kept the `-1` label on their Linux and Windows jobs and
-    each got a fresh runner within two minutes, which is what the merge-queue
-    readiness poll's rerun relies on.) A workflow clears TWO heal-safety gates. The
+    each got a fresh runner within two minutes.) A workflow clears TWO heal-safety gates. The
     declared gate is `HEAL_SAFE_WORKFLOWS`, a written judgement that a full
     re-run is safe, and it is the LOAD-BEARING one: a workflow joining the
     watched set is exempt until a person puts it there. There are two declared

@@ -410,32 +410,33 @@ def _readiness_job() -> dict:
 
 
 def test_merge_queue_readiness_rollout_values() -> None:
-    """The poll's budget, rerun cap and job cap are the rollout's numbers.
+    """The poll's budget and job cap are the rollout's numbers.
 
     The ruleset's status-check timeout (180 minutes) is set from these, so a
     change here is a change to the documented rollout and must move with it.
+    The poll has no rerun cap because it never reruns: a rerun inside the queue
+    holds every group behind this one for the rerun's whole duration.
     """
     import re
 
     job = _readiness_job()
     (step,) = job["steps"]
     values = dict(re.findall(r"^\s*(TOTAL_BUDGET|MAX_RERUNS)=(\d+)\s*$", step["run"], re.MULTILINE))
-    assert values == {"TOTAL_BUDGET": "9000", "MAX_RERUNS": "2"}
-    assert job["timeout-minutes"] == 155
+    assert values == {"TOTAL_BUDGET": "7200"}
+    assert job["timeout-minutes"] == 125
 
 
-def test_merge_queue_readiness_may_rerun_failed_jobs_and_nothing_more() -> None:
-    """Rerunning needs actions:write; the job holds no other write scope.
+def test_merge_queue_readiness_reads_runs_and_never_reruns_them() -> None:
+    """The poll holds read scope only and issues no rerun.
 
-    `gh run rerun --failed` reruns only the jobs that failed, so a flaky shard
-    costs one shard's time and the jobs that passed are not run again.
+    A rerun's whole duration is time the groups queued behind this one spend
+    waiting, so a failed lane is a verdict, not a retry. With no rerun to issue
+    the job needs no write scope on Actions.
     """
     job = _readiness_job()
-    assert job["permissions"] == {"actions": "write", "contents": "read"}
+    assert job["permissions"] == {"actions": "read", "contents": "read"}
     (step,) = job["steps"]
-    reruns = [line.strip() for line in step["run"].splitlines() if "gh run rerun" in line]
-    assert reruns, "the poll must rerun a failed run's jobs"
-    assert all("--failed" in line for line in reruns), reruns
+    assert "gh run rerun" not in step["run"], "the poll must not rerun a failed run"
 
 
 _FAKE_GH = r"""
@@ -456,27 +457,20 @@ def save():
     state_file.write_text(json.dumps(state))
 
 def wf_state(wf):
-    return state.setdefault(wf, {"attempt": 1, "phase": "done", "errors": 0})
+    # `running_ticks` lists the lane as in_progress for that many listings
+    # before its first conclusion is shown.
+    return state.setdefault(
+        wf, {"attempt": 1, "running": scenario[wf].get("running_ticks", 0)}
+    )
 
 if args[:2] == ["api", "rate_limit"]:
     print(int(time.time()) + options.get("reset_in", 5))
     sys.exit(0)
 
 if args[:2] == ["run", "rerun"]:
-    run_id = int(args[2])
+    # The poll must never issue one; the log is the evidence that it did not.
     with (root / "reruns.log").open("a") as log:
         log.write(" ".join(args) + "\n")
-    (wf,) = [w for w, i in ids.items() if i == run_id]
-    st = wf_state(wf)
-    if st["errors"] < scenario[wf].get("rerun_errors", 0):
-        st["errors"] += 1
-        save()
-        print("HTTP 502: Bad Gateway", file=sys.stderr)
-        sys.exit(1)
-    st["attempt"] += 1
-    # The listing lags the rerun by a tick, then shows the attempt running.
-    st["phase"] = "lag"
-    save()
     sys.exit(0)
 
 listed = state.get("_listings", 0)
@@ -488,17 +482,14 @@ if listed < options.get("rate_limited_listings", 0):
 runs = []
 for wf in scenario:
     st = wf_state(wf)
-    attempt = st["attempt"]
-    shown, status = attempt, "completed"
-    if st["phase"] == "lag":
-        shown, st["phase"] = attempt - 1, "running"
-    elif st["phase"] == "running":
-        status, st["phase"] = "in_progress", "done"
+    status = "completed"
+    if st["running"] > 0:
+        status, st["running"] = "in_progress", st["running"] - 1
     runs.append({
         "id": ids[wf], "path": f".github/workflows/{wf}",
         "head_branch": "gh-readonly-queue/main/pr-1-abc-as-the-api-spells-it",
-        "status": status, "run_attempt": shown,
-        "conclusion": scenario[wf]["attempts"][shown - 1] if status == "completed" else None,
+        "status": status, "run_attempt": st["attempt"],
+        "conclusion": scenario[wf]["conclusion"] if status == "completed" else None,
         "html_url": f"https://example.invalid/runs/{ids[wf]}",
     })
 save()
@@ -511,9 +502,9 @@ def _run_readiness(
 ) -> tuple[int, str, list[str]]:
     """Run the real poll step against a fake `gh` that plays out `scenario`.
 
-    Each workflow lists the conclusion of every attempt it will make, and how
-    many rerun requests the API refuses first; `sleep` is a no-op so the
-    ticks run back to back.
+    Each workflow names the conclusion its one attempt reaches and how many
+    listings it is shown in_progress first; `sleep` is a no-op so the ticks run
+    back to back.
     """
     import json
     import subprocess
@@ -522,7 +513,7 @@ def _run_readiness(
     job = _readiness_job()
     (step,) = job["steps"]
     workflows = step["env"]["WORKFLOWS"].split()
-    full: dict = {wf: scenario.get(wf, {"attempts": ["success"]}) for wf in workflows}
+    full: dict = {wf: scenario.get(wf, {"conclusion": "success"}) for wf in workflows}
     full["_options"] = options or {}
     (tmp_path / "scenario.json").write_text(json.dumps(full))
     (tmp_path / "fake_gh.py").write_text(_FAKE_GH)
@@ -567,48 +558,62 @@ _needs_bash_and_jq = pytest.mark.skipif(
 
 
 @_needs_bash_and_jq
-def test_a_failed_first_attempt_is_rerun_not_ejected(tmp_path: Path) -> None:
-    code, out, reruns = _run_readiness(tmp_path, {"ci.yml": {"attempts": ["failure", "success"]}})
-    assert code == 0, out
-    assert reruns == ["run rerun 1001 --failed -R kirodotdev/KiroCrew"], reruns
-    assert "Rerunning its failed jobs as attempt 2 (rerun 1 of 2)" in out
-
-
-@_needs_bash_and_jq
-def test_the_group_fails_only_after_the_third_attempt(tmp_path: Path) -> None:
-    code, out, reruns = _run_readiness(
-        tmp_path, {"build.yml": {"attempts": ["failure", "timed_out", "cancelled"]}}
-    )
+def test_a_failed_lane_fails_the_group_on_the_tick_that_reads_it(tmp_path: Path) -> None:
+    code, out, reruns = _run_readiness(tmp_path, {"ci.yml": {"conclusion": "failure"}})
     assert code == 1, out
-    assert len(reruns) == 2, reruns
-    assert "concluded 'cancelled'" in out and "on attempt 3, after 2 rerun(s)" in out
+    assert reruns == [], reruns
+    assert "::error::ci.yml concluded 'failure'" in out and "not cleared to merge" in out
+    assert "re-queue the pull request" in out
+    # One listing: the verdict was final on the first tick, so nothing slept.
+    calls = (tmp_path / "calls.log").read_text().splitlines()
+    assert len([c for c in calls if "actions/runs" in c]) == 1, calls
+    assert not (tmp_path / "sleeps.log").exists()
 
 
 @_needs_bash_and_jq
-def test_a_refused_rerun_request_is_retried_and_not_counted(tmp_path: Path) -> None:
-    code, out, reruns = _run_readiness(
-        tmp_path, {"ci.yml": {"attempts": ["failure", "failure", "success"], "rerun_errors": 1}}
-    )
-    # Three requests: the refused one, then the two that count.
-    assert code == 0, out
-    assert len(reruns) == 3, reruns
-    assert "could not rerun the failed jobs" in out
+def test_a_failed_lane_does_not_wait_for_the_lanes_still_running(tmp_path: Path) -> None:
+    """A group with one red lane is ejected while its other lanes still run.
 
-
-@_needs_bash_and_jq
-def test_ci_is_not_rerun_until_fast_gate_has_recovered(tmp_path: Path) -> None:
-    """CI's await-fast-gate fails at once on a failed Fast Gate, so a CI rerun
-    started first would spend CI's attempts on a gate that has not recovered."""
+    Every tick the group stays queued is a tick every group behind it waits,
+    so the first verdict is reported without awaiting the rest.
+    """
     code, out, reruns = _run_readiness(
         tmp_path,
         {
-            "ci.yml": {"attempts": ["failure", "success"]},
-            "fast-gate.yml": {"attempts": ["failure", "success"]},
+            "build.yml": {"conclusion": "timed_out"},
+            "ci.yml": {"conclusion": "success", "running_ticks": 5},
         },
     )
+    assert code == 1, out
+    assert reruns == [], reruns
+    assert "::error::build.yml concluded 'timed_out'" in out
+    assert "t+" not in out, "the poll ticked on after reading a verdict"
+
+
+@_needs_bash_and_jq
+def test_a_failed_fast_gate_is_its_own_verdict(tmp_path: Path) -> None:
+    """A red Fast Gate fails the group at once; CI's dependent failure is not awaited."""
+    code, out, reruns = _run_readiness(
+        tmp_path,
+        {
+            "fast-gate.yml": {"conclusion": "failure"},
+            "ci.yml": {"conclusion": "failure", "running_ticks": 3},
+        },
+    )
+    assert code == 1, out
+    assert reruns == [], reruns
+    assert "::error::fast-gate.yml concluded 'failure'" in out
+    assert "after-fast-gate" not in out
+
+
+@_needs_bash_and_jq
+def test_a_slow_green_group_is_cleared(tmp_path: Path) -> None:
+    code, out, reruns = _run_readiness(
+        tmp_path, {"ci.yml": {"conclusion": "success", "running_ticks": 2}}
+    )
     assert code == 0, out
-    # Run ids follow the sorted workflow names: ci.yml is 1001, fast-gate.yml 1003.
-    assert [line.split()[2] for line in reruns] == ["1003", "1001"], reruns
+    assert reruns == [], reruns
+    assert "Every polled workflow succeeded" in out
 
 
 def test_merge_queue_readiness_reads_one_listing_per_tick() -> None:
@@ -632,7 +637,9 @@ def test_merge_queue_readiness_reads_one_listing_per_tick() -> None:
 
 @_needs_bash_and_jq
 def test_a_green_group_costs_one_listing_per_tick(tmp_path: Path) -> None:
-    code, out, _ = _run_readiness(tmp_path, {"ci.yml": {"attempts": ["failure", "success"]}})
+    code, out, _ = _run_readiness(
+        tmp_path, {"ci.yml": {"conclusion": "success", "running_ticks": 1}}
+    )
     assert code == 0, out
     calls = (tmp_path / "calls.log").read_text().splitlines()
     listings = [c for c in calls if "actions/runs" in c]

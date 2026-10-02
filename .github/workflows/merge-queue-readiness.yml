@@ -36,21 +36,25 @@ name: Merge Queue Readiness
 # caps is 100 minutes (changes and await-fast-gate in parallel 15 ->
 # backend-test 60 -> coverage-combine 15 -> coverage-gate 10), so a shorter
 # budget would dequeue a pull request whose lanes were about to go green. The
-# 150-minute budget is that chain plus room for a rerun of the failed jobs.
+# 120-minute budget is that chain plus slack for the shards' own pickup.
 # test_ci_fleet_routing_expression_parity.py holds the budget above that sum. Keep the ruleset's
 # merge-queue "status check timeout" at 180 minutes or more: this budget plus a
 # slow hosted pickup.
 #
-# Only a verdict fails the group. A run that concluded without success has its
-# failed jobs rerun, up to MAX_RERUNS times per workflow, and fails the group
-# only when its last attempt still does not succeed: a flaky shard or a lost
-# runner then costs one rerun instead of an ejection, and an ejection rebuilds
-# every group queued behind this one, so the retry has to happen here, before
-# the check fails. A run still absent after the appear window fails the group
-# because the verdict can never be read. A failed API call -- a read or a rerun
-# request; a rate limit, a 5xx, a reset, or a listing that has lost a run it
-# showed a tick earlier -- is retried until the budget runs out, so one bad
-# answer from the API cannot dequeue a green group or spend a rerun.
+# Only a verdict fails the group, and the first verdict is final: a run that
+# concluded without success fails the group on the tick that reads it, with no
+# rerun and no wait for the other lanes. This poll never reruns anything. A
+# rerun inside the queue holds every group queued behind this one for the
+# rerun's whole duration -- a CI rerun is ~40 minutes, and two of them put a
+# failing group's ejection past the point where main has moved and every group
+# is rebuilt, so the failing group is never ejected and sits at the head of the
+# queue for hours while green groups wait behind it. A flaky shard costs the
+# pull request a re-queue, which costs the groups behind it one rebuild; a
+# stuck one costs them nothing. A run still absent after the appear window
+# fails the group because the verdict can never be read. A failed API call --
+# a rate limit, a 5xx, a reset, or a listing that has lost a run it showed a
+# tick earlier -- is retried until the budget runs out, so one bad answer from
+# the API cannot dequeue a green group.
 
 on:
   merge_group:
@@ -73,14 +77,14 @@ jobs:
     runs-on: ubuntu-latest
     # Above the poll's TOTAL_BUDGET below, so the step's own error names the
     # slow lane rather than the job cap cutting it off.
-    timeout-minutes: 155
+    timeout-minutes: 125
     permissions:
-      # actions:write is what lets this read the other workflows' runs AND
-      # rerun their failed jobs (`gh run rerun --failed`); read alone would
-      # turn every flaky shard into an ejection. It grants nothing on the
+      # actions:read is what lets this read the other workflows' runs on the
+      # merge group's commit. It is READ on purpose: this poll never reruns a
+      # run, so it holds no write scope on Actions and grants nothing on the
       # repository's contents. Job-level permissions REPLACE the top-level
       # grant, so contents:read is restated.
-      actions: write
+      actions: read
       contents: read
     steps:
       - name: Wait for every test workflow on this merge group
@@ -104,19 +108,14 @@ jobs:
           # may not be visible for the first seconds. APPEAR_BUDGET covers that
           # race; after it, a run the API lists as absent is a real
           # misconfiguration and fails.
-          # TOTAL_BUDGET is 150 minutes: ci.yml's 100-minute longest chain of
+          # TOTAL_BUDGET is 120 minutes: ci.yml's 100-minute longest chain of
           # job caps (changes | await-fast-gate 15 -> backend-test 60 ->
           # coverage-combine 15 -> coverage-gate 10) plus slack for the shards'
-          # own pickup and a rerun of the failed jobs. The ruleset's merge-queue
-          # status-check timeout has to stay at 180 minutes or more so that this
-          # budget plus a slow hosted pickup fits inside it.
-          # MAX_RERUNS: one rerun clears ~90% of flaky failures and a second
-          # almost all the rest; a third made the queue slower in simulation,
-          # because a real failure then takes longer to eject while everything
-          # queued behind it waits to be rebuilt.
+          # own pickup. The ruleset's merge-queue status-check timeout has to
+          # stay at 180 minutes or more so that this budget plus a slow hosted
+          # pickup fits inside it.
           APPEAR_BUDGET=300
-          TOTAL_BUDGET=9000
-          MAX_RERUNS=2
+          TOTAL_BUDGET=7200
           # One runs listing per tick serves all six workflows, and the tick is
           # 60 s while a run may still be appearing, 180 s once all are seen
           # (CI takes ~25 minutes, so the slow tick costs at most ~3 minutes).
@@ -171,9 +170,8 @@ jobs:
           # (from `gh api rate_limit`, which does not count against it), plus
           # jitter so the queued groups do not all wake on the same second,
           # capped by what is left of the budget. A secondary limit carries no
-          # reset there, so it waits a minute. Either way it is never a verdict
-          # and never a spent rerun: the caller has already marked the
-          # workflow errored.
+          # reset there, so it waits a minute. Either way it is never a verdict:
+          # the caller has already marked the workflow errored.
           backoff=0
           note_rate_limit() {
             grep -qiE 'rate limit|HTTP 429' "$errfile" || return 0
@@ -217,23 +215,6 @@ jobs:
               case "$word" in "$2="*) printf '%s' "${word#*=}"; return 0 ;; esac
             done
             return 1
-          }
-
-          # Reruns issued per workflow, and the attempt each was requested
-          # from, as `wf=N` words in the same plain-string style. The run id
-          # stays the same across attempts, so the seen-run logic above holds;
-          # `requested_from` stops a rerun from being requested twice while
-          # the listing still shows the attempt it replaces.
-          rerun_counts=""
-          requested_from=""
-
-          set_word() {
-            local list="$1" key="$2" value="$3" word out=""
-            # shellcheck disable=SC2086 -- deliberate word split of the list.
-            for word in $list; do
-              case "$word" in "$key="*) ;; *) out="$out $word" ;; esac
-            done
-            printf '%s' "$out $key=$value"
           }
 
           while :; do
@@ -280,54 +261,14 @@ jobs:
                 continue
               fi
               if [ "$conclusion" != "success" ]; then
-                reruns="$(word_value "$rerun_counts" "$wf" || echo 0)"
-                if [ "$(word_value "$requested_from" "$wf" || echo 0)" = "$attempt" ]; then
-                  # The rerun was accepted, but the listing still shows the
-                  # attempt it replaces: wait for the new attempt to start.
-                  pending="$pending $wf(rerun-requested)"
-                  continue
-                fi
-                # CI's await-fast-gate fails at once on a failed Fast Gate, so a
-                # CI rerun before Fast Gate has recovered would spend CI's
-                # attempts on the gate. Hold CI until Fast Gate's latest run has
-                # succeeded; if Fast Gate never does, its own verdict fails the
-                # group.
-                if [ "$wf" = "ci.yml" ]; then
-                  if ! gate="$(latest_run fast-gate.yml)"; then
-                    echo "::warning::fast-gate.yml: could not read its runs on $SHA:" \
-                         "$(api_error). Retrying on the next tick."
-                    errored="$errored $wf"
-                    continue
-                  fi
-                  if [ "$(printf '%s' "$gate" | jq -r '"\(.status // "")/\(.conclusion // "")"')" \
-                       != "completed/success" ]; then
-                    pending="$pending $wf(after-fast-gate)"
-                    continue
-                  fi
-                fi
-                # The attempt number is the API's, so a rerun someone else
-                # started still counts toward the cap.
-                if [ "$reruns" -ge "$MAX_RERUNS" ] || [ "$attempt" -gt "$MAX_RERUNS" ]; then
-                  echo "::error::$wf concluded '$conclusion' on merge group $SHA" \
-                       "($url) on attempt $attempt, after $reruns rerun(s) of its" \
-                       "failed jobs. The group is not cleared to merge."
-                  exit 1
-                fi
-                if ! gh run rerun "$run_id" --failed -R "$REPO" >/dev/null 2>"$errfile"; then
-                  echo "::warning::$wf: could not rerun the failed jobs of $url:" \
-                       "$(api_error). Retrying on the next tick."
-                  note_rate_limit
-                  errored="$errored $wf"
-                  continue
-                fi
-                reruns=$((reruns + 1))
-                rerun_counts="$(set_word "$rerun_counts" "$wf" "$reruns")"
-                requested_from="$(set_word "$requested_from" "$wf" "$attempt")"
-                echo "::warning::$wf concluded '$conclusion' on attempt $attempt" \
-                     "($url). Rerunning its failed jobs as attempt $((attempt + 1))" \
-                     "(rerun $reruns of $MAX_RERUNS)."
-                pending="$pending $wf(rerun)"
-                continue
+                # The first verdict is final. Nothing is rerun and the other
+                # lanes are not awaited: every tick this group stays queued
+                # holds every group behind it. The attempt is the API's, so a
+                # rerun someone started by hand is named for what it is.
+                echo "::error::$wf concluded '$conclusion' on merge group $SHA" \
+                     "($url) on attempt $attempt. The group is not cleared to" \
+                     "merge; re-queue the pull request to try again."
+                exit 1
               fi
               done_list="$done_list $wf"
             done
