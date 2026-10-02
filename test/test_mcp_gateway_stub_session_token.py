@@ -189,6 +189,119 @@ def test_the_token_is_not_a_pool_dimension(monkeypatch: pytest.MonkeyPatch) -> N
     assert PoolKey.from_register(first).stable_hash() == PoolKey.from_register(second).stable_hash()
 
 
+def test_an_owned_control_plane_register_names_the_stubs_code_generation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only Crew's own MCP target needs a daemon-generation compatibility gate.
+
+    A third-party target keeps the wire shape it had before this field; otherwise
+    upgrading Kiro Crew would unpool every unrelated server even when its own
+    binary and protocol did not move.
+    """
+    from kiro_crew import code_fingerprint as fingerprint_mod
+
+    monkeypatch.setattr(fingerprint_mod, "code_fingerprint", lambda: "stub-generation")
+    owned = stub_mod._parse_args(
+        [
+            "--server",
+            "kirocrew-core",
+            "--agent",
+            "cp-agent",
+            "--target-command",
+            "kirocrew",
+            "--target-args",
+            "mcp-core",
+            "--work-dir",
+            "/tmp",
+            "--poolable",
+        ]
+    )
+    assert stub_mod.build_register_payload(owned)["stub_code_fingerprint"] == "stub-generation"
+    assert "stub_code_fingerprint" not in stub_mod.build_register_payload(_stub_args())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("registered", "reason"),
+    [
+        ({"type": "registered"}, "did not report"),
+        (
+            {"type": "registered", "fingerprint": "older-daemon-generation"},
+            "does not match",
+        ),
+    ],
+    ids=["pre-fingerprint-daemon", "different-generation"],
+)
+async def test_an_owned_control_plane_falls_back_from_a_stale_daemon(
+    monkeypatch: pytest.MonkeyPatch,
+    registered: dict[str, Any],
+    reason: str,
+) -> None:
+    """A package upgrade must not strand every session behind an old broker.
+
+    Before this gate, the new stub accepted the old daemon's ``registered`` frame.
+    That daemon forwarded a caller key but not the new per-session token, so the
+    current MCP server's policy read answered ``identity_unattested`` and refused
+    every tool call. Requesting fallback execs this session's direct server, whose
+    own element carries the signed token and preserves the fail-closed policy gate.
+    """
+    reader = _QueueReader()
+    writer = _RecordingWriter()
+    reader.feed(registered)
+
+    async def _connect(*_args: Any, **_kwargs: Any) -> tuple[Any, Any]:
+        return reader, writer
+
+    monkeypatch.setattr(stub_mod.transport, "connect", _connect)
+    payload = {
+        "type": "register",
+        "stub_uuid": "generation-probe",
+        "stub_code_fingerprint": "current-stub-generation",
+    }
+    with pytest.raises(stub_mod.FallbackRequestedError, match=reason):
+        await stub_mod.handshake("ignored.sock", payload)
+
+
+@pytest.mark.asyncio
+async def test_an_owned_control_plane_accepts_the_matching_daemon_generation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reader = _QueueReader()
+    writer = _RecordingWriter()
+    reader.feed({"type": "registered", "fingerprint": "same-generation"})
+
+    async def _connect(*_args: Any, **_kwargs: Any) -> tuple[Any, Any]:
+        return reader, writer
+
+    monkeypatch.setattr(stub_mod.transport, "connect", _connect)
+    attached = await stub_mod.handshake(
+        "ignored.sock",
+        {
+            "type": "register",
+            "stub_uuid": "generation-probe",
+            "stub_code_fingerprint": "same-generation",
+        },
+    )
+    assert attached[0] is reader and attached[1] is writer
+
+
+@pytest.mark.asyncio
+async def test_registered_reply_names_the_daemons_code_generation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(gw, "code_fingerprint", lambda: "daemon-generation")
+    _patch_env(monkeypatch)
+    reader = _QueueReader()
+    writer = _RecordingWriter()
+    reader.feed(_register_with_token(PARENT_KEY, TOKEN_A))
+    reader.feed({"type": "unregister"})
+
+    await _handle(reader, writer)
+
+    registered = next(frame for frame in writer.frames if frame.get("type") == "registered")
+    assert registered["fingerprint"] == "daemon-generation"
+
+
 def _stub_args() -> Any:
     return stub_mod._parse_args(
         [
