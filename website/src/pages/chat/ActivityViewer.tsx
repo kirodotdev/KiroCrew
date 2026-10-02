@@ -41,6 +41,7 @@ import { fmtDateFields } from '../../i18n/format'
 import { isModelDowngrade } from './subagentCompletion'
 import { normalizeModelKey } from '../../lib/model'
 import { fmtCredits } from '../../i18n/format'
+import MarkdownRenderer from '../../components/MarkdownRenderer'
 const STATUS = {
   pending: <Lock size={12} className="text-muted" />,
   running: <LoaderIcon size={12} className="text-accent animate-spin" />,
@@ -93,7 +94,7 @@ function DiskLoader({ id, autoLoad }: { id: string; autoLoad?: boolean }) {
     if (autoLoad && text === null && !loading && !error) load()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoLoad])
-  if (text !== null) return <>{text}</>
+  if (text !== null) return <MarkdownRenderer content={text} softBreaks readOnlyCode />
   if (loading) return <span className="text-muted/30 italic">{i18nT('pages.chat.activityViewer.loading')}</span>
   // Retry and hand-off are two separate controls: the notice carries the
   // agent hand-off (a side-panel read failure, nothing to lose), the button
@@ -109,7 +110,7 @@ function DiskLoader({ id, autoLoad }: { id: string; autoLoad?: boolean }) {
 }
 
 function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slot: string; onClick: () => void; selected?: boolean }) {
-  const bodyRef = useRef<HTMLPreElement>(null)
+  const bodyRef = useRef<HTMLDivElement>(null)
   const cardRef = useRef<HTMLDivElement>(null)
   const autoScroll = useRef(true)
   const isPending = a.status === 'pending'
@@ -316,7 +317,7 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
           )}
           {a.task && <>
             <div className="text-[10px] text-muted/40 uppercase tracking-wider mb-1">{i18nT('pages.chat.activityViewer.input')}</div>
-            <pre className="px-2.5 py-2 bg-bg rounded-md text-[12px] font-mono whitespace-pre-wrap break-all max-h-[120px] overflow-y-auto text-muted/80 leading-relaxed">{a.task}</pre>
+            <div className="px-2.5 py-2 bg-bg rounded-md text-[12px] break-words max-h-[120px] overflow-y-auto text-muted/80 leading-relaxed"><MarkdownRenderer content={a.task} softBreaks readOnlyCode /></div>
           </>}
         </div>
       )}
@@ -340,10 +341,13 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
       <>
       <div className="px-3 pb-2">
         <div className="text-[10px] text-muted/40 uppercase tracking-wider mb-1">{i18nT('pages.chat.activityViewer.output')}</div>
-        <pre ref={bodyRef} onScroll={onScroll} className="px-2.5 py-2 bg-bg rounded-md text-[12px] font-mono whitespace-pre-wrap break-all max-h-[240px] overflow-y-auto text-muted/80 leading-relaxed">
-          {a.streaming || a.result || (isDone ? (isNative ? <span className="text-muted/30 italic">{i18nT('pages.chat.activityViewer.output_shown_in_chat')}</span> : <DiskLoader id={a.id} autoLoad={selected} />) : <span className="text-muted/30 italic">{i18nT('pages.chat.activityViewer.waiting_for_output')}</span>)}
-          {a.lastTool && <div className="text-accent mt-1"><Wrench className="lucide-inline" /> {a.lastTool}</div>}
-        </pre>
+        {/* Sub-agent output is usually markdown (fences, lists, tables): render it
+            the way the transcript's completion card does. `streaming` holds a
+            half-typed fence until it closes. */}
+        <div ref={bodyRef} onScroll={onScroll} data-testid="subagent-output-body" className="px-2.5 py-2 bg-bg rounded-md text-[12px] break-words max-h-[240px] overflow-y-auto text-muted/80 leading-relaxed">
+          {(a.streaming || a.result) ? <MarkdownRenderer content={a.streaming || a.result || ''} streaming={isRunning && !!a.streaming} softBreaks readOnlyCode /> : (isDone ? (isNative ? <span className="text-muted/30 italic">{i18nT('pages.chat.activityViewer.output_shown_in_chat')}</span> : <DiskLoader id={a.id} autoLoad={selected} />) : <span className="text-muted/30 italic">{i18nT('pages.chat.activityViewer.waiting_for_output')}</span>)}
+          {a.lastTool && <div className="text-accent mt-1 font-mono"><Wrench className="lucide-inline" /> {a.lastTool}</div>}
+        </div>
       </div>
       {/* Error details — a backend-reported subagent failure, so it takes the
           shared notice (hand-off on: nothing in this panel is unsaved). */}
