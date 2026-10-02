@@ -2176,8 +2176,8 @@ text. `write_bundle_json` then writes the wire document a message at a time and
 streams the log out of the snapshot, byte-for-byte what
 `json.dumps(bundle, separators=(",", ":"))` produces, so every importer reads it
 unchanged. The file export writes the gzip to a temp file (`_stage_export`) and sends it
-from there (`_StagedExport`, a `FileResponse` that removes the file once the send
-ends), so neither the document nor its compressed form is resident; the tunnel send (`send_session_bundle(..., serialise=...)`)
+from there (`_StagedExport`, a `StreamResponse` that owns the file's handle and closes it
+before removing the file once the send ends), so neither the document nor its compressed form is resident; the tunnel send (`send_session_bundle(..., serialise=...)`)
 uploads a plain-JSON temp file, re-serialised per attempt. `release_bundle_files`
 removes the snapshot on every exit, including a discarded snapshot retry. The
 send's timeout bounds each connect and read, not the whole request, and its read

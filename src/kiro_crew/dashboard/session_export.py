@@ -64,19 +64,22 @@ slot, so it lives here instead of weakening the guard.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import os
 import re
 import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
-from aiohttp import web
+from aiohttp import hdrs, web
 
 from kiro_crew.config.loader import _raw_config
 from kiro_crew.dashboard.chat_utils import slot_history_key
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 from kiro_crew.dashboard.session_transfer import (
+    _CHUNK_BYTES,
     SnapshotUnstable,
     TranscriptBusy,
     TranscriptWithheld,
@@ -173,7 +176,42 @@ def _stage_export(bundle: dict[str, Any]) -> Path:
     return write_bundle_file(bundle, compress=True)
 
 
-class _StagedExport(web.FileResponse):
+#: Releases still running for a send whose task was cancelled. A shielded task
+#: needs a strong reference or it can be collected before it finishes.
+_PENDING_RELEASES: set[asyncio.Task[None]] = set()
+
+
+def _open_staged(path: Path) -> tuple[BinaryIO, int]:
+    """Open a staged export and read its size. **Blocking.**"""
+    fobj = path.open("rb")
+    try:
+        return fobj, os.fstat(fobj.fileno()).st_size
+    except BaseException:
+        fobj.close()
+        raise
+
+
+def _close_and_remove(fobj: BinaryIO | None, path: Path) -> None:
+    """Close the send's handle, then remove its file. **Blocking.**
+
+    The close comes first because Windows refuses to delete a file while any
+    handle on it is open.
+    """
+    if fobj is not None:
+        with contextlib.suppress(OSError):
+            fobj.close()
+    _rm_import_temps(path)
+
+
+async def _release_staged(opening: asyncio.Future[tuple[BinaryIO, int]], path: Path) -> None:
+    """Remove a staged export once the open it may still be waiting on settles."""
+    fobj: BinaryIO | None = None
+    with contextlib.suppress(Exception):
+        fobj, _size = await opening
+    await asyncio.to_thread(_close_and_remove, fobj, path)
+
+
+class _StagedExport(web.StreamResponse):
     """An export served from its staged file, which is removed once sent.
 
     The file is streamed to the socket a chunk at a time, so a session of any
@@ -181,13 +219,34 @@ class _StagedExport(web.FileResponse):
     memory. It is removed when the send ends, whether it completed or the
     client went away; a response that is never sent leaves its file under the
     egress staging directory.
+
+    The response owns its file handle and closes it before the removal, since
+    a handle still open makes the delete fail on Windows. The removal is
+    shielded: a client that goes away cancels the send, and cancelling an
+    ``asyncio.to_thread`` that no worker has started withdraws the job.
     """
 
+    def __init__(self, path: Path, *, headers: dict[str, str]) -> None:
+        super().__init__(headers=headers)
+        self._path = path
+
     async def prepare(self, request: web.BaseRequest) -> Any:
+        loop = asyncio.get_running_loop()
+        opening = loop.run_in_executor(None, _open_staged, self._path)
         try:
-            return await super().prepare(request)
+            fobj, size = await asyncio.shield(opening)
+            self.content_length = size
+            writer = await super().prepare(request)
+            if request.method != hdrs.METH_HEAD:
+                while chunk := await loop.run_in_executor(None, fobj.read, _CHUNK_BYTES):
+                    await self.write(chunk)
+            await self.write_eof()
+            return writer
         finally:
-            await asyncio.to_thread(_rm_import_temps, self._path)
+            release = asyncio.ensure_future(_release_staged(opening, self._path))
+            _PENDING_RELEASES.add(release)
+            release.add_done_callback(_PENDING_RELEASES.discard)
+            await asyncio.shield(release)
 
 
 #: Whether the operator has granted STANDING PERMISSION for the file export to

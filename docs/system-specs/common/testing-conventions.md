@@ -4190,6 +4190,15 @@ pytest-timeout kills the worker first, which is
 [class 6](#6-a-hang-is-a-lost-run-not-a-failed-test). Derive the ceiling from that mark
 (20 s under a 30 s mark) and say so where it is defined.
 
+**A cleanup awaited through `asyncio.to_thread` can be withdrawn, not merely late.**
+Cancelling the awaiting task cancels the executor job too if no worker has started it, so
+a `finally: await asyncio.to_thread(remove, path)` skips the removal whenever the
+cancellation wins the race for a worker. `aiohttp`'s `TestServer` cancels a handler when its
+client disconnects, so a test that waits on the removal fails as "cleanup never ran" however
+long it waits. Shield the cleanup, and close any handle on the file in that same job before
+the delete, since Windows refuses to delete an open file. Reproduce by holding the job in a
+default executor that queues it unstarted (`test_session_export._HeldExecutor`).
+
 ### 3. Leaked async objects
 
 An `AsyncMock` standing in for a **synchronous** method (`StreamWriter.write`,
