@@ -189,6 +189,39 @@ def _read(path: Path, root: Path) -> str:
         raise MemberEssentialContextError(f"Essential source {path}: {exc}") from exc
 
 
+def _read_implicit_guide(path: Path, root: Path) -> str | None:
+    """Read a project-root guide the template did not declare, or ``None`` if refused.
+
+    ``AGENTS.md`` and ``SOUL.md`` are picked up because they exist, not because
+    the template names them, so a refused one must not refuse the whole turn:
+    a guide symlinked to a repository outside the project, or a link whose
+    target has gone, would otherwise abort every session start of the agent. The read is
+    the same :func:`_read` every declared source goes through -- containment,
+    managed-state isolation, the no-follow descriptor read -- so nothing it
+    refuses is read here either; only the refusal's consequence differs. A
+    declared source keeps failing closed, and an oversized guide still raises,
+    because that is a guide the user can shorten rather than one this reader
+    may not open.
+    """
+    try:
+        return _read(path, root)
+    except MemberEssentialContextError as exc:
+        reason = str(exc.__cause__ or exc)
+        logger.warning("Project guide %s not loaded: %s", path, reason)
+        return None
+
+
+def _omitted_guide(path: Path, root: Path) -> tuple[str, str]:
+    """The in-band note that stands in for a guide :func:`_read_implicit_guide` refused."""
+    return (
+        f"{path}#omitted",
+        f"PROJECT GUIDE NOT LOADED. {path.name} in {root} could not be read safely: it is "
+        "a link to a file outside this project, a link whose target is missing, a managed "
+        "memory file, a hard link, or otherwise unreadable. Do not assume its contents. "
+        f"If it should apply, ask the user to make {path.name} a regular file inside {root}.",
+    )
+
+
 def _matches(root: Path, pattern: str) -> list[Path]:
     """Expand a declared glob with bounded directory work and no link traversal."""
     pieces = Path(pattern).parts
@@ -383,10 +416,11 @@ def documents_for_member(
     seen: set[Path] = set()
     project_root = _admitted_project_root(project)
 
-    def add(path: Path, root: Path, *, steering: bool = False) -> None:
+    def add(path: Path, root: Path, *, steering: bool = False, body: str | None = None) -> None:
         if Path(os.path.abspath(path)) in seen:
             return
-        body = _read(path, root)
+        if body is None:
+            body = _read(path, root)
         if steering:
             fields, _ = split_frontmatter(body, STEERING_LOADER)
             inclusion = fields.get("inclusion", "always").strip().casefold()
@@ -468,7 +502,11 @@ def documents_for_member(
         for name in ("AGENTS.md", "SOUL.md") if inherits else ("SOUL.md",):
             path = project_root / name
             if path.exists() or path.is_symlink():
-                add(path, project_root)
+                body = _read_implicit_guide(path, project_root)
+                if body is None:
+                    documents.append(_omitted_guide(path, project_root))
+                else:
+                    add(path, project_root, body=body)
         if inherits:
             for path in _matches(project_root, ".kiro/steering/**/*.md"):
                 add(path, project_root, steering=True)

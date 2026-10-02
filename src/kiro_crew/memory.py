@@ -1046,6 +1046,31 @@ class MemoryStore:
     # attempt almost always lands after the writer's atomic rewrite finishes.
     _GUARDED_READ_ATTEMPTS = 2
 
+    def _expected_opened_path(self, path: Path) -> str:
+        """The real path a descriptor opened at *path* must report.
+
+        The descriptor reports a REAL path, so the expectation has to be one too
+        or a memory root reached through a link (``/home/<user>`` linking to
+        ``/local/home/<user>``) makes every file under it look relocated. Only
+        the memory root's own spelling is resolved, and that root is
+        configuration the root guard already screened: the part of *path* below
+        it stays lexical, so a link anywhere under the root -- a directory link
+        that stays inside included -- still disagrees with the opened path and
+        is refused. A path not spelled under the root keeps its lexical form and
+        is judged by the containment check alone.
+        """
+        lexical = os.path.abspath(path)
+        root = os.path.abspath(self._memory_dir)
+        if os.path.normcase(lexical) == os.path.normcase(root):
+            return lexical
+        try:
+            relative = os.path.relpath(lexical, root)
+        except ValueError:  # another drive on Windows
+            return lexical
+        if relative == os.pardir or relative.startswith(os.pardir + os.sep):
+            return lexical
+        return os.path.join(os.path.realpath(root), relative)
+
     def _read_entry_bytes(self, path: Path) -> bytes | None:
         """Read one bound memory file without consulting learned-memory state."""
         if self._memory_version != 2 and not self._memory_store_name:
@@ -1072,7 +1097,7 @@ class MemoryStore:
                 raise OSError("Cannot verify the opened manual profile file's location")
             root = os.path.normcase(os.path.realpath(self._memory_dir))
             actual = os.path.normcase(opened)
-            expected = os.path.normcase(os.path.abspath(path))
+            expected = os.path.normcase(self._expected_opened_path(path))
             if actual != expected or os.path.commonpath([actual, root]) != root:
                 raise OSError("Opened manual profile file is outside its expected bound path")
             with os.fdopen(descriptor, "rb", closefd=False) as handle:
