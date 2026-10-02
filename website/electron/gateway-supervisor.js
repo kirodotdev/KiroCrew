@@ -366,6 +366,7 @@ function createGatewaySupervisor({
     fs,
     path,
     http,
+    isWindows: IS_WIN,
     log: glog,
     sendStatus,
     snapshotGatewayPortPids,

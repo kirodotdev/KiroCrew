@@ -2,7 +2,13 @@
 
 const { getRemoteHostConfig } = require("../../host-config");
 const { validateRemoteSettings } = require("../../validation");
-const { buildRemoteTokenCommand, parseTokenFromStdout } = require("../../remote-token");
+const { findSshBin } = require("../../find-bin");
+const {
+  buildRemoteTokenCommand,
+  buildRemoteTokenSshArgs,
+  describeSshFailure,
+  parseTokenFromStdout,
+} = require("../../remote-token");
 const { defaultedPort } = require("../../gateway-auth-hint");
 const { mintLocalToken: mintTokenFromHome } = require("../../local-token");
 const { resolveHome } = require("../../home-dir");
@@ -28,6 +34,7 @@ function createTokenSources({
   fs,
   path,
   http,
+  isWindows,
   log: glog,
   sendStatus,
   snapshotGatewayPortPids,
@@ -53,20 +60,30 @@ function createTokenSources({
       port: effectivePort,
       remotePath: remotePath || undefined,
     });
-    const sshArgs = ["-o", "ConnectTimeout=10", remoteHost, remoteCommand];
+    const timeoutMs = Math.max(store.get("sshTimeoutMs") || 20000, 5000);
+    const sshArgs = buildRemoteTokenSshArgs(remoteHost, remoteCommand, { timeoutMs });
+    const sshBin = findSshBin(fs, path, isWindows);
+    if (!sshBin) {
+      const error = "ssh client not found: the Windows system directory did not resolve.";
+      console.error(`Refusing SSH token fetch: ${error}`);
+      return Promise.resolve({ token: "", error });
+    }
 
     return new Promise((resolve) => {
       sendStatus("Fetching token from remote dev desktop…");
-      glog(`SSH token fetch: ssh ${remoteHost} for port ${effectivePort}`);
+      glog(`SSH token fetch: ${sshBin} ${remoteHost} for port ${effectivePort}`);
       execFile(
-        "/usr/bin/ssh",
+        sshBin,
         sshArgs,
-        { timeout: Math.max(store.get("sshTimeoutMs") || 20000, 5000) },
+        { timeout: timeoutMs },
         (error, stdout, stderr) => {
           if (error) {
             console.error("SSH token fetch failed:", error.message);
             if (stderr) console.error("SSH stderr:", stderr.trim().slice(0, 500));
-            resolve({ token: "", error: stderr?.trim() || error.message });
+            resolve({
+              token: "",
+              error: describeSshFailure(error, stderr, { sshBin, remoteHost, timeoutMs }),
+            });
             return;
           }
           resolve({ token: parseTokenFromStdout(stdout), error: null });
