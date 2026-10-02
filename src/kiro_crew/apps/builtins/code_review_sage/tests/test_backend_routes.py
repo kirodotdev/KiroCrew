@@ -23,7 +23,7 @@ import pytest
 from aiohttp import web
 
 from kiro_crew import platform_compat
-from kiro_crew.apps.builtins.code_review_sage.tests.fixtures import SYMLINKS_OK
+from kiro_crew.apps.builtins.code_review_sage.tests.fixtures import SYMLINKS_OK, OwnerRequest
 
 _APP_ROOT = Path(__file__).resolve().parent.parent
 _ROUTES = _APP_ROOT / "backend" / "routes.py"
@@ -488,7 +488,7 @@ class TestHandlers(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(rv["effort"] == "" or rv["effort"] in _rp.VALID_EFFORTS)
 
     async def test_review_rejects_empty_input(self):
-        class _Req:
+        class _Req(OwnerRequest):
             async def json(self):
                 return {}
         resp = await self.mod._handle_review(_Req())
@@ -501,7 +501,7 @@ class TestHandlers(unittest.IsolatedAsyncioTestCase):
 
         _url = "https://github.com/kirodotdev/KiroCrew/pull/20"
 
-        class _Req:
+        class _Req(OwnerRequest):
             async def json(self):
                 return {"links": _url}
         resp = await self.mod._handle_review(_Req())
@@ -2298,12 +2298,15 @@ class TestConsolidationCannotResurrectADeletedNamespace(unittest.IsolatedAsyncio
                          "a delete must not be refused after pruning the active list")
 
     async def _delete(self, ns):
-        req = unittest.mock.MagicMock()
-        req.method = "DELETE"
-        req.json = unittest.mock.AsyncMock(return_value={"name": ns})
-        req.query = {}
-        req.match_info = {}
-        return await self.mod._handle_namespaces(req)
+        class _DeleteReq(OwnerRequest):
+            method = "DELETE"
+            query: dict = {}
+            match_info: dict = {}
+
+            async def json(self):
+                return {"name": ns}
+
+        return await self.mod._handle_namespaces(_DeleteReq())
 
 
 class TestPhase1ValuesMustBeStrings(unittest.TestCase):
@@ -2774,8 +2777,9 @@ class _FakeState:
         return value
 
 
-class _Req:
+class _Req(OwnerRequest):
     def __init__(self, body=None, query=None):
+        super().__init__()
         self._body = body or {}
         self.query = query or {}
 

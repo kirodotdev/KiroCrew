@@ -2,6 +2,7 @@
 
 import os
 import tempfile
+from types import SimpleNamespace
 
 
 def _symlinks_creatable() -> bool:
@@ -25,6 +26,23 @@ def _symlinks_creatable() -> bool:
 #: importing modules decorate classes and functions at definition time, so this
 #: must be a plain constant rather than a fixture.
 SYMLINKS_OK = _symlinks_creatable()
+
+
+#: The dashboard owner the route suites' fake requests act as.
+OWNER = "sage-owner"
+
+
+class OwnerRequest(dict):
+    """The identity the dashboard auth middleware stamps on the owner's request.
+
+    The routes' owner gate reads ``request.app["state"].owner_id`` and the
+    ``user`` / ``app`` keys, so a fake that carries the owner's real identity lets
+    the gate run unpatched and admit it.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(user=OWNER, app="")
+        self.app = {"state": SimpleNamespace(owner_id=OWNER)}
 
 
 # A sensitive file (gateway/lifecycle) with a guard removal + an import add,

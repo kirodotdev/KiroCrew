@@ -19,11 +19,14 @@ from aiohttp import web
 from backend import routes
 from sage_lib import discovery, store
 
+from kiro_crew.apps.builtins.code_review_sage.tests.fixtures import OwnerRequest
 
-class _FakeRequest:
+
+class _FakeRequest(OwnerRequest):
     """Minimal stand-in: the handler reads the method and the JSON body."""
 
     def __init__(self, body: dict, method: str = "POST"):
+        super().__init__()
         self._body = body
         self.method = method
 

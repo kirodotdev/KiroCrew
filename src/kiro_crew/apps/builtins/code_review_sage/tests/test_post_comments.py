@@ -24,6 +24,7 @@ from sage_lib import discovery, results
 from sage_lib import review_driver as D
 from sage_lib import store
 
+from kiro_crew.apps.builtins.code_review_sage.tests.fixtures import OwnerRequest
 from kiro_crew.dashboard import state as dashboard_state
 
 
@@ -541,10 +542,11 @@ class TestGroupedPost(_Base):
         self.assertEqual(self.dispatched, [])
 
 
-class _FakeRequest:
+class _FakeRequest(OwnerRequest):
     """Minimal stand-in: the handler only reads match_info, query and json()."""
 
     def __init__(self, run_id: str, body: dict | None = None):
+        super().__init__()
         self.match_info = {"run_id": run_id}
         self.query: dict = {}
         self._body = body
