@@ -3385,10 +3385,32 @@ apps or bypass the existing project consent boundary.
 Ordinary mapped and project skills are activated on demand. `skill_search` always
 provides `action="list"` plus `offset` for complete discovery and `action="read"`
 plus the exact `key` for activation, even while the body index is incomplete.
-Required `always:true` bodies share `PINNED_SKILL_BODIES_CAP` (99,000 UTF-8 bytes),
-including rendered framing. Exceeding the capacity or refusing a required read
-raises `SkillContextCapacityError`; no final slice may silently discard required
-instructions. Bounded global reads use `safe_read_file_bytes_nolink`, retaining
+The operator's required `always:true` bodies share `PINNED_SKILL_BODIES_CAP`
+(99,000 UTF-8 bytes), including rendered framing. Exceeding the capacity or refusing
+a required read raises `SkillContextCapacityError`; no final slice may silently
+discard required instructions. A trusted project's `always:true` bodies are not
+charged there: a checked-out repository must not be able to fail every session in
+that project. They ride their own `project_body_budget` (`PROJECT_SKILL_BODY_CAP`
+from both `context.py` callers) through `_append_project_skill_bodies`, and one that
+does not fit or cannot be read is skipped. The budget bounds the project bodies as a
+whole, not each skill, so several large project skills cannot all inject; the
+skipped-skills notice below is separate and bounded on its own.
+One warning per context build (session start and post-compaction) names the
+skipped keys with their reasons, the trusted project, and that project's revocable
+project-skill trust grant. The required block carries a notice naming the same keys
+with their `skill_search(action='read', ...)` pointers, to be read when their topic
+applies (not all at once), so the omission is visible in the prompt; the rows join
+the on-demand directory. A repository chooses how many
+rows it ships, so the bound applies where a skipped row is retained, not where it is
+rendered: `SkippedProjectSkills` counts every skipped row and keeps, for the warning
+and for the notice separately, only the leading items that fit
+`_SKIPPED_PROJECT_KEYS_MAX_CHARS` (2,000) together. A warning item cuts its key to
+`_SKIPPED_PROJECT_KEY_LOG_CHARS` (200) and the first row is always named; a notice
+pointer keeps the whole key, since a cut key cannot be read back. Both count the rest,
+and a skipped key is discarded from the pinned set as it is skipped. Each read stays
+bounded by the room left in that budget, and the delivered bytes are re-checked
+against `repo_scope`. Bounded global reads use
+`safe_read_file_bytes_nolink`, retaining
 sensitive-path, descriptor identity and hardlink checks while allowing validated
 provider links. Project reads retain descriptor confinement and their byte cap.
 The explicit unbudgeted catalog renderer remains available to non-startup callers.
