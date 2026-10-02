@@ -7464,7 +7464,7 @@ class GatewayOrchestrator:
                 # no dashboard state nothing was read, so nothing advanced.
                 return [], 0, {}
 
-            async def _read_session(target: str, since: int) -> tuple[list[dict], int]:
+            async def _read_session(target: str, since: int) -> tuple[list[dict], int, int | None]:
                 # Off the loop: this authorizes, may write a SEL row, and reads slot
                 # state. Raises on refusal, which the collector counts as a drop.
                 #
@@ -7474,7 +7474,9 @@ class GatewayOrchestrator:
                 # cursor across rows that are then discarded and never read again: a
                 # 20-row burst loses its oldest 8, which is where an actionable line
                 # sits when a worker posted several since the last tick. Reading
-                # exactly what is retained turns that loss into a later tick.
+                # exactly what is retained turns that loss into a later page: the
+                # collector reads again from ``next_since`` while it is short of
+                # ``total``, which is why ``total`` is returned too.
                 payload = await asyncio.to_thread(
                     _sc.read_messages,
                     state,
@@ -7485,7 +7487,12 @@ class GatewayOrchestrator:
                 )
                 rows = payload.get("messages") or []
                 cursor = payload.get("next_since")
-                return list(rows), int(cursor) if isinstance(cursor, int) else since
+                total = payload.get("total")
+                return (
+                    list(rows),
+                    int(cursor) if isinstance(cursor, int) else since,
+                    int(total) if isinstance(total, int) else None,
+                )
 
             async def _read_pr(target: str) -> dict | None:
                 # The reading the fetcher ALREADY made this tick, never a fresh fetch:

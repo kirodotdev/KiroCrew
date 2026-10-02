@@ -358,6 +358,7 @@ def evidence_item(
 def screen_evidence(
     items: Sequence[Mapping[str, Any]] | None,
     refusals: dict[str, int] | None = None,
+    fresh: list[bool] | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     """Evidence that may be sent, newest first, and how many items were dropped.
 
@@ -374,30 +375,48 @@ def screen_evidence(
     rows of the last target on exactly the busy ticks this point exists for.
     Items the cap sheds are counted in the returned total, because a bound that
     silently discards what it will not carry reports a calm tick it never read.
+
+    The cap sheds items ALREADY SEEN on an earlier tick before any fresh one. A seen
+    item is context the judge already answered about; a fresh one is the delta, and
+    a session row past the read cursor is never offered again. Every fresh item the
+    cap still has to shed is counted under ``"shed_fresh"`` in *refusals*, which is
+    what makes :func:`judge_tick` fire instead of judging the survivors calm.
+
+    *fresh*, when given, is filled with one flag per returned item, in the same
+    order, so :func:`build_state`'s char budget can apply the same preference.
     """
-    screened: list[dict[str, Any]] = []
+    candidates: list[tuple[dict[str, Any], bool]] = []
     dropped = 0
     for raw in list(items or []):
         if not isinstance(raw, Mapping):
             dropped += 1
             continue
+        first_seen = raw.get("first_seen_this_tick") is not False
         item = evidence_item(
             str(raw.get("source", "") or ""),
             str(raw.get("kind", "") or ""),
             raw.get("age_s", 0.0),
             str(raw.get("text", "") or ""),
             refusals,
-            raw.get("first_seen_this_tick") is not False,
+            first_seen,
         )
         if item is None:
             dropped += 1
             continue
-        screened.append(item)
-    screened.sort(key=lambda row: row["age_s"])
-    if len(screened) > MAX_EVIDENCE_ITEMS:
-        dropped += len(screened) - MAX_EVIDENCE_ITEMS
-        del screened[MAX_EVIDENCE_ITEMS:]
-    return screened, dropped
+        candidates.append((item, first_seen))
+    if len(candidates) > MAX_EVIDENCE_ITEMS:
+        # Fresh first, newest first within each group; keep the head.
+        candidates.sort(key=lambda pair: (not pair[1], pair[0]["age_s"]))
+        shed = candidates[MAX_EVIDENCE_ITEMS:]
+        del candidates[MAX_EVIDENCE_ITEMS:]
+        dropped += len(shed)
+        lost = sum(1 for _, is_fresh in shed if is_fresh)
+        if lost and refusals is not None:
+            refusals["shed_fresh"] = refusals.get("shed_fresh", 0) + lost
+    candidates.sort(key=lambda pair: pair[0]["age_s"])
+    if fresh is not None:
+        fresh[:] = [is_fresh for _, is_fresh in candidates]
+    return [item for item, _ in candidates], dropped
 
 
 def recent_verdict_item(raw: Mapping[str, Any] | None) -> dict[str, Any] | None:
@@ -509,7 +528,8 @@ def build_state(
     # Counted apart from ``dropped``: an item the scrub refused existed and may have
     # been the actionable half, while an unknown kind or empty text carried nothing.
     refusals: dict[str, int] = {}
-    screened, dropped = screen_evidence(evidence, refusals)
+    fresh: list[bool] = []
+    screened, dropped = screen_evidence(evidence, refusals, fresh)
     loop: dict[str, Any] = {"instruction": _clip(instruction, MAX_INSTRUCTION_CHARS)}
     wake = _clip(wake_when, MAX_CRITERION_CHARS)
     quiet = _clip(quiet_when, MAX_CRITERION_CHARS)
@@ -550,7 +570,11 @@ def build_state(
     # already bounded, and a judge without the owner's instruction cannot answer
     # the one question that asks about the owner's intent.
     while rows and _rendered_len(state) > MAX_STATE_CHARS:
-        del rows[_shed_index(rows)]
+        index = _shed_index(rows, fresh)
+        del rows[index]
+        if fresh.pop(index):
+            # A fresh item this send cannot carry: counted so the tick fires.
+            refusals["shed_fresh"] = refusals.get("shed_fresh", 0) + 1
         dropped += 1
         state = assemble(rows)
     if trace is not None:
@@ -559,17 +583,24 @@ def build_state(
         trace["dropped"] = dropped
         trace["scrubbed"] = int(refusals.get("scrubbed", 0))
         trace["scrubbed_fresh"] = int(refusals.get("scrubbed_fresh", 0))
+        trace["shed_fresh"] = int(refusals.get("shed_fresh", 0))
         trace["state_chars"] = _rendered_len(state)
         trace["recent_verdicts"] = len(history)
     return state
 
 
-def _shed_index(rows: Sequence[Mapping[str, Any]]) -> int:
+def _shed_index(rows: Sequence[Mapping[str, Any]], fresh: Sequence[bool] | None = None) -> int:
     """Which item the char budget gives up next.
 
-    The oldest item that is NOT one of :data:`PINNED_KINDS`, and only once none of
-    those are left, the oldest item overall. *rows* is newest first, so "oldest" is
-    the last match.
+    Three tiers, oldest first within each: an item ALREADY SEEN on an earlier tick
+    that is not one of :data:`PINNED_KINDS`; then a fresh item that is not pinned;
+    then, only once neither is left, the oldest item overall. *rows* is newest
+    first, so "oldest" is the last match. *fresh* runs parallel to *rows*; absent,
+    every item reads as fresh.
+
+    Seen items go first because they are context the judge already answered about,
+    while a fresh item is the delta -- and a session row past the read cursor is
+    never offered again, so shedding it is a permanent loss the caller must fire on.
 
     Two tiers rather than one age order, because age answers the wrong question
     here. A check tally is observed on the tick that sends it, so by age it is
@@ -581,9 +612,11 @@ def _shed_index(rows: Sequence[Mapping[str, Any]]) -> int:
     for a state whose pinned rows alone exceed it. An over-budget send is refused
     downstream, which would lose the whole reading rather than one row of it.
     """
-    for index in range(len(rows) - 1, -1, -1):
-        if str(rows[index].get("kind", "")) not in PINNED_KINDS:
-            return index
+    for want_fresh in (False, True):
+        for index in range(len(rows) - 1, -1, -1):
+            is_fresh = True if fresh is None else bool(fresh[index])
+            if is_fresh is want_fresh and str(rows[index].get("kind", "")) not in PINNED_KINDS:
+                return index
     return len(rows) - 1
 
 
@@ -789,7 +822,7 @@ async def judge_tick(
         return irq.Verdict(
             irq.Outcome.QUIET, body="wake judge: no new evidence since the last tick"
         )
-    if int(bounds.get("scrubbed_fresh") or 0):
+    if int(bounds.get("scrubbed_fresh") or 0) or int(bounds.get("shed_fresh") or 0):
         # A PARTIAL shed, which the branch above cannot see: something got through, so
         # the delta is non-empty and the tick would go on to ask a judge its question
         # with the shed half missing. The pinned board and state summaries survive a
@@ -805,6 +838,12 @@ async def judge_tick(
         # cadence interval for hours, spending the caller's whole budget re-reporting a
         # loss it already fired for. A repeated refusal is a loss already answered; only
         # a loss arriving now can be the actionable half this branch exists to protect.
+        #
+        # ``shed_fresh`` is the same loss caused by a BOUND instead of the scrub: a fresh
+        # item the item cap or the char budget could not carry, after every already-seen
+        # item was given up first. A session row past the read cursor is never offered
+        # again, so a quiet here would be a quiet about rows that were thrown away
+        # (#16151). One rule for every cause: nothing new may be lost and judged calm.
         return irq.Verdict(
             irq.Outcome.FALLBACK, body="wake judge could not send every evidence item"
         )
