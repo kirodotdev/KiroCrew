@@ -4982,10 +4982,24 @@ class KiroCrewConfig:
         ``realpath`` calls plus twice as many ``is_sensitive_path`` round trips
         through the two-worker ``mc-pathres`` pool; when that pool is also
         serving the skill scanner's bulk traffic, those waits queue and their
-        sum crosses the loop-stall watchdog. A warm call now costs one
-        ``scandir``. On the loop, cold or changed snapshots refresh in the
-        ``mc-discovery`` pool while this lookup serves previous rows (or no
-        pin until the first refresh lands). Off-loop callers parse inline.
+        sum crosses the loop-stall watchdog. A warm call costs one ``scandir``.
+        On the loop, cold or changed snapshots refresh in the ``mc-discovery``
+        pool while this lookup serves the previous rows. Off-loop callers parse
+        inline.
+
+        An EMPTY snapshot on the loop -- nothing published yet, or just cleared --
+        is answered ``""`` (no pin), and NOT from the named agent's own file: a
+        spec read, however bounded, is filesystem IO on the event loop, and the
+        loop-stall watchdog this snapshot exists for makes no exception for a
+        small one. The one caller that resolves a pin on a cold snapshot, the
+        persistent background session created at gateway start before the first
+        refresh lands, is async and warms the snapshot first
+        (:func:`kiro_crew.agent_discovery.warm_agent_specs`, awaited in
+        ``_ensure_background`` before the provider factory runs), so this lookup
+        then finds warm rows through the path above and ``_bg`` is created on its
+        own pin instead of the chat model for the gateway's lifetime. A snapshot
+        that holds rows is served as it stands, whether or not it names this
+        agent.
 
         JSON-first precedence is kept: with two live specs of DIFFERENT stems
         both declaring this name, the ``.json`` one wins, as the unordered

@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
+from kiro_crew.agent_discovery import warm_agent_specs
 from kiro_crew.agent_scratch import SharedScratchJoinError
 from kiro_crew.agent_sdk.tool_search import ToolSearchSettings
 from kiro_crew.kiro_prerequisite import (
@@ -272,6 +273,18 @@ class BackgroundSessionRuntime:
         # Create outside lock
         if not self._owner._provider_factory:
             return
+        # The factory resolves the background agent's model pin SYNCHRONOUSLY
+        # on the loop from the agent-spec snapshot, which at gateway start has
+        # not been published yet (the first ``mc-discovery`` refresh is still
+        # in flight): a cold snapshot answers "no pin", the session would be
+        # created on the chat model, and it is persistent, so it would stay
+        # there for the gateway's lifetime. This is the one caller that reaches
+        # the lookup cold AND is async, so warm the snapshot here, off the loop,
+        # and the factory's unchanged lookup finds the rows. Once, awaited, no
+        # retry: a failed warm-up costs this session the cold answer only.
+        # Before the permit, so the identity-sweep barrier below covers the
+        # spawn alone, not a directory parse.
+        await warm_agent_specs(operation="ensure_background", source="unknown")
         # The permit is retained through stamping AND registration, not just
         # the process start: the identity sweep drains every cold-start permit
         # as its quiescence barrier, so releasing the permit while this

@@ -1204,6 +1204,16 @@ _EXPECTED_WARM_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
 }
 
 
+# The user-level snapshot's warm wrapper, held to the same contract: it forwards
+# to ``parsed_agent_specs``, so its one caller -- the background session's
+# creation, which warms the snapshot so the provider factory's on-loop model
+# lookup is a hit -- names the surface a denial during that first parse belongs
+# to. The channel is ``unknown``: the background session serves several.
+_EXPECTED_WARM_SPECS_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
+    "kiro_crew/session_background.py": [("ensure_background", "unknown")],
+}
+
+
 @functools.lru_cache(maxsize=None)
 def _labelled_call_sites(target: str) -> dict[str, list[tuple[str | None, str | None]]]:
     """Return every *target* call site and its label pair.
@@ -1273,8 +1283,11 @@ _EXPECTED_PARSED_SPECS_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     # ``cached_agent_specs`` is the on-loop face of the same snapshot: it
     # forwards its caller's labels into the pool-side refresh, so the surface
     # that asked still owns the denial. Pinned as forwarding, like the wrapper.
+    # ``warm_agent_specs`` is the awaited face: it hands the parse to the pool
+    # by reference and forwards for the same reason.
     "kiro_crew/agent_discovery.py": [
         ("agent_skill_globs", "unknown"),
+        ("forward:operation", "forward:source"),
         ("forward:operation", "forward:source"),
     ],
     # The named-agent model resolver runs on the event loop from the provider
@@ -1349,6 +1362,7 @@ _RATCHET_INVENTORY: dict[str, dict[str, list[tuple[str, str]]]] = {
     "project_agent_names": _EXPECTED_PROJECT_NAMES_CALL_SITE_LABELS,
     "read_agent_spec_strict": _EXPECTED_STRICT_CALL_SITE_LABELS,
     "spec_by_declared_name": _EXPECTED_DECLARED_NAME_CALL_SITE_LABELS,
+    "warm_agent_specs": _EXPECTED_WARM_SPECS_CALL_SITE_LABELS,
     "warm_project_agent_names": _EXPECTED_WARM_CALL_SITE_LABELS,
 }
 

@@ -1216,8 +1216,25 @@ the skill scanner's bulk traffic on the same pool those waits queued and their
 sum crossed the loop-stall watchdog (eight of eight dumps on the reporting host).
 On-loop calls read only the cached snapshot dict and schedule at most one
 in-flight revalidation per directory on `mc-discovery`; every `scandir`, stat
-and parse stays on that worker. Cold or changed snapshots serve previous rows
-(or no pin until the first refresh lands). A warm worker revalidation costs one
+and parse stays on that worker. A snapshot that holds rows is served as it
+stands, whether or not it names the agent, so a changed directory answers from
+the previous rows until the refresh lands. An EMPTY snapshot on the loop (nothing
+published yet, or just cleared) is `""` -- no pin -- and is NOT answered from the
+named agent's own file: a spec read, however bounded, is filesystem IO on the
+event loop, which the `no-blocking-call-on-event-loop` rule forbids regardless of
+size. The one caller that resolves a pin against a cold snapshot is the persistent
+background session (`_bg`, agent `kirocrew-lite`), created by `_ensure_background`
+at gateway start before the first refresh lands; it is async, so it awaits
+`agent_discovery.warm_agent_specs()` (labels `ensure_background`/`unknown`) before
+the provider factory runs -- the same shape `warm_project_agent_names()` gives the
+per-turn project resolver (see `resolve_agent_bindings` below) -- and the factory's
+unchanged lookup then finds warm rows, so `_bg` is created on its own pin instead
+of `agent.model` for the gateway's lifetime. The warm-up is one awaited
+`parsed_agent_specs` parse on `mc-discovery`, no polling and no retry; it never
+raises (a failed warm-up costs that session the cold answer), and a
+`clear_list_agents_cache()` landing during the parse keeps its rows unpublished
+(the generation guard), so the lookup then degrades to the cold answer exactly as
+a concurrent agent write does today. A warm worker revalidation costs one
 `scandir` and no parses, whereas off-loop callers revalidate and parse inline.
 JSON-first
 precedence for two live specs of different stems declaring one name is kept by

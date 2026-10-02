@@ -313,7 +313,13 @@ persistence alone cannot claim application.
 `BACKGROUND_KEY = "_bg"` is a persistent shared session for lightweight
 background work. It is:
 
-- **Created on startup** by `start_pool()` alongside the warm pool
+- **Created on startup** by `start_pool()` alongside the warm pool. Before the
+  provider factory runs, `_ensure_background` awaits
+  `agent_discovery.warm_agent_specs()` (one `parsed_agent_specs` parse on
+  `mc-discovery`, never raises) so the factory's synchronous, on-loop model lookup
+  finds a warm snapshot and `_bg` is created on its agent's own pin rather than on
+  `agent.model`; the lookup itself touches no file on the loop (see
+  `_resolve_named_agent_model` in `config.md`)
 - **Never expired** by idle cleanup (`_expire_idle` skips it)
 - **Serialized** by the per-session semaphore (one background task at a time)
   — applies to the **non-kiro** `_bg` path only; see "Multiplexed _bg runtime"
