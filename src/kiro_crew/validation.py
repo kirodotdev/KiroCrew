@@ -3540,6 +3540,16 @@ SESSION_RELOAD_SCHEMA = ToolSchema(
     ],
 )
 
+SESSION_SET_PROJECT_SCHEMA = ToolSchema(
+    tool_name="session_set_project",
+    fields=[
+        FieldSpec("target", str, required=True, max_len=MAX_SHORT_STRING),
+        # Same shape gate as set_project's own path: absolute and PATH_MAX-bounded.
+        # The gateway runs the realpath and sensitive-path checks.
+        FieldSpec("path", str, required=True, max_len=4096, pattern=_ABSOLUTE_PATH_RE),
+    ],
+)
+
 SESSION_CLOSE_SCHEMA = ToolSchema(
     tool_name="session_close",
     fields=[
@@ -3880,6 +3890,7 @@ MCP_DASHBOARD_SCHEMAS: dict[str, ToolSchema] = {
     "session_end_wait": SESSION_END_WAIT_SCHEMA,
     "session_set_model": SESSION_SET_MODEL_SCHEMA,
     "session_reload": SESSION_RELOAD_SCHEMA,
+    "session_set_project": SESSION_SET_PROJECT_SCHEMA,
     "session_close": SESSION_CLOSE_SCHEMA,
     "session_revive": SESSION_REVIVE_SCHEMA,
     "session_send": SESSION_SEND_SCHEMA,

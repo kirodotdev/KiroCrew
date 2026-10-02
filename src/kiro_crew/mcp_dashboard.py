@@ -128,6 +128,7 @@ from kiro_crew.validation import (
     SESSION_REVIVE_SCHEMA,
     SESSION_SEND_SCHEMA,
     SESSION_SET_MODEL_SCHEMA,
+    SESSION_SET_PROJECT_SCHEMA,
     SESSION_STATUS_SCHEMA,
     SESSION_STOP_SCHEMA,
     SESSION_SUMMARY_SCHEMA,
@@ -152,6 +153,7 @@ SESSION_CONTROL_TOOLS: tuple[str, ...] = (
     "session_end_wait",
     "session_set_model",
     "session_reload",
+    "session_set_project",
     "session_close",
     "session_revive",
     "session_send",
@@ -769,6 +771,37 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     },
                 },
                 "required": ["target"],
+            },
+        },
+        {
+            "name": "session_set_project",
+            "description": (
+                "Set the project directory of a session you created, e.g. to point a "
+                "worker at a new git worktree. The target's session RESETS at its "
+                "next turn boundary: its next message cold-starts a new process with "
+                "the new CWD and project-level .kiro/steering, and any turn in progress "
+                "then would be cut off, so an idle target is required. The transcript "
+                "and conversation history are kept. Only a session this session created is "
+                "reachable; a person's own session, a pinned session and a closed one "
+                "are refused. A target with a turn in flight, sub-agents attached or "
+                "queued messages is refused and nothing changes: stop or wait for it "
+                "first, then retry. The path goes through the same checks set_project "
+                "applies (absolute, an existing directory, not a sensitive path such "
+                "as ~/.aws or ~/.ssh)."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": "Session key from list_sessions, or its exact title.",
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "Absolute path to the new project directory.",
+                    },
+                },
+                "required": ["target", "path"],
             },
         },
         {
@@ -2542,6 +2575,29 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         return redact(
             f"\U0001f504 `{target}` is relaunching its agent process with the conversation "
             "kept. Its transcript shows the reload notice."
+        )
+
+    if name == "session_set_project":
+        args = validate_tool_args(args, SESSION_SET_PROJECT_SCHEMA)
+        resp = _post(
+            "/api/session-control/set-project",
+            {"target": args["target"], "path": args["path"]},
+            session_key=caller_key,
+        )
+        if resp.get("error"):
+            return f"Error: could not change that session's project: {resp['error']}"
+        target = resp.get("target", args["target"])
+        project = resp.get("project") or ""
+        where = f"set to `{project}`"
+        if not resp.get("changed", True):
+            return redact(
+                f"\u2139\ufe0f `{target}` project is already {where} — nothing changed "
+                "and its session is not reset."
+            )
+        return redact(
+            f"\U0001f4c1 `{target}` project {where}. Its session resets at its next "
+            "turn boundary: the next message cold-starts with the new CWD and project "
+            "steering. The transcript and conversation history are kept."
         )
 
     if name == "session_close":
