@@ -151,6 +151,11 @@ _SEAMS = frozenset(
         "_record_is_enabled",
         "sel",
         "_JOB_TIMEOUT_SECS",
+        # The project_dir rule: ``fields`` reads both through the facade so a test
+        # patch on ``kiro_crew.cron`` reaches the store's validation and the
+        # shared core it delegates to.
+        "validate_cron_project_dir",
+        "resolve_project_dir",
     }
 )
 
@@ -556,9 +561,12 @@ class TestAPatchUndoesCleanly:
         assert cron.published_config_timezone is original
 
 
+#: Every record carries ``project_dir`` and ``project_dir_was`` (both ``""`` in
+#: the shipped fixtures), so these are the split's goldens re-taken with those two
+#: fields in stored order; the byte layout is otherwise the pre-split one.
 _BASE_STORE_SHA256 = {
-    "minimal": "4d60217b5d73a346618967791e75a15cef9d046b75e910a8eaa284fa0cbde2a1",
-    "rich": "efcd7d48f3e1f1124c9f3bbb0c0110aef37344317b631655cf748de9b2cd3553",
+    "minimal": "bdd4765691923bf828ed7dc7065ff35e1133f4d828f50515167f87e493b7f89c",
+    "rich": "4d8ff11cb1594499efe6b1bbac7bc718ad206c53af7d96b361fc3420c85de72c",
 }
 
 
@@ -608,6 +616,8 @@ def _full_record() -> dict[str, object]:
         "folder_id": "folder-1",
         "chat_folder_id": "chat-folder-1",
         "model": "some-model",
+        "project_dir": "/srv/repos/digest",
+        "project_dir_was": "/srv/repos/old-digest",
         "last_retry_count": 1,
         "last_retry_run_ts": 1772860000.5,
         "run_generation": 9,

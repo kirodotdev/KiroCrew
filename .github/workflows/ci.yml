@@ -978,6 +978,51 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  # A project-scoped session on Windows is created with the VOLUME-IDENTITY
+  # spelling of its work dir (``\\?\Volume{GUID}\...``) as the process cwd --
+  # see AcpRuntime._pin_work_dir_chain. That is sound only if the harnesses
+  # the gateway spawns actually start under such a cwd on a real Windows
+  # kernel, which no unit test can answer. This job runs
+  # scripts/windows_volume_cwd_probe.py on a HOSTED Windows runner: it pins a
+  # directory with the PR's own chain pin, then starts python, node (the
+  # claude-agent-acp adapter's runtime) and the PINNED kiro-cli release
+  # (packaging/kiro-cli-version, sha256-verified, msiexec /a extract -- the
+  # installer's own procedure) under the bound spelling, and requires each to
+  # report the validated directory and kiro-cli to answer the ACP initialize
+  # handshake. Hosted on purpose: the self-hosted large label is an
+  # unknown-image runner and this is a kernel-behaviour probe.
+  windows-volume-cwd-probe:
+    name: Windows volume-identity cwd probe
+    needs: [changes, await-fast-gate]
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            setup.cfg
+
+      # The probe imports kiro_crew.platform_compat (the pin under test), whose
+      # import chain reaches the package's runtime dependencies.
+      - name: Install dependencies
+        run: uv pip install --system -e .
+
+      - name: Probe the harnesses under a volume-identity cwd
+        # bash (Git Bash): same invocation shape as the Windows shards. node
+        # comes from the runner image; kiro-cli is fetched by the script.
+        shell: bash
+        run: python scripts/windows_volume_cwd_probe.py --kiro-cli fetch
+
   # Native IPv6 loopback is required here, not enabled on the shared fleet.
   # Keep both OS contracts, including Windows' real IPv6 listener discovery.
   backend-test-ipv6:

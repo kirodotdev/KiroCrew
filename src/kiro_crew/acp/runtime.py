@@ -166,7 +166,7 @@ from kiro_crew.agent_sdk.tool_search import (
 from kiro_crew.agent_spec_format import NATIVE_SKILL_ALIAS_PREFIX
 from kiro_crew.browser_cli.launch import browser_session_env, browser_socket_env
 from kiro_crew.config import live
-from kiro_crew.config.paths import data_home, kiro_agents_dir
+from kiro_crew.config.paths import data_home, default_work_dir, kiro_agents_dir
 from kiro_crew.constants import (
     KIROCREW_SPAWN_HOME_ENV,
     KIROCREW_SPAWN_INSTANCE_ENV,
@@ -232,6 +232,15 @@ from kiro_crew.session_token_sig import publish_session_token
 from kiro_crew.validation import MAX_ACP_SESSION_ID_LEN, MODEL_ID_RE
 
 logger = logging.getLogger(__name__)
+
+#: Whether the spawn pins the caller-named work dir's directory chain across
+#: process creation. On every platform: a validated pathname is re-resolved by
+#: the process creation and by the child, and a component swapped for a link
+#: in between aims that resolution elsewhere (on Windows at a share; on POSIX
+#: outside the directory an agent-authored job was confined to). A module
+#: attribute rather than an inline platform read so a test can drive the
+#: composition on any host and switch it off for harnesses that stub the spawn.
+_PIN_WORK_DIR_CHAIN: bool = True
 
 
 def _escapee_is_still_ours(pid: int, record: ChildRecord) -> bool:
@@ -1034,11 +1043,14 @@ class AcpRuntime:
         if work_dir:
             self._work_dir = Path(work_dir)
         else:
-            # config.paths is a stdlib-only leaf: importing it here can't
-            # re-enter the config.loader -> providers.acp -> acp.client cycle.
-            from kiro_crew.config.paths import config_dir
-
-            self._work_dir = config_dir() / "workspace"
+            self._work_dir = default_work_dir()
+        # A caller-named work dir (a slot's project, a folder's project, a
+        # cron job's ``project_dir``, an alias workspace) is operator-chosen and
+        # was handed over as a canonical STRING; on Windows the spawn pins its
+        # directory chain so that string still reaches the verified
+        # directories when the child enters it (``_pin_work_dir_chain``).
+        # The runtime's own default tree is not operator-named and is left alone.
+        self._work_dir_is_named = bool(work_dir)
         self._agent = agent
         # Canonical Kiro Crew agent identity (a cfg.agents key) resolved by the
         # surface that created this runtime — a DIFFERENT namespace from
@@ -1102,6 +1114,7 @@ class AcpRuntime:
         self._expect_mcp_reports = expect_mcp_reports
         self._sandbox_cleanup: str | None = None
         self._bound_workspace_fd: int | None = None
+        self._work_dir_chain: list[int] = []
         self._spawn_work_dir = str(self._work_dir)
         # The session tree's work directory when this runtime is not the tree's
         # first process (a companion runtime spawned for a parent's subagents,
@@ -1667,19 +1680,140 @@ class AcpRuntime:
             self._sandbox_cleanup = None
 
     async def _discard_bound_workspace(self) -> None:
-        """Close the parent copy of a macOS workspace identity off-loop."""
+        """Close the parent copy of a macOS workspace identity off-loop.
+
+        Also releases the Windows work-dir chain pins (``_pin_work_dir_chain``):
+        both are the parent's hold on the directory the child entered, and both
+        end with the process.
+        """
         descriptor = getattr(self, "_bound_workspace_fd", None)
         self._bound_workspace_fd = None
+        chain = getattr(self, "_work_dir_chain", [])
+        self._work_dir_chain = []
         work_dir = getattr(self, "_work_dir", None)
         if work_dir is not None:
             self._spawn_work_dir = str(work_dir)
         if descriptor is not None:
             await release_bound_agent_workspace(descriptor)
+        if chain:
+            await asyncio.to_thread(platform_compat.release_directory_chain, chain)
+
+    async def _pin_work_dir_chain(self) -> None:
+        """Hold every directory on the caller-named work dir across the spawn.
+
+        The work dir arrived as a canonical string, validated moments or minutes
+        earlier by whichever surface named it. A pathname is re-resolved by the
+        process creation and again by the child, and a same-user writer who can
+        replace a component with a link in between aims that resolution
+        elsewhere. On Windows that is a junction at a share -- an outbound
+        SMB/NTLM authentication carrying the gateway's credentials, irreversible
+        once emitted -- and there is no handle-based ``lpCurrentDirectory``, so
+        the chain is pinned (:func:`platform_compat.pin_directory_chain_bound`):
+        every component opened without following and held without
+        ``FILE_SHARE_DELETE``, so nothing on the path can be renamed or replaced
+        while the child is created and for as long as the process lives. On
+        POSIX a held descriptor stops no rename, but the same walk opens every
+        component with ``O_NOFOLLOW`` and its leaf is bound to an inode: that
+        leaf is DUPLICATED into ``_bound_workspace_fd``, the child enters it by
+        ``fchdir`` (``create_subprocess_limited``'s ``chdir_fd``, which drops
+        the by-name ``cwd`` from the spawn) and the ACP session cwd is verified
+        against it and handed to the peer as the descriptor's own name
+        (``_session_work_dir``) -- so a rename of the validated directory to a
+        link aimed outside an agent-authored job's allowed root between the
+        validation and the spawn is not followed by the create, and the peer is
+        refused rather than handed the retargeted name. Both holds are released
+        with the process in ``_discard_bound_workspace``. A component that is
+        ALREADY a link fails the spawn: the string the surface validated does
+        not name what it validated.
+        """
+        if not (_PIN_WORK_DIR_CHAIN and getattr(self, "_work_dir_is_named", False)):
+            return
+
+        def _pin() -> tuple[list[int], str, int | None]:
+            # The session pool hands its default cwd over EXPLICITLY too -- the
+            # realpath of the default work dir -- and the cold-start path names
+            # the key's OWN per-session directory (``_session_work_dir(key)``,
+            # a direct child of that default): both are the runtime's own tree,
+            # not an operator- or agent-named one. Pinning them would hold the
+            # data home's directories from the gateway for as long as any
+            # agent lives, which is exactly the hold a shutdown or a pod
+            # teardown must not meet -- and would put the walk on EVERY
+            # ordinary session start, not on the named-directory swap it
+            # exists to refuse. Compared with ``compare_key``: on the Windows
+            # rule that is string work only, so neither the default (a tree
+            # the agent can write under) nor the named work dir is resolved by
+            # name inside the very guard against a re-resolved name. A DIRECT
+            # child only: a named directory deeper in the tree is not the
+            # gateway's own root and is pinned like any other.
+            own_default = platform_compat.compare_key(default_work_dir())
+            spawn_key = platform_compat.compare_key(self._spawn_work_dir)
+            if spawn_key == own_default or os.path.dirname(spawn_key) == own_default:
+                return [], self._spawn_work_dir, None
+            # ``create_missing``: a caller-named work dir that does not exist yet
+            # is created by name only under already-pinned ancestors and then
+            # pinned itself, the one write the walk allows; a by-name ``mkdir``
+            # BEFORE the pin would resolve the whole path unpinned.
+            fds, bound_spelling = platform_compat.pin_directory_chain_bound(
+                self._spawn_work_dir, create_missing=True
+            )
+            # POSIX: the child enters the LEAF by descriptor, never by name.
+            # Windows has no descriptor-entered cwd (and no shim to carry one),
+            # so there the pins alone are the hold. Duplicated so the chain and
+            # the bound descriptor are released independently.
+            child_fd: int | None = None
+            if platform_compat.IS_POSIX:
+                try:
+                    child_fd = platform_compat.duplicate_leaf_descriptor(fds)
+                except BaseException:
+                    platform_compat.release_directory_chain(fds)
+                    raise
+            # The child is created under the spelling the chain OPENED under.
+            # On the binding rule that is the volume's own identity
+            # (``\\?\Volume{GUID}\...``): the pins hold every directory on the
+            # path, but the drive LETTER the validated spelling starts from is
+            # not a directory -- it is a name the mount manager can rebind (a
+            # per-session DosDevices definition, a same-user operation), and
+            # the kernel's open of the cwd at ``CreateProcess`` resolves the
+            # letter. Only a spelling resolved through the volume carries the
+            # walk's verdict to that open. The peer-facing ACP session cwd
+            # (``_session_work_dir``) is the same spelling, for the same
+            # reason: the peer resolves that name for itself. Verified on a
+            # real Windows runner by the ``windows-volume-cwd-probe`` CI job
+            # (``scripts/windows_volume_cwd_probe.py``): kiro-cli, node and
+            # python all start under that cwd and report it.
+            return fds, bound_spelling, child_fd
+
+        try:
+            # The chain, the spelling the child is created under (the
+            # volume-identity spelling on the Windows rule, the validated
+            # spelling elsewhere) and, on POSIX, the descriptor the child enters
+            # instead of that spelling.
+            self._work_dir_chain, self._spawn_work_dir, bound = await asyncio.to_thread(_pin)
+            if bound is not None:
+                self._bound_workspace_fd = bound
+        except OSError as exc:
+            raise RuntimeError(
+                f"refusing to start the agent in {self._spawn_work_dir!r}: a directory on "
+                f"that path could not be pinned ({exc.strerror or exc.__class__.__name__}); "
+                "a component may have been replaced by a symlink or junction since the "
+                "directory was validated."
+            ) from exc
 
     async def _session_work_dir(self, cwd: str | Path | None = None) -> str | Path:
         """Resolve an ACP cwd without re-authorizing a mutable macOS pathname."""
         if self._bound_workspace_fd is None:
-            return cwd if cwd else self._work_dir
+            requested_name = cwd if cwd else self._work_dir
+            # A pinned chain with no descriptor to enter (the Windows rule): the
+            # spelling the child was created under is the volume-identity one,
+            # and the peer, which resolves its session cwd for ITSELF, is handed
+            # that same spelling rather than the letter a same-user writer can
+            # rebind. Only for the work dir the chain holds; another directory
+            # the caller names is that caller's own spelling.
+            if getattr(self, "_work_dir_chain", None) and platform_compat.compare_key(
+                requested_name
+            ) == platform_compat.compare_key(self._work_dir):
+                return self._spawn_work_dir
+            return requested_name
         requested = cwd if cwd else self._work_dir
         # The shared rule lives in sandbox.resolve_bound_session_workspace; only the
         # error mapping is this front end's. What the peer receives is the BOUND
@@ -1702,12 +1836,13 @@ class AcpRuntime:
             return await resolve_bound_session_workspace(self._bound_workspace_fd, requested)
         except BoundWorkspaceMismatch as exc:
             raise AcpWorkspaceBindingError(
-                "A delegated macOS Kiro runtime is bound to one exact workspace; "
-                "create a runtime bound to the requested workspace"
+                "This agent runtime is bound to one exact workspace directory and the "
+                "requested path no longer names it (moved, or replaced by a link since "
+                "it was validated); create a runtime bound to the requested workspace"
             ) from exc
         except OSError as exc:
             raise AcpWorkspaceBindingError(
-                "Cannot verify the requested macOS session workspace"
+                "Cannot verify the requested session workspace against the bound directory"
             ) from exc
 
     async def _to_thread_guarding_sandbox(
@@ -1929,7 +2064,7 @@ class AcpRuntime:
         from kiro_crew.agent import DerivedSpecStale
 
         try:
-            await self._spawn_admitted()
+            await self._pinned_spawn_admitted()
         except DerivedSpecStale as first:
             logger.info(
                 "acp_cold_start stage=rederive outcome=retry backend=%s reason=%s",
@@ -1937,18 +2072,43 @@ class AcpRuntime:
                 first,
             )
             try:
-                await self._spawn_admitted()
+                await self._pinned_spawn_admitted()
             except DerivedSpecStale as second:
                 raise AcpRuntimeError(str(second)) from second
 
-    async def _spawn_admitted(self) -> None:
-        """Spawn and initialize after the caller has acquired cold-start admission."""
+    async def _pinned_spawn_admitted(self) -> None:
+        """Pin the named work dir, then :meth:`_spawn_admitted`; release the pin if it fails."""
         if self._process is not None:
             raise AcpRuntimeError("Runtime already spawned")
         # A stored skill-view name is never the agent to spawn: map it to the
         # agent it was built from before anything reads ``self._agent``.
         self._agent = await self._source_agent(self._agent) or self._agent
 
+        # The Windows chain pin comes FIRST -- before the mkdir, the voice-runtime
+        # check, the skill projection and every other by-name touch of the work
+        # dir this method makes on the way to ``CreateProcess``. Each of those
+        # resolves the pathname, and a component swapped for a junction aimed at
+        # a share is followed by whichever of them runs first: the SMB/NTLM
+        # authentication is emitted there, not only at process creation, so a
+        # pin placed just before the create would guard the last access and
+        # leave the earlier ones open. Held from here through the create and for
+        # the process's lifetime; released below on any failure before the
+        # process exists. A stale binding from an earlier spawn attempt is
+        # discarded first, since the discard is also what releases a chain.
+        await self._discard_bound_workspace()
+        await self._pin_work_dir_chain()
+        try:
+            await self._spawn_admitted()
+        except BaseException:
+            await self._discard_bound_workspace()
+            raise
+
+    async def _spawn_admitted(self) -> None:
+        """Spawn and initialize after the caller has acquired cold-start admission.
+
+        Entered through :meth:`_pinned_spawn_admitted`, which holds the Windows
+        work-dir chain before the first by-name access below.
+        """
         # Let this host narrow the configured recycle thresholds before the
         # process it governs exists. The operator's values go IN, so a host that
         # does not narrow changes nothing, and a caller that set a threshold
@@ -1960,7 +2120,11 @@ class AcpRuntime:
         self._max_rss_mb = reclaim.max_rss_mb
 
         # Off-loop: mkdir is a blocking syscall and the parent dirs may live on
-        # slow storage; the loop must never wait on the kernel here.
+        # slow storage; the loop must never wait on the kernel here. Under the
+        # pin every component is held, so this by-name resolution cannot be
+        # redirected; a pinned named dir already exists (the pin created any
+        # missing tail under held ancestors), so this creates only the
+        # runtime's own default tree.
         await asyncio.to_thread(self._work_dir.mkdir, parents=True, exist_ok=True)
         # Delegated Kiro agents on macOS do not inherit Kiro Crew's Seatbelt
         # deny rules. Keep their workspace disjoint from the named voice-decoder
@@ -2240,10 +2404,18 @@ class AcpRuntime:
         # file is live, so a cancellation here must not orphan it.
         await self._to_thread_guarding_sandbox(inject_xdist_auto_cap, env)
 
-        await self._discard_bound_workspace()
+        # The chain was pinned in ``_pinned_spawn_admitted`` (before the first
+        # by-name access) and is still held here; on POSIX its leaf is already
+        # ``_bound_workspace_fd``. The macOS voice-runtime overlap check runs
+        # against THAT descriptor when one is held (never re-opening the name
+        # the pin exists to distrust) and opens the default work dir by name
+        # only when nothing is pinned. NOT ``_discard_bound_workspace`` here:
+        # that is what would release the pin.
         if self._harness.internal_sandbox:
             self._spawn_work_dir, self._bound_workspace_fd = (
-                await bind_voice_safe_agent_workspace_async(self._work_dir)
+                await bind_voice_safe_agent_workspace_async(
+                    self._spawn_work_dir, descriptor=self._bound_workspace_fd
+                )
             )
         try:
             self._process = await platform_compat.create_windows_cleanup_owned_process(
@@ -2269,11 +2441,16 @@ class AcpRuntime:
                             | platform_compat._SUBPROCESS_NO_WINDOW
                             | platform_compat.CREATE_SUSPENDED
                         ),
-                        # None off macOS, where nothing binds. When set, the child enters
-                        # the workspace through this verified descriptor instead of
-                        # resolving ``cwd``'s pathname, which a same-UID symlink retarget
-                        # could aim elsewhere in between; ``cwd`` stays the same directory
-                        # by name so the spawn keeps reporting a real path.
+                        # None on Windows (no descriptor-entered cwd) and for the
+                        # runtime's own default work dir. Set for a caller-named
+                        # work dir on POSIX (the pinned chain's leaf) and for the
+                        # macOS voice-safe binding: ``create_subprocess_limited``
+                        # then DROPS the by-name ``cwd`` from the spawn and the
+                        # child's cwd comes from ``fchdir`` on this verified
+                        # descriptor -- there is no by-name fallback, so a
+                        # same-UID symlink retarget of the pathname in between
+                        # aims nothing. ``cwd`` above is still the spelling the
+                        # spawn reports for the directory the descriptor names.
                         chdir_fd=self._bound_workspace_fd,
                         env=env,
                         profile=RLIMIT_PROFILE_SESSION_HOST,

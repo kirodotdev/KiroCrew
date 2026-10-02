@@ -53,6 +53,7 @@ from typing import (
     Collection,
     Coroutine,
     Iterator,
+    Sequence,
 )
 
 if TYPE_CHECKING:
@@ -93,9 +94,14 @@ from kiro_crew.cron_service.fields import (  # noqa: F401 -- re-exported
     _CHAT_FOLDER_NEEDS_PERSISTENT,
     _CRON_STRING_FIELD_CAPS,
     _MIN_INTERVAL_SECS,
+    _PROJECT_DIR_NEEDS_AGENT_JOB,
+    PROJECT_DIR_OUT_OF_SCOPE,
+    CronProjectDirOutOfScope,
+    _project_dir_within,
     _validate_cron_string_fields,
     apply_job_update,
     build_job,
+    validate_cron_project_dir,
 )
 from kiro_crew.cron_service.folders import (  # noqa: F401 -- re-exported
     _CRON_FOLDERS_FILE,
@@ -189,11 +195,16 @@ from kiro_crew.process_identity import (
     teardown_capture,
     with_kill_failure,
 )
+from kiro_crew.project_dir import (  # noqa: F401 -- patch seam cron_service.fields reads
+    ProjectDirRefused,
+    resolve_project_dir,
+)
 from kiro_crew.resource_status import admission_check
 from kiro_crew.runtime_ownership import authorize_runtime_kill
 from kiro_crew.validation import (  # noqa: F401 -- re-exported
     CHANNEL_MAX_LEN,
     MAX_CRON_MESSAGE,
+    MAX_PROJECT_DIR_LEN,
     MAX_SHORT_STRING,
 )
 
@@ -950,9 +961,7 @@ class CronService:
 
             # SEL audit.
             try:
-                from kiro_crew.sel import sel
-
-                sel().log_tool_invocation(
+                sel.sel().log_tool_invocation(
                     session_key=session_key,
                     source="cron",
                     tool_name="reaper_force_kill",
@@ -1725,6 +1734,9 @@ class CronService:
         minimal_context: bool = False,
         timeout: int = 0,
         timeout_secs: int = 0,
+        project_dir: str = "",
+        audit_caller: str = "",
+        project_dir_allowed_roots: Sequence[str] | None = None,
     ) -> CronJob:
         """Add a new job. Provide one of ``every_secs``, ``at_ts``, or ``cron_expr``.
 
@@ -1786,6 +1798,9 @@ class CronService:
             minimal_context=minimal_context,
             timeout=timeout,
             timeout_secs=timeout_secs,
+            project_dir=project_dir,
+            audit_caller=audit_caller,
+            project_dir_allowed_roots=project_dir_allowed_roots,
         )
         self._persist_add_locked(job)
         self._arm_timer()
@@ -1939,19 +1954,24 @@ class CronService:
         minimal_context: bool = False,
         timeout: int = 0,
         timeout_secs: int = 0,
+        project_dir: str = "",
         source_preset: str = "",
         source_template_prompt: str = "",
+        audit_caller: str = "",
+        project_dir_allowed_roots: Sequence[str] | None = None,
     ) -> CronJob:
-        """Event-loop-safe :meth:`add_job`: the lock+save runs off the loop.
+        """Event-loop-safe :meth:`add_job`: build, lock and save all run off the loop.
 
         The gateway's aiohttp/Slack handlers run on the sole asyncio event loop;
         calling the sync :meth:`add_job` there parks the loop in the bounded lock
-        spin under contention. This builds+validates on the loop (no I/O),
-        offloads the lock+persist to a worker thread via ``asyncio.to_thread``
-        (the disk core is thread-safe — flock on separate fds mutually excludes
-        in-process too), then re-arms the timer back on the loop. Raises
-        :class:`CronStoreBusy` (retryable) on sustained contention; the public
-        boundaries translate it to a clean 409 / structured error.
+        spin under contention. This offloads the build+validate to a worker
+        thread (``validate_cron_project_dir`` resolves and stats the project
+        path, and a network-mounted directory can stall that call), then the
+        lock+persist via ``asyncio.to_thread`` (the disk core is thread-safe —
+        flock on separate fds mutually excludes in-process too), then re-arms
+        the timer back on the loop. Raises :class:`CronStoreBusy` (retryable)
+        on sustained contention; the public boundaries translate it to a clean
+        409 / structured error.
 
         Optional presentation/routing fields (``agent_id``, ``model``,
         ``silent``, ``timezone``, ``strict_schedule``, ``hide_in_chat``) are
@@ -1959,7 +1979,8 @@ class CronService:
         follow-up unlocked ``_save()`` (which could race a concurrent create and
         drop a job).
         """
-        job = self._build_job(
+        job = await asyncio.to_thread(
+            self._build_job,
             name,
             message,
             every_secs=every_secs,
@@ -1990,6 +2011,9 @@ class CronService:
             minimal_context=minimal_context,
             timeout=timeout,
             timeout_secs=timeout_secs,
+            project_dir=project_dir,
+            audit_caller=audit_caller,
+            project_dir_allowed_roots=project_dir_allowed_roots,
         )
         # Dashboard-only template provenance. Set on the freshly-built job
         # BEFORE the off-loop persist -- the object has no other reference yet,
@@ -2011,6 +2035,7 @@ class CronService:
 
         Accepted kwargs: name, message, every_secs, cron_expr, agent_id, channel,
         approval_mode, silent, skip_dates, timezone, thread_ts, model,
+        project_dir (agent jobs only; "" clears),
         timeout_secs (per-wake execution budget, 1..86400).
 
         Raises :class:`CronStoreBusy` if the store lock is contended past the
@@ -2060,6 +2085,14 @@ class CronService:
         # instead of resurrecting state the operator withdrew.
         expect_active = kwargs.pop("expect_secret_env", None)
         expect_active_pin = kwargs.pop("expect_secret_env_pin", None)
+        # Same shape for the project scope: the gateway clears the rescope
+        # marker only if the job is still scoped exactly as the wake it just
+        # re-rooted read it -- ``(project_dir, project_dir_was)``. A rescope
+        # that landed DURING that wake (a clear-to-unset the store kept the
+        # first marker through) must survive the clear, or the next wake's
+        # never-scoped short-circuit would leave the conversation in the old
+        # repository with nothing left to notice.
+        expect_scope = kwargs.pop("expect_project_scope", None)
         # Optional OUT-parameter, owned by the caller: a dict this pass fills with
         # ``{"chat_folder_was": <prior folder, possibly "">}`` when the update
         # actually changes ``chat_folder_id``.
@@ -2075,6 +2108,10 @@ class CronService:
         # to, and clobberable by, the others. A dict the caller allocated is seen
         # by that caller alone.
         chat_folder_out = kwargs.pop("chat_folder_transition_out", None)
+        # Surface identity for the SEL event a sensitive project_dir refusal
+        # emits (see validate_cron_project_dir); never a stored field.
+        audit_caller = str(kwargs.pop("audit_caller", "") or "cron_store")
+        project_dir_allowed_roots = kwargs.pop("project_dir_allowed_roots", None)
         with self._file_lock():
             self._sync_for_write()
             for job in self._jobs:
@@ -2090,7 +2127,17 @@ class CronService:
                     raise CronPendingMismatch("active grant changed concurrently")
                 if expect_active_pin is not None and job.secret_env_pin != expect_active_pin:
                     raise CronPendingMismatch("active grant pin changed concurrently")
-                apply_job_update(job, kwargs, chat_folder_out)
+                if expect_scope is not None and (job.project_dir, job.project_dir_was) != tuple(
+                    expect_scope
+                ):
+                    raise CronPendingMismatch("project scope changed concurrently")
+                apply_job_update(
+                    job,
+                    kwargs,
+                    chat_folder_out,
+                    audit_caller=audit_caller,
+                    project_dir_allowed_roots=project_dir_allowed_roots,
+                )
                 self._save()
                 logger.info("Updated cron job %s", job_id)
                 return job

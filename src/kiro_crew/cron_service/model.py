@@ -181,6 +181,31 @@ class CronJob:
     # benign (they self-heal on the job's next folder move).
     folder_id: str = ""
     model: str = ""  # per-job model override (canonical key or provider id); "" = inherit
+    # Per-job project directory for an AGENT job: the working directory its
+    # session is rooted at, exactly as a dashboard chat scoped to a project
+    # (``slot.project``) is. That cwd is what makes the repo's own
+    # ``.kiro/steering/**/*.md`` load (kiro-cli resolves the agent's steering
+    # resources relative to its cwd) and what the ``[PROJECT]`` context line
+    # names. ``""`` (every job predating the field) keeps the gateway default
+    # -- the workspace directory -- which carries no repo steering at all.
+    #
+    # Stored as a validated REALPATH (see validate_cron_project_dir); the
+    # gateway re-checks it at fire time and FAILS the run when the directory
+    # is gone or has become sensitive, rather than silently running the job
+    # unscoped -- a repo-scoped job running without its repo policy is the
+    # exact drift this field exists to prevent. Refused for script/command
+    # jobs, which launch no session.
+    project_dir: str = ""
+    # The project_dir this job's conversation BEGAN under when ``project_dir``
+    # was last changed or cleared, held until the gateway's next wake has
+    # re-rooted that conversation. Written by the store on the rescope (never
+    # by a caller), read and cleared by the gateway. It is what tells "this
+    # job's project was cleared, so its conversation still rooted at the old
+    # repository must end" apart from "this job never had a project", which
+    # the ``""`` in ``project_dir`` alone cannot: a job that never opted in is
+    # never policed, whatever directory its tab's own project control moved
+    # its session to.
+    project_dir_was: str = ""
     # The CHAT (sidebar) folder the job's ``cron-{id}`` tab is filed into; "" =
     # not filed, which is what every job predating the field keeps doing. Its
     # run stamps and markers already make that one tab the job's timeline.

@@ -370,6 +370,26 @@ def config_dir() -> Path:
     return d
 
 
+def default_work_dir(home: Path | None = None) -> Path:
+    """The directory a session with no explicit ``cwd`` runs in.
+
+    ONE spelling for the ACP runtime and client (which root a cwd-less
+    process here), for the session manager's ``default_conversation_roots``
+    (which must recognise a conversation rooted here as "at the gateway
+    default"), and for every data path that lives under the workspace. Kept
+    together so a future change to the default work dir cannot move the
+    process and leave the "is it at the default" test pointing at the old
+    place, which would end a cleared-project cron job's conversation on every
+    wake.
+
+    *home* is the data home when the caller already holds one -- a CLI verb
+    that resolved ``config_dir()`` through its own module seam, which its tests
+    point at a fixture home -- so the location is the caller's while the
+    spelling of what lies beneath it stays here. Default: :func:`config_dir`.
+    """
+    return (home if home is not None else config_dir()) / "workspace"
+
+
 def data_home() -> Path:
     """The resolved data home, WITHOUT re-running start-of-process maintenance.
 

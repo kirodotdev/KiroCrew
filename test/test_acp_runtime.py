@@ -2063,8 +2063,8 @@ async def test_runtime_spawn_passes_installed_path_through_exact_wrappers(
     # its own descriptor to pass_fds, so pin that seam to the no-descriptor shape
     # every other platform already produces, or the assertion reads the wrong fd.
 
-    async def _unbound_workspace(work_dir):
-        return work_dir, None
+    async def _unbound_workspace(work_dir, *, descriptor=None):
+        return work_dir, descriptor
 
     monkeypatch.setattr(runtime_mod, "bind_voice_safe_agent_workspace_async", _unbound_workspace)
     monkeypatch.setattr(runtime_mod, "create_subprocess_limited", stop_spawn)
@@ -2102,13 +2102,16 @@ async def test_runtime_spawn_passes_installed_path_through_exact_wrappers(
     assert isinstance(spawn_kwargs, dict)
     # The installed binary is exec'd in place: the ONLY descriptor handed to the
     # child is the verified workspace the spawn shim must `fchdir` into, never an
-    # inherited snapshot descriptor. Nothing binds a workspace off macOS, so the
-    # expected set is empty there -- asserting the exact set rather than the absence
-    # of the key keeps the same strength on Linux and stops pinning the platform's
-    # own spawn shape on darwin.
+    # inherited snapshot descriptor. The caller hands that descriptor to the
+    # (stubbed) wrapper as ``chdir_fd``; the wrapper is what derives ``pass_fds``
+    # from it, so the caller itself passes no pass_fds. A caller-named work dir
+    # binds on every POSIX host (the pinned chain's leaf), so here bound_fd is a
+    # real descriptor; on Windows nothing binds and both are unset.
     bound_fd = wrapped["bound_fd"]
-    expected_fds: tuple[int, ...] = () if bound_fd is None else (bound_fd,)
-    assert tuple(spawn_kwargs.get("pass_fds", ())) == expected_fds
+    assert spawn_kwargs.get("chdir_fd") == bound_fd
+    assert tuple(spawn_kwargs.get("pass_fds", ())) == ()
+    if os.name != "nt":
+        assert isinstance(bound_fd, int)
     # The sibling subcommand binary a multi-call CLI dispatches to is still
     # reachable beside the launch path.
     assert (Path(launch_path).parent / "kiro-cli-chat").exists()

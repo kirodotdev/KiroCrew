@@ -5604,6 +5604,8 @@ def _directory_ancestor_identities(descriptor: int) -> tuple[tuple[int, int], ..
 
 def bind_voice_safe_agent_workspace(
     workspace: str | os.PathLike[str],
+    *,
+    descriptor: int | None = None,
 ) -> tuple[str, int | None]:
     """Bind a verified macOS workspace identity for delegated Kiro startup.
 
@@ -5626,10 +5628,17 @@ def bind_voice_safe_agent_workspace(
     independent, so closing this one does not disturb a running agent.
 
     Other platforms keep their original pathname and do not inherit a descriptor.
+
+    *descriptor*, when given, is a directory the caller ALREADY holds (the leaf
+    of a pinned work-dir chain): the overlap check runs against that identity
+    and the same number is returned, so the workspace is never re-opened by
+    name here -- a name is what a same-UID rename retargets between the pin
+    and this call. The caller keeps ownership; nothing is closed on refusal.
+    Off macOS it is handed back unchanged.
     """
     workspace_path = os.fspath(workspace)
     if sys.platform != "darwin":
-        return workspace_path, None
+        return workspace_path, descriptor
 
     workspace_fd = -1
     runtime_fds: list[int] = []
@@ -5641,7 +5650,9 @@ def bind_voice_safe_agent_workspace(
         # would print "<unknown>" for exactly the failure a user hits first.
         runtime_paths = _voice_runtime_sandbox_paths()
 
-        workspace_fd = _open_directory_descriptor(workspace_path)
+        workspace_fd = (
+            descriptor if descriptor is not None else _open_directory_descriptor(workspace_path)
+        )
         workspace_identity = os.fstat(workspace_fd)
         workspace_id = (workspace_identity.st_dev, workspace_identity.st_ino)
         workspace_ancestors = set(_directory_ancestor_identities(workspace_fd))
@@ -5663,7 +5674,7 @@ def bind_voice_safe_agent_workspace(
 
         return workspace_path, workspace_fd
     except OSError as exc:
-        if workspace_fd >= 0:
+        if workspace_fd >= 0 and descriptor is None:
             os.close(workspace_fd)
         raise RuntimeError(
             _voice_runtime_guard_message(
@@ -5675,7 +5686,7 @@ def bind_voice_safe_agent_workspace(
             )
         ) from exc
     except BaseException:
-        if workspace_fd >= 0:
+        if workspace_fd >= 0 and descriptor is None:
             os.close(workspace_fd)
         raise
     finally:
@@ -5710,6 +5721,8 @@ async def release_bound_agent_workspace(descriptor: int) -> None:
 
 async def bind_voice_safe_agent_workspace_async(
     workspace: str | os.PathLike[str],
+    *,
+    descriptor: int | None = None,
 ) -> tuple[str, int | None]:
     """Cancellation-safe off-loop wrapper for workspace identity binding.
 
@@ -5717,8 +5730,12 @@ async def bind_voice_safe_agent_workspace_async(
     cancelled after the worker opens the descriptor but before ownership is
     transferred, a plain await loses the returned fd.  Shield and settle the
     worker; on cancellation, close any descriptor it produced before re-raising.
+    A *descriptor* the CALLER handed in is the caller's to release and is not
+    closed here on cancellation.
     """
-    binding = asyncio.create_task(asyncio.to_thread(bind_voice_safe_agent_workspace, workspace))
+    binding = asyncio.create_task(
+        asyncio.to_thread(bind_voice_safe_agent_workspace, workspace, descriptor=descriptor)
+    )
     cancellation: asyncio.CancelledError | None = None
     while not binding.done():
         try:
@@ -5730,14 +5747,14 @@ async def bind_voice_safe_agent_workspace_async(
         return binding.result()
 
     try:
-        _path, descriptor = binding.result()
+        _path, opened = binding.result()
     except BaseException:
         # The caller's cancellation remains authoritative, but retrieving the
         # worker exception prevents a false "Task exception was never retrieved".
         raise cancellation
-    if descriptor is not None:
+    if opened is not None and opened != descriptor:
         try:
-            await release_bound_agent_workspace(descriptor)
+            await release_bound_agent_workspace(opened)
         except asyncio.CancelledError as exc:
             cancellation = exc
     raise cancellation

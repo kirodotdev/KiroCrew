@@ -7038,6 +7038,16 @@ _WIN_FILE_ATTRIBUTE_DIRECTORY = 0x00000010
 _WIN_FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400
 
 
+class ReparsePointRefused(NotADirectoryError):
+    """:func:`pin_directory` found a reparse point (junction/symlink) at the name.
+
+    Raised from the open that would otherwise have traversed it, carrying the
+    verdict the handle proved so no caller needs to re-derive it from the name
+    after the handle is closed. A ``NotADirectoryError`` for callers that only
+    need the refusal.
+    """
+
+
 def pin_directory(path: str | os.PathLike) -> int:
     """Open *path* as a directory and return a descriptor that PINS it.
 
@@ -7065,12 +7075,39 @@ def pin_directory(path: str | os.PathLike) -> int:
     O_NOFOLLOW``. Release with ``os.close``.
     """
     if IS_POSIX:
-        return os.open(os.fspath(path), pinned_dir_flags())
+        try:
+            return os.open(os.fspath(path), pinned_dir_flags())
+        except OSError as exc:
+            # ``O_DIRECTORY | O_NOFOLLOW`` reports a link at the name as
+            # ``ENOTDIR`` (Linux) or ``ELOOP``; name it as the reparse refusal
+            # the Windows flavour raises, so a caller sees ONE type on every
+            # host. The ``lstat`` is a POSIX-only diagnostic: a POSIX link
+            # cannot trigger the outbound authentication the Windows verdict
+            # guards, and the Windows flavour below never re-reads by name.
+            if exc.errno in (errno.ENOTDIR, errno.ELOOP):
+                try:
+                    is_link = stat.S_ISLNK(os.lstat(path).st_mode)
+                except OSError:
+                    is_link = exc.errno == errno.ELOOP
+                if is_link:
+                    raise ReparsePointRefused(
+                        errno.ENOTDIR, "not a real directory", os.fspath(path)
+                    ) from exc
+            raise
 
     fd = _win_open_without_following(path)
     try:
         attrs = getattr(os.fstat(fd), "st_file_attributes", 0)
-        if not attrs & _WIN_FILE_ATTRIBUTE_DIRECTORY or attrs & _WIN_FILE_ATTRIBUTE_REPARSE_POINT:
+        if attrs & _WIN_FILE_ATTRIBUTE_REPARSE_POINT:
+            # The verdict travels ON the exception: the handle that proved the
+            # reparse bit is closed below, and a caller that re-derived the bit
+            # by name afterwards would read an unpinned name -- a junction
+            # removed in between reads as a plain missing entry, and a security
+            # refusal would lose its audit. ``ReparsePointRefused`` is a
+            # ``NotADirectoryError``, so a caller that does not care still sees
+            # the refusal it always did.
+            raise ReparsePointRefused(errno.ENOTDIR, "not a real directory", os.fspath(path))
+        if not attrs & _WIN_FILE_ATTRIBUTE_DIRECTORY:
             raise NotADirectoryError(errno.ENOTDIR, "not a real directory", os.fspath(path))
     except BaseException:
         os.close(fd)
@@ -7395,6 +7432,209 @@ def pinned_directory(path: str | os.PathLike) -> PinnedDirectory:
     """Open *path* as a :class:`PinnedDirectory`. Refuses a link at the name."""
     target = os.fspath(path)
     return PinnedDirectory(pin_directory(target), target)
+
+
+#: Whether :func:`compare_key` may resolve a path by NAME (``realpath``).
+#: True off Windows, where a symlinked spelling of a directory is legitimate
+#: and resolving it is harmless; False on Windows, where a caller-named path is
+#: already canonical when it reaches a compare and resolving it by name is the
+#: check-then-resolve race the pinned walk exists to avoid. A module attribute
+#: so a test can exercise the Windows rule on any host.
+_COMPARE_KEY_RESOLVES: bool = not IS_WINDOWS
+
+
+def compare_key(path: str | os.PathLike) -> str:
+    r"""The form of *path* two directory spellings are compared in.
+
+    Off Windows: ``realpath``, so ``/tmp`` and ``/private/tmp`` (macOS) or a
+    symlinked repository layout compare equal -- a spelling difference is not a
+    different directory there, and following a POSIX symlink authenticates to
+    nothing.
+
+    On Windows: ``normcase(normpath(path))`` -- string work only, no filesystem.
+    Every caller-named directory reaches a compare already canonical (the
+    project-directory rule reads its answer from an opened handle; the gateway's
+    own default is the realpath of its own tree), so nothing is lost by not
+    resolving; and resolving WOULD be the hazard: a component swapped for a
+    junction between validation and this compare would be opened by
+    ``realpath``, and a junction aimed at a share is an outbound SMB/NTLM
+    authentication carrying the gateway's credentials. A spelling that differs
+    from the canonical one on Windows is therefore a DIFFERENT root here, which
+    the callers treat as a mismatch -- refusing is the safe answer for a
+    compare that gates where an agent runs.
+    """
+    text = os.fspath(path)
+    if _COMPARE_KEY_RESOLVES:
+        return os.path.realpath(text)
+    return os.path.normcase(os.path.normpath(text))
+
+
+class NotALocalVolume(OSError):
+    """The drive letter at the head of a path is not bound to a local volume.
+
+    Raised by :func:`pin_directory_chain` on Windows BEFORE anything is opened:
+    a mapped network drive spells like a local path and has no local volume
+    identity, and opening anything under it is an outbound authentication.
+    """
+
+
+#: Whether :func:`pin_directory_chain` binds the walk to the LOCAL VOLUME's
+#: own identity rather than to the drive letter (Windows). A module attribute
+#: so a test can exercise the binding on any host.
+_BIND_VOLUME_IDENTITY: bool = IS_WINDOWS
+
+_DRIVE_LETTER_ROOT = re.compile(r"^[A-Za-z]:$")
+
+
+def local_volume_root(drive: str) -> str | None:
+    r"""``\\?\Volume{GUID}\`` for the local volume the letter *drive* (``C:``) is bound to.
+
+    ``None`` for a letter bound to a network share or to nothing; raises
+    ``OSError`` when the mount manager cannot be asked. Windows-only; a
+    thin seam over :func:`windows_acl.local_volume_root` so a test can stand in.
+    """
+    try:
+        return windows_acl.local_volume_root(drive + "\\")
+    except windows_acl.AclUnavailable as exc:
+        raise OSError(errno.ENOSYS, "volume identity unavailable", drive) from exc
+
+
+def pin_directory_chain_bound(
+    path: str | os.PathLike, *, create_missing: bool = False
+) -> tuple[list[int], str]:
+    r"""Pin every directory on *path*, root-most first, refusing any reparse point.
+
+    :func:`pin_directory` freezes ONE directory: while its handle is open it can
+    be neither renamed nor deleted, nor can anything above it. That is not yet a
+    guarantee about the PATH that reaches it, because a later open of
+    ``<dir>\child`` still resolves ``<dir>`` by name -- and a component swapped
+    for a junction between two opens is followed by the second. So this walks
+    the UNRESOLVED path one component at a time -- ``C:\a``, ``C:\a\b``, ... --
+    opening each prefix through :func:`pin_directory` and holding every handle
+    until the caller releases them. Each open sees whatever sits at the name as
+    ITSELF (``FILE_FLAG_OPEN_REPARSE_POINT``), so a junction or symlink is refused
+    in the call that would otherwise have traversed it and its target is never
+    touched; and because each prefix is held before the next component is opened
+    through it, the intermediate components of every later open are frozen at
+    what was already verified. A ``..`` after a reparse point is never reached:
+    the point itself was refused first. With the chain held, a pathname spelled
+    the same way -- a spawn's ``cwd``, a canonicalisation from the leaf handle --
+    can only reach the directories that were verified.
+
+    Refusals propagate from :func:`pin_directory`: ``NotADirectoryError`` for a
+    file or reparse point at a name, ``FileNotFoundError`` for a missing one.
+    Whatever was opened before the refusal is closed first. Release with
+    :func:`release_directory_chain`. Windows is where this matters -- resolving a
+    reparse point aimed at a share is an outbound authentication -- but the walk
+    is portable (POSIX opens with ``O_NOFOLLOW``, reporting a link as ``ELOOP``
+    or ``ENOTDIR``), so a test can exercise it anywhere.
+
+    Returns ``(fds, bound)``: the handles, leaf last, and the SPELLING the walk
+    opened under. Off the binding rule that is *path* as given. Under it, it is
+    the volume-identity spelling, and a caller that goes on to name the
+    directory to the kernel again -- ``CreateProcess``'s current directory --
+    must name THAT: the letter it started from is a name a same-user writer can
+    rebind between this walk and that open, and only a spelling the kernel
+    resolves through the volume rather than the letter carries the walk's
+    verdict to the child's own open.
+
+    *create_missing* gives the walk ``mkdir -p`` semantics for a TAIL that does
+    not exist yet: the first component the open reports missing is created by
+    name and then pinned like any other, and so on to the leaf. That creation is
+    the one by-name write this module allows on an unpinned name, and it is
+    sound only here: every ancestor is already held, so the name being created
+    can only be resolved through verified directories, and the pin that follows
+    opens the new entry as itself -- a reparse point swapped in between the
+    ``mkdir`` and the open is refused, never followed. A spawn owner whose
+    caller-named work dir may not exist yet uses this instead of a by-name
+    ``mkdir`` before the pin, which would resolve the whole path unpinned.
+    """
+    text = os.fspath(path)
+    # The drive split is a Windows notion; under the binding rule it is spelled
+    # with ``ntpath`` so the rule reads the same on every host that drives it.
+    drive, rest = (ntpath if _BIND_VOLUME_IDENTITY else os.path).splitdrive(text)
+    prefix = drive
+    bound = False
+    if _BIND_VOLUME_IDENTITY and _DRIVE_LETTER_ROOT.match(drive):
+        # Bind the walk to the VOLUME, not the letter. The letter is a name the
+        # mount manager can rebind -- to a share -- between any two opens that
+        # spell it, and a classification read off the letter's root (drive
+        # type) is then a check against a name the open does not resolve
+        # through. The volume GUID mount-point name is the local volume's own
+        # identity: a network drive has none (so this is the classification),
+        # and every open below spells THAT identity, so a later rebind of the
+        # letter cannot redirect the chain. Refused, closed, before anything
+        # is opened when no local identity exists.
+        volume = local_volume_root(drive)
+        if not volume:
+            raise NotALocalVolume(errno.ENODEV, "drive is not a local volume", drive)
+        prefix = volume.rstrip("\\/")
+        bound = True
+    fds: list[int] = []
+    try:
+        for part in re.split(r"[\\/]", rest):
+            if not part or part == ".":
+                continue
+            prefix = prefix + os.sep + part
+            try:
+                fds.append(pin_directory(prefix))
+            except FileNotFoundError:
+                if not create_missing:
+                    raise
+                # Under the held ancestors; the pin right after opens what was
+                # created as ITSELF, so a swap-in link is refused, not followed.
+                # A concurrent creation of the same name is fine for the same
+                # reason: the pin, not the mkdir, is what judges the entry.
+                try:
+                    os.mkdir(prefix)
+                except FileExistsError:
+                    pass
+                fds.append(pin_directory(prefix))
+        if not fds:
+            # A ROOT-ONLY path (``/``, ``C:\``) has no component for the loop
+            # to open, and an empty chain has no leaf for the child to enter:
+            # the spawn would refuse a work dir the validators accept. The
+            # root is a directory like any other -- pin it. Its spelling keeps
+            # the trailing separator: ``\\?\Volume{GUID}`` without one names
+            # the volume DEVICE, not its root directory.
+            prefix = prefix + os.sep
+            fds.append(pin_directory(prefix))
+    except BaseException:
+        release_directory_chain(fds)
+        raise
+    return fds, (prefix if bound else text)
+
+
+def pin_directory_chain(path: str | os.PathLike) -> list[int]:
+    """The handles of :func:`pin_directory_chain_bound`, for a caller that names nothing again."""
+    return pin_directory_chain_bound(path)[0]
+
+
+def release_directory_chain(fds: list[int]) -> None:
+    """Close the handles :func:`pin_directory_chain` returned; tolerant of a closed one."""
+    for fd in fds:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+
+def duplicate_leaf_descriptor(fds: list[int]) -> int:
+    """An independent descriptor for the LEAF of a pinned chain, for a child to enter.
+
+    On POSIX a held descriptor stops nothing from being renamed -- the chain's
+    value there is that every component was opened without following and the
+    leaf is bound to an INODE. That binding is what a spawn hands the child
+    (``create_subprocess_limited``'s ``chdir_fd`` ``fchdir``s it, never a name)
+    and what the ACP session cwd is verified against. The duplicate is owned
+    separately from the chain (released with the bound-workspace descriptor,
+    not with the chain), so the two releases cannot double-close one number.
+    Raises ``OSError`` when the leaf cannot be duplicated; the caller fails the
+    spawn closed rather than enter a name.
+    """
+    if not fds:
+        raise OSError(errno.EBADF, "no pinned leaf to duplicate")
+    return os.dup(fds[-1])
 
 
 def _win_open_without_following(path: str | os.PathLike) -> int:

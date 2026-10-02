@@ -13,11 +13,12 @@ The store transaction around them -- lock, reload, save -- is the service's.
 
 from __future__ import annotations
 
+import os
 import time
 import uuid
-from typing import Any
+from typing import Any, Sequence
 
-from kiro_crew import cron_script
+from kiro_crew import cron_script, platform_compat
 from kiro_crew.cron_service.execution import _SUBPROC_CLEANUP_ALLOWANCE_SECS
 from kiro_crew.cron_service.model import CronJob, CronSchedule
 from kiro_crew.cron_service.schedule import (
@@ -26,7 +27,13 @@ from kiro_crew.cron_service.schedule import (
     validate_cron_expr,
 )
 from kiro_crew.cron_service.store import _is_representable_number
-from kiro_crew.validation import CHANNEL_MAX_LEN, MAX_CRON_MESSAGE, MAX_SHORT_STRING
+from kiro_crew.project_dir import ProjectDirRefused
+from kiro_crew.validation import (
+    CHANNEL_MAX_LEN,
+    MAX_CRON_MESSAGE,
+    MAX_PROJECT_DIR_LEN,
+    MAX_SHORT_STRING,
+)
 
 _MIN_INTERVAL_SECS = 60
 
@@ -36,6 +43,141 @@ _CHAT_FOLDER_NEEDS_PERSISTENT = (
     "Filing runs into a chat folder needs a persistent session: a stateless job "
     "has no job-wide tab to file. Clear the chat folder, or keep the session."
 )
+
+# A project directory scopes an AGENT job's session; a script/command job
+# never launches an agent, so the field would be dead configuration there.
+_PROJECT_DIR_NEEDS_AGENT_JOB = (
+    "project_dir applies only to an agent (message) job: a --script/--command "
+    "job runs no agent session, so there is no session to scope to a project."
+)
+
+
+class CronProjectDirOutOfScope(ValueError):
+    """The canonical ``project_dir`` lies outside the roots the caller may name.
+
+    Raised by :func:`validate_cron_project_dir` when *allowed_roots* is given,
+    which only an AGENT-facing surface passes (the MCP ``cron_add`` /
+    ``cron_update`` tools); operator surfaces pass ``None`` and are not
+    confined. A distinct type so that surface can record the refusal as an
+    authorization denial rather than a validation error; ``canonical`` is the
+    resolved path that was judged, for that record (redact before logging).
+    """
+
+    def __init__(self, message: str, *, canonical: str) -> None:
+        super().__init__(message)
+        self.canonical = canonical
+
+
+PROJECT_DIR_OUT_OF_SCOPE = (
+    "project_dir must be under a configured agent.subagent_cwd_allowed_roots entry "
+    "(the same allowlist spawn_run's cwd answers to)"
+)
+
+
+def _project_dir_within(canonical: str, allowed_roots: Sequence[str]) -> bool:
+    """Whether *canonical* is one of *allowed_roots* or below one, by path component.
+
+    Judged with the same :func:`platform_compat.compare_key` the session roots
+    use (realpath off Windows, string work on it), so a link spelling cannot
+    smuggle a root in or out and a sibling sharing a root's string prefix is
+    outside it.
+    """
+    key = platform_compat.compare_key(canonical)
+    for root in allowed_roots:
+        if not isinstance(root, str) or not root:
+            continue
+        root_key = platform_compat.compare_key(os.path.expanduser(root))
+        if key == root_key or key.startswith(root_key.rstrip(os.sep) + os.sep):
+            return True
+    return False
+
+
+def validate_cron_project_dir(
+    raw: str | None,
+    *,
+    audit_caller: str = "cron_store",
+    allowed_roots: Sequence[str] | None = None,
+    revalidate: bool = False,
+) -> str:
+    """Normalize and validate a cron job's per-job project directory.
+
+    Returns the resolved absolute path, or ``""`` when *raw* is empty (the
+    job keeps the gateway's default working directory). Raises ``ValueError``
+    for anything a session could not be rooted at: a relative path, a path
+    under a sensitive location (``~/.ssh``, the Kiro Crew data home, ...), or
+    a directory that does not exist.
+
+    *revalidate* is for the fire-time check of a value THIS function already
+    produced and the store persisted: *raw* is then the canonical spelling
+    itself, and the fresh resolution must be that very directory -- anything
+    else (a component of the persisted path replaced by a link since
+    authoring) is refused as a SEL-audited ``moved`` denial rather than
+    followed. That is what keeps the authoring-time judgement -- including
+    the agent-scope confinement below, which the wake does not repeat --
+    binding at every fire: the wake runs the job at the directory that was
+    judged or not at all.
+
+    The absolute/realpath/sensitive/isdir rule itself is
+    :func:`kiro_crew.project_dir.resolve_project_dir`, the ONE body the
+    dashboard's chat-folder validator calls too, so the two surfaces cannot
+    drift on what a project directory is (read through the
+    :mod:`kiro_crew.cron` facade, which is where tests patch it). Applied HERE
+    at the persistence owner so every create/update surface (MCP
+    ``cron_add``/``cron_update``, ``kirocrew cron add``/``update``, the
+    dashboard REST routes) shares one check and no caller can persist a
+    directory the agent runtime would refuse at spawn. The stored value is the
+    REALPATH so the fire-time comparison against the live session's cwd
+    (``provider.cwd``) is a plain string equality.
+
+    What stays in this wrapper is cron-specific: the type and length caps
+    (this is a persisted string field under ``_CRON_STRING_FIELD_CAPS``) and the
+    SEL attribution -- the sensitive-path refusal is recorded by the core
+    under ``cron.project_dir`` for the invoking surface named by
+    ``audit_caller`` (``cli``, an MCP session key, a dashboard user,
+    ``cron:<id>`` at fire time); the default is the store itself.
+
+    *allowed_roots*, when given, confines the CANONICAL value to those roots
+    (:class:`CronProjectDirOutOfScope` otherwise). It is judged here, on the
+    very value the store goes on to persist, inside the same locked operation:
+    a containment judged by a caller on its own resolution of the raw string
+    and a store that then re-resolves that string are two passes, and a link
+    retargeted between them persists a root the first pass never saw. Only an
+    agent-facing surface passes roots; ``None`` (operator surfaces) confines
+    nothing.
+    """
+    from kiro_crew import cron as seams  # the facade holds the patched names; it imports us
+
+    if raw is None:
+        return ""
+    if not isinstance(raw, str):
+        raise ValueError("project_dir must be a string")
+    value = raw.strip()
+    if not value:
+        return ""
+    if len(value) > MAX_PROJECT_DIR_LEN:
+        raise ValueError(f"project_dir exceeds {MAX_PROJECT_DIR_LEN} characters")
+    # The UNC/network and Windows reparse-point refusals -- both of which must
+    # run BEFORE realpath can contact a remote host -- live in the core, so
+    # every surface gets them, not only the store.
+    try:
+        resolved = seams.resolve_project_dir(
+            value,
+            label="project_dir",
+            audit_operation="cron.project_dir",
+            audit_caller=audit_caller or "cron_store",
+            expect_canonical=value if revalidate else None,
+        )
+    except ProjectDirRefused as exc:
+        raise ValueError(str(exc)) from exc
+    # The cap bounds the value RETAINED, and canonicalisation can lengthen
+    # it (a Windows 8.3 short-name spelling expands; ``~`` expands), so the
+    # check on the input above is not enough on its own.
+    if len(resolved) > MAX_PROJECT_DIR_LEN:
+        raise ValueError(f"project_dir exceeds {MAX_PROJECT_DIR_LEN} characters")
+    if allowed_roots is not None and not _project_dir_within(resolved, allowed_roots):
+        raise CronProjectDirOutOfScope(PROJECT_DIR_OUT_OF_SCOPE, canonical=resolved)
+    return resolved
+
 
 # Table-driven string-field caps for the persistence chokepoint. Every
 # caller-supplied string field persisted by _build_job/_update_job_locked
@@ -59,6 +201,7 @@ _CRON_STRING_FIELD_CAPS: tuple[tuple[str, int], ...] = (
     ("command", 5000),
     ("script", 200),
     ("timezone", 50),
+    ("project_dir", MAX_PROJECT_DIR_LEN),
     # Secret-grant fields have no boundary FieldSpec: the pins are sha256 hex
     # digests computed server-side by the grant endpoint / cron_secret_request
     # tool (grant validity is enforced by pin equality at fire time, not by
@@ -129,12 +272,17 @@ def build_job(
     minimal_context: bool = False,
     timeout: int = 0,
     timeout_secs: int = 0,
+    project_dir: str = "",
+    audit_caller: str = "",
+    project_dir_allowed_roots: Sequence[str] | None = None,
 ) -> CronJob:
-    """Validate inputs and construct the :class:`CronJob` (no I/O, no lock).
+    """Validate inputs and construct the :class:`CronJob` (no lock, no store I/O).
 
     Shared by :meth:`add_job` and :meth:`add_job_async` so both perform
-    identical validation on the event loop before any disk work. Raises
-    ``ValueError`` on an invalid schedule or approval mode.
+    identical validation before any disk work. Touches the filesystem only
+    to resolve ``project_dir`` (realpath/isdir), which is why the async
+    caller runs this off the loop. Raises ``ValueError`` on an invalid
+    schedule or approval mode.
 
     ``timeout_secs`` is the per-wake execution budget (the
     ``asyncio.wait_for`` deadline in ``_execute_with_timeout``); ``0`` means
@@ -185,11 +333,23 @@ def build_job(
             "command": command,
             "script": script,
             "timezone": timezone,
+            "project_dir": project_dir,
         },
         required=frozenset({"name", "message"}),
     )
     if chat_folder_id and not persistent_session:
         raise ValueError(_CHAT_FOLDER_NEEDS_PERSISTENT)
+    # Resolved (realpath) and checked at the persistence owner: every
+    # create surface shares the one rule, and the stored value is what the
+    # gateway compares the live session's cwd against at fire time. Read
+    # through the facade: that is the name tests patch.
+    project_dir = seams.validate_cron_project_dir(
+        project_dir,
+        audit_caller=audit_caller or "cron_store",
+        allowed_roots=project_dir_allowed_roots,
+    )
+    if project_dir and (command or script):
+        raise ValueError(_PROJECT_DIR_NEEDS_AGENT_JOB)
     if timeout_secs and not 1 <= int(timeout_secs) <= 86400:
         raise ValueError(f"timeout_secs must be within 1..86400, got {timeout_secs}")
     if timeout_secs and (command or script):
@@ -257,11 +417,17 @@ def build_job(
         minimal_context=minimal_context,
         timeout=timeout,
         timeout_secs=int(timeout_secs) if timeout_secs else seams._JOB_TIMEOUT_SECS,
+        project_dir=project_dir,
     )
 
 
 def apply_job_update(
-    job: CronJob, kwargs: dict[str, Any], chat_folder_out: dict[str, str] | None
+    job: CronJob,
+    kwargs: dict[str, Any],
+    chat_folder_out: dict[str, str] | None,
+    *,
+    audit_caller: str = "cron_store",
+    project_dir_allowed_roots: Sequence[str] | None = None,
 ) -> None:
     """Validate the update ``kwargs`` against ``job``, then apply it.
 
@@ -269,7 +435,12 @@ def apply_job_update(
     ``ValueError`` with ``job`` untouched. ``chat_folder_out`` is the caller's
     transition sink (see :meth:`CronService._update_job_locked`): filled with the
     prior ``chat_folder_id`` only when this update actually changes it.
+    ``audit_caller`` names the surface for the SEL event a sensitive
+    ``project_dir`` refusal emits; ``project_dir_allowed_roots`` confines an
+    agent-authored ``project_dir`` (see :func:`validate_cron_project_dir`).
     """
+    from kiro_crew import cron as seams  # the facade holds the patched names; it imports us
+
     # Validate approval_mode if provided
     if "approval_mode" in kwargs:
         valid_approval_modes = ("", "auto")
@@ -330,6 +501,20 @@ def apply_job_update(
     if "timezone" in kwargs and kwargs["timezone"]:
         if not is_valid_timezone(kwargs["timezone"]):
             raise ValueError(f"Invalid timezone: {kwargs['timezone']!r}")
+    # Per-job project directory: resolved+checked here with the other
+    # pre-mutation gates so a refused path strands nothing. "" clears
+    # (the job returns to the gateway default cwd). Refused for a job
+    # that is, or this update makes, a script/command job -- it launches
+    # no session, so the field would be stored and never read.
+    _project_dir_next: str | None = None
+    if "project_dir" in kwargs:
+        _project_dir_next = seams.validate_cron_project_dir(
+            kwargs["project_dir"],
+            audit_caller=audit_caller,
+            allowed_roots=project_dir_allowed_roots,
+        )
+        if _project_dir_next and (job.command or job.script):
+            raise ValueError(_PROJECT_DIR_NEEDS_AGENT_JOB)
     if "skip_dates" in kwargs and kwargs["skip_dates"]:
         for _d in kwargs["skip_dates"]:
             if not is_valid_skip_date(_d):
@@ -487,6 +672,24 @@ def apply_job_update(
         job.chat_folder_id = ""
     if "model" in kwargs:
         job.model = str(kwargs["model"] or "").strip()
+    if _project_dir_next is not None:
+        if job.project_dir and _project_dir_next != job.project_dir and not job.project_dir_was:
+            # A rescope (changed or cleared). The conversation that
+            # began under the old project is still rooted there;
+            # the gateway reads this marker at the next wake, ends
+            # that conversation, and clears it. Not overwritten by a
+            # second rescope before that wake: the FIRST old project
+            # is the one a stored conversation may still sit in.
+            job.project_dir_was = job.project_dir
+        job.project_dir = _project_dir_next
+    if "project_dir_was" in kwargs:
+        # The gateway's clear once the rescoped conversation has been
+        # re-rooted. The only value a caller may write is the empty
+        # one: the marker's content is always a project_dir this
+        # store already validated, copied by the rescope above.
+        if kwargs["project_dir_was"] not in ("", None):
+            raise ValueError("project_dir_was is store-managed; only clearing it is accepted")
+        job.project_dir_was = ""
     if "secret_env" in kwargs and kwargs["secret_env"] is not None:
         job.secret_env = dict(kwargs["secret_env"])
         # Pin travels with the grant; a revoke (empty map) clears it.

@@ -477,6 +477,33 @@ def volume_is_remote(path: str | os.PathLike) -> bool | None:
     return _volume_remote_verdict(kernel32, Path(os.fspath(path)))
 
 
+def local_volume_root(drive_root: str) -> str | None:
+    r"""The ``\\?\Volume{GUID}\`` mount-point name of the LOCAL volume at *drive_root*.
+
+    *drive_root* is a drive-letter root spelled ``C:\``. The answer is the
+    mount manager's own name for the volume the letter is bound to right now:
+    a name that stays bound to that volume however the letter is later
+    reassigned, which is what makes it an IDENTITY rather than a spelling. A
+    network drive has no such name -- the mount manager owns no mount point
+    for it -- so ``None`` is returned, and the same ``None`` answers a letter
+    that is bound to nothing. The query (``GetVolumeNameForVolumeMountPointW``)
+    is answered by the local mount manager and touches no share. Raises
+    :class:`AclUnavailable` off Windows.
+    """
+    _advapi32, kernel32 = _load()
+    kernel32.GetVolumeNameForVolumeMountPointW.argtypes = [
+        C.c_wchar_p,
+        C.c_wchar_p,
+        C.c_uint,
+    ]
+    kernel32.GetVolumeNameForVolumeMountPointW.restype = C.c_int
+    buffer = C.create_unicode_buffer(64)
+    if not kernel32.GetVolumeNameForVolumeMountPointW(drive_root, buffer, len(buffer)):
+        return None
+    name = buffer.value
+    return name if name.startswith("\\\\?\\Volume{") else None
+
+
 def describe(path: Path) -> ComponentSecurity:
     """Read one path component's owner and its substitution-capable writers.
 

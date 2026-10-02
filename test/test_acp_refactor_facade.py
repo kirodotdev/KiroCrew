@@ -1523,6 +1523,33 @@ _UNRESOLVED_FACADE_PATCHES: dict[tuple[str, str], int] = {
     ("test/test_session_core_audit.py", "test_resolve_agent_model_serves_cache_within_ttl"): 1,
     ("test/test_subagent_shared_scratch.py", "TestSpawnersMountTheTreeWindow._install_capture"): 5,
     ("test/test_taskrunner.py", "_at_workflow_checkpoint"): 1,
+    # The chain-pin owner tests take ``module`` from a parametrize over the two spawn
+    # owners (runtime and client), so the scan cannot read which one each patch lands on.
+    **{
+        ("test/test_work_dir_chain_pin.py", f"TestSpawnOwnersPinTheNamedWorkDir.{test}"): count
+        for test, count in (
+            ("test_a_named_dir_deeper_under_the_default_is_still_pinned", 2),
+            ("test_a_named_work_dir_is_pinned_and_held_until_discard", 1),
+            ("test_a_project_is_still_pinned_when_a_default_exists", 2),
+            ("test_a_swapped_component_fails_the_spawn_by_name", 1),
+            ("test_off_the_gate_nothing_is_pinned", 1),
+            (
+                "test_on_posix_a_leaf_that_cannot_be_duplicated_fails_the_spawn_and_releases_the_chain",
+                1,
+            ),
+            ("test_on_posix_the_child_enters_the_pinned_inode_not_the_name", 2),
+            ("test_the_default_exemption_never_resolves_a_name_on_the_windows_rule", 2),
+            ("test_the_default_work_dir_is_not_pinned", 1),
+            ("test_the_gateways_own_per_key_work_dir_is_not_pinned", 2),
+            ("test_the_pools_explicit_default_cwd_is_not_pinned", 2),
+            ("test_the_process_and_the_session_cwd_are_the_volume_identity_on_windows", 1),
+        )
+    },
+    (
+        "test/test_work_dir_chain_pin.py",
+        "TestThePinPrecedesEveryByNameAccess."
+        "test_the_pin_lands_before_the_spawn_body_and_is_released_when_it_fails",
+    ): 1,
 }
 
 

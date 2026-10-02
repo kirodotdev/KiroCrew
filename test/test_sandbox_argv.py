@@ -696,6 +696,116 @@ class TestBuildSeatbeltProfile:
         assert "/dev/fd" not in path
         assert closed == [42]
 
+    def test_macos_workspace_binding_verifies_a_pinned_descriptor_without_opening_the_name(
+        self, monkeypatch
+    ):
+        # A spawn that already pinned the work dir's chain hands the LEAF in:
+        # the overlap check runs against that identity and the same number
+        # comes back. The workspace is never re-opened by name -- a name is what
+        # a same-UID rename retargets between the pin and this call.
+        monkeypatch.setattr(sandbox_mod.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            sandbox_mod,
+            "_voice_runtime_sandbox_paths",
+            lambda: ("/protected/voice-runtime",),
+        )
+        opened_names: list[str] = []
+        monkeypatch.setattr(
+            sandbox_mod,
+            "_open_directory_descriptor",
+            lambda path, **_kwargs: (opened_names.append(str(path)), 42)[1],
+        )
+
+        def fake_fstat(descriptor):
+            identities = {41: (7, 101), 42: (7, 202)}
+            dev, inode = identities[descriptor]
+            result = MagicMock()
+            result.st_dev = dev
+            result.st_ino = inode
+            return result
+
+        monkeypatch.setattr(sandbox_mod.os, "fstat", fake_fstat)
+        monkeypatch.setattr(
+            sandbox_mod,
+            "_directory_ancestor_identities",
+            lambda descriptor: (
+                ((7, 101), (7, 11), (7, 1)) if descriptor == 41 else ((7, 202), (7, 22), (7, 1))
+            ),
+        )
+        closed: list[int] = []
+        monkeypatch.setattr(sandbox_mod.os, "close", closed.append)
+
+        path, descriptor = sandbox_mod.bind_voice_safe_agent_workspace(
+            "/mutable/workspace", descriptor=41
+        )
+
+        assert (path, descriptor) == ("/mutable/workspace", 41)
+        assert opened_names == ["/protected/voice-runtime"], "the workspace was not opened by name"
+        assert closed == [42], "the caller's descriptor is the caller's to release"
+
+    def test_macos_workspace_binding_refusal_leaves_a_pinned_descriptor_open(self, monkeypatch):
+        monkeypatch.setattr(sandbox_mod.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            sandbox_mod,
+            "_voice_runtime_sandbox_paths",
+            lambda: ("/protected/voice-runtime",),
+        )
+        monkeypatch.setattr(sandbox_mod, "_open_directory_descriptor", lambda path, **_kw: 42)
+
+        def fake_fstat(descriptor):
+            identities = {41: (7, 101), 42: (7, 202)}
+            dev, inode = identities[descriptor]
+            result = MagicMock()
+            result.st_dev = dev
+            result.st_ino = inode
+            return result
+
+        monkeypatch.setattr(sandbox_mod.os, "fstat", fake_fstat)
+        # The runtime lives INSIDE the workspace: refused.
+        monkeypatch.setattr(
+            sandbox_mod,
+            "_directory_ancestor_identities",
+            lambda descriptor: (
+                ((7, 101), (7, 1)) if descriptor == 41 else ((7, 202), (7, 101), (7, 1))
+            ),
+        )
+        closed: list[int] = []
+        monkeypatch.setattr(sandbox_mod.os, "close", closed.append)
+        with pytest.raises(RuntimeError):
+            sandbox_mod.bind_voice_safe_agent_workspace("/mutable/workspace", descriptor=41)
+        assert closed == [42], "only the runtime descriptor this call opened is closed"
+
+    def test_off_macos_the_binder_hands_a_pinned_descriptor_back_unchanged(self, monkeypatch):
+        monkeypatch.setattr(sandbox_mod.sys, "platform", "linux")
+        assert sandbox_mod.bind_voice_safe_agent_workspace("/w", descriptor=9) == ("/w", 9)
+        assert sandbox_mod.bind_voice_safe_agent_workspace("/w") == ("/w", None)
+
+    @pytest.mark.asyncio
+    async def test_cancelled_async_binding_does_not_close_a_caller_owned_descriptor(
+        self, monkeypatch
+    ):
+        entered = threading.Event()
+        release = threading.Event()
+        closed: list[int] = []
+
+        def delayed_binding(_workspace, *, descriptor=None):
+            entered.set()
+            assert release.wait(timeout=2)
+            return "/mutable/workspace", descriptor
+
+        monkeypatch.setattr(sandbox_mod, "bind_voice_safe_agent_workspace", delayed_binding)
+        monkeypatch.setattr(sandbox_mod, "_close_bound_agent_workspace", closed.append)
+
+        task = asyncio.create_task(
+            sandbox_mod.bind_voice_safe_agent_workspace_async("/mutable/workspace", descriptor=61)
+        )
+        assert await asyncio.to_thread(entered.wait, 2)
+        task.cancel()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert closed == [], "the caller still owns 61 and releases it with its chain"
+
     def test_bound_session_target_is_read_off_the_descriptor(self, monkeypatch, tmp_path):
         """A peer that can only take a pathname gets the DESCRIPTOR's own name.
 
@@ -813,7 +923,7 @@ class TestBuildSeatbeltProfile:
         loop_thread = threading.get_ident()
         close_threads: list[int] = []
 
-        def delayed_binding(_workspace):
+        def delayed_binding(_workspace, *, descriptor=None):
             entered.set()
             assert release.wait(timeout=2)
             return "/dev/fd/61", 61
