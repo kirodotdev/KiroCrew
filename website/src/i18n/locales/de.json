@@ -11397,7 +11397,7 @@
       "drag_to_reorder": "Ziehen zum Umsortieren",
       "drop_here_to_remove_from_folder": "Hier ablegen, um aus dem Ordner zu entfernen",
       "drop_to_reference_session": "Hier ablegen, um diese Sitzung zu referenzieren",
-      "duplicate": "Duplizieren",
+      "duplicate": "Chat verzweigen",
       "expand_folder_name": "Ordner {{name}} ausklappen",
       "expand_group_results": "Ergebnisse für {{group}} ausklappen",
       "failed_to_load_preview": "Vorschau konnte nicht geladen werden.",

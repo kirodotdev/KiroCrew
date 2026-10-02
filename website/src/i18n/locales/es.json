@@ -11556,7 +11556,7 @@
       "drag_to_reorder": "Arrastra para reordenar",
       "drop_here_to_remove_from_folder": "Suelta aquí para quitar de la carpeta",
       "drop_to_reference_session": "Suelta aquí para referenciar esta sesión",
-      "duplicate": "Duplicar",
+      "duplicate": "Bifurcar chat",
       "expand_folder_name": "Expandir la carpeta {{name}}",
       "expand_group_results": "Expandir los resultados de {{group}}",
       "failed_to_load_preview": "No se pudo cargar la vista previa.",

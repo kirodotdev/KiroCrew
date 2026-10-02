@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, memo, useMemo, useCallback, useId, Fragment } from 'react'
 import { createPortal } from 'react-dom'
 import { LayoutGroup, AnimatePresence, motion } from 'framer-motion'
-import { Plus, X, Pin, Monitor, ArrowUpDown, Eye, EyeOff, VenetianMask, Ghost, FolderPlus, FolderX, MessageSquare, MessageSquarePlus, Folder, ChevronRight, ChevronDown, ChevronUp, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns3, CornerDownRight, GripVertical, Check, Copy, List, ListTree, Loader, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot, Users, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck, Server } from 'lucide-react'
+import { Plus, X, Pin, Monitor, ArrowUpDown, Eye, EyeOff, VenetianMask, Ghost, FolderPlus, FolderX, MessageSquare, MessageSquarePlus, Folder, ChevronRight, ChevronDown, ChevronUp, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns3, CornerDownRight, GripVertical, Check, GitFork, List, ListTree, Loader, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot, Users, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck, Server } from 'lucide-react'
 import GithubLogo from '../components/icons/GithubLogo'
 import GitlabLogo from '../components/icons/GitlabLogo'
 import { FolderBody } from '../components/FolderBody'
@@ -1685,7 +1685,7 @@ const SessionRow = memo(function SessionRow({
             <SessionActionsMenu variant="dropdown" {...rowMenuProps} />
           </DropdownMenuContent>
         </DropdownMenu>
-        <IconButton variant="accent" title={i18nT('pages.chatSidebar.duplicate')} aria-label={i18nT('pages.chatSidebar.duplicate')} onMouseDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); onDuplicate(rowKey) }}><Copy size={12} /></IconButton>
+        <IconButton variant="accent" title={i18nT('pages.chatSidebar.duplicate')} aria-label={i18nT('pages.chatSidebar.duplicate')} onMouseDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); onDuplicate(rowKey) }}><GitFork size={12} /></IconButton>
         <IconButton variant="danger" title={i18nT('pages.chatSidebar.close')} aria-label={i18nT('pages.chatSidebar.close_session')} onMouseDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); onCloseSession(rowKey) }}><X size={12} /></IconButton>
       </IconButtonGroup>
     )) : null

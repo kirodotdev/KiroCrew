@@ -11238,7 +11238,7 @@
       "drag_to_reorder": "드래그해서 순서 변경",
       "drop_here_to_remove_from_folder": "여기에 놓아서 폴더에서 빼기",
       "drop_to_reference_session": "여기에 놓아 이 세션 참조",
-      "duplicate": "복제",
+      "duplicate": "채팅 분기",
       "expand_folder_name": "{{name}} 폴더 펼치기",
       "expand_group_results": "{{group}} 결과 펼치기",
       "failed_to_load_preview": "미리보기를 불러오지 못했습니다.",
