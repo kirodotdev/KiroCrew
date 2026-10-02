@@ -33,8 +33,14 @@ def _process_apparmor_confinement() -> str:
 
 
 def _read_linux_proc_self(name: str) -> str:
-    """Read one Linux ``/proc/self`` file; callers gate on ``IS_LINUX``."""
-    return (Path("/proc/self") / name).read_text(encoding="ascii")
+    """Read one Linux ``/proc/self`` file; callers gate on ``IS_LINUX``.
+
+    Decoded with ``errors="replace"``: ``status``'s ``Name:`` line is this
+    process's raw ``comm``, which need not be ASCII, and a strict decode of it
+    would lose the ASCII ``Seccomp:`` line the caller needs. A non-ASCII byte in
+    a numeric field still fails that field's ``int()`` parse.
+    """
+    return (Path("/proc/self") / name).read_text(encoding="ascii", errors="replace")
 
 
 def _process_userns_vantage_confined() -> bool | None:
@@ -50,7 +56,7 @@ def _process_userns_vantage_confined() -> bool | None:
     try:
         uid_map_text = _read_linux_proc_self("uid_map")
         status_text = _read_linux_proc_self("status")
-    except (OSError, UnicodeError):
+    except OSError:
         return None
 
     uid_map: list[tuple[int, int, int]] = []

@@ -538,19 +538,24 @@ _MODULE_SEAMS: list[tuple[str, str, dict[str, object], str, tuple[object, ...]]]
             ("kiro_crew.acp.client", "sys", {"platform_compat": _POSIX}, helper, (1,)),
             (
                 "kiro_crew.acp.client",
-                "Path",
-                {"platform_compat": _POSIX, "sys": _LINUX},
-                helper,
-                (1,),
-            ),
-            (
-                "kiro_crew.acp.client",
                 "subprocess_mod",
                 {"platform_compat": ps, "sys": _DARWIN},
                 helper,
                 (1,),
             ),
         )
+    ],
+    # ``_get_start_time`` reads its Linux stat through ``platform_compat.read_proc_stat``,
+    # so only the other two reach ``Path`` on the facade.
+    *[
+        (
+            "kiro_crew.acp.client",
+            "Path",
+            {"platform_compat": _POSIX, "sys": _LINUX},
+            helper,
+            (1,),
+        )
+        for helper in ("_direct_children", "_read_basename")
     ],
     ("kiro_crew.acp.client", "platform_compat", {}, "_capture_child_records", ([1],)),
     ("kiro_crew.acp.client", "platform_compat", {}, "_is_our_child", (1, "start", b"node")),
@@ -1137,8 +1142,12 @@ _SEAM_IMPORTS: dict[tuple[str, str], tuple[str, tuple[str, ...]]] = {
             "kiro_crew.acp.client",
             ("Path", "platform_compat", "subprocess_mod", "sys"),
         )
-        for helper in ("_direct_children", "_get_start_time", "_read_basename")
+        for helper in ("_direct_children", "_read_basename")
     },
+    ("kiro_crew.acp.runtime_process_tree", "_get_start_time"): (
+        "kiro_crew.acp.client",
+        ("platform_compat", "subprocess_mod", "sys"),
+    ),
     **{
         ("kiro_crew.acp.runtime_process_tree", helper): (
             "kiro_crew.acp.client",

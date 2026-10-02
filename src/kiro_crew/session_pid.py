@@ -217,7 +217,7 @@ def _track_session_pid(pid: int, start_token: str | None = None) -> None:
         path = _session_pid_file_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         if path.exists():
-            lines = path.read_text(encoding="utf-8").splitlines()
+            lines = _read_pid_file_text(path).splitlines()
             kept: list[str] = []
             already_present = False
             stale_predecessor = False
@@ -272,6 +272,19 @@ def _pid_file_lock():  # type: ignore[no-untyped-def]
     with platform_compat.open_lock_file(lock_path) as lock_fd:
         with platform_compat.file_lock(lock_fd, exclusive=True):
             yield
+
+
+def _read_pid_file_text(path: Path) -> str:
+    """A PID tracking file's text; raises ``OSError`` exactly as ``read_text`` does.
+
+    The files hold ASCII digits and colons, so a byte that is not UTF-8 is
+    damage, and a strict decode would raise ``UnicodeDecodeError`` -- which no
+    ``except OSError`` around these reads catches -- out of every reader,
+    including the boot sweep. Undecodable bytes become U+FFFD instead, so the
+    field they sit in fails its ``int()`` parse and each reader's
+    malformed-entry rule applies to it exactly as to an ASCII-garbled one.
+    """
+    return path.read_text(encoding="utf-8", errors="replace")
 
 
 def _rewrite_pid_file(path: Path, content: str) -> bool:
@@ -1113,7 +1126,7 @@ def _write_back_pid_file(killed_or_dead: set[str]) -> None:
     with _session_pid_file_lock():
         path = _session_pid_file_path()
         if path.exists():
-            current = path.read_text(encoding="utf-8").splitlines()
+            current = _read_pid_file_text(path).splitlines()
             keep = [
                 entry
                 for entry in current
@@ -1314,7 +1327,7 @@ def _periodic_pid_sweep(my_gw_pid: int, active_pids: set[int]) -> tuple[set[str]
         if not platform_compat.try_acquire_lock(lock_fd.fileno(), exclusive=False):
             return set(), []
         try:
-            lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+            lines = _read_pid_file_text(path).splitlines() if path.exists() else []
         finally:
             platform_compat.release_lock(lock_fd.fileno())
     finally:
@@ -1354,7 +1367,7 @@ def _session_pid_entry_index(my_gw_pid: int) -> dict[int, tuple[str, str | None]
         with _session_pid_file_lock():
             if not path.exists():
                 return index
-            lines = path.read_text(encoding="utf-8").splitlines()
+            lines = _read_pid_file_text(path).splitlines()
     except OSError:
         logger.warning("Could not read %s for the kill phase", path, exc_info=True)
         return index
@@ -1386,13 +1399,17 @@ def retained_gateway_pids() -> frozenset[int]:
     could confirm dead or kill and removed those entries, so a gateway pid that
     still has one may have something alive and its run directories are kept. A
     ledger that cannot be read raises ``OSError`` rather than answering "nothing
-    retained": the callers decide a deletion on this answer and fail closed.
+    retained": the callers decide a deletion on this answer and fail closed. A
+    byte that is not UTF-8 gets the malformed-entry rule an ASCII-garbled one
+    does: a gateway-pid field it lands in fails its parse and the line is skipped,
+    as the boot sweep has already pruned it.
     """
     path = _session_pid_file_path()
     with _session_pid_file_lock():
         if not path.exists():
             return frozenset()
-        lines = path.read_text(encoding="utf-8").splitlines()
+        text = _read_pid_file_text(path)
+    lines = text.splitlines()
     retained: set[int] = set()
     for line in lines:
         parts = line.strip().split(":")
@@ -2643,7 +2660,7 @@ def _cleanup_orphaned_mcp_servers() -> int:
     # read and our kill decision.  os.kill is non-blocking so lock duration is
     # negligible.
     with _pid_file_lock():
-        lines = path.read_text(encoding="utf-8").splitlines()
+        lines = _read_pid_file_text(path).splitlines()
         killed = 0
         lines_to_remove: set[str] = set()
         # Lazily computed on the first orphan-kill decision: the /proc scan is
@@ -2777,7 +2794,7 @@ def cleanup_orphaned_sessions(*, narrow_with_leaders: bool = True) -> None:
     # Step 1: Read file under lock (fast I/O only)
     with _session_pid_file_lock():
         path = _session_pid_file_path()
-        lines: list[str] = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+        lines: list[str] = _read_pid_file_text(path).splitlines() if path.exists() else []
 
     # Step 2: Process outside lock (slow: os.kill, _get_child_pids, SIGKILL)
     def _skip_tagged(gw_pid: int, _pid: int) -> bool:
@@ -3002,7 +3019,7 @@ def cleanup_orphaned_session_roots() -> int:
         return killed
 
     with _session_pid_file_lock():
-        lines = path.read_text(encoding="utf-8").splitlines()
+        lines = _read_pid_file_text(path).splitlines()
 
     if not lines:
         return killed
@@ -3183,7 +3200,7 @@ def _track_child_pids(pids: Mapping[int, object], parent_pid: int = 0) -> None:
     with _pid_file_lock():
         path = _pid_file_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        existing = set(path.read_text(encoding="utf-8").splitlines()) if path.exists() else set()
+        existing = set(_read_pid_file_text(path).splitlines()) if path.exists() else set()
         with open(path, "a", encoding="utf-8") as f:
             for pid in pids:
                 key = f"{pid}:{parent_pid}"
@@ -3262,7 +3279,7 @@ def _replace_child_pids(
     with _pid_file_lock():
         path = _pid_file_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+        lines = _read_pid_file_text(path).splitlines() if path.exists() else []
         kept: list[str] = []
         for raw in lines:
             entry = raw.strip()
@@ -3288,7 +3305,7 @@ def _untrack_child_pids(pids: Mapping[int, object]) -> None:
         path = _pid_file_path()
         if not path.exists():
             return
-        lines = path.read_text(encoding="utf-8").splitlines()
+        lines = _read_pid_file_text(path).splitlines()
         lines = [
             ln for ln in lines if ":" not in ln.strip() or ln.strip().split(":")[0] not in to_remove
         ]
@@ -3301,7 +3318,7 @@ def _untrack_pid(pid: int) -> bool:
         path = _pid_file_path()
         if not path.exists():
             return True
-        lines = path.read_text(encoding="utf-8").splitlines()
+        lines = _read_pid_file_text(path).splitlines()
         lines = [ln for ln in lines if ln.strip() != str(pid)]
         return _rewrite_pid_file(path, "\n".join(lines) + "\n" if lines else "")
 
@@ -3318,7 +3335,7 @@ def _untrack_session_pid(pid: int) -> bool:
         path = _session_pid_file_path()
         if not path.exists():
             return True
-        lines = path.read_text(encoding="utf-8").splitlines()
+        lines = _read_pid_file_text(path).splitlines()
         # Match both the legacy ``gw:pid`` form and the token-bearing
         # ``gw:pid:token`` form (see _track_session_pid).
         lines = [
@@ -3357,7 +3374,7 @@ def _untrack_pid_if_dead(pid: int) -> bool:
             return True
         if platform_compat.pid_exists(pid):
             return True
-        lines = path.read_text(encoding="utf-8").splitlines()
+        lines = _read_pid_file_text(path).splitlines()
         lines = [ln for ln in lines if ln.strip() != str(pid)]
         return _rewrite_pid_file(path, "\n".join(lines) + "\n" if lines else "")
 
@@ -3409,7 +3426,7 @@ def _untrack_root_by_identity(pid: int, start_token: str | None) -> bool:
         session_path = _session_pid_file_path()
         if not session_path.exists():
             return False
-        lines = session_path.read_text(encoding="utf-8").splitlines()
+        lines = _read_pid_file_text(session_path).splitlines()
         kept = [ln for ln in lines if ln.strip() != ours]
         if len(kept) == len(lines):
             return False
@@ -4529,22 +4546,25 @@ def _read_tracked_agent_pids() -> tuple[set[int], bool]:
     go through :func:`_rewrite_pid_file` (temp file + rename, so a reader sees
     either the whole old or the whole new content) and tracking appends are
     single short lines. ``complete`` is false whenever a potential PID could
-    have been dropped; a missing file is a complete empty contribution.
+    have been dropped -- a reapable field that does not parse, a byte that was
+    not UTF-8 in it included; a missing file is a complete empty contribution.
     """
     tracked: set[int] = set()
     complete = True
     paths = (_session_pid_file_path(), _pid_file_path())
     for path, (_label, reapable_index) in zip(paths, _REAPABLE_PID_FIELD):
         try:
-            # errors="replace": bytes no writer produces are damage, so they fail
-            # the per-line int() below and mark the snapshot incomplete instead of
-            # raising out of every reaper that reads it.
-            raw = path.read_text(encoding="utf-8", errors="replace")
+            # Bytes no writer produces are damage: they fail the per-line int()
+            # below and mark the snapshot incomplete instead of raising out of
+            # every reaper that reads it.
+            raw = _read_pid_file_text(path)
         except OSError as exc:
             if exc.errno != errno.ENOENT:
                 complete = False
             continue
         for line in raw.split():
+            # A damaged byte gets the malformed-entry rule: in the reapable field
+            # it fails the int() below; elsewhere the pid still counts as tracked.
             fields = line.split(":")
             index = 0 if len(fields) == 1 else reapable_index
             if index >= len(fields):
@@ -4597,7 +4617,7 @@ def tracked_agent_pid_owners() -> dict[int, int]:
     paths = (_session_pid_file_path(), _pid_file_path())
     for path, (_label, reapable_index) in zip(paths, _REAPABLE_PID_FIELD):
         try:
-            raw = path.read_text(encoding="utf-8")
+            raw = _read_pid_file_text(path)
         except OSError:
             continue
         owner_index = 1 - reapable_index

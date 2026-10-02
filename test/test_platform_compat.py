@@ -1434,6 +1434,16 @@ class TestPeakRssIsThisProcesss:
         monkeypatch.setattr(pc, "_LINUX_STATUS_PATH", tmp_path / "gone")
         assert pc._posix_peak_rss_bytes() is None
 
+    def test_a_name_that_is_not_utf8_does_not_hide_the_peak(self, tmp_path, monkeypatch):
+        """The ``Name:`` line is this process's raw comm, which a strict read raises on."""
+        status = tmp_path / "status"
+        status.write_bytes(b"Name:\tkc-\xff\n" + self._STATUS.encode())
+        self._never_getrusage(monkeypatch)
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setattr(pc, "_LINUX_STATUS_PATH", status)
+        monkeypatch.setattr(pc, "_LINUX_PEAK_RSS_FLOOR", 0)
+        assert pc._posix_peak_rss_bytes() == 11432 * 1024
+
     @pytest.mark.skipif(
         not pc.IS_POSIX, reason="proc_rss_bytes's POSIX last resort; Windows reads Win32 counters"
     )

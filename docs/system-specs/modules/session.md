@@ -3620,6 +3620,17 @@ session, a kernel thread's session 0 included, counts as ended), the parent edge
 process table, the ages (`_pid_age_seconds`, `_linux_pid_age`) and the RSS reads
 the recycle ceilings judge by.
 
+The two PID tracking files hold ASCII only, so a byte in one that is not UTF-8
+is damage. Every read of them, `runtime_reconcile`'s row capture and retraction
+included, goes through `_read_pid_file_text`, which decodes with
+`errors="replace"`. The damaged field fails its parse and gets that reader's
+malformed-entry rule, exactly as an ASCII-garbled one does (a damaged start-id
+token reads as a mismatching identity, as an ASCII-garbled one does). The
+tracked snapshot (`_read_tracked_agent_pids`) is incomplete only when a reapable
+pid field fails its parse. There is no exception: a damaged gateway-pid field is
+pruned and skipped exactly as an ASCII-garbled one is. No reader, including the
+`cleanup_orphaned_sessions` boot sweep, lets a decode error escape.
+
 If the gateway crashes, the entries remain in the file for the next startup.
 
 **Detection**: reads `kiro_pids.txt`, processes only `child:parent` lines

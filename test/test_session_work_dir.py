@@ -645,6 +645,15 @@ class TestRetainedGatewayPids:
         with pytest.raises(OSError):
             session_pid.retained_gateway_pids()
 
+    def test_a_ledger_with_a_damaged_line_still_answers(self, ledger: Path) -> None:
+        """A byte that is not UTF-8 is a malformed entry, as an ASCII-garbled one is."""
+        ledger.write_bytes(b"111:222\n4\xff21:333\n")
+        assert session_pid.retained_gateway_pids() == frozenset({111})
+
+    def test_damage_outside_the_gateway_pid_keeps_the_gateway(self, ledger: Path) -> None:
+        ledger.write_bytes(b"111:2\xff2\n")
+        assert session_pid.retained_gateway_pids() == frozenset({111})
+
 
 class TestGatewayWiring:
     """The gateway sweeps predecessors at boot, after the ledger reap, before writers."""

@@ -744,10 +744,15 @@ def _resolve_shell(cfg: dict) -> tuple[str, str | None]:
 
 
 def _proc_comm(pid: int) -> str | None:
-    """Command name of a process (Linux /proc). None if unavailable."""
+    """Command name of a process (Linux /proc). None if unavailable.
+
+    Read as bytes and decoded with ``replace``: a comm is whatever bytes the
+    process named itself, and a multibyte name cut at the kernel's 15 bytes is
+    not UTF-8. It is only ever shown as a title.
+    """
     try:
-        with open(f"/proc/{pid}/comm", encoding="utf-8") as fh:
-            return fh.read().strip() or None
+        with open(f"/proc/{pid}/comm", "rb") as fh:
+            return fh.read().decode("utf-8", "replace").strip() or None
     except OSError:
         return None
 
