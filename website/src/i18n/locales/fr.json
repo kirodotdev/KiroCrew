@@ -11612,6 +11612,7 @@
       "double_click_to_rename": "Double-cliquez pour renommer",
       "drag_to_reorder": "Faites glisser pour réordonner",
       "drop_here_to_remove_from_folder": "Déposez ici pour retirer du dossier",
+      "drop_into_folder": "Déposer dans {{name}}",
       "drop_to_reference_session": "Déposez ici pour référencer cette session",
       "duplicate": "Bifurquer la discussion",
       "expand_folder_name": "Développer le dossier {{name}}",

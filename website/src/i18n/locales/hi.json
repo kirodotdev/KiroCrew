@@ -11453,6 +11453,7 @@
       "double_click_to_rename": "नाम बदलने के लिए डबल-क्लिक करें",
       "drag_to_reorder": "क्रम बदलने के लिए खींचें",
       "drop_here_to_remove_from_folder": "फ़ोल्डर से निकालने के लिए यहाँ छोड़ें",
+      "drop_into_folder": "{{name}} में छोड़ें",
       "drop_to_reference_session": "इस सेशन का संदर्भ जोड़ने के लिए यहाँ छोड़ें",
       "duplicate": "चैट फ़ोर्क करो",
       "expand_folder_name": "फ़ोल्डर {{name}} विस्तृत करें",

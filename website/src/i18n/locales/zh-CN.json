@@ -11294,6 +11294,7 @@
       "double_click_to_rename": "双击可重命名",
       "drag_to_reorder": "拖动可重新排序",
       "drop_here_to_remove_from_folder": "拖到此处可从文件夹中移出",
+      "drop_into_folder": "放入 {{name}}",
       "drop_to_reference_session": "拖到此处可引用该会话",
       "duplicate": "分叉对话",
       "expand_folder_name": "展开文件夹 {{name}}",

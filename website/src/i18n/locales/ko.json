@@ -11294,6 +11294,7 @@
       "double_click_to_rename": "두 번 클릭해서 이름 변경",
       "drag_to_reorder": "드래그해서 순서 변경",
       "drop_here_to_remove_from_folder": "여기에 놓아서 폴더에서 빼기",
+      "drop_into_folder": "{{name}}에 놓기",
       "drop_to_reference_session": "여기에 놓아 이 세션 참조",
       "duplicate": "채팅 분기",
       "expand_folder_name": "{{name}} 폴더 펼치기",

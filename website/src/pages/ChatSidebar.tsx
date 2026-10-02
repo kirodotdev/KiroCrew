@@ -10,7 +10,7 @@ import ErrorNotice, { ErrorNoticeMenuItem } from '../components/ErrorNotice'
 import JiraLogo from '../components/icons/JiraLogo'
 import { sourceProviderMeta } from '../utils/sourceProviderMeta'
 import FolderGlyph from '../components/FolderGlyph'
-import { DndContext, DragOverlay, MeasuringStrategy } from '@dnd-kit/core'
+import { DndContext, DragOverlay, MeasuringStrategy, type Modifier } from '@dnd-kit/core'
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
@@ -97,7 +97,7 @@ import { compareText, fmtDateFields, fmtList } from '../i18n/format'
 import { sidebarCollision } from './chat-sidebar/dnd/collision'
 export { sidebarCollision, isFolderNestBand } from './chat-sidebar/dnd/collision'
 export { boardSidebarWidth } from './chat-sidebar/board'
-import { ChatPaneDropZone, RootDropHint, SortableFolderBlock, SortableSubfolderBlock, SortableColumnFolder, FolderDragGhost, SessionDragGhost } from './chat-sidebar/dnd/targets'
+import { ChatPaneDropZone, ParentFolderDropTarget, RootDropHint, SortableFolderBlock, SortableSubfolderBlock, SortableColumnFolder, FolderDragGhost, SessionDragGhost } from './chat-sidebar/dnd/targets'
 import type { Slot, SourceLinkState, SidebarSourceLink, HistoryItem, AgentInfo, SessionFilterKey, RevealBlockingFilter, FilterDimension } from './chat-sidebar/types'
 import { HIDDEN_FOLDERS_LS_KEY, FOLDERS_SHELVED_LS_KEY, FLAT_VIEW_LS_KEY } from './chat-sidebar/persistence'
 import { SESSION_FILTERS, useSessionFilterState, useSessionStatusFilters } from './chat-sidebar/filters'
@@ -754,6 +754,42 @@ const FOLDER_BODY_OPEN_PADDING = `2px 0 2px ${FOLDER_BODY_INSET_PX}px`
  *  child's block scrolls out beneath it. Kept small: it only has to beat the
  *  session rows in the lane, and every menu and popover renders in a portal. */
 const FOLDER_ROW_STICKY_Z = 20
+
+/** Move only the visual SESSION preview away from a pointer-owned destination
+ * cue. Collision detection continues to use the real pointer coordinates; this
+ * modifier belongs on DragOverlay, never DndContext. Keyboard drags keep the
+ * preview aligned with their synthetic position. A pointer drag is moved only
+ * while a `folder-drop` destination is under it — a folder block, a parent cue,
+ * the root lane or the un-nest hint, each of which paints its cue in the lane
+ * under the pointer; the chat pane anchors its cue to the composer, so there the
+ * preview stays where dnd-kit put it. While a folder is targeted, prefer the
+ * open space beside the sidebar so both the parent cue and the child row stay
+ * readable; a narrow viewport with no side room moves the ghost below both rows
+ * instead, stopping at the same gutter the side placements keep so it cannot
+ * leave the viewport. */
+const offsetSessionDragGhost: Modifier = ({
+  transform, activatorEvent, activeNodeRect, overlayNodeRect, over, windowRect,
+}) => {
+  if (typeof KeyboardEvent !== 'undefined' && activatorEvent instanceof KeyboardEvent) return transform
+  const overData = over?.data.current as { type?: string } | undefined
+  if (overData?.type !== 'folder-drop' || !activeNodeRect || !overlayNodeRect || !windowRect) return transform
+  const sideGap = 12
+  const currentLeft = overlayNodeRect.left + transform.x
+  const rightOffset = activeNodeRect.width + sideGap
+  if (currentLeft + rightOffset + overlayNodeRect.width <= windowRect.right - sideGap) {
+    return { ...transform, x: transform.x + rightOffset, y: transform.y + 8 }
+  }
+  const leftOffset = -(overlayNodeRect.width + sideGap)
+  if (currentLeft + leftOffset >= windowRect.left + sideGap) {
+    return { ...transform, x: transform.x + leftOffset, y: transform.y + 8 }
+  }
+  // Below both rows, but never past the bottom gutter. The overlay sits at its
+  // initial rect plus the transform, so the room under it is measured from
+  // that absolute bottom edge; a ghost already past the gutter is pulled back.
+  const roomBelow = windowRect.bottom - sideGap - (overlayNodeRect.top + transform.y + overlayNodeRect.height)
+  return { ...transform, x: transform.x + sideGap, y: transform.y + Math.min(96, roomBelow) }
+}
+const SESSION_DRAG_GHOST_MODIFIERS = [offsetSessionDragGhost]
 
 /** The list-view folder body: the connector line (`border-l`) plus the gap after
  *  it, and a tighter left pad (9px, `R_in`) for every row filed inside a folder.
@@ -4161,6 +4197,15 @@ function ChatSidebar({
             onClick={e => { e.stopPropagation(); createChatInFolder(folder.id, { inNewTab: !!onOpenSlotInNewTab && isOpenInTabModifierClick(e) }) }}><MessageSquarePlus size={12} /></button>
         </div>
         )}
+        {/* During a session drag, replace an expanded parent's normal presentation
+          *  with one explicit destination and extend its hit area 8px into the
+          *  first child row. Keeping the overlay INSIDE the sticky header makes
+          *  it follow pinned parents without inserting layout; all remaining
+          *  child-row pixels and the child body keep their own droppable. A
+          *  session already filed directly here gets no no-op target. */}
+        {activeDrag?.type === 'session' && !collapsed && childFolders.length > 0
+          && slotFolders[activeDrag.id] !== folder.id
+          && <ParentFolderDropTarget folder={folder} depth={depth} />}
       </div>
         </ContextMenuTrigger>
         <ContextMenuContent data-testid={`folder-context-menu-${folder.id}`} className="min-w-[180px]" onClick={e => e.stopPropagation()} onCloseAutoFocus={onMenuCloseAutoFocus}>
@@ -4394,7 +4439,7 @@ function ChatSidebar({
    * stays inside the DndContext because React portals preserve context.
    */
   const dragOverlay = createPortal(
-    <DragOverlay dropAnimation={null}>{dragGhost}</DragOverlay>,
+    <DragOverlay dropAnimation={null} modifiers={activeDrag?.type === 'session' ? SESSION_DRAG_GHOST_MODIFIERS : undefined}>{dragGhost}</DragOverlay>,
     document.body,
   )
 

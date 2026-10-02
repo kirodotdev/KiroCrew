@@ -317,3 +317,56 @@ describe('sidebarCollision session branch wires the fixed strategies', () => {
     world.cleanup()
   })
 })
+
+
+describe('explicit parent-folder target', () => {
+  it('routes overlapping explicit targets by painted depth, not registration order', () => {
+    const world = buildWorld()
+    const parentTargetHost = document.createElement('div')
+    ;(world.kiro.node.current as HTMLElement).appendChild(parentTargetHost)
+    const parentTarget = container(
+      'folder-parent-drop:kiro',
+      rect(135, 179),
+      parentTargetHost,
+      { type: 'folder-drop', folderId: 'kiro', headerHitRect: 'self', headerHitDepth: 0 },
+    )
+    const childTargetHost = document.createElement('div')
+    ;(world.docw.node.current as HTMLElement).appendChild(childTargetHost)
+    const childTarget = container(
+      'folder-parent-drop:docw',
+      rect(169, 213, 255, 487),
+      childTargetHost,
+      { type: 'folder-drop', folderId: 'docw', headerHitRect: 'self', headerHitDepth: 1 },
+    )
+    world.containers.push(parentTarget, childTarget)
+    world.droppableRects.set(parentTarget.id as string, parentTarget.rect.current as ClientRect)
+    world.droppableRects.set(childTarget.id as string, childTarget.rect.current as ClientRect)
+
+    const setElementRect = (element: Element, r: ClientRect) => {
+      Object.defineProperty(element, 'getBoundingClientRect', { value: () => r })
+    }
+    const setFirstChildRect = (candidate: DroppableContainer, r: ClientRect) => {
+      const child = document.createElement('div')
+      setElementRect(child, r)
+      ;(candidate.node.current as HTMLElement).appendChild(child)
+    }
+    // Real browser geometry: Parent's 44px target overlaps both Child's 32px
+    // header and Child's own 44px target. The shallower sticky header is painted
+    // above the deeper one, so it must win independently of registration order.
+    setElementRect(parentTarget.node.current as HTMLElement, rect(135, 179))
+    setElementRect(childTarget.node.current as HTMLElement, rect(169, 213, 255, 487))
+    setFirstChildRect(world.kiro, rect(139, 171))
+    setFirstChildRect(world.docw, rect(173, 205, 255, 487))
+    setFirstChildRect(parentTarget, rect(150, 163, 308.5, 321.5))
+    setFirstChildRect(childTarget, rect(184, 197, 318.5, 331.5))
+
+    const overlapArgs = () => args({ x: 366, y: 175 }, world, { type: 'session', key: 's1' })
+    expect(winner(sidebarCollision(overlapArgs()))).toBe('folder-parent-drop:kiro')
+    world.containers.reverse()
+    expect(winner(sidebarCollision(overlapArgs()))).toBe('folder-parent-drop:kiro')
+
+    const onChildBody = args({ x: 366, y: 240 }, world, { type: 'session', key: 's1' })
+    expect(winner(sidebarCollision(onChildBody))).toBe('folder-drop:docw')
+    world.cleanup()
+  })
+})

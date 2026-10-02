@@ -28,6 +28,7 @@ import { createTestStore } from './helpers'
 import { ThemeProvider } from '../hooks/useTheme'
 import type { RootState } from '../store'
 import type { ChatFolder, ChatTag, TagColumn } from '../types'
+import type { Modifier } from '@dnd-kit/core'
 
 // Render framer-motion elements as plain DOM because jsdom cannot run projection.
 vi.mock('framer-motion', async () => {
@@ -81,6 +82,11 @@ const dnd = vi.hoisted(() => ({
   /** Every `useDraggable` registration, so a row's pickup state is assertable
    *  (a pointer drag itself cannot be simulated — see the file header). */
   draggables: [] as Array<{ id: string; disabled: boolean }>,
+  /** The `modifiers` the sidebar hands its DragOverlay, captured off the stub
+   *  below. The ghost-offset modifier is a pure function of dnd-kit's measured
+   *  rects, so it is exercised directly with fabricated geometry rather than
+   *  through a pointer drag the DOM cannot deliver. */
+  overlayModifiers: undefined as Modifier[] | undefined,
 }))
 
 vi.mock('@dnd-kit/core', async (importOriginal) => {
@@ -115,8 +121,12 @@ vi.mock('@dnd-kit/core', async (importOriginal) => {
     // The real overlay reads the active item off DndContext's internal store,
     // which the stub above does not provide, so it would render nothing. It is
     // a presentational portal — passing children through is what lets the ghost
-    // itself be asserted.
-    DragOverlay: (props: { children?: unknown }) => props.children as never,
+    // itself be asserted, and recording `modifiers` is what lets the ghost's
+    // placement rule be called with fabricated rects.
+    DragOverlay: (props: { children?: unknown; modifiers?: Modifier[] }) => {
+      dnd.overlayModifiers = props.modifiers
+      return props.children as never
+    },
   }
 })
 
@@ -336,6 +346,7 @@ beforeEach(() => {
   localStorage.setItem('mc-session-stale-collapse-ms', '0')
   localStorage.setItem(HIDDEN_FOLDERS_LS_KEY, JSON.stringify([HIDDEN_FOLDER_ID]))
   dnd.active = null
+  dnd.overlayModifiers = undefined
   cfg.value = { tagColumnsEnabled: false, confirmCloseSession: false }
   mocks.chatFolders.mockResolvedValue(FOLDERS)
   mocks.updateChatFolder.mockResolvedValue({ ok: true })
@@ -834,6 +845,47 @@ describe('ChatSidebar — surfaces that exist only during a drag', () => {
     expect(await screen.findByText('Drop here to remove from folder', undefined, { timeout: 5_000 })).toBeTruthy()
   })
 
+  it('offers a visible parent target for the Misc header while preserving JobOps as the leaf target', async () => {
+    const folders: ChatFolder[] = [
+      { id: 'misc', name: 'Misc', order: 0, collapsed: false },
+      { id: 'jobops', name: 'JobOps', order: 0, parent_id: 'misc', collapsed: false },
+    ]
+    const slots: TestSlot[] = [
+      { key: 'chat-jobops', title: 'JobOps session', running: false, messages: 1, folder_id: 'jobops' },
+    ]
+    renderSidebar({ folders, slots })
+    await waitFor(() => expect(dnd.onDragStart).toBeTruthy())
+    expect(screen.queryByTestId('folder-parent-drop-misc')).toBeNull()
+
+    dragStart({ type: 'session', key: 'chat-jobops' }, 'chat-jobops')
+
+    const parentTarget = await screen.findByTestId('folder-parent-drop-misc', undefined, { timeout: 5_000 })
+    expect(within(parentTarget).getByText('Drop into Misc')).toBeTruthy()
+    expect(parentTarget.classList.contains('min-h-11')).toBe(true)
+    expect(parentTarget.closest('[data-folder-drop="misc"]')).toBeTruthy()
+    // JobOps has no nested folder competing for its body, so its normal header
+    // and block remain the target instead of spending another row on a hint.
+    expect(screen.queryByTestId('folder-parent-drop-jobops')).toBeNull()
+  })
+
+  it('withholds the parent target from a collapsed folder before the next visible folder', async () => {
+    const folders: ChatFolder[] = [
+      { id: 'misc', name: 'Misc', order: 0, collapsed: true },
+      { id: 'jobops', name: 'JobOps', order: 0, parent_id: 'misc', collapsed: false },
+      { id: 'following', name: 'Following', order: 1, collapsed: false },
+    ]
+    const slots: TestSlot[] = [
+      { key: 'chat-following', title: 'Following session', running: false, messages: 1, folder_id: 'following' },
+    ]
+    renderSidebar({ folders, slots })
+    await waitFor(() => expect(dnd.onDragStart).toBeTruthy())
+
+    dragStart({ type: 'session', key: 'chat-following' }, 'chat-following')
+
+    expect(screen.queryByTestId('folder-parent-drop-misc')).toBeNull()
+    expect(document.querySelector('[data-folder-drop="following"]')).toBeTruthy()
+  })
+
   it('previews the dragged folder in the overlay ghost', async () => {
     renderSidebar()
     await waitFor(() => expect(dnd.onDragStart).toBeTruthy())
@@ -871,6 +923,98 @@ describe('ChatSidebar — surfaces that exist only during a drag', () => {
     const ghosts = screen.getAllByText('Loose work').filter(el => !el.closest('.sidebar-inner'))
     expect(ghosts).toHaveLength(1)
     expect(ghosts[0].parentElement).toBe(document.body)
+  })
+
+  // ── Ghost placement ──────────────────────────────────────────────────────
+  // dnd-kit parks the overlay at the row's initial rect and moves it by
+  // `transform`, so `overlayNodeRect + transform` is where the ghost IS. One
+  // geometry serves every branch: a 240×32 row at (0, 300) that the pointer
+  // has carried 10px right and 20px down, and a folder as the destination.
+  const ROW = { width: 240, height: 32, top: 300, left: 0, right: 240, bottom: 332 }
+  const CARRIED = { x: 10, y: 20, scaleX: 1, scaleY: 1 }
+  const SIDE_GAP = 12
+  const viewport = (width: number, height: number) =>
+    ({ width, height, top: 0, left: 0, right: width, bottom: height })
+  const overFolder = {
+    id: 'folder-drop:f1', rect: ROW, disabled: false,
+    data: { current: { type: 'folder-drop', folderId: 'f1' } },
+  }
+  /** Starts a session drag and hands back the placement rule the sidebar put
+   *  on its DragOverlay. */
+  const sessionGhostModifier = async () => {
+    renderSidebar({ slots: [SLOTS[1]] })
+    await waitFor(() => expect(dnd.onDragStart).toBeTruthy())
+    dragStart({ type: 'session', key: SLOT_LOOSE }, SLOT_LOOSE)
+    await waitFor(() => expect(dnd.overlayModifiers).toHaveLength(1))
+    return dnd.overlayModifiers![0]
+  }
+  /** A pointer drag of the fixture row over the folder, unless overridden. */
+  const place = (modifier: Modifier, args: Partial<Parameters<Modifier>[0]>) => modifier({
+    activatorEvent: new MouseEvent('pointerdown'),
+    active: null,
+    activeNodeRect: ROW,
+    draggingNodeRect: ROW,
+    containerNodeRect: null,
+    over: overFolder,
+    overlayNodeRect: ROW,
+    scrollableAncestors: [],
+    scrollableAncestorRects: [],
+    transform: CARRIED,
+    windowRect: viewport(1200, 800),
+    ...args,
+  })
+
+  it('puts no placement rule on a folder drag — the offset is a session-only affordance', async () => {
+    renderSidebar()
+    await waitFor(() => expect(dnd.onDragStart).toBeTruthy())
+    dragStart({ type: 'folder' }, 'f1')
+    await waitFor(() => expect(screen.getAllByText('Alpha').length).toBeGreaterThan(1))
+    expect(dnd.overlayModifiers).toBeUndefined()
+  })
+
+  it("leaves a keyboard drag's preview where the sensor put it, even over a folder", async () => {
+    const modifier = await sessionGhostModifier()
+    expect(place(modifier, { activatorEvent: new KeyboardEvent('keydown', { key: ' ' }) })).toEqual(CARRIED)
+  })
+
+  it("leaves a pointer drag's preview under the pointer until a folder is the destination", async () => {
+    const modifier = await sessionGhostModifier()
+    expect(place(modifier, { over: null })).toEqual(CARRIED)
+    const overPane = { ...overFolder, id: 'chat-pane-ref', data: { current: { type: 'chat-pane-ref' } } }
+    expect(place(modifier, { over: overPane })).toEqual(CARRIED)
+  })
+
+  it('prefers the open space to the right of the row when the viewport has it', async () => {
+    const modifier = await sessionGhostModifier()
+    // Current left 10 + one row width + the gap + the ghost itself = 502 ≤ 1188.
+    expect(place(modifier, {}))
+      .toEqual({ ...CARRIED, x: CARRIED.x + ROW.width + SIDE_GAP, y: CARRIED.y + 8 })
+  })
+
+  it('falls back to the left of the row when the right has no room', async () => {
+    const modifier = await sessionGhostModifier()
+    // Carried 300px right in a 500px viewport: a right placement would end at
+    // 792, a left one starts at 48 — inside the 12px gutter.
+    const carriedRight = { ...CARRIED, x: 300 }
+    expect(place(modifier, { transform: carriedRight, windowRect: viewport(500, 800) }))
+      .toEqual({ ...carriedRight, x: carriedRight.x - (ROW.width + SIDE_GAP), y: carriedRight.y + 8 })
+  })
+
+  it('moves the preview below both rows when neither side fits', async () => {
+    const modifier = await sessionGhostModifier()
+    // 400px wide: the right placement overflows at 502, the left at -242.
+    expect(place(modifier, { windowRect: viewport(400, 800) }))
+      .toEqual({ ...CARRIED, x: CARRIED.x + SIDE_GAP, y: CARRIED.y + 96 })
+  })
+
+  it('stops the below-the-rows preview at the viewport bottom instead of dropping it off screen', async () => {
+    const modifier = await sessionGhostModifier()
+    // Same narrow viewport, 400px tall. The row sits at 320, so the full 96px
+    // drop would put the ghost's bottom edge at 448 — below the window. It
+    // clamps upward to the same 12px gutter the side placements respect.
+    const placed = place(modifier, { windowRect: viewport(400, 400) })
+    expect(ROW.top + placed.y + ROW.height).toBe(400 - SIDE_GAP)
+    expect(placed).toEqual({ ...CARRIED, x: CARRIED.x + SIDE_GAP, y: 400 - SIDE_GAP - ROW.height - ROW.top })
   })
 })
 

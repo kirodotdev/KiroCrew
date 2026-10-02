@@ -11453,6 +11453,7 @@
       "double_click_to_rename": "Doppelklicken zum Umbenennen",
       "drag_to_reorder": "Ziehen zum Umsortieren",
       "drop_here_to_remove_from_folder": "Hier ablegen, um aus dem Ordner zu entfernen",
+      "drop_into_folder": "In {{name}} ablegen",
       "drop_to_reference_session": "Hier ablegen, um diese Sitzung zu referenzieren",
       "duplicate": "Chat verzweigen",
       "expand_folder_name": "Ordner {{name}} ausklappen",

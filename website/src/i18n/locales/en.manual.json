@@ -5035,6 +5035,7 @@
       "delete_folder_confirm": "Delete “{{name}}”? Sessions will be ungrouped.",
       "filter_tags": "Filter tags: {{name}}",
       "folder_2": "Folder {{name}}",
+      "drop_into_folder": "Drop into {{name}}",
       "folder_create_failed": "Could not create the chat.",
       "folder_options_for": "Folder options for {{name}}",
       "folder_project_dir_missing": "The folder's project directory no longer exists: {{path}}. Update it in Folder settings.",

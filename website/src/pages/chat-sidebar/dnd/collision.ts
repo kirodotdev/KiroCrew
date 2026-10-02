@@ -40,9 +40,22 @@ function isFolderNestBandHit(args: Parameters<CollisionDetection>[0], collision:
 /** The live rect of a `folder-drop` container's header row (the block's first
  *  child), or null when the node is unavailable or not yet laid out (a zero-size
  *  rect, e.g. before first measure or under jsdom). */
+type FolderDropData = {
+  type?: string
+  folderId?: string | null
+  /** This droppable is itself the painted header target, not a folder block
+   * whose first child is its header row. */
+  headerHitRect?: 'self'
+  /** Folder nesting depth, matching the sticky header's visual z-index. */
+  headerHitDepth?: number
+}
+
 function folderDropHeaderRect(container: DroppableContainer | undefined): ClientRect | null {
   const node = container?.node?.current as HTMLElement | null | undefined
-  const headerEl = node?.firstElementChild as HTMLElement | null | undefined
+  const data = container?.data?.current as FolderDropData | undefined
+  const headerEl = data?.headerHitRect === 'self'
+    ? node
+    : node?.firstElementChild as HTMLElement | null | undefined
   if (!headerEl) return null
   const r = headerEl.getBoundingClientRect()
   if (!(r.width > 0) || !(r.height > 0)) return null
@@ -61,24 +74,39 @@ function folderDropHeaderRect(container: DroppableContainer | undefined): Client
  * pinned header is in no header rect and keeps the block-rect resolution.
  *
  * Only real folders are considered (`folderId` set): the root lane and the
- * ungrouped bucket carry no header row as their first child. When two headers
- * both contain the pointer (a parent's header pushed out over its child's as
- * the block ends), the OUTERMOST wins, matching the paint order
- * (`FOLDER_ROW_STICKY_Z - depth`).
+ * ungrouped bucket carry no header row as their first child. An explicit
+ * parent target measures its own painted rectangle and outranks an ordinary
+ * child header in their deliberate overlap. When explicit targets overlap,
+ * the shallower depth wins because its sticky header paints above the deeper
+ * one (`FOLDER_ROW_STICKY_Z - depth`). Among ordinary headers, the OUTERMOST
+ * wins by DOM containment.
  */
 function folderDropHeaderHit(args: Parameters<CollisionDetection>[0], containers: DroppableContainer[]): Collision | null {
   const p = args.pointerCoordinates
   if (!p) return null
   let hit: DroppableContainer | null = null
+  let hitPriority = -1
+  let hitDepth = Number.POSITIVE_INFINITY
   for (const c of containers) {
-    const d = c.data?.current as { type?: string; folderId?: string | null } | undefined
+    const d = c.data?.current as FolderDropData | undefined
     if (d?.type !== 'folder-drop' || !d.folderId) continue
     const r = folderDropHeaderRect(c)
     if (!r) continue
     if (p.x < r.left || p.x > r.right || p.y < r.top || p.y > r.bottom) continue
+    const priority = d.headerHitRect === 'self' ? 1 : 0
+    const depth = priority === 1 && typeof d.headerHitDepth === 'number' && Number.isFinite(d.headerHitDepth)
+      ? d.headerHitDepth
+      : Number.POSITIVE_INFINITY
     const node = c.node.current as HTMLElement | null
     const hitNode = hit?.node.current as HTMLElement | null | undefined
-    if (!hit || (node && hitNode && node !== hitNode && node.contains(hitNode))) hit = c
+    const shallowerExplicitTarget = priority === 1 && priority === hitPriority && depth < hitDepth
+    const outerOrdinaryHeader = priority === 0 && priority === hitPriority
+      && node && hitNode && node !== hitNode && node.contains(hitNode)
+    if (!hit || priority > hitPriority || shallowerExplicitTarget || outerOrdinaryHeader) {
+      hit = c
+      hitPriority = priority
+      hitDepth = depth
+    }
   }
   return hit ? { id: hit.id, data: { droppableContainer: hit, value: 0 } } : null
 }

@@ -11771,6 +11771,7 @@
       "double_click_to_rename": "Двойной щелчок — переименовать",
       "drag_to_reorder": "Перетащите, чтобы изменить порядок",
       "drop_here_to_remove_from_folder": "Перетащите сюда, чтобы убрать из папки",
+      "drop_into_folder": "Переместить в {{name}}",
       "drop_to_reference_session": "Перетащите сюда, чтобы добавить ссылку на эту сессию",
       "duplicate": "Ответвить чат",
       "expand_folder_name": "Развернуть папку «{{name}}»",

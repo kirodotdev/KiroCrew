@@ -11612,6 +11612,7 @@
       "double_click_to_rename": "Doppio clic per rinominare",
       "drag_to_reorder": "Trascina per riordinare",
       "drop_here_to_remove_from_folder": "Rilascia qui per rimuovere dalla cartella",
+      "drop_into_folder": "Rilascia in {{name}}",
       "drop_to_reference_session": "Rilascia qui per fare riferimento a questa sessione",
       "duplicate": "Dirama la chat",
       "expand_folder_name": "Espandi la cartella {{name}}",

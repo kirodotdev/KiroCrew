@@ -11293,6 +11293,7 @@
       "double_click_to_rename": "ダブルクリックして名前を変更",
       "drag_to_reorder": "ドラッグして並べ替え",
       "drop_here_to_remove_from_folder": "ここにドロップしてフォルダーから外す",
+      "drop_into_folder": "{{name}} にドロップ",
       "drop_to_reference_session": "ここにドロップしてこのセッションを参照",
       "duplicate": "チャットをフォーク",
       "expand_folder_name": "フォルダー {{name}} を展開",
