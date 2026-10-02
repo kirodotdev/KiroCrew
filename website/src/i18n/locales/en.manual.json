@@ -1793,6 +1793,9 @@
     "agentImportFlow": {
       "choose_sources": "Choose sources",
       "could_not_save_onboarding_state": "Could not save onboarding state.",
+      "config_unreadable_onboarding_state": "{{productName}} can't read its config.json (in ~/.kiro/crew by default), so setup can't be marked done. Your imported items were not affected. Close setup for now, and ask the agent to repair the file.",
+      "close_setup_for_now": "Close setup for now",
+      "close_setup_for_now_hint": "Your imported items are kept. Setup opens again next time.",
       "import_all_your_supported_work_or_handpick_what": "Import all your supported work or handpick what to bring over.",
       "import_complete": "Import complete",
       "import_selected": "Import selected",
