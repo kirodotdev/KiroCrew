@@ -805,7 +805,17 @@ def restart_pod_gateway(pod: PodClient):
         _wait_for(RESTART_TIMEOUT, pod.health, lambda c: c not in (200, 401, 403))
         code = _wait_for(RESTART_TIMEOUT, pod.health, lambda c: c in (200, 401, 403))
         if code not in (200, 401, 403):
-            pytest.fail(f"pod gateway did not come back after restart (last {code})\n{pod.logs()}")
+            # `health` folds a failed `pod status` into 0, the same value as a port
+            # nobody answers. Print the verb's own output so the two can be told
+            # apart from the failure alone: `"status": "down"` with the port
+            # unreachable means the supervisor let the successor go, a non-zero
+            # exit means the verb itself refused.
+            status = _run_cli(pod.cli, ["pod", "status", pod.name, "--json"], pod.env)
+            pytest.fail(
+                f"pod gateway did not come back after restart (last {code})\n"
+                f"pod status exit={status.returncode} stdout={status.stdout.strip()!r} "
+                f"stderr={status.stderr.strip()!r}\n{pod.logs()}"
+            )
 
     return _restart
 

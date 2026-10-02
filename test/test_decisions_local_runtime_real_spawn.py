@@ -33,7 +33,7 @@ pytestmark = pytest.mark.timeout(120)
 #: 127.0.0.1 on ``--port``, answer ``/kirocrew-attest`` with the secret, exit at
 #: end of stdin -- and nothing else.
 _STUB = textwrap.dedent("""
-    import argparse, os, sys, threading
+    import argparse, os, socketserver, sys, threading
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
     ATTEST = os.environ.pop("KIROCREW_LOCAL_ATTEST", "")
@@ -59,7 +59,16 @@ _STUB = textwrap.dedent("""
         def log_message(self, *a):
             pass
 
-    ThreadingHTTPServer(("127.0.0.1", args.port), H).serve_forever()
+    class S(ThreadingHTTPServer):
+        def server_bind(self):
+            # http.server resolves socket.getfqdn(host) on bind. The stand-in
+            # needs no name, and that lookup goes through the system resolver,
+            # which on a macOS runner can stall far past the attest wait with
+            # the socket bound but not yet listening.
+            socketserver.TCPServer.server_bind(self)
+            self.server_name, self.server_port = self.server_address[:2]
+
+    S(("127.0.0.1", args.port), H).serve_forever()
     """)
 
 _WEIGHT = b"stand-in"
@@ -139,7 +148,18 @@ def _wait(rt, *states, timeout=30.0) -> dict:
         if s["state"] in states:
             return s
         time.sleep(0.05)
-    raise AssertionError(f"runtime stayed {rt.status()}; log: {rt._log_tail(_model())}")
+    # Say which half stalled: a server that never listened reads as a free port,
+    # one that listens but does not attest reads as a taken port with a failed
+    # probe. The log tail alone cannot tell the two apart.
+    status = rt.status()
+    port = int(status.get("port") or 0)
+    run = getattr(rt, "_run", None)
+    nonce = getattr(run, "nonce", "") if run is not None else ""
+    raise AssertionError(
+        f"runtime stayed {status}; port free={lr._port_free(port) if port else 'n/a'} "
+        f"attest ok={lr._health_ok(port, nonce) if port else 'n/a'}; "
+        f"log: {rt._log_tail(_model())}"
+    )
 
 
 def test_a_real_server_is_attested_running_and_stopped_by_its_stdin(runtime):
