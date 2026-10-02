@@ -200,9 +200,9 @@ class TestTheCrewLibraryIsItsOwn:
     def test_the_companion_app_does_not_import_the_dashboard_store(self):
         """And the other direction: the app stays independent of the dashboard.
 
-        One import statement is allowed, once: the shared owner gate, which
-        every owner-gated app route uses. Any other dashboard reference, this
-        store included, fails.
+        One import statement is allowed, once, and only in the routes module:
+        the shared owner gate, which every owner-gated app route uses. Any other
+        dashboard reference, this store included, fails.
         """
         from kiro_crew.apps.builtins.crew_companion import hooks
         from kiro_crew.apps.builtins.crew_companion.backend import routes
@@ -212,7 +212,9 @@ class TestTheCrewLibraryIsItsOwn:
         )
         for mod in (hooks, routes):
             source = Path(mod.__file__).read_text(encoding="utf-8")
-            assert "kiro_crew.dashboard" not in source.replace(owner_gate, "", 1), mod.__name__
+            if mod is routes:
+                source = source.replace(owner_gate, "", 1)
+            assert "kiro_crew.dashboard" not in source, mod.__name__
 
 
 class TestRoutesDoNotDependOnTheApp:

@@ -252,27 +252,6 @@ class TestOwnerGate:
             assert gated.petdex_calls == ["some-pet"]
 
     @pytest.mark.asyncio
-    async def test_an_allowed_owner_write_is_audited(self, gated, monkeypatch):
-        """Every permission decision reaches SEL, the allowed one included."""
-        import kiro_crew.sel as sel_mod
-
-        events: list[dict] = []
-        recorder = SimpleNamespace(log_api_access=lambda **kw: events.append(kw))
-        monkeypatch.setattr(sel_mod, "sel", lambda: recorder)
-        client = await _client()
-        try:
-            r = await client.post(f"{BASE}/reminders/config", json={"breakNudgesEnabled": False})
-            assert r.status == 200
-        finally:
-            await client.close()
-        assert {
-            "caller": OWNER,
-            "operation": "crew_companion.reminders_config",
-            "outcome": "allowed",
-            "source": "dashboard",
-        } in events
-
-    @pytest.mark.asyncio
     @pytest.mark.parametrize("path", READS)
     async def test_non_owner_reads_keep_working(self, gated, path):
         client = await _client()

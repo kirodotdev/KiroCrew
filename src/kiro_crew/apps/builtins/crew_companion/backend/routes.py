@@ -127,33 +127,13 @@ def _require_enabled(handler: Handler) -> Handler:
     return _wrapped
 
 
-def _audit_owner_write_allowed_sync(caller: str, operation: str) -> None:
-    """Best-effort SEL record of an allowed owner write; never raises.
-
-    The shared owner gate audits only its refusals, so the allowed decision is
-    recorded here. Runs off the event loop: the first ``sel()`` of a process
-    constructs the log.
-    """
-    try:
-        from kiro_crew.sel import sel  # deferred: sel imports config, which reaches apps
-
-        sel().log_api_access(
-            caller=caller,
-            operation=operation,
-            outcome="allowed",
-            source="dashboard",
-        )
-    except Exception:  # pragma: no cover - audit must never change the outcome
-        logger.debug("SEL audit for %s failed", operation, exc_info=True)
-
-
 def _owner_only(operation: str) -> Callable[[Handler], Handler]:
     """Refuse everyone but the dashboard owner before a write runs.
 
     Delegates to the shared ``require_owner_dashboard_request`` so this gate
-    follows the same rule, refusal audit and 403 ``owner_only`` as every other
-    owner-gated route, and records the allowed decision in SEL too. App tokens
-    are refused: the companion has no caller that holds one.
+    follows the same rule, audit and 403 ``owner_only`` as every other
+    owner-gated route. App tokens are refused too: the companion has no caller
+    that holds one.
     """
 
     def _decorate(handler: Handler) -> Handler:
@@ -162,8 +142,6 @@ def _owner_only(operation: str) -> Callable[[Handler], Handler]:
             denied = await require_owner_dashboard_request(request, operation)
             if denied is not None:
                 return denied
-            caller = str(request.get("user") or "unknown")
-            await asyncio.to_thread(_audit_owner_write_allowed_sync, caller, operation)
             return await handler(request)
 
         return _wrapped
