@@ -1194,8 +1194,13 @@ def is_denied(
     _argv = _submodule("argv_floor")
     _shell = _submodule("shell_normalizer")
     _diag = _submodule("diagnostics")
+    _marks = _submodule("quoted_marks")
 
-    lower = tool_name.lower()
+    # The tokenizer's quoted-text marks are control bytes no real command carries;
+    # one typed into the command (``ssh -i /tmp/k\x10 localhost``) would otherwise be
+    # read back as the separator it stands for (R31 Opus).  Dropped here, once, so a
+    # mark below can only have been produced by the tokenizer's own pass.
+    lower = _marks.strip_marks(tool_name.lower())
 
     def _reason(
         matched: str,
@@ -2648,7 +2653,7 @@ _EXPORTS: dict[str, str] = {
     "_resolve_own_host_names_into_cache": "argv_floor",
     "_routing_option_key_value_targets_self": "argv_floor",
     "_routing_option_value_targets_self": "argv_floor",
-    "_self_cli_operands": "argv_floor",
+    "_self_cli_operand_readings": "argv_floor",
     "_self_floor_can_fire": "argv_floor",
     "_self_module_flag_scan": "argv_floor",
     "_self_module_name_index": "argv_floor",
@@ -3231,7 +3236,7 @@ if TYPE_CHECKING:  # keep the names visible to type checkers and IDEs
         _resolve_own_host_names_into_cache,
         _routing_option_key_value_targets_self,
         _routing_option_value_targets_self,
-        _self_cli_operands,
+        _self_cli_operand_readings,
         _self_floor_can_fire,
         _self_module_flag_scan,
         _self_module_name_index,

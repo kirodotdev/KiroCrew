@@ -142,12 +142,103 @@ def _url_payload_command(n: int) -> str:
 #: One route regex, one span helper, a four-line check in pass 3, and the comment
 #: naming the residual. No pass widened and no threshold moved.
 #:
+#: Raised again, from 28,025, for the case-aware substitution-depth walker
+#: (``_SubstitutionDepth`` over a stack of ``_Frame`` command lists, ~380 lines) that
+#: every argv window bounds itself with in place of the bare paren counter -- one
+#: character pass per token, no recursion, so a long clause run cannot raise out of
+#: the gate; a substitution inside a ``case`` pattern is a frame of its own, so a
+#: nested case's ``)`` closes nothing of the enclosing one; its ``grammar_next`` tells
+#: the ssh-family walk that a case WORD, ``in`` or PATTERN is not an operand (a ``*)``
+#: pattern read as every self host).  Its ``words`` lists the top-level argument
+#: words a token completed with the substitutions cut out (the verb glued to a
+#: closer, ``esac)<verb>``), and a DATA token (a redirection) opens a substitution
+#: the window then reads through without ending it.
+#:
+#: Raised again, from 28,302, for the walker's lookahead: ``esac)`` in PATTERN
+#: position is either the reserved word glued to the substitution's closer or a
+#: quoted ``'esac')`` pattern with a clause body, and the rest of the argv settles it
+#: (a ``)`` closing nothing, a ``;;`` with no case or ``esac`` in command position is
+#: not valid bash under the closer reading).  One lookahead covers every ambiguity
+#: up to the event it finds, so the pass stays linear.  The ssh-family walk reads a
+#: substitution's body words as that command's argv, not its own operands.
+#:
+#: Raised again, from 28,435, for the quoted-grammar-word mark: bash reads ``case``,
+#: ``esac``, ``in`` and the keepers as grammar only when no character is quoted, and
+#: the tokenizer drops the quotes, so ``_self_tokens`` marks a quoted spelling from
+#: the raw text (one quote-state pass) and the walker reads an argument -- a
+#: ``$("case" x in y) <host>`` closes at its ``)`` and the host is this command's.
+#:
+#: Raised again, from 28,544, for the ssh-family walk reading the TOP-LEVEL words a
+#: token completes even when the token is grammar or a whole top-level word: the
+#: host glued behind a substitution's closer (``esac)<host>``, ``$(true)<host>``) is
+#: the destination when the output is empty.
+#:
+#: Raised again, from 28,566, for the walker's reading of a QUOTED blank: at top
+#: level it is text of the one word bash hands over (``'psql -h localhost'`` is one
+#: ssh argument, not a host); before a fresh pattern inside a substitution it is the
+#: separator the multi-token spelling gets from the tokenizer.
+#:
+#: Raised again, from 28,580, for the quoted-backtick mark (a single-quoted or escaped
+#: backtick is text, not a substitution the walker leaves open), the walker's plain-word
+#: fast path and one CLI operand reading per (frame, anchor) shared by the five
+#: self-subcommand specs -- a long argv of anchors read the rest of itself five times.
+#:
+#: Re-pinned from 28,664 for R19: a subcommand spec's operand reading stops at its
+#: leading words (the per-frame cache of full readings is gone -- it retained the
+#: quadratic result), a lookahead stops at the first root event and is reused up to
+#: it, the operand cache skips long tokens, a closed substitution in the ssh
+#: destination slot consumes it, and the ssh floor's outer walker reads every token.
+#: The quoted-text marks and their raw-text pass move to ``quoted_marks.py``, which
+#: keeps ``shell_normalizer.py`` under the per-module cap it had reached.  The ANSI-C body
+#: (``$'…'``) is compared decoded, as the tokenizer reads it (R20).  The ssh destination slot
+#: is consumed when its substitution closes on a LATER token as well (R20 Opus).  A QUOTED
+#: blank is marked as one word's text unless its quote encloses a substitution (R22).  The closer
+#: reading's word behind an ``esac)`` read as a pattern is checked too, and a resolver
+#: splices a grammar word in marked (R22 Opus).  Quoting restarts inside a substitution
+#: met inside double quotes, and a quoted ``>``/``<`` is marked as text (R23).  Every expansion
+#: spelling of the local resolver splices a grammar word in marked (R23 Opus).  An option word
+#: glued behind a substitution's closer sets the ssh option state (R24 GPT).  A quoted tab or
+#: newline is one word's text like a quoted blank (R25 GPT).  A quoted substitution's closer
+#: is found by a quote-aware scan, so a nested quote does not end the enclosing one (R25 Opus).  Only a
+#: command-position ``case`` defers that closer (R26 GPT).  The walker's words keep their
+#: marks so the ssh floor can tell a quoted backtick from a substitution (R26 scope).  The
+#: first quoted opener with no closer ahead ends the probing for the whole line (R27 Opus).
+#: The keeper table moves to ``quoted_marks`` so the closer scan reads command position as
+#: the walker does: a keeper or an option word holds it (``time -p case``, R28 GPT).  The
+#: closer reading behind an ``esac)`` the lookahead settled as a pattern lists ALL its words
+#: up to the refusing event, a sequence of its own: an enclosing clause's ``;;`` makes that
+#: reading bash's (R28 Opus).  The closer scan hands command position on through the NAME
+#: after ``function``/``coproc``, as the walker does (``function f case``, R29 GPT).  An option
+#: VALUE keeps its quoted backtick for the ProxyCommand hint; a case-aware probe that reads
+#: to the end turns the later openers' probes plain; a spliced FRAGMENT of a grammar word is
+#: marked; a RAW blank after a fresh ``esac`` makes it the reserved word (R30 Opus), a quoted
+#: one is the pattern's text (R31 GPT).  A typed mark byte is dropped at the gate's entry
+#: (``strip_marks``), and a ``${`` closes only when a ``}`` AND an unmatched ``)`` stand ahead of
+#: that occurrence (``BraceCloses``, R31 Opus), built lazily and shared across the anchors of
+#: one argv; the mint window skips an anchor whose window an earlier walk read (R32 GPT).  The
+#: closer scan escapes through an ANSI-C body and the enclosing quote pops at or past its
+#: recorded closer, so both readings agree on where a quoted substitution ends (R32 Opus).  A
+#: ``#`` word inside a substitution is a comment to the newline: its ``)`` closes nothing (R35 GPT),
+#: and the comment is dropped from the RAW text, where the newline still stands, so a ``;`` typed
+#: inside it is not the newline sentinel (``strip_comments``, R37 GPT).  The glued-option reader
+#: also returns the rsync remote-shell and ssh forward readings (R37 Opus).  The comment scan keeps
+#: the backtick state: only an OPENING backtick starts a word (R38 GPT).  The glued branches run the
+#: detached branch's in-token remote-shell and forward checks (``_glued_option_dials_self``, R38 Opus).
+#: The word behind an opaque destination substitution is resolved as any destination is, hosts
+#: file and DNS included, in place of a literal-only read (R41 GPT).  A ``case`` substitution whose
+#: every clause prints a literal is a static alternation: its self-naming branch is spliced in as
+#: the flat ``$(echo localhost)`` is (``splice_case_alternations``, R44 GPT); a dynamic branch
+#: keeps the compound the documented run-time residual.  A glued exact ``--`` ends option
+#: parsing as the detached one does, so the word behind it is in host position (R44 Opus).
+#: The comment scan tracks the case grammar so a ``#`` behind a PATTERN's ``)`` -- an operator -- is
+#: the comment bash reads, while a substitution's or a subshell's closer still ends no word (R46 GPT).
+#:
 #: The number IS the package's measured total, carrying no spare room: a ratchet with
 #: headroom admits exactly the unreviewed growth it exists to catch, so the next line
 #: added here fails this gate and has to be re-pinned deliberately, with its reason
 #: written above. The guards that detect a monolith growing back are the per-file cap
 #: and the facade's share below, and both must stay untouched.
-_PACKAGE_LINE_BUDGET = 28_025
+_PACKAGE_LINE_BUDGET = 29_631
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

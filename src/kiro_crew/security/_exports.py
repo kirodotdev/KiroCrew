@@ -455,7 +455,7 @@ EXPORTED_NAMES: tuple[str, ...] = (
     "_safe_oauth_parameter_name",
     "_schedule_push_allow_audit",
     "_sed_exec_replacement",
-    "_self_cli_operands",
+    "_self_cli_operand_readings",
     "_self_floor_can_fire",
     "_self_module_flag_scan",
     "_self_module_name_index",
