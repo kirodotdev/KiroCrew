@@ -664,3 +664,30 @@ async def api_session_control_summary(request: web.Request) -> web.Response:
     except sc.SessionControlError as exc:
         return _refusal(exc)
     return web.json_response(result)
+
+
+async def api_session_control_run_queued(request: web.Request) -> web.Response:
+    """POST /api/session-control/run-queued — run one of the caller's queued messages now."""
+    refused = await _require_internal(request)
+    if refused is not None:
+        return refused
+    # No prewarm here: `run_queued_target` warms after its own SEL prewarm, for
+    # the reason `api_session_control_stop` gives.
+    state: DashboardState = request.app["state"]
+    try:
+        body = await _body(request)
+        queue_id = body.get("queue_id")
+        if not isinstance(queue_id, str) or not queue_id.strip():
+            raise sc.SessionControlError("queue_id is required", code="bad_request")
+        if len(queue_id) > MAX_SHORT_STRING:
+            raise sc.SessionControlError("queue_id must be a short string", code="bad_request")
+        result = await sc.run_queued_target(
+            state,
+            caller_session_key=_read_session_key(request),
+            target=_target(body),
+            queue_id=queue_id.strip(),
+            caller_fenced=_carried_fence(request),
+        )
+    except sc.SessionControlError as exc:
+        return _refusal(exc)
+    return web.json_response(result)

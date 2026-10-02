@@ -8884,6 +8884,15 @@ def _retry_cancel_reason(rebound: bool, superseded: bool, stopped: bool) -> str:
     return "the turn was stopped."
 
 
+def _take_run_now_queue_id(slot: _ChatSlot) -> str | None:
+    """Consume a queued Run-now binding if its entry is still available."""
+    queue_id = slot._run_now_queue_id
+    slot._run_now_queue_id = ""
+    if queue_id and any(item.get("id") == queue_id for item in slot._queue):
+        return queue_id
+    return None
+
+
 async def _start_next_queued_turn(
     state: DashboardState,
     slot: _ChatSlot,
@@ -9287,14 +9296,18 @@ async def _start_next_queued_turn(
         if not slot._queue:
             return False
 
-    try:
-        merge = KiroCrewConfig.load().dashboard.merge_queued_messages
-    except Exception:
-        logger.warning(
-            "Failed to load config; falling back to sequential dequeue",
-            exc_info=True,
-        )
+    # A targeted dequeue never merges, so avoid loading config on its event-loop path.
+    if required_queue_id:
         merge = False
+    else:
+        try:
+            merge = KiroCrewConfig.load().dashboard.merge_queued_messages
+        except Exception:
+            logger.warning(
+                "Failed to load config; falling back to sequential dequeue",
+                exc_info=True,
+            )
+            merge = False
 
     in_stage = bool(slot._in_stage_execution)
     hold_users = bool(
@@ -21343,6 +21356,7 @@ async def _run_chat(
         # "hold the queue for post-login resume" guard on its end-of-plan handoff.
         slot._last_turn_auth_required = _auth_required
         next_turn_started = False
+        run_now_queue_id = _take_run_now_queue_id(slot)
         if slot._queue and not _auth_required and _memory_preparation_admitted:
             # After startup admission, the successor's own ACP attempt remains
             # the authority for a later sign-out. A turn cancelled while waiting
@@ -21355,7 +21369,12 @@ async def _run_chat(
             # cancellable) and resumes on the user's next send after they log in
             # — the no-loss rule, without a readiness waiter to strand it.
             state.push_slots_update()
-            next_turn_started = await _start_next_queued_turn(state, slot)
+            if run_now_queue_id:
+                next_turn_started = await _start_next_queued_turn(
+                    state, slot, required_queue_id=run_now_queue_id
+                )
+            else:
+                next_turn_started = await _start_next_queued_turn(state, slot)
 
         if not next_turn_started:
             await _finish_queue_cycle(

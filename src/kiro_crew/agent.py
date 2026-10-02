@@ -4141,6 +4141,10 @@ handle immediately.
 #:   and relaunches it. The conversation survives, but a reload is still a
 #:   process-level action on a session a person may be watching, and no
 #:   conductor step needs it.
+#: * ``session_run_queued`` — WITHHELD. On a running target it stops the turn
+#:   the way ``session_stop`` does, discarding its work, and then chooses what
+#:   the target runs next. No conductor step calls it yet; a skill that adopts it
+#:   adds it here with that step as the reason.
 #:
 #: Every withheld verb stays MOUNTED (``@kirocrew-dashboard`` is still in
 #: ``tools``) — it just passes through ``hooks.on_tool_call`` like any ungranted

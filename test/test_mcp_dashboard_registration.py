@@ -384,6 +384,7 @@ class TestWhatThisSetGrants:
         "session_release",
         "session_read_message",
         "session_summary",
+        "session_run_queued",
     }
     GRANTED_TOOLS = FOLDER_TOOLS | TAG_TOOLS | COLUMN_TOOLS | PIN_TOOLS | SESSION_TOOLS
 

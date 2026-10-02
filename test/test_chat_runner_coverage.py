@@ -2577,6 +2577,30 @@ class TestStartNextQueuedTurn:
         assert len(slot._queue) == 1
 
     @pytest.mark.asyncio
+    async def test_targeted_dequeue_skips_config_load_but_ordinary_dequeue_reads_it(self, tmp_path):
+        targeted_state, targeted_slot = _state(tmp_path), _slot()
+        queue_id = targeted_slot.queue_append("selected")
+        targeted_state.subagents = None
+        ordinary_state, ordinary_slot = _state(tmp_path), _slot()
+        ordinary_slot.queue_append("ordinary")
+        ordinary_state.subagents = None
+        config = MagicMock()
+        config.dashboard.merge_queued_messages = False
+
+        with (
+            patch.object(chat_runner.KiroCrewConfig, "load", return_value=config) as load,
+            patch.object(chat_runner, "spawn_guarded_turn", return_value=MagicMock()),
+            patch.object(chat_runner, "_run_chat", return_value=MagicMock()),
+        ):
+            assert await chat_runner._start_next_queued_turn(
+                targeted_state, targeted_slot, required_queue_id=queue_id
+            )
+            load.assert_not_called()
+            assert await chat_runner._start_next_queued_turn(ordinary_state, ordinary_slot)
+
+        load.assert_called_once_with()
+
+    @pytest.mark.asyncio
     async def test_running_subagents_hold_user_messages_back(self, tmp_path):
         """With a fan-out in flight only a system injection may drain."""
         state, slot = _state(tmp_path), _slot()

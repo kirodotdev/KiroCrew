@@ -126,6 +126,7 @@ from kiro_crew.validation import (
     SESSION_RELEASE_SCHEMA,
     SESSION_RELOAD_SCHEMA,
     SESSION_REVIVE_SCHEMA,
+    SESSION_RUN_QUEUED_SCHEMA,
     SESSION_SEND_SCHEMA,
     SESSION_SET_MODEL_SCHEMA,
     SESSION_STATUS_SCHEMA,
@@ -161,6 +162,7 @@ SESSION_CONTROL_TOOLS: tuple[str, ...] = (
     "session_release",
     "session_read_message",
     "session_summary",
+    "session_run_queued",
 )
 
 # The folder endpoints store ``name[:100]``. Mirroring the number here is what
@@ -1085,6 +1087,38 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     },
                 },
                 "required": ["target"],
+            },
+        },
+        {
+            "name": "session_run_queued",
+            "description": (
+                "Run one of YOUR queued messages on a session you created now, instead of "
+                "after the turn in front of it. session_send to a busy session queues the "
+                "message (started: false); this is how a correction jumps the line. On a "
+                "RUNNING target this STOPS the current turn, like session_stop: the turn's "
+                "work is discarded, your chosen message goes to the front, and the rest of "
+                "the queue is kept and runs after it. On an IDLE target (for example one "
+                "held by attached sub-agents) the chosen message starts at once. `queue_id` "
+                "is required and must name an entry you queued with session_send or "
+                "session_broadcast: a person's queued message, or another session's, is "
+                "refused. A stop card "
+                "appears in the target's transcript so the person reading it sees what "
+                "happened. Safe to re-send: a repeat while the stop is still pending is a "
+                "no-op, never a hard kill."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": "Session key from list_sessions, or its exact title.",
+                    },
+                    "queue_id": {
+                        "type": "string",
+                        "description": "Id of the queued entry to run.",
+                    },
+                },
+                "required": ["target", "queue_id"],
             },
         },
     ]
@@ -2878,6 +2912,48 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         if resp.get("error"):
             return f"Error: could not read that session's summary: {resp['error']}"
         return _render_session_summary(resp)
+
+    if name == "session_run_queued":
+        args = validate_tool_args(args, SESSION_RUN_QUEUED_SCHEMA)
+        resp = _post(
+            "/api/session-control/run-queued",
+            {"target": args["target"], "queue_id": args["queue_id"]},
+            session_key=caller_key,
+        )
+        if resp.get("error"):
+            return f"Error: could not run that queued message: {resp['error']}"
+        target = resp.get("target", args["target"])
+        queue_id = resp.get("queue_id", args["queue_id"])
+        outcome = resp.get("outcome")
+        if outcome == "started":
+            return (
+                f"\u25b6\ufe0f `{target}` started your queued message `{queue_id}` now. "
+                "Nothing was stopped."
+            )
+        if outcome == "stopping":
+            return (
+                f"\U0001f6d1 Stopped the running turn on `{target}`; its work is discarded. "
+                f"Your queued message `{queue_id}` is at the front, ahead of the rest of "
+                "the queue, and runs next once the target's attached sub-agents (if any) "
+                "have finished. Its transcript shows the stop card."
+            )
+        if outcome == "idle":
+            return (
+                f"\u2139\ufe0f `{target}` reported no active turn, so nothing was stopped. "
+                f"Your queued message `{queue_id}` moved to the front of its queue and has "
+                "NOT started. Call again to run it on the now idle session."
+            )
+        if outcome == "compacting":
+            return (
+                f"\u2139\ufe0f `{target}` is compacting its context, so nothing was stopped "
+                f"and `{queue_id}` keeps its place in the queue. Try again once the "
+                "compaction finishes."
+            )
+        # `noop`: a stop was already in flight, so nothing was promoted.
+        return (
+            f"\u2139\ufe0f `{target}`: {resp.get('info') or 'stop already in progress'} — "
+            f"nothing changed, and `{queue_id}` keeps its place in the queue."
+        )
 
     if name == "chat_folder_tree":
         validate_tool_args(args, CHAT_FOLDER_TREE_SCHEMA)

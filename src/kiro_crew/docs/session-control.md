@@ -5,14 +5,15 @@ change its model, reload its agent process, and take another one under itself in
 the sidebar. The tools come from the
 `kirocrew-dashboard` MCP server, so an agent that does not mount that server
 never has them — exactly like any other MCP server. This page is the reference
-for all 28 of its tools, written for the agent that is about to use them.
+for all 29 of its tools, written for the agent that is about to use them.
 
 The server is defined in `src/kiro_crew/mcp_dashboard.py`. Two halves:
 
 - **Session control** — `session_create`, `session_fork`, `session_send`,
   `session_read_message`, `session_summary`, `session_stop`, `session_end_wait`,
   `session_set_model`, `session_reload`, `session_close`, `session_revive`, `session_broadcast`,
-  `session_status`, `session_adopt`, `session_release`. These reach another session.
+  `session_status`, `session_adopt`, `session_release`, `session_run_queued`.
+  These reach another session.
 - **Sidebar shape** — `chat_folder_tree`, `chat_folder_create`,
   `chat_folder_move`, `chat_folder_move_session`, `chat_folder_file_self`,
   `chat_tag_list`, `chat_tag_create`, `chat_tag_update`, `chat_tag_assign`,
@@ -420,6 +421,44 @@ tell which one to wake, and hides the button for the same reason.
 Compared with the verbs next to it: `session_stop` discards the turn's work,
 and `session_send` to a sleeping target also ends its wait (as a steer) but
 delivers text the target then acts on. `session_end_wait` does neither.
+
+### `session_run_queued`
+
+| Argument | Required | Meaning |
+|---|---|---|
+| `target` | yes | Session key or exact title of a session you created |
+| `queue_id` | yes | Id of a queued entry you queued with `session_send` or `session_broadcast` |
+
+`session_send` to a busy session queues the message behind the running turn.
+`session_run_queued` runs one of those messages now. It is the same action as
+the "run now" button on a queued message's card.
+
+- **Running target:** the current turn is stopped, as `session_stop` would stop
+  it, and its work is discarded. Your entry moves to the front and the rest of
+  the queue stays, so it runs next and the others follow in their order. If the
+  target has attached sub-agents still running, user entries are held until that
+  child work finishes, so the promoted entry waits that long. A stop
+  card appears in the target's transcript. If the target turns out to have no
+  active turn to cancel, the reply says so: your entry is at the front of the
+  queue, nothing was stopped and nothing started, and calling again runs it.
+- **Idle target** (for example one waiting on attached sub-agents): your entry
+  starts now and nothing is stopped.
+- **Orchestrating target** (running a multi-stage plan): refused with
+  `slot_orchestrating`, because the plan decides what runs next there.
+- **Compacting target** (an automatic context compaction holds the session):
+  declined like the Stop button is. Nothing is stopped or moved, the reply says
+  `compacting`, and you can try again once the compaction finishes.
+
+Only your own entries qualify. An entry is yours when `session_send` or
+`session_broadcast` from this session queued it; a person's typed message and
+another session's delivery are refused with `not_your_entry`. Entries queued
+before a gateway restart lose the sender record and are refused the same way.
+The target must be a session you created (`not_creator` otherwise).
+
+The stop is the cooperative one and the call is safe to re-send: a repeat while
+the stop is still pending reports `stop already in progress` and never
+escalates to a hard kill. A target on a remote crew is refused
+(`remote_target_unsupported`).
 
 ### `session_set_model`
 

@@ -232,6 +232,10 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("chat_handlers.py", "api_chat_slot_continue"),
                 ("chat_handlers.py", "api_chat_slot_detail"),
                 ("chat_handlers.py", "api_chat_slot_interrupt"),
+                # The Run-now idle re-check and its session-control entry point,
+                # split out of the route above and reading the same state.
+                ("chat_handlers.py", "_idle_run_now_refusal"),
+                ("chat_handlers.py", "run_queued_slot_turn"),
                 ("chat_handlers.py", "api_chat_slot_model"),
                 ("chat_handlers.py", "api_chat_slot_note"),
                 ("chat_handlers.py", "api_chat_slot_reasoning_effort"),

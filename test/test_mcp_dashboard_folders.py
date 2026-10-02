@@ -1902,6 +1902,7 @@ class TestAdvertisedSet:
             "session_status",
             "session_read_message",
             "session_summary",
+            "session_run_queued",
             "session_adopt",
             "session_release",
         }

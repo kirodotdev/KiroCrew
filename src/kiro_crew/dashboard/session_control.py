@@ -61,7 +61,7 @@ from kiro_crew.config.loader import (
 from kiro_crew.config.resolution import DEGRADED_WHOLE_CONFIG
 from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.crew_log.session_tree_projection import projection
-from kiro_crew.dashboard.chat_delivery import sanitize_outbound
+from kiro_crew.dashboard.chat_delivery import queue_entry_is_user_origin, sanitize_outbound
 from kiro_crew.dashboard.chat_folders import (
     _folder_declared_project,
     _resolve_folder_project_dir,
@@ -7657,3 +7657,160 @@ async def read_summary(
         "generated_at": (payload or {}).get("generated_at"),
         **bounded,
     }
+
+
+def queued_by_caller(entry: Any, caller_key: str, caller_tab: str) -> bool:
+    """Whether queue *entry* is one the caller queued with ``session_send``/``session_broadcast``.
+
+    Needs the sender stamp ``send_to_target`` writes (:func:`send_origin_meta`) to
+    name the caller's slot key AND its current tab identity: a closed slot's key
+    can be handed to the next occupant, which must not inherit the old one's
+    entries, and a caller with no tab identity owns nothing. A queue-mode
+    broadcast carries the same stamp, because :func:`broadcast_to_targets`
+    delivers through ``send_to_target``, and those entries are the caller's own
+    on the same terms.
+
+    A person's typed message is checked first, so no stamp can make one read as
+    the caller's. Only a PLAIN entry qualifies: no producer ``kind``, no
+    ``payload`` and no consumption callback, which is the shape ``session_send``
+    queues. A recovery requeue or a plan-stage delivery can inherit the stamp
+    through its meta, but running it out of turn would strand the waiter its
+    callback settles.
+
+    ``session_queue`` applies the same rule to cancel and move; whichever of the
+    two lands second should share one helper.
+    """
+    if not isinstance(entry, dict) or queue_entry_is_user_origin(entry):
+        return False
+    if entry.get("kind") or entry.get("payload"):
+        return False
+    if "_on_consumed" in entry or "_on_irreversibly_consumed" in entry:
+        return False
+    meta = entry.get("meta")
+    return bool(caller_tab) and (
+        send_origin_slot(meta) == caller_key and send_origin_tab(meta) == caller_tab
+    )
+
+
+async def run_queued_target(
+    state: "DashboardState",
+    *,
+    caller_session_key: str,
+    target: str,
+    queue_id: str,
+    caller_fenced: bool | None = None,
+) -> dict[str, Any]:
+    """Run one queued entry on *target* now, via the queue card's Run-now path.
+
+    On a running target this stops the in-flight turn cooperatively, like
+    :func:`stop_target`, with the chosen entry moved to the front and the rest of
+    the queue kept. On an idle one it dispatches the entry directly.
+
+    Two gates on top of :func:`authorize_target`, both before anything changes:
+
+    * the target is a session the caller CREATED (``_created_by``), whatever
+      class of caller this is, because what runs next in a person's own tab is
+      theirs to decide; and
+    * *queue_id* names an entry the caller itself queued
+      (:func:`queued_by_caller`). A person's message, or another session's, is
+      never promoted.
+
+    A remote-bound target is refused: its queue drains on the peer, and the
+    local Run-now machinery would stop nothing there.
+
+    Same prewarm ordering as :func:`close_target`, and the ownership verdict is
+    resolved once so the idle path's post-lock re-check reads no config on the
+    loop.
+    """
+    try:
+        await asyncio.to_thread(sel)
+    except Exception:  # noqa: BLE001 - a prewarm failure must not fail the call
+        logger.warning("session-control SEL prewarm failed", exc_info=True)
+    await prewarm_enabled_check()
+
+    caller_key = caller_slot_key(state, caller_session_key)
+    if caller_fenced is None:
+        caller_fenced = bool(caller_key) and _caller_is_ownership_fenced(state, caller_key)
+    deny = _deny_factory(
+        caller_session_key=caller_session_key, operation="run_queued", target=target
+    )
+    slot = authorize_target(
+        state,
+        caller_session_key=caller_session_key,
+        target=target,
+        operation="run_queued",
+        precomputed_ownership_fenced=caller_fenced,
+    )
+    slot_key = slot.key
+
+    def _gate_entry() -> None:
+        if _created_by_other(slot, caller_key):
+            raise deny(
+                "session_run_queued reaches only sessions this session created", "not_creator"
+            )
+        if slot.is_remote or getattr(slot, "executor", "") == "remote":
+            raise deny(
+                "that session runs on a remote crew; running its queue from another "
+                "session is not supported yet",
+                "remote_target_unsupported",
+                status=409,
+            )
+        entry = next((item for item in slot._queue if item.get("id") == queue_id), None)
+        if entry is None:
+            raise deny(
+                f"no queued entry {queue_id!r} on that session", "entry_not_found", status=404
+            )
+        caller_tab = str(getattr(state._slots.get(caller_key), "_tab_id", "") or "")
+        if not queued_by_caller(entry, caller_key, caller_tab):
+            raise deny(
+                "that entry was not queued by this session; only the messages you "
+                "queued with session_send or session_broadcast can be run early",
+                "not_your_entry",
+            )
+
+    def _recheck() -> None:
+        # Synchronous, after the idle path's lock await: the target can have
+        # gained a channel link, been replaced, or had the entry cancelled or
+        # edited into another shape while the call waited.
+        live = authorize_target(
+            state,
+            caller_session_key=caller_session_key,
+            target=slot_key,
+            operation="run_queued",
+            skip_enabled_check=True,
+            precomputed_ownership_fenced=caller_fenced,
+        )
+        if live is not slot:
+            raise deny(
+                "the target session was replaced before its message could run",
+                "target_replaced",
+                status=409,
+            )
+        _gate_entry()
+
+    _gate_entry()
+    # Deferred for the same import cycle `stop_target` documents.
+    from kiro_crew.dashboard.chat_handlers import run_queued_slot_turn
+
+    result = await run_queued_slot_turn(state, slot, queue_id=queue_id, recheck=_recheck)
+    if not result.get("ok"):
+        _audit(
+            caller_session_key=caller_session_key,
+            operation="run_queued",
+            slot_key=slot_key,
+            outcome="denied",
+            detail={"queue_id": queue_id, "code": result.get("code")},
+        )
+        raise SessionControlError(
+            str(result.get("error") or "the queued message could not run"),
+            code=str(result.get("code") or "queue_item_unavailable"),
+            status=409,
+        )
+    _audit(
+        caller_session_key=caller_session_key,
+        operation="run_queued",
+        slot_key=slot_key,
+        outcome="allowed",
+        detail={"queue_id": queue_id, "outcome": result.get("outcome")},
+    )
+    return {"ok": True, "target": slot_key, "queue_id": queue_id, **result}

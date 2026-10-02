@@ -31,6 +31,7 @@ unreachable in production because the caller's `X-Internal-Secret` is ignored.
 | `session_status` | `GET /api/session-control/status` | List the sessions the caller stood up and what each is doing, with the roster taken from the crew log's session tree so a session that is gone still appears |
 | `session_read_message` | `GET /api/session-control/read` | Read another session's transcript tail + liveness |
 | `session_summary` | `GET /api/session-control/summary` | Read another session's cached intent summary + liveness, authorized as `session_read_message` is; never generates one |
+| `session_run_queued` | `POST /api/session-control/run-queued` | Run one entry the caller queued on a session it created now: stops a running turn cooperatively with the entry promoted and the rest of the queue kept, or dispatches it on an idle one |
 
 **Two verbs here write into another session's conversation: `session_send` and
 `session_broadcast`.** Reading returns a transcript tail, stopping cancels a turn
@@ -637,7 +638,8 @@ Two rules give a member caller its shape:
 Ordinary (non-member) callers are untouched: they still require the switch.
 The exceptions are `session_end_wait`, whose own creator fence (below, "Ending
 a wait early") binds every caller class, owner sessions included, and
-`session_reload`, whose creator fence binds every caller class the same way.
+`session_reload` and `session_run_queued`, whose creator fences bind every
+caller class the same way.
 
 #### The strict-internal surface admits a member DM slot, not every scoped caller
 

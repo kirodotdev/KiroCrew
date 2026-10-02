@@ -6562,18 +6562,10 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
             # object dispatch work into the replacement's session namespace.
             if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_interrupt"):
                 return _slot_not_found()
-            if slot.running:
+            refusal_pair = _idle_run_now_refusal(slot)
+            if refusal_pair is not None:
                 return web.json_response(
-                    {"error": "slot started running", "code": "slot_running"}, status=409
-                )
-            if slot._in_stage_execution:
-                return web.json_response(
-                    {"error": "slot is orchestrating", "code": "slot_orchestrating"},
-                    status=409,
-                )
-            if slot._stopping or slot._stop_state != "idle":
-                return web.json_response(
-                    {"error": "a stop is in progress", "code": "slot_stopping"}, status=409
+                    {"error": refusal_pair[0], "code": refusal_pair[1]}, status=409
                 )
             # The body read above can race a cron/workflow rebind on this same
             # live slot. Re-authorize the session the queued turn will use while
@@ -6757,7 +6749,43 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
 
     # Stop current turn but preserve the queue so dequeue loop fires
     # (soft_pending already claimed above, before the request-body await)
+    outcome = await _interrupt_claimed_turn(state, slot, cancel_key, queue_id)
+    return web.json_response({"ok": True, "outcome": outcome})
 
+
+def _idle_run_now_refusal(slot: _ChatSlot) -> tuple[str, str] | None:
+    """Why an idle Run-now may not dispatch yet, as ``(error, code)``, or ``None``.
+
+    Read under ``slot._lock``, after the awaits that got there, because each of
+    the three can change while the request waited. Shared by the route and
+    :func:`run_queued_slot_turn` so the two refuse the same states.
+    """
+    if slot.running:
+        return ("slot started running", "slot_running")
+    if slot._in_stage_execution:
+        return ("slot is orchestrating", "slot_orchestrating")
+    if slot._stopping or slot._stop_state != "idle":
+        return ("a stop is in progress", "slot_stopping")
+    return None
+
+
+async def _interrupt_claimed_turn(
+    state: "DashboardState",
+    slot: _ChatSlot,
+    cancel_key: str,
+    queue_id: Any,
+    *,
+    via: str = "",
+) -> str:
+    """Stop the running turn for a Run-now that holds the ``soft_pending`` claim.
+
+    The caller has already claimed the stop and promoted the chosen entry; this
+    opens the stop card, cancels cooperatively with the queue preserved, and
+    audits. Returns ``stop_turn``'s outcome. Shared by the route and
+    :func:`run_queued_slot_turn`, so the card, the resolvers and the audit line
+    are one spelling. *via* names a non-dashboard caller on the audit line.
+    """
+    name = slot.key
     # One card per press: re-arm an orphaned card in place or append a fresh
     # one (see _open_stop_event_card for why sweeping the orphan rendered two
     # chips).
@@ -6785,17 +6813,20 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
         slot._stop_state = "idle"
         state.push_slots_update()
     elif outcome == "compacting":
-        # The window the two probes above cannot close: a compaction commits
-        # between the second probe and ``stop_turn`` taking the registry lock,
-        # with no await of ours in between, so only another task's tick can
-        # land here. Nothing was interrupted. The pending waits
+        # The window the caller's compaction probe cannot close: a compaction
+        # commits between that probe and ``stop_turn`` taking the registry
+        # lock, with no await of ours in between, so only another task's tick
+        # can land here. Nothing was interrupted. The pending waits
         # ``_unblock_pending_waits`` rejected cannot be un-rejected, which is
-        # why both probes run first. ``_stop_state`` goes back to idle; no
-        # escalation marker, for the reason the pre-check gives.
+        # why the callers probe first. ``_stop_state`` goes back to idle; no
+        # escalation marker, for the reason the route's pre-check gives.
         _resolve_stop_event(slot, "compacting")
         slot._stop_event_id = None
         slot._stop_state = "idle"
         state.push_slots_update()
+    metadata: dict[str, Any] = {"slot": name, "queue_id": queue_id}
+    if via:
+        metadata["via"] = via
     sel().log_tool_invocation(
         session_key=_history_key_for(name),
         agent=getattr(slot, "agent", "") or "kirocrew",
@@ -6803,9 +6834,153 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
         tool_name="dashboard_interrupt",
         tool_kind="command",
         outcome=outcome,
-        metadata={"slot": name, "queue_id": queue_id},
+        metadata=metadata,
     )
-    return web.json_response({"ok": True, "outcome": outcome})
+    return outcome
+
+
+async def run_queued_slot_turn(
+    state: "DashboardState",
+    slot: _ChatSlot,
+    *,
+    queue_id: str,
+    recheck: Callable[[], None],
+) -> dict[str, Any]:
+    """Run queued entry *queue_id* now: the Run-now mechanism for a caller with no request.
+
+    ``session_control.run_queued_target`` authorizes the slot and the entry
+    first, with no suspension between that gate and this call, and it has
+    already refused a remote-bound slot. The route's own authorization is
+    request-scoped, which is why this takes a slot, as :func:`stop_slot_turn`
+    does.
+
+    * Running slot: claim the cooperative stop, move the entry to the front and
+      stop the turn with the queue preserved, as the route does after its body
+      read. Nothing suspends from the claim to the promotion, so the route's
+      supersede guards have no window to cover here. A slot whose stop is
+      already in flight answers the route's idempotent no-op and promotes
+      nothing: that stop belongs to someone else's decision. An orchestrating
+      slot is refused with the idle path's own ``slot_orchestrating``, before
+      anything is claimed or promoted: a multi-stage plan owns what runs next,
+      and the dispatcher's hold would withhold the promoted entry anyway.
+    * Idle slot: take ``slot._lock``, re-check the slot and the three states the
+      route re-checks, then call *recheck* (synchronous; it raises to refuse)
+      because the lock await is a suspension point, and dispatch the entry.
+
+    A running slot whose session an automatic compaction holds is declined
+    before the claim, as the route declines it, with outcome ``compacting``.
+
+    Returns ``{"ok": True, "outcome": ...}`` with ``stopping``, ``idle``,
+    ``compacting``, ``noop`` or ``started``; a refused dispatch is ``ok: False`` with the
+    route's code. ``stopping`` means ``stop_turn`` cancelled a live turn and the
+    promoted entry runs next; ``idle`` means the provider reported no active
+    turn, so the entry sits at the front of the queue with nothing stopped and
+    nothing started. The raw ``stop_turn`` value rides along under ``stop``.
+    """
+    name = slot.key
+    if slot.running:
+        if slot._in_stage_execution:
+            # Read before the claim and the promotion so a refusal mutates
+            # nothing, and spelled as `_idle_run_now_refusal` spells it so both
+            # paths refuse an orchestrating slot identically.
+            return {
+                "ok": False,
+                "error": "slot is orchestrating",
+                "code": "slot_orchestrating",
+            }
+        if slot._stop_state != "idle":
+            sel().log_tool_invocation(
+                session_key=_history_key_for(name),
+                agent=getattr(slot, "agent", "") or "kirocrew",
+                source="dashboard",
+                tool_name="dashboard_interrupt",
+                tool_kind="command",
+                outcome="noop",
+                metadata={
+                    "slot": name,
+                    "via": "session_control",
+                    "reason": "stop already in progress",
+                },
+            )
+            return {"ok": True, "outcome": "noop", "info": "stop already in progress"}
+        cancel_key = _cancel_target(slot)
+        if _compaction_in_flight(state, cancel_key):
+            # The route's pre-claim decline, for the route's reason: an
+            # automatic compaction holds the session, and neither the claim nor
+            # the pending-wait rejection inside `_interrupt_claimed_turn` may
+            # touch a turn that is not being stopped. Nothing is promoted.
+            sel().log_tool_invocation(
+                session_key=_history_key_for(name),
+                agent=getattr(slot, "agent", "") or "kirocrew",
+                source="dashboard",
+                tool_name="dashboard_interrupt",
+                tool_kind="command",
+                outcome="compacting",
+                metadata={"slot": name, "via": "session_control"},
+            )
+            return {"ok": True, "outcome": "compacting"}
+        slot._stop_state = "soft_pending"
+        slot.queue_promote_by_id(queue_id)
+        slot._run_now_queue_id = queue_id
+        try:
+            stop = await _interrupt_claimed_turn(
+                state, slot, cancel_key, queue_id, via="session_control"
+            )
+        except BaseException:
+            slot._run_now_queue_id = ""
+            raise
+        if stop == "compacting":
+            # A compaction that committed after the probe above: nothing was
+            # stopped, and the entry stays where the promotion put it.
+            slot._run_now_queue_id = ""
+            return {"ok": True, "outcome": "compacting", "stop": stop}
+        # Only a cancelled turn may be reported as a stop. "idle" is the
+        # provider saying there was no active turn to cancel: the entry is at
+        # the front of the queue, but nothing was stopped and the dequeue that
+        # a real cancel drives never happened, so the caller is told to call
+        # again rather than that its message runs next.
+        if stop not in ("soft", "hard"):
+            slot._run_now_queue_id = ""
+        return {
+            "ok": True,
+            "outcome": "stopping" if stop in ("soft", "hard") else "idle",
+            "stop": stop,
+        }
+
+    async with slot._lock:
+        if state._slots.get(name) is not slot:
+            return {
+                "ok": False,
+                "error": "the target session was replaced before its message could run",
+                "code": "target_replaced",
+            }
+        refusal_pair = _idle_run_now_refusal(slot)
+        if refusal_pair is not None:
+            return {"ok": False, "error": refusal_pair[0], "code": refusal_pair[1]}
+        recheck()
+        started = await _start_next_queued_turn(
+            state,
+            slot,
+            allow_user_during_subagents=True,
+            required_queue_id=queue_id,
+        )
+    if not started:
+        return {
+            "ok": False,
+            "error": "queued message is no longer available",
+            "code": "queue_item_unavailable",
+        }
+    sel().log_tool_invocation(
+        session_key=_history_key_for(name),
+        agent=getattr(slot, "agent", "") or "kirocrew",
+        source="dashboard",
+        tool_name="dashboard_interrupt",
+        tool_kind="command",
+        outcome="started",
+        metadata={"slot": name, "queue_id": queue_id, "via": "session_control"},
+    )
+    state.push_slots_update()
+    return {"ok": True, "outcome": "started"}
 
 
 async def api_chat_slot_queue_cancel(request: web.Request) -> web.Response:

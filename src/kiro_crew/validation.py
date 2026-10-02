@@ -3639,6 +3639,19 @@ SESSION_SUMMARY_SCHEMA = ToolSchema(
     ],
 )
 
+# A queue id is ``uuid4().hex[:12]`` (``slot_queue_repository``). The pattern is
+# looser than that so an id minted elsewhere still reads, but it keeps the value
+# a bare token rather than free text.
+_RUN_QUEUED_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+SESSION_RUN_QUEUED_SCHEMA = ToolSchema(
+    tool_name="session_run_queued",
+    fields=[
+        FieldSpec("target", str, required=True, max_len=MAX_SHORT_STRING),
+        FieldSpec("queue_id", str, required=True, max_len=64, pattern=_RUN_QUEUED_ID_RE),
+    ],
+)
+
 # ── Schema Registry ──
 
 MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
@@ -3889,6 +3902,7 @@ MCP_DASHBOARD_SCHEMAS: dict[str, ToolSchema] = {
     "session_release": SESSION_RELEASE_SCHEMA,
     "session_read_message": SESSION_READ_MESSAGE_SCHEMA,
     "session_summary": SESSION_SUMMARY_SCHEMA,
+    "session_run_queued": SESSION_RUN_QUEUED_SCHEMA,
     "chat_folder_tree": CHAT_FOLDER_TREE_SCHEMA,
     "chat_folder_create": CHAT_FOLDER_CREATE_SCHEMA,
     "chat_folder_move": CHAT_FOLDER_MOVE_SCHEMA,

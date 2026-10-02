@@ -2711,6 +2711,7 @@ class _ChatSlot:
         "_pending_consumers",
         "_pending_release_deferred",
         "_queue",
+        "_run_now_queue_id",
         "_queue_persisted_sig",
         "_queue_persist_inflight",
         "_queue_persist_owed",
@@ -3149,6 +3150,9 @@ class _ChatSlot:
         # outlive every consumer and the leak survives its own fix.
         self._pending_release_deferred: bool = False
         self._queue: list[dict[str, Any]] = []  # [{"id": uuid, "content": str}, ...]
+        # One-shot ownership binding for a queued Run-now request that stopped
+        # the active turn. Memory only: the cancelled turn's tail consumes it.
+        self._run_now_queue_id: str = ""
         # Signature of the durable queue value this slot's last committed save
         # wrote (see slot_queue_repository.queue_persist_signature). Drift
         # between it and the live queue is what tells the periodic flush a
