@@ -480,6 +480,7 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # directory: ``atomic_write`` publishes through a sibling temp.
     "crew-teams",
     # Auth stores and signing keys owned by the gateway web server alone.
+    "mobile-ssh",
     "token_signing.key",
     "refresh_chains.json",
     # The staging directory those two publish through. Masked as a whole DIRECTORY so the
@@ -1751,6 +1752,7 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     # (empty, 0o700) before every spawn so the mask always has a name to bind over.
     "file-delivery-consent-pending",
     "appearance-library",
+    "mobile-ssh",
     "quarantined-clones",
     # First created by the first member-born session's vouch, so a sandbox spawned
     # before then would otherwise see the directory appear unmasked.

@@ -2580,6 +2580,52 @@ Examples:
         "-n", "--lines", type=int, default=100, help="Number of lines to show (default: 100)"
     )
 
+    # mobile — host-agnostic OpenSSH enrollment and forced-command token mint.
+    mobile_parser = cli_help.add_command(sub, "mobile")
+    mobile_sub = mobile_parser.add_subparsers(dest="mobile_action")
+    mobile_ssh = mobile_sub.add_parser("ssh", help="Manage mobile SSH device access")
+    mobile_ssh_sub = mobile_ssh.add_subparsers(dest="mobile_ssh_action")
+    mobile_enroll = mobile_ssh_sub.add_parser(
+        "enroll", help="Enroll one device public key and print an authorized_keys line"
+    )
+    mobile_enroll.add_argument("device_id", help="Stable device id (lowercase letters/digits/-)")
+    mobile_enroll.add_argument(
+        "--host",
+        dest="ssh_host",
+        required=True,
+        help="Reachable SSH DNS name or IP address for this Kiro Crew host",
+    )
+    mobile_enroll.add_argument("--label", default="", help="Optional non-secret device label")
+    mobile_enroll.add_argument(
+        "--public-key-file",
+        default="-",
+        help="File containing one ssh-ed25519 public key, or - for stdin (default)",
+    )
+    mobile_enroll.add_argument(
+        "--port", type=int, default=None, help="Local gateway port (default: the running gateway)"
+    )
+    mobile_enroll.add_argument(
+        "--qr",
+        action="store_true",
+        help="Also print a Kiro Mobile pairing QR code to stderr (it carries no credential)",
+    )
+    mobile_list = mobile_ssh_sub.add_parser("list", help="List non-secret enrollment metadata")
+    mobile_list.add_argument(
+        "--port", type=int, default=None, help="Local gateway port (default: the running gateway)"
+    )
+    mobile_revoke = mobile_ssh_sub.add_parser("revoke", help="Revoke one device enrollment")
+    mobile_revoke.add_argument("device_id", help="Device id to revoke")
+    mobile_revoke.add_argument(
+        "--port", type=int, default=None, help="Local gateway port (default: the running gateway)"
+    )
+    mobile_token = mobile_ssh_sub.add_parser(
+        "token", help="OpenSSH forced-command entry point (not for interactive use)"
+    )
+    mobile_token.add_argument("--device-id", required=True, help=argparse.SUPPRESS)
+    mobile_token.add_argument("--binding", required=True, help=argparse.SUPPRESS)
+    mobile_token.add_argument("--port", type=int, default=DASHBOARD_PORT, help=argparse.SUPPRESS)
+    mobile_token.add_argument("--home", default=None, help=argparse.SUPPRESS)
+
     # token
     token_parser = cli_help.add_command(sub, "token")
 
@@ -3154,6 +3200,14 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
 
     args = parser.parse_args()
 
+    # sshd runs the forced command with a clean environment; its --home must win
+    # before anything below resolves or creates the default data home.
+    if args.command == "mobile":
+        from kiro_crew.mobile_ssh_cli import pin_enrolled_home
+
+        if pin_enrolled_home(args):
+            raise SystemExit(1)
+
     # Direct agent-bearing CLI commands do not construct the long-lived
     # prerequisite service. Pin an explicit override before the jail gate or
     # provider factory can launch it, preserving the same process-start trust
@@ -3535,6 +3589,15 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
         from kiro_crew.cli_server import _logs_cmd
 
         _logs_cmd(args)
+    elif args.command == "mobile":
+        from kiro_crew.mobile_ssh_cli import run_mobile_ssh
+
+        if getattr(args, "mobile_action", "") != "ssh":
+            print("Usage: kirocrew mobile ssh {enroll|list|revoke|token}", file=sys.stderr)
+            raise SystemExit(2)
+        rc = run_mobile_ssh(args)
+        if rc:
+            raise SystemExit(rc)
     elif args.command == "token":
         from kiro_crew.cli_server import _token
 

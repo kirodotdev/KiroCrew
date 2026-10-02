@@ -10,6 +10,84 @@ The dashboard also issues a paired **refresh cookie** (`mc_refresh_{port}`, Http
 
 An existing dashboard session can recover another browser with `POST /api/auth/mobile-link`. The endpoint requires the normal access-cookie session and an allowed same-origin request; it refuses unauthenticated and app-scoped callers. It returns a normal signed URL token plus `Cache-Control: no-store`; the browser uses that token through the ordinary link-to-cookie exchange, which establishes a separate access cookie and a refresh chain. The dashboard presents this as **Settings → Security → Sign in on mobile**, so a mobile browser whose storage was cleared can be restored without exposing a raw token prompt. The returned link has the normal five-minute click window, is built only from the configured external dashboard origin, and must be transferred only to the intended device.
 
+A separate host-side contract serves native mobile clients over an already-enrolled
+OpenSSH key (`mobile_ssh.py`, `mobile_ssh_cli.py`). `kirocrew mobile ssh enroll`
+accepts one Ed25519 public key, discovers the current non-root SSH username and the
+root-owned, non-writable public host key at
+`/etc/ssh/ssh_host_ed25519_key.pub`, and returns JSON containing its SHA-256
+fingerprint plus an exact restricted `authorized_keys` line. It never edits
+`authorized_keys`. Linux and macOS share this OpenSSH layout; Windows enrollment
+returns `platform_unsupported` until an equivalent source and service contract are
+validated.
+
+The line forces `kirocrew mobile ssh token`, limits local (`-L`) forwarding to
+`127.0.0.1:5476`, pins remote (`-R`) listens to `permitlisten="127.0.0.1:1"` (a
+privileged port a non-root sshd child cannot bind; `permitlisten="none"` is not valid key
+syntax, and `AllowTcpForwarding local` in `sshd_config` refuses `-R` outright), and
+disables PTY, agent forwarding, X11 forwarding, user rc, and arbitrary shell commands.
+Key options cannot restrict Unix-socket forwarding: `port-forwarding` also permits
+`direct-streamlocal`, which `permitopen` does not cover, so the account's `sshd_config`
+must set `AllowStreamLocalForwarding no`. SSH authorization ends only when the
+`authorized_keys` line is deleted; revocation ends token issuance and acceptance.
+
+The forced-command argv (`<launcher> mobile ssh token --device-id ID --binding HEX
+--port PORT --home DIR`) and the line format are a frozen v1 contract: the gateway never
+rewrites `authorized_keys`, so a change to either breaks every enrolled phone. Each device
+record stores the pinned `gateway_port` and `home`, and `mobile ssh list` reports a
+`drift` entry when the serving gateway differs from them. The forced command additionally requires OpenSSH's exact
+`SSH_ORIGINAL_COMMAND=kirocrew-mobile-token-v1`, a valid `SSH_CONNECTION`, no
+`SSH_TTY`, and an unguessable binding whose hash is stored with the device record.
+Those environment checks distinguish the expected sshd execution from an accidental
+interactive invocation; the binding is the actual key-record proof. A process already
+running as the same local OS account can synthesize the environment and read its own
+`authorized_keys`, but that account already owns the Kiro Crew data and is outside the
+remote-client boundary.
+
+Each successful forced-command invocation emits one JSON object containing a fresh
+15-minute token. Its signed claims are `kind=mobile_ssh`,
+`aud=kirocrew-mobile-gateway`, `scope=gateway:mobile`, `device_id`, the public-key
+digest, the enrollment id, and `no_refresh=1`. The token is an HMAC-signed bearer credential under
+the gateway signing key; the device claims name the enrollment but do not prove possession
+of the device key. Validation checks an in-memory snapshot of the device registry on
+every request; the middleware refreshes that snapshot off the event loop before
+validating a request that presents a mobile-kind credential, re-reading the file only
+when its identity changed, so another gateway process's revoke or re-enroll is honored
+and revoking or replacing an enrollment rejects outstanding tokens on their next
+request. It does not terminate a response already streaming. A registry that fails to
+load never blocks gateway startup; mobile requests then fail closed. The registry loader rejects non-object
+documents, unexpected or non-string fields, non-canonical device ids and duplicate
+records as `store_unavailable`. The claim-gated middleware carries every mobile claim
+through the normal link-to-cookie exchange, issues no refresh cookie, and admits only
+the native sessions/chat/approvals/artifacts/tasks/schedules/agent-metadata API set
+named by `mobile_token_path_allowed`, plus the routes the native app also calls: prompt
+suggestions and improvement, file upload, outbox downloads, artifact and
+schedule folder lists (read-only), notifications, subagent runs under `/api/spawn`
+(the app shows and stops subagent runs from chat), and answering or dismissing pending
+questions. Opening a question
+(`POST /api/ask-question`), listing the outbox, `POST /api/outbox/notify`, the
+owner-only `/api/file-raw` and the dashboard WebSocket `/api/ws` stay denied;
+dashboard pages and administration, security,
+configuration, update, shutdown, and generic `/v1` routes remain denied. A mobile
+token is never `is_dashboard_user`: the owner flag is a positive identity (no app
+claim and no mobile kind), so owner-only projections stay withheld from a phone.
+Every allowlist entry is pinned to a registered gateway route by test. Tokens with
+no mobile kind retain the existing validation path unchanged.
+
+Enroll, revoke and token minting are loopback-only and require the gateway local
+secret plus the same host-provenance check as `/api/token/local`
+(`local_owner_bootstrap_allowed`), so a sandboxed agent that can read the secret
+cannot enroll a device or mint a mobile token. Enroll and token minting are also
+governed by the `capabilities.mobile_connect` scope under the method id
+`ssh_device`, the same seam the tailnet QR and sign-in link mints consult.
+
+The device registry is `<KIROCREW_HOME>/mobile-ssh/devices.json`. It stores only
+public-key and forced-binding hashes plus non-secret metadata, under an owner-only
+directory with a cross-platform file lock and atomic, fsynced owner-only replacement.
+The whole directory is on the sensitive-path floor and bind-masked from every
+agent sandbox so agent file tools and spawned commands cannot rewrite enrollment
+authority. Private keys, raw public keys, binding values, and tokens are never
+persisted there.
+
 The refresh scheduler is mounted by `DashboardBootstrap` outside the first-run
 Kiro CLI prerequisite gate. A cold browser with a stale access cookie can
 therefore rotate its refresh cookie even while the main dashboard tree is not

@@ -552,6 +552,11 @@ _BYPASS_EXACT_METHODS: dict[str, frozenset[str]] = {
     AGENT_HOOK_PATH: _SELF_AUTH_WEBHOOK_METHODS,
     TEAMS_WEBHOOK_PATH: _SELF_AUTH_WEBHOOK_METHODS,
     UPDATE_REVALIDATE_PATH: _SELF_AUTH_WEBHOOK_METHODS,
+    # Each mobile SSH handler verifies loopback plus X-Local-Secret itself.
+    "/api/mobile/ssh/enroll": frozenset({"POST"}),
+    "/api/mobile/ssh/devices": frozenset({"GET"}),
+    "/api/mobile/ssh/revoke": frozenset({"POST"}),
+    "/api/mobile/ssh/token": frozenset({"POST"}),
 }
 
 # Exact-path exemptions from the CSRF **Origin** check, path -> allowed methods.
@@ -999,6 +1004,14 @@ def validate_token(token: str, *, use_session_exp: bool = False) -> tuple[bool, 
     token_boot = str(data.get("boot", ""))
     if token_boot and token_boot != current_boot_id():
         return False, "", "session ended at gateway restart"
+    # Claim-gated: ordinary dashboard and app tokens never enter this branch.
+    # In-memory check; the middleware refreshed the registry off the loop.
+    if data.get("kind") == "mobile_ssh":
+        from kiro_crew.mobile_ssh import validate_mobile_token_claims
+
+        mobile_valid, mobile_reason = validate_mobile_token_claims(data)
+        if not mobile_valid:
+            return False, "", mobile_reason
     # Nonce is a single-use guard for the one-time LINK click only. For an
     # established session cookie (use_session_exp=True), a valid HMAC signature
     # plus an unexpired session_exp is sufficient — requiring the in-memory
@@ -1102,6 +1115,36 @@ def claims_an_app_unverified(token: str) -> bool:
     except Exception:
         return False
     return bool(isinstance(data, dict) and data.get("app"))
+
+
+def claims_mobile_token_unverified(token: str) -> bool:
+    """Whether *token* claims the mobile SSH kind, used only to narrow fallback."""
+    try:
+        data = json.loads(_b64url_decode(token.split(".")[0]))
+    except Exception:
+        return False
+    return bool(isinstance(data, dict) and data.get("kind") == "mobile_ssh")
+
+
+def _is_dashboard_user(app_name: str, token: str) -> bool:
+    # Owner is a positive identity: not an app, and not a scoped mobile device.
+    return not app_name and not claims_mobile_token_unverified(token)
+
+
+async def _refresh_mobile_registry(request: web.Request, port: int) -> None:
+    # Off-loop registry read so validate_token's mobile check stays in-memory.
+    if request.get("_mobile_registry_refreshed") is True:
+        return
+    request["_mobile_registry_refreshed"] = True
+    cookie = request.cookies.get(f"mc_token_{_cookie_port_from_host(request, port)}", "")
+    if any(
+        claims_mobile_token_unverified(candidate)
+        for candidate in (request.query.get("token") or "", cookie)
+        if candidate
+    ):
+        from kiro_crew.mobile_ssh import refresh_mobile_ssh_store
+
+        await asyncio.to_thread(refresh_mobile_ssh_store)
 
 
 def requires_verified_peer_unverified(token: str) -> bool:
@@ -1667,6 +1710,26 @@ def _enforce_app_scope(request: web.Request, app_name: str, path: str) -> web.Re
     )
     _log_auth(request, app_name, "denied", f"app token out of scope: {path}")
     return _deny(request, "app token not permitted for this endpoint")
+
+
+def _enforce_mobile_scope(request: web.Request, token: str, path: str) -> web.Response | None:
+    """Confine mobile SSH credentials to the native gateway API surface."""
+    if not claims_mobile_token_unverified(token):
+        return None
+    from kiro_crew.mobile_ssh import mobile_token_path_allowed
+
+    if mobile_token_path_allowed(path, request.method):
+        return None
+    _sel_fn().log_api_access(
+        caller="mobile",
+        operation="mobile_scope_check",
+        outcome="denied",
+        source="token_auth",
+        resources=path,
+        error="mobile token out of scope",
+    )
+    _log_auth(request, "mobile", "denied", f"mobile token out of scope: {path}")
+    return _deny(request, "mobile token not permitted for this endpoint", "mobile_scope_denied")
 
 
 async def warm_auth_singletons() -> None:
@@ -2783,7 +2846,12 @@ def token_auth_middleware(
             # identity with the user's own and skip the ``_enforce_app_scope``
             # gate below. An expired app token must be refused as an expired
             # app token, so the caller re-exchanges its app secret.
-            if valid or not cookie_token or claims_an_app_unverified(query_token):
+            if (
+                valid
+                or not cookie_token
+                or claims_an_app_unverified(query_token)
+                or claims_mobile_token_unverified(query_token)
+            ):
                 return valid, uid, reason, app, query_token
         valid, uid, reason, app = validate_token_with_app(cookie_token, use_session_exp=True)
         return valid, uid, reason, app, cookie_token
@@ -3076,6 +3144,7 @@ def token_auth_middleware(
             # at the decision point rather than deferring to downstream.
             # NOTE: uses _extract_and_validate_token helper (defined above)
             # for cookie/query-param validation.
+            await _refresh_mobile_registry(request, port)
             _valid, _uid, _reason, _app, _tok = _extract_and_validate_token(request, port)
             if not _valid:
                 _sel = _sel_fn()
@@ -3104,7 +3173,7 @@ def token_auth_middleware(
             request["auth_token"] = _tok
             # POSITIVE dashboard-user signal for the WS scope gate: the WS
             # layer must never infer trust from a falsy app claim (CWE-269).
-            request["is_dashboard_user"] = not _app
+            request["is_dashboard_user"] = _is_dashboard_user(_app, _tok)
             # App tokens are confined to their declared scope even on internal
             # paths (e.g. /api/chat, /api/spawn are mixed_internal) — otherwise
             # an app token would reach them on loopback with NO app identity set
@@ -3112,6 +3181,9 @@ def token_auth_middleware(
             _scope_deny = _enforce_app_scope(request, _app, path)
             if _scope_deny is not None:
                 return _scope_deny
+            _mobile_scope_deny = _enforce_mobile_scope(request, _tok, path)
+            if _mobile_scope_deny is not None:
+                return _mobile_scope_deny
             # A dashboard-user cookie poll on a mixed-internal path is the same
             # request the ``_log_auth`` row below already audits (operation
             # ``dashboard.token_auth``), so emitting an ``internal_auth`` row
@@ -3169,6 +3241,7 @@ def token_auth_middleware(
                         )
                         _log_auth(request, "internal", "denied", _detail)
                         return _deny(request, "Forbidden", "internal_auth_mismatch")
+                await _refresh_mobile_registry(request, port)
                 _valid, _uid, _reason, _app, _tok = _extract_and_validate_token(request, port)
                 if not _valid:
                     _sel = _sel_fn()
@@ -3201,10 +3274,13 @@ def token_auth_middleware(
                 request["auth_token"] = _tok
                 # POSITIVE dashboard-user signal for the WS scope gate (see
                 # the loopback branch above).
-                request["is_dashboard_user"] = not _app
+                request["is_dashboard_user"] = _is_dashboard_user(_app, _tok)
                 _scope_deny = _enforce_app_scope(request, _app, path)
                 if _scope_deny is not None:
                     return _scope_deny
+                _mobile_scope_deny = _enforce_mobile_scope(request, _tok, path)
+                if _mobile_scope_deny is not None:
+                    return _mobile_scope_deny
                 # Same dedup as the loopback mixed branch above: the dashboard
                 # user's grant is already audited by ``_log_auth``, whose row
                 # carries the daemon-verified caller (``_audit_uid``); only an
@@ -3289,6 +3365,7 @@ def token_auth_middleware(
             return await handler(request)  # type: ignore[operator]
 
         # Extract token from query param or cookie
+        await _refresh_mobile_registry(request, port)
         cookie_name = f"mc_token_{_cookie_port_from_host(request, port)}"
         token = request.query.get("token") or ""
         from_cookie = False
@@ -3337,7 +3414,11 @@ def token_auth_middleware(
             # claim is read unverified, which is sound because it can only make
             # this decision stricter (see ``claims_an_app_unverified``).
             _cookie_token = request.cookies.get(cookie_name, "")
-            if _cookie_token and not claims_an_app_unverified(token):
+            if (
+                _cookie_token
+                and not claims_an_app_unverified(token)
+                and not claims_mobile_token_unverified(token)
+            ):
                 _c_valid, _c_uid, _c_reason, _c_app = validate_token_with_app(
                     _cookie_token, use_session_exp=True
                 )
@@ -3470,6 +3551,19 @@ def token_auth_middleware(
                 # refresh chain is still suppressed below by never being minted.
                 if _no_refresh:
                     _carried["no_refresh"] = "1"
+                # Carry mobile claims so the exchange cannot widen into a dashboard session.
+                if str(data.get("kind", "")) == "mobile_ssh":
+                    for _claim in (
+                        "kind",
+                        "aud",
+                        "scope",
+                        "device_id",
+                        "key_sha256",
+                        "enrollment_id",
+                    ):
+                        _value = data.get(_claim)
+                        if isinstance(_value, str) and _value:
+                            _carried[_claim] = _value
                 session_token = generate_token(
                     user_id,
                     ttl_seconds=_remaining,
@@ -3566,7 +3660,7 @@ def token_auth_middleware(
         # just-established device scope.
         request["auth_token"] = session_token
         # POSITIVE dashboard-user signal for the WS scope gate (see above).
-        request["is_dashboard_user"] = not app_name
+        request["is_dashboard_user"] = _is_dashboard_user(app_name, token)
         # WHICH credential authenticated: the ``?token=`` the caller presented,
         # or the session cookie the fallback above adopted after that query
         # token proved invalid. One bit, derived from the same ``from_cookie``
@@ -3588,6 +3682,9 @@ def token_auth_middleware(
         _scope_deny = _enforce_app_scope(request, app_name, path)
         if _scope_deny is not None:
             return _scope_deny
+        _mobile_scope_deny = _enforce_mobile_scope(request, token, path)
+        if _mobile_scope_deny is not None:
+            return _mobile_scope_deny
 
         # Proceed to handler
         resp = await handler(request)  # type: ignore[operator]

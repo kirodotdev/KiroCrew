@@ -229,6 +229,10 @@ choice blob makes the usage line unreadable.
 | `kirocrew learn add/list/remove` | Manage learned corrections |
 | `kirocrew run TASK.md` | Run an autonomous task from a spec file |
 | `kirocrew token` | Print a dashboard access URL with auth token |
+| `kirocrew mobile ssh enroll DEVICE --host HOST [--public-key-file FILE] [--qr]` | Validate a generic DNS/IP SSH host, enroll one Ed25519 device public key, discover the current non-root username and pinned Ed25519 host-key fingerprint, and emit one JSON document with the exact restricted `authorized_keys` line. Reads the key from stdin when `FILE` is `-`; never edits SSH configuration. `--qr` also prints a Kiro Mobile pairing QR code (`kiro-crew://c/...`, no credential) to stderr, leaving stdout as the one JSON document. Linux/macOS only until a safe Windows OpenSSH host-key source is validated. |
+| `kirocrew mobile ssh list` | Emit one JSON document containing non-secret device enrollment metadata. |
+| `kirocrew mobile ssh revoke DEVICE` | Revoke one enrollment; outstanding device-bound tokens fail their next gateway validation. It does not remove SSH authorization; delete the matching `authorized_keys` line to end SSH access. |
+| `kirocrew mobile ssh token` | Forced-command-only mint invoked by the generated `authorized_keys` line. Requires the expected OpenSSH environment and key-record binding; emits exactly one success or error JSON object and exits nonzero on error. Not an interactive mint command. |
 | `kirocrew logout` | Revoke all active dashboard sessions, refresh chains included |
 | `kirocrew manifest` | Generate Slack manifest with user alias auto-populated |
 | `kirocrew update` | Update to latest version (git fetch, pin the upstream commit, refuse a revision whose `requires-python` this venv fails, hard reset to the pinned commit + rebuild; a diverged checkout is refused — `--force` discards its local commits) |
