@@ -957,6 +957,11 @@ ambiguity marker cannot permanently starve a newer current answer behind it.
 If a failed turn requeues the delivery with consumption callbacks, the generic queue
 editor refuses to replace that entry: those callbacks can settle only their original text.
 App tokens cannot send or recover these human-authored turns; each denial is recorded in SEL.
+Execute, its `handoff` alias and Stop arm or remove the owner session's nudge loop, so they take
+the owner predicate `POST /api/autonudge` uses (`is_owner_dashboard_request`): a non-owner
+subject or app token gets 403 `owner_only`, a signed pre-owner bootstrap subject 401
+`stale_session_reauth`, and each denial is audited in SEL as `spec_builder_execute` /
+`spec_builder_stop`.
 The durable prompt is rebuilt from the backend-validated title and selected option; its
 bound includes both normalized fields so replay cannot truncate the immutable answer.
 Every Spec Builder dispatch boundary (decision answer, ordinary message, and execution
