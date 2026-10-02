@@ -129,7 +129,7 @@ def _run_scan(
     *alias_ids* are the ``(device, inode)`` pairs the PARENT collected, which is the
     only form these credentials can reach the child in,
     one level below the root -- the level the ``SENSITIVE_DIRS`` walk stops above. Empty
-    by default, which is what every caller outside the cron apps-tree mask supplies.
+    by default, which is what a caller that pins no credential supplies.
 
     Returns ``(files_walked, refusal)``; *refusal* is None when the scan let the
     exec proceed.

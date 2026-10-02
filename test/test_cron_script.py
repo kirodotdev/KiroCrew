@@ -66,7 +66,7 @@ def _crons_dir_tracks_patched_home(monkeypatch, tmp_path):
     OPERATOR's real home, which outlive the run and which the conftest's
     real-data-home guards cannot see (they inspect ``KIROCREW_HOME`` only). So an
     unpatched home resolves to a per-test tmp dir instead, the same shape
-    ``test_cron_secret_env.py`` and ``test_cron_apps_secret_mask.py`` use.
+    ``test_cron_secret_env.py`` uses.
     """
     real_home = Path.home()
     fallback = tmp_path / "kirocrew-home-fallback"
