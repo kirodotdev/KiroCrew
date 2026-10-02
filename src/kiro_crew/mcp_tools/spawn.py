@@ -46,7 +46,7 @@ from kiro_crew.subagent import (
     visible_agent_names,
 )
 from kiro_crew.subagent_persistence import agent_dir_for_display
-from kiro_crew.subagent_wait_reasons import queued_wait_text
+from kiro_crew.subagent_wait_reasons import MEMORY_PRESSURE_PHRASE, queued_wait_text
 from kiro_crew.validation import (
     MAX_MEDIUM_STRING,
     MAX_SHORT_STRING,
@@ -928,8 +928,8 @@ def spawn_run(name: str, args: dict[str, Any]) -> str:
             head_reason = queued_reasons[deferred[0][0]]
             spawn_lines.append(
                 f"Queued {len(deferred)} subagent(s). Not started yet: {head_reason}. "
-                "The gateway re-checks every admit wait and starts each one once the "
-                "condition clears; only then does its result arrive:"
+                "The gateway re-checks them and starts each one once the condition "
+                "clears; only then does its result arrive:"
             )
             for aid, a, t in deferred:
                 label = f"{aid} ({a})" if a else aid
@@ -1695,6 +1695,13 @@ def resource_status(name: str, args: dict[str, Any]) -> str:
         out.append(
             "\nGuidance: memory is tight — prefer the lighter path (targeted "
             "tests, fewer sub-agents, deferred builds) for heavy work."
+        )
+    elif rstatus.memory_pressure_held:
+        # The posture is figure-based and can read AMPLE while the macOS kernel
+        # reports pressure; "heavy work is fine" would then contradict the gate.
+        # The queue note itself is on the "Kernel memory pressure" line above.
+        out.append(
+            f"\nGuidance: {MEMORY_PRESSURE_PHRASE} — prefer the lighter path for heavy work."
         )
     elif rstatus.posture == "ample":
         out.append("\nGuidance: ample headroom — heavy work is fine.")

@@ -1188,7 +1188,9 @@ class AgentConfig:
             "2 GB, never below subagent_cost_gb); one that shares its parent's runtime at "
             "about 0.35 GB "
             "less. A spawn that does not fit waits in the durable queue (one with no "
-            "durable queue is refused). 0 disables the check.",
+            "durable queue is refused). On macOS a start also waits while the kernel "
+            "reports memory pressure and one of this gateway's dedicated subagents is "
+            "running. 0 disables the check, that wait included.",
         ),
     )
     resource_pressure_gb: float = field(
@@ -1198,9 +1200,11 @@ class AgentConfig:
             "Available memory (GB) at or below which the agent is told host memory "
             "is 'tight' via a compact [RESOURCES] context line, so it can prefer "
             "the lighter path for heavy work (targeted tests, smaller sub-agent "
-            "waves). Advisory only — not enforced. 0 disables the context line. "
-            "Lower this on small-memory hosts / memory-limited containers (e.g. a "
-            "2-4 GB pod) so the advisory only fires under genuine pressure.",
+            "waves). On macOS the line also fires while the kernel reports memory "
+            "pressure. Advisory only — not enforced. 0 disables the context line, "
+            "that macOS case included. Lower this on small-memory hosts / "
+            "memory-limited containers (e.g. a 2-4 GB pod) so the advisory only fires "
+            "under genuine pressure.",
         ),
     )
     resource_critical_gb: float = field(

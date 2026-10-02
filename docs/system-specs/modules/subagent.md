@@ -321,6 +321,149 @@ running work: a settled child that runs builds or tests can still push the host
 below it. And a start admitted shared whose runtime then dies may, after its
 bounded wait, launch a dedicated process below the floor rather than fail.
 
+**macOS: the kernel memory-pressure hold.** The macOS reading of the floor has
+a second input: the kernel's `kern.memorystatus_vm_pressure_level`, read fresh
+on every check through `resource_status.read_memory_pressure_level()`
+(`platform_compat.memory_pressure_level()`, a `sysctlbyname` on the cached libc
+handle; it says once per process, at WARNING, when macOS cannot answer it). This
+section is the one statement of the hold's rules; the code points here.
+
+The hold applies (`_memory_pressure_hold`) while all of these are true:
+
+- the floor is on (`spawn_min_memory_gb > 0`);
+- the level is WARN or CRITICAL;
+- a dedicated runtime of this gateway is running or warming
+  (`_owns_dedicated_runtime`): a live row admitted at the dedicated price and
+  not confirmed shared, or a claim admitted at the dedicated price
+  (`_claim_prices`) and not registered yet. A row with no process does not
+  count: one parked at the spawn approval (`_parked_at_spawn_approval`) or one
+  approved and waiting for the pump to release it (`_start_release`). Neither
+  do shared-priced starts: their end returns little memory, and counting them
+  would hold a shared wave behind its own first member.
+
+It keeps a start (`_memory_pressure_holds`) when, in addition:
+
+- the start is a root (not nested, `taskq_parent_id_for` / `entry_is_child`);
+  a child's parent is a live runtime of ours waiting on it, so holding the
+  child would hold the parent on an episode only the child can end;
+- it is not a claim re-entry (`_dispatch_now`), which already holds its slot;
+- the start's own wait has not run out. A row's wait is clocked from the first
+  time it is held, and past `_PRESSURE_HOLD_MAX_WAIT_SECS` it never proceeds
+  into the pressure it waited on: it is ended, never started
+  (`MEMORY_PRESSURE_NEVER_STARTED`, which OPENS with its verdict because a
+  surface grouping terminal runs would otherwise read it as a success; its row
+  failed, its parent's depth recounted and the terminal record registered so a
+  read by id answers the outcome rather than a 404; the run card headlines a
+  wave whose every member ended this way as "N agents never started", and a
+  settled wave where only some did as "M of N agents ran", matching
+  the error's opening words through `NEVER_STARTED_PREFIX`, which lives in
+  `website/src/lib/backendPhrases.json` because it is backend prose the UI
+  matches rather than copy it renders; the error itself opens with the owner's
+  wording, "never started: waiting for memory", and names both ways out, the
+  level easing and a running agent finishing, which the card states whenever any member
+  ended this way, as an inline `ErrorNotice` directly under the card's button
+  (never inside it), counted ("1 never started — ...") and naming the panel's
+  Retry failed control,
+  so a mixed wave's "finished" header cannot hide it and the retry is not read
+  as automatic), with a WARNING and
+  a `never_started_memory_pressure` SEL row
+  (`_pressure_hold_expired`) whose `expired_by` says which bound ended it:
+  `wait` (its own wait ran out) or `episode` (the spent episode ended it at
+  once, so `waited_secs` is near 0 and `episode_secs` carries the episode's
+  length). The bound is a named constant carrying the
+  planned default of the queued-spawn maximum wait, a config key main does not
+  have yet. An approval-released start past its bound ends the same way. The
+  pump's pick only classifies an expired row (it is picked); the gate's
+  re-check is what ends it and writes the record, so a row whose level eased
+  in between starts with no "never started" audit. The clock survives a pause
+  in the hold, such as our last runtime ending between two of a wave's
+  starts, so a wave released one runtime at a time still meets the bound; only
+  a clock older than `_PRESSURE_HOLD_PRUNE_SECS` (a row that left with no
+  registration or refusal) is dropped.
+
+**Foreign pressure with a runtime of ours alive, weighed.** The hold cannot
+tell its own load from foreign load (a browser, a build). So with one
+long-lived dedicated subagent of ours running (a `keep` conversation, say) on a
+Mac held at WARN by other apps, every new root start waits, up to its bound,
+even though ending our runtime might not end the episode. That is the chosen
+side: a new runtime under WARN slows the whole machine, not just Kiro Crew, and
+the per-row bound caps the wait at `_PRESSURE_HOLD_MAX_WAIT_SECS` (30 minutes),
+after which the start is ended rather than launched into the pressure. A
+chronic episode does not make every new start wait that long in turn: once the
+hold has applied without a break for `_PRESSURE_HOLD_MAX_WAIT_SECS`
+(`_pressure_episode_since`, from the first read at which it applied; a read at
+which it does not apply, because the level eased or nothing of ours runs, ends
+the episode, and so does a gap between reads longer than
+`_PRESSURE_EPISODE_MAX_GAP_SECS`, a break nobody observed), the episode is spent (`_pressure_episode_spent`, one WARNING) and
+every start the hold would keep is ended at once, never started, until the hold
+stops applying.
+With no runtime of ours the hold never applies, so foreign pressure alone never
+delays or ends a start. `spawn_min_memory_gb = 0` turns it off. The
+shared-to-dedicated top-up is not a held start: it is an admitted run already
+starting, so past its own bound it starts and says so
+(`dedicated_start_under_memory_pressure`), as it does below the floor.
+
+The memory-figure exits run first: below the floor a start is deferred as
+`low_memory`, and a critical posture defers it as `posture_critical` with its
+figure, which wins over this hold. Agent validation runs before both, so an
+unknown agent is refused `agent_not_found` instead of waiting.
+
+The level is the kernel's own verdict, and it lags. A 16 GB Mac has read NORMAL
+with 4.9 GB in the compressor and 4.8 of 6.0 GB of swap in use, so the level is
+no measure of free memory and does not replace the figure. It is a backstop
+beside the floor: when the kernel does say WARN, the host is short whatever the
+page counters add up to. A start the floor priced shared is held too: it skips
+the kiro-cli process but still launches a fresh copy of the agent's MCP servers
+(~0.45-0.6 GiB with the default roster, see *Prices* above).
+
+A held start waits like a capacity wait, not a store deferral. It joins the
+in-memory window (`_queue`) exactly as a `concurrency_limit` row does, durable
+or restricted alike, labelled `QUEUED_REASON_MEMORY_PRESSURE` with the
+figure-free detail `MEMORY_PRESSURE_DETAIL`, and the pump's pick passes over
+held roots (`pick_window_index(root_held=...)`) the way the child reserve does.
+Every slot release and pump pass re-checks it, and while the hold applies one
+timer (`_pressure_recheck_handle`, cancelled at shutdown) pumps every
+`MEMORY_PRESSURE_RECHECK_SECS`, so a level that eases with nothing finishing is
+noticed. The label is the binding reason: a start the hold keeps is labelled
+`memory_pressure` even when a full cap or the stagger would also have queued
+it, except under an adaptive cap of 0, which keeps `adaptive_cap_zero` because
+nothing starts before the controller's probe recovers. A row first held at the
+pump's pick (queued earlier for capacity) is relabelled there. When the hold
+stops applying, a parent still labelled `memory_pressure` is relabelled
+`concurrency_limit`, or `adaptive_cap_zero` while the cap is 0. Because the row never leaves the window
+machinery, its crew-log pin, its parent's teardown and the continuation checks
+see it as they see any capacity wait. The same rule is re-checked where a start
+could otherwise pass it later: an approval-released start
+(`_release_admitted_start_impl`, so an approval answered after the hold began
+waits too; it is decided per entry, so a held root is passed over rather than
+blocking the nested starts released behind it) and a shared start turning
+dedicated (`_ensure_dedicated_start_priced`, under that wait's own
+`_DEDICATED_TOPUP_WAIT_SECS` bound).
+
+What a held start reports: `deferred_memory_pressure` in SEL on its first hold
+(with the floor's `available_gb`, null when that figure was unreadable, and
+absent when the hold was decided at the pump, which reads none), no GB figures in its
+label, detail or event (the figure cleared the floor, so any "N GB free, needs
+M GB" pair would contradict the verdict), and WARNING once per level
+(`_pressure_hold_level`), DEBUG for every later row. When the hold stops
+applying, the WARNING latch resets, so the next episode warns again; each row
+keeps its wait clock (see the bound above) unless it is older than
+`_PRESSURE_HOLD_PRUNE_SECS`.
+
+An unreadable figure on macOS is reported like Linux's: a WARNING and a
+`memory_check_unavailable` SEL row, and the start proceeds on the fail-open
+contract.
+
+The level never rewrites the figure and never moves the posture, which stays
+figure-based. It is reported beside them: `summary_lines` (the
+`resource_status` tool, whose guidance then names the pressure instead of
+"heavy work is fine"), the `[RESOURCES]` context line, and the diagnostics
+bundle. The eager-spawn admission (`chat_runner._pressure_hold_blocks_prewarm`)
+admits no new speculative pre-warm while the hold applies, and leaves the idle
+ones already live to the host bands; the re-probe after a
+pre-warm registered does not read it. The cron, runner and adaptive-controller
+gates do not act on the level (the probe they share reports it).
+
 The adaptive growth bound is the user's ceiling itself (`user_max_concurrent`),
 with no static host prediction under it: the controller climbs on live pressure
 signals and this spawn-time reservation queues what the host cannot absorb yet.
@@ -551,12 +694,21 @@ Admission order (`subagent_manager/admission/gate.py::spawn_impl`):
 2. For persistent work, **persist** the row in the task store (write-before-ack; see § Durable task
    queue). A store write failure is a refusal with
    `error_code="task_store_unavailable"`; the id is never handed out as accepted.
-3. Memory floor (`spawn_min_memory_gb`, what must remain after the start's price; see *Memory guard*) and posture gate (`admission_gate`,
+3. Agent name validation (a failure marks the row `failed`, refused
+   `agent_not_found` before any wait). The event-loop callers (`spawn_async`
+   and the coroutine pump's dispatch) take both agent-directory scans, app
+   ownership and `_validate_agent`, on a worker thread and hand the gate the
+   answer (`AgentCheck`, keyed by the agent, the cwd it runs in and the app the
+   gate settles on, the captured execution's app winning over the caller's); a
+   synchronous caller validates inline.
+4. Memory floor (`spawn_min_memory_gb`, what must remain after the start's price;
+   see *Memory guard*) and posture gate (`admission_gate`,
    `cached_admission_check`): with a persistent row, **defer** (row stays `queued`,
    `next_run_at = now + admit_wait_secs`, pump wake-up armed, caller gets a
    `queued` id); without one, refuse as before.
-4. Capacity / stagger gate: queue (persistent window/store-only or restricted memory-only) or proceed.
-5. Agent name validation (a failure marks the row `failed`), then the **atomic
+5. Capacity / stagger gate, with the child reserve and the macOS kernel
+   memory-pressure hold (see *Memory guard*): queue (persistent window/store-only
+   or restricted memory-only) or proceed. Then the **atomic
    claim** for persistent work (`admitted`, generation++). A row cancelled while it waited fails the
    claim here and is never started. A boundary-owned claim then revalidates its
    generation and cancellation authority. If that post-claim store step is
@@ -565,20 +717,23 @@ Admission order (`subagent_manager/admission/gate.py::spawn_impl`):
    Registration consumes the reservation; a durable refusal releases it.
 6. Register, take the slot, `starting`; then the approval branch below.
 
-**Every wait is labelled with the verdict that caused it.** Steps 3 and 4 set
+**Every wait is labelled with the verdict that caused it.** Steps 4 and 5 set
 `SubagentInfo.queued_reason` on the `queued` record they return — one of the
 kinds defined in the leaf module `kiro_crew.subagent_wait_reasons` (re-exported by
 `kiro_crew.subagent`; the channel command layer reads them from the leaf so it never
-imports `kiro_crew.subagent` at runtime): `QUEUED_REASON_LOW_MEMORY` / `QUEUED_REASON_POSTURE_CRITICAL` (step 3, with
-`queued_reason_detail` = the gate's own sentence, the same text the task store's
-`deferred` event records), `QUEUED_REASON_ADAPTIVE_CAP_ZERO` (step 4 when the
-effective cap is 0) or `QUEUED_REASON_CONCURRENCY_LIMIT` (step 4 otherwise: a
-taken slot or the stagger tick). The label is a report of a decision already
+imports `kiro_crew.subagent` at runtime): `QUEUED_REASON_LOW_MEMORY` /
+`QUEUED_REASON_POSTURE_CRITICAL` (step 4, with `queued_reason_detail` = the
+gate's own sentence, the same text the task store's `deferred` event records),
+`QUEUED_REASON_MEMORY_PRESSURE` (step 5 while the kernel pressure hold keeps the
+start, with its figure-free detail), `QUEUED_REASON_ADAPTIVE_CAP_ZERO` (step 5
+when the effective cap is 0) or `QUEUED_REASON_CONCURRENCY_LIMIT` (step 5
+otherwise: a taken slot or the stagger tick). The label is a report of a decision already
 made; no gate reads it back. Two consumers:
 
 - The advisory `subagent_queued` lifecycle event (`_emit_queue_depth`) carries
-  `reason` and, for the memory kinds, `available_gb` / `required_gb` beside
-  `queued`. The label is remembered per parent (`_queue_wait`) so the drain's,
+  `reason` and, for the low-memory and posture kinds, `available_gb` /
+  `required_gb` beside `queued`; the memory-pressure kind carries no figures.
+  The label is remembered per parent (`_queue_wait`) so the drain's,
   the claim path's, the cancel paths' and the terminal reports' requests —
   which carry no verdict of their own — keep it. A frame at depth 0 is the
   bare `{"queued": 0}`, and a 0 read no request overlapped forgets the label.
@@ -644,7 +799,7 @@ made; no gate reads it back. Two consumers:
   does exist for that parent.
   An event without `reason` (nothing labelled, or an older gateway) leaves the
   dashboard on its default "queued behind the concurrency limit" text; the
-  memory and adaptive kinds render their own sentence
+  memory, memory-pressure and adaptive kinds render their own sentence
   (`website/src/pages/chat/subagentQueuedReason.ts`), visibly on the run card
   and the composer chip as well as in their tooltips, and with a figure-less
   sentence when the event names the kind but not the numbers. The dashboard
@@ -653,7 +808,7 @@ made; no gate reads it back. Two consumers:
   `sseSubagentQueued` reducer (`website/src/store/chat/subagents.ts`), which
   rewrites or clears both on every frame, so a count never sits under a stale
   reason.
-- `POST /api/spawn` answers the three DEFERRED kinds (`DEFERRED_QUEUED_REASONS`)
+- `POST /api/spawn` answers the DEFERRED kinds (`DEFERRED_QUEUED_REASONS`)
   with `status: "queued"`, `reason` and `reason_detail` under the same `id`;
   every reader of that answer relays it: `spawn_run` prints a
   `Queued N subagent(s). Not started yet: <detail> …` group apart from the
@@ -2001,9 +2156,10 @@ Specified in [taskq.md](taskq.md); this section is the manager's side of it.
   (tests, tools) pumps as soon as it can. The first refused pass logs one debug
   line naming the queue depth and store state, so a hold that is never released
   is visible instead of presenting as rows accepted but never claimed.
-- **Memory pressure defers.** See admission order step 3. SEL outcomes:
+- **Memory pressure defers.** See admission order step 4. SEL outcomes:
   `deferred_low_memory` / `deferred_memory_critical` (store) vs the legacy
-  `refused_low_memory` / `refused_memory_critical`.
+  `refused_low_memory` / `refused_memory_critical`. The macOS kernel pressure
+  hold is a capacity-style wait (step 5), audited `deferred_memory_pressure`.
 - **Nested tree.** `taskq_accept` sets `parent_id` (and inherits `root_id`)
   when the spawning session is `subagent:<id>` and that id has a row, so the
   store holds the S → A → B links a restart rebuilds from.

@@ -882,7 +882,10 @@ subagent adapter calls it — instead of refusing — when
 caller receives a `queued` id. Only when there is no store (the feature is
 off, or the row is a legacy in-memory entry the store never saw) does pressure
 still refuse, exactly as before. `agent.admission_gate=false` still turns the
-posture tier off entirely.
+posture tier off entirely. The macOS kernel memory-pressure hold is not a deferral: it
+is a capacity-style wait in the window (subagent.md), and the runner lane,
+cron and workflow `ctx.agent` gates deliberately do not read the kernel level;
+only the subagent gate acts on it.
 
 ## Journal mode and network filesystems
 

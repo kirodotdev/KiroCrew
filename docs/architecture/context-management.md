@@ -203,7 +203,7 @@ it adds:
 | `[SLACK THREAD REPLIES]` | `slack/thread_replies.py`, fenced as untrusted | a Slack thread turn with replies it has not seen |
 | `[PROJECT]` | the slot's project dir | every turn, `project` group |
 | `[BOARD]` | slot board tags, sanitized ids | slot carries tags |
-| `[RESOURCES]` | `resource_status.probe` | host memory tight/critical, or the agent slice within `_SLICE_TASKS_TIGHT_RATIO` of its cgroup `pids.max` |
+| `[RESOURCES]` | `resource_status.probe` | host memory tight/critical, or the agent slice within `_SLICE_TASKS_TIGHT_RATIO` of its cgroup `pids.max`, or a macOS kernel memory-pressure level of WARN or worse |
 | `[FOLDER]` | sidebar ancestry | once per session, and after a move |
 | `[THEME PERSONA]` / `$skill` bodies | `request_prefix_context` | dashboard-generated |
 | `[Skill: name]` bodies, `[Relevant skills for this message]` | trigger matching | see below |

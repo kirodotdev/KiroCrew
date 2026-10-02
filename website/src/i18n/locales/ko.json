@@ -10586,12 +10586,16 @@
         "adaptive_cap_zero": "시작 대기 중 — 이 컴퓨터의 메모리가 부족하거나 과부하 상태여서 새 시작이 일시 중지되었습니다. 회복되면 자동으로 다시 시작됩니다",
         "low_memory": "시작 대기 중 — 여유 메모리 {{required}} 필요, 현재 {{available}} 여유. 계속하려면 메모리를 확보하세요",
         "low_memory_no_figures": "시작 대기 중 — 여유 메모리가 부족합니다. 계속하려면 메모리를 확보하세요",
+        "memory_pressure": "시작 대기 중 — macOS가 메모리 압박을 보고하고 있습니다. 압박이 줄어들거나 실행 중인 에이전트가 끝나면 자동으로 다시 시작됩니다. 압박이 30분 동안 계속되면 시작은 중단됩니다",
         "posture_critical": "시작 대기 중 — 이 컴퓨터의 메모리가 심각하게 부족합니다(여유 {{available}}). 계속하려면 메모리를 확보하세요",
         "posture_critical_no_figures": "시작 대기 중 — 이 컴퓨터의 메모리가 심각하게 부족합니다. 계속하려면 메모리를 확보하세요"
       },
       "subagentRunCard": {
         "agent_finished_other": "에이전트 {{count}}개 완료",
         "agent_launched_other": "에이전트 {{count}}개 시작됨",
+        "agent_never_started_other": "에이전트 {{count}}개가 시작되지 않음",
+        "agent_ran_of_total_other": "에이전트 {{total}}개 중 {{count}}개 실행됨",
+        "never_started_memory_pressure_other": "{{count}}개가 시작되지 않음 — macOS 메모리 압박이 제때 줄어들지 않았습니다. 압박이 줄거나 실행 중인 에이전트가 끝나면 서브에이전트 패널의 '실패 재시도'를 사용하세요 (압박 수준은 활성 상태 보기의 '메모리' 탭에서 확인할 수 있습니다)",
         "agent_other": "에이전트 {{count}}개",
         "agent_queued_other": "에이전트 {{count}}개 대기 중",
         "agent_running_other": "에이전트 {{count}}개 실행 중",

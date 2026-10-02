@@ -784,6 +784,19 @@ describe('ActivityViewer — queued subagents', () => {
     expect(text).not.toContain('concurrency limit')
   })
 
+  it('names macOS memory pressure without GB figures, even if an event carries them', () => {
+    // The kernel's pressure verdict holds a start whose free-memory figure
+    // cleared the floor, so a "needs M GB, N GB free" pair would contradict it.
+    render(<ActivityViewer {...baseProps} view="subagents" />, {
+      wrapper: queuedWrapper(1, { reason: 'memory_pressure', available_gb: 8, required_gb: 4.5 }),
+    })
+    const text = screen.getByTestId('subagent-queued-banner').textContent ?? ''
+    expect(text).toBe(
+      '1 waiting to start — macOS reports memory pressure; the starts resume on their own once it eases or the running agents finish; starts give up once the pressure has lasted 30 minutes',
+    )
+    expect(text).not.toMatch(/GB/)
+  })
+
   it('tells the user what to do about a memory wait', () => {
     render(<ActivityViewer {...baseProps} view="subagents" />, {
       wrapper: queuedWrapper(1, { reason: 'low_memory', available_gb: 3.2, required_gb: 4.5 }),

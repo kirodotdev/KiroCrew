@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -1390,6 +1391,35 @@ class TestPrewarmAdmission:
             await _eager_spawn(state, slot)
         state.sessions.get_or_create.assert_not_awaited()
         assert not chat_runner._armed_prefetches
+
+    @pytest.mark.parametrize("held", [True, False])
+    @pytest.mark.asyncio
+    async def test_the_subagent_pressure_hold_blocks_a_new_prewarm(self, monkeypatch, held):
+        """While the subagent gate's macOS memory-pressure hold applies, a
+        speculative runtime must not take the memory held starts wait for; the
+        host allowance alone would admit it."""
+        monkeypatch.setattr(chat_runner, "_prewarm_allowance", lambda: 3)
+        chat_runner._armed_prefetches.clear()
+        chat_runner._armed_prefetches["dashboard:old"] = 1.0
+        slot = _ChatSlot("t1")
+        state = _mock_state(slot)
+        state.sessions.remove_if_unclaimed = AsyncMock(return_value=True)
+        state.subagents = SimpleNamespace(memory_pressure_hold_active=lambda: held)
+        with (
+            patch.object(chat_runner.KiroCrewConfig, "load", _cfg(True)),
+            patch.object(chat_runner, "resolve_agent_bindings", return_value=self._bindings()),
+        ):
+            await _eager_spawn(state, slot)
+        try:
+            if held:
+                state.sessions.get_or_create.assert_not_awaited()
+                # The idle pre-warm already live is left alone.
+                state.sessions.remove_if_unclaimed.assert_not_awaited()
+                assert "dashboard:old" in chat_runner._armed_prefetches
+            else:
+                state.sessions.get_or_create.assert_awaited_once()
+        finally:
+            chat_runner._armed_prefetches.clear()
 
     @pytest.mark.asyncio
     async def test_zero_allowance_evicts_the_prewarms_already_live(self, monkeypatch):

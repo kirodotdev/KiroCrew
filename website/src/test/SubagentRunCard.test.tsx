@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { screen, fireEvent } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from './helpers'
 import SubagentRunCard, { extractSpawnRunLaunch, isSpawnRunTool } from '../pages/chat/SubagentRunCard'
+import { NEVER_STARTED_PREFIX } from '../pages/chat/subagentQueuedReason'
 import type { RootState } from '../store'
 import type { ChatMessage, SubagentActivity } from '../types'
 
@@ -358,6 +359,71 @@ describe('SubagentRunCard rendering', () => {
     })
     renderWithProviders(<SubagentRunCard launch={launch} slot={SLOT} />, { store })
     expect(screen.getByText('1 agent running')).toBeTruthy()
+  })
+
+  it('says the wave never started when the hold ended every member', () => {
+    // The gate's terminal error for a start its macOS memory-pressure hold ended.
+    // "3 agents finished" over a wave that launched nothing read as success, so
+    // the header names what happened instead.
+    const ended = (id: string) => ({
+      ...agent(id, 'error'),
+      error: `${NEVER_STARTED_PREFIX} (macOS memory pressure did not ease in time)`,
+    })
+    const store = createTestStore({
+      chat: {
+        activeSlot: SLOT,
+        subagents: { a1: ended('a1'), a2: ended('a2'), a3: ended('a3') },
+        subagentQueued: {},
+      } as unknown as ChatState,
+    })
+    renderWithProviders(<SubagentRunCard launch={launch} slot={SLOT} />, { store })
+    expect(screen.getByText('3 agents never started')).toBeTruthy()
+    expect(screen.queryByText('3 agents finished')).toBeNull()
+    // The terminal card keeps the cause and the way out, as the waiting card did.
+    const reason = screen.getByTestId('subagent-card-never-started-reason').textContent ?? ''
+    expect(reason).toContain('3 never started')
+    expect(reason).toContain('macOS memory pressure did not ease in time')
+    // The way out names the control that does it, so it is not read as automatic.
+    expect(reason).toContain('Retry failed')
+    // A failure renders through the shared error surface, outside the card's
+    // button (errors-use-error-notice): an alert nested in a button is not read.
+    const notice = screen.getByTestId('subagent-card-never-started-reason')
+    expect(notice.getAttribute('role')).toBe('alert')
+    expect(screen.getByTestId('subagent-run-card').contains(notice)).toBe(false)
+  })
+
+  it('says how many ran and shows the cause when only some members never started', () => {
+    const store = createTestStore({
+      chat: {
+        activeSlot: SLOT,
+        subagents: {
+          a1: agent('a1', 'done'),
+          a2: agent('a2', 'done'),
+          a3: { ...agent('a3', 'error'), error: NEVER_STARTED_PREFIX },
+        },
+        subagentQueued: {},
+      } as unknown as ChatState,
+    })
+    renderWithProviders(<SubagentRunCard launch={launch} slot={SLOT} />, { store })
+    expect(screen.getByText('2 of 3 agents ran')).toBeTruthy()
+    expect(screen.queryByText('3 agents finished')).toBeNull()
+    // The member that never started keeps its cause on the card all the same.
+    // Counted, so the line binds to the one failed member, not the whole wave.
+    expect(screen.getByTestId('subagent-card-never-started-reason').textContent).toContain(
+      '1 never started — macOS memory pressure did not ease in time',
+    )
+  })
+
+  it('renders no never-started line for an ordinary settled wave', () => {
+    const store = createTestStore({
+      chat: {
+        activeSlot: SLOT,
+        subagents: { a1: agent('a1', 'done'), a2: agent('a2', 'done'), a3: agent('a3', 'error') },
+        subagentQueued: {},
+      } as unknown as ChatState,
+    })
+    renderWithProviders(<SubagentRunCard launch={launch} slot={SLOT} />, { store })
+    expect(screen.queryByTestId('subagent-card-never-started-reason')).toBeNull()
   })
 
   it('shows a finished summary once the wave settles', () => {

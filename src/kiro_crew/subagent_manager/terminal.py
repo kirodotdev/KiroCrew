@@ -19,6 +19,7 @@ if TYPE_CHECKING:
         SubagentInfo,
         _done_result,
         _injection_notice_outcome,
+        _parked_at_spawn_approval,
         _redact,
         _timeout_context,
         _ws_result_path,
@@ -656,7 +657,7 @@ class TerminalCoordinator(ManagerComponent):
         # also sets ``_awaiting_approval`` for mid-run TOOL prompts, where
         # ``_exec_started`` is already set, so ``_exec_started is None`` is what
         # distinguishes "never started" from "was running".
-        approval_parked = info._awaiting_approval and info._exec_started is None
+        approval_parked = _parked_at_spawn_approval(info)
         # Same capture for the state right after: approved, and waiting for the
         # pump to meter the start into startup (``_admit_released_start``).
         release_parked = info._start_release is not None and info._exec_started is None

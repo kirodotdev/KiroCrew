@@ -1265,7 +1265,9 @@ class TestOpsMissionControlApiTool:
 class TestResourceStatusTool:
     def _run(self, posture: str, *, cap: Any = 3, state: Any = None, lines: Any = None):
         rstatus = SimpleNamespace(
-            posture=posture, summary_lines=lambda: list(lines or ["Memory: 19G free", "Load: 1.2"])
+            posture=posture,
+            memory_pressure_held=False,
+            summary_lines=lambda: list(lines or ["Memory: 19G free", "Load: 1.2"]),
         )
         cfg = SimpleNamespace(load=staticmethod(lambda: object()))
         resolver = (

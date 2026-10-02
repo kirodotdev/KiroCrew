@@ -419,6 +419,7 @@ def _read_posture() -> dict[str, Any]:
             "slice_tasks_limit": status.slice_tasks_limit,
             "slice_tasks_own": status.slice_tasks_own,
             "slice_tasks_tight": status.slice_tasks_tight,
+            "memory_pressure_level": status.memory_pressure_level,
         }
     except Exception:  # noqa: BLE001
         logger.debug("diag: posture probe failed", exc_info=True)
@@ -433,6 +434,7 @@ def _read_posture() -> dict[str, Any]:
             "slice_tasks_limit": None,
             "slice_tasks_own": None,
             "slice_tasks_tight": None,
+            "memory_pressure_level": None,
         }
 
 

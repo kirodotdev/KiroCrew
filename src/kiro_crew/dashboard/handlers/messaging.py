@@ -951,12 +951,13 @@ async def api_spawn(request: web.Request) -> web.Response:
         "status": "spawned",
         "parent_work_supported": can_work,
     }
-    # A row the gate DEFERRED (memory floor, critical posture, adaptive cap at
-    # 0) is accepted and keyed like any other -- same ``id``, counted in its
-    # wave -- but it is not running and may not run for a long time: the pump
-    # re-checks it every admit wait for as long as the host stays below the
-    # bar. Saying ``spawned`` for it left the caller waiting on a completion
-    # event that was not coming. ``queued`` names the wait; ``reason`` is the
+    # A row the gate DEFERRED or HELD (memory floor, critical posture, adaptive
+    # cap at 0, macOS kernel memory pressure) is accepted and keyed like any
+    # other -- same ``id``, counted in its wave -- but it is not running and may
+    # not run for a long time: the pump re-checks it until the condition clears
+    # (the pressure hold within its own bound). Saying ``spawned`` for it left
+    # the caller waiting on a completion event that was not coming. ``queued``
+    # names the wait; ``reason`` is the
     # kind, ``reason_detail`` the gate's own sentence. A row waiting only for a
     # slot or the stagger tick (``concurrency_limit``) keeps ``spawned``: that
     # wait is the ordinary wave shape and clears within seconds.
@@ -1550,11 +1551,12 @@ def _awaiting_spawn_approval(info: object) -> bool:
     pair, because the two handlers build their payloads independently and a
     drift between them is invisible to a behavioural test.
 
-    ``subagent_manager/terminal.py`` computes the same pair for the reap message.
-    Deliberately not extracted onto ``SubagentInfo``: that read is a plain
-    attribute read on a live run inside the manager package, whereas this one
-    must survive the info doubles the handlers are tested with (below). The
-    duplication is two lines and both sites name each other.
+    The manager package has its own copy, ``subagent._parked_at_spawn_approval``,
+    read by ``subagent_manager/terminal.py`` (the reap message),
+    ``subagent_manager/cancellation.py`` (the parent-end paths) and the kernel
+    memory-pressure hold. Deliberately not imported from there: this handler
+    layer does not reach into the manager's private helpers. The duplication is
+    two lines and both sites name each other.
 
     ``getattr`` with a strict ``is True`` / ``is None``: these handlers are
     exercised with lightweight info doubles (SimpleNamespace / MagicMock) that

@@ -1948,6 +1948,30 @@ def _no_carried_auto_update_effect(_floor_monkeypatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _no_live_kernel_memory_pressure(_floor_monkeypatch) -> None:
+    """Pin the macOS kernel memory-pressure level to "unknown" for the suite.
+
+    ``resource_status.probe`` reads it, and through the probe so do
+    ``prewarm_allowance``, the posture surfaces and the subagent gate's pressure
+    hold. On a macOS runner the live level is whatever the machine is under, so
+    without this pin a busy runner at WARN would hold spawns and zero the prewarm
+    allowance in tests that never asked about pressure. ``None`` is the value
+    every caller fails open on, so it is what a non-macOS host already reads.
+    A test about the level patches it in its own body, on top of this; the
+    reader's own tests capture the real function at import. Patched through the
+    floor's own ``MonkeyPatch`` so a test's ``monkeypatch.undo()`` cannot lift it.
+    """
+    _floor_monkeypatch.setattr(
+        "kiro_crew.platform_compat.memory_pressure_level", lambda: None, raising=True
+    )
+    # On a macOS runner that pinned None would otherwise make the probe log its
+    # once-per-process "level unreadable" WARNING into whichever test came first.
+    _floor_monkeypatch.setattr(
+        "kiro_crew.resource_status._pressure_unreadable_reported", True, raising=True
+    )
+
+
+@pytest.fixture(autouse=True)
 def _no_live_catalog_network(_floor_monkeypatch):
     """Make the official app catalog's network seam unreachable for the suite.
 
