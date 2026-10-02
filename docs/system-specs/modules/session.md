@@ -1679,8 +1679,9 @@ the four where `rewind` does not yet, so nobody reads them as already shared:
   write. It matters more here than elsewhere: a periodic save is a full metadata
   rebuild and does not request the `rows_only` deferral that keeps another
   holder's folder, title and tag.
-  That in-lock refusal keeps the write OWED (`_keep_owed_after_refusal`), for the
-  reason its own docstring gives: `flush_slot_now` clears `_dirty` on any return
+  That in-lock refusal keeps the write OWED (`_keep_owed_after_refusal`, kept with
+  the save's other refusal rules in `dashboard/slot_persistence/write_guards.py`),
+  for the reason its own docstring gives: `flush_slot_now` clears `_dirty` on any return
   that did not raise, so a guard refusing without re-arming erases the only
   in-memory witness of an edit it never wrote. An in-place edit has no
   substitute witness — the popped slot is outside the registry the periodic pass
@@ -2441,7 +2442,8 @@ flow) diverged from their sanitized filename: after a gateway restart,
 producing duplicate sidebar sessions backed by one transcript.
 `restore_open_slots()` and `_rehydrate_slot_from_history()` apply the same
 fold on read so pre-fix snapshots carrying both key forms self-heal (the
-second form hits the dedup guard). When normalization changes the name, the
+second form hits the dedup guard); the open-tab read screens and folds each key
+through `_sanitize_open_slot_key` (`dashboard/slot_persistence/restore_inputs.py`). When normalization changes the name, the
 original pretty form is preserved as the slot's initial title
 (redaction-scrubbed, non-pinned so auto-title can still override).
 
@@ -2735,7 +2737,10 @@ so absence clears it.
   separately, the two halves could commit a file showing neither the entry nor
   its row. A crash between the drain and the save loses the row as well, so a
   replayed entry is a prompt the transcript never recorded — never a second copy
-  of one it did.
+  of one it did. The pairing and the in-lock committed-witness refusal are the
+  save's guards in `dashboard/slot_persistence/write_guards.py`
+  (`paired_window_snapshot`, `_queue_snapshot_is_stale`); the value rides the line
+  that `metadata_line.build_full_line` folds.
 - **Restored entries are handed back as queue CARDS, not dispatched.** Nothing
   drains an idle slot on boot, so the user sends, edits or deletes them. This is
   the same rule `sendTurn.ts` follows for an indeterminate send: a prompt whose
