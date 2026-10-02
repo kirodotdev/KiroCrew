@@ -2719,8 +2719,8 @@ class TestProcessDescendants:
             ),
         ]
         assert runs == [
-            ["/usr/bin/ps", "-Ao", "pid=,ppid=,lstart="],
-            ["/usr/bin/ps", "-Ao", "pid=,ppid=,lstart="],
+            ["/usr/bin/ps", "-A", "-o", "pid=", "-o", "ppid=", "-o", "lstart="],
+            ["/usr/bin/ps", "-A", "-o", "pid=", "-o", "ppid=", "-o", "lstart="],
         ]
 
     @pytest.mark.parametrize(

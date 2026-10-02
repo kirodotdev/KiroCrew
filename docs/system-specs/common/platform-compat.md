@@ -94,6 +94,12 @@ produces exactly those silent failures, which is why the helper is named per cal
 | Read a Windows system tool's ANSWER (`schtasks /Query`, `tasklist`, `sc query`) | the tool's **exit code**, or a fact the program under test recorded itself | parsing its stdout (column headers AND status words are translated by the UI language, so a match on `"Running"` reports every instance down on a non-English host — the fail-OPEN direction) |
 | strftime no-pad | `strftime(dt, "%-I")` | bare `dt.strftime("%-I")` (`ValueError` on Windows) |
 
+The shared POSIX process snapshot requests each column separately:
+`ps -A -o pid= -o ppid= -o lstart=`. Some `ps` implementations parse the commas
+after an empty header as part of that header, returning only PIDs. Separate
+output options preserve the parent and start-time fields that descendant
+discovery and PID-reuse checks need, even when the combined form exits successfully.
+
 **Its relationship to `pinned_fs`.** That module owns this discipline and says so —
 mechanism in one place, callers as thin consumers — and `PinnedDirectory` is the
 cross-platform arm of it, not a second opinion. What decides the split is the import

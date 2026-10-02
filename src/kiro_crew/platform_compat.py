@@ -3396,7 +3396,7 @@ def _posix_process_snapshot() -> dict[int, _PosixProcessSnapshotRow] | None:
         return None
     try:
         output = subprocess.check_output(
-            [ps_bin, "-Ao", "pid=,ppid=,lstart="],
+            [ps_bin, "-A", "-o", "pid=", "-o", "ppid=", "-o", "lstart="],
             timeout=5,
             stderr=subprocess.DEVNULL,
         ).decode(errors="replace")
