@@ -11843,6 +11843,49 @@ def _reconcile_slice_memory_high_off_thread() -> None:
         )
 
 
+# ``resource_limits`` keys whose only enforcement is a cgroup/systemd property
+# or a POSIX rlimit. The Windows Job object carries per-spawn processes and
+# memory only, so a value set for any of these is accepted but not enforced.
+_WINDOWS_INERT_RESOURCE_LIMIT_KEYS = (
+    "cpu_weight",
+    "max_cpu_percent",
+    "max_cpu_seconds",
+    "max_open_files",
+    "max_total_memory_mb",
+    "max_total_processes",
+)
+_WINDOWS_INERT_LIMITS_WARNED = False
+
+
+def _warn_windows_inert_resource_limits_once() -> None:
+    """Log ONE warning naming each set ``resource_limits`` key Windows ignores.
+
+    A key counts as set when it is non-null and non-zero. Nothing is logged
+    when no such key is configured, and later calls are no-ops either way.
+    """
+    global _WINDOWS_INERT_LIMITS_WARNED
+    if _WINDOWS_INERT_LIMITS_WARNED:
+        return
+    _WINDOWS_INERT_LIMITS_WARNED = True
+    try:
+        # circular import: same function-level pattern as _cgroup_limits_from_config.
+        from kiro_crew.config.loader import ResourceLimitsConfig, _raw_config
+
+        rl = ResourceLimitsConfig.from_raw(_raw_config().get("resource_limits"))
+    except Exception:
+        logger.debug("inert resource_limits check: config unavailable")
+        return
+    inert = [key for key in _WINDOWS_INERT_RESOURCE_LIMIT_KEYS if getattr(rl, key, None)]
+    if inert:
+        logger.warning(
+            "resource_limits.%s %s set but not enforced on Windows: the Job "
+            "object bounds only per-spawn max_processes / max_memory_mb, and "
+            "these keys need a systemd user manager or POSIX rlimits.",
+            ", resource_limits.".join(inert),
+            "is" if len(inert) == 1 else "are",
+        )
+
+
 def apply_windows_resource_ceiling(pid: int) -> bool:
     """Windows counterpart to :func:`cgroup_scope_argv`, applied AFTER the spawn.
 
@@ -11871,6 +11914,7 @@ def apply_windows_resource_ceiling(pid: int) -> bool:
     """
     if not platform_compat.IS_WINDOWS:
         return False
+    _warn_windows_inert_resource_limits_once()
     max_procs, max_mem_mb, _cpu_weight, _max_cpu_percent = _cgroup_limits_from_config()
     return platform_compat.apply_job_limits(
         pid,
