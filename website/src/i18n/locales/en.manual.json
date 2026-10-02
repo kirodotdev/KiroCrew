@@ -8101,6 +8101,7 @@
       "downloading_decoder": "Downloading the audio decoder: {{pct}} ({{done}} of {{total}})",
       "downloading_speech_model": "Downloading the speech model: {{pct}} ({{done}} of {{total}})",
       "loading_speech_model": "Loading the speech model…",
+      "stream_error_consent_required": "AWS Transcribe needs permission before it can listen. Confirm it in Settings → Voice, then try again.",
       "stream_error_decode_failed": "Speech recognition could not finish this transcript. Dictate it again.",
       "stream_error_max_duration": "Dictation reached its length limit. Start a new recording to continue.",
       "stream_error_model_missing": "The speech model is not ready yet. Download it in the speech-to-text settings, then try again.",

@@ -9476,6 +9476,7 @@
       "downloading_decoder": "Audio-Decoder wird heruntergeladen: {{pct}} ({{done}} von {{total}})",
       "downloading_speech_model": "Sprachmodell wird heruntergeladen: {{pct}} ({{done}} von {{total}})",
       "loading_speech_model": "Sprachmodell wird geladen…",
+      "stream_error_consent_required": "AWS Transcribe braucht eine Freigabe, bevor es zuhören kann. Bestätige sie unter Einstellungen → Sprache und versuche es dann erneut.",
       "stream_error_decode_failed": "Die Spracherkennung konnte diese Transkription nicht abschließen. Diktiere sie noch einmal.",
       "stream_error_max_duration": "Das Diktat hat seine Längenbegrenzung erreicht. Starte eine neue Aufnahme, um weiterzumachen.",
       "stream_error_model_missing": "Das Sprachmodell ist noch nicht bereit. Lade es in den Spracherkennungseinstellungen herunter und versuche es dann noch einmal.",

@@ -123,6 +123,12 @@ export function unavailableMessage(code: string, detail = ''): string {
  * reaches the socket too and needs different words there: the settings panel's
  * version says "Download it below", and below the composer there is no "below".
  *
+ * `stt_consent_required` is the AWS consent gate refusing a Transcribe stream, with
+ * the gateway's refusal reason as its advisory English `message`. It is re-checked
+ * live on every stream, so an expired credential on an already-confirmed profile
+ * lands here too, not only a first use — which is why the notice points to the
+ * settings page rather than describing a one-time confirmation.
+ *
  * Keys, not resolved strings, for the same reason as `PROVIDER_LABEL_KEY` — the
  * table is evaluated at module load, so an `i18nT()` here would freeze the boot
  * language.
@@ -132,6 +138,7 @@ export const STREAM_ERROR_CODE_KEY: Record<string, string> = {
   stt_session_failed: 'lib.sttProviders.stream_error_session_failed',
   stt_max_duration_exceeded: 'lib.sttProviders.stream_error_max_duration',
   stt_model_missing: 'lib.sttProviders.stream_error_model_missing',
+  stt_consent_required: 'lib.sttProviders.stream_error_consent_required',
 }
 
 /**
