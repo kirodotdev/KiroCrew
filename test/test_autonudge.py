@@ -5024,10 +5024,11 @@ async def test_cross_surface_ladder_still_refuses_unroutable_channels(tmp_path):
     """The delivery ladder, not the key classifier, is the enforcement point.
 
     Membership in ``_CHANNEL_KEY_PREFIXES`` asserts "this key names a
-    conversation", never "a send will succeed", so the fail-closed ladder in
-    ``dashboard/chat_runner.py`` (``_resolve_channel_target``: governance → a
-    REGISTERED transport → ``supports_proactive_send``) has to keep refusing on
-    its own. Both of its transport arms are pinned here: a namespace with no
+    conversation", never "a send will succeed", so the fail-closed ladder
+    ``chat_runner._resolve_channel_target`` (defined in
+    ``dashboard/chat_turn/recipient.py``: governance → a REGISTERED transport →
+    ``supports_proactive_send``) has to keep refusing on its own. Both of its
+    transport arms are pinned here: a namespace with no
     registered transport (``whatsapp``) and a registered transport that declares
     no proactive send (a SYNTHETIC capability — every shipped channel now declares
     True, and the arm still has to refuse). Each logs its reason and degrades to a

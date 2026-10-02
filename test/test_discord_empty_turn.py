@@ -685,10 +685,19 @@ class TestOneStoryAcrossSurfaces:
         )
 
     def test_the_remedies_are_spelled_once(self) -> None:
-        from kiro_crew.dashboard import chat_runner
+        import importlib
+        import pkgutil
+
+        from kiro_crew.dashboard import chat_runner, chat_turn
         from kiro_crew.messaging import driver, empty_turn_copy
 
-        for module in (driver, chat_runner):
+        # The runner's empty-turn copy is composed into it from these owners.
+        owners = [
+            importlib.import_module(f"{chat_turn.__name__}.{info.name}")
+            for info in pkgutil.iter_modules(chat_turn.__path__)
+        ]
+        assert owners, "the owner scan found no module, so it is measuring nothing"
+        for module in (driver, chat_runner, *owners):
             source = Path(module.__file__).read_text(encoding="utf-8")
             for remedy in (empty_turn_copy.EMPTY_TURN_RESEND, empty_turn_copy.EMPTY_TURN_CONTINUE):
                 assert remedy not in source, f"{module.__name__} respells {remedy!r}"

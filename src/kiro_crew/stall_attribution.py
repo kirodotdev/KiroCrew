@@ -55,7 +55,11 @@ _SURFACE_RULES: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
     ("task runner", ("/kiro_crew/task_executor.py", "/kiro_crew/task_planner.py"), ()),
     ("subagent", ("/kiro_crew/subagent_manager/",), ()),
     ("workflow", ("/kiro_crew/workflows/",), ()),
-    ("dashboard chat", ("/kiro_crew/dashboard/chat_runner.py",), ()),
+    (
+        "dashboard chat",
+        ("/kiro_crew/dashboard/chat_runner.py", "/kiro_crew/dashboard/chat_turn/"),
+        (),
+    ),
     ("dashboard side panel", ("/kiro_crew/dashboard/handlers/side.py",), ()),
     ("slack", ("/kiro_crew/slack/handler.py", "/kiro_crew/slack/transport_dispatch.py"), ()),
     ("discord", ("/kiro_crew/discord/",), ()),

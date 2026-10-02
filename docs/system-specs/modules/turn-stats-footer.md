@@ -2,7 +2,7 @@
 
 ## Overview
 
-The dashboard persists per-turn measurement metadata on an assistant message and renders it as a muted footer when that message is the completed turn's final assistant message. `chat_runner._attach_turn_stats` keeps the metadata on the message before persistence, so the `chat_done` refresh can restore the same footer after reconnects.
+The dashboard persists per-turn measurement metadata on an assistant message and renders it as a muted footer when that message is the completed turn's final assistant message. `_attach_turn_stats` (`dashboard/chat_turn/turn_stats.py`, called through `chat_runner`) keeps the metadata on the message before persistence, so the `chat_done` refresh can restore the same footer after reconnects.
 
 ## Data flow
 
@@ -25,11 +25,11 @@ chat_done → refreshSlot → persisted metadata
 AssistantMessage renders the footer when its presentation gates permit it
 ```
 
-## Backend (`src/kiro_crew/dashboard/chat_runner.py`)
+## Backend (`src/kiro_crew/dashboard/chat_runner.py`, `chat_turn/turn_stats.py`)
 
 `_run_chat` captures a monotonic start time and message boundary at turn start. On `EVENT_COMPLETE`, it prefers `TurnUsage.duration_ms` when present and otherwise measures elapsed time locally; it reads credits and cost from `TurnUsage` and calls `read_turn_model(client)`. ACP credit telemetry is accumulated from `meteringUsage` entries whose unit is `credit` by `acp.client.AcpClient._track_metadata`; `acp._dispatch.parse_metadata` applies the same unit filter for the shared dispatch path.
 
-`_attach_turn_stats(slot, elapsed_ms, credits, cost_usd, turn_boundary, model)` writes `meta["turn_stats"]` on the last assistant message appended at or after `turn_boundary`. `TestAttachTurnStats.test_error_only_turn_does_not_overwrite_previous_turn` and `test_boundary_scopes_to_current_turn_assistant` enforce this boundary: without it, an error-only turn could overwrite the prior turn's measurement. The helper does not fabricate a message, and it returns without a positive elapsed measurement. The post-turn persistence block skips the helper for `_retrying_empty` turns.
+`_attach_turn_stats(slot, elapsed_ms, credits, cost_usd, turn_boundary, model, ttft_ms)`, defined in `chat_turn/turn_stats.py` beside the first-token clock (`_FirstVisibleClock`, `_turn_clock`) whose reading `_run_chat` passes as `ttft_ms`, and bound on `chat_runner` (the binding tests import), writes `meta["turn_stats"]` on the last assistant message appended at or after `turn_boundary` and returns whether a row received it. `TestAttachTurnStats.test_error_only_turn_does_not_overwrite_previous_turn` and `test_boundary_scopes_to_current_turn_assistant` enforce this boundary: without it, an error-only turn could overwrite the prior turn's measurement. The helper does not fabricate a message, and it returns without a positive elapsed measurement. The post-turn persistence block skips the helper for `_retrying_empty` turns.
 
 The helper preserves pre-existing `meta`, always records a positive `elapsed_ms`, and omits non-positive credits, cost, and empty model values. It also drops a non-finite credit or cost (`json.dumps` writes `inf`/`nan` as a bare `Infinity`/`NaN` that no browser parses), scrubs the model id with `_redact_acp_string` (credentials and suspicious URLs), and drops a model longer than `_MAX_MODEL_ID_LEN` — all of which applies to chat turns too, since `turn_stats_meta` is the one builder both writers share. `TestAttachTurnStats.test_credits_rounded` pins credit precision; `test_preserves_existing_meta`, `test_zero_credits_key_omitted`, `test_zero_cost_key_omitted`, and `test_model_omitted_when_unattributable` pin the remaining contract.
 
