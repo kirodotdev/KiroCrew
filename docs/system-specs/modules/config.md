@@ -860,7 +860,13 @@ must not resolve for anyone:
   Rewriting is safe here where it is not on the load path because the operator
   asked by name, and only a key whose stored value IS the superseded default is
   ever removed. Detection runs again inside the write lock, so a value changed
-  since it was listed is left alone;
+  since it was listed is left alone. It prints each key it removed, and asks for
+  a gateway restart only for the keys `requires_restart` marks, the schema's one
+  statement of which fields a running gateway cannot adopt (see *`restart=True` is
+  the single source of restart truth*). That makes a row whose consumer reads its
+  key only at boot a row that must carry the mark:
+  `dashboard.loop_stall_exit_after_secs` does, because the gateway sizes its
+  loop-stall watchdog from it once at start;
 - `--keep [KEY...]` records the stored values as intentional, which suppresses the
   load-path line for exactly those values. A kept row that carries a `note`
   prints it again in the confirmation.
@@ -2116,6 +2122,8 @@ Consequences, and they are the point:
 Currently marked: `agent.jail`, `agent.dangerously_skip_permissions`,
 `agent.approval_mode`, `dashboard.url`, `dashboard.tailscale.*`,
 `dashboard.restore_sessions`, `dashboard.restore_window_minutes`,
+`dashboard.loop_stall_exit_after_secs` (read once at boot to build the loop-stall
+watchdog),
 `dashboard.surface_channel_sessions`, `dashboard.cautious_boot`,
 `dashboard.auto_open_browser`, `tunnel.*`, `instances.*`, `mcp_gateway.*`
 (every field of the section), `memory.embed_model_id`, `memory.embed_model_path`,

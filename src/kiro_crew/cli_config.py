@@ -561,8 +561,20 @@ def _defaults_cmd(args: argparse.Namespace) -> None:
                 print(f"✅ {key} removed — the current default now applies")
         if not removed:
             print("Nothing removed — the stored values changed since they were listed.")
-        else:
-            print("\nRestart the gateway for a running instance to pick this up.")
+        # The schema's restart=True mark is the one statement of which fields a
+        # running gateway cannot adopt, so the restart hint names exactly those keys
+        # -- and only where the effective value moved: an overlay-shadowed key runs
+        # the same value after the edit as before it.
+        # Imported here: the schema builds the full registry at import time, which
+        # the listing and --keep paths never need.
+        from kiro_crew.config.schema import requires_restart
+
+        restart_bound = [key for key in removed if key not in overridden and requires_restart(key)]
+        if restart_bound:
+            print(
+                "\nRestart the gateway for a running instance to pick up: "
+                + ", ".join(restart_bound)
+            )
         return
 
     if keeping:

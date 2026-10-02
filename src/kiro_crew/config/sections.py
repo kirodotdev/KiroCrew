@@ -2566,6 +2566,7 @@ class DashboardConfig:
             "liveness probe kills at roughly 20s independently, so a value "
             "above that only takes effect for a headless gateway — the desktop "
             "probe wins first and the stack dump is lost.",
+            restart=True,
         ),
     )
     chat_entry_cache_max_entries: int = field(

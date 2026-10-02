@@ -7427,7 +7427,8 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": null,
-      "nullable": true
+      "nullable": true,
+      "requiresRestart": true
     },
     {
       "path": "dashboard.chat_entry_cache_max_entries",

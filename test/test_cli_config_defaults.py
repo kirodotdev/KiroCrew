@@ -131,6 +131,48 @@ def test_keep_records_the_stored_values_and_silences_the_report(home, capsys):
     assert "recorded as intentional" in capsys.readouterr().out
 
 
+def test_the_restart_hint_names_only_restart_bound_keys(home, capsys):
+    """The schema's ``restart=True`` mark decides the hint, so a key the mark leaves
+    hot is not sent through a restart. ``forward_declared_env`` is marked;
+    ``autocompact_pct`` is not."""
+    from kiro_crew.config.schema import requires_restart
+
+    assert requires_restart("mcp_gateway.forward_declared_env")
+    assert not requires_restart("session.autocompact_pct")
+    _run(_args(adopt=True), home)
+    out = capsys.readouterr().out
+    assert "session.autocompact_pct removed" in out
+    assert "mcp_gateway.forward_declared_env removed" in out
+    restart = [line for line in out.splitlines() if "Restart the gateway" in line]
+    assert restart == [
+        "Restart the gateway for a running instance to pick up: mcp_gateway.forward_declared_env"
+    ]
+
+
+def test_adopting_only_live_keys_asks_for_no_restart(home, capsys):
+    _run(_args(keys=["session.autocompact_pct"], adopt=True), home)
+    out = capsys.readouterr().out
+    assert "session.autocompact_pct removed" in out
+    assert "Restart the gateway" not in out
+
+
+def test_adopting_a_boot_only_key_asks_for_a_restart(tmp_path, capsys):
+    """The gateway sizes its loop-stall watchdog from this key once, at start, so a
+    running one keeps the stored budget until it restarts; the hint has to say so."""
+    d = tmp_path / "crew"
+    d.mkdir()
+    stored = {"dashboard": {"loop_stall_exit_after_secs": 25}}
+    (d / "config.json").write_text(json.dumps(stored), encoding="utf-8")
+    _run(_args(keys=["dashboard.loop_stall_exit_after_secs"], adopt=True), d)
+    out = capsys.readouterr().out
+    assert "dashboard.loop_stall_exit_after_secs removed" in out
+    assert (
+        "Restart the gateway for a running instance to pick up: "
+        "dashboard.loop_stall_exit_after_secs"
+    ) in out
+    assert "loop_stall_exit_after_secs" not in _stored(d).get("dashboard", {})
+
+
 def test_keeping_a_row_whose_meaning_moved_repeats_the_note(tmp_path, capsys):
     d = tmp_path / "crew"
     d.mkdir()
@@ -205,6 +247,21 @@ def test_adopt_says_the_overlay_still_wins_when_it_carries_the_key(home, capsys)
     out = capsys.readouterr().out
     assert "config.local.json still overrides it" in out
     assert "the current default now applies" not in out
+
+
+def test_an_overlay_shadowed_restart_bound_key_asks_for_no_restart(home, capsys):
+    """The overlay still decides that key, so the running value does not move and a
+    restart would change nothing."""
+    from kiro_crew.config.schema import requires_restart
+
+    assert requires_restart("mcp_gateway.forward_declared_env")
+    (home / "config.local.json").write_text(
+        json.dumps({"mcp_gateway": {"forward_declared_env": False}}), encoding="utf-8"
+    )
+    _run(_args(keys=["mcp_gateway.forward_declared_env"], adopt=True), home)
+    out = capsys.readouterr().out
+    assert "mcp_gateway.forward_declared_env removed from config.json" in out
+    assert "Restart the gateway" not in out
 
 
 def test_an_unknown_key_is_refused_rather_than_silently_ignored(home, capsys):

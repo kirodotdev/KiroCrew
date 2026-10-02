@@ -60,9 +60,10 @@ kirocrew config defaults --keep        # affirm your values, stop the notice
 ```
 
 Both accept specific keys — `kirocrew config defaults --keep session.autocompact_pct`
-if you chose 90 on purpose and want the rest adopted. `--adopt` removes the keys so
-the current defaults apply from the next start; `--keep` records the exact values
-you affirmed, so changing one later brings the notice back. `kirocrew doctor` lists
+if you chose 90 on purpose and want the rest adopted. `--adopt` removes the keys,
+and a running gateway picks up the current defaults live; the command asks for a
+restart only for a key that needs one, and names it. `--keep` records the exact
+values you affirmed, so changing one later brings the notice back. `kirocrew doctor` lists
 everything, affirmed values included.
 
 The same command also clears a stored value Kiro Crew has to replace — a retired
