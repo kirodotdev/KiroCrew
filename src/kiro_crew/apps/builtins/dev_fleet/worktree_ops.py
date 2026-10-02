@@ -1737,10 +1737,11 @@ def _frontend_build_steps(
     return [
         ([npm_bin, "ci", "--prefix", "website"], "strict", runtime._build_env(), "npm ci"),
         # Build and stage as ONE step, holding the staging lock across both.
-        # `npm run build` empties website/dist, so a peer flow (the dashboard's
-        # own update, pod provisioning) staging concurrently would copy a
-        # partially written tree — and a bundle's lazy chunks are not reachable
-        # from index.html, so no post-hoc inspection detects that reliably.
+        # `npm run build` swaps a new tree into website/dist
+        # (website/scripts/publish-dist.mjs), so a peer flow (the dashboard's own
+        # update, pod provisioning) copying concurrently could copy half of each
+        # — and a bundle's lazy chunks are not reachable from index.html, so no
+        # post-hoc inspection detects that reliably.
         # Covering only the copy is not enough; the holder has to span the build.
         #
         # Run with THIS backend's interpreter, not the target checkout's: the
@@ -2138,11 +2139,11 @@ async def _sync_start_locked() -> dict:
     #
     # The build runs under _build_env(), whose allowlist (_SAFE_ENV_KEYS) drops
     # KIROCREW_EDITION_DIR and KIROCREW_ALLOW_EDITION, so on an edition
-    # composition root `npm run build` can only compile the STOCK SPA -- and vite
-    # builds with emptyOutDir, so it OVERWRITES website/dist. On a source-tree
-    # install frontend.ensure_dev_dist_symlink() has pointed static/dist at
-    # website/dist, which means the build alone replaces the served edition
-    # dashboard with upstream's, with or without a staging step. Skipping the
+    # composition root `npm run build` can only compile the STOCK SPA -- and it
+    # publishes that into website/dist. An edition checkout serves a private
+    # copy, but one whose static/dist links to website/dist (no private edition
+    # copy, or one that could not be made) would have the build alone replace the served edition dashboard
+    # with upstream's, with or without a staging step. Skipping the
     # build is therefore the only way to make this safe, and it costs an edition
     # nothing: the only artifact this path could produce for it is a stock SPA it
     # must never serve. It is the same call frontend's own

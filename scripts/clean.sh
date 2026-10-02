@@ -8,8 +8,9 @@ cd "$(dirname "$0")/.."
 
 rm -rf build dist *.egg-info src/*.egg-info \
        .mypy_cache .pytest_cache \
-       src/kiro_crew/static/dist \
-       website/dist website/tsconfig.app.tsbuildinfo
+       src/kiro_crew/static/dist src/kiro_crew/static/.dist.* \
+       website/dist website/tsconfig.app.tsbuildinfo \
+       website/.dist*.next-* website/.dist*.ready-* website/.dist*.prev-*
 
 find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
 find . -name ".DS_Store" -delete 2>/dev/null || true

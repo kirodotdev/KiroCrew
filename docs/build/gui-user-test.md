@@ -366,7 +366,7 @@ role. On a machine with those:
 ```bash
 sudo apt-get install -y xvfb xdotool x11-utils           # Debian/Ubuntu
 pip install -e . "boto3>=1.34,<2"
-(cd website && npm ci && npm run build) && rm -rf src/kiro_crew/static/dist && cp -R website/dist src/kiro_crew/static/dist
+(cd website && npm ci && npm run build) && PYTHONPATH=src python -m kiro_crew.frontend stage .
 export GUI_OUT="$(mktemp -d)"
 bash scripts/gui-user-test/boot.sh                       # Xvfb :99, gateway, Chromium
 . "$GUI_OUT/target.env"

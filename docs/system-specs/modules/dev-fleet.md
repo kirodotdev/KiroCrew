@@ -1042,21 +1042,49 @@ as narrow as it cheaply can be without a lock — the cleanliness check and the
 tree-id read run back-to-back under the staging lock, and the preflight runs
 immediately before the merge.
 
-The final **npm build + stage** step builds the frontend and copies `website/dist` into
-`src/kiro_crew/static/dist` under the Dev Fleet backend's OWN interpreter, with
+The final **npm build + stage** step builds the frontend and stages `website/dist`
+as the served `src/kiro_crew/static/dist` under the Dev Fleet backend's OWN interpreter, with
 the target repo passed as an argument. Resolving the helper from the target
 instead would make the step's very existence contingent on the pulled revision
 already carrying it, so an older target would turn the whole Pull+Build into an
-ImportError. It is not cosmetic. On a source install `static/dist` is a *symlink*
-to `website/dist` (`ensure_dev_dist_symlink`), and aiohttp resolves a static
-route's directory once at registration — so a gateway started in that state is
-pinned to the Vite output directory for its whole life, and every `npm build`
-rewrites the tree it is serving. Staging leaves a real snapshot there, so from
-the gateway's **next start** onward a build cannot touch what it serves. It
-publishes the same bundle the build just wrote into `website/dist`, which keeps
-the pinned `/assets` route and the staged `index.html` on the same hashed
-chunks. The run script stops at the first non-zero step, so a build or staging
-failure fails the sync rather than silently leaving the symlink in place.
+ImportError. It is not cosmetic. On a source install `static/dist` is a *link*
+to `website/dist` (`ensure_dev_dist_symlink`), and the gateway resolves
+`static/dist` on every request — `index.html`, the PWA files, the stale-asset
+watchdog and every build route (`/assets`, `/sprites`, `/fonts`, `/vendor`,
+`/app-assets`), which are registered whether or not a build exists yet. App
+window entries are enumerated when the gateway starts and each is then resolved
+per request; a window entry first built after start needs a restart. So
+whatever `static/dist` names is what is served, on a running gateway too, and
+staging only ever switches it by re-pointing the link:
+
+- A stock build that publishes atomically is served through the dev link to
+  `website/dist`, kept if it is there and made otherwise, whatever occupied
+  `static/dist` before. No Vite build except `--watch` or one into a mount-point
+  outDir empties `website/dist` in place: every other build writes a scratch
+  sibling and publishes it by rename once it has succeeded
+  (`website/scripts/publish-dist.mjs` explains the mechanism), so on a source
+  install this step copies nothing.
+- Anything else — an edition bundle, an older target revision whose build still
+  writes `website/dist` in place — is copied into a fresh, never-rewritten
+  `static/.dist.<id>`, and `static/dist` is re-pointed at the copy. Before an
+  in-place build runs under the dev link, the served bundle is moved to such a
+  copy first, so the build cannot empty what is served. Each copy carries its
+  own `.gitignore` of `*`, so a target whose `.gitignore` predates these names
+  still reads clean.
+
+On POSIX the re-point is one `rename` of a link over a link. On Windows a
+junction cannot be renamed over another, so the old one is removed first; that
+touches no tree, so no open handle refuses it. The link's target is always
+absolute. Copies `static/dist` does not serve are swept under the staging lock, matched to
+the served one by file identity rather than path spelling, and nothing is swept
+while `static/dist` is a link that resolves nowhere. A `static/dist` that is still
+a real directory is renamed aside once when the first stage replaces it with the
+link; a gateway already running then, one whose build routes were resolved from
+that directory at start, answers 404 for the build until it restarts, and the
+stage log says to restart it. The same holds on every re-stage of an older target
+revision that builds in place: its gateway resolved the copy it started on, which
+the re-stage sweeps, so the stage log says to restart that gateway too. The run script stops at the first non-zero step,
+so a build or staging failure fails the sync rather than reporting success.
 
 ### Dependency preflight and the `node_modules` transaction
 
@@ -1322,21 +1350,32 @@ texts are dropped, and the last-line fallback skips marker lines too, so a forge
 marker can neither hide the notice nor be surfaced raw.
 
 The build and the copy are ONE step because they share ONE holder of the staging
-lock (`.dist.staging.lock`, next to `static/dist`). `npm run build` empties
-`website/dist` before repopulating it, so a peer flow — another sync, or the
-dashboard's own update — that held the lock only for the copy could still read a
-partially written tree. Inspecting the copy afterwards cannot substitute: a
+lock (`.dist.staging.lock`, next to `static/dist`). `npm run build` swaps a new
+tree into `website/dist`, so a peer flow — another sync, or the dashboard's own
+update — that held the lock only for the copy could copy half of each tree.
+Inspecting the copy afterwards cannot substitute: a
 bundle's lazy route chunks are referenced from inside the entry chunk, not from
 `index.html`, so most of the tree is invisible to any index-based check. `npm ci`
 stays a separate step since it does not touch `website/dist`.
 
-Not covered: a gateway process that started while `static/dist` was still a
-symlink to `website/dist` — the first staging sync, and equally any process
-booted after something re-created the symlink (a `git clean` re-running
-`ensure_dev_dist_symlink`). Such a process is pinned to `website/dist`, so its
-dashboard still 404s while Vite rewrites it; pairing Pull+Build with Restart
-Gateway is what closes it. A process that booted against a staged real
-directory is unaffected.
+Not covered: between publish's two renames `website/dist` is absent. The in-gap
+rename gets 1.5 s, under the stale-asset watchdog's 2 s re-check; if it misses
+on Windows, the old tree is renamed back with the full 60 s retry budget, and
+the tree stays absent until that rename lands. A request in the gap 404s (and
+is never cached). A gateway starting in the gap keeps the dangling link to this
+checkout's `website/dist` and serves the build once it lands; a stock
+checkout's gateway started before anything is built makes that link itself,
+where the platform can link a missing directory. A `vite build
+--watch`, and a `website/dist` that is a mount point, write in place as Vite
+always did; the stager does not tell a mount point apart, so such a build
+empties the tree the dev link serves. The install scripts (`install.sh`,
+`setup.sh`, `minimal_install.sh`) still `rm -rf` and copy `website/dist` into
+`static/dist`, and `install.sh` is also the documented update path (`git pull &&
+bash install.sh`), so under a running gateway requests 404 for the length of the
+copy and the dev link is replaced by a real copy until the next stage. Dev
+Fleet's build-pending badge compares `static/dist`'s mtime with the gateway's
+start, so a frontend-only `npm run build` served live through the dev link
+raises it too, although no restart is needed for that build.
 
 ## Make Live
 

@@ -115,6 +115,11 @@ KIROCREW_HOME=.kirocrew-dev KIROCREW_PORT=6777 kirocrew gateway
 ```
 
 Browse at `http://localhost:6777`. The backend serves the built frontend assets directly.
+When `src/kiro_crew/static/dist` links to `website/dist` (what `make build` and the
+gateway set up for a stock checkout), a hand-run `npm run build` is live as soon as it
+finishes, on a running gateway too; under an edition `static/dist` links to a private
+copy, which only the next stage replaces. See the runtime dist resolution notes in
+[learn-cron-dashboard](docs/system-specs/modules/learn-cron-dashboard.md).
 
 | Env var | Purpose | Default |
 |---------|---------|---------|

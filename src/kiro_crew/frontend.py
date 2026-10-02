@@ -12,18 +12,22 @@ resolving an already-built dist at runtime (see ``ensure_dev_dist_symlink``).
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import contextlib
+import errno
 import logging
 import os
 import re
+import secrets
 import shutil
 import subprocess
-import tempfile
+import sys
 from pathlib import Path
 from typing import Callable, Iterator, Optional
 
 from kiro_crew import platform_compat
+from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.node_modules_txn import NodeModulesBackup
 
@@ -89,6 +93,23 @@ _REAP_TIMEOUT = 30
 # not catchable, so this only covers the kernel tearing the tree down; there are
 # no pipes to drain because the build's output goes to DEVNULL.
 _BUILD_KILL_GRACE = 10
+#: How long ``python -m kiro_crew.frontend stage`` waits for the staging lock.
+#: A holder is a Kiro Crew build that publishes its own bundle, so a stager
+#: run by hand reports that plainly rather than queueing behind the build.
+_CLI_STAGE_LOCK_TIMEOUT = 30.0
+#: How long gateway start waits for the staging lock before an edition serves
+#: the build it found through the link instead of a private copy. Short: the
+#: whole start waits on it, and a holder is a build that publishes its own
+#: bundle anyway.
+_GATEWAY_START_LOCK_TIMEOUT = 5.0
+#: Prefix of every entry staging keeps beside ``static/dist``: the immutable
+#: copies ``static/dist`` links to, the link being swapped in, and the lock.
+_STAGED_PREFIX = ".dist."
+_STAGING_LOCK_NAME = ".dist.staging.lock"
+#: Written into every staged copy: a checkout at a revision whose own
+#: ``.gitignore`` predates the copies' names still reads it as ignored, so a
+#: Dev Fleet stage of an older target never leaves that worktree dirty.
+_STAGED_COPY_IGNORE = (".gitignore", "*\n")
 
 # Env vars that select the frontend EDITION composition root (see
 # ``website/vite.config.ts`` ``editionExtensionPlugin`` and
@@ -213,13 +234,32 @@ def ensure_dev_dist_symlink() -> Optional[Path]:
 
     1. Existing real directory with ``index.html`` → no-op (packaged install /
        a prior local build that populated the source tree / manual setup).
-    2. Existing symlink → validated; dangling or empty targets get replaced.
+    2. Existing link → kept while its target holds ``index.html``. A link to
+       this checkout's ``website/dist`` is kept too while that target is
+       dangling or index-less, except under an edition: the build is
+       mid-publish or not built yet, and since the dashboard resolves
+       ``static/dist`` on every request, every build route serves it the moment
+       it lands. App window entries are the exception: they are enumerated when
+       the gateway starts, so a window first built after start needs a restart.
+       Any other dangling or index-less link is replaced.
     3. Missing → resolve the in-tree ``website/dist`` (or a sibling
-       ``KiroCrewWebsite`` checkout as a last resort) and symlink to it.
+       ``KiroCrewWebsite`` checkout as a last resort) and symlink to it. When
+       nothing is built yet, a stock checkout still links its ``website/dist``
+       (the link Case 2 keeps), so the first build is served the moment it
+       lands; ``None`` is returned all the same, as nothing is served yet.
 
     Symlink over copy: no source-tree churn, ``.gitignore`` already excludes
     ``static/dist/``, and a fresh ``website`` rebuild propagates to the gateway
-    with no extra step.
+    with no extra step, a running one included: every Vite build publishes into
+    ``website/dist`` atomically (``website/scripts/publish-dist.mjs``).
+
+    Under an edition (:func:`edition_configured`) no link is made: the bundle is
+    staged as a private copy, so a later stock build in the same checkout cannot
+    replace the edition dashboard. If that stage fails (the staging lock is still
+    held after :data:`_GATEWAY_START_LOCK_TIMEOUT`, or the copy fails), the
+    gateway serves the build it found through the link and logs a warning rather
+    than starting with no dashboard. Gateway start calls this off the event loop,
+    so that lock wait is a real wait.
 
     Returns the resolved dist path on success, ``None`` if nothing could be
     found (caller should warn; the gateway then serves the "not built"
@@ -227,6 +267,7 @@ def ensure_dev_dist_symlink() -> Optional[Path]:
     """
     kiro_crew_pkg_dir = Path(__file__).resolve().parent
     tree_dist = kiro_crew_pkg_dir / "static" / "dist"
+    repo_root = _repo_root(kiro_crew_pkg_dir)
 
     # A prior run may have created a symlink (POSIX) OR a directory junction
     # (non-admin Windows); both are "links" here and neither is a real dir.
@@ -235,30 +276,41 @@ def ensure_dev_dist_symlink() -> Optional[Path]:
     # Case 1: real directory already populated (packaged install / a prior
     # local build landing in the source tree / user ran kirocrew init --ui).
     if tree_dist.is_dir() and not tree_dist_is_link:
-        if (tree_dist / "index.html").is_file():
+        if _has_index(tree_dist):
             return tree_dist
         # Empty real dir — fall through and try to resolve something usable.
 
-    # Case 2: existing link — validate and re-use if the target still has
-    # a dist in it. A dangling or empty target means the website build moved
-    # or was cleaned; drop the link and re-resolve below.
+    # Case 2: existing link — re-use it while its target holds a dist.
+    source: Optional[Path] = None
     if tree_dist_is_link:
-        try:
-            target = tree_dist.resolve(strict=True)
-        except (FileNotFoundError, OSError):
-            target = None
-        if target is not None and (target / "index.html").is_file():
-            return target
-        try:
-            platform_compat.unlink_link_or_junction(tree_dist)
-        except OSError as exc:
-            logger.warning("Failed to remove stale dist link %s: %s", tree_dist, exc)
+        target = _live_link_target(tree_dist)
+        if target is not None and _has_index(target):
+            # An edition's own staged copy is already private.
+            if not edition_configured() or _is_staged_tree(target, tree_dist):
+                return target
+            source = target
+        elif not edition_configured() and _links_to_website_dist(tree_dist, repo_root):
             return None
+        else:
+            try:
+                platform_compat.unlink_link_or_junction(tree_dist)
+            except OSError as exc:
+                logger.warning("Failed to remove stale dist link %s: %s", tree_dist, exc)
+                return None
 
     # Case 3: no usable dist in place — probe and link.
-    candidate = _resolve_website_dist(kiro_crew_pkg_dir)
-    if candidate is None:
-        return None
+    source = source or _resolve_website_dist(kiro_crew_pkg_dir)
+    unbuilt = source is None
+    if source is None:
+        if edition_configured() or not (repo_root / _DIR_NAME).is_dir():
+            return None
+        source = repo_root / _DIR_NAME / "dist"
+    if edition_configured():
+        if _stage_dist(source, repo_root, lock_timeout=_GATEWAY_START_LOCK_TIMEOUT):
+            return tree_dist
+        logger.warning("Could not stage the edition bundle; serving %s through the link", source)
+        if _live_link_target(tree_dist) is not None:
+            return source
 
     tree_dist.parent.mkdir(parents=True, exist_ok=True)
     # Guard against a lingering empty real dir from Case 1's fall-through, or a
@@ -276,12 +328,20 @@ def ensure_dev_dist_symlink() -> Optional[Path]:
         # symlink on POSIX; directory junction on non-admin Windows, where a
         # plain symlink needs SeCreateSymbolicLinkPrivilege and would fail with
         # WinError 1314 — leaving a source-tree gateway with no SPA bundle.
-        platform_compat.symlink_or_junction(str(candidate), str(tree_dist))
+        platform_compat.symlink_or_junction(str(source), str(tree_dist))
     except OSError as exc:
-        logger.warning("Failed to link %s -> %s: %s", tree_dist, candidate, exc)
+        logger.warning("Failed to link %s -> %s: %s", tree_dist, source, exc)
         return None
-    logger.info("Linked frontend dist: %s -> %s", tree_dist, candidate)
-    return candidate
+    logger.info("Linked frontend dist: %s -> %s", tree_dist, source)
+    return None if unbuilt else source
+
+
+def _links_to_website_dist(link: Path, repo_root: Path) -> bool:
+    """Whether ``link`` names this checkout's ``website/dist``, built or not."""
+    try:
+        return os.path.realpath(link) == os.path.realpath(repo_root / _DIR_NAME / "dist")
+    except (OSError, ValueError):
+        return False
 
 
 def _incomplete_bundle_reason(tree: Path) -> str:
@@ -297,27 +357,106 @@ def _incomplete_bundle_reason(tree: Path) -> str:
     references paths the GATEWAY serves by route rather than from the bundle
     (``/manifest.js``), and those must not be mistaken for missing files.
     """
-    index = tree / "index.html"
-    if not index.is_file():
-        return "no index.html"
     try:
-        html = index.read_text(encoding="utf-8", errors="replace")
+        html = (tree / "index.html").read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        return "no index.html"
     except OSError as exc:
-        return f"index.html is unreadable ({exc})"
-    refs = re.findall(r'(?:src|href)="(/assets/[^"?#]+\.(?:js|css))', html)
+        code = errno.errorcode.get(exc.errno or 0, type(exc).__name__)
+        return f"index.html is unreadable ({code})"
+    refs = re.findall(_ASSET_REF, html)
     missing = [ref for ref in refs if not (tree / ref.lstrip("/")).is_file()]
     if missing:
         return f"{len(missing)} referenced asset(s) missing, e.g. {missing[0]}"
     return ""
 
 
+#: Every ``/assets/*.js|css`` an index.html references, ignoring a query or hash.
+#: Byte-identical to ``ASSET_REF_PATTERN`` in website/scripts/publish-dist.mjs,
+#: pinned by test_frontend_dist_resolve.py, so both gates accept the same trees.
+_ASSET_REF = r'(?:src|href)="(/assets/[^"?#]+\.(?:js|css))(?:[?#][^"]*)?"'
+
+
+def _live_link_target(path: Path) -> Optional[Path]:
+    """Where the link at ``path`` resolves, or ``None`` if it is no live link.
+
+    ``None`` for a real directory, a dangling link and a looping one; a loop
+    raises ``RuntimeError`` from ``resolve`` before Python 3.13.
+    """
+    if not platform_compat.is_link_or_junction(path):
+        return None
+    try:
+        return path.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
+
+
+def _has_index(tree: Path) -> bool:
+    """Whether ``tree`` holds an index.html; an unreadable tree is "no", not a crash."""
+    return os.path.isfile(tree / "index.html")
+
+
+def _same_dir(a: Path, b: Path) -> bool:
+    """Whether two paths name one directory, whatever case or spelling reaches it."""
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return False
+
+
+def _publishes_atomically(built_dist: Path) -> bool:
+    """Whether the checkout that built ``built_dist`` publishes every build by rename.
+
+    A Dev Fleet Pull+Build stages older target revisions too, whose Vite build
+    writes ``website/dist`` in place; those must not be served through a link.
+    """
+    return (built_dist.parent / "scripts" / "publish-dist.mjs").is_file()
+
+
+def _links_to(link: Path, tree: Path) -> bool:
+    """Whether ``link`` is a live link to ``tree``."""
+    target = _live_link_target(link)
+    return target is not None and _same_dir(target, tree)
+
+
+def _serves_through_dev_link(built_dist: Path, static_dist: Path) -> bool:
+    """Whether ``static/dist`` is the dev link to a stock build that publishes atomically.
+
+    An edition bundle is always a private copy, and a build that writes
+    ``website/dist`` in place is served from a copy, so neither keeps the link.
+    Correctness does not rest on this: the dashboard resolves ``static/dist`` on
+    every request, so re-pointing it is safe whichever way this answers.
+    """
+    if edition_configured() or not _publishes_atomically(built_dist):
+        return False
+    return _links_to(static_dist, built_dist)
+
+
+def _print_safe(message: str) -> None:
+    """Print a progress line that can never raise.
+
+    A stage that already re-pointed ``static/dist`` must not then fail on its own
+    log line: the emoji on a latin-1 or cp1252 stdout, no stdout at all
+    (``pythonw``), or a pipe whose reader has gone.
+    """
+    stream = sys.stdout
+    if stream is None:
+        return
+    encoding = getattr(stream, "encoding", None) or "utf-8"
+    try:
+        stream.write(message.encode(encoding, errors="replace").decode(encoding) + "\n")
+        stream.flush()
+    except (OSError, ValueError):
+        pass
+
+
 @contextlib.contextmanager
-def _staging_lock(static_parent: Path) -> Iterator[None]:
+def _staging_lock(static_parent: Path, timeout: Optional[float] = None) -> Iterator[None]:
     """Hold the cross-process staging lock for ``static/dist``.
 
     Serializes every build or stage of the frontend initiated by Kiro Crew: Dev
     Fleet's Pull+Build and the dashboard update flow can run at once, and BOTH
-    the ``npm run build`` (which empties ``website/dist``) and the copy/swap must
+    the ``npm run build`` (which swaps a new tree into ``website/dist``) and the copy/swap must
     be inside one holder. Covering only the copy still lets a peer's build rewrite
     the tree mid-read, and a bundle's lazy chunks are not reachable from
     ``index.html``, so no post-hoc inspection can detect that reliably.
@@ -328,7 +467,7 @@ def _staging_lock(static_parent: Path) -> Iterator[None]:
     ``open()`` in the same process would deadlock against itself.
     """
     static_parent.mkdir(parents=True, exist_ok=True)
-    lock_path = static_parent / ".dist.staging.lock"
+    lock_path = static_parent / _STAGING_LOCK_NAME
     with open(lock_path, "a+") as lock_fh:
         # required=True: Windows msvcrt acquisition failures are otherwise
         # swallowed, and running without exclusion is the very outage this
@@ -340,7 +479,7 @@ def _staging_lock(static_parent: Path) -> Iterator[None]:
             lock_fh.fileno(),
             exclusive=True,
             required=True,
-            timeout=_STAGING_LOCK_TIMEOUT,
+            timeout=_STAGING_LOCK_TIMEOUT if timeout is None else timeout,
         ):
             yield
 
@@ -354,11 +493,24 @@ def _npm_build_and_stage_locked(
     """Run ``npm run build`` then stage it. Caller holds the staging lock.
 
     The build is spawned in its own process group and the whole tree is reaped
-    on timeout. ``npm run build`` is ``tsc -p tsconfig.app.json && vite build``, so killing only
-    npm would leave vite writing ``website/dist`` after this function returns
-    and the lock releases — a surviving writer makes the lock's exclusion
-    meaningless, since a peer could then stage a tree vite is still rewriting.
+    on timeout. ``npm run build`` (website/package.json) runs several processes,
+    so killing only npm would leave a survivor that renames a late build over
+    ``website/dist`` after the lock releases, while a peer is staging it.
+
+    An exit of 0 is not taken as proof that a bundle was published: the build
+    must also have replaced ``website/dist/index.html``, which a publish by
+    rename and an in-place rewrite both do. Both readings come from the one
+    filesystem, so no clock is compared with another.
+
+    A revision whose Vite build still empties ``website/dist`` in place (an
+    older Dev Fleet target) must not do that under a gateway serving it through
+    the dev link, so the served bundle is moved to a copy first.
     """
+    built_dist = website_dir / "dist"
+    static_dist = proj_path / "src" / "kiro_crew" / "static" / "dist"
+    if not _publishes_atomically(built_dist) and _links_to(static_dist, built_dist):
+        _stage_dist_locked(built_dist, static_dist, log)
+    before = _index_identity(built_dist)
     proc = subprocess.Popen(
         [npm, "run", "build"],
         env=_edition_build_env(),
@@ -405,23 +557,35 @@ def _npm_build_and_stage_locked(
     if proc.returncode != 0:
         log("  ⚠️  Frontend build failed — dashboard may be stale")
         return False
-    static_dist = proj_path / "src" / "kiro_crew" / "static" / "dist"
-    return _stage_dist_locked(website_dir / "dist", static_dist, log)
+    after = _index_identity(built_dist)
+    if after is None or after == before:
+        log(f"  ⚠️  The build exited 0 but published no new {built_dist} — not staging")
+        return False
+    return _stage_dist_locked(built_dist, static_dist, log)
+
+
+def _index_identity(dist: Path) -> Optional[tuple[int, int]]:
+    """``(st_mtime_ns, st_ino)`` of ``dist/index.html``, or ``None`` if it is absent."""
+    try:
+        st = (dist / "index.html").stat()
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_ino)
 
 
 def build_and_stage(
     proj_path: "str | Path | None" = None,
     npm: str | None = None,
-    log: Callable[[str], None] = print,
+    log: Callable[[str], None] = _print_safe,
     git: str | None = None,
 ) -> bool:
     """Build this install's frontend and stage it, both under one lock.
 
     The entry point for callers that build an install they do NOT run
     in-process — notably Dev Fleet's Pull+Build. Holding the lock across the
-    build is what makes the result safe to publish: ``npm run build`` empties
-    ``website/dist``, so a peer flow staging concurrently would otherwise copy
-    a partially written tree.
+    build is what makes the result safe to publish: ``npm run build`` swaps a
+    new tree into ``website/dist``, so a peer flow staging concurrently would
+    otherwise copy half of each.
 
     ``proj_path`` accepts a string because the callers that need it are
     out-of-process and pass it through ``argv``. ``npm`` names the executable to
@@ -527,6 +691,9 @@ def _write_build_source_fingerprint(root: Path, git_bin: str, log: Callable[[str
             # An empty rev-parse output proves nothing; leave no fingerprint so
             # the next sync rebuilds rather than trusting an empty tree id.
             return
+        # Through the dev link this lands in website/dist, which the next build
+        # (hand-run ones included) replaces: the fingerprint then goes with it,
+        # and a missing fingerprint only ever means "rebuild".
         (static_dist / _BUILD_SOURCE_FINGERPRINT).write_text(tree_id, encoding="utf-8")
     except (OSError, subprocess.TimeoutExpired) as exc:
         log(
@@ -566,40 +733,170 @@ def _discard_path(path: Path) -> None:
 def _stage_dist(
     built_dist: Path,
     proj_path: Path,
-    log: Callable[[str], None] = print,
+    log: Callable[[str], None] = _print_safe,
+    *,
+    lock_timeout: Optional[float] = None,
 ) -> bool:
-    """Copy a freshly built dist into ``static/dist``.
+    """Publish a freshly built dist as the served ``static/dist``.
 
-    A copy (rather than a symlink) is used so the served bundle is a
-    self-contained snapshot independent of later ``website/`` rebuilds —
-    important for packaged/installed layouts. That independence is load-bearing
-    for a *running* gateway too: aiohttp resolves a static route's directory once
-    at registration, so a gateway started while ``static/dist`` was a symlink
-    (see :func:`ensure_dev_dist_symlink`) is pinned to ``website/dist`` for its
-    whole life and 404s while Vite rewrites that directory. Staging makes the
-    NEXT start serve an independent tree.
+    ``static/dist`` is always switched by re-pointing a link, never by renaming
+    or rewriting a served tree: to ``website/dist`` itself for a stock build
+    that publishes atomically (the dev link), otherwise to an immutable copy in
+    a fresh ``static/.dist.<id>`` (:func:`_stage_dist_locked`). The dashboard
+    resolves ``static/dist`` on every request, so a running gateway follows
+    either at once. A live dev link to ``built_dist`` needs no lock, so a stage
+    with nothing to copy never waits on one or fails on one.
 
-    The copy lands in a temporary sibling and is swapped in with a single
-    ``os.replace``, so a concurrently-serving gateway never sees a half-copied
-    tree. The live tree is moved aside rather than deleted, and restored if the
-    swap fails, so a failed stage never leaves the dashboard with no assets:
-    either the new bundle is published or the previous one is still there.
-
-    Returns ``True`` when ``static/dist`` now holds the new bundle. Callers that
+    Returns ``True`` when ``static/dist`` now serves the new bundle. Callers that
     treat staging as best-effort can keep ignoring the result — the failure is
     still logged — but a caller whose own success depends on staging (Dev Fleet's
     Pull+Build) must check it, because a preserved older bundle is no longer
     evidence that anything was staged.
     """
     static_dist = proj_path / "src" / "kiro_crew" / "static" / "dist"
+    if _serves_through_dev_link(built_dist, static_dist):
+        staged = _report_dev_link(built_dist, log)
+        # Residue from an earlier copy is swept only by whoever holds the lock;
+        # take it if it is free, and never wait for it here.
+        with contextlib.suppress(OSError):
+            with _staging_lock(static_dist.parent, 0):
+                _sweep_staged_locked(static_dist)
+        return staged
     # Staging alone takes the lock; callers that also BUILD must hold it across
-    # both (see build_and_stage), since the build rewrites the tree this copies.
+    # both (see build_and_stage), since the build replaces the tree this copies.
     try:
-        with _staging_lock(static_dist.parent):
+        with _staging_lock(static_dist.parent, lock_timeout):
             return _stage_dist_locked(built_dist, static_dist, log)
     except OSError as exc:
-        log(f"  ⚠️  Could not acquire the static/dist staging lock: {exc}")
+        log(
+            f"  ⚠️  Could not acquire the static/dist staging lock ({exc}) — a "
+            "frontend build may hold it; static/dist was not changed"
+        )
         return False
+
+
+def _report_dev_link(built_dist: Path, log: Callable[[str], None]) -> bool:
+    """The dev link already serves ``built_dist``: report it, nothing to copy."""
+    reason = _incomplete_bundle_reason(built_dist)
+    if reason:
+        log(f"  ⚠️  {built_dist} is not a complete build ({reason}) — not staging")
+        return False
+    _log_nothing_to_copy(built_dist, log)
+    return True
+
+
+def _log_nothing_to_copy(built_dist: Path, log: Callable[[str], None]) -> None:
+    log(f"  📦 static/dist links to the build at {built_dist} — nothing to copy")
+
+
+def _is_staged_tree(path: Path, static_dist: Path) -> bool:
+    """Whether ``path`` is one of the immutable copies staged beside ``static_dist``.
+
+    Compared by identity, not by path string: a case-insensitive filesystem or a
+    bind mount reaches one checkout through more than one spelling.
+    """
+    return path.name.startswith(_STAGED_PREFIX) and _same_dir(path.parent, static_dist.parent)
+
+
+def _sweep_staged_locked(static_dist: Path) -> None:
+    """Remove every staged copy, link and residue beside ``static_dist`` that it does not serve.
+
+    Caller holds the staging lock, so nothing else is writing one. That covers
+    a copy a killed stage left behind, a ``.dist.staging.*`` or
+    ``.dist.previous.*`` tree (residue of a tree-rename stage), and a real
+    ``static/dist`` retired when it was replaced by a link. Each is a whole
+    bundle of untracked residue that makes the checkout read as dirty, which
+    fail-closes Dev Fleet's prune.
+
+    The served copy is recognised by identity (:func:`_same_dir`), so a second
+    spelling of the checkout cannot make it look unserved. While ``static/dist``
+    is a link that resolves nowhere, nothing is swept: which copy it meant
+    cannot be told, and residue costs less than a deleted dashboard.
+    """
+    served = _live_link_target(static_dist)
+    if served is None and platform_compat.is_link_or_junction(static_dist):
+        return
+    for entry in static_dist.parent.glob(_STAGED_PREFIX + "*"):
+        if entry.name == _STAGING_LOCK_NAME:
+            continue
+        if (
+            served is not None
+            and not platform_compat.is_link_or_junction(entry)
+            and _same_dir(entry, served)
+        ):
+            continue
+        _discard_path(entry)
+
+
+def _point_static_dist_at(static_dist: Path, target: Path) -> bool:
+    """Make ``static_dist`` a link to ``target``. Caller holds the staging lock.
+
+    POSIX swaps link for link in one ``rename``, so a reader sees the old target
+    or the new one and never neither. Windows cannot rename one junction over
+    another, so the old one is removed first: removing a junction does not touch
+    the tree behind it, so no open handle refuses it and the gap is a single
+    directory-entry operation. A real ``static/dist`` directory is renamed aside
+    once, to a name the next sweep removes.
+
+    The link always carries an absolute target: a relative one would be read
+    against the link's own directory, not the caller's working directory.
+
+    Returns whether a real directory was retired, which a gateway that resolved
+    it once at start cannot follow. Raises ``OSError`` with ``static_dist`` as
+    it was.
+    """
+    tmp = static_dist.with_name(f"{_STAGED_PREFIX}link-{os.getpid()}-{secrets.token_hex(4)}")
+    platform_compat.symlink_or_junction(os.path.abspath(target), str(tmp))
+    retired: Optional[Path] = None
+    previous: Optional[Path] = None
+    try:
+        if platform_compat.is_link_or_junction(static_dist):
+            if platform_compat.IS_WINDOWS:
+                previous = Path(os.path.realpath(static_dist))
+                platform_compat.unlink_link_or_junction(static_dist)
+        elif os.path.lexists(static_dist):
+            retired = static_dist.with_name(_staged_name())
+            replace_with_retry(static_dist, retired)
+        replace_with_retry(tmp, static_dist)
+    except OSError:
+        if not os.path.lexists(static_dist):
+            # The rollback rides the same Windows rename-window retry as the
+            # forward moves: a bare ``os.replace`` refused by a scanner's handle
+            # leaves ``static/dist`` absent and the retired tree to the sweep.
+            with contextlib.suppress(OSError):
+                if retired is not None:
+                    replace_with_retry(retired, static_dist)
+                elif previous is not None:
+                    platform_compat.symlink_or_junction(str(previous), str(static_dist))
+        _discard_path(tmp)
+        raise
+    return retired is not None
+
+
+def _links_to_a_staged_copy(static_dist: Path) -> bool:
+    """Whether ``static_dist`` is a live link to one of the copies staged beside it."""
+    target = _live_link_target(static_dist)
+    return target is not None and _is_staged_tree(target, static_dist)
+
+
+def _report_served_dir_gone(gone: bool, log: Callable[[str], None]) -> None:
+    """Tell the operator when the directory ``static/dist`` served was just retired.
+
+    A gateway that resolved that directory once at start (a revision whose build
+    routes are static mounts) keeps answering 404 for every chunk until it
+    restarts: a real ``static/dist`` renamed aside, or a copy it linked to that
+    the sweep removed.
+    """
+    if gone:
+        log(
+            "  ⚠️  static/dist no longer serves the directory it did: restart a "
+            "gateway already running from this checkout if its dashboard comes up blank"
+        )
+
+
+def _staged_name() -> str:
+    """A fresh ``static/.dist.<id>`` name: unique per stage, never reused."""
+    return f"{_STAGED_PREFIX}{os.getpid()}-{secrets.token_hex(4)}"
 
 
 def _stage_dist_locked(
@@ -607,16 +904,21 @@ def _stage_dist_locked(
     static_dist: Path,
     log: Callable[[str], None],
 ) -> bool:
-    """Sweep, copy and swap. Caller holds the staging lock."""
-    # Under the lock every staging tree present is abandoned residue from a run
-    # that was killed mid-copy; left alone each one is ~30 MB of untracked
-    # residue that makes the checkout read as permanently dirty, which
-    # fail-closes Dev Fleet's prune.
-    for stale in static_dist.parent.glob(".dist.staging.*"):
-        if stale.is_dir():
-            shutil.rmtree(stale, ignore_errors=True)
-    # Validated after the sweep, so refusing an unusable source still clears
-    # residue rather than leaving the checkout dirty.
+    """Link or copy, re-point ``static/dist``, then sweep. Caller holds the staging lock.
+
+    A stock in-tree build that publishes atomically is served through the dev
+    link to ``built_dist``: kept if it is already there, made otherwise. Every
+    other build -- an edition bundle, an older target revision whose Vite build
+    still writes ``website/dist`` in place -- is copied into a fresh
+    ``static/.dist.<id>`` and ``static/dist`` re-pointed at the copy, so no
+    later build can rewrite what is served.
+
+    Re-pointing away from a copy sweeps it. A gateway of the older target
+    revision pinned that copy at start, so that re-stage says to restart it;
+    an edition re-stage of a revision that publishes atomically does not, as
+    its gateway resolves ``static/dist`` per request.
+    """
+    _sweep_staged_locked(static_dist)
     if not built_dist.is_dir():
         log(f"  ⚠️  Built dist not found at {built_dist} — dashboard may be stale")
         return False
@@ -627,76 +929,53 @@ def _stage_dist_locked(
         # replace a good bundle with a broken one.
         log(f"  ⚠️  {built_dist} is not a complete build ({reason}) — not staging")
         return False
-    tmp_dist: Path | None = None
+    if not edition_configured() and _publishes_atomically(built_dist):
+        if _links_to(static_dist, built_dist):
+            _log_nothing_to_copy(built_dist, log)
+            return True
+        try:
+            retired = _point_static_dist_at(static_dist, built_dist.resolve())
+        except OSError as exc:
+            # A gateway starting up links without the lock: if that is what
+            # landed, it is the link wanted. Never copy over it.
+            if _links_to(static_dist, built_dist):
+                _log_nothing_to_copy(built_dist, log)
+                return True
+            log(f"  ⚠️  Could not link static/dist to {built_dist} ({exc}); copying instead")
+        else:
+            _sweep_staged_locked(static_dist)
+            log(f"  📦 Linked static/dist → {built_dist}")
+            _report_served_dir_gone(retired, log)
+            return True
+    staged = static_dist.parent / _staged_name()
     try:
-        # Same parent as the destination so the swap is a rename within one
-        # filesystem; a cross-device staging dir would make os.replace fail.
-        tmp_dist = Path(
-            tempfile.mkdtemp(prefix=".dist.staging.", dir=static_dist.parent)
-        )
-        # mkdtemp already created it, but copytree needs to create the target.
-        tmp_dist.rmdir()
-        shutil.copytree(built_dist, tmp_dist)
+        shutil.copytree(built_dist, staged)
+        name, rule = _STAGED_COPY_IGNORE
+        (staged / name).write_text(rule, encoding="utf-8")
     except OSError as exc:
-        # tmp_dist stays None when mkdtemp itself fails (ENOSPC, quota), so the
-        # cleanup is conditional — an unconditional rmtree would raise
-        # UnboundLocalError and mask the real error.
         log(f"  ⚠️  Could not copy static/dist: {exc}")
-        if tmp_dist is not None:
-            shutil.rmtree(tmp_dist, ignore_errors=True)
+        _discard_path(staged)
         return False
-    assert tmp_dist is not None  # bound above or we returned
-    reason = _incomplete_bundle_reason(tmp_dist)
+    reason = _incomplete_bundle_reason(staged)
     if reason:
         # The source passed its pre-copy check but changed while being read — a
-        # peer flow's `npm run build` rewriting website/dist mid-copy. Swapping
-        # this in would replace a valid served bundle with a partial one.
+        # peer flow's build replacing website/dist mid-copy. Serving this would
+        # replace a valid bundle with a partial one.
         log(f"  ⚠️  Staged copy is incomplete ({reason}) — not publishing")
-        shutil.rmtree(tmp_dist, ignore_errors=True)
+        _discard_path(staged)
         return False
-    backup: Path | None = None
+    left_a_pinned_copy = not _publishes_atomically(built_dist) and _links_to_a_staged_copy(
+        static_dist
+    )
     try:
-        # Move whatever is in place aside rather than deleting it — a symlink
-        # (the normal source install) just as much as a staged tree — so a
-        # failed publication can put it back. Deleting first means a replace
-        # error publishes nothing and the dashboard serves no assets at all.
-        # The link check comes first so a BROKEN link is still moved — and it
-        # must be is_link_or_junction, not is_symlink: this module publishes
-        # static/dist itself via platform_compat.symlink_or_junction, which
-        # falls back to a directory JUNCTION on Windows, and a dangling
-        # junction answers False to both is_symlink() and exists(). Without
-        # the wider predicate the move-aside is skipped and the os.replace
-        # below lands on the surviving entry — the same "Could not stage
-        # static/dist" failure _discard_path and build_dist guard against.
-        if platform_compat.is_link_or_junction(static_dist) or static_dist.exists():
-            backup = static_dist.parent / f".dist.previous.{os.getpid()}"
-            _discard_path(backup)
-            os.replace(static_dist, backup)
-        os.replace(tmp_dist, static_dist)
+        retired = _point_static_dist_at(static_dist, staged)
     except OSError as exc:
         log(f"  ⚠️  Could not stage static/dist: {exc}")
-        published = platform_compat.is_link_or_junction(static_dist) or static_dist.exists()
-        if backup is not None and not published:
-            try:
-                os.replace(backup, static_dist)
-            except OSError as restore_exc:
-                # Leave the backup on disk: it is the only remaining copy of
-                # what was being served, so it must not be swept away.
-                log(
-                    "  ⚠️  Could not restore the previous static/dist "
-                    f"({restore_exc}); it is preserved at {backup}"
-                )
-            else:
-                backup = None
-        shutil.rmtree(tmp_dist, ignore_errors=True)
+        _discard_path(staged)
         return False
-    # Published. The superseded entry, and any older one a failed restore
-    # preserved, are safe to drop now that a good bundle is in place.
-    if backup is not None:
-        _discard_path(backup)
-    for old in static_dist.parent.glob(".dist.previous.*"):
-        _discard_path(old)
+    _sweep_staged_locked(static_dist)
     log(f"  📦 Staged static/dist ← {built_dist}")
+    _report_served_dir_gone(retired or left_a_pinned_copy, log)
     return True
 
 
@@ -714,7 +993,9 @@ def edition_configured() -> bool:
 
 def stage_built_dist(
     proj_path: "str | Path",
-    log: Callable[[str], None] = print,
+    log: Callable[[str], None] = _print_safe,
+    *,
+    lock_timeout: Optional[float] = None,
 ) -> None:
     """Stage an ALREADY-built ``website/dist`` into the served ``static/dist``.
 
@@ -724,10 +1005,9 @@ def stage_built_dist(
     :func:`build_frontend_sync`'s all-in-one path.
 
     Without this step a Pull+Build leaves the new bundle in ``website/dist``
-    while the gateway keeps serving the old ``static/dist``. On a source-tree
-    gateway start that goes unnoticed because :func:`ensure_dev_dist_symlink`
-    has already linked the two; with a packaged install there is no link, so the
-    rebuild silently never takes effect.
+    while a gateway serving a staged copy keeps serving the old one. Through the
+    dev link (:func:`ensure_dev_dist_symlink`) there is nothing to copy, and the
+    step reports that.
 
     Raises ``RuntimeError`` when staging did not happen.
     :func:`_stage_dist` logs and returns ``False`` on failure because its other
@@ -742,22 +1022,23 @@ def stage_built_dist(
     """
     proj = Path(proj_path)
     built = proj / "website" / "dist"
-    if not _stage_dist(built, proj, log):
+    if not _stage_dist(built, proj, log, lock_timeout=lock_timeout):
         raise RuntimeError(
-            f"dist staging failed; the dashboard still serves the previous "
-            f"bundle (built dist: {built})"
+            "dist staging failed; static/dist serves what it held before the "
+            f"attempt (built dist: {built})"
         )
 
 
 def build_frontend_sync(
     proj_path: Path,
-    log: Callable[[str], None] = print,
+    log: Callable[[str], None] = _print_safe,
 ) -> None:
     """Build the in-tree ``website/`` frontend and stage it (synchronous).
 
     Runs ``npm ci`` (falling back to ``npm install`` when there is no
-    lockfile) then ``npm run build`` in ``<proj>/website``, then copies
-    ``website/dist`` into ``src/kiro_crew/static/dist``. Graceful no-op when
+    lockfile) then ``npm run build`` in ``<proj>/website``, then stages
+    ``website/dist`` as ``src/kiro_crew/static/dist`` (:func:`_stage_dist_locked`:
+    the dev link, or a link to a fresh ``static/.dist.<id>`` copy). Graceful no-op when
     there is no ``website/`` directory or ``npm`` is not installed.
 
     The edition seam is threaded through the build (see
@@ -905,8 +1186,9 @@ async def build_frontend_async(
 
     Async sibling of :func:`build_frontend_sync`: runs ``npm ci`` (fallback
     ``npm install``) then ``npm run build`` in ``<proj>/website`` with
-    timeouts + kill-on-timeout, then copies ``website/dist`` into
-    ``src/kiro_crew/static/dist``. Graceful no-op when there is no
+    timeouts + kill-on-timeout, then stages ``website/dist`` as
+    ``src/kiro_crew/static/dist`` (:func:`_stage_dist_locked`: the dev link, or
+    a link to a fresh ``static/.dist.<id>`` copy). Graceful no-op when there is no
     ``website/`` directory or ``npm`` is not installed.
 
     Threads the edition seam like the sync helper — this is the path
@@ -1061,9 +1343,9 @@ async def build_frontend_async(
         await _offload(backup.commit)
 
         # Still inside the SAME holder, so this calls the _locked variant --
-        # re-entering _staging_lock here would deadlock against ourselves. Vite
-        # empties website/dist, so a peer staging concurrently would copy a
-        # partially written tree.
+        # re-entering _staging_lock here would deadlock against ourselves. The
+        # build swaps a new tree into website/dist, so a peer staging
+        # concurrently would copy half of each.
         def _build_and_stage() -> bool:
             # Collect rather than calling _warn: this runs on a worker thread, and
             # _warn reaches push_progress, which belongs to the loop thread.
@@ -1086,7 +1368,7 @@ async def build_frontend_async(
         # Through _offload, NOT raw run_in_executor: that is what puts the future
         # in `inflight` so the `finally` waits for it before releasing the lock.
         # Otherwise a cancellation here releases the flock while this thread is
-        # still running `npm run build` (which rewrites website/dist) and staging
+        # still running `npm run build` (which swaps website/dist) and staging
         # it, and a peer would publish a bundle vite is mid-rewrite -- the mixed
         # bundle the lock exists to prevent. The lock is held OUTSIDE the worker, so
         # a cancelled await can release it early unless the future is tracked.
@@ -1145,3 +1427,33 @@ async def build_frontend_async(
         _warn(message.strip().lstrip("⚠️ ").strip() or "Frontend build/staging failed")
     if not staged and not messages:
         _warn("Frontend build/staging failed -- dashboard may be stale")
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    """``python -m kiro_crew.frontend stage [REPO]``: stage a built ``website/dist``.
+
+    The one entry point the build drivers (Makefile, make.ps1) and the docs use.
+    Waits at most :data:`_CLI_STAGE_LOCK_TIMEOUT` for the staging lock, and
+    refuses a directory that is not a Kiro Crew checkout before creating anything
+    in it.
+    """
+    platform_compat.ensure_utf8_console()
+    parser = argparse.ArgumentParser(prog="python -m kiro_crew.frontend")
+    sub = parser.add_subparsers(dest="command", required=True)
+    stage = sub.add_parser("stage", help="stage website/dist into src/kiro_crew/static/dist")
+    stage.add_argument("repo", nargs="?", default=".", help="repository root (default: .)")
+    args = parser.parse_args(argv)
+    repo = Path(args.repo).resolve()
+    if not (repo / _DIR_NAME).is_dir() or not (repo / "src" / "kiro_crew").is_dir():
+        _print_safe(f"error: {repo} is not a Kiro Crew checkout (no website/ and src/kiro_crew/)")
+        return 1
+    try:
+        stage_built_dist(repo, lock_timeout=_CLI_STAGE_LOCK_TIMEOUT)
+    except (RuntimeError, OSError) as exc:
+        _print_safe(f"error: {exc}")
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

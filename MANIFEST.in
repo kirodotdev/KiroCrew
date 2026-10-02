@@ -26,6 +26,9 @@ include src/kiro_crew/model_tokens.json
 # Excluded from package_data globs and .gitignored, but it MUST ship so that a
 # `pip install .` / sdist install serves the dashboard with no npm/node present.
 recursive-include src/kiro_crew/static *
+# ...but not the immutable copies staging keeps beside it: static/dist links
+# to one of them and ships through the link.
+prune src/kiro_crew/static/.dist.*
 
 # --- Other package_data directories ------------------------------------------
 recursive-include src/kiro_crew/config *

@@ -163,18 +163,25 @@ describe('precompressPlugin', () => {
     expect(typeof plugin.closeBundle).toBe('function')
   })
 
-  it('compresses the configured outDir/subdir relative to cwd', () => {
-    const assets = path.join(dir, 'dist', 'assets')
-    mkdirSync(assets, { recursive: true })
-    writeFileSync(path.join(assets, 'index-abc123.js'), filler(4096))
-    const cwd = process.cwd()
-    try {
-      process.chdir(dir)
-      precompressPlugin({ log: false }).closeBundle()
-    } finally {
-      process.chdir(cwd)
-    }
-    expect(existsSync(path.join(assets, 'index-abc123.js.gz'))).toBe(true)
+  /** The plugin as Vite drives it: resolved config first, then closeBundle. */
+  function runPlugin(outDir: string): void {
+    const plugin = precompressPlugin({ log: false })
+    plugin.configResolved({ root: dir, build: { outDir } })
+    plugin.closeBundle()
+  }
+
+  it("compresses the build's resolved outDir, not the live dist", () => {
+    // The build writes a scratch sibling and publishes it afterwards; a
+    // hardcoded dist would compress the tree being served instead.
+    const sibling = path.join(dir, '.dist.next-1-ab', 'assets')
+    const live = path.join(dir, 'dist', 'assets')
+    mkdirSync(sibling, { recursive: true })
+    mkdirSync(live, { recursive: true })
+    writeFileSync(path.join(sibling, 'index-new.js'), filler(4096))
+    writeFileSync(path.join(live, 'index-old.js'), filler(4096))
+    runPlugin('.dist.next-1-ab')
+    expect(existsSync(path.join(sibling, 'index-new.js.gz'))).toBe(true)
+    expect(existsSync(path.join(live, 'index-old.js.gz'))).toBe(false)
   })
 
   it('leaves stable-named files outside assets/ uncompressed', () => {
@@ -185,13 +192,7 @@ describe('precompressPlugin', () => {
     mkdirSync(path.join(dist, 'vendor'), { recursive: true })
     writeFileSync(path.join(dist, 'index.html'), filler(4096))
     writeFileSync(path.join(dist, 'vendor', 'tailwind.js'), filler(4096))
-    const cwd = process.cwd()
-    try {
-      process.chdir(dir)
-      precompressPlugin({ log: false }).closeBundle()
-    } finally {
-      process.chdir(cwd)
-    }
+    runPlugin('dist')
     expect(existsSync(path.join(dist, 'index.html.gz'))).toBe(false)
     expect(existsSync(path.join(dist, 'vendor', 'tailwind.js.gz'))).toBe(false)
   })

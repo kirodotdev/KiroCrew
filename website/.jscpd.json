@@ -8,6 +8,9 @@
   "ignore": [
     "**/node_modules/**",
     "**/dist/**",
+    "**/.dist.next-*/**",
+    "**/.dist.ready-*/**",
+    "**/.dist.prev-*/**",
     "**/dist-dev/**",
     "**/build/**",
     "**/coverage/**",

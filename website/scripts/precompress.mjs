@@ -133,15 +133,22 @@ export function compressDir(dir) {
  * Runs in `closeBundle` (not `writeBundle`) so it fires once after the final
  * pass; vite can run several rollup passes per build, and compressing in each
  * would redo the work. Re-running is harmless anyway: siblings are overwritten,
- * and the dist-staging copy (`rm -rf` + `cp -R`) clears old ones every build,
- * which is what keeps them from going stale.
+ * and Vite's `emptyOutDir` clears old ones every build, which is what keeps
+ * them from going stale.
+ *
+ * Compresses the build's own resolved outDir, which is a scratch sibling of
+ * the live dist until scripts/publish-dist.mjs publishes it.
  */
-export function precompressPlugin({ outDir = 'dist', subdir = 'assets', log = true } = {}) {
+export function precompressPlugin({ subdir = 'assets', log = true } = {}) {
+  let outDir = ''
   return {
     name: 'kirocrew-precompress',
     apply: 'build',
+    configResolved(config) {
+      outDir = path.resolve(config.root, config.build.outDir)
+    },
     closeBundle() {
-      const target = path.resolve(process.cwd(), outDir, subdir)
+      const target = path.join(outDir, subdir)
       const stats = compressDir(target)
       if (log && stats.files > 0) {
         const mb = n => (n / 1e6).toFixed(2)

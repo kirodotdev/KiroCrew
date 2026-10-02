@@ -17,13 +17,18 @@ npm run dev          # Vite dev server on http://localhost:3000 (proxies API to 
 npm run build        # tsc -p tsconfig.app.json && vite build  → dist/
 ```
 
-After building, stage `dist/` into the backend package so the gateway serves it.
-Clear the destination first: Vite emits content-hashed filenames, so copying over an
-existing bundle accumulates stale assets.
+Every Vite build except `--watch` or one into a mount-point `dist/` writes a
+scratch sibling of `dist/` and swaps it in only when it succeeds
+(`scripts/publish-dist.mjs`), so `dist/` is never empty or half-written; those
+two write in place.
+Then stage it into the backend package so the gateway serves it:
 
 ```bash
-rm -rf ../src/kiro_crew/static/dist && cp -r dist ../src/kiro_crew/static/dist
+cd .. && PYTHONPATH=src python -m kiro_crew.frontend stage .
 ```
+
+The stager points `src/kiro_crew/static/dist` at `dist/` (or, for an edition, at
+a fresh private copy); a running gateway follows it on its next request.
 
 ## Test and lint
 

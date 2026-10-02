@@ -673,8 +673,9 @@ def _kill_tree_sync(pid: int) -> None:
     session (``start_new_session`` / ``CREATE_NEW_PROCESS_GROUP``) sits in a
     different process group, so POSIX ``killpg`` never reaches it. Sync/provision
     run worktree-controlled build tooling that does exactly this, and an escaped
-    npm/vite keeps rewriting ``website/dist`` after the run is declared dead —
-    a later sync then stages a bundle a live writer is still mutating.
+    npm/vite keeps building and publishing into ``website/dist`` after the run
+    is declared dead — a later sync then stages a bundle a live writer is still
+    replacing.
 
     Descendants are enumerated FIRST: killing reparents survivors to init and
     erases the PPID links that identify them. Each survivor is killed via its

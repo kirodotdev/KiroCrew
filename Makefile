@@ -16,12 +16,19 @@ PIP := $(VENV)/bin/pip
 # OR 022: only ever ADDS write-mask bits, a stricter umask is preserved.
 TIGHT_UMASK := umask "$$(printf '%03o' "$$(( $$(umask) | 022 ))")"
 PYTEST := $(VENV)/bin/pytest
+# Stage website/dist as the served src/kiro_crew/static/dist with the package's
+# own stager, through the venv `backend` installed it into: it links
+# static/dist to website/dist, keeps that link, or points it at a fresh copy --
+# never rm + cp under a running gateway. Not part of `frontend`, so
+# `backend-bin` (which copies website/dist itself) needs no Python for it.
+STAGE_DIST := $(VENV)/bin/python -m kiro_crew.frontend stage .
 
 all: test
 
-# Build the frontend (npm/vite) and stage it into the package, then install
-# the backend into a local venv.
+# Build the frontend (npm/vite), install the backend into a local venv, then
+# stage the dashboard into the package.
 build: frontend backend
+	$(STAGE_DIST)
 
 frontend:
 	bash ensure-node.sh || true
@@ -48,9 +55,6 @@ frontend:
 	  npm run build && \
 	  ( cd electron && \
 	    if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi )
-	rm -rf src/kiro_crew/static/dist
-	mkdir -p src/kiro_crew/static
-	cp -R website/dist src/kiro_crew/static/dist
 
 backend:
 	bash ensure-python.sh || true
@@ -99,12 +103,13 @@ test: build
 # "externally-managed-environment" where the marker exists. Depending on
 # `backend` guarantees a >= 3.12 venv exists first.
 wheel: frontend backend
+	$(STAGE_DIST)
 	$(PIP) install --upgrade build
 	$(VENV)/bin/python -m build --wheel
 
 # Standalone backend tree on a bundled python-build-standalone interpreter (no
-# system Python needed). Stages the dashboard first so it's embedded in the
-# bundle. Host-arch only (UNIVERSAL=0): the standalone backend is a
+# system Python needed). Builds the dashboard first; build-desktop.sh embeds
+# website/dist in the bundle itself. Host-arch only (UNIVERSAL=0): the standalone backend is a
 # local-machine artifact, not a distributable app.
 backend-bin: frontend
 	UNIVERSAL=0 SKIP_FRONTEND=1 SKIP_ELECTRON=1 bash packaging/build-desktop.sh
@@ -125,7 +130,8 @@ desktop:
 
 clean:
 	rm -rf build dist *.egg-info src/*.egg-info \
-	       src/kiro_crew/static/dist website/dist \
+	       src/kiro_crew/static/dist src/kiro_crew/static/.dist.* website/dist \
+	       website/.dist*.next-* website/.dist*.ready-* website/.dist*.prev-* \
 	       website/electron/backend-dist website/electron/dist \
 	       .pytest_cache .mypy_cache
 	find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
