@@ -6484,6 +6484,7 @@
       "add_to_chat": "Adicionar à conversa",
       "cancel": "Cancelar",
       "collapse_comment": "Recolher comentário",
+      "comment_on_this_merge_request": "Comentar neste merge request",
       "comment_on_this_pull_request": "Comentar nesta pull request",
       "could_not_change_the_thread_s_state": "Não foi possível alterar o estado do tópico.",
       "empty_comment": "_(vazio)_",

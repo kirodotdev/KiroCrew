@@ -6383,6 +6383,7 @@
       "add_to_chat": "চ্যাটে যোগ করুন",
       "cancel": "বাতিল করো",
       "collapse_comment": "মন্তব্য সংকুচিত করুন",
+      "comment_on_this_merge_request": "এই merge request-এ মন্তব্য করো",
       "comment_on_this_pull_request": "এই pull request-এ মন্তব্য করো",
       "could_not_change_the_thread_s_state": "থ্রেডের অবস্থা পরিবর্তন করা যায়নি।",
       "empty_comment": "_(ফাঁকা)_",

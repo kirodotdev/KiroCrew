@@ -6585,6 +6585,7 @@
       "add_to_chat": "Добавить в чат",
       "cancel": "Отмена",
       "collapse_comment": "Свернуть комментарий",
+      "comment_on_this_merge_request": "Оставить комментарий к этому merge request",
       "comment_on_this_pull_request": "Оставить комментарий к этому pull request",
       "could_not_change_the_thread_s_state": "Не удалось изменить состояние обсуждения.",
       "empty_comment": "_(пусто)_",
