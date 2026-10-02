@@ -108,6 +108,14 @@ from kiro_crew.workspace_cli_settings import (
 logger = logging.getLogger(__name__)
 
 
+#: Decoding for the workspace ``cli.json``. The file can be a person's own
+#: workspace settings, and Windows editors save UTF-8 with a byte-order mark,
+#: which ``json.loads`` refuses on decoded text. A refused file reads as empty
+#: here, and the overlay writers then replace it with only Kiro Crew's keys, so
+#: every reader drops one leading mark. Writers emit plain UTF-8.
+_CLI_JSON_ENCODING = "utf-8-sig"
+
+
 def _write_cli_overlay(
     work_dir: Path,
     model: str,
@@ -146,7 +154,11 @@ def _write_cli_overlay(
     """
     with workspace_cli_settings_lock(work_dir, timeout=timeout) as cli_json:
         try:
-            existing = json.loads(cli_json.read_text(encoding="utf-8")) if cli_json.exists() else {}
+            existing = (
+                json.loads(cli_json.read_text(encoding=_CLI_JSON_ENCODING))
+                if cli_json.exists()
+                else {}
+            )
         except (json.JSONDecodeError, OSError):
             existing = {}
         if not isinstance(existing, dict):
@@ -232,7 +244,11 @@ def _write_tool_search_overlay(
     """
     with workspace_cli_settings_lock(work_dir) as cli_json:
         try:
-            existing = json.loads(cli_json.read_text(encoding="utf-8")) if cli_json.exists() else {}
+            existing = (
+                json.loads(cli_json.read_text(encoding=_CLI_JSON_ENCODING))
+                if cli_json.exists()
+                else {}
+            )
         except (json.JSONDecodeError, OSError):
             existing = {}
         if not isinstance(existing, dict):
@@ -276,7 +292,7 @@ def _clear_cli_overlay_effort(work_dir: Path, model: str) -> bool:
             if not cli_json.exists():
                 return True
             try:
-                data = json.loads(cli_json.read_text(encoding="utf-8"))
+                data = json.loads(cli_json.read_text(encoding=_CLI_JSON_ENCODING))
             except json.JSONDecodeError:
                 # A malformed file names no effort for any model, and
                 # ``_read_cli_overlay`` reads it as ``{}`` too, so a respawn
@@ -326,7 +342,7 @@ def _read_cli_overlay(work_dir: Path) -> dict[str, str]:
     if not cli_json.exists():
         return {}
     try:
-        data = json.loads(cli_json.read_text(encoding="utf-8"))
+        data = json.loads(cli_json.read_text(encoding=_CLI_JSON_ENCODING))
     except (json.JSONDecodeError, OSError):
         return {}
     if not isinstance(data, dict):
