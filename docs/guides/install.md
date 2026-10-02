@@ -263,10 +263,10 @@ PYTHONPATH=src python -m kiro_crew gateway   # -> http://localhost:5476
 
 On Windows the same targets run through `make.ps1`, because `make` is not part
 of a Windows install and the Makefile's recipes are POSIX-shaped
-(`.venv/bin/pip`, `rm -rf`, `cp -R`, `bash ensure-*.sh`):
+(`.venv/bin/pip`, `rm -rf`, `bash ensure-*.sh`):
 
 ```powershell
-.\make.ps1 build                             # same two steps, same artifacts
+.\make.ps1 build                             # same steps, same artifacts
 $env:PYTHONPATH="src"; .\.venv\Scripts\python.exe -m kiro_crew gateway
 ```
 
@@ -282,15 +282,24 @@ other lacks. Differences are confined to what the platform forces: a Windows
 venv puts its executables in `.venv\Scripts\`, and the macOS-only
 `resign-macos-libs.sh` step has no Windows counterpart.
 
-`make build` runs two steps:
+`make build` runs three steps:
 
 1. **`frontend`**: `npm ci` (or `npm install`) + `npm run build` in `website/`,
-   then copies `website/dist` into `src/kiro_crew/static/dist` so the backend
-   serves the SPA, and installs `website/electron`'s own deps last — it is a
-   separate npm package the `website/` install never reaches, and `npm test`
-   in `website/` needs it.
+   and installs `website/electron`'s own deps last — it is a separate npm
+   package the `website/` install never reaches, and `npm test` in `website/`
+   needs it.
 2. **`backend`**: creates `.venv` and runs an editable install with the `dev`
    extra (`pip install -e ".[dev]"`).
+3. **stage**: `.venv/bin/python -m kiro_crew.frontend stage .` makes
+   `website/dist` the served `src/kiro_crew/static/dist`: a link to
+   `website/dist`, or for an edition a link to a fresh private copy. It waits at
+   most 30 s for the staging lock a Kiro Crew build holds. `make wheel` stages
+   the same way; `make backend-bin` does not, since its bundle copies
+   `website/dist` itself, so it needs no Python for this. `make frontend` alone
+   does not stage either: a checkout whose `static/dist` is still a real
+   directory keeps serving that old copy until a stage turns it into the link.
+   A gateway already running when that happens, one whose build routes were
+   resolved from the directory, needs a restart; the stage says so.
 
 Both targets bootstrap their toolchain first (`ensure-node.sh`,
 `ensure-python.sh`) and fall back to whatever is on `PATH` if that fails. The
@@ -505,8 +514,8 @@ Linux, `.\make.ps1 <target>` on Windows.
 
 | Target | What it does |
 |--------|--------------|
-| `make build` | Frontend (npm/Vite) + backend into `.venv` |
-| `make frontend` | Frontend only: npm build staged into `src/kiro_crew/static/dist`, plus `website/electron` deps |
+| `make build` | Frontend (npm/Vite) + backend into `.venv`, then stage `website/dist` as `src/kiro_crew/static/dist` |
+| `make frontend` | Frontend only: npm build into `website/dist`, plus `website/electron` deps. It does not stage; run `python -m kiro_crew.frontend stage .` (or `make build`) for that |
 | `make backend` | Backend only: `.venv` + editable install with the `dev` extra |
 | `make wheel` | Self-contained pip wheel with the dashboard bundled, into `dist/` |
 | `make backend-bin` | Frozen standalone backend binary (host arch only) |

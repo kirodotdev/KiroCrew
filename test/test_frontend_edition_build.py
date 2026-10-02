@@ -31,6 +31,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import make_dir_link
 from kiro_crew import frontend, platform_compat
 
 _DIR_ENV = "KIROCREW_EDITION_DIR"
@@ -356,20 +357,21 @@ def test_stage_built_dist_copies_website_dist_into_static_dist(tmp_path):
 
 
 def test_stage_built_dist_replaces_a_stale_symlink(tmp_path):
-    """A source-tree gateway leaves static/dist as a SYMLINK to website/dist.
+    """A source-tree gateway leaves static/dist as a link to website/dist.
 
-    Staging must replace it with a real snapshot rather than fail or write
-    through it, so a packaged layout gets a self-contained bundle.
+    A build that writes website/dist in place (no publish-dist.mjs) must not be
+    served through it, so staging re-points static/dist at a private copy
+    rather than failing or writing through the link.
     """
     built = tmp_path / "website" / "dist"
     built.mkdir(parents=True)
     (built / "index.html").write_text("<html>fresh</html>")
     static_parent = tmp_path / "src" / "kiro_crew" / "static"
     static_parent.mkdir(parents=True)
-    (static_parent / "dist").symlink_to(built)
+    make_dir_link(static_parent / "dist", built)  # a junction on Windows
     frontend.stage_built_dist(tmp_path, log=lambda _m: None)
     staged = static_parent / "dist"
-    assert not staged.is_symlink(), "a stale symlink must be replaced by a copy"
+    assert staged.resolve() != built.resolve(), "still served through the stale link"
     assert (staged / "index.html").read_text() == "<html>fresh</html>"
 
 
@@ -432,10 +434,9 @@ def test_stage_dist_keeps_the_served_bundle_when_the_copy_fails(tmp_path, monkey
     assert frontend._stage_dist(built, tmp_path, log=lambda _m: None) is False
     # The already-served bundle is untouched.
     assert (served / "index.html").read_text() == "<html>previous</html>"
-    # No staging leftovers.
-    # The .dist.staging.lock file is the persistent flock target; what must
-    # not survive is a staging DIRECTORY.
-    assert not [q for q in served.parent.glob(".dist.staging.*") if q.is_dir()]
+    # No staging leftovers. The .dist.staging.lock file is the persistent flock
+    # target; what must not survive is a partial copy.
+    assert not [q for q in served.parent.glob(".dist.*") if q.is_dir()]
 
 
 def test_stage_dist_replaces_the_served_bundle_on_success(tmp_path):
@@ -452,22 +453,20 @@ def test_stage_dist_replaces_the_served_bundle_on_success(tmp_path):
     assert (served / "index.html").read_text() == "<html>fresh</html>"
     # A replace, not a merge -- stale files from the old bundle are gone.
     assert not (served / "stale-asset.js").exists()
-    # The .dist.staging.lock file is the persistent flock target; what must
-    # not survive is a staging DIRECTORY.
-    assert not [q for q in served.parent.glob(".dist.staging.*") if q.is_dir()]
+    # The one copy left is the one served; the old tree it replaced was swept.
+    assert [q for q in served.parent.glob(".dist.*") if q.is_dir()] == [served.resolve()]
 
 
-def test_stage_dist_moves_a_dangling_dist_link_aside_and_publishes(tmp_path):
+def test_stage_dist_replaces_a_dangling_dist_link_and_publishes(tmp_path):
     """A dangling link occupying `static/dist` must not block staging.
 
-    The move-aside in `_stage_dist_locked` decides whether an occupant exists
-    with a link check plus `exists()`. `static/dist` is published by this very
-    module through `platform_compat.symlink_or_junction`, which falls back to a
+    The re-point in `_point_static_dist_at` decides what occupies `static/dist`
+    with a link check first. `static/dist` is published by this very module
+    through `platform_compat.symlink_or_junction`, which falls back to a
     directory JUNCTION on Windows, and a dangling junction answers False to
-    `is_symlink()` AND `exists()` — a predicate built from those two skips the
-    move-aside, and the `os.replace` publish then lands on the surviving entry:
-    the "Could not stage static/dist" failure this module's backup side already
-    guards against. The link check must therefore be `is_link_or_junction`.
+    `is_symlink()` AND `exists()` — a predicate built from those two misreads
+    it, and the new link then lands on the surviving entry. The link check must
+    therefore be `is_link_or_junction`.
 
     Built with the product's own link helper, so the test exercises whichever
     shape the running platform actually produces.
@@ -489,11 +488,11 @@ def test_stage_dist_moves_a_dangling_dist_link_aside_and_publishes(tmp_path):
 
     assert frontend._stage_dist(built, tmp_path, log=lambda _m: None) is True
 
-    # The fresh bundle is served as a real tree, not through the old link.
-    assert not platform_compat.is_link_or_junction(served)
+    # The fresh bundle is served from its own copy, not through the old link.
+    assert served.resolve().parent == static_dir.resolve()
     assert (served / "index.html").read_text() == "<html>fresh</html>"
-    # The moved-aside occupant is reclaimed once the publish succeeds.
-    assert not list(served.parent.glob(".dist.previous.*"))
+    # Nothing but the served copy is left beside it.
+    assert [q for q in static_dir.glob(".dist.*") if q.is_dir()] == [served.resolve()]
 
 
 def test_discard_path_detaches_a_live_dist_link_without_deleting_its_target(tmp_path):

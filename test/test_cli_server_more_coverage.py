@@ -1069,6 +1069,17 @@ class TestGateway:
         assert any("dist/ not found" in r.message for r in caplog.records)
         assert "kw" in captured
 
+    def test_the_dist_is_resolved_off_the_event_loop(self, gw, monkeypatch) -> None:
+        """An edition start waits for the staging lock; on the loop thread that wait is skipped."""
+        from kiro_crew.atomic_write import on_event_loop
+
+        seen: list[bool] = []
+        monkeypatch.setattr(
+            cli_server, "ensure_dev_dist_symlink", lambda: seen.append(on_event_loop()) or None
+        )
+        asyncio.run(cli_server._gateway(no_dashboard=False))
+        assert seen == [False]
+
     def test_slack_only_skips_the_dist_check(self, gw, monkeypatch) -> None:
         captured, _ = gw
 

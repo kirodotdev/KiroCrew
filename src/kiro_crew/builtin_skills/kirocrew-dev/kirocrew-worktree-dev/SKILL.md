@@ -151,17 +151,20 @@ python3 -m venv ~/.kiro/crew/venvs/mypy-ci
 ## The served frontend is built dist
 
 The gateway serves `src/kiro_crew/static/dist/`, not source TSX or a Vite server.
-After creating a worktree or changing frontend code, build and clean-stage:
+After creating a worktree or changing frontend code, build and stage:
 
 ```bash
 cd website && npm ci && npm run build && cd ..
-rm -rf src/kiro_crew/static/dist && cp -R website/dist src/kiro_crew/static/dist
+PYTHONPATH=src python -m kiro_crew.frontend stage .
 ```
 
-Only remove that generated dist in the assigned worktree; rebuilding restores it.
-`make build` also builds, clean-stages and installs. Copying over an old dist
-leaves stale content-hashed assets. Dist is gitignored and does not transfer with
-a fetch or new worktree. To inspect a minified bundle, search surviving route,
+Every Vite build publishes into `website/dist` atomically
+(`website/scripts/publish-dist.mjs`). The stager points `static/dist` at it (the
+dev link), or for an edition at a fresh private copy, and a running gateway
+follows either on its next request. Never `rm -rf` + `cp -R` `static/dist`:
+that deletes the tree a running gateway serves. `make build` builds, installs
+and stages. Dist is gitignored and does not transfer with a fetch or new
+worktree. To inspect a minified bundle, search surviving route,
 API or label strings, not React component names.
 
 ## Flags and isolated preview

@@ -2726,8 +2726,10 @@ async def _gateway(
     # Resolve the dashboard's React build. Skipped in slack-only mode since no
     # dashboard will be served. When the prebuilt dist/ is missing the gateway
     # has no dashboard shell to serve and returns the "not found" guidance page;
-    # build the frontend to restore the full dashboard.
-    if not no_dashboard and ensure_dev_dist_symlink() is None:
+    # build the frontend to restore the full dashboard. Off the event loop: under
+    # an edition it waits for the staging lock and copies the whole bundle, and
+    # a lock acquire on the loop thread never waits at all.
+    if not no_dashboard and await asyncio.to_thread(ensure_dev_dist_symlink) is None:
         logging.getLogger(__name__).warning(
             "Dashboard dist/ not found — the dashboard will show the "
             "'not built' guidance page until the SPA is bundled. "
