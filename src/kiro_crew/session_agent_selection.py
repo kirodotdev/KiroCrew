@@ -63,14 +63,12 @@ def _source_of_view(name: str) -> str:
     """
     if not name.startswith(NATIVE_SKILL_ALIAS_PREFIX):
         return name
-    # Deferred: the projection module pulls in the ACP stack, which a plain agent
+    # Deferred: the driver module pulls in the ACP stack, which a plain agent
     # name never needs.
-    from kiro_crew.acp.skill_projection import RetiredSkillView, source_agent_name
+    from kiro_crew.agent_sdk.drivers import acp as acp_driver
 
-    try:
-        return source_agent_name(name)
-    except RetiredSkillView:
-        return name
+    source = acp_driver.skill_view_source_agent(name)
+    return name if source is None else source
 
 
 def resolve_session_agent_bindings(

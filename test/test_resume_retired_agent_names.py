@@ -152,3 +152,20 @@ def test_a_view_of_an_uninstalled_agent_still_fails_closed(monkeypatch, installe
     bindings = _resume(monkeypatch, _cfg(), captured, VIEW)
 
     assert not bindings.requested_resolved
+
+
+def test_the_sdk_facade_answers_both_callers_without_the_projection_type(monkeypatch, view_sidecar):
+    """Both resolvers reach the projection through the SDK driver, which hands
+    back ``None`` for a view nothing records instead of the projection's own
+    exception type."""
+    from kiro_crew.agent_sdk.drivers import acp as acp_driver
+
+    assert acp_driver.skill_view_source_agent(VIEW) == AGENT
+    assert acp_driver.skill_view_source_agent(AGENT) == AGENT
+    assert session_agent_selection._source_of_view(VIEW) == AGENT
+    assert execution_context._same_agent(AGENT, VIEW)
+
+    view_sidecar.unlink()
+    assert acp_driver.skill_view_source_agent(VIEW) is None
+    assert session_agent_selection._source_of_view(VIEW) == VIEW
+    assert not execution_context._same_agent(AGENT, VIEW)
