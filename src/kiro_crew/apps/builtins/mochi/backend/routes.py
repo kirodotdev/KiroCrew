@@ -92,6 +92,7 @@ from kiro_crew.atomic_write import atomic_write
 from kiro_crew.hooks import safe_read_file
 from kiro_crew.mcp_discovery import list_servers, probe_server
 from kiro_crew.mcp_utils import mcp_server_alias
+from kiro_crew.user_json import loads_user_json
 
 logger = logging.getLogger(__name__)
 
@@ -685,7 +686,7 @@ def _mcp_scope_specs_strict() -> list[dict[str, Any]]:
         if not p.is_file():
             continue
         # Let OSError / JSONDecodeError propagate: unreadable is NOT "empty".
-        data = json.loads(safe_read_file(str(p)))
+        data = loads_user_json(safe_read_file(str(p)))
         # A malformed SHAPE is unreadable too. Skipping it silently here would
         # reintroduce the very fail-open this function exists to close:
         # ``{"mcpServers": []}`` parses fine, carries no server map, and would

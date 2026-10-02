@@ -187,6 +187,34 @@ def test_a_fork_whose_spec_does_not_read_as_an_object_stays_blocked(
     assert agent._fork_refresh_failed == frozenset({"crewfork"})
 
 
+def test_an_unparseable_fork_spec_stays_blocked_and_is_not_rewritten(
+    one_fork: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spec = one_fork / "crewfork.json"
+    spec.write_text("{not json", encoding="utf-8")
+    monkeypatch.setattr(agent, "agent_spec_path", lambda _name: spec)
+    written: list[dict[str, Any]] = []
+    monkeypatch.setattr(agent, "_atomic_json_write", lambda _path, config: written.append(config))
+    agent._refresh_forked_templates_locked(gated_off=frozenset())
+    assert written == []
+    assert agent._fork_refresh_failed == frozenset({"crewfork"})
+
+
+def test_a_fork_spec_saved_with_a_byte_order_mark_is_refreshed_whole(
+    one_fork: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spec = one_fork / "crewfork.json"
+    doc = {"name": "crewfork", "tools": [], "allowedTools": [], "prompt": "keep me"}
+    spec.write_bytes(b"\xef\xbb\xbf" + json.dumps(doc).encode("utf-8"))
+    monkeypatch.setattr(agent, "agent_spec_path", lambda _name: spec)
+    monkeypatch.setattr(agent, "_refresh_dynamic_fields", lambda *_a, **_k: None)
+    written: list[dict[str, Any]] = []
+    monkeypatch.setattr(agent, "_atomic_json_write", lambda _path, config: written.append(config))
+    agent._refresh_forked_templates_locked(gated_off=frozenset())
+    assert [config.get("prompt") for config in written] == ["keep me"]
+    assert agent._fork_refresh_failed == frozenset()
+
+
 def test_a_plumbing_failure_still_writes_the_governance_passes(
     one_fork: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:

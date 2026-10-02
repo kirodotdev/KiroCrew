@@ -103,6 +103,7 @@ from kiro_crew.sel import (  # circular import: sel imports config which imports
     SecurityEvent,
     sel,
 )
+from kiro_crew.user_json import loads_user_json
 from kiro_crew.validation import is_registered_agent_name
 
 if TYPE_CHECKING:  # served by ``__getattr__`` at runtime; named here for mypy
@@ -2345,7 +2346,7 @@ def _load_existing_config(
     runs reads the same decision the caller's audit will report.
     """
     try:
-        config = json.loads(path.read_text(encoding="utf-8"))
+        config = loads_user_json(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         config = None
     if not isinstance(config, dict):

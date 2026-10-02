@@ -67,6 +67,7 @@ from kiro_crew.platform.governance import may_skip_gate_now, strip_ungoverned_au
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.sel import sel
 from kiro_crew.session_map import SUPPRESS_REPLAY_FLAG, SessionMap
+from kiro_crew.user_json import loads_mcp_config, loads_user_json
 from kiro_crew.zip_vet import ZipInventoryRejected, vet_zip_inventory
 
 #: Absolute path of the stdlib-only launch shim, for interpreters whose
@@ -233,7 +234,7 @@ def _global_mcp_specs() -> dict[str, Any]:
     that cannot read it neutralizes nothing rather than failing app enable.
     """
     try:
-        raw = json.loads(
+        raw = loads_user_json(
             (Path.home() / ".kiro" / "settings" / "mcp.json").read_text(encoding="utf-8")
         )
         specs = raw.get("mcpServers")
@@ -744,7 +745,7 @@ _FRAMEWORK_OWNED_AGENT_KEYS = frozenset(
 def _read_agent_config(path: Path) -> dict[str, Any] | None:
     """The agent JSON currently on disk, or None when there is nothing usable."""
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = loads_user_json(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
     return data if isinstance(data, dict) else None
@@ -2092,7 +2093,7 @@ def _read_mcp_json_unlocked(*, strict: bool = False) -> dict[str, Any]:
     if not _mcp_json_path().is_file():
         return {}
     try:
-        return json.loads(_mcp_json_path().read_text(encoding="utf-8"))
+        return loads_mcp_config(_mcp_json_path().read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as exc:
         if strict:
             raise
@@ -3174,7 +3175,7 @@ def _scrub_legacy_shared_mcp(app_name: str) -> int:
         # rename. It is a DIFFERENT sidecar than _mcp_lock's default (that guards
         # kirocrew.json), so pass the legacy path explicitly.
         with _mcp_lock(target=_LEGACY_SHARED_MCP_PATH):
-            data = json.loads(_LEGACY_SHARED_MCP_PATH.read_text(encoding="utf-8"))
+            data = loads_mcp_config(_LEGACY_SHARED_MCP_PATH.read_text(encoding="utf-8"))
             servers = data.get("mcpServers", {})
             stale = [k for k in servers if k.startswith(prefix)]
             if not stale:

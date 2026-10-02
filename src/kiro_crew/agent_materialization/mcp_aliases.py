@@ -13,12 +13,12 @@ ownership transaction and commits it once the spec is durable.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Collection
 from pathlib import Path
 from typing import Any
 
 from kiro_crew import agent as agent_mod
+from kiro_crew import user_json
 from kiro_crew.mcp_cleanup import purge_deleted_proxy_from_config
 from kiro_crew.mcp_provenance import DERIVED_KEY
 from kiro_crew.mcp_utils import mcp_server_alias
@@ -514,7 +514,7 @@ def _durable_tool_aliases(path: Path) -> tuple[bool, object]:
     except OSError:
         return (False, None)
     try:
-        on_disk = json.loads(raw)
+        on_disk = user_json.loads_user_json(raw)
     except ValueError:
         return (True, None)
     return (True, on_disk.get("toolAliases") if isinstance(on_disk, dict) else None)

@@ -159,6 +159,7 @@ from kiro_crew.sandbox import (
     scrub_agent_subprocess_env,
     wrap_argv,
 )
+from kiro_crew.user_json import loads_user_json
 from kiro_crew.validation import TEMPLATE_NAME_RE
 
 _MODEL_LIST_STDERR_TAIL_CHARS = 1000
@@ -308,7 +309,7 @@ def _on_disk_mcp_servers(installed_path: Path) -> dict[str, Any] | None:
     in-gateway writer of this file can commit between them.
     """
     try:
-        on_disk = json.loads(installed_path.read_text(encoding="utf-8"))
+        on_disk = loads_user_json(installed_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
     if not isinstance(on_disk, dict):
@@ -1332,7 +1333,7 @@ async def api_agent_config(request: web.Request) -> web.Response:
             return _err500(exc)
     # GET
     try:
-        data = json.loads(agent_config_path.read_text(encoding="utf-8"))
+        data = loads_user_json(agent_config_path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         data = {}
     # A pre-registered Connections client projects its secret into the installed

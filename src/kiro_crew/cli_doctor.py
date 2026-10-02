@@ -62,6 +62,7 @@ from kiro_crew import (  # noqa: F401
     sandbox,
     stdlib_shadow,
     stt,
+    user_json,
 )
 from kiro_crew._bootstrap import _source_checkout_root
 from kiro_crew.acp.client import KIRO_CLI_BIN
@@ -743,7 +744,7 @@ def _doctor_mcp_tools(
     managed server then reports as missing and the file is never rewritten.
     """
     try:
-        agent_data = json.loads(agent_path.read_text(encoding="utf-8"))
+        agent_data = user_json.loads_user_json(agent_path.read_text(encoding="utf-8"))
     except Exception:
         agent_data = {}
     if not isinstance(agent_data, dict):

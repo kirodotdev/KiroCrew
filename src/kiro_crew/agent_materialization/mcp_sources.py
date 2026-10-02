@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from kiro_crew import agent as agent_mod
+from kiro_crew import user_json
 from kiro_crew.agent_materialization import auto_approve, mcp_aliases
 from kiro_crew.env import MCP_PATH_HINT, dedup_path, describe_search_path, emit_env
 from kiro_crew.mcp_cleanup import (
@@ -397,7 +398,7 @@ def merge_mcp_sources(config: dict) -> McpSources:
             # @ref if it ever lands there.
             config.setdefault("tools", []).append(f"@{_app_srv}")
 
-    shared_mcp = agent_mod._load_json(agent_mod._KIRO_MCP_JSON).get("mcpServers", {})
+    shared_mcp = user_json.load_mcp_servers(agent_mod._KIRO_MCP_JSON)
     for name, spec in shared_mcp.items():
         if isinstance(spec, dict) and name not in managed_names:
             # Copy so config never aliases the source dict — a later update()
@@ -422,7 +423,7 @@ def merge_mcp_sources(config: dict) -> McpSources:
     # (replaces the old single ``cc_shared_mcp``).
     extra_shared_mcp: dict[str, dict] = {}
     for scope_global in _extra_mcp_scope_globals():
-        scope_shared_mcp = agent_mod._load_json(scope_global).get("mcpServers", {})
+        scope_shared_mcp = user_json.load_mcp_servers(scope_global)
         for name, spec in scope_shared_mcp.items():
             if not isinstance(spec, dict):
                 continue
@@ -437,7 +438,7 @@ def merge_mcp_sources(config: dict) -> McpSources:
     # Uses update() to merge into existing specs, preserving user-set fields
     # like autoApprove while letting kirocrew's command/args/env win.
     # Skip managed servers for the same reason as above.
-    kirocrew_mcp = agent_mod._load_json(agent_mod._user_dir() / "mcp.json").get("mcpServers", {})
+    kirocrew_mcp = user_json.load_mcp_servers(agent_mod._user_dir() / "mcp.json")
     for name, spec in kirocrew_mcp.items():
         if isinstance(spec, dict) and name not in managed_names:
             mcps = config.setdefault("mcpServers", {})

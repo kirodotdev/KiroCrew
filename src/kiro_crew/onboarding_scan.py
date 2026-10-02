@@ -59,6 +59,7 @@ from kiro_crew.security import (
     is_sensitive_path,
     redact_with_findings,
 )
+from kiro_crew.user_json import strip_utf8_bom
 
 
 class _NoAliasSafeLoader(yaml.SafeLoader):
@@ -607,6 +608,7 @@ def _read_json(
     if text is None:
         return None
     try:
+        text = strip_utf8_bom(text)
         return _parse_json5(text) if json5 else json.loads(text)
     except (ValueError, RecursionError):
         scan.diagnostic(category, "invalid_config")

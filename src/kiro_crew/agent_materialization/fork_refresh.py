@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Literal
 
 from kiro_crew import agent as agent_mod
-from kiro_crew import agent_state
+from kiro_crew import agent_state, user_json
 from kiro_crew.agent_files import OWNED_KIRO_AGENT_FILES
 from kiro_crew.agent_materialization import auto_approve
 from kiro_crew.agent_spec_format import is_markdown_spec
@@ -256,7 +256,13 @@ def _refresh_forked_templates_locked(*, gated_off: "frozenset[str] | None" = Non
             # refresh that reads, loses the CPU to a dashboard PATCH, then
             # writes its stale snapshot would silently revert the user's edit.
             with agent_mod.agents_spec_lock(agents_dir):
-                config = agent_mod._load_json(spec_path)
+                # A strict read: `_load_json` answers `{}` for an unreadable
+                # file, which would pass the check below and be written back
+                # over the spec.
+                try:
+                    config = user_json.loads_user_json(spec_path.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    config = None
                 if not isinstance(config, dict):
                     # Unreadable spec: governance cannot be projected onto it.
                     failures.add(fork_name)
