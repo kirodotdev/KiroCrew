@@ -89,10 +89,15 @@ sequenceDiagram
 
 > **Token→session exchange (CWE-613).** The one-time link token that appears in
 > URLs / Slack DMs / terminal history / access logs is NEVER reused as the
-> long-lived session cookie. On first (query-param) auth the middleware mints a
+> long-lived session cookie. On first link authentication—whether the token is
+> carried in `?token=` or `X-Presigned-Token`—the middleware mints a
 > **separate** session token (fresh nonce, same identity, same remaining
-> lifetime) and sets *that* as the cookie. Leaking the link therefore exposes
-> only its 5-minute click window, not the 20-hour session credential. Combined
+> lifetime), exposes it to the handler as the authenticated request credential,
+> and revokes raw-token cookie replay before the handler runs. Buffered HTTP
+> responses receive that token as their cookie after the handler returns;
+> streaming `/api/chat` and `/api/ws` responses attach it before `prepare()` so
+> their transmitted headers carry it. A leaked link therefore exposes only its 5-minute
+> click window, not the 20-hour session credential. Combined
 > with per-session revocation (`revoke_access_cookie`), an individual leaked
 > session can be killed without the global generation bump.
 
@@ -291,7 +296,7 @@ def parse_duration(s: str) -> int | None: ...
 def token_auth_middleware(local_only: bool = True) -> Callable[..., Any]:
 ```
 
-The `local_only` parameter is accepted for backward compatibility but does not control whether ordinary loopback requests authenticate. `token_auth_middleware()` requires a token on ordinary loopback routes (`test_loopback_requires_token`). An internal route can grant a loopback caller with a valid `X-Internal-Secret`; a mixed internal route without that secret follows its cookie-authentication branch.
+The `local_only` parameter is accepted for backward compatibility but does not control whether ordinary loopback requests authenticate. `token_auth_middleware()` requires a token on ordinary loopback routes (`test_loopback_requires_token`). An internal route can grant a loopback caller with a valid `X-Internal-Secret`; a mixed internal route without that secret follows its cookie-authentication branch. Mixed routes are prefix-scoped by default; `exact_mixed_internal_paths` admits only equality for singleton routes such as `/api/ws`, `/api/models`, `/api/effort-levels`, and `/api/slash-commands`, so future siblings retain their own authorization contracts.
 
 Request flow:
 1. Internal-path handling is separate: a loopback caller with a valid `X-Internal-Secret` is admitted, a mixed internal path can validate a cookie, and a strict internal path denies non-loopback callers; ordinary loopback requests continue to the token gate (`token_auth_middleware`; `test_loopback_requires_token`).

@@ -506,6 +506,7 @@ class _SessionEntry(Protocol):
     provider_switch_replay: bool
     retire_on_identity_change: bool
     prev_turn_cancelled: bool
+    session_mcp_servers: list[dict[str, Any]] | None
 
 
 class _SessionMapPort(Protocol):
@@ -631,7 +632,11 @@ class SessionLifecycleOwner(Protocol):
 
     async def _send_abort_for_session(self, key: str, session: Any) -> None: ...
 
-    async def _eager_respawn(self, key: str) -> None: ...
+    async def _eager_respawn(
+        self,
+        key: str,
+        session_mcp_servers: list[dict[str, Any]] | None = None,
+    ) -> None: ...
 
     async def get_or_create(self, key: str, **kwargs: Any) -> tuple[Any, bool, bool]: ...
 
@@ -2989,7 +2994,9 @@ class SessionLifecycleService:
         )
         # Retain the task strongly until completion; the event loop alone keeps
         # only a weak reference.
-        task = asyncio.create_task(owner._eager_respawn(key))
+        task = asyncio.create_task(
+            owner._eager_respawn(key, getattr(session, "session_mcp_servers", None))
+        )
         owner._background_tasks.add(task)
         task.add_done_callback(owner._background_tasks.discard)
         if on_hard:
@@ -3041,7 +3048,11 @@ class SessionLifecycleService:
         except Exception:
             logger.debug("_send_abort_for_session failed for %s", key, exc_info=True)
 
-    async def _eager_respawn(self, key: str) -> None:
+    async def _eager_respawn(
+        self,
+        key: str,
+        session_mcp_servers: list[dict[str, Any]] | None = None,
+    ) -> None:
         """Respawn after hard kill and release its acquired turn semaphore.
 
         A start that succeeds here also delivers what a forced channel stop parked:
@@ -3049,7 +3060,7 @@ class SessionLifecycleService:
         wakes the adopted entries' channel drains.
         """
         try:
-            await self._owner.get_or_create(key)
+            await self._owner.get_or_create(key, session_mcp_servers=session_mcp_servers)
             self._owner.release(key)
         except Exception:
             self._deps.logger.debug("Eager respawn failed for %s", key, exc_info=True)

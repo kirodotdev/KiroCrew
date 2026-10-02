@@ -812,6 +812,9 @@ class SessionMcpProjection(NamedTuple):
 
     #: The translated ``mcpServers`` array (:func:`session_mcp_servers`).
     servers: list[dict[str, Any]]
+    #: Every server name the projection admitted before yielding matching entries
+    #: to caller-owned stubs. This is the declaration boundary for explicit input.
+    admitted_server_names: frozenset[str]
     #: Servers whose per-tool narrowing forces withholding them
     #: (:func:`session_mcp_restricted_servers`).
     restricted: frozenset[str]
@@ -864,10 +867,18 @@ def session_mcp_projection(
     disabled_tools = session_mcp_disabled_tools(
         agent, work_dir=work_dir, spec=spec, settings=settings
     )
+    admitted_servers = session_mcp_servers(agent, work_dir=work_dir, spec=spec)
+    admitted_server_names = frozenset(
+        str(element.get("name"))
+        for element in admitted_servers
+        if isinstance(element, dict) and element.get("name")
+    )
+    yielded_names = {str(name) for name in stub_server_names}
     return SessionMcpProjection(
-        servers=session_mcp_servers(
-            agent, stub_server_names=stub_server_names, work_dir=work_dir, spec=spec
-        ),
+        servers=[
+            element for element in admitted_servers if str(element.get("name")) not in yielded_names
+        ],
+        admitted_server_names=admitted_server_names,
         restricted=session_mcp_restricted_servers(disabled_tools),
         disabled_tools=disabled_tools,
         disabled_servers=session_mcp_disabled_servers(spec, settings),

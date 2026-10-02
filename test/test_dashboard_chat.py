@@ -24680,3 +24680,46 @@ class TestHistoryResumeInterruptedTurnMarker:
             (m.get("meta") or {}).get("kind") != "gateway_restart_interruption"
             for m in restored.messages
         )
+
+
+@pytest.mark.asyncio
+async def test_presigned_header_chat_stream_sends_exchanged_cookie(tmp_path, monkeypatch):
+    from aiohttp import CookieJar
+
+    from kiro_crew.dashboard.token_auth import (
+        MAX_SESSION_TTL_SECS,
+        generate_token,
+        token_auth_middleware,
+        validate_token,
+    )
+
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    state = _make_state(tmp_path)
+    link_token = generate_token("header-user", ttl_seconds=MAX_SESSION_TTL_SECS)
+
+    async def fake_run_chat(_state, slot, _message, **_kwargs):
+        raw_valid, _uid, raw_reason = validate_token(link_token, use_session_exp=True)
+        assert raw_valid is False
+        assert raw_reason == "session revoked"
+        slot.append("assistant", "ok", "chunk")
+        slot.append("assistant", "", "done")
+
+    monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", fake_run_chat)
+    app = _make_app(state)
+    app.middlewares.insert(0, token_auth_middleware(mixed_internal_paths=frozenset({"/api/chat"})))
+
+    async with TestClient(TestServer(app), cookie_jar=CookieJar(unsafe=True)) as client:
+        response = await client.post(
+            "/api/chat",
+            json={"message": "hello", "slot": "s1"},
+            headers={"X-Presigned-Token": link_token},
+        )
+        await response.read()
+        cookies = client.session.cookie_jar.filter_cookies(client.make_url("/"))
+        access = next(
+            morsel.value for name, morsel in cookies.items() if name.startswith("mc_token_")
+        )
+
+    assert access != link_token
+    valid, user_id, reason = validate_token(access, use_session_exp=True)
+    assert (valid, user_id, reason) == (True, "header-user", "")

@@ -238,6 +238,7 @@ async def test_tick_writes_the_slot_and_broadcasts_the_same_delta_the_tool_does(
     state.broadcast_ws.assert_called_once_with(
         "todo_update", {"slot": "s1", "todo": slot.todo_payload()}
     )
+    state._broadcast_session_plan.assert_called_once_with("s1", slot.todo_payload())
     # The tick is what the next fresh native session rebuilds from.
     assert "2. [x] <<<UNTRUSTED_TODO_TEXT b " in slot.todo_recovery_prompt()
 
@@ -1151,6 +1152,7 @@ async def test_clear_drops_the_pill_so_the_next_cold_start_does_not_rebuild_it(
     state, sent = _runner_state(tmp_path, monkeypatch, is_new=False, resumed=True)
     slot = state.get_or_create_slot("pill-chat")
     _seed_pill(slot)
+    state._broadcast_session_plan = MagicMock()
     broadcasts: list[tuple[str, dict[str, Any]]] = []
     real_broadcast = state.broadcast_ws
     state.broadcast_ws = lambda kind, payload, *a, **k: (  # type: ignore[assignment]
@@ -1171,6 +1173,7 @@ async def test_clear_drops_the_pill_so_the_next_cold_start_does_not_rebuild_it(
     await _runner_turn(state, slot, "/clear")
     assert slot.todo_payload() is None
     assert ("todo_update", {"slot": slot.key, "todo": None}) in broadcasts
+    state._broadcast_session_plan.assert_called_once_with(slot.key, None)
     assert slot.todo_recovery_prompt() == ""
 
 

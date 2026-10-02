@@ -98,6 +98,7 @@ from typing import TYPE_CHECKING, Any
 # broadcast_ws, and ws.py imports us before apps.manager). Kept top-level per
 # the top-level-imports guideline.
 from kiro_crew.apps.manager import get_app_manifest, is_app_enabled
+from kiro_crew.gateway.constants import SESSION_MESSAGE_EVENT, SESSION_PLAN_EVENT
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state import DashboardState, _ChatSlot
@@ -298,6 +299,10 @@ _OWNER_ONLY_EVENTS = frozenset({
     # Per-row slot metadata edits. Sent only to dashboard-user sockets that
     # declared the capability; an app token gets its filtered full list.
     "slot_patch",
+    # Dedicated out-of-process session subscriptions are authenticated through
+    # the loopback internal-secret path, never through an app manifest.
+    SESSION_MESSAGE_EVENT,
+    SESSION_PLAN_EVENT,
 })
 
 

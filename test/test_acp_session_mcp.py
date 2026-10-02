@@ -10,9 +10,11 @@ registry pointer, Crew's own control plane).
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import os
 import stat
+import threading
 from pathlib import Path
 from unittest import mock
 
@@ -22,7 +24,8 @@ from kiro_crew import agent as agent_mod
 from kiro_crew.acp import client as client_mod
 from kiro_crew.acp import session_mcp
 from kiro_crew.acp.client import AcpClient
-from kiro_crew.acp.types import ACP_BACKEND_CLAUDE
+from kiro_crew.acp.types import ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_KAS
+from kiro_crew.acp_backends import ACP_BACKEND_GOOSE, ACP_BACKEND_OPENCODE
 from kiro_crew.kiro_cli import SPEC_PERMISSIONS_MIN_VERSION
 from kiro_crew.providers.mirrors import claude_code as claude_mirror
 from kiro_crew.providers.mirrors import registry as mirrors_registry
@@ -1491,3 +1494,242 @@ class TestLocalSettingsSeed:
         client = self._client(tmp_path)
         del client._claude_settings_authored
         client._reset_state()  # must not raise
+
+
+class TestExplicitSessionMcpProjection:
+    @pytest.mark.parametrize(
+        ("backend", "permission_surface_owned", "expected"),
+        [
+            (ACP_BACKEND_CLAUDE, True, {"granted", "restricted"}),
+            (ACP_BACKEND_CODEX, False, {"granted"}),
+            (ACP_BACKEND_KAS, False, {"granted"}),
+        ],
+    )
+    def test_request_owned_array_cannot_widen_agent_grants(
+        self, agents_dir, backend, permission_surface_owned, expected
+    ):
+        _write_spec(
+            agents_dir,
+            servers={
+                "granted": {"command": "/spec/granted"},
+                "restricted": {
+                    "command": "/spec/restricted",
+                    "disabledTools": ["danger"],
+                },
+                "disabled": {"command": "/spec/disabled", "disabled": True},
+                "unreferenced": {"command": "/spec/unreferenced"},
+            },
+            tools=["@granted", "@restricted", "@disabled"],
+        )
+        requested = [
+            {
+                "name": name,
+                "command": f"/request/{name}",
+                "args": [],
+                "env": [],
+                "type": "stdio",
+            }
+            for name in ("granted", "restricted", "disabled", "unreferenced", "undeclared")
+        ]
+
+        projected = mirrors_registry.project_explicit_session_mcp(
+            backend,
+            "kirocrew",
+            requested,
+            permission_surface_owned=permission_surface_owned,
+        )
+        servers = projected.params["mcpServers"]
+
+        assert {server["name"] for server in servers} == expected
+        assert all(server["command"] == f"/request/{server['name']}" for server in servers)
+        assert "disabled" in projected.disabled_servers
+
+    @pytest.mark.parametrize(
+        ("backend", "permission_surface_owned"),
+        [
+            (ACP_BACKEND_CLAUDE, True),
+            (ACP_BACKEND_CODEX, False),
+            (ACP_BACKEND_OPENCODE, False),
+            (ACP_BACKEND_GOOSE, False),
+        ],
+    )
+    @pytest.mark.parametrize("spec_mode", ["absent", "wildcard"])
+    def test_request_owned_server_still_requires_a_projected_declaration(
+        self,
+        agents_dir,
+        backend,
+        permission_surface_owned,
+        spec_mode,
+    ):
+        agent = None
+        if spec_mode == "wildcard":
+            _write_spec(
+                agents_dir,
+                servers={"declared": {"command": "/spec/declared"}},
+                tools=["*"],
+            )
+            agent = "kirocrew"
+        requested = [
+            {
+                "name": "undeclared",
+                "command": "/request/undeclared",
+                "args": [],
+                "env": [],
+                "type": "stdio",
+            }
+        ]
+
+        projected = mirrors_registry.project_explicit_session_mcp(
+            backend,
+            agent,
+            requested,
+            permission_surface_owned=permission_surface_owned,
+        )
+
+        assert projected.params["mcpServers"] == []
+
+    def test_explicit_empty_remains_empty(self, agents_dir):
+        _write_spec(
+            agents_dir,
+            servers={"granted": {"command": "/spec/granted"}},
+            tools=["@granted"],
+        )
+        projected = mirrors_registry.project_explicit_session_mcp(
+            ACP_BACKEND_CLAUDE,
+            "kirocrew",
+            [],
+            permission_surface_owned=True,
+        )
+        assert projected.params["mcpServers"] == []
+
+    def test_kas_explicit_admission_uses_the_user_level_agent(self, tmp_path, agents_dir):
+        """Admission follows the spec KAS actually projects onto the session."""
+        _write_spec(
+            agents_dir,
+            servers={"granted": {"command": "/user/granted"}},
+            tools=["@granted"],
+        )
+        _write_project_spec(
+            tmp_path,
+            servers={"other": {"command": "/project/other"}},
+            tools=["@other"],
+        )
+        requested = [
+            {
+                "name": "granted",
+                "command": "/request/granted",
+                "args": [],
+                "env": [],
+                "type": "stdio",
+            }
+        ]
+
+        projected = mirrors_registry.project_explicit_session_mcp(
+            ACP_BACKEND_KAS,
+            "kirocrew",
+            requested,
+            work_dir=tmp_path,
+        )
+
+        assert projected.params["mcpServers"] == requested
+
+    def test_codex_request_names_are_folded_before_reaching_the_wire(self, agents_dir):
+        _write_spec(
+            agents_dir,
+            servers={
+                "my server": {"command": "/spec/first"},
+                "my_server": {"command": "/spec/second"},
+            },
+            tools=["@my server", "@my_server"],
+        )
+        requested = [
+            {
+                "name": "my server",
+                "command": "/request/first",
+                "args": [],
+                "env": [],
+                "type": "stdio",
+            },
+            {
+                "name": "my_server",
+                "command": "/request/second",
+                "args": [],
+                "env": [],
+                "type": "stdio",
+            },
+        ]
+
+        projected = mirrors_registry.project_explicit_session_mcp(
+            ACP_BACKEND_CODEX,
+            "kirocrew",
+            requested,
+        )
+
+        assert projected.params["mcpServers"] == [
+            {
+                "name": "my_server",
+                "command": "/request/first",
+                "args": [],
+                "env": [],
+                "type": "stdio",
+            }
+        ]
+
+    def test_codex_folded_grant_keeps_request_owned_launch(self, agents_dir):
+        _write_spec(
+            agents_dir,
+            servers={"my server": {"command": "/spec/granted"}},
+            tools=["@my server"],
+        )
+        requested = [
+            {
+                "name": "my_server",
+                "command": "/request/only",
+                "args": [],
+                "env": [],
+                "type": "stdio",
+            }
+        ]
+
+        projected = mirrors_registry.project_explicit_session_mcp(
+            ACP_BACKEND_CODEX,
+            "kirocrew",
+            requested,
+        )
+
+        assert projected.params["mcpServers"] == [
+            {
+                "name": "my_server",
+                "command": "/request/only",
+                "args": [],
+                "env": [],
+                "type": "stdio",
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_explicit_gateway_array_is_warmed_off_loop_before_wire_calls(
+        self, tmp_path, monkeypatch
+    ):
+        caller_thread = threading.get_ident()
+        resolver_threads: list[int] = []
+        client = AcpClient(
+            work_dir=tmp_path,
+            agent="kirocrew",
+            session_mcp_servers=[],
+        )
+
+        def _resolve():
+            resolver_threads.append(threading.get_ident())
+            return []
+
+        monkeypatch.setattr(client, "_resolve_session_mcp_servers", _resolve)
+        client._session_work_dir = mock.AsyncMock(return_value=str(tmp_path))
+        client._send_request = mock.AsyncMock(return_value=1)
+        client._wait_for_response = mock.AsyncMock(return_value={"sessionId": "session-1"})
+
+        await client._new_session_following_substitution()
+
+        assert resolver_threads and resolver_threads[0] != caller_thread
+        source = inspect.getsource(AcpClient)
+        assert source.count("await self._warm_requested_session_mcp_cache()") == 2

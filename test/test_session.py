@@ -1473,7 +1473,8 @@ class TestStopTurn:
     async def test_eager_respawn_called(self, cfg):
         """Hard path schedules _eager_respawn via asyncio.create_task."""
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
-        provider, _, _ = await mgr.get_or_create("key1")
+        servers = [{"name": "echo", "command": "echo", "args": [], "env": []}]
+        provider, _, _ = await mgr.get_or_create("key1", session_mcp_servers=servers)
         mgr.release("key1")
 
         provider.cancel = AsyncMock(return_value="timeout")
@@ -1482,7 +1483,7 @@ class TestStopTurn:
             await mgr.stop_turn("key1")
             # Allow the created task to run
             await asyncio.sleep(0)
-            mock_respawn.assert_awaited_once_with("key1")
+            mock_respawn.assert_awaited_once_with("key1", servers)
 
         await mgr.close_all()
 

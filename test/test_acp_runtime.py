@@ -6766,6 +6766,77 @@ class TestAcpRuntimeLoadSession:
         assert STUB_SESSION_TOKEN_ENV not in json.dumps(agent_block)
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("resume", [False, True], ids=["new", "load"])
+    async def test_kas_explicit_session_servers_suppress_agent_servers(self, monkeypatch, resume):
+        """An explicit array is the whole session MCP composition on KAS."""
+        rt, _, _ = _make_runtime()
+        rt._can_load_session = True
+        sent: list[tuple[str, dict]] = []
+
+        async def _fake_send(method, params, timeout=None):
+            sent.append((method, params))
+            if method == METHOD_SESSION_LOAD:
+                return {"modes": {"currentModeId": "kirocrew"}, "models": []}
+            if method == METHOD_SESSION_NEW:
+                return {"sessionId": "sid-kas-new"}
+            return {}
+
+        async def _fake_agents(agent, *, member_dispatch=False, crew_panel=False, session_key=""):
+            return SessionExtras(
+                custom_agents=[
+                    {
+                        "id": agent,
+                        "prompt": "p",
+                        "tools": ["@kirocrew-core", "@ambient"],
+                        "mcpServers": {
+                            "kirocrew-core": {"command": "kc"},
+                            "ambient": {"command": "ambient"},
+                        },
+                    }
+                ]
+            )
+
+        monkeypatch.setattr(rt, "_send_and_await", _fake_send)
+        monkeypatch.setattr(rt, "_kas_custom_agents", _fake_agents)
+        import kiro_crew.acp.runtime as runtime_mod
+        from kiro_crew.providers.mirrors.base import SessionProjection
+
+        monkeypatch.setattr(
+            runtime_mod,
+            "project_explicit_session_mcp",
+            lambda _backend, _agent, requested, **_kwargs: SessionProjection(
+                params={"mcpServers": list(requested)}
+            ),
+        )
+        monkeypatch.setattr(AcpSessionHandle, "wait_mcp_ready", AsyncMock(return_value=None))
+        rt._acp_backend = ACP_BACKEND_KAS
+        explicit = [{"name": "client", "command": "client", "args": [], "env": []}]
+
+        if resume:
+            await rt.load_session(
+                "",
+                "sid-kas-load",
+                cwd="/work",
+                agent="kirocrew",
+                mcp_servers=explicit,
+                explicit_mcp_override=True,
+            )
+            method = METHOD_SESSION_LOAD
+        else:
+            await rt.create_session(
+                cwd="/work",
+                agent="kirocrew",
+                mcp_servers=explicit,
+                explicit_mcp_override=True,
+            )
+            method = METHOD_SESSION_NEW
+
+        params = next(p for m, p in sent if m == method)
+        assert params["mcpServers"] == explicit
+        (agent_block,) = params["_meta"]["kiro"]["customAgents"]
+        assert "mcpServers" not in agent_block
+
+    @pytest.mark.asyncio
     async def test_load_session_keeps_the_transcript_path_alongside_the_agents(self, monkeypatch):
         """Merged, not assigned: a third _meta writer must not drop an earlier one.
 

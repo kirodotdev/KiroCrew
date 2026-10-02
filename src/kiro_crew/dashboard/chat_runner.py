@@ -13,6 +13,7 @@ import re
 import stat as stat_module
 import time
 import uuid
+from contextvars import copy_context
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, NamedTuple
@@ -254,6 +255,10 @@ from kiro_crew.execution_context import (
     tighten_live_session_execution,
 )
 from kiro_crew.executors import run_in_embed_pool, subprocess_executor
+from kiro_crew.gateway.constants import (
+    GATEWAY_TURN_ORIGIN_META_KEY,
+    QUEUED_GATEWAY_MCP_META_KEY,
+)
 from kiro_crew.history import HUMAN_TURN_META_KEY
 from kiro_crew.hooks import (
     HOOK_EVENT_AGENT_SPAWN,
@@ -7855,6 +7860,9 @@ async def _spawn_admitted_prefetch(
                 speculative=True,
                 speculative_resume=allow_resume,
                 reasoning_effort_override=slot.reasoning_effort or None,
+                session_mcp_servers=(
+                    list(slot.session_mcp_servers) if slot._session_mcp_configured else None
+                ),
             )
         except (SpeculativeResumeRefused, SessionClosingError, SessionEndingError):
             # A refusal, a gateway shutdown, or a key being ended: no agent
@@ -9538,11 +9546,19 @@ async def _start_next_queued_turn(
             _sid = _item_meta.get("sendId")
             if isinstance(_sid, str) and _sid and _sid not in _drained_send_ids:
                 _drained_send_ids.append(_sid)
-            # The admission-time containment snapshot is queue plumbing,
-            # consumed by _drop_stale_admissions above; it says nothing about the
-            # ROW, so it must not ride into the persisted transcript meta.
+            # Admission-time containment and Gateway request metadata are queue
+            # plumbing. They say nothing trustworthy about the ROW, so neither
+            # the MCP snapshot nor origin provenance may ride into transcript
+            # meta.
             _drained_meta.update(
-                (k, v) for k, v in _item_meta.items() if k != QUEUED_CONTAINMENT_META_KEY
+                (k, v)
+                for k, v in _item_meta.items()
+                if k
+                not in (
+                    QUEUED_CONTAINMENT_META_KEY,
+                    QUEUED_GATEWAY_MCP_META_KEY,
+                    GATEWAY_TURN_ORIGIN_META_KEY,
+                )
             )
     if _drained_ids:
         _drained_meta.pop("steer_delivery_id", None)
@@ -9601,7 +9617,33 @@ async def _start_next_queued_turn(
         # with any non-human (app) entry, or the ``inject`` branch above, never
         # reaches here and stays unmarked.
         _drained_meta[HUMAN_TURN_META_KEY] = True
-    current_row = slot.append(
+    # Ordinary queue entries own no provenance from the turn whose tail drains
+    # them. An origin-scoped native answer is the exception: a steer can race the
+    # live turn's teardown and become a queue entry after admission. That entry
+    # drains alone and carries the immutable MCP request snapshot admitted by its
+    # route, so a later slot-owner replacement cannot substitute another client's
+    # composition. Malformed marker data fails closed to an explicit empty request.
+    gateway_admissions = [
+        meta[QUEUED_GATEWAY_MCP_META_KEY]
+        for item in consumed
+        if isinstance((meta := item.get("meta")), dict) and QUEUED_GATEWAY_MCP_META_KEY in meta
+    ]
+    has_gateway_admission = bool(gateway_admissions)
+    gateway_mcp_servers: list[dict[str, Any]] | None = None
+    if has_gateway_admission:
+        raw_gateway_mcp = gateway_admissions[0] if len(gateway_admissions) == 1 else []
+        if isinstance(raw_gateway_mcp, list) and all(
+            isinstance(server, dict) for server in raw_gateway_mcp
+        ):
+            gateway_mcp_servers = list(raw_gateway_mcp)
+        elif raw_gateway_mcp is not None:
+            gateway_mcp_servers = []
+
+    successor_context = copy_context()
+    successor_context.run(slot._turn_origin.set, slot.key if has_gateway_admission else "")
+    successor_context.run(slot._request_mcp_servers.set, gateway_mcp_servers)
+    current_row = successor_context.run(
+        slot.append,
         row_role,
         next_msg,
         row_cls,
@@ -9709,7 +9751,8 @@ async def _start_next_queued_turn(
         _run_kwargs["_image_recovery"] = True
     if is_recovery:
         _run_kwargs["_synthetic_recovery_turn"] = True
-    task = spawn_guarded_turn(
+    task = successor_context.run(
+        spawn_guarded_turn,
         state,
         slot,
         _run_chat(state, slot, next_msg, **_run_kwargs),
@@ -9928,7 +9971,13 @@ async def _finish_queue_cycle(
         slot._stopping = False
     if will_synthesize:
         slot._synthesis_inflight = True
-        task = asyncio.create_task(_run_pending_synthesis(state, slot))
+        # Synthesis is an ordinary automatic successor, not part of the Gateway
+        # request whose turn just ended. Preserve unrelated task context while
+        # dropping predecessor-owned origin and MCP snapshot provenance.
+        successor_context = copy_context()
+        successor_context.run(slot._turn_origin.set, "")
+        successor_context.run(slot._request_mcp_servers.set, None)
+        task = successor_context.run(asyncio.create_task, _run_pending_synthesis(state, slot))
         slot.task = task
         state._background_tasks.add(task)
         task.add_done_callback(state._background_tasks.discard)
@@ -10316,6 +10365,16 @@ def _gateway_shutdown_requested(state: DashboardState) -> bool:
 _TODO_BLOCK_READ_EVENT_KINDS = frozenset(
     {EVENT_TEXT_CHUNK, EVENT_THINKING_CHUNK, EVENT_TOOL_CALL, EVENT_PERMISSION_REQUEST}
 )
+
+
+def _turn_session_mcp_servers(slot: "_ChatSlot") -> list[dict[str, Any]] | None:
+    """Return the immutable request snapshot, or current state for ordinary turns."""
+    request_mcp_servers = slot._request_mcp_servers.get()
+    if slot._turn_origin.get():
+        return request_mcp_servers
+    if request_mcp_servers is not None:
+        return request_mcp_servers
+    return list(slot.session_mcp_servers) if slot._session_mcp_configured else None
 
 
 async def _run_chat(
@@ -12341,6 +12400,7 @@ async def _run_chat(
         # which decides whether to send it, and the crew log's `session/opened`,
         # which records the choice.
         _requested_model = slot.model or agent_model or default_model or ""
+        turn_mcp_servers = _turn_session_mcp_servers(slot)
         _allocation_kwargs: dict[str, Any] = dict(
             agent=kiro_agent or slot.agent or None,
             # Same canonical crew identity as the eager-spawn path — the two
@@ -12354,6 +12414,7 @@ async def _run_chat(
             # direct dashboard turn.
             channel_id=_provider_channel_id or None,
             reasoning_effort_override=slot.reasoning_effort or None,
+            session_mcp_servers=turn_mcp_servers,
         )
 
         def _release_dispatch_lock() -> None:
@@ -17067,6 +17128,7 @@ async def _run_chat(
                 # registered, which is also true for the session that typed it.
                 if _this_turn_is_clear and slot.set_todo(None):
                     state.broadcast_ws("todo_update", {"slot": slot.key, "todo": None})
+                    state._broadcast_session_plan(slot.key, None)
                 append_and_surface(
                     state, slot, "assistant", "🗑️ Conversation cleared.", "msg msg-a"
                 )
@@ -17259,6 +17321,7 @@ async def _run_chat(
                         "todo_update",
                         {"slot": slot.key, "todo": slot.todo_payload()},
                     )
+                    state._broadcast_session_plan(slot.key, slot.todo_payload())
                     # Gated on set_todo's own change test, which is what keeps a
                     # turn that echoes an identical snapshot on several tool
                     # results from writing the same list repeatedly. Inside the

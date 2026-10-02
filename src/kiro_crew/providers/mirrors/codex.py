@@ -421,6 +421,9 @@ def codex_projection(
     denied = frozenset((codex_name(server), tool) for server, tool in projection.disabled_tools)
     return SessionProjection(
         params={"mcpServers": out},
+        admitted_server_names=frozenset(
+            codex_name(name) for name in projection.admitted_server_names
+        ),
         denied_tools=denied,
         # Recorded for the caller, not acted on differently here: this backend's
         # ``PerToolDeny`` is ``PER_CALL`` and ``denied_tools`` above carries every

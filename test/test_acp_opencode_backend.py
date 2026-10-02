@@ -650,14 +650,30 @@ def test_a_resumed_session_is_not_gated_on_a_kiro_transcript() -> None:
     # splice, rather than that the name is absent: a blanket absence check passed
     # only while this harness had no MCP channel at all, and would have had to be
     # deleted rather than narrowed the moment it got one.
-    stray = [
-        line.strip()
-        for line in body.splitlines()
-        if "self._is_opencode" in line and "_opencode_session_mcp_servers()" not in line
-    ]
-    assert not stray, (
+    tree = ast.parse(textwrap.dedent(body))
+
+    def _opencode_identity(node: ast.AST) -> bool:
+        return isinstance(node, ast.Attribute) and node.attr == "_is_opencode"
+
+    identity_uses = {
+        (node.lineno, node.col_offset) for node in ast.walk(tree) if _opencode_identity(node)
+    }
+    splice_uses = {
+        (node.lineno, node.col_offset)
+        for ternary in ast.walk(tree)
+        if isinstance(ternary, ast.IfExp)
+        and any(
+            isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Attribute)
+            and call.func.attr == "_opencode_session_mcp_servers"
+            for call in ast.walk(ternary.body)
+        )
+        for node in ast.walk(ternary.test)
+        if _opencode_identity(node)
+    }
+    assert identity_uses == splice_uses, (
         "an opencode identity test that is not the MCP-array splice sits on the shared "
-        f"init path (harness-parity H13): {stray}"
+        f"init path (harness-parity H13): {sorted(identity_uses - splice_uses)}"
     )
 
 

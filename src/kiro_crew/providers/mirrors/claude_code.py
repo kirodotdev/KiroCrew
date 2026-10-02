@@ -269,6 +269,7 @@ class ClaudeCodeMirror(AgentConfigMirror):
             out.append(dict(stub))
         return SessionProjection(
             params={"mcpServers": out},
+            admitted_server_names=projection.admitted_server_names,
             # Nothing is withheld here for a per-tool narrowing -- this backend
             # re-expresses that as ``permissions.deny`` rules and keeps the server
             # mounted -- but a whole-server disable has no such form, so the one

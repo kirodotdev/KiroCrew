@@ -10,6 +10,11 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.gateway.constants import (
+    GATEWAY_TURN_ORIGIN_META_KEY,
+    QUEUED_GATEWAY_MCP_META_KEY,
+)
+
 if TYPE_CHECKING:
     from kiro_crew.subagent import SubagentDelivery
 
@@ -126,9 +131,12 @@ def durable_queue_entries(queue: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """The json-safe copies of *queue* a metadata writer may persist.
 
     Copies rather than aliases, so a later in-memory mutation cannot rewrite a
-    dict a writer is holding. ``meta`` rides along VERBATIM (through one json
-    round-trip that also proves the writer can serialize it): it carries the
-    admission-time containment snapshot the drain re-validates against, and an
+    dict a writer is holding. ``meta`` rides along through one json round-trip
+    that also proves the writer can serialize it, except for process-local
+    Gateway MCP admission and row-origin provenance. Persisting either marker
+    would let an edited queue line recreate request authority or client-origin
+    correlation after restart. The remaining metadata carries
+    the admission-time containment snapshot the drain re-validates against, and an
     entry without one fails closed into the full current-constraint set — so
     dropping it would make a restored prompt refusable for a boundary its
     author was never subject to.
@@ -161,6 +169,8 @@ def durable_queue_entries(queue: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     continue
                 if not isinstance(value, dict):
                     continue
+                value.pop(QUEUED_GATEWAY_MCP_META_KEY, None)
+                value.pop(GATEWAY_TURN_ORIGIN_META_KEY, None)
             entry[key] = value
         entry_id = entry.get("id")
         if not isinstance(entry_id, str) or not entry_id:
@@ -301,10 +311,15 @@ def sanitize_restored_queue(raw: object) -> list[dict[str, Any]]:
     every currently-held constraint while a FORGED all-True one reports nothing
     newly held and fails OPEN — a hand-written entry would drain into a linked or
     mirrored slot and republish to an audience its admission never contemplated.
-    Stripping the key restores the fail-closed baseline: the entry is re-checked
-    against the constraints that hold NOW, the only set this process can vouch
-    for. The rest of ``meta`` rides along, because it carries the sender's own
-    plumbing (``sendId``, attachments) that decides nothing about audience.
+    Gateway MCP admission and row-origin provenance are process-local for the
+    same reason. The admission marker restores an immutable request snapshot;
+    either key can stamp Gateway turn origin onto a finalized row. Neither
+    authority marker survives restoration. Stripping the keys restores the
+    fail-closed baseline:
+    the entry is re-checked against the constraints that hold NOW, the only set
+    this process can vouch for. The rest of ``meta`` rides along, because it
+    carries the sender's own plumbing (``sendId``, attachments) that decides
+    nothing about audience.
 
     Capped at :data:`MAX_DURABLE_QUEUE_ENTRIES` entries and
     :data:`MAX_DURABLE_QUEUE_BYTES` of serialized content, the SAME two ceilings
@@ -422,6 +437,8 @@ def sanitize_restored_queue(raw: object) -> list[dict[str, Any]]:
                 if k
                 not in (
                     QUEUED_CONTAINMENT_META_KEY,
+                    QUEUED_GATEWAY_MCP_META_KEY,
+                    GATEWAY_TURN_ORIGIN_META_KEY,
                     TURN_ACTOR_META_KEY,
                     SEND_ORIGIN_META_KEY,
                     CHANNEL_RECIPIENT_META_KEY,
