@@ -32,6 +32,7 @@ import pytest
 
 import kiro_crew.sel as sel_mod
 from kiro_crew import llm_helpers, security
+from kiro_crew.hooks import HookManager, HooksConfig, UserDeniedPattern
 from kiro_crew.llm_helpers import ToolApprovalPolicy, _resolve_permission
 from kiro_crew.providers.base import EVENT_PERMISSION_REQUEST, LLMEvent
 
@@ -63,7 +64,11 @@ def _event(tool_input: str, title: str = _BENIGN_TITLE, *, is_shell: bool = Fals
 
 
 async def _resolve(
-    tool_input: str, title: str = _BENIGN_TITLE, *, is_shell: bool = False
+    tool_input: str,
+    title: str = _BENIGN_TITLE,
+    *,
+    is_shell: bool = False,
+    hooks: HookManager | None = None,
 ) -> tuple[bool, _RecordingProvider, list[dict]]:
     """Drive ``_resolve_permission`` and capture every SEL row it logged."""
     provider = _RecordingProvider()
@@ -75,7 +80,7 @@ async def _resolve(
             provider,  # type: ignore[arg-type]
             _event(tool_input, title, is_shell=is_shell),
             ToolApprovalPolicy.AUTO_APPROVE,
-            None,
+            hooks,
         )
     return approved, provider, rows
 
@@ -604,3 +609,161 @@ class TestShellCommandTextLeavesThePathTier:
             source = inspect.getsource(tier)
             assert "_is_exempt_command_text(" in source, tier.__name__
             assert source.count("sensitive_path_refusal(") == 1, tier.__name__
+
+
+class TestTruncatedShellTitleTier:
+    """The title tier judges a cut-short shell title as the command it slices.
+
+    kiro-cli cuts a shell call's ``Running: <command>`` title to 197 characters
+    plus ``...``, and the git-publish floor read the cut end of a long push as a
+    push naming no branch. ``hooks.on_tool_call`` and this funnel apply the same
+    rule (``hooks.untruncated_shell_title``): a title that is a leading slice of
+    the recovered command is judged uncut, any other title verbatim.
+    """
+
+    LEASE = "0123456789abcdef0123456789abcdef01234567"
+    OPTIONS = (
+        "git -C /workspace/checkouts/project-worktree -c credential.helper= "
+        "-c credential.helper=/workspace/checkouts/credential-helper.sh push"
+    )
+    FEATURE_PUSH = (
+        f"{OPTIONS} --force-with-lease=refs/heads/fix/long-branch-123:{LEASE} "
+        f"origin {LEASE}:refs/heads/fix/long-branch-123"
+    )
+    BARE_PUSH = f"{OPTIONS} --force-with-lease=refs/heads/fix/long-branch-123:{LEASE}"
+    MAIN_PUSH = f"{OPTIONS} --force-with-lease=main:{LEASE} origin {LEASE}:main"
+
+    @staticmethod
+    def _cut_title(command: str) -> str:
+        return f"Running: {command[:197]}..."
+
+    @pytest.mark.asyncio
+    async def test_a_long_feature_branch_push_is_approved(self) -> None:
+        assert self.FEATURE_PUSH.index(" origin ") >= 197
+        approved, provider, _rows = await _resolve(
+            json.dumps({"command": self.FEATURE_PUSH}),
+            title=self._cut_title(self.FEATURE_PUSH),
+            is_shell=True,
+        )
+        assert approved is True
+        assert provider.rejected == []
+
+    @pytest.mark.asyncio
+    async def test_a_long_push_cut_at_another_length_is_approved(self) -> None:
+        # The rebuild is not pinned to kiro-cli's 197-character cut.
+        title = f"Running: {self.FEATURE_PUSH[:220]}..."
+        approved, provider, _rows = await _resolve(
+            json.dumps({"command": self.FEATURE_PUSH}), title=title, is_shell=True
+        )
+        assert approved is True
+        assert provider.rejected == []
+
+    @pytest.mark.asyncio
+    async def test_a_long_push_to_main_is_still_refused_as_protected(self) -> None:
+        assert self.MAIN_PUSH.index(" origin ") >= 197
+        approved, provider, rows = await _resolve(
+            json.dumps({"command": self.MAIN_PUSH}),
+            title=self._cut_title(self.MAIN_PUSH),
+            is_shell=True,
+        )
+        assert approved is False
+        assert provider.rejected == ["r1"]
+        _outcome, error, mechanism = _decision(rows)
+        assert "rule=git-publish-push-protected-branch-name" in error
+        assert mechanism == "always_deny"
+
+    @pytest.mark.asyncio
+    async def test_a_cut_title_that_is_not_the_commands_slice_is_still_refused(self) -> None:
+        approved, provider, rows = await _resolve(
+            json.dumps({"command": "git status"}),
+            title=self._cut_title(self.BARE_PUSH),
+            is_shell=True,
+        )
+        assert approved is False
+        assert provider.rejected == ["r1"]
+        assert "rule=git-publish-push-bare" in _decision(rows)[1]
+
+    @pytest.mark.asyncio
+    async def test_an_operator_regex_on_the_cut_title_still_fires(self) -> None:
+        # The tier judges the rebuilt title, and the operator's own regexes judge
+        # the title as SENT too: a rule written against kiro-cli's ``...`` keeps
+        # refusing the call.
+        hooks = HookManager(
+            HooksConfig(denied_commands_user_added=[UserDeniedPattern(id="u1", pattern=r"\.\.\.$")])
+        )
+        approved, provider, rows = await _resolve(
+            json.dumps({"command": self.FEATURE_PUSH}),
+            title=self._cut_title(self.FEATURE_PUSH),
+            is_shell=True,
+            hooks=hooks,
+        )
+        assert approved is False
+        assert provider.rejected == ["r1"]
+        _outcome, error, mechanism = _decision(rows)
+        assert r"\.\.\.$" in error
+        assert mechanism == "always_deny"
+
+    @pytest.mark.asyncio
+    async def test_an_operator_regex_on_one_chained_command_still_fires(self) -> None:
+        # The sent title is judged per segment too, so a rule anchored to the
+        # chained command the cut ends inside still refuses the call.
+        command = "git status && echo blocked " + "x" * 220
+        hooks = HookManager(
+            HooksConfig(
+                denied_commands_user_added=[
+                    UserDeniedPattern(id="u1", pattern=r"^echo blocked .*\.\.\.$")
+                ]
+            )
+        )
+        approved, provider, rows = await _resolve(
+            json.dumps({"command": command}),
+            title=self._cut_title(command),
+            is_shell=True,
+            hooks=hooks,
+        )
+        assert approved is False
+        assert provider.rejected == ["r1"]
+        _outcome, error, mechanism = _decision(rows)
+        assert "echo blocked" in error
+        assert mechanism == "always_deny"
+
+    @pytest.mark.asyncio
+    async def test_the_sent_title_meets_operator_rules_only(self) -> None:
+        # An operator rule that does not match leaves the push approved: the
+        # shipped floor that misread the cut never judges the sent title.
+        hooks = HookManager(
+            HooksConfig(
+                denied_commands_user_added=[UserDeniedPattern(id="u1", pattern=r"\bshred\b")]
+            )
+        )
+        approved, provider, _rows = await _resolve(
+            json.dumps({"command": self.FEATURE_PUSH}),
+            title=self._cut_title(self.FEATURE_PUSH),
+            is_shell=True,
+            hooks=hooks,
+        )
+        assert approved is True
+        assert provider.rejected == []
+
+    @pytest.mark.asyncio
+    async def test_a_command_just_under_the_size_ceiling_is_not_pushed_over_it(self) -> None:
+        # The rebuilt title is the display prefix plus the whole command; the bash
+        # tier scans it without the prefix, so a command that fits the ceiling is
+        # not refused as too large to scan because of the nine prefix characters.
+        command = "echo " + "a" * (security.MAX_SCANNABLE_COMMAND_CHARS - 5 - 5)
+        assert len("Running: " + command) > security.MAX_SCANNABLE_COMMAND_CHARS
+        approved, provider, rows = await _resolve(
+            json.dumps({"command": command}), title=self._cut_title(command), is_shell=True
+        )
+        assert approved is True, _decision(rows)
+        assert provider.rejected == []
+
+    @pytest.mark.asyncio
+    async def test_a_command_over_the_size_ceiling_is_still_refused(self) -> None:
+        command = "echo " + "a" * security.MAX_SCANNABLE_COMMAND_CHARS
+        approved, provider, rows = await _resolve(
+            json.dumps({"command": command}), title=self._cut_title(command), is_shell=True
+        )
+        assert approved is False
+        assert provider.rejected == ["r1"]
+        assert "too large to security-scan" in _decision(rows)[1]

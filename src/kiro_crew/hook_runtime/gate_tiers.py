@@ -53,6 +53,7 @@ if TYPE_CHECKING:
         security,
         sensitive_path_refusal,
         target_paths,
+        untruncated_shell_title,
     )
 
 
@@ -112,8 +113,29 @@ class GateFacts:
         return self._once("normalized", lambda: _normalize_tool_name(self.call.title))
 
     @property
+    def judged_title(self) -> str:
+        """What the deny planes judge in the title's place.
+
+        A title in kiro-cli's cut shape (a leading slice of the command plus
+        ``...``) is judged uncut (``untruncated_shell_title``): the cut is display
+        truncation, and a structural rule read its end as the command's end. Every
+        other title, and every title of a call with no command, is judged verbatim.
+        A rebuilt title's sent form still meets the operator's own deny rules
+        (:func:`_tier_deny_rules`). The grant tiers keep reading the title and
+        :attr:`normalized`.
+        """
+        return self._once(
+            "judged_title", lambda: untruncated_shell_title(self.call.title, self.call.command)
+        )
+
+    @property
+    def judged_normalized(self) -> str:
+        """:attr:`judged_title` without its display prefix."""
+        return self._once("judged_normalized", lambda: _normalize_tool_name(self.judged_title))
+
+    @property
     def security_targets(self) -> list[str]:
-        """What the always-on checks judge: the normalized title AND the raw command.
+        """What the always-on checks judge: the judged title AND the raw command.
 
         The command is the ground truth for shell tools; the title is retained so
         non-shell tools (whose identifier IS the title) stay gated and so a
@@ -121,7 +143,7 @@ class GateFacts:
         """
 
         def compute() -> list[str]:
-            targets = [self.normalized]
+            targets = [self.judged_normalized]
             command = self.call.command
             if command and command not in targets:
                 targets.append(command)
@@ -249,7 +271,9 @@ class GateFacts:
     def deny_targets(self) -> list[str]:
         """What the effective deny set is asked about.
 
-        The normalized and original title, then the trusted identities, then the
+        The judged title (:attr:`judged_title`, the title itself unless it is
+        kiro-cli's cut shape) with and without its prefix, then the trusted
+        identities, then the
         raw command, then any :attr:`raw_shell_commands` not already listed.
         ADDITIVE, never a substitution: the title and the raw command
         stay in every check they were already in. They are not competing spellings
@@ -272,7 +296,7 @@ class GateFacts:
 
         def compute() -> list[str]:
             call = self.call
-            targets = [self.normalized, call.title]
+            targets = [self.judged_normalized, self.judged_title]
             if self.canonical_mcp_name:
                 targets.append(self.canonical_mcp_name)
             if call.mcp_tool and call.mcp_tool not in targets:
@@ -286,7 +310,7 @@ class GateFacts:
             )
             if alias and alias not in targets:
                 targets.append(alias)
-            if call.command:
+            if call.command and call.command not in targets:
                 targets.append(call.command)
             for raw_command in self.raw_shell_commands:
                 # Already past the scan ceiling in the targets tier.
@@ -572,6 +596,39 @@ def _tier_deny_rules(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
         )
         if reason:
             return ToolHookResult.deny(reason)
+    # The title kiro-cli actually SENT, when ``judged_title`` rebuilt it. The
+    # rebuild is for the shipped rules, whose shell-syntax reading (the
+    # git-publish floor, an end-anchored built-in) takes the cut end for the
+    # command's end. An operator's own rule is another matter: it may be written
+    # against the very string kiro-cli displayed, ``...`` included, and judging
+    # only the rebuilt title would retire it without a word. So the sent title is
+    # ALSO judged by every rule the operator authored -- their enabled regexes,
+    # their ``auto_deny_tools`` globs and the companion overlay -- and by no
+    # shipped rule or floor, through
+    # ``security.is_denied_synthesized_target(..., segments=True)``: whole-string
+    # AND per-segment passes over those patterns only. A cut title is a command
+    # line, so a rule anchored to one chained command of it still meets that
+    # command; the floors are what misread the cut end. The overlay rides in the
+    # glob tier (``authority.effective_patterns()``) rather than through
+    # ``authority.is_denied_synthesized_target``, which judges the overlay with
+    # ``is_denied`` and so would run the git-publish floor on the cut text
+    # whenever a companion adds a pattern. Its patterns still meet the whole
+    # command, floors included, through the deny targets above. Additive: a deny
+    # here can only deny.
+    call = facts.call
+    if facts.judged_title != call.title:
+        operator_regexes = facts.manager.operator_denied_regexes()
+        sent_title_globs = list(authority.effective_patterns()) + list(facts.config.auto_deny_tools)
+        for shown in dict.fromkeys((facts.normalized, call.title)):
+            reason = security.is_denied_synthesized_target(
+                shown,
+                operator_regexes,
+                extra_patterns=sent_title_globs,
+                reason_notes=denied_notes,
+                segments=True,
+            )
+            if reason:
+                return ToolHookResult.deny(reason)
     return None
 
 
@@ -624,10 +681,9 @@ def _tier_search_target(facts: GateFacts, tier: GateTier) -> ToolHookResult | No
     """
     search_target = _search_deny_target(facts.call.raw_params)
     if search_target:
-        config = facts.config
         reason = facts.authority.is_denied_synthesized_target(
             search_target,
-            [p.pattern for p in config.denied_commands_user_added if p.enabled],
+            facts.manager.operator_denied_regexes(),
             extra_patterns=facts.config.auto_deny_tools,
             reason_notes=facts.denied_notes,
         )
