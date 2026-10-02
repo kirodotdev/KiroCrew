@@ -252,11 +252,12 @@ async def test_unrelated_provider_error_stays_terminal_no_swap(tmp_path, monkeyp
 @pytest.mark.asyncio
 async def test_swap_recovery_replay_preserves_the_one_shot_flag(tmp_path, monkeypatch):
     """The swap re-queues the user's ORIGINAL message, which the turn-start reset
-    cannot tell from a fresh user turn. The _model_access_recovery_pending latch
-    the swap sets makes the reset preserve _model_access_fallback_used for that
-    one replay, so a still-unentitled candidate cannot trigger a second swap.
+    cannot tell from a fresh user turn. The drain recognizes the replay by its
+    queue id and says so (``_model_access_replay``), which makes the reset
+    preserve _model_access_fallback_used for that one replay, so a
+    still-unentitled candidate cannot trigger a second swap.
 
-    Without the latch the flag would reset to False on the replay and the one-shot
+    Without that identity the flag would reset to False on the replay and the one-shot
     guarantee would be delivered only by model_is_unusable, contradicting the
     branch's own bounded-by-one-attempt invariant."""
     state = _make_state_for_run_chat(tmp_path, monkeypatch)
@@ -280,13 +281,13 @@ async def test_swap_recovery_replay_preserves_the_one_shot_flag(tmp_path, monkey
 
     # Simulate the state a swap leaves behind before its replay turn runs.
     slot._model_access_fallback_used = True
-    slot._model_access_recovery_pending = True
+    slot._model_access_recovery_queue_id = "q-replay"
 
-    await _run_chat(state, slot, "first message")
+    await _run_chat(state, slot, "first message", _model_access_replay=True)
 
-    # The replay preserved the one-shot flag and consumed the latch.
+    # The replay preserved the one-shot flag and consumed the record.
     assert slot._model_access_fallback_used is True
-    assert slot._model_access_recovery_pending is False
+    assert slot._model_access_recovery_queue_id == ""
 
 
 @pytest.mark.asyncio
@@ -328,7 +329,247 @@ async def test_stop_during_set_model_abandons_the_replay(tmp_path, monkeypatch):
         for i in _inserts
         if i["kind"] == SYNTHETIC_RECOVERY_KIND and i["content"] == "first message"
     ], _inserts
-    assert slot._model_access_recovery_pending is False
+    assert slot._model_access_recovery_queue_id == ""
+
+
+def _record_inserts(monkeypatch, slot) -> list[dict]:
+    inserts: list[dict] = []
+    repo = slot._queue_repository
+    real_insert = repo.queue_insert
+
+    def _record(owner, index, content, kind="", *args, **kw):
+        inserts.append({"content": content, "kind": kind})
+        return real_insert(owner, index, content, kind, *args, **kw)
+
+    monkeypatch.setattr(repo, "queue_insert", _record)
+    return inserts
+
+
+@pytest.mark.asyncio
+async def test_an_owed_completion_is_replayed_as_a_completion_despite_a_stop(tmp_path, monkeypatch):
+    """A sub-agent completion the model never consumed is a result the parent is
+    still owed, so a Stop in flight neither skips the swap nor cancels the
+    replay. Decided once, at the requeue: the replay is queued as the completion
+    it is, with no model-access record for the drain or the consume seam to
+    revoke, and the admission sweep exempts it like any queued completion."""
+    from kiro_crew.dashboard.chat_utils import SUBAGENT_COMPLETION_KIND
+
+    state = _make_state_for_run_chat(tmp_path, monkeypatch)
+    slot = state.get_or_create_slot("s1")
+    client = _client_raising_always(_rejection("auto", ["claude-opus-5", "claude-sonnet-5"]))
+    rejecting_stream = client.stream
+
+    async def _stopped_then_rejected(msg):
+        slot._stop_state = "soft_pending"  # the user presses Stop mid-turn
+        async for event in rejecting_stream(msg):
+            yield event  # pragma: no cover - the stream raises first
+
+    client.stream = _stopped_then_rejected
+    client.stream_command = _stopped_then_rejected
+    state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+    inserts = _record_inserts(monkeypatch, slot)
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.chat_runner._start_next_queued_turn", AsyncMock(return_value=False)
+    )
+
+    await _run_chat(
+        state,
+        slot,
+        "[Subagent completion event] the child finished",
+        _turn_actor="subagent",
+        _on_consumed=MagicMock(),
+    )
+
+    client.set_model.assert_awaited_once_with("claude-opus-5")
+    assert inserts == [
+        {
+            "content": "[Subagent completion event] the child finished",
+            "kind": SUBAGENT_COMPLETION_KIND,
+        }
+    ], inserts
+    assert slot._model_access_recovery_queue_id == ""
+
+
+@pytest.mark.asyncio
+async def test_a_synthesis_replay_stays_cancellable(tmp_path, monkeypatch):
+    """The synthesis turn's ledger actor is ``subagent``, but it owes nothing:
+    it is runner-authored. A Stop landing during the swap's set_model abandons
+    its replay, exactly as it does a user turn's."""
+    from kiro_crew.dashboard.state import SUBAGENT_SYNTHESIS_PROMPT
+
+    state = _make_state_for_run_chat(tmp_path, monkeypatch)
+    slot = state.get_or_create_slot("s1")
+    client = _client_raising(_rejection("auto", ["claude-opus-5", "claude-sonnet-5"]))
+
+    async def _set_model_then_stop(_model):
+        slot._stop_generation = getattr(slot, "_stop_generation", 0) + 1
+
+    client.set_model = AsyncMock(side_effect=_set_model_then_stop)
+    state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+    inserts = _record_inserts(monkeypatch, slot)
+
+    await _run_chat(
+        state,
+        slot,
+        SUBAGENT_SYNTHESIS_PROMPT,
+        _synthetic_payload=True,
+        _turn_actor="subagent",
+        # Even with a settlement callback attached, synthesis owes nothing.
+        _on_consumed=MagicMock(),
+    )
+
+    client.set_model.assert_awaited_once_with("claude-opus-5")
+    assert inserts == [], inserts
+    assert slot._model_access_recovery_queue_id == ""
+
+
+@pytest.mark.asyncio
+async def test_a_runner_continuation_of_a_completion_stays_cancellable(tmp_path, monkeypatch):
+    """A recovery turn of an unconsumed completion inherits its actor and its
+    settlement callback, but its message can be runner-written text (an infra
+    retry prompt, a stall continuation). That text is not the completion, so a
+    model-access requeue of it keeps the family record a Stop, rebind or newer
+    message revokes, instead of being queued as an uncancellable completion."""
+    from kiro_crew.dashboard.chat_runner import build_infra_retry_prompt
+    from kiro_crew.dashboard.chat_utils import SUBAGENT_COMPLETION_KIND
+
+    state = _make_state_for_run_chat(tmp_path, monkeypatch)
+    slot = state.get_or_create_slot("s1")
+    client = _client_raising_always(_rejection("auto", ["claude-opus-5", "claude-sonnet-5"]))
+    state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+    inserts = _record_inserts(monkeypatch, slot)
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.chat_runner._start_next_queued_turn", AsyncMock(return_value=False)
+    )
+    retry_prompt = build_infra_retry_prompt("throttled", 5)
+
+    await _run_chat(
+        state,
+        slot,
+        retry_prompt,
+        _turn_actor="subagent",
+        _on_consumed=MagicMock(),
+        _synthetic_payload=True,
+        _synthetic_recovery_turn=True,
+    )
+
+    assert inserts == [{"content": retry_prompt, "kind": SYNTHETIC_RECOVERY_KIND}], inserts
+    assert not any(i["kind"] == SUBAGENT_COMPLETION_KIND for i in inserts)
+    assert slot._model_access_recovery_queue_id == slot._queue[0]["id"]
+
+
+@pytest.mark.asyncio
+async def test_a_verbatim_recovery_of_a_completion_is_still_owed(tmp_path, monkeypatch):
+    """A recovery entry the runner marked as a verbatim requeue of the completion
+    replays the completion itself, so it stays owed through a Stop."""
+    from kiro_crew.dashboard.chat_utils import SUBAGENT_COMPLETION_KIND
+
+    state = _make_state_for_run_chat(tmp_path, monkeypatch)
+    slot = state.get_or_create_slot("s1")
+    client = _client_raising_always(_rejection("auto", ["claude-opus-5", "claude-sonnet-5"]))
+    rejecting_stream = client.stream
+
+    async def _stopped_then_rejected(msg):
+        slot._stop_state = "soft_pending"
+        async for event in rejecting_stream(msg):
+            yield event  # pragma: no cover - the stream raises first
+
+    client.stream = _stopped_then_rejected
+    client.stream_command = _stopped_then_rejected
+    state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+    inserts = _record_inserts(monkeypatch, slot)
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.chat_runner._start_next_queued_turn", AsyncMock(return_value=False)
+    )
+
+    await _run_chat(
+        state,
+        slot,
+        "[Subagent completion event] the child finished",
+        _turn_actor="subagent",
+        _on_consumed=MagicMock(),
+        _synthetic_recovery_turn=True,
+        _replays_completion=True,
+    )
+
+    assert inserts == [
+        {
+            "content": "[Subagent completion event] the child finished",
+            "kind": SUBAGENT_COMPLETION_KIND,
+        }
+    ], inserts
+
+
+@pytest.mark.asyncio
+async def test_a_hard_kill_discards_an_owed_completion(tmp_path, monkeypatch):
+    """A hard kill clears the queue and discards everything in it. An owed
+    completion requeued while it is in progress would survive that clear and
+    run as a new turn, so the kill suppresses it like any other requeue."""
+    state = _make_state_for_run_chat(tmp_path, monkeypatch)
+    slot = state.get_or_create_slot("s1")
+    client = _client_raising_always(_rejection("auto", ["claude-opus-5", "claude-sonnet-5"]))
+
+    async def _killed_during_the_swap(_model):
+        slot._stop_state = "killing"
+        slot._queue.clear()
+
+    client.set_model = AsyncMock(side_effect=_killed_during_the_swap)
+    state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+    inserts = _record_inserts(monkeypatch, slot)
+    drain = AsyncMock(return_value=False)
+    monkeypatch.setattr("kiro_crew.dashboard.chat_runner._start_next_queued_turn", drain)
+
+    await _run_chat(
+        state,
+        slot,
+        "[Subagent completion event] the child finished",
+        _turn_actor="subagent",
+        _on_consumed=MagicMock(),
+    )
+
+    assert inserts == [], inserts
+    assert slot._queue == []
+    drain.assert_not_awaited()
+
+
+@pytest.mark.parametrize("verbatim", [True, False])
+@pytest.mark.asyncio
+async def test_the_verbatim_mark_travels_through_the_queue(tmp_path, monkeypatch, verbatim):
+    """``_queue_recovery`` marks a verbatim requeue of a completion turn's own
+    message, and the drain hands the mark to the replay turn; runner-written
+    text queued by a recovery turn that is not the completion carries none."""
+    from kiro_crew.acp.transport_errors import AcpAuthRequired
+    from kiro_crew.dashboard import chat_runner
+
+    state = _make_state_for_run_chat(tmp_path, monkeypatch)
+    slot = state.get_or_create_slot("s1")
+    client = _client_raising_always(AcpAuthRequired("Please sign in"))
+    state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+    message = "[Subagent completion event] the child finished" if verbatim else "Continue."
+
+    await _run_chat(
+        state,
+        slot,
+        message,
+        _turn_actor="subagent",
+        _on_consumed=MagicMock(),
+        _synthetic_recovery_turn=True,
+        _replays_completion=verbatim,
+    )
+
+    [entry] = slot._queue
+    assert entry["kind"] == SYNTHETIC_RECOVERY_KIND and entry["content"] == message
+    assert (entry.get("_replays_completion") is True) is verbatim
+    slot._last_turn_auth_required = False
+    run_chat = AsyncMock()
+    monkeypatch.setattr(chat_runner, "_run_chat", run_chat)
+
+    assert await chat_runner._start_next_queued_turn(state, slot) is True
+    await slot.task
+
+    kwargs = run_chat.await_args.kwargs
+    assert kwargs["_synthetic_recovery_turn"] is True
+    assert kwargs.get("_replays_completion", False) is verbatim
 
 
 @pytest.mark.asyncio
@@ -376,9 +617,8 @@ async def test_soft_stop_after_enqueue_drops_the_recovery_at_dequeue(tmp_path, m
     # A swap has already run: the flag is used, the recovery is queued, and the
     # enqueue stop-gen was snapshotted.
     slot._model_access_fallback_used = True
-    slot._model_access_recovery_pending = True
     slot._model_access_recovery_stop_gen = 0
-    slot.queue_insert(
+    slot._model_access_recovery_queue_id = slot.queue_insert(
         0,
         "first message",
         kind=SYNTHETIC_RECOVERY_KIND,
@@ -393,7 +633,7 @@ async def test_soft_stop_after_enqueue_drops_the_recovery_at_dequeue(tmp_path, m
     # The stopped replay was dropped, not dispatched, and the one-shot refunded.
     assert dispatched is False
     assert not [q for q in slot._queue if q.get("kind") == SYNTHETIC_RECOVERY_KIND]
-    assert slot._model_access_recovery_pending is False
+    assert slot._model_access_recovery_queue_id == ""
     assert slot._model_access_fallback_used is False
 
 
@@ -416,10 +656,9 @@ async def test_linked_channel_stop_drops_the_recovery_at_dequeue(tmp_path, monke
     # A swap has run: flag used, recovery queued, and BOTH stop-gen snapshots
     # taken at enqueue (slot=0, session=0).
     slot._model_access_fallback_used = True
-    slot._model_access_recovery_pending = True
     slot._model_access_recovery_stop_gen = 0
     slot._model_access_recovery_session_stop_gen = 0
-    slot.queue_insert(
+    slot._model_access_recovery_queue_id = slot.queue_insert(
         0,
         "first message",
         kind=SYNTHETIC_RECOVERY_KIND,
@@ -437,29 +676,29 @@ async def test_linked_channel_stop_drops_the_recovery_at_dequeue(tmp_path, monke
     # dropped, one-shot refunded.
     assert dispatched is False
     assert not [q for q in slot._queue if q.get("kind") == SYNTHETIC_RECOVERY_KIND]
-    assert slot._model_access_recovery_pending is False
+    assert slot._model_access_recovery_queue_id == ""
     assert slot._model_access_fallback_used is False
     """The one-shot fence, proven at its WEAKEST arm: after a swap, the recovery
     replay runs and fails again with an entitlement rejection that DOES satisfy
     model_is_unusable (the rejected id is absent from the advertised set). The
     discriminator arm would let the elif fire -- so the ONLY thing that stops a
     second swap here is the preserved _model_access_fallback_used flag. It holds:
-    the latch made the turn-start reset preserve the flag, `not _model_access_
+    the replay identity made the turn-start reset preserve the flag, `not _model_access_
     fallback_used` is False, the elif is skipped, and the turn ends on the
     terminal entitlement card with no second swap and no second recovery.
 
     Driven directly as the recovery turn: the drain dispatches the replay as its
     own turn (a background task the tail-drain does not await), so the fence is
     pinned by putting the slot in the exact state that turn starts in -- the flag
-    set and the recovery-pending latch armed, as the swap left them."""
+    set and the replay recorded, as the swap left them."""
     state = _make_state_for_run_chat(tmp_path, monkeypatch)
     slot = state.get_or_create_slot("s1")
 
     # The recovery turn begins with the swap already applied: the one-shot flag is
-    # set and the latch armed (so the turn-start reset preserves the flag rather
+    # set and the replay recorded (so the turn-start reset preserves the flag rather
     # than refunding it -- exactly the state the swap enqueued).
     slot._model_access_fallback_used = True
-    slot._model_access_recovery_pending = True
+    slot._model_access_recovery_queue_id = "q-replay"
     slot.served_model = "claude-opus-5"
     # The replay fails with a rejection whose id is ABSENT from the advertised set
     # (model_is_unusable is True) AND a real candidate exists. Every gate EXCEPT
@@ -479,15 +718,15 @@ async def test_linked_channel_stop_drops_the_recovery_at_dequeue(tmp_path, monke
     monkeypatch.setattr(_repo, "queue_insert", _record_insert)
 
     # Drive the recovery turn itself: the user's original message, replayed.
-    await _run_chat(state, slot, "first message")
+    await _run_chat(state, slot, "first message", _model_access_replay=True)
 
     # No SECOND swap: the fence held on the flag arm alone. set_model is never
     # called on this turn.
     client.set_model.assert_not_awaited()
-    # The flag stayed set across the recovery turn (the latch preserved it, then
-    # consumed the latch), so a still-unentitled candidate cannot re-open the swap.
+    # The flag stayed set across the recovery turn (the replay identity preserved
+    # it), so a still-unentitled candidate cannot re-open the swap.
     assert slot._model_access_fallback_used is True
-    assert slot._model_access_recovery_pending is False
+    assert slot._model_access_recovery_queue_id == ""
     # The replay's own failure surfaced the terminal entitlement card (this
     # rejection IS model_is_unusable, so it is tagged so the frontend offers the
     # picker), not a silent dead turn and not a second swap.
@@ -505,7 +744,7 @@ async def test_user_followup_drops_the_recovery_regardless_of_queue_position(tmp
     """Cell 2, pinned as position-independence rather than head-ordering. A user
     follow-up queued while a swap recovery is pending aborts the recovery and
     refunds the one-shot -- and it does so no matter WHERE the recovery sits,
-    because the dequeue drop scans the whole queue by is_synthetic_recovery_item
+    because the dequeue drop finds the replay by the queue id the swap recorded
     and _has_user_queued_followup scans the whole queue for user speech; neither
     reads an index. Here the user follow-up is enqueued AHEAD of the recovery (the
     opposite of the index-0 placement the swap uses), and the drop still fires. So
@@ -518,13 +757,12 @@ async def test_user_followup_drops_the_recovery_regardless_of_queue_position(tmp
     state = _make_state_for_run_chat(tmp_path, monkeypatch)
     slot = state.get_or_create_slot("s1")
     slot._model_access_fallback_used = True
-    slot._model_access_recovery_pending = True
     slot._model_access_recovery_stop_gen = getattr(slot, "_stop_generation", 0)
     # A user follow-up sits at the HEAD (plain entry, no kind => user speech), and
     # the recovery replay sits BEHIND it -- the reverse of the swap's own index-0
     # insert. No Stop is pressed; the follow-up alone is the intervention.
     slot.queue_append("please answer this instead")
-    slot.queue_insert(
+    slot._model_access_recovery_queue_id = slot.queue_insert(
         1,
         "first message",
         kind=SYNTHETIC_RECOVERY_KIND,
@@ -534,11 +772,11 @@ async def test_user_followup_drops_the_recovery_regardless_of_queue_position(tmp
     await _start_next_queued_turn(state, slot)
 
     # The recovery was dropped and the one-shot refunded, even though it sat
-    # BEHIND the user follow-up rather than at the head -- the drop scanned the
-    # whole queue, not index 0. That is the position-independence the disposition
+    # BEHIND the user follow-up rather than at the head -- the drop found it by
+    # its id, not at index 0. That is the position-independence the disposition
     # rests on; the follow-up's own dispatch is not part of this claim.
     assert not [q for q in slot._queue if q.get("kind") == SYNTHETIC_RECOVERY_KIND]
-    assert slot._model_access_recovery_pending is False
+    assert slot._model_access_recovery_queue_id == ""
     assert slot._model_access_fallback_used is False
 
 
@@ -897,7 +1135,6 @@ async def test_recovery_replay_dropped_when_the_slot_rebinds_mid_episode(tmp_pat
     state = _make_state_for_run_chat(tmp_path, monkeypatch)
     slot = state.get_or_create_slot("s1")
     slot._model_access_fallback_used = True
-    slot._model_access_recovery_pending = True
     slot._model_access_recovery_stop_gen = 0
     slot._model_access_recovery_session_stop_gen = 0
     # Enqueue recorded a binding; the slot has since rebound to a DIFFERENT
@@ -906,7 +1143,7 @@ async def test_recovery_replay_dropped_when_the_slot_rebinds_mid_episode(tmp_pat
     slot._model_access_recovery_session_key = effective_session_key(slot) + "-OLD-BOUND"
     slot._stop_generation = 0
     state.sessions.stop_generation = MagicMock(return_value=0)
-    slot.queue_insert(
+    slot._model_access_recovery_queue_id = slot.queue_insert(
         0,
         "first message",
         kind=SYNTHETIC_RECOVERY_KIND,
@@ -915,29 +1152,28 @@ async def test_recovery_replay_dropped_when_the_slot_rebinds_mid_episode(tmp_pat
 
     dispatched = await _start_next_queued_turn(state, slot)
 
-    # The rebind was seen: replay dropped, latch cleared, one-shot refunded.
+    # The rebind was seen: replay dropped, record cleared, one-shot refunded.
     assert dispatched is False
     assert not [q for q in slot._queue if q.get("kind") == SYNTHETIC_RECOVERY_KIND]
-    assert slot._model_access_recovery_pending is False
+    assert slot._model_access_recovery_queue_id == ""
     assert slot._model_access_recovery_session_key == ""
 
 
 @pytest.mark.asyncio
-async def test_recovery_latch_cleared_when_the_admission_sweep_removes_the_entry(
+async def test_recovery_record_cleared_when_the_admission_sweep_removes_the_entry(
     tmp_path, monkeypatch
 ):
     """The admission sweep (``_drop_stale_admissions``) drops a containment-changed
     recovery entry from the queue WITHOUT touching slot state -- not a stop, a
     rebind, or user input, so none of the drain's trigger-based drops fire. Without
-    an entry-gone guard the ``_model_access_recovery_pending`` latch survives the
-    sweep, and the user's next genuine turn is misclassified as a replay at the
-    consume seam and discarded. The drain must clear the latch when the recorded
-    replay entry is absent from the queue -- the guard the sibling refusal replay
-    carries at ``_replay_entry is None``.
+    an entry-gone guard the replay record (its queue id and the spent one-shot)
+    survives the sweep, and a later entry inherits it. The drain must clear the
+    record when the recorded replay entry is absent from the queue -- the guard
+    the sibling refusal replay carries.
 
-    Mutation guard: delete the entry-gone branch at the top of the
-    ``_model_access_recovery_pending`` block and this test reddens, because the
-    latch is left True after the sweep emptied the queue.
+    Mutation guard: delete the entry-gone branch at the top of the drain and this
+    test reddens, because the record is left set after the sweep emptied the
+    queue.
     """
     from unittest.mock import MagicMock
 
@@ -947,10 +1183,9 @@ async def test_recovery_latch_cleared_when_the_admission_sweep_removes_the_entry
     state = _make_state_for_run_chat(tmp_path, monkeypatch)
     slot = state.get_or_create_slot("s1")
     slot._model_access_fallback_used = True
-    slot._model_access_recovery_pending = True
     slot._model_access_recovery_stop_gen = 0
     slot._model_access_recovery_session_stop_gen = 0
-    # No stop, no rebind, no user input: the ONLY reason the latch may clear is
+    # No stop, no rebind, no user input: the ONLY reason the record may clear is
     # the recorded replay entry being gone from the queue.
     slot._model_access_recovery_session_key = effective_session_key(slot)
     slot._stop_generation = 0
@@ -968,16 +1203,15 @@ async def test_recovery_latch_cleared_when_the_admission_sweep_removes_the_entry
         qid = slot._queue[0]["id"]
     slot._model_access_recovery_queue_id = qid
     # The admission sweep removed the entry (containment change) but left the
-    # latch set -- reproduce that state directly.
+    # record set -- reproduce that state directly.
     slot.queue_remove_by_id(qid)
     assert not [q for q in slot._queue if q.get("kind") == SYNTHETIC_RECOVERY_KIND]
 
     dispatched = await _start_next_queued_turn(state, slot)
 
-    # The entry-gone guard cleared the latch and refunded the one-shot, so a
-    # genuine next turn is not misclassified as a replay.
+    # The entry-gone guard cleared the record and refunded the one-shot, so a
+    # later entry cannot inherit it.
     assert dispatched is False
-    assert slot._model_access_recovery_pending is False
     assert slot._model_access_recovery_queue_id == ""
     assert slot._model_access_recovery_session_key == ""
     assert slot._model_access_fallback_used is False
@@ -1105,7 +1339,7 @@ async def test_recovery_replay_aborts_at_consume_when_stopped_after_dequeue(tmp_
     # The state a swap leaves behind before its replay turn runs, with the
     # stop-gen snapshots taken AT ENQUEUE.
     slot._model_access_fallback_used = True
-    slot._model_access_recovery_pending = True
+    slot._model_access_recovery_queue_id = "q-replay"
     slot._model_access_recovery_stop_gen = 0
     slot._model_access_recovery_session_stop_gen = 0
     # A Stop landed after the drain dequeued the replay: the slot stop counter has
@@ -1113,9 +1347,9 @@ async def test_recovery_replay_aborts_at_consume_when_stopped_after_dequeue(tmp_
     # that must abort this replay is the advanced stop counter.
     slot._stop_generation = 1
 
-    await _run_chat(state, slot, "first message")
+    await _run_chat(state, slot, "first message", _model_access_replay=True)
 
     # The consume guard saw the Stop and aborted: the cancelled prompt never
-    # streamed, and the latch/record were cleared.
+    # streamed, and the record was cleared.
     assert _streamed["n"] == 0, "the stopped replay executed instead of aborting"
-    assert slot._model_access_recovery_pending is False
+    assert slot._model_access_recovery_queue_id == ""

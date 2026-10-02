@@ -114,6 +114,15 @@ def require_memory_prepared() -> None:
         )
 
 
+def memory_prepared() -> bool:
+    """Whether :func:`require_memory_prepared` admits the caller now, without raising."""
+    try:
+        require_memory_prepared()
+    except MemoryStartupUnavailable:
+        return False
+    return True
+
+
 async def wait_for_memory_preparation(task: asyncio.Future | None) -> None:
     """Give one turn a short grace period without cancelling shared recovery."""
     with _lock:

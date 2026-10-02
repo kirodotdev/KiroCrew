@@ -127,7 +127,14 @@ never drift. Notable terminal (non-retryable) classes:
   session-scoped stop generations at enqueue, and the queue drain drops the entry
   (refunding the shared one-shot) when either counter moved, when user input
   queued behind it, or when the slot was rebound to another session — the same
-  guard the model-access and refusal replays carry.
+  rule (`chat_runner._replay_revocation`) the model-access and refusal replays
+  carry, re-checked at the turn's consume seam. One requeue is exempt, decided
+  at the requeue: a verbatim requeue of a sub-agent completion the model never
+  consumed is a result the parent is still owed, so it is queued again as the
+  completion it is (`SUBAGENT_COMPLETION_KIND`), with no recovery record, and
+  runs ahead of a newer user message instead of being suppressed or cancelled
+  by a soft Stop. A hard kill discards it, and runner-written text queued for
+  the completion (a continuation, a retry prompt) is never exempt.
 - **Oversized request**: kiro-cli's own refusal, `This message is too large to
   send, and it contains no text that can be shortened. Remove or reduce the
   attached content and try again.` It is emitted when the context overflowed

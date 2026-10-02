@@ -1918,35 +1918,48 @@ class TestTurnCompleteLabelling:
             / "chat_runner.py"
         )
         tree = ast.parse(runner_path.read_text(encoding="utf-8"))
-        gates = [
-            keyword.value
+        # The turn records the facts its tail hands to notify_turn_complete; the
+        # helper that makes the call forwards each one under its own name. Each
+        # is pinned unique: a second record, or a second notify call (the
+        # double-notify a direct call beside the helper would bring back), must
+        # fail here wherever it lands in the file.
+        records = [
+            {
+                key.value: value
+                for key, value in zip(node.keys, node.values)
+                if isinstance(key, ast.Constant)
+            }
             for node in ast.walk(tree)
-            if isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "notify_turn_complete"
-            for keyword in node.keywords
-            if keyword.arg == "nudge_turn"
+            if isinstance(node, ast.Dict)
+            and any(
+                isinstance(key, ast.Constant) and key.value in {"nudge_turn", "reply_flushed"}
+                for key in node.keys
+            )
         ]
-        assert len(gates) == 1
-        gate = gates[0]
+        assert len(records) == 1, "exactly one record carries the nudge facts"
+        [facts] = records
+        gate = facts["nudge_turn"]
         assert isinstance(gate, ast.BoolOp)
         assert isinstance(gate.op, ast.And)
         assert [part.id for part in gate.values if isinstance(part, ast.Name)] == [
             "_directive_self_wake",
             "_turn_landed",
         ]
-        flushed = [
-            keyword.value
+        assert isinstance(facts["reply_flushed"], ast.Name)
+        assert facts["reply_flushed"].id == "_turn_flushed_visible_text"
+        calls = [
+            node
             for node in ast.walk(tree)
             if isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
             and node.func.attr == "notify_turn_complete"
-            for keyword in node.keywords
-            if keyword.arg == "reply_flushed"
         ]
-        assert len(flushed) == 1
-        assert isinstance(flushed[0], ast.Name)
-        assert flushed[0].id == "_turn_flushed_visible_text"
+        assert len(calls) == 1, "the tail's helper is the one notify_turn_complete call"
+        forwarded = {keyword.arg: keyword.value for keyword in calls[0].keywords}
+        assert all(
+            isinstance(forwarded[name], ast.Name) and forwarded[name].id == name
+            for name in ("nudge_turn", "reply_flushed")
+        ), forwarded
 
     @staticmethod
     def _loop(history: list) -> NudgeLoop:

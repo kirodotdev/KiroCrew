@@ -231,7 +231,9 @@ crowd out the session; intent survives truncation.
 ## Generation
 
 Dispatched from `_finish_queue_cycle` in `dashboard/chat_runner.py` — the post-turn
-hub, alongside auto-titling — as a background task. Not from `hooks.py`: the
+hub, alongside auto-titling — as a background task, for a cycle in which a turn
+reached a provider (learn-cron-dashboard.md, "Every turn exit runs the turn's
+tail"); a cycle of local commands has nothing to summarize. Not from `hooks.py`: the
 `Stop` hook event is script/config-driven and fires only for dashboard turns, and
 shipped behavior does not belong on a user-extension seam.
 

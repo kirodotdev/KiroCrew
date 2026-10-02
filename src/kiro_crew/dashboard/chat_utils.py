@@ -1308,7 +1308,7 @@ def _attached_verdict(running: Any, queued: int, slot: _ChatSlot | None) -> bool
 
 
 async def chat_done_payload(
-    state: DashboardState, slot: _ChatSlot, *, continuing: bool = False
+    state: DashboardState, slot: _ChatSlot, *, continuing: bool = False, queue_held: bool = False
 ) -> dict[str, Any]:
     """Describe whether a turn boundary actually hands the floor to the user.
 
@@ -1322,6 +1322,10 @@ async def chat_done_payload(
     and every caller here is a turn-boundary frame on the gateway loop, so the
     read belongs on the store's writer thread
     (:func:`subagents_attached_async`).
+
+    ``queue_held`` says the turn ending here held the queue (a sign-in,
+    memory-preparation or setup failure): nothing drains it until the user's
+    next send, so its entries are not work that continues.
     """
     # Avoid a circular import: autonudge's slot lookup imports dashboard.state.
     from kiro_crew.autonudge import get_instance
@@ -1334,7 +1338,7 @@ async def chat_done_payload(
             continuing
             or slot._in_stage_execution
             or slot._pending_synthesis
-            or (slot.queue_depth and not slot._last_turn_auth_required)
+            or (slot.queue_depth and not queue_held and not slot._last_turn_auth_required)
             or await subagents_attached_async(
                 state, slot, effective_session_key(slot), "completion_sound"
             )

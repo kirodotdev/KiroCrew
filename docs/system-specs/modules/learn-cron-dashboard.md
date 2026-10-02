@@ -1406,6 +1406,82 @@ condition: a boundary where no successor dispatches (empty queue, dropped
 entry, synthesis not eligible) emits nothing here -- `_finish_queue_cycle`'s
 `chat_done` stays that path's sole finalizer, so no path double-finalizes.
 
+### Every turn exit runs the turn's tail
+
+`chat_runner._end_turn_tail` is the one ordered list of what every
+`_run_chat` exit owes, and it runs at most once per turn: the deferred
+reset consume, the steer-fence and channel-narrowing clears, the wait
+countdown retirement (for a turn that reached its `try`), the sign-in outcome, the AutoNudge re-arm, and last
+the queue hand-off (`_hand_off_queue`: unconsumed steers requeue at the
+head, then the next queued turn starts or `_finish_queue_cycle` ends the
+cycle). The turn's `finally` ends with it. Every exit the `finally` does not
+finish runs it from the `_hands_off_queue_on_exit` guard on `_run_chat`: a
+return above the main `try` (a recovery replay cancelled at its consume
+seam, a blocked or local slash command such as `/prompts`, `/goal`,
+`/workflow` or an unsupported `/compact`), an exception there, or a
+`finally` cut short by a second cancel. A local command appends no `done`
+row of its own; the cycle's end does.
+
+The guard hands the turn a `_TurnExit` record as an argument, never a
+context variable, so each call, the nested `/prompts get` turn included, has
+its own record with no token to reset. The tail's policy comes from that
+record and the slot, not from where the turn stopped:
+
+- The `finally` records the turn's outcome first, before anything in it can
+  raise or be cancelled: its sign-in result, whether it passed the
+  memory-preparation barrier, and the AutoNudge facts. A cut-short `finally`
+  therefore still ends with this turn's own holds.
+- A turn with no recorded outcome never reached its `try` and acquired no
+  session. It consumes no deferred reset or conversation discard and retires
+  no wait state, which may belong to a sub-agent's sleep on the same slot (a
+  refused `/compact` behaves as if the turn never started), leaves
+  `_last_turn_auth_required` as the last turn recorded it, so a queue held
+  after a sign-in failure stays held, and takes the barrier's verdict from
+  the shared `memory_startup_task` and the preparation it ran
+  (`memory_startup.memory_prepared`, the barrier's own rule): a task still
+  running or cancelled, or a preparation that recorded a failure or was
+  stopped, holds the queue and synthesis.
+- An exception above the `try` appends an error row, since the dispatcher
+  only logs it, and propagates. The row carries `meta.turn_failed`
+  (`chat_runner.TURN_FAILED_META`), so the OpenAI-compatible endpoint, which
+  waits for the cycle's `done` row, answers `server_error` instead of an empty
+  reply. Raised by a local command's own handler
+  (`/goal`, `/workflow`, `/prompts`, recorded as `_TurnExit.local_command`)
+  it is that entry's failure and the queue drains on; any other one holds
+  the queue, because the setup that failed would fail every queued entry in
+  turn. The cycle still ends with its `done` row and `chat_done`.
+- The guard runs no tail for a coroutine being closed (`GeneratorExit`),
+  which cannot await. A turn closed inside its `try` still runs the tail
+  from its own `finally`: see what a closed loop leaves behind in
+  [testing-conventions](../common/testing-conventions.md).
+
+Two exits opt out by marking the record handed off: the remote-slot
+refusal, whose queue drains on its peer, and the `/prompts get` branch,
+whose nested turn is a whole turn with its own guard.
+
+`_finish_queue_cycle` reads the `chat_done` payload while the finishing
+turn still holds `slot.task`, so no turn or reservation can take the floor
+inside that read: a send arriving then queues behind the turn and is handed
+the floor when the queue moved during the read, rather than stranded on an
+idle slot. A held queue keeps the entries it held when the hold was decided,
+but an entry that arrived during the read is the user's next send, the one
+a hold resumes on, so it runs (`required_queue_id`) -- unless sub-agents are
+still attached: the sub-agent hold would keep that send queued on an idle
+slot, so it stays queued here too, and no held entry runs in its place. The
+drain after the synthesis fire-gate read is skipped for a held queue for the
+same reason. The frame of a held
+queue does not count its entries as continuing work (`queue_held`). The `done` row, the release and the
+frame follow with no await between them. `chat_runner._send_chat_done` is
+the one place the local runner sends a `chat_done` frame. Titling, the session summary,
+the source-status refresh and the `history` refresh run only when a turn of
+the cycle reached a provider (`slot._cycle_reached_provider`, set by each
+turn's tail and cleared at the cycle's end), so a cycle of local commands
+and cancelled replays titles nothing, and a provider reply followed by a
+queued local command is still titled.
+
+Pinned by `test/test_dashboard_chat.py::TestRunChatEarlyExitHandOff` and
+the superseded-replay cases in `TestRunChatRefusalFallback`.
+
 ### Agent welcome message (`welcomeMessage`)
 
 An agent spec may carry `welcomeMessage`, a hint its author wants read when that
@@ -2457,9 +2533,9 @@ that reason is also excluded until ACP events carry provenance that distinguishe
 it from a provider result. That correlated completion
 is persisted before cancellable token-analytics I/O, so slot cleanup cannot lose
 provider completion evidence after the event has arrived. Legacy dashboard nudge
-scheduling still returns immediately and still rearms from the existing
-`notify_turn_complete` `finally`; the completion hook neither replaces nor moves
-that lifecycle call. The pure `decide_monitor` policy performs no I/O. It
+scheduling still returns immediately and still rearms from
+`notify_turn_complete` in the turn's tail (`_end_turn_tail`); the completion hook
+neither replaces nor moves that lifecycle call. The pure `decide_monitor` policy performs no I/O. It
 checks the non-zero runtime/turn/token/provider-error budgets first, classifies provider errors
 without a model turn, suppresses an unchanged observation, and permits
 `wake_actionable` only when the actionable fingerprint differs from the last

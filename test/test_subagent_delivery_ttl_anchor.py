@@ -64,6 +64,15 @@ def _delivery(agent_id: str, *, elapsed: float = 12.0, credits: float = 0.25):
     return SubagentDelivery(agent_id, elapsed, credits)
 
 
+def _spawned_on_consumed(coro):
+    """The ``_on_consumed`` hook the drain passed to the ``_run_chat`` it spawned.
+
+    ``_run_chat`` runs under its exit guard, so before the coroutine first steps
+    its frame holds the dispatcher's keywords as ``kwargs``.
+    """
+    return coro.cr_frame.f_locals["kwargs"].get("_on_consumed")
+
+
 def _pending_map(slot) -> dict[str, list[str]]:
     """The whole pending-delivery ledger as ``{key: [agent_id, ...]}``.
 
@@ -375,7 +384,7 @@ class TestConsumptionSignalIsPerTurn:
         spawned: list[dict] = []
 
         def _spawn(_state, _slot, coro):
-            hook = coro.cr_frame.f_locals.get("_on_consumed")
+            hook = _spawned_on_consumed(coro)
             coro.close()
             fut = second_done if spawned else first_done
 
@@ -504,7 +513,7 @@ class TestDrainSettlesDelivery:
         """
 
         def _spawn(_state, _slot, coro):
-            hook = coro.cr_frame.f_locals.get("_on_consumed")
+            hook = _spawned_on_consumed(coro)
             coro.close()  # the real runner would await it; we are not running a turn
             if consumed and hook is not None:
                 hook()
@@ -691,7 +700,7 @@ class TestDrainSettlesDelivery:
         hooks: list = []
 
         def _spawn(_state, _slot, coro):
-            hooks.append(coro.cr_frame.f_locals.get("_on_consumed"))
+            hooks.append(_spawned_on_consumed(coro))
             coro.close()
 
             async def _turn():
@@ -726,7 +735,7 @@ class TestDrainSettlesDelivery:
         hooks: list = []
 
         def _spawn(_state, _slot, coro):
-            hooks.append(coro.cr_frame.f_locals.get("_on_consumed"))
+            hooks.append(_spawned_on_consumed(coro))
             coro.close()
 
             async def _turn():

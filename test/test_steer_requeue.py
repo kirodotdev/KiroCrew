@@ -468,16 +468,22 @@ class TestProductionWiring:
         return Path(cr.__file__).read_text(encoding="utf-8")
 
     def test_finally_calls_requeue_before_queue_drain(self):
-        src = self._runner_source()
+        import inspect
+
+        import kiro_crew.dashboard.chat_runner as cr
+
+        # Scoped to the one hand-off every turn exit runs, so a requeue call
+        # anywhere else in the module cannot satisfy the order.
+        src = inspect.getsource(cr._hand_off_queue)
         requeue_at = src.index("_requeue_unconsumed_steers(state, slot)")
-        drain_at = src.index(
-            "next_turn_started = await _start_next_queued_turn(state, slot)",
-            requeue_at,
-        )
+        drain_at = src.index("await _start_next_queued_turn(state, slot)")
         assert requeue_at < drain_at, (
-            "_run_chat's finally must call _requeue_unconsumed_steers BEFORE "
+            "_hand_off_queue must call _requeue_unconsumed_steers BEFORE "
             "the queue drain so a requeued steer is delivered on the very next turn"
         )
+        # The hand-off is the tail's last step, and the turn's finally ends in it.
+        assert "await _hand_off_queue(" in inspect.getsource(cr._end_turn_tail)
+        assert "await _end_turn_tail(state, slot, turn_exit)" in inspect.getsource(cr._run_chat)
 
     def test_inject_provenance_folds_into_the_mapping_the_row_write_reads(self):
         """One mapping carries BOTH provenance kinds to the row.

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
-from chat_test_helpers import _make_state
+from chat_test_helpers import _make_state, chat_done_frames
 
 from kiro_crew import autonudge
 from kiro_crew.dashboard import chat_runner as cr
@@ -35,9 +35,7 @@ async def finish_frame(state, slot):
     tasks = list(state._background_tasks)
     if tasks:
         await asyncio.gather(*tasks)
-    frames = [
-        call.args[1] for call in state.broadcast_ws.call_args_list if call.args[0] == "chat_done"
-    ]
+    frames = chat_done_frames(state)
     assert len(frames) == 1
     return frames[0]
 

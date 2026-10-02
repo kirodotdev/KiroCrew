@@ -25,7 +25,7 @@ from aiohttp import web
 from kiro_crew import members as members_mod
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.context import _neutralize_structural_markers
-from kiro_crew.dashboard.chat_runner import _run_chat
+from kiro_crew.dashboard.chat_runner import TURN_FAILED_META, _run_chat
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.state import DashboardState, _normalize_slot_key
 from kiro_crew.dashboard.turn_dispatch import chat_turn_timeout_secs
@@ -642,6 +642,25 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
             return await _blocking_response(state, slot, completion_id, model, created, ephemeral)
 
 
+_SERVER_ERROR = {"error": {"message": "internal error", "type": "server_error"}}
+
+
+def _turn_failed(msg: dict[str, Any]) -> bool:
+    """Whether *msg* is the error row of a turn that failed before it started.
+
+    That turn's cycle still ends with a ``done`` row, which on its own reads as
+    an empty successful reply."""
+    meta = msg.get("meta")
+    return isinstance(meta, dict) and bool(meta.get(TURN_FAILED_META))
+
+
+async def _stream_server_error(resp: web.StreamResponse) -> web.StreamResponse:
+    """End an SSE completion with the server-error frame and ``[DONE]``."""
+    await resp.write(f"data: {json.dumps(_SERVER_ERROR)}\n\n".encode())
+    await resp.write(b"data: [DONE]\n\n")
+    return resp
+
+
 async def _stream_response(
     request: web.Request,
     state: DashboardState,
@@ -661,9 +680,13 @@ async def _stream_response(
     try:
         _redact_buffer = ""
         _last_emitted_len = 0
+        failed = False
         while True:
             pending = slot.drain()
             for msg in pending:
+                failed = failed or _turn_failed(msg)
+                if msg.get("cls") == "done" and failed:
+                    return await _stream_server_error(resp)
                 if msg.get("cls") == "done":
                     # Flush remaining buffer
                     if _redact_buffer:
@@ -732,10 +755,7 @@ async def _stream_response(
                     slot.task.result()
                 except BaseException as exc:
                     logger.warning("chat task failed: %s", exc)
-                    err_data = {"error": {"message": "internal error", "type": "server_error"}}
-                    await resp.write(f"data: {json.dumps(err_data)}\n\n".encode())
-                    await resp.write(b"data: [DONE]\n\n")
-                    return resp
+                    return await _stream_server_error(resp)
 
             try:
                 await asyncio.wait_for(slot.event.wait(), timeout=30)
@@ -765,11 +785,15 @@ async def _blocking_response(
     counts at the slot layer.
     """
     collected: list[str] = []
+    failed = False
 
     try:
         while True:
             pending = slot.drain()
             for msg in pending:
+                failed = failed or _turn_failed(msg)
+                if msg.get("cls") == "done" and failed:
+                    return web.json_response(_SERVER_ERROR, status=500)
                 if msg.get("cls") == "done":
                     content = _redact("".join(collected))
                     return web.json_response(
@@ -803,10 +827,7 @@ async def _blocking_response(
                     slot.task.result()
                 except BaseException as exc:
                     logger.warning("chat task failed: %s", exc)
-                    return web.json_response(
-                        {"error": {"message": "internal error", "type": "server_error"}},
-                        status=500,
-                    )
+                    return web.json_response(_SERVER_ERROR, status=500)
 
             try:
                 await asyncio.wait_for(slot.event.wait(), timeout=30)
