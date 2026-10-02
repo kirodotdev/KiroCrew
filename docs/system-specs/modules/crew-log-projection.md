@@ -1030,6 +1030,26 @@ dashboard state exists, so the crew log names no dashboard symbol. Further consu
 a summary fold over a session's events, the automatic-card sentence trigger, channel
 notifications -- are expected to subscribe the same way and are not built here.
 
+**Subscribing: keys, disposers and a baseline.** `subscribe(kind, callback, *, scope=,
+key=, fold=, baseline=False)` returns a disposer. Calling it removes the subscription; a
+second call does nothing, and calling it from inside the callback is safe, because no
+registry lock is held while a callback runs and a publish skips a subscriber disposed
+after it was collected. The filters are the index: subscribers are stored by
+(kind, scope, key, fold) with `None` as a wildcard, so a publish looks up the at most
+eight buckets its event can match and never walks a subscriber keyed to another cell.
+An unfiltered subscription receives every event of its kind, which is how the WS
+exporter subscribes.
+
+`baseline=True` (with all three filters set) is for a consumer that joins after a fold
+already advanced. The subscription is registered FIRST, then the current value is read
+through the same read path a route serves (`read_slot_projection` or `read_projection`),
+delivered as a `FoldAdvanced`, and from then on only events with a HIGHER revision reach
+it -- the client rule, applied once in the bus. Events published during the read are
+held and replayed through that floor, so the join loses nothing and repeats nothing.
+The read runs on the subscriber's own thread: never the append path and never the fold
+worker, so a caller on an event loop calls it through `asyncio.to_thread`. A read that
+raises removes the subscription and propagates.
+
 **Why that needed a revision, and why `seq` could not be it.** A slot fold's `last_seq` is
 the NEWEST unit's own seq by contract, and conductor units are folded before worker units.
 So a conductor-side change on a board with any worker bound leaves that number unmoved, and
