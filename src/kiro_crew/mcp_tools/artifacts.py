@@ -971,9 +971,16 @@ def artifact_get_comments(name: str, args: dict[str, Any]) -> str:
         # those follow-up tools uncallable from a get_comments result.
         cid = c.get("id")
         id_tag = f" (id={cid})" if cid else ""
+        # The indent alone loses which parent a reply answers once threads
+        # interleave, so name the parent id and the creation time.
+        meta = ""
+        if c.get("parent_id"):
+            meta += f" parent={c['parent_id']}"
+        if c.get("created_at"):
+            meta += f" at={c['created_at']}"
         lines.append(
             f"{indent}{prefix}{c.get('author', '?')}: {comment_body}"
-            f"{anchor} [{c.get('status', 'open')}]{id_tag}"
+            f"{anchor} [{c.get('status', 'open')}]{id_tag}{meta}"
         )
     result_str = f"Comments on `{slug}` ({len(comments)}):\n" + "\n".join(lines)
     # Route verbatim comment egress through the canonical context-aware shim
