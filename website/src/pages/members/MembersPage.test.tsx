@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { PREVIEW_DASHBOARD, setPreviewFlag } from '../../utils/previewFlags'
 import { useState } from 'react'
 import { screen, fireEvent, waitFor, act, within } from '@testing-library/react'
 import { CREWMATES_PAGE_ENTERED_EVENT } from '../../components/MeetCrewmatesFlow'
@@ -178,7 +179,7 @@ vi.mock('../../components/ChatPane', () => ({
   default: ({ slotKey, agentLocked, followContentWidth, busyMode, onOpenCommandCenter }: { slotKey: string; agentLocked?: boolean; followContentWidth?: boolean; busyMode?: string; onOpenCommandCenter?: () => void }) => (
     <div data-testid="chat-pane-stub" data-agent-locked={agentLocked ? '1' : '0'} data-follow-content-width={followContentWidth ? '1' : '0'} data-busy-mode={busyMode ?? 'split'}>
       {slotKey}
-      <button onClick={onOpenCommandCenter}>Open task dashboard</button>
+      {onOpenCommandCenter && <button onClick={onOpenCommandCenter}>Open task dashboard</button>}
     </div>
   ),
 }))
@@ -455,6 +456,9 @@ beforeEach(() => {
   vi.mocked(api.teams.list).mockImplementation(() => Promise.resolve({ teams: [] }))
   // The remembered member must not leak between cases.
   localStorage.clear()
+  // The Dashboard tab and the in-chat dock are a Feature Preview: these cases
+  // exercise them, so the flag is on; the preview's own tests cover it off.
+  localStorage.setItem(PREVIEW_DASHBOARD, '1')
   // The projection store is a module-level singleton fed by the roster seed;
   // clear it so one case's seeded values do not survive into the next.
   memberProjectionStore.clear()
@@ -1089,6 +1093,24 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(tabs[1]).toHaveTextContent('Work log')
     expect(tabs[2]).toHaveTextContent('Notes')
     expect(tabs[0]).toHaveTextContent('Dashboard')
+  })
+
+  it('offers no Dashboard tab while the Dynamic Dashboard preview is off, and the tab once it is on', async () => {
+    // The tab IS the preview on this page, so it goes with the flag: Notes, Work
+    // log and Schedules stay, the strip simply has no third crewmate chip. The
+    // in-chat dock has no opener here either (ChatPane renders none without one).
+    localStorage.removeItem(PREVIEW_DASHBOARD)
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    await screen.findByTestId(`side-panel-leading-tab-${CREW_WORK_LOG_TAB_ID}`)
+    expect(screen.queryByTestId(`side-panel-leading-tab-${CREW_DASHBOARD_TAB_ID}`)).toBeNull()
+    expect(screen.queryByTestId('member-dashboard')).toBeNull()
+    expect(screen.getByTestId(`side-panel-leading-tab-${CREW_WORK_LOG_TAB_ID}`)).toBeInTheDocument()
+    // No opener handed to the pane either: the stub renders its button only when wired.
+    expect(screen.queryByRole('button', { name: 'Open task dashboard' })).toBeNull()
+    act(() => { setPreviewFlag(PREVIEW_DASHBOARD, true) })
+    expect(await screen.findByTestId(`side-panel-leading-tab-${CREW_DASHBOARD_TAB_ID}`)).toHaveTextContent('Dashboard')
+    expect(screen.getByRole('button', { name: 'Open task dashboard' })).toBeInTheDocument()
   })
 
   it('selecting another tab swaps the body; Dashboard comes back on its chip', async () => {
@@ -3246,7 +3268,7 @@ describe('MembersPage auto patrol (monitor loop status)', () => {
 })
 
 describe('MembersPage member edit entry (issue #9425)', () => {
-  beforeEach(() => { localStorage.clear() })
+  beforeEach(() => { localStorage.clear(); localStorage.setItem(PREVIEW_DASHBOARD, '1') })
 
   it('the DM header identity pill — face + name, centred, one Glass chip — is a button, named by the crewmate and described "Edit crewmate", that opens this crewmate\'s editor', async () => {
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })])

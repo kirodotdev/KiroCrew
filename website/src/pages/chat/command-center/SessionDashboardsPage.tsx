@@ -15,7 +15,6 @@ import { runTitle, scopedSlots, slotKey, type RunNode } from './model'
 import AttentionCard from './AttentionCard'
 import TaskDashboardFrame from './TaskDashboardFrame'
 import SessionStatusFrame from './SessionStatusFrame'
-import AutomaticCardSetting from './AutomaticCardSetting'
 
 /** One free summary read per visible card, sharing chat's websocket-invalidated cache. */
 function SavedSummary({ slot, active }: { slot: string; active: boolean }) {
@@ -132,7 +131,9 @@ export default function SessionDashboardsPage() {
         </div>
         {slotsLoaded && !data.loading && !data.stale && !pending.length && <p className="text-sm text-muted">{t('commandCenter.no_input')}</p>}
       </section>
-      <AutomaticCardSetting active={slotsLoaded} />
+      {/* The automatic-cards switch lives in Settings > Developer > Feature
+          Previews, inside the Dynamic Dashboard card: a setting belongs in
+          Settings, and this page is for reading what the sessions show. */}
       <PanelSectionHeader label={t('pages.sessionsPage.page_title')} count={matching.length} />
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 items-start">
         {/* Preserve selection, but unmount inactive iframe documents to cap resources. */}

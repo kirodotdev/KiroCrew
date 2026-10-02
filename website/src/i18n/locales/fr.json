@@ -42,13 +42,9 @@
     "reject": "Refuser une fois",
     "running": "En cours",
     "idle": "Inactif",
-    "done": "Terminé",
     "blocked": "Bloqué",
-    "waiting": "En attente",
     "needs_input": "Questions",
-    "stopped": "Arrêté",
     "progress": "{{done}} / {{total}} acceptés ou cochés",
-    "progress_label": "Progression vérifiée de la tâche",
     "adaptive_title": "Créer une vue publiée pour cette tâche",
     "adaptive_description": "L’agent peut publier ici une vue adaptée à la tâche : chronologie, tableau, carte des dépendances ou autre vue utile. En attendant, l’activité en direct et les demandes restent disponibles.",
     "contained": "Réponds dans Questions et Approbations ci-dessus. La page conçue par l’agent ne peut pas approuver d’actions.",
@@ -12424,7 +12420,9 @@
         "decisions_runtime_running": "En cours d’exécution sur cette machine.",
         "decisions_runtime_running_off": "Tourne sur cette machine, mais ne reçoit rien tant que l’interrupteur Decisions ci-dessus est désactivé.",
         "decisions_runtime_error": "Impossible de démarrer le modèle.",
-        "decisions_runtime_retry": "Réessayer"
+        "decisions_runtime_retry": "Réessayer",
+        "dashboard": "Tableau de bord dynamique",
+        "dashboard_desc": "Active le tableau de bord dynamique, encore en développement : une ligne d’état au-dessus du champ de saisie du chat, une vue Tableau de bord dans le panneau latéral et sur la page d’un coéquipier, et une page Tous les tableaux de bord. Sa mise en page est encore en cours de conception, il n’apparaît donc que si tu l’actives. Contient aussi l’interrupteur des cartes automatiques."
       },
       "kiroSignInCard": {
         "title": "Connexion Kiro",

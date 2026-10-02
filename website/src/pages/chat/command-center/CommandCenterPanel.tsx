@@ -11,20 +11,33 @@ import { fmtDateTime } from '../../../i18n/format'
 import { missingSourcesNotice, useCommandCenter } from './useCommandCenter'
 import TaskDashboardFrame from './TaskDashboardFrame'
 import SessionStatusFrame from './SessionStatusFrame'
-import AutomaticCardSetting from './AutomaticCardSetting'
 import AttentionCard from './AttentionCard'
-import StatusTiles from './StatusTiles'
-import TileList from './TileList'
-import { APPROVAL_MODE_KEYS, runTitle, type RunState } from './model'
+import { APPROVAL_MODE_KEYS, runTitle } from './model'
 import { PANEL_HEADING_ATTR } from './panelHeading'
 import { sendTurn } from '../../../chat-core/transport/sendTurn'
 import { REQUEST_PUBLISHED_VIEW } from './commandCenter.prompt'
 
-const STATE_KEYS: Record<RunState, string> = {
-  running: 'commandCenter.running', idle: 'commandCenter.idle', done: 'commandCenter.done',
-  blocked: 'commandCenter.blocked', waiting: 'commandCenter.waiting', needs_input: 'commandCenter.state_needs_input', stopped: 'commandCenter.stopped',
-}
-
+/** The side panel's Dashboard view.
+ *
+ * The Overview is the agent's published page and nothing else: the host draws
+ * the header (title, help, permission mode), the three segments with their
+ * counts, and the notices, then hands the whole Overview to the view the agent
+ * authored. The blocked and running work, the work items and the progress are
+ * the agent's to lay out — `REQUEST_PUBLISHED_VIEW` tells it how — because two
+ * renderings of the same numbers, one native and one authored, disagree
+ * whenever either lags, and a native block would take the top of a panel meant
+ * for the page. The dock above the composer keeps the native tiles; this panel
+ * is the page.
+ *
+ * What stays native is what the agent's HTML must never do: the Questions and
+ * Approvals tabs mount the host's own `AttentionCard`s, so an answer or an
+ * approval is only ever sent by a control the host rendered. The published page
+ * runs sandboxed and can at most point at a decision; it cannot make one.
+ *
+ * With no published view yet, the Overview shows the automatic card (the
+ * gateway's own summary of the session) and the request that asks the agent for
+ * a page. Once a page exists the automatic card steps aside: the Overview is the
+ * page alone. */
 export default function CommandCenterPanel({ slot, active, publishedView, sessionReady = true, onDraftStateChange, onOpenSession }: {
   slot: string | null
   active: boolean
@@ -52,10 +65,6 @@ export default function CommandCenterPanel({ slot, active, publishedView, sessio
 }) {
   const { t } = useTranslation()
   const data = useCommandCenter(slot, active && sessionReady)
-  // Same predicate as TileList's Progress rows: a board stands in for the runs
-  // only when it is the progress source (present and nothing omitted). It
-  // decides only whether the running runs are listed; work items always are.
-  const boardStands = data.progress?.source === 'work'
   // Report the draft state up, and report FALSE on unmount: a host holding its
   // panel open for a draft must not be held by a panel that is no longer there.
   const draftCb = useRef(onDraftStateChange)
@@ -98,8 +107,6 @@ export default function CommandCenterPanel({ slot, active, publishedView, sessio
         {sessionReady && <span className="ml-auto text-[11px] text-muted inline-flex items-center gap-1"><ShieldCheck size={12} />{t('commandCenter.permission_mode', { mode: t(APPROVAL_MODE_KEYS[data.approvalMode]) })}</span>}
       </div>
       <div hidden={!sessionReady} className="space-y-3">
-      <StatusTiles data={data} />
-      {data.progress && <progress className="w-full h-1.5 accent-accent" value={data.progress.done} max={data.progress.total} aria-label={t('commandCenter.progress_label')} />}
       <SegmentedControl value={section} onChange={setSection} collapse={false} wrap layoutId={`task-dashboard-section-${slot}`} segments={[
         { key: 'dashboard', label: t('commandCenter.dashboard'), icon: <LayoutDashboard size={14} /> },
         { key: 'attention', label: t('commandCenter.needs_input'), icon: <MessageSquare size={14} />, count: data.attention.length - data.approvalCount },
@@ -112,18 +119,21 @@ export default function CommandCenterPanel({ slot, active, publishedView, sessio
       </div>
     </header>
     <div className="flex-1 min-h-0 overflow-y-auto">
-    <div className="p-3 space-y-3" hidden={!sessionReady || (showingOverview && !data.attention.length)}>
+    {/* Questions and Approvals: the host's own cards, every one of them mounted
+        whichever tab shows, so a half-typed answer survives a tab switch. Never
+        in the Overview — the segments carry their counts, and the published page
+        can name a decision but only these cards can make it. */}
+    <div className="p-3 space-y-3" hidden={!sessionReady || showingOverview} data-testid="command-center-attention">
       <PanelSectionHeader label={t('commandCenter.attention_filter')} />
-      {!data.stale && !data.attention.some(a => showingOverview || (section === 'approvals' ? a.kind === 'approval' : a.kind !== 'approval')) && <p className="text-sm text-muted p-3">{t('commandCenter.no_input')}</p>}
+      {!data.stale && !data.attention.some(a => section === 'approvals' ? a.kind === 'approval' : a.kind !== 'approval') && <p className="text-sm text-muted p-3">{t('commandCenter.no_input')}</p>}
       {data.attention.map(item => {
         const node = data.nodes.find(n => n.id === `session:${item.slot}`)!
-        return <div key={`${slot}:${item.id}`} hidden={!showingOverview && (section === 'approvals' ? item.kind !== 'approval' : item.kind === 'approval')}>
+        return <div key={`${slot}:${item.id}`} hidden={section === 'approvals' ? item.kind !== 'approval' : item.kind === 'approval'}>
           <AttentionCard item={item} title={runTitle(node)} context={node.detail} onOpenSession={onOpenSession} onDraftChange={item.question ? active => data.onQuestionDraftChange(item.question!, active) : undefined} />
         </div>
       })}
     </div>
-    <div className="p-3 space-y-4" hidden={!showingOverview}>
-      {sessionReady && <AutomaticCardSetting active={active && showingOverview} />}
+    <div className="p-3 space-y-4" hidden={!showingOverview} data-testid="command-center-overview">
       {views.length > 1 && <label className="flex flex-col gap-1 text-[12px] text-muted">{t('commandCenter.published_view')}
         <SimpleSelect aria-label={t('commandCenter.published_view')} options={views.map(view => view.id)} optionLabels={views.map(view => view.title)} value={selectedView || ''} onChange={setSelected} />
       </label>}
@@ -140,28 +150,10 @@ export default function CommandCenterPanel({ slot, active, publishedView, sessio
           {/* No hand-off: pending QuestionCard answer drafts remain mounted below. */}
           <ErrorNotice message={requestDashboard.error?.message} />
         </div>}
-      <div hidden={!sessionReady} className="space-y-3">
-      {/* The task's own automatic card. Workers carry none. Under Progress the
-          panel shows the work items whenever the board has any, partial or
-          not; the running runs are added only when the board is not the
-          progress source (absent, or with omitted entries), because that is
-          when the dock's Progress list shows runs, and that list caps its rows
-          and its overflow lands here, so the rest must be readable somewhere.
-          Idle and done runs stay with the sidebar's Subagents and Workflows
-          tabs; this is not a roster. */}
-      {slot && <SessionStatusFrame slot={slot} title={t('commandCenter.title')} active={active && sessionReady && showingOverview} />}
-      {data.blocked > 0 && <>
-        <PanelSectionHeader label={t('commandCenter.blocked')} count={data.blocked} />
-        <TileList tile="blocked" data={data} />
-      </>}
-      {(data.loading || data.workItems.length > 0 || (!boardStands && data.running > 0)) && <PanelSectionHeader label={t('commandCenter.tile_progress')} />}
-      {data.loading && <p role="status" className="text-sm text-muted">{t('commandCenter.loading')}</p>}
-      {data.workItems.map(item => <div key={item.item_id} className="text-[13px] border-l-2 border-border pl-3">
-        <p>{item.title}</p><p className="text-muted text-[12px]">{t(STATE_KEYS[item.state])}{item.summary ? ` · ${item.summary}` : ''}</p>
-      </div>)}
-      {/* No `onOpen`: every running row renders, uncapped. */}
-      {!boardStands && data.running > 0 && <TileList tile="progress" data={data} />}
-      </div>
+      {/* The automatic card — the gateway's own summary of this session — only
+          until the agent publishes a page. Once one exists the Overview is that
+          page alone, so the two never say different things about one task. */}
+      {slot && sessionReady && views.length === 0 && <SessionStatusFrame slot={slot} title={t('commandCenter.title')} active={active && sessionReady && showingOverview} />}
     </div>
     </div>
   </div>

@@ -42,13 +42,9 @@
     "reject": "拒绝本次",
     "running": "运行中",
     "idle": "空闲",
-    "done": "已完成",
     "blocked": "受阻",
-    "waiting": "等待中",
     "needs_input": "提问",
-    "stopped": "已停止",
     "progress": "{{done}} / {{total}} 已验收或勾选完成",
-    "progress_label": "已核实的任务进度",
     "adaptive_title": "为当前任务创建发布视图",
     "adaptive_description": "模型可以在这里发布适合任务的视图：时间线、任务板、依赖图或其他有用的视图。在此之前，实时活动和待处理请求仍然可见。",
     "contained": "请通过上方的“提问”和“审批”回复。模型设计的页面不能批准操作。",
@@ -12060,7 +12056,9 @@
         "decisions_runtime_running": "正在这台机器上运行。",
         "decisions_runtime_running_off": "已在本机运行，但上方的 Decisions 开关关闭时，不会向它发送任何内容。",
         "decisions_runtime_error": "无法启动模型。",
-        "decisions_runtime_retry": "重试"
+        "decisions_runtime_retry": "重试",
+        "dashboard": "动态仪表板",
+        "dashboard_desc": "开启仍在开发中的动态仪表板：聊天输入框上方显示状态行，侧边面板和队友页面提供仪表板视图，另有“全部仪表板”页面。布局仍在设计中，因此开启前不会显示。自动卡片开关也在这里。"
       },
       "kiroSignInCard": {
         "title": "Kiro 登录",

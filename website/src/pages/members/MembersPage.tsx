@@ -49,6 +49,8 @@
 import { Fragment, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { AlarmClock, ArrowLeft, Check, ChevronRight, Circle, Goal, LayoutDashboard, ListChecks, Loader2, MessageCircleQuestionMark, NotebookPen, Plus, RotateCw, Route, Sparkles, Square, Star, Users, Zap } from 'lucide-react'
+import { usePreviewFlag } from '../../hooks/usePreviewFlag'
+import { PREVIEW_DASHBOARD } from '../../utils/previewFlags'
 import { PanelRightSolid } from '../../components/icons/panels'
 import { Btn, ContentSkeleton } from '../../components/ui'
 import { CrewMemberMark } from '../../components/CrewMemberMark'
@@ -1981,7 +1983,11 @@ export default function MembersPage() {
   const activeTabId = shownTabId ?? tabsCtl.activeId
   const notesVisible = panelVisible && activeTabId === CREW_NOTES_TAB_ID
   const workLogVisible = panelVisible && activeTabId === CREW_WORK_LOG_TAB_ID
-  const dashboardVisible = panelVisible && activeTabId === CREW_DASHBOARD_TAB_ID
+  // The Dynamic Dashboard is a Feature Preview (Settings > Developer). Off, the
+  // Dashboard tab is not among the leading tabs at all — a stored focus on it
+  // falls back to Notes in the strip — and the in-chat dock has no opener.
+  const dashboardPreview = usePreviewFlag(PREVIEW_DASHBOARD)
+  const dashboardVisible = dashboardPreview && panelVisible && activeTabId === CREW_DASHBOARD_TAB_ID
   const [dashboardVisitedFor, setDashboardVisitedFor] = useState<string | null>(null)
   useEffect(() => {
     // Armed whenever the Dashboard is on screen, INCLUDING by merely landing on
@@ -2036,7 +2042,8 @@ export default function MembersPage() {
   // gesture at all, since `beside` is recomputed from the window width.
   const [dashboardFrameLive, setDashboardFrameLive] = useState(false)
   useEffect(() => { if (!active) setDashboardFrameLive(false) }, [active])
-  const hasTaskDashboard = dashboardHasDraft || dashboardFrameLive || tabsCtl.tabs.some(tab => tab.kind === 'command-center')
+  // Off, the Dashboard is not offered at all, so nothing of it may hold the panel.
+  const hasTaskDashboard = dashboardPreview && (dashboardHasDraft || dashboardFrameLive || tabsCtl.tabs.some(tab => tab.kind === 'command-center'))
   const mountInput = { activityOpen: panelVisible, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen: false }
   // A typed schedule draft is another thing on this page that cannot survive a remount,
   // and unlike the panel's own gestures it can be destroyed by something no guard is able
@@ -4051,7 +4058,7 @@ export default function MembersPage() {
                     openSideChat={openMemberSideChat}
                     crewmate={crewmateIdentity}
                     onOpenCrewWorkLog={openCrewWorkLog}
-                    onOpenCommandCenter={openCrewCommandCenter}
+                    onOpenCommandCenter={dashboardPreview ? openCrewCommandCenter : undefined}
                     threads={threadHooks}
                     onFileOpen={openFileGuarded}
                     onSessionOpen={openSessionGuarded}
@@ -4644,13 +4651,15 @@ export default function MembersPage() {
           // member's face: the face sits in each body's identity row and in
           // the DM header, and three faces in a row would name nothing.
           const leadingTabs: SidePanelLeadingTab[] = [
-            {
+            // Offered only while the Dynamic Dashboard preview is on: the tab
+            // IS that surface on this page, so it goes with the flag.
+            ...(dashboardPreview ? [{
               id: CREW_DASHBOARD_TAB_ID,
               title: t('pages.membersPage.dashboard_tab'),
               icon: <LayoutDashboard className="lucide-inline" aria-hidden="true" />,
               keepMounted: dashboardVisitedFor === activeMemberKey,
               render: () => dashboardBody,
-            },
+            }] : []),
             {
               id: CREW_WORK_LOG_TAB_ID,
               title: t('pages.membersPage.work_log_tab'),

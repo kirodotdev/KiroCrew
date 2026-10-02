@@ -90,6 +90,7 @@ vi.mock('../../components/ChatPane', () => ({
 
 import { api } from '../../api/client'
 import MembersPage from './MembersPage'
+import { PREVIEW_DASHBOARD } from '../../utils/previewFlags'
 
 function setWindowWidth(px: number) {
   Object.defineProperty(window, 'innerWidth', { value: px, configurable: true, writable: true })
@@ -154,6 +155,8 @@ async function openCrewmate(name = 'oncall', alsoRoster: string[] = []) {
 beforeEach(() => {
   vi.clearAllMocks()
   localStorage.clear()
+  // These tests exercise the Dashboard tab, a Feature Preview (default off).
+  localStorage.setItem(PREVIEW_DASHBOARD, '1')
   __resetPanelTabs()
   setWindowWidth(1440)
 })

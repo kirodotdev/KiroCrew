@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { PREVIEW_DASHBOARD } from '../../utils/previewFlags'
 import { screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { renderWithProviders } from '../../test/helpers'
 import { __resetPanelTabs } from '../../hooks/usePanelTabs'
@@ -105,6 +106,8 @@ beforeEach(() => {
   vi.clearAllMocks()
   verdicts.length = 0
   localStorage.clear()
+  // The Dashboard tab is a Feature Preview; these cases pin the strip with it on.
+  localStorage.setItem(PREVIEW_DASHBOARD, '1')
   __resetPanelTabs()
   setWindowWidth(WIDE_WINDOW)
 })

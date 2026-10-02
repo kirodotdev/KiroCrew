@@ -42,13 +42,9 @@
     "reject": "Rejeitar uma vez",
     "running": "Em execução",
     "idle": "Inativo",
-    "done": "Concluído",
     "blocked": "Bloqueado",
-    "waiting": "Aguardando",
     "needs_input": "Perguntas",
-    "stopped": "Interrompido",
     "progress": "{{done}} / {{total}} aceitos ou marcados como concluídos",
-    "progress_label": "Progresso verificado da tarefa",
     "adaptive_title": "Criar uma visualização publicada para esta tarefa",
     "adaptive_description": "O agente pode publicar aqui uma visualização específica: linha do tempo, quadro, mapa de dependências ou outra visualização útil. Até lá, a atividade ao vivo e as solicitações continuam disponíveis.",
     "contained": "Responda em Perguntas e Aprovações acima. A página criada pelo agente não pode aprovar ações.",
@@ -12424,7 +12420,9 @@
         "decisions_runtime_running": "Em execução nesta máquina.",
         "decisions_runtime_running_off": "Em execução nesta máquina, mas não recebe nada enquanto o interruptor Decisions acima estiver desligado.",
         "decisions_runtime_error": "Não foi possível iniciar o modelo.",
-        "decisions_runtime_retry": "Tentar de novo"
+        "decisions_runtime_retry": "Tentar de novo",
+        "dashboard": "Painel dinâmico",
+        "dashboard_desc": "Ativa o painel dinâmico, ainda em desenvolvimento: uma linha de status acima do compositor do chat, uma visualização Painel no painel lateral e na página de um membro da equipe, e uma página Todos os painéis. O layout ainda está sendo definido, por isso só aparece quando você o ativa. Também contém o interruptor dos cartões automáticos."
       },
       "kiroSignInCard": {
         "title": "Login do Kiro",

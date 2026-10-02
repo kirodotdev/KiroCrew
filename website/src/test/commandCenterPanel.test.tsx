@@ -47,18 +47,24 @@ describe('task dashboard host controls', () => {
     expect(await screen.findAllByText('Some sources could not be loaded: workflow runs under “Progress”. Anything that needs you is still current, and this notice clears once they load.')).toHaveLength(2)
     // The exact text above names only the failed source; the others are not listed.
     expect(screen.queryByText(/The last known state may be out of date/)).not.toBeInTheDocument()
-    // The sources that did load still render: the board's items and the panel
-    // header's Blocked readout, not a stale placeholder.
-    expect(screen.getByText('Accepted contract')).toBeInTheDocument()
-    expect(screen.getByTestId('status-tile-blocked')).toHaveTextContent('1')
+    // The sources that did load still render: the dock's Blocked readout, not a
+    // stale placeholder. (The panel draws no tiles of its own any more.)
+    expect(screen.getByRole('button', { name: 'Blocked 1' })).toBeInTheDocument()
+    expect(screen.getByTestId('command-center-panel')).toBeInTheDocument()
   })
 
-  it('shows accepted progress and requests an authored dashboard only after a click', async () => {
+  it('shows the automatic card while no page is published, and requests one only after a click', async () => {
     const send = vi.spyOn(transport, 'sendTurn').mockResolvedValue({ status: 'queued', body: {} })
     renderWithProviders(<CommandCenterPanel slot="root" active />, { store: taskStore() })
-    expect(await screen.findByText('Accepted contract')).toBeInTheDocument()
-    expect(screen.getByRole('progressbar')).toHaveAttribute('value', '1')
-    expect(screen.getByRole('progressbar')).toHaveAttribute('max', '2')
+    expect(await screen.findByRole('button', { name: 'Create published view' })).toBeEnabled()
+    // No page yet: the gateway's own card stands in. Nothing native beside it —
+    // the tiles, the progress bar and the board rows belong to the dock and to
+    // the page the agent is asked for.
+    expect(screen.getByTestId('session-status-frame')).toBeInTheDocument()
+    expect(screen.queryByRole('progressbar')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('status-tiles')).not.toBeInTheDocument()
+    expect(screen.queryByText('Accepted contract')).not.toBeInTheDocument()
+    expect(screen.queryByText('Automatic cards for all sessions')).not.toBeInTheDocument()
     expect(send).not.toHaveBeenCalled()
     expect(screen.getByText('Permission mode: Normal')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Create published view' }))
@@ -109,28 +115,57 @@ describe('task dashboard host controls', () => {
     expect(screen.queryByText('Published view requested — it will appear here when ready.')).not.toBeInTheDocument()
   })
 
-  it('shows failed runs as alerts without a draft-destroying agent hand-off', async () => {
+  it('shows failed runs as alerts in the dock, without a draft-destroying agent hand-off', async () => {
     vi.mocked(api.workflowRuns).mockResolvedValue({ runs: [{ run_id: 'failed', name: 'Validation', session_key: 'dashboard:root', status: 'failed', error: 'Runner unavailable', last_log: 'Preparing checks' }] })
-    renderWithProviders(<CommandCenterPanel slot="root" active />, { store: taskStore() })
+    renderWithProviders(<CommandCenterDock slot="root" onOpen={vi.fn()} />, { store: taskStore() })
+    fireEvent.click(await screen.findByRole('button', { name: 'Blocked 2' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('Runner unavailable')
     expect(screen.getByText('Preparing checks')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Ask the agent/ })).not.toBeInTheDocument()
   })
 
-  it('lists every running run, uncapped, when no work board stands in for them', async () => {
-    vi.mocked(api.sessionWorkProjection).mockResolvedValue({ value: { items: [] } })
-    const initial = createTestStore().getState()
-    const workers = Array.from({ length: 7 }, (_, i) => ({ key: `worker-${i + 1}`, title: `Worker ${i + 1}`, created_by: 'root', messages: 0, running: true }))
-    const store = createTestStore({ ...initial, dashboard: { ...initial.dashboard, connected: true, slots: [
-      { key: 'root', title: 'Conductor', messages: 0, running: true }, ...workers,
-    ] } })
-    renderWithProviders(<CommandCenterPanel slot="root" active />, { store })
-    expect(await screen.findByText('Worker 7')).toBeInTheDocument()
-    for (const title of ['Conductor', ...workers.map(w => w.title)]) expect(screen.getByText(title)).toBeInTheDocument()
-    expect(screen.getAllByTestId('panel-section-header').some(h => h.textContent === 'Progress')).toBe(true)
-    // The dock's list caps at six and hands the rest here; the panel caps nothing.
-    expect(screen.queryByRole('button', { name: /more in the Dashboard/ })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Open Dashboard' })).not.toBeInTheDocument()
+  it('renders a published view as the whole Overview, with the questions and approvals kept to their own tabs', async () => {
+    vi.mocked(api.artifacts).mockResolvedValue({ artifacts: [{ slug: 'release', name: 'Release pipeline', kind: 'html', tags: ['task-dashboard'], session_key: 'dashboard:root' }] } as never)
+    vi.mocked(api.pendingQuestions).mockResolvedValue([{ slot: 'worker', ask_id: 'ask', questions: [{ question: 'Which contract?', options: [{ label: 'Stable API' }] }] }])
+    vi.mocked(api.approvals).mockResolvedValue([{ id: 'permission', slot: 'worker', tool: 'shell', tool_input: 'git status' }])
+    const initial = taskStore().getState()
+    const running = createTestStore({ ...initial, dashboard: { ...initial.dashboard, slots: initial.dashboard.slots.map(s => ({ ...s, running: true })) } })
+    renderWithProviders(<CommandCenterPanel slot="root" active />, { store: running })
+    const frame = await screen.findByTestId('published-task-view')
+    expect(frame).toBeVisible()
+    const overview = screen.getByTestId('command-center-overview')
+    // The page is the Overview: no native tiles, progress bar, settings switch,
+    // automatic card, blocked list or board rows beside it.
+    expect(overview).toContainElement(frame)
+    expect(screen.queryByTestId('status-tiles')).not.toBeInTheDocument()
+    expect(screen.queryByRole('progressbar')).not.toBeInTheDocument()
+    expect(screen.queryByText('Automatic cards for all sessions')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('session-status-frame')).not.toBeInTheDocument()
+    expect(screen.queryByText('Accepted contract')).not.toBeInTheDocument()
+    expect(screen.queryByText('Review changes')).not.toBeInTheDocument()
+    expect(screen.queryByText('Conductor')).not.toBeInTheDocument()
+    expect(screen.queryByText('Create published view')).not.toBeInTheDocument()
+    expect(within(overview).queryByRole('button', { name: 'Approve once' })).not.toBeInTheDocument()
+    expect(within(overview).queryByText('Which contract?')).not.toBeInTheDocument()
+    // The segments still carry the counts, and each tab still lists its cards:
+    // answering and approving stay with the host's own controls.
+    expect(await screen.findByRole('radio', { name: 'Approvals 1' })).toBeVisible()
+    fireEvent.click(screen.getByRole('radio', { name: 'Questions 1' }))
+    expect(screen.getByText('Which contract?')).toBeVisible()
+    expect(frame).not.toBeVisible()
+    fireEvent.click(screen.getByRole('radio', { name: 'Approvals 1' }))
+    expect(screen.getByRole('button', { name: 'Approve once' })).toBeVisible()
+    expect(screen.getByText('Which contract?')).not.toBeVisible()
+    fireEvent.click(screen.getByRole('radio', { name: /Overview/ }))
+    expect(frame).toBeVisible()
+  })
+
+  it('shows no attention card in the Overview even while nothing is published', async () => {
+    vi.mocked(api.approvals).mockResolvedValue([{ id: 'permission', slot: 'worker', tool: 'shell', tool_input: 'git status' }])
+    renderWithProviders(<CommandCenterPanel slot="root" active />, { store: taskStore() })
+    expect(await screen.findByRole('radio', { name: 'Approvals 1' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Approve once', hidden: true })).not.toBeVisible()
+    expect(screen.getByTestId('session-status-frame')).toBeVisible()
   })
 
   it('keeps every section accessible with compact labels in a 320px panel', async () => {
@@ -142,8 +177,7 @@ describe('task dashboard host controls', () => {
       disconnect() {}
     })
     renderWithProviders(<CommandCenterPanel slot="root" active />, { store: taskStore() })
-    await screen.findByText('Accepted contract')
-    const approvals = screen.getByRole('radio', { name: /Approvals/ })
+    const approvals = await screen.findByRole('radio', { name: /Approvals/ })
     expect(approvals).toHaveTextContent('Approvals')
     fireEvent.click(approvals)
     expect(approvals).toHaveTextContent('Approvals')
@@ -156,8 +190,7 @@ describe('task dashboard host controls', () => {
     const store = createTestStore({ ...initial, dashboard: { ...initial.dashboard, slots: initial.dashboard.slots.map(slot => ({ ...slot, ...(slot.key === 'worker' ? { todo: { tasks: [], current: 'Validate release in isolated workspace' } } : {}) })) } })
     vi.mocked(api.approvals).mockResolvedValue([{ id: 'permission', slot: 'worker', tool: 'shell', tool_input: 'git status' }])
     renderWithProviders(<CommandCenterPanel slot="root" active />, { store })
-    await screen.findByText('Accepted contract')
-    fireEvent.click(screen.getByRole('radio', { name: /Approvals/ }))
+    fireEvent.click(await screen.findByRole('radio', { name: 'Approvals 1' }))
     expect(screen.getAllByText('Approvals')).toHaveLength(1)
     expect(screen.getByRole('radio', { name: /Approvals/ })).toHaveTextContent('1')
     const card = screen.getByRole('button', { name: 'Approve once' }).closest('section')!
@@ -171,8 +204,7 @@ describe('task dashboard host controls', () => {
     ] }])
     vi.mocked(api.approvals).mockResolvedValue([{ id: 'permission', slot: 'dashboard:worker', tool: 'shell', tool_input: 'git status' }])
     renderWithProviders(<CommandCenterPanel slot="root" active />, { store: taskStore() })
-    await screen.findByText('Accepted contract')
-    fireEvent.click(screen.getByRole('radio', { name: /Questions/ }))
+    fireEvent.click(await screen.findByRole('radio', { name: 'Questions 1' }))
     fireEvent.click(await screen.findByText('Stable API'))
     fireEvent.click(screen.getByRole('radio', { name: /Approvals/ }))
     expect(screen.getByRole('button', { name: 'Approve once' })).toBeVisible()
@@ -180,7 +212,8 @@ describe('task dashboard host controls', () => {
     fireEvent.click(screen.getByRole('radio', { name: /Questions/ }))
     expect(screen.getByRole('button', { name: 'Send answer' })).toBeEnabled()
     fireEvent.click(screen.getByRole('radio', { name: /Overview/ }))
-    expect(screen.getByText('Accepted contract')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Create published view' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Send answer', hidden: true })).not.toBeVisible()
   })
 
   it.each(['custom', 'option'])('retains a retired stateless %s draft across polls and section navigation', async kind => {
@@ -188,8 +221,7 @@ describe('task dashboard host controls', () => {
       { question: 'Which contract?', options: [{ label: 'Stable API' }] },
     ] }])
     const { queryClient } = renderWithProviders(<CommandCenterPanel slot="root" active />, { store: taskStore() })
-    await screen.findByText('Accepted contract')
-    fireEvent.click(screen.getByRole('radio', { name: /Questions/ }))
+    fireEvent.click(await screen.findByRole('radio', { name: 'Questions 1' }))
     const input = screen.getByPlaceholderText(/type a custom answer/i)
     if (kind === 'custom') fireEvent.change(input, { target: { value: 'Keep my contract draft' } })
     else fireEvent.click(screen.getByText('Stable API'))
@@ -224,8 +256,7 @@ describe('task dashboard host controls', () => {
     else send.mockResolvedValue({ status: 'dispatched', body: {} })
     const dismiss = vi.spyOn(api, 'dismissQuestionCard').mockRejectedValue(new Error('Retirement failed'))
     const { queryClient } = renderWithProviders(<CommandCenterPanel slot="root" active />, { store: taskStore() })
-    await screen.findByText('Accepted contract')
-    fireEvent.click(screen.getByRole('radio', { name: /Questions/ }))
+    fireEvent.click(await screen.findByRole('radio', { name: 'Questions 1' }))
     const input = screen.getByPlaceholderText(/type a custom answer/i)
     fireEvent.change(input, { target: { value: 'Drafted response' } })
     vi.mocked(api.pendingQuestions).mockResolvedValue([])
@@ -313,29 +344,6 @@ describe('task dashboard host controls', () => {
     const progress = screen.getByRole('region', { name: 'Progress' })
     expect(within(progress).getByText('Conductor')).toBeInTheDocument()
     expect(within(progress).queryByText('Omitted board item')).not.toBeInTheDocument()
-  })
-
-  it('keeps the partial board items in the panel beside the running runs the dock lists', async () => {
-    vi.mocked(api.sessionWorkProjection).mockResolvedValue({ value: { items: [
-      { item_id: 'partial-work', title: 'Tracked board item', state: 'dispatched' },
-    ], omitted: 1 } })
-    const initial = taskStore().getState()
-    const both = createTestStore({ ...initial, dashboard: { ...initial.dashboard, slots: initial.dashboard.slots.map(s => ({ ...s, running: true })) } })
-    renderWithProviders(<CommandCenterPanel slot="root" active />, { store: both })
-    // The board still tracks this item, so the panel must not hide it merely
-    // because an omission keeps the board from being the progress source.
-    expect(await screen.findByText('Tracked board item')).toBeInTheDocument()
-    expect(screen.getByText('Conductor')).toBeInTheDocument()
-    expect(screen.getByText('Review worker')).toBeInTheDocument()
-    expect(screen.getAllByTestId('panel-section-header').some(h => h.textContent === 'Progress')).toBe(true)
-  })
-
-  it('shows the board items alone, without a run list, when the board is the progress source', async () => {
-    renderWithProviders(<CommandCenterPanel slot="root" active />, { store: taskStore() })
-    expect(await screen.findByText('Accepted contract')).toBeInTheDocument()
-    // The blocked item is listed under Blocked and stays on the board list too.
-    expect(screen.getAllByText('Review changes')).toHaveLength(2)
-    expect(screen.queryByText('Conductor')).not.toBeInTheDocument()
   })
 
   it('shows the dock for a lone session as soon as a question waits on the user', async () => {
@@ -538,16 +546,17 @@ describe('task dashboard host controls', () => {
       { key: 'root', title: 'Conductor', messages: 0, running: false },
     ] } })
     renderWithProviders(<><CommandCenterDock slot="root" onOpen={vi.fn()} /><CommandCenterPanel slot="root" active /></>, { store })
-    // The panel reads the board and lists its blocked item; the dock, which does
-    // not, has only a finished run to show and settles away.
-    expect((await screen.findAllByText('Review changes')).length).toBeGreaterThan(0)
+    // The panel reads the board (its open item keeps the panel's own model
+    // unsettled); the dock, which does not, has only a finished run to show and
+    // settles away.
+    await waitFor(() => expect(api.sessionWorkProjection).toHaveBeenCalledTimes(1))
     await waitFor(() => expect(screen.queryByTestId('command-center-dock')).not.toBeInTheDocument())
-    expect(api.sessionWorkProjection).toHaveBeenCalledTimes(1)
+    expect(screen.getByTestId('command-center-panel')).toBeInTheDocument()
     // A connection drop makes every read incomplete. The dock's latch, had the
     // panel released it, would let the drop bring a finished dock back.
     act(() => { store.dispatch(sseDisconnected()) })
     expect(screen.queryByTestId('command-center-dock')).not.toBeInTheDocument()
-    expect(screen.getAllByText('Review changes').length).toBeGreaterThan(0)
+    expect(screen.getByTestId('command-center-panel')).toBeInTheDocument()
   })
 
   it('says what the Progress tile counts without a plan, under the same label', async () => {
@@ -570,11 +579,6 @@ describe('task dashboard host controls', () => {
     // Blocked and Needs you both read as "stuck": each title names who acts.
     expect(screen.getByRole('button', { name: 'Blocked 0' })).toHaveAttribute('title', 'Waiting on the agent — runs or items that are stuck')
     expect(screen.getByRole('button', { name: 'Needs you 0' })).toHaveAttribute('title', 'Waiting on you — questions and approvals')
-    // The panel readout agrees with the dock.
-    renderWithProviders(<CommandCenterPanel slot="root" active />, { store: both })
-    const readout = await screen.findByTestId('status-tile-progress')
-    expect(readout).toHaveTextContent('2 running')
-    expect(within(readout).getByText('Progress')).toBeInTheDocument()
   })
 
   it('labels the open button beside its icon and keeps the row at two actions', async () => {
@@ -633,7 +637,7 @@ describe('task dashboard host controls', () => {
 
   it('mentions the agent-designed page in the panel help only once a published view exists', async () => {
     const first = renderWithProviders(<CommandCenterPanel slot="root" active />, { store: taskStore() })
-    await screen.findByText('Accepted contract')
+    await screen.findByRole('button', { name: 'Create published view' })
     expect(screen.getByRole('button', { name: 'More information' })).toHaveAttribute('title', expect.not.stringContaining('agent-designed page'))
     first.unmount()
     vi.mocked(api.artifacts).mockResolvedValue({ artifacts: [{ slug: 'release', name: 'Release pipeline', kind: 'html', tags: ['task-dashboard'], session_key: 'dashboard:root' }] } as never)

@@ -2,6 +2,8 @@ import { useState, useRef, useEffect, useCallback, useMemo, Fragment, Suspense, 
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { useRailWidth } from '../../hooks/useRailWidth'
 import { useDevMode } from '../../hooks/useDevMode'
+import { usePreviewFlag } from '../../hooks/usePreviewFlag'
+import { PREVIEW_DASHBOARD } from '../../utils/previewFlags'
 import { usePointerDrag } from '../../hooks/usePointerDrag'
 import { useLongPressReorder } from '../../hooks/useLongPressReorder'
 import { Reorder } from 'framer-motion'
@@ -492,9 +494,19 @@ export default function SidePanel({
   pins, pinsLoading, onJumpToPin, onUnpin,
   slotTitle, chatMode,
   expanded, fillWidth, canDockBottom = true,
-  leadingTabs, extraReserveW = 0, hiddenViews, onActiveTabChange,
+  leadingTabs, extraReserveW = 0, hiddenViews: hostHiddenViews, onActiveTabChange,
 }: SidePanelProps) {
   const { tabs, activeId: storedActiveId, openView, openPanelTab, openTerminal, setActive, closeTab, patchTab, setOrder, syncPinned } = tabsCtl
+  // The Dynamic Dashboard is a Feature Preview (Settings > Developer). While it
+  // is off its view is withheld exactly as a host withdrawal is — out of the +
+  // menu, off the strip even when a persisted tab holds it, never the active
+  // tab — so one filter decides both, and flipping the toggle brings a tab the
+  // user had open straight back rather than making them re-open it.
+  const dashboardPreview = usePreviewFlag(PREVIEW_DASHBOARD)
+  const hiddenViews = useMemo<ReadonlySet<SidePanelWithholdable> | undefined>(() => {
+    if (dashboardPreview) return hostHiddenViews
+    return new Set<SidePanelWithholdable>([...(hostHiddenViews ?? []), 'command-center'])
+  }, [hostHiddenViews, dashboardPreview])
   // A permanent panel has no close control and answers Escape with nothing —
   // the views' `onToggle` still needs a function, so it gets a no-op.
   const closable = !!onClose
@@ -1273,7 +1285,10 @@ export default function SidePanel({
           // tab's `AppHost` are equally destroyed by a key change on chat switch.
           if (t.kind === 'app' || isPanelTabKind(t.kind)) return null
           // Keep the authored document and per-question drafts alive on tab switches.
-          if (t.kind === 'command-center') return (
+          // Not mounted at all while the preview is off: unlike a host's temporary
+          // withdrawal, the flag is a standing choice, and a hidden panel would
+          // still read the session's work for a view nothing offers.
+          if (t.kind === 'command-center') return !dashboardPreview ? null : (
             <div key={`${t.id}:${slot}`} className="absolute inset-0" hidden={!isActive}>
               {/* Local boundary: the panel is a lazy chunk, and a chunk that fails
                   to load after main.tsx's preload-reload heal declined would

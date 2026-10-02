@@ -142,6 +142,25 @@ export const PREVIEW_INSTANCE_SESSIONS = `${PREVIEW_FLAG_PREFIX}instance-session
 export const PREVIEW_LAYOUT_HARNESS = `${PREVIEW_FLAG_PREFIX}layout-harness`
 
 /**
+ * The Dynamic Dashboard: the status dock above the composer, the side panel's
+ * Dashboard view, the Crewmates page's Dashboard tab, and the "All dashboards"
+ * page (`/session-dashboards`).
+ *
+ * Held because the surface is still being designed — what the panel shows,
+ * what the agent's published page is asked to carry, and where the automatic
+ * card belongs are all moving — so it is not something to put in front of a
+ * user yet. A developer turns it on here to work on it.
+ *
+ * Gating the INGRESS only, like every flag here. `/session-dashboards` stays
+ * routable, the dashboard-card and work-projection APIs are untouched, and a
+ * published view an agent already authored stays an ordinary artifact. The
+ * flag decides whether the dock, the menu entries and the tabs are OFFERED; a
+ * persisted `command-center` tab is withheld from the strip while it is off
+ * and returns when it is on, exactly as a host withdrawal does.
+ */
+export const PREVIEW_DASHBOARD = `${PREVIEW_FLAG_PREFIX}dashboard`
+
+/**
  * Read a preview flag. Absent, unparseable, or storage-denied all mean OFF —
  * the whole point of the gate is that a surface stays hidden unless someone
  * deliberately turned it on, so it fails closed.

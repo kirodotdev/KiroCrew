@@ -30,6 +30,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { createTestStore } from './helpers'
+import { PREVIEW_DASHBOARD, setPreviewFlag } from '../utils/previewFlags'
 import { ThemeProvider } from '../hooks/useTheme'
 
 // --- Stub the chat message components: AssistantMessage exposes the real
@@ -281,6 +282,8 @@ describe('ChatPage – opening a dock panel closes the find pane', () => {
 
   it('the dock\'s open-panel action closes the find pane and shows the command-center panel', async () => {
     localStorage.clear()
+    // The dock is a Feature Preview: on, so there is a dock to open from.
+    localStorage.setItem(PREVIEW_DASHBOARD, '1')
     renderChatPage({ withWorker: true })
     const card = await screen.findByTestId('command-center-dock')
     openFind()
@@ -297,6 +300,19 @@ describe('ChatPage – opening a dock panel closes the find pane', () => {
       expect(heading).toBeTruthy()
       expect(heading!.closest('[hidden]')).toBeNull()
     })
+  })
+
+  it('mounts no dock while the Dynamic Dashboard preview is off, and the dock in the same tick it turns on', async () => {
+    localStorage.clear()
+    renderChatPage({ withWorker: true })
+    // The worker makes a team, which is what would show the dock: with the flag
+    // off the dock is not offered at all, not merely empty.
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)) })
+    expect(screen.queryByTestId('command-center-dock')).toBeNull()
+    act(() => { setPreviewFlag(PREVIEW_DASHBOARD, true) })
+    expect(await screen.findByTestId('command-center-dock')).toBeTruthy()
+    act(() => { setPreviewFlag(PREVIEW_DASHBOARD, false) })
+    await waitFor(() => expect(screen.queryByTestId('command-center-dock')).toBeNull())
   })
 })
 

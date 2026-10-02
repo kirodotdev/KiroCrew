@@ -1632,6 +1632,15 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "developer.dynamic-dashboard",
+    "label": "Dynamic Dashboard",
+    "labelKey": "pages.developer.featurePreviewsTab.dashboard",
+    "description": "Turns on the in-development Dynamic Dashboard: a status row above the chat composer, a Dashboard view in the side panel and on a crewmate’s page, and an All Dashboards page. Its layout is still being designed, so it is not shown until you turn it on. Also holds the switch for automatic cards.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
     "id": "developer.earlier-conversation-one-decision-may-carry-in-characters",
     "label": "Earlier conversation one decision may carry, in characters",
     "labelKey": "pages.developer.featurePreviewsTab.decisions_history_label",

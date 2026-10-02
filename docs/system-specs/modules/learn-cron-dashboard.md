@@ -1669,8 +1669,11 @@ duration of a `wait`, so there is no surface there to host either affordance.
 ### Automatic session status cards
 
 `dashboard.dynamic_dashboard_cards` is a live, default-off cost opt-in. The
-native **Automatic cards for all sessions** control in the task panel and fleet page
-patches this setting; the config watcher applies UI, CLI and file edits alike.
+native **Automatic cards for all sessions** control (`AutomaticCardSetting.tsx`)
+patches this setting; it is rendered inside the Dynamic Dashboard card of
+Settings > Developer > Feature Previews, and only while that preview flag
+(`PREVIEW_DASHBOARD`) is on — not in the task panel or on the fleet page, which
+are for reading. The config watcher applies UI, CLI and file edits alike.
 Its copy names the hourly attempt limit shared by all sessions, including failures.
 The optional producer is neither imported nor constructed during route or watcher
 registration. Both server entrypoints defer initial activation until after listening;

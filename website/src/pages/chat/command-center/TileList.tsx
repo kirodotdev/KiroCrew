@@ -7,7 +7,9 @@ import { fmtNumber } from '../../../i18n/format'
 import { approvalTitle, questionText, runTitle, type AttentionItem, type CommandCenterModel, type RunNode } from './model'
 import type { Tile } from './StatusTiles'
 
-/** Rows one list shows before the rest is left to the side panel. */
+/** Rows one list shows before the rest is left to the side panel, whose
+ * Overview is the agent's published page (one line per work item is the
+ * layout it is asked for). */
 const MAX_ROWS = 6
 export const TILE_LABEL_KEYS: Record<Tile, string> = { progress: 'commandCenter.tile_progress', blocked: 'commandCenter.blocked', attention: 'commandCenter.attention_filter' }
 
@@ -19,7 +21,7 @@ type Data = Pick<CommandCenterModel, 'nodes' | 'workItems' | 'attention' | 'prog
  * home: the panel. With `onOpen` (the dock) the row itself is the hand-off, a
  * full-width button named by the item's title that opens the panel, the same
  * place the dock's labelled Open Dashboard button and the overflow row reach;
- * without it (the panel's own list) the row is plain text. */
+ * without it the row is plain text. */
 export default function TileList({ tile, data, onOpen }: { tile: Tile; data: Data; onOpen?: () => void }) {
   const { t } = useTranslation()
   const idBase = useId()

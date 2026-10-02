@@ -42,13 +42,9 @@
     "reject": "Reject once",
     "running": "Running",
     "idle": "Idle",
-    "done": "Completed",
     "blocked": "Blocked",
-    "waiting": "Waiting",
     "needs_input": "Questions",
-    "stopped": "Stopped",
     "progress": "{{done}} / {{total}} accepted or checked off",
-    "progress_label": "Verified task progress",
     "adaptive_title": "Create a published view for this task",
     "adaptive_description": "The agent can publish a task-specific view here: a timeline, board, dependency map or another useful view. Until then, live activity and requests remain available.",
     "contained": "Use Questions and Approvals above to respond. The agent-designed page cannot approve actions.",
@@ -7733,7 +7729,9 @@
         "decisions_runtime_running": "Running on this machine.",
         "decisions_runtime_running_off": "Running on this machine, but nothing is sent to it while the Decisions switch above is off.",
         "decisions_runtime_error": "The model could not be started.",
-        "decisions_runtime_retry": "Try again"
+        "decisions_runtime_retry": "Try again",
+        "dashboard": "Dynamic Dashboard",
+        "dashboard_desc": "Turns on the in-development Dynamic Dashboard: a status row above the chat composer, a Dashboard view in the side panel and on a crewmate’s page, and an All Dashboards page. Its layout is still being designed, so it is not shown until you turn it on. Also holds the switch for automatic cards."
       },
       "kiroSignInCard": {
         "title": "Kiro sign-in",

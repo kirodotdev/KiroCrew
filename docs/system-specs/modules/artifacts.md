@@ -98,6 +98,31 @@ only artifacts whose recorded originating slot is the current slot or a durable
 without impersonating its conductor. The same slug is updated at milestones;
 visible hosts re-read the artifact inventory on each `artifact_update` frame and
 load new revisions.
+
+The side panel's Dashboard view hands its whole **Overview** to that published
+view: the host draws the header (title, help, permission mode), the Overview /
+Questions / Approvals segments with their counts, and the stale / missing-source
+notices, then renders the selected published view and nothing native beside it.
+The automatic card (`SessionStatusFrame`) shows only while no published view
+exists; progress bars, status tiles, blocked and work-item lists are not drawn
+in the panel (the dock above the composer keeps its native tiles). Questions and
+Approvals remain host-rendered `AttentionCard`s — the sandboxed page can name a
+decision but never answer or approve one. The request that asks the agent for a
+page (`commandCenter.prompt.ts`, `REQUEST_PUBLISHED_VIEW`) recommends, without
+enforcing, a layout for that whole-Overview placement: what needs the user first
+with the decision named or linked (answering happens in the Questions tab), one
+line per work item with a status word and details folded, dependencies shown when
+tasks wait on others, cost and technical detail inside the folds, theme CSS
+variables. The artifacts skill repeats the recommendation.
+
+The whole Dynamic Dashboard surface is a developer Feature Preview
+(`PREVIEW_DASHBOARD`, `website/src/utils/previewFlags.ts`), default OFF and
+gating INGRESS only: with the flag off the dock, the + menu entry, a persisted
+Dashboard tab, the Crew chat's Dashboard tab and the Sessions menu's All
+Dashboards item are withheld, while `/session-dashboards` stays routable and
+every API above is unchanged. The **Automatic cards for all sessions** switch
+lives inside that preview's card in Settings > Developer > Feature Previews,
+shown only while the flag is on.
 Session matching strips the dashboard scope and normalizes registered channel
 keys with the history safe-key rules, retaining the channel namespace. Unknown
 prefixes are not folded; missing task roots remain fail-closed.

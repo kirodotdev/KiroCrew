@@ -11,7 +11,7 @@
  * round their own outer corners instead.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -80,6 +80,7 @@ Object.defineProperty(window, 'matchMedia', {
 })
 
 import ChatSidebar from '../pages/ChatSidebar'
+import { PREVIEW_DASHBOARD, setPreviewFlag } from '../utils/previewFlags'
 
 function renderSidebar() {
   const slots = [{ key: 'k1', title: 'a session', running: false, messages: 2 }]
@@ -139,5 +140,24 @@ describe('sidebar icon controls: 44px touch hit area', () => {
     const row = document.querySelector('[data-slot-key="k1"]') as HTMLElement
     expect(row, 'session row not rendered').not.toBeNull()
     expect(within(row).getByRole('button', { name: 'More options' })).toHaveClass('mc-touch-hit')
+  })
+})
+
+describe('sidebar header menu: All Dashboards behind the Dynamic Dashboard preview', () => {
+  const openHeaderMenu = () => act(() => { fireEvent.keyDown(screen.getAllByLabelText('More options')[0], { key: 'Enter' }) })
+
+  it('offers no All Dashboards item while the preview is off, and does once it is on', async () => {
+    mobile.value = false
+    renderSidebar()
+    openHeaderMenu()
+    const menu = await screen.findByRole('menu')
+    expect(within(menu).queryByRole('menuitem', { name: /All Dashboards/ })).toBeNull()
+    // The rest of the menu is untouched: only the preview's door is withheld.
+    expect(within(menu).getByRole('menuitem', { name: /board view/ })).toBeTruthy()
+    act(() => { fireEvent.keyDown(menu, { key: 'Escape' }) })
+    act(() => { setPreviewFlag(PREVIEW_DASHBOARD, true) })
+    openHeaderMenu()
+    const again = await screen.findByRole('menu')
+    expect(within(again).getByRole('menuitem', { name: /All Dashboards/ })).toBeTruthy()
   })
 })

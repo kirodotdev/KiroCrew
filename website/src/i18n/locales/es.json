@@ -42,13 +42,9 @@
     "reject": "Rechazar una vez",
     "running": "En ejecución",
     "idle": "Inactivo",
-    "done": "Completado",
     "blocked": "Bloqueado",
-    "waiting": "En espera",
     "needs_input": "Preguntas",
-    "stopped": "Detenido",
     "progress": "{{done}} / {{total}} aceptados o marcados como terminados",
-    "progress_label": "Progreso verificado de la tarea",
     "adaptive_title": "Crear una vista publicada para esta tarea",
     "adaptive_description": "El agente puede publicar aquí una vista específica: cronología, tablero, mapa de dependencias u otra vista útil. Mientras tanto, la actividad en vivo y las solicitudes siguen disponibles.",
     "contained": "Responde en Preguntas y Aprobaciones, arriba. La página diseñada por el agente no puede aprobar acciones.",
@@ -12424,7 +12420,9 @@
         "decisions_runtime_running": "Ejecutándose en este equipo.",
         "decisions_runtime_running_off": "Se ejecuta en este equipo, pero no recibe nada mientras el interruptor Decisions de arriba esté apagado.",
         "decisions_runtime_error": "No se pudo iniciar el modelo.",
-        "decisions_runtime_retry": "Reintentar"
+        "decisions_runtime_retry": "Reintentar",
+        "dashboard": "Panel dinámico",
+        "dashboard_desc": "Activa el panel dinámico, aún en desarrollo: una fila de estado encima del cuadro de redacción del chat, una vista Panel en el panel lateral y en la página de un compañero de equipo, y una página Todos los paneles. Su diseño aún se está definiendo, así que no se muestra hasta que lo actives. También contiene el interruptor de las tarjetas automáticas."
       },
       "kiroSignInCard": {
         "title": "Inicio de sesión en Kiro",

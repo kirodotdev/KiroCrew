@@ -74,6 +74,15 @@ about style when the user delegated that choice.
   approvals by their exact owning session, including Normal permission mode.
   Do not build imitation approval buttons or claim that clicking HTML can change
   a session's permissions. Never change approval mode to keep a run moving.
+- The chat side panel shows the published page as its WHOLE Overview (the host
+  draws only the header, the Overview / Questions / Approvals segments with their
+  counts, and notices), so a recommended layout, not a template: what needs the
+  user first, naming or linking the decision (answering happens in the Questions
+  tab, not in the page); then one line per work item with a status word (done /
+  running / waiting / needs you) and details folded in `details`; when tasks wait
+  on others, show the dependencies — batches that can run together, a "waits on
+  #N" mark, or a metro-line style map for many tasks; cost/credits and technical
+  detail (SHAs, check counts) inside the folded details; theme CSS variables.
 - HTML/CSS/SVG may freely lay out the presentation. Use theme variables, readable
   typography and responsive layouts from a 320px phone to an expanded view.
   Use meaningful task/session names and plain-language summaries: explain what

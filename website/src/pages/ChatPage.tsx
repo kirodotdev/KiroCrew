@@ -280,6 +280,8 @@ import { useChatNavigation } from '../hooks/useChatNavigation'
 import { useChatPins } from '../hooks/useChatPins'
 import SubagentProgressBar from './chat/SubagentProgressBar'
 import CommandCenterDock from './chat/command-center/CommandCenterDock'
+import { usePreviewFlag } from '../hooks/usePreviewFlag'
+import { PREVIEW_DASHBOARD } from '../utils/previewFlags'
 import TaskProgressBar from './chat/TaskProgressBar'
 import SidePanel, { CHAT_PANE_MIN_W, sidePanelFillWidth } from './chat/SidePanel'
 import { useSidePanelDock } from '../hooks/useSidePanelDock'
@@ -2597,10 +2599,16 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // (shouldMountSidePanel returns false while it is open), so without the close
   // the dashboard would open behind a pane the user cannot see past. `close()`
   // is safe with nothing open.
-  const openCommandCenter = useCallback(() => {
+  // The Dynamic Dashboard is a Feature Preview (Settings > Developer). While it
+  // is off there is no dock to open from, no menu entry to open with, and a
+  // persisted `command-center` tab is withheld from the strip (SidePanel), so
+  // the opener is absent rather than a path onto a view nothing else offers.
+  const dashboardPreview = usePreviewFlag(PREVIEW_DASHBOARD)
+  const openCommandCenterOn = useCallback(() => {
     search.close(); dispatch(openActivityPanel()); tabsCtlRef.current.openView('command-center')
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `search.close` is a useCallback([]) in useMessageSearch; the object around it is rebuilt every render
   }, [dispatch, search.close])
+  const openCommandCenter = dashboardPreview ? openCommandCenterOn : undefined
 
   /** Bring an app's panel tab back — focusing it if open, re-creating it if the
    *  user closed it (`openApp` upserts).
@@ -4640,7 +4648,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const activitySlot = useShellSlot('activity-bar-slot', !isMobile && !embedMode)
   /** The inline panel's mount predicate, shared by the overlay phase effect
    *  and the render below so the two cannot disagree. */
-  const hasTaskDashboard = tabsCtl.tabs.some(tab => tab.kind === 'command-center')
+  // A persisted dashboard tab holds the panel mounted only while the preview
+  // offers it; off, the tab is withheld and must not keep the panel on screen.
+  const hasTaskDashboard = dashboardPreview && tabsCtl.tabs.some(tab => tab.kind === 'command-center')
   const sidePanelWantsMount = shouldMountSidePanel({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen: search.isOpen })
     && !isSidePanelHidden({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen: search.isOpen })
   // Mobile right-panel overlay: slide in when the panel wants the screen,
@@ -6023,7 +6033,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   calls and goes stale when the user clicks a tab in the panel. */}
               {!(activityOpen && !search.isOpen && tabsCtl.tabs.find(t => t.id === tabsCtl.activeId)?.kind === 'subagents') && <SubagentProgressBar slot={activeSlot} />}
               {!(activityOpen && !search.isOpen && tabsCtl.tabs.find(t => t.id === tabsCtl.activeId)?.kind === 'workflows') && <WorkflowProgressBar slot={activeSlot} />}
-              <CommandCenterDock slot={activeSlot} onOpen={openCommandCenter} />
+              {openCommandCenter && <CommandCenterDock slot={activeSlot} onOpen={openCommandCenter} />}
               <SubagentDeliveryProgress count={systemDeliveryCount} />
               <QueueStack messages={queuedMessages} onCancel={handleCancelQueued} onInterrupt={handleInterruptQueued} onEdit={handleEditQueued} onReorder={handleReorderQueued} pendingIds={queuePendingIds} fuseBelow={followUpOptions.length === 0 && !knowledgeFetch.pendingKnowledge} />
               </div>

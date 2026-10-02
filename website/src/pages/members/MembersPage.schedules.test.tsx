@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { PREVIEW_DASHBOARD } from '../../utils/previewFlags'
 import { useState } from 'react'
 import { screen, fireEvent, waitFor, within, act } from '@testing-library/react'
 import { renderWithProviders } from '../../test/helpers'
@@ -204,6 +205,8 @@ const askToLeave = () => {
 beforeEach(() => {
   vi.clearAllMocks()
   localStorage.clear()
+  // The Dashboard tab and the in-chat dock are a Feature Preview, on here.
+  localStorage.setItem(PREVIEW_DASHBOARD, '1')
   __resetPanelTabs()
   Object.defineProperty(window, 'innerWidth', { value: WIDE_WINDOW, configurable: true, writable: true })
   vi.mocked(api.crons).mockResolvedValue({ jobs: JOBS } as never)

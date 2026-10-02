@@ -42,13 +42,9 @@
     "reject": "今回のみ拒否",
     "running": "実行中",
     "idle": "待機中",
-    "done": "完了",
     "blocked": "ブロック中",
-    "waiting": "応答待ち",
     "needs_input": "質問",
-    "stopped": "停止済み",
     "progress": "{{done}} / {{total}} 検収済み・チェック済み",
-    "progress_label": "確認済みのタスク進捗",
     "adaptive_title": "このタスクの公開ビューを作成",
     "adaptive_description": "エージェントはタイムライン、ボード、依存関係図など、タスクに適したビューをここに公開できます。それまでもリアルタイムの活動とリクエストを確認できます。",
     "contained": "上の「質問」と「承認」から対応してください。エージェントが作成したページは操作を承認できません。",
@@ -12060,7 +12056,9 @@
         "decisions_runtime_running": "このマシンで実行中です。",
         "decisions_runtime_running_off": "このマシンで動いていますが、上の Decisions スイッチがオフの間は何も送られません。",
         "decisions_runtime_error": "モデルを起動できませんでした。",
-        "decisions_runtime_retry": "再試行"
+        "decisions_runtime_retry": "再試行",
+        "dashboard": "ダイナミックダッシュボード",
+        "dashboard_desc": "開発中のダイナミックダッシュボードを有効にします。チャット入力欄の上のステータス行、サイドパネルとクルーメイトのページにあるダッシュボード表示、そして「すべてのダッシュボード」ページです。レイアウトはまだ設計中のため、有効にするまで表示されません。自動カードのスイッチもここにあります。"
       },
       "kiroSignInCard": {
         "title": "Kiro サインイン",

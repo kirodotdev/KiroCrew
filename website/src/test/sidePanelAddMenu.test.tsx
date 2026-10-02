@@ -40,6 +40,7 @@ globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} 
 
 import SidePanel, { newMenuSections, NEW_MENU_LABEL_KEY } from '../pages/chat/SidePanel'
 import { usePanelTabs } from '../hooks/usePanelTabs'
+import { PREVIEW_DASHBOARD, setPreviewFlag } from '../utils/previewFlags'
 
 function Harness() {
   const tabsCtl = usePanelTabs('slot-a')
@@ -119,6 +120,62 @@ describe('side panel + menu (shadcn dropdown)', () => {
     // Rules separate groups, so no two are adjacent.
     const roles = kids.map(el => el.getAttribute('role'))
     expect(roles.join(' ')).not.toContain('separator separator')
+  })
+})
+
+describe('side panel Dashboard view behind the Dynamic Dashboard preview', () => {
+  beforeEach(() => { localStorage.clear() })
+
+  it('offers no Dashboard entry and withholds a persisted Dashboard tab while the preview is off', () => {
+    // A tab the user opened before the flag went off (or that the store still
+    // holds) must not stay on the strip: the withdrawal is the same one a host
+    // applies, so it covers the bucket, not just the menu.
+    const Seeded = () => {
+      const tabsCtl = usePanelTabs('slot-a')
+      if (!tabsCtl.tabs.some(t => t.kind === 'command-center')) tabsCtl.openView('command-center')
+      return <SidePanel tabsCtl={tabsCtl} slot="slot-a" onFileSave={async () => {}} onClose={() => {}} />
+    }
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <Provider store={createTestStore()}>
+          <Seeded />
+        </Provider>
+      </QueryClientProvider>,
+    )
+    expect(screen.queryByRole('tab', { name: /Dashboard/ })).toBeNull()
+    expect(screen.queryByTestId('command-center-panel')).toBeNull()
+    openMenu()
+    expect(screen.queryByRole('menuitem', { name: 'Dashboard' })).toBeNull()
+    // Every other session-output row is still there: only this view is gated.
+    expect(screen.getByRole('menuitem', { name: 'Pins' })).toBeTruthy()
+  })
+
+  it('offers the Dashboard entry, and opens it as a tab, once the preview is on', () => {
+    localStorage.setItem(PREVIEW_DASHBOARD, '1')
+    renderPanel()
+    openMenu()
+    act(() => { fireEvent.click(screen.getByRole('menuitem', { name: 'Dashboard' })) })
+    expect(screen.getByRole('tab', { name: /Dashboard/ })).toBeTruthy()
+  })
+
+  it('brings a withheld Dashboard tab back in the same tick the toggle flips on', () => {
+    const Seeded = () => {
+      const tabsCtl = usePanelTabs('slot-a')
+      if (!tabsCtl.tabs.some(t => t.kind === 'command-center')) tabsCtl.openView('command-center')
+      return <SidePanel tabsCtl={tabsCtl} slot="slot-a" onFileSave={async () => {}} onClose={() => {}} />
+    }
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <Provider store={createTestStore()}>
+          <Seeded />
+        </Provider>
+      </QueryClientProvider>,
+    )
+    expect(screen.queryByRole('tab', { name: /Dashboard/ })).toBeNull()
+    act(() => { setPreviewFlag(PREVIEW_DASHBOARD, true) })
+    expect(screen.getByRole('tab', { name: /Dashboard/ })).toBeTruthy()
   })
 })
 

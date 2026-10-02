@@ -42,13 +42,9 @@
     "reject": "이번만 거부",
     "running": "실행 중",
     "idle": "유휴",
-    "done": "완료",
     "blocked": "차단됨",
-    "waiting": "대기 중",
     "needs_input": "질문",
-    "stopped": "중지됨",
     "progress": "{{done}} / {{total}} 검수 또는 완료 표시",
-    "progress_label": "검증된 작업 진행 상황",
     "adaptive_title": "이 작업을 위한 게시할 보기 만들기",
     "adaptive_description": "에이전트가 타임라인, 보드, 의존성 지도 등 작업에 맞는 보기를 여기에 게시할 수 있습니다. 그 전에도 실시간 활동과 요청은 확인할 수 있습니다.",
     "contained": "위의 질문 및 승인에서 응답하세요. 에이전트가 만든 페이지는 작업을 승인할 수 없습니다.",
@@ -12060,7 +12056,9 @@
         "decisions_runtime_running": "이 컴퓨터에서 실행 중입니다.",
         "decisions_runtime_running_off": "이 컴퓨터에서 실행 중이지만, 위의 Decisions 스위치가 꺼져 있는 동안에는 아무것도 전송되지 않습니다.",
         "decisions_runtime_error": "모델을 시작하지 못했습니다.",
-        "decisions_runtime_retry": "다시 시도"
+        "decisions_runtime_retry": "다시 시도",
+        "dashboard": "동적 대시보드",
+        "dashboard_desc": "개발 중인 동적 대시보드를 켭니다. 채팅 입력란 위의 상태 행, 사이드 패널과 크루메이트 페이지의 대시보드 보기, 그리고 모든 대시보드 페이지가 포함됩니다. 레이아웃이 아직 설계 중이므로 켜기 전에는 표시되지 않습니다. 자동 카드 스위치도 여기에 있습니다."
       },
       "kiroSignInCard": {
         "title": "Kiro 로그인",

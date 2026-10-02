@@ -270,6 +270,14 @@ describe('task dashboard sources and containment', () => {
     expect(result.current.hasQuestionDraft).toBe(false)
     rerender()
     expect(result.current.hasQuestionDraft).toBe(false)
+    // A trailing [OPTIONS:] ask carries no id either, but a pick in it is a draft
+    // the host must hold the panel for; it is never retained as a card.
+    const followUp = { slot: 'root', followUp: true, questions }
+    act(() => { result.current.onQuestionDraftChange(followUp, true) })
+    expect(result.current.hasQuestionDraft).toBe(true)
+    expect(result.current.attention).toEqual([])
+    act(() => { result.current.onQuestionDraftChange(followUp, false) })
+    expect(result.current.hasQuestionDraft).toBe(false)
   })
 
   it('renders model HTML through the sandbox document service without a privileged bridge', async () => {

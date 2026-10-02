@@ -80,7 +80,9 @@ export function useCommandCenter(root: string | null, enabled = true, scope: 'ta
   const [draftIds, setDraftIds] = useState<{ scope: string; ids: string[] }>({ scope: draftScope, ids: [] })
   if (draftIds.scope !== draftScope) setDraftIds({ scope: draftScope, ids: [] })
   const onQuestionDraftChange = (question: PendingQuestion, active: boolean) => {
-    const key = question.ask_id || question.card_id
+    // A trailing `[OPTIONS:]` ask (`followUp`) has neither id, but a pick in it
+    // is unsent text all the same; one per session is all the model ever offers.
+    const key = question.ask_id || question.card_id || (question.followUp ? 'follow-up' : '')
     if (!key) return
     const draftId = JSON.stringify([slotKey(question.slot), key])
     setDraftIds(previous => {
