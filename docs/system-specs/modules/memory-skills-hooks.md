@@ -1866,6 +1866,43 @@ stage rather than using archive path extraction. Limits are 8,192 files and
 The database format and stable member/store identity must match before snapshot
 creation, staging or activation. Unsupported old formats are refused.
 
+One older layout is read rather than refused: the pre-identity one
+(0.7.0-insider.1 to .5, the same layout the start-of-process store upgrade above,
+`migrate_legacy_member_stores`, repairs). Its snapshot manifests and
+pending-restore journals name the owner as `owner_member`, the member's alias,
+instead of `member_id`. Its bundles also carry
+`lessons.jsonl` and `memory/history/<date>.md`, and its `memory.db` has no
+`member_database` row. `BUNDLE_VERSION` is the same for both. Such a manifest or
+journal belongs to the member only when the store record's `owner_member` is that
+alias and the member under that alias is bound to the store and carries the
+record's `owner_member_id`. Those legacy file names are accepted only inside a
+manifest of that layout. Its database must pass `PRAGMA integrity_check`, carry
+this store's `store_name` stamp, and carry no stamp or identity naming another
+store or member. So once the start-of-process store upgrade has attributed the
+store, a restore the old build staged before the upgrade can still be activated or
+cancelled, and an old snapshot can still be restored. That upgrade needs the live
+`memory.db` to be present, private and readable; a store whose live directory is
+lost, whose activation crashed between its two renames, or whose live database is
+corrupt is not attributed, and its legacy restore stays refused with "Memory has
+no member identity". A pre-identity copy is always completed in its stage, by
+`memory_stores.complete_legacy_member_directory` (the helper the store upgrade
+uses), and given a current-layout manifest before live memory is touched: an old
+snapshot restored today at staging, so it is staged with a current-layout manifest
+and journal; a restore the old build staged itself at activation, before the live
+tree is moved aside, on a fresh copy of its stage that an atomic rewrite of the
+journal then switches to. The old build's stage is never written, so a completion
+that fails or is interrupted before that switch leaves it matching its own
+manifest: live memory is untouched, the next start repeats the completion, and the
+pending restore can still be cancelled. Only a
+tree the old build itself activated, interrupted before it removed the journal, is
+completed in place at the next start. Both legacy database helpers
+open SQLite through `_sqlite_compat`, the FTS5-capable driver every other memory
+path uses. Cancelling while the live database is unreadable is refused as a
+`ValueError` and keeps the journal. The legacy `lessons.jsonl` and `memory/history/<date>.md` are restored
+into the live tree but nothing reads them: a V2 member reads lessons and history
+only from `memory.db`, and `backup_store` bundles only the current file set, so a
+later snapshot leaves them out. They are carried, not imported.
+
 **A restore request changes no live memory.** It returns `pending: true` and
 `restart_required: true`. Only `apply_pending_member_restores()` at the gateway
 startup barrier, before any memory is opened or served, activates it. Ordinary

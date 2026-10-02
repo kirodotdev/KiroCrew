@@ -950,8 +950,7 @@ def _legacy_member_database_identity(path: Path, store: str, alias: str) -> str:
     or restored into the wrong store directory carries the stamps of where it
     came from, which is what makes the misplacement detectable here.
     """
-    import sqlite3
-
+    from kiro_crew._sqlite_compat import sqlite3
     from kiro_crew.memory_schema import MEMBER_DATABASE_FORMAT, STORE_NAME_META_KEY
 
     _require_private_member_database(path)
@@ -1114,9 +1113,8 @@ def _complete_legacy_member_database(path: Path, *, member_id: str, store: str) 
     ``member_database`` row is inserted when absent. One transaction, so a crash
     leaves either the old file or the finished one.
     """
-    import sqlite3
-
     from kiro_crew import memory_record_metadata as record_meta
+    from kiro_crew._sqlite_compat import sqlite3
     from kiro_crew.memory_schema import (
         CREW_SCHEMA_VERSION,
         LINEAGE_CREW,
@@ -1182,6 +1180,29 @@ def _complete_legacy_member_database(path: Path, *, member_id: str, store: str) 
             raise
     finally:
         db.close()
+
+
+def complete_legacy_member_directory(directory: Path, *, member_id: str, store: str) -> None:
+    """Finish an older member directory in place: its database identity, then its documents.
+
+    Idempotent, so a caller that is interrupted repeats it. Shared by the
+    start-of-process store upgrade and by restoring a snapshot that layout wrote.
+    """
+    from kiro_crew import platform_compat
+    from kiro_crew.atomic_write import atomic_write
+    from kiro_crew.memory import PREFERENCES_FILE, PROJECTS_FILE
+    from kiro_crew.vector_memory import read_member_database_identity
+
+    database = directory / MEMORY_DB_FILE
+    _complete_legacy_member_database(database, member_id=member_id, store=store)
+    if read_member_database_identity(database) != (member_id, store):
+        raise UnknownMemoryStore("the completed database does not read back its identity")
+    manual = directory / "memory"
+    platform_compat.make_owner_only_dir(manual)
+    if not (manual / PREFERENCES_FILE).exists():
+        atomic_write(manual / PREFERENCES_FILE, "# Member Preferences\n", fsync=True)
+    if not (manual / PROJECTS_FILE).exists():
+        atomic_write(manual / PROJECTS_FILE, "# Member Projects\n", fsync=True)
 
 
 def _publish_legacy_member_identity(alias: str, store: str, member_id: str) -> None:
@@ -1261,11 +1282,6 @@ def migrate_legacy_member_stores(config) -> list[str]:
     are logged once with the reason and :data:`LEGACY_MEMBER_STORE_REMEDY`, and
     the second run over a repaired install finds nothing to do.
     """
-    from kiro_crew import platform_compat
-    from kiro_crew.atomic_write import atomic_write
-    from kiro_crew.memory import PREFERENCES_FILE, PROJECTS_FILE
-    from kiro_crew.vector_memory import read_member_database_identity
-
     repaired: list[str] = []
     with memory_store_namespace_lock():
         for name, (alias, existing_id, reason) in _legacy_member_store_candidates(config).items():
@@ -1280,19 +1296,9 @@ def migrate_legacy_member_stores(config) -> list[str]:
                 continue
             try:
                 member_id = existing_id or _allocate_member_id(config, alias, refuse_damaged=False)
-                directory = _named_store_dir(name)
-                database = directory / MEMORY_DB_FILE
-                _complete_legacy_member_database(database, member_id=member_id, store=name)
-                if read_member_database_identity(database) != (member_id, name):
-                    raise UnknownMemoryStore(
-                        "the completed database does not read back its identity"
-                    )
-                manual = directory / "memory"
-                platform_compat.make_owner_only_dir(manual)
-                if not (manual / PREFERENCES_FILE).exists():
-                    atomic_write(manual / PREFERENCES_FILE, "# Member Preferences\n", fsync=True)
-                if not (manual / PROJECTS_FILE).exists():
-                    atomic_write(manual / PROJECTS_FILE, "# Member Projects\n", fsync=True)
+                complete_legacy_member_directory(
+                    _named_store_dir(name), member_id=member_id, store=name
+                )
                 _publish_legacy_member_identity(alias, name, member_id)
             except Exception:
                 logger.warning(
