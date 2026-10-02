@@ -366,6 +366,17 @@ MALICIOUS_COMMANDS = [
     "shopt -s extglob; eval 'cat ~/.a@(ws)/credentials'",
     # Nested bash with shopt + eval.
     "bash -c 'shopt -s extglob; eval \"cat ~/.ss@(h)/id_rsa\"'",
+    # Repetition: +(s) matches one OR MORE `s`, so it can produce `.ss`,
+    # reaching `.ssh`. Verified: `bash -O extglob -c 'cat ~/.+(s)h/id_rsa'`
+    # reads the key (two repetitions of `s`).
+    "bash -O extglob -c 'cat ~/.+(s)h/id_rsa'",
+    # Mixed plain glob and extglob: ?(x) removal leaves `?` in the expansion,
+    # so the fnmatch scan must run on the expansion, not just a literal check.
+    "bash -O extglob -c 'cat ~/.s?h?(x)/id_rsa'",
+    # Escaped closing paren: `\)` inside the extglob group is a literal `)`,
+    # not a group close, so the alternatives are `\)` and `ssh`.  The depth
+    # walker must not close on a backslash-escaped `)`.
+    r"bash -O extglob -c 'cat ~/.@(\)|ssh)/id_rsa'",
 ]
 
 # Shapes that LOOK like the smuggling patterns above but cannot actually reach a
@@ -2151,6 +2162,12 @@ def test_extglob_operators_are_refused():
         "shopt -s extglob; eval 'cat ~/.ss@(h)/id_rsa'",
         "shopt -s extglob; eval 'cat ~/.a@(ws)/credentials'",
         "bash -c 'shopt -s extglob; eval \"cat ~/.ss@(h)/id_rsa\"'",
+        # Repetition case: +(s) can produce .ssh via two repetitions of `s`
+        "bash -O extglob -c 'cat ~/.+(s)h/id_rsa'",
+        # Mixed plain glob + extglob: expansion retains `?` which must fnmatch
+        "bash -O extglob -c 'cat ~/.s?h?(x)/id_rsa'",
+        # Escaped paren: \) is a literal ) not a group close
+        r"bash -O extglob -c 'cat ~/.@(\)|ssh)/id_rsa'",
     ]
     for cmd in blocked:
         err = _vet_shell_command(cmd)
@@ -2181,11 +2198,16 @@ def test_extglob_expansion_helper():
     assert set(_extglob_expansions("~/.@(ssh|rsa)/id_rsa")) == {"~/.ssh/id_rsa", "~/.rsa/id_rsa"}
     # ?(h) -> empty + h
     assert set(_extglob_expansions("~/.ss?(h)/id_rsa")) == {"~/.ss/id_rsa", "~/.ssh/id_rsa"}
-    # *(h) -> empty + h (same as ?)
-    assert set(_extglob_expansions("~/.ss*(h)/id_rsa")) == {"~/.ss/id_rsa", "~/.ssh/id_rsa"}
+    # *(h) -> None (repetition cannot be enumerated)
+    assert _extglob_expansions("~/.ss*(h)/id_rsa") == [None]
+    # +(h) -> None (repetition cannot be enumerated)
+    assert _extglob_expansions("~/.ss+(h)/id_rsa") == [None]
     # !(x) -> None (negation, refuse)
     assert None in _extglob_expansions("~/.ss!(x)/id_rsa")
     # No extglob -> list with original
     assert _extglob_expansions("~/.ssh/id_rsa") == ["~/.ssh/id_rsa"]
     # AWS path
     assert _extglob_expansions("~/.a@(ws)/credentials") == ["~/.aws/credentials"]
+    # Escaped paren: \) is literal, not a group close; alternatives are [\), ssh]
+    exps = _extglob_expansions(r"~/.@(\)|ssh)/id_rsa")
+    assert "~/.ssh/id_rsa" in exps

@@ -423,17 +423,27 @@ def _extglob_expansions(text: str, _budget: list[int] | None = None) -> list[str
     op_char = text[m.start()]
     inner_start = m.end()  # just after '('
 
-    # Find the matching ')' by tracking nesting depth
+    # Find the matching ')' by tracking nesting depth.
+    # Track whether the immediately preceding UNESCAPED character was an
+    # extglob prefix so a backslash-prefixed `(` is not mistaken for a
+    # nested group: `\(` is a literal paren, not an opener.
     depth = 1
     pos = inner_start
+    prev_op = False  # was the last processed character an unescaped ?+*@! ?
     while pos < len(text) and depth > 0:
         ch = text[pos]
-        if ch == "(" and pos > 0 and text[pos - 1] in "?+*@!":
+        if ch == "\\":
+            # Backslash escapes the next character; neither is structural.
+            prev_op = False
+            pos += 2
+            continue
+        if ch == "(" and prev_op:
             depth += 1
         elif ch == "(":
             depth += 1
         elif ch == ")":
             depth -= 1
+        prev_op = ch in "?+*@!"
         pos += 1
 
     if depth != 0:
@@ -445,15 +455,34 @@ def _extglob_expansions(text: str, _budget: list[int] | None = None) -> list[str
     before = text[: m.start()]
     after = text[pos:]
 
-    if op_char == "!":
-        # Negation: can match virtually any string — refuse outright
+    if op_char in ("!", "+", "*"):
+        # Negation !(…): can match any string — refuse outright.
+        # Repetition +(…)/*(…): the pattern repeats an arbitrary number of
+        # times, so one occurrence of each alternative is not the full set.
+        # `~/.+(s)h/id_rsa` expands to `~/.sh/id_rsa` (one `s`) but bash
+        # also matches `.ssh` (two `s`) — a credential path the single-
+        # occurrence enumeration never sees.  Cannot enumerate all repetitions
+        # without knowing the target length, so refuse rather than miss one.
         return [None]
 
-    # Split inner alternatives on '|' at depth 0
+    # Split inner alternatives on '|' at depth 0.
+    # Backslash-escaped characters are not structural tokens, so `\|` is a
+    # literal pipe (not a separator) and `\)` is a literal paren (not a close).
     alts: list[str] = []
     depth2 = 0
     cur: list[str] = []
-    for ch in inner:
+    inner_idx = 0
+    while inner_idx < len(inner):
+        ch = inner[inner_idx]
+        if ch == "\\":
+            # Escaped character: consume both the backslash and the next char
+            cur.append(ch)
+            if inner_idx + 1 < len(inner):
+                cur.append(inner[inner_idx + 1])
+                inner_idx += 2
+            else:
+                inner_idx += 1
+            continue
         if ch == "(" and cur and cur[-1] in "?+*@!":
             depth2 += 1
             cur.append(ch)
@@ -468,10 +497,11 @@ def _extglob_expansions(text: str, _budget: list[int] | None = None) -> list[str
             cur = []
         else:
             cur.append(ch)
+        inner_idx += 1
     alts.append("".join(cur))
 
-    # ?(…) and *(…) also match zero occurrences
-    if op_char in ("?", "*"):
+    # ?(…) also matches the empty string (zero occurrences)
+    if op_char == "?":
         alts = [""] + alts
 
     results: list[str | None] = []
@@ -892,6 +922,13 @@ def _glob_could_reach_credentials(command: str) -> bool:
         if _EXTGLOB_OP_RE.search(word):
             for exp in _extglob_expansions(word):
                 if exp is None or _CRON_CRED_PATH_RE.search(exp):
+                    return True
+                # An expansion may retain regular glob metacharacters: e.g.
+                # `~/.s?h?(x)/id_rsa` -> expansion `~/.s?h/id_rsa` which
+                # has `?` but no literal `.ssh`.  Feed it back through the
+                # full fnmatch window pipeline so the plain-glob check that
+                # already handles `~/.s?h/id_rsa` covers this expansion too.
+                if _contains_glob_meta(exp) and _glob_could_reach_credentials(exp):
                     return True
             continue
         # Strip shell decoration that is not part of the path: quotes (all of
