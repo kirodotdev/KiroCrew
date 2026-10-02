@@ -1062,10 +1062,22 @@ original exception, and cancellation is not logged as failure.
 
 Restore reads this same registry. Unreadable storage leaves the file untouched
 and fences subsequent snapshot writes until restart after recovery. Invalid JSON
-is preserved as `.corrupt` when renaming succeeds. An invalid snapshot shape,
-malformed execution context or obsolete `private_payload` reference refuses
-restore and fences writes; it is not hydrated through a hidden row or downgraded
-to Global memory. Other per-record construction failures leave later valid rows
+is preserved as `.corrupt` when renaming succeeds. An invalid snapshot shape or
+malformed execution context refuses restore and fences writes; it is not hydrated
+through a hidden row or downgraded to Global memory. An obsolete
+`{"task_id": ..., "private_payload": true}` reference, which 0.7.0-insider.1 to .5
+wrote for a member task whose payload lived in the hidden
+`memory_stores/.task-runs/` sidecar, refuses the row, never the runner: a row of
+exactly that shape is never hydrated or run, it is moved into
+`runs.json.legacy-private-tasks.json` (merged by task id) with a warning naming that
+file, and the other rows restore with writes unfenced. Any other `private_payload`
+row still refuses restore. Nothing rewrites the registry until a run changes, so
+fencing on that row would hold across every restart; a restart that finds the same
+rows again rewrites nothing. The set-aside file sits in the work directory where
+task sessions write, so it is read only as a single-link regular file, never
+through a link. If it cannot be read or written, the registry stays untouched and
+writes stay fenced, while the other rows still restore. Other per-record
+construction failures leave later valid rows
 restorable while marking recovery incomplete and fencing writes. A legacy record
 with no execution-context field retains the ordinary Global compatibility path;
 an explicitly malformed field does not take that fallback. Existing crash recovery

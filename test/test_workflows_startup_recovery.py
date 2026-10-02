@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 import threading
 from unittest.mock import MagicMock
 
@@ -182,3 +183,131 @@ def test_bad_project_isolated_in_memory_and_original_snapshot_retained(tmp_path,
     errors = [record for record in caplog.records if record.levelname == "ERROR"]
     assert errors
     assert all(record.exc_info is None and record.exc_text is None for record in errors)
+
+
+# The exact row 0.7.0-insider.1 to .5 wrote into the public registry for a member
+# task whose payload lived in the hidden memory_stores/.task-runs/ sidecar.
+_LEGACY_PRIVATE_ROW = {"task_id": "member-task", "private_payload": True}
+_PUBLIC_ROW = {"task_id": "public-task", "spec_path": "", "status": "completed"}
+
+
+def _legacy_registry(tmp_path):
+    from kiro_crew.workflow_memory import LEGACY_TASK_REFERENCES_SUFFIX
+
+    path = tmp_path / "runs.json"
+    path.write_text(json.dumps([_LEGACY_PRIVATE_ROW, _PUBLIC_ROW]), encoding="utf-8")
+    return path, tmp_path / ("runs.json" + LEGACY_TASK_REFERENCES_SUFFIX)
+
+
+def test_legacy_private_reference_is_set_aside_and_writes_resume(tmp_path, caplog):
+    path, aside = _legacy_registry(tmp_path)
+    runner = TaskRunner(sessions=MagicMock(), auto_test=False, work_dir=tmp_path)
+    assert set(runner._runs) == {"public-task"}
+    assert not runner._snapshot_recovery_incomplete
+    assert json.loads(aside.read_text(encoding="utf-8")) == [_LEGACY_PRIVATE_ROW]
+    assert str(aside) in caplog.text
+    runner._runs["public-task"].name = "pending change"
+    runner._persist_runs()
+    rows = json.loads(path.read_text(encoding="utf-8"))
+    assert [row["task_id"] for row in rows] == ["public-task"]
+    assert rows[0]["name"] == "pending change"
+    restarted = TaskRunner(sessions=MagicMock(), auto_test=False, work_dir=tmp_path)
+    assert set(restarted._runs) == {"public-task"}
+    assert not restarted._snapshot_recovery_incomplete
+    assert json.loads(aside.read_text(encoding="utf-8")) == [_LEGACY_PRIVATE_ROW]
+
+
+def test_a_restart_before_any_write_does_not_rewrite_the_set_aside_file(tmp_path, caplog):
+    _, aside = _legacy_registry(tmp_path)
+    TaskRunner(sessions=MagicMock(), auto_test=False, work_dir=tmp_path)
+    first = aside.stat()
+    caplog.clear()
+    restarted = TaskRunner(sessions=MagicMock(), auto_test=False, work_dir=tmp_path)
+    assert set(restarted._runs) == {"public-task"}
+    assert not restarted._snapshot_recovery_incomplete
+    assert (aside.stat().st_ino, aside.stat().st_mtime_ns) == (first.st_ino, first.st_mtime_ns)
+    assert "Set aside" not in caplog.text
+
+
+@pytest.mark.parametrize("damage", ["unparseable", "directory", "not-records"])
+def test_an_unusable_set_aside_file_fences_writes_but_keeps_the_other_runs(
+    tmp_path, caplog, damage
+):
+    path, aside = _legacy_registry(tmp_path)
+    if damage == "directory":
+        aside.mkdir()
+    else:
+        aside.write_text("{" if damage == "unparseable" else '[{"task_id": 1}]', encoding="utf-8")
+    before = path.read_bytes()
+    runner = TaskRunner(sessions=MagicMock(), auto_test=False, work_dir=tmp_path)
+    assert runner._snapshot_recovery_incomplete
+    assert set(runner._runs) == {"public-task"}
+    assert str(path) in caplog.text
+    runner._persist_runs()
+    assert path.read_bytes() == before
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="needs symlinks")
+def test_a_linked_set_aside_file_is_never_read_or_republished(tmp_path):
+    path, aside = _legacy_registry(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    target = outside / "records.json"
+    target.write_text(json.dumps([{"task_id": "x", "secret": "kept-out"}]), encoding="utf-8")
+    try:
+        aside.symlink_to(target)
+    except OSError:
+        pytest.skip("symlinks are not available here")
+    runner = TaskRunner(sessions=MagicMock(), auto_test=False, work_dir=tmp_path)
+    assert runner._snapshot_recovery_incomplete
+    assert aside.is_symlink()
+    assert "kept-out" not in path.read_text(encoding="utf-8")
+
+
+def test_a_hard_linked_set_aside_file_is_refused(tmp_path):
+    from kiro_crew.workflow_memory import TaskSnapshotError, quarantine_legacy_task_references
+
+    path, aside = _legacy_registry(tmp_path)
+    target = tmp_path / "elsewhere.json"
+    target.write_text(json.dumps([{"task_id": "x", "secret": "kept-out"}]), encoding="utf-8")
+    try:
+        os.link(target, aside)
+    except OSError:
+        pytest.skip("hard links are not available here")
+    with pytest.raises(TaskSnapshotError):
+        quarantine_legacy_task_references(path, [_LEGACY_PRIVATE_ROW])
+    assert json.loads(target.read_text(encoding="utf-8")) == [
+        {"task_id": "x", "secret": "kept-out"}
+    ]
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        {"task_id": "member-task", "private_payload": "true"},
+        {"task_id": ["member-task"], "private_payload": True},
+        {"task_id": "member-task", "private_payload": True, "status": "running"},
+    ],
+)
+def test_any_other_private_payload_row_still_refuses_the_registry(tmp_path, row):
+    from kiro_crew.workflow_memory import LEGACY_TASK_REFERENCES_SUFFIX
+
+    path = tmp_path / "runs.json"
+    path.write_text(json.dumps([row, _PUBLIC_ROW]), encoding="utf-8")
+    runner = TaskRunner(sessions=MagicMock(), auto_test=False, work_dir=tmp_path)
+    assert runner._snapshot_recovery_incomplete
+    assert runner._runs == {}
+    assert not (tmp_path / ("runs.json" + LEGACY_TASK_REFERENCES_SUFFIX)).exists()
+
+
+def test_set_aside_merges_by_task_id(tmp_path):
+    from kiro_crew.workflow_memory import quarantine_legacy_task_references
+
+    path = tmp_path / "runs.json"
+    first = {"task_id": "a", "private_payload": True}
+    second = {"task_id": "b", "private_payload": True}
+    aside, changed = quarantine_legacy_task_references(path, [first])
+    assert changed
+    assert quarantine_legacy_task_references(path, [first, second]) == (aside, True)
+    assert quarantine_legacy_task_references(path, [second]) == (aside, False)
+    assert json.loads(aside.read_text(encoding="utf-8")) == [first, second]
