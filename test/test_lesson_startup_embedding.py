@@ -12,8 +12,9 @@ is not measured against the best row in the set, gaining a vector never lowers
 a row, rows tied on the hybrid score are ordered by word rarity rather than
 recency, and a store in which no row has a positive cosine ranks exactly as
 no vector does, and that every way the vector can be missing or stale
-ranks lexically instead of failing the build, and a missing embedder is never
-loaded from its factory. ``test_memory_v1_golden`` pins the inference count and
+ranks lexically instead of failing the build, a missing embedder is never
+loaded from its factory, and a session that excludes the memory group keeps its
+lessons and embeds nothing. ``test_memory_v1_golden`` pins the inference count and
 that ``inject_activity: false`` still embeds nothing.
 """
 
@@ -26,7 +27,11 @@ from unittest.mock import MagicMock
 import pytest
 
 from kiro_crew._sqlite_compat import sqlite3
-from kiro_crew.context import ContextBuilder
+from kiro_crew.context import (
+    CONTEXT_GROUP_MEMORY,
+    SWITCHABLE_CONTEXT_GROUPS,
+    ContextBuilder,
+)
 from kiro_crew.context_assembly import budget as context_budget
 from kiro_crew.learn import LessonStore
 from kiro_crew.memory import MemoryStore
@@ -151,6 +156,25 @@ class TestStartupUsesTheVector:
         semantic_ranking.assert_not_called()
         lesson_query.assert_not_called()
         assert FIRST_MESSAGE not in store.embed_fn.calls
+
+    def test_a_session_that_excludes_memory_keeps_its_lessons_and_embeds_nothing(
+        self, store, tmp_path
+    ) -> None:
+        """A build can keep lessons and drop memory, and then no site ranks against a vector.
+
+        ``activity_ranked`` is set inside the memory group's own branch, so a
+        subagent spawned with ``include_memory=false, include_lessons=true``
+        never reaches the predicate above: its lessons block still renders, from
+        the same store, ranked lexically and embedding nothing.
+        """
+        rendered = build_first_turn(
+            store,
+            tmp_path,
+            context_groups=frozenset(SWITCHABLE_CONTEXT_GROUPS) - {CONTEXT_GROUP_MEMORY},
+        )
+
+        assert rendered.index(LEXICAL) < rendered.index(SEMANTIC)
+        assert store.embed_fn.calls == []
 
 
 class TestAMissingOrStaleVectorRanksLexically:
