@@ -38,7 +38,12 @@ refactor changes the shape of a turn.
 is appended to `<dir>/<backend>.jsonl` with owner-only permissions. It records
 what a running gateway sees, so it is the right tool when the scenario needs
 Crew's own session wiring — its MCP projection, its permission policy, its auth
-callback.
+callback. A frame the recorder cannot turn into a line (one nested deeper than
+half the interpreter's recursion limit, for example) is skipped while recording
+carries on, with at most one `skipped N frame(s)` warning a minute in the
+gateway log, so a capture whose run logged one has a gap there. A count still
+held when the minute is up, recording stands down or the writer stops is logged
+then, so the warnings add up to every frame that is missing.
 
 It is not the only route, and for most classes it is not the shortest one. A
 backend that speaks ACP over stdio can be driven directly: spawn it, send

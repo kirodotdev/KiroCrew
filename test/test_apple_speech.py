@@ -1135,6 +1135,33 @@ class TestStreamingSession:
         await session.close()
         await session.close()
 
+    @pytest.mark.asyncio
+    async def test_a_helper_line_that_is_not_an_object_is_skipped_mid_utterance(self):
+        """``RecursionError`` (a line nested past the decoder) and the plain
+        ``ValueError`` of an over-long integer are not ``JSONDecodeError``s:
+        unlisted, either ended the reader and dictation with it."""
+        from types import SimpleNamespace
+
+        from stray_line_helpers import STRAY_LINES
+
+        stdout = asyncio.StreamReader(limit=1 << 20)
+        for line in (
+            b'{"type": "partial", "text": "hel"}\n',
+            *(make() for make in STRAY_LINES.values()),
+            b'{"type": "final", "text": "hello"}\n',
+        ):
+            stdout.feed_data(line)
+        stdout.feed_eof()
+        session = apple_speech.StreamingSession()
+        session._proc = SimpleNamespace(stdout=stdout)  # type: ignore[assignment]
+
+        await asyncio.wait_for(session._read_events(), timeout=10)
+
+        kinds = []
+        while (event := session._queue.get_nowait()) is not None:
+            kinds.append(event["type"])
+        assert kinds == ["partial", "final"]
+
 
 class TestHelperArgvPinsFast:
     """Pin the ``--fast`` flag in the STREAMING helper argv.

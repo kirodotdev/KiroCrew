@@ -837,3 +837,46 @@ async def test_app_call_requires_callback_secret(apps_flag_on, spool_tmp):
         assert "callback capability" in missing["reason"]
     finally:
         await live.aclose()
+
+
+class _InboxBackend:
+    """Just the four calls ``_roundtrip`` makes, over a pre-filled inbox."""
+
+    def __init__(self, *lines: bytes) -> None:
+        self.inbox: asyncio.Queue[bytes] = asyncio.Queue()
+        for line in lines:
+            self.inbox.put_nowait(line)
+        self.detached: list[str] = []
+
+    async def attach_stub(self, stub_uuid: str) -> "asyncio.Queue[bytes]":
+        return self.inbox
+
+    async def forward_from_stub(self, stub_uuid: str, frame: dict, **kwargs) -> None:
+        return None
+
+    async def cancel_in_flight_for_stub(self, stub_uuid: str) -> None:
+        return None
+
+    async def detach_stub(self, stub_uuid: str) -> None:
+        self.detached.append(stub_uuid)
+
+
+@pytest.mark.asyncio
+async def test_the_round_trip_skips_stray_frames_to_its_own_response():
+    """``RecursionError`` is not a ``ValueError``: unlisted, a frame nested past
+    the decoder's ceiling failed the app call instead of costing one frame."""
+    from stray_line_helpers import STRAY_LINES
+
+    from kiro_crew.mcp_gateway import app_call as app_call_mod
+
+    reply = {"jsonrpc": "2.0", "id": 4, "result": {"ok": True}}
+    backend = _InboxBackend(
+        *(make() for make in STRAY_LINES.values()),
+        (json.dumps(reply) + "\n").encode("utf-8"),
+    )
+    got = await asyncio.wait_for(
+        app_call_mod._roundtrip(backend, {"id": 4, "method": "tools/call"}, caller=None, timeout=10),
+        timeout=10,
+    )
+    assert got == reply
+    assert len(backend.detached) == 1

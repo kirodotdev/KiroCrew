@@ -53,6 +53,7 @@ from kiro_crew.hooks import (
     hook_gate_kwargs,
     hooks_config_from_config_dict,
 )
+from kiro_crew.json_line import parse_json_object_line
 from kiro_crew.llm_helpers import _steer_host_deny
 from kiro_crew.permission_floor import (
     OUTCOME_PENDING_APPROVAL,
@@ -1068,12 +1069,8 @@ class AgentRunner:
                         error=f"timeout after {timeout_s}s",
                         duration_s=time.monotonic() - t0,
                     )
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except json.JSONDecodeError:
+                obj = parse_json_object_line(line)
+                if obj is None:
                     continue
                 act = _summarize_stream_event(obj)
                 if act:

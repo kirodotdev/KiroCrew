@@ -38,6 +38,7 @@ from typing import Any, Callable, NoReturn, Optional
 
 from kiro_crew import platform_compat
 from kiro_crew.executors import configure_default_executor, subprocess_executor
+from kiro_crew.json_line import parse_json_object_line
 from kiro_crew.jsonl_util import bounded_records, rotate_jsonl_at
 from kiro_crew.mcp_caller import (
     POOLING_REQUIRES_TENANT_NONCE,
@@ -768,17 +769,48 @@ async def _write_frame(writer: asyncio.StreamWriter, obj: dict) -> None:
         await writer.drain()
 
 
+class _NonObjectFrame(json.JSONDecodeError):
+    """A gateway frame that is valid JSON but neither an object nor ``null``.
+
+    A ``JSONDecodeError``, so every catch set that degrades on a bad frame
+    still does; the admission wait catches it first and reads the next frame.
+    """
+
+
 async def _read_frame(reader: asyncio.StreamReader) -> Optional[dict]:
     try:
         line = await reader.readuntil(b"\n")
     except (asyncio.IncompleteReadError, asyncio.LimitOverrunError):
         return None
+    if not line:
+        return None
     # errors="replace": an invalid-UTF-8 byte must NOT raise UnicodeDecodeError
     # (a ValueError, not json.JSONDecodeError) out through the handshake /
     # ensure_backend catch sets — that would kill the stub before fallback_exec.
-    # A replaced char just yields a JSONDecodeError below, which IS caught and
-    # degrades cleanly to a per-session exec.
-    return json.loads(line.decode("utf-8", errors="replace")) if line else None
+    # Every unusable frame (not JSON, not an object, nested past the decoder's
+    # ceiling, which raises RecursionError) becomes the one JSONDecodeError
+    # those catch sets handle, and degrades cleanly to a per-session exec. A
+    # non-object value raises the _NonObjectFrame subclass, which only the
+    # admission wait tells apart.
+    msg = parse_json_object_line(line, errors="replace")
+    if msg is not None:
+        return msg
+    if _is_json_non_object(line):
+        raise _NonObjectFrame("gateway frame is not a JSON object", "", 0)
+    raise json.JSONDecodeError("gateway frame is not JSON", "", 0)
+
+
+def _is_json_non_object(line: bytes) -> bool:
+    """True when *line* is JSON other than an object or ``null``.
+
+    Run only for a frame the shared parser already refused, so the second
+    parse costs nothing on the frames that matter.
+    """
+    try:
+        value = json.loads(line.decode("utf-8", errors="replace"))
+    except (ValueError, RecursionError):
+        return False
+    return value is not None
 
 
 async def _safe_close(writer: asyncio.StreamWriter) -> None:
@@ -904,17 +936,6 @@ async def handshake(
     if resp is None:
         await _safe_close(writer)
         raise FallbackRequestedError("gateway closed during handshake")
-    if not isinstance(resp, dict):
-        # _read_frame returns raw json.loads output, which can be a non-dict
-        # (list / number / string) for a malformed broker reply. resp.get(...)
-        # would then raise AttributeError OUTSIDE the caught
-        # (OSError, ConnectionError, json.JSONDecodeError) set above, crashing
-        # the stub before fallback_exec and defeating the always-degrade-to-
-        # per-session guarantee. Treat it as a fallback-eligible bad reply.
-        await _safe_close(writer)
-        raise FallbackRequestedError(
-            f"unexpected handshake reply (not an object): {type(resp).__name__}"
-        )
 
     msg_type = resp.get("type")
     if msg_type == "registered":
@@ -1105,11 +1126,8 @@ class StubSession:
                     break
         ids = []
         for line in lines:
-            try:
-                msg = json.loads(line)
-            except (ValueError, TypeError):
-                continue
-            if isinstance(msg, dict) and "method" in msg and "id" in msg:
+            msg = parse_json_object_line(line)
+            if msg is not None and "method" in msg and "id" in msg:
                 ids.append(msg["id"])
         return ids
 
@@ -1243,16 +1261,16 @@ async def run_bridge(
                 return
             # Track outbound JSON-RPC request IDs (have "method" + "id"), and
             # let the session keep whatever a reconnect will need.
-            # Best-effort: parse failures are silently ignored — the frame is
-            # still forwarded verbatim.
-            try:
-                msg = json.loads(line)
-                if isinstance(msg, dict):
+            # Best-effort: a line that does not parse as an object (nested
+            # past the decoder's ceiling included) is still forwarded verbatim.
+            msg = parse_json_object_line(line)
+            if msg is not None:
+                try:
                     session.note_outbound(line, msg)
                     if "method" in msg and "id" in msg:
                         _outstanding_ids.add(msg["id"])
-            except (ValueError, TypeError):
-                pass
+                except (ValueError, TypeError):
+                    pass
             try:
                 # Serialize with _recaller_loop's _write_frame writes on the
                 # same socket: the write itself is whole-frame atomic, but a
@@ -1342,9 +1360,9 @@ async def run_bridge(
                 # requests.
                 # Best-effort: parse failures pass the line through verbatim.
                 _is_control = False
+                msg = parse_json_object_line(line)
                 try:
-                    msg = json.loads(line)
-                    if isinstance(msg, dict):
+                    if msg is not None:
                         _mtype = msg.get("type")
                         if _mtype == _BRIDGE_PONG_TYPE:
                             _pong_received.set()
@@ -1613,11 +1631,8 @@ async def _replay_initialize(
             line = await reader.readuntil(b"\n")
             if not line:
                 return _REPLAY_RETRY, None, "closed_during_replay"
-            try:
-                msg = json.loads(line.decode("utf-8", errors="replace"))
-            except (ValueError, TypeError):
-                continue
-            if not isinstance(msg, dict):
+            msg = parse_json_object_line(line, errors="replace")
+            if msg is None:
                 continue
             if msg.get("type") in (_BRIDGE_PONG_TYPE, _BRIDGE_KEEPALIVE_TYPE, _SPAWN_QUEUED_TYPE):
                 continue
@@ -1710,12 +1725,13 @@ async def _ensure_backend_admitted(
             msg = await asyncio.wait_for(_read_frame(reader), timeout=min(silence_secs, remaining))
         except asyncio.TimeoutError:
             return _ADMIT_TIMEOUT, None
+        except _NonObjectFrame:
+            # A stray value costs that frame; the daemon still holds our place.
+            continue
         except (OSError, ConnectionError, json.JSONDecodeError):
             return _ADMIT_CLOSED, None
         if msg is None:
             return _ADMIT_CLOSED, None
-        if not isinstance(msg, dict):
-            continue
         if queue_aware and _admission_control_frame(msg):
             # Proof the daemon is alive and still holds our place: renew the
             # silence window, never the total budget.
@@ -1785,11 +1801,8 @@ async def _serve_capacity_refusal(
             return 1
         if not line:
             return 0
-        try:
-            msg = json.loads(line)
-        except (ValueError, TypeError):
-            continue
-        if not isinstance(msg, dict) or "method" not in msg or "id" not in msg:
+        msg = parse_json_object_line(line)
+        if msg is None or "method" not in msg or "id" not in msg:
             continue
         error = {
             "jsonrpc": "2.0",
@@ -2002,10 +2015,8 @@ async def _drain_while_disconnected(
                     # have, and stop draining: nothing else is coming.
                     held.append((line, None, 0.0))
                     return
-                try:
-                    msg = json.loads(line)
-                except (ValueError, TypeError):
-                    msg = None
+                # Any: ``failable`` below is what proves it a dict with an id.
+                msg: Any = parse_json_object_line(line)
                 failable = _is_failable_request(msg)
                 if _no_room_to_hold(line, held, held_bytes):
                     # Retention is full in one of its dimensions, so this frame

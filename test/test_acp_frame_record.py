@@ -13,17 +13,21 @@ are ``test/test_acp_frame_replay.py``; this module covers only the recorder.
 from __future__ import annotations
 
 import asyncio
+import collections
 import errno
 import json
 import logging
 import os
 import stat
+import sys
 import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+from stray_line_helpers import cyclic_gc_quiesced  # noqa: F401 - fixture
 
 from kiro_crew import security_posture
 from kiro_crew.acp import _frame_record
@@ -184,6 +188,136 @@ def test_a_frame_lands_in_the_backend_file(monkeypatch, tmp_path):
     lines = kiro_file.read_text(encoding="utf-8").splitlines()
     assert [json.loads(ln)["id"] for ln in lines] == [1, 2]
     assert json.loads((Path(dest) / "kas.jsonl").read_text(encoding="utf-8"))["id"] == 3
+
+
+def _nested(depth: int, *, as_dict: bool) -> object:
+    node: object = 1
+    for _ in range(depth):
+        node = {"a": node} if as_dict else [node]
+    return node
+
+
+@pytest.mark.usefixtures("cyclic_gc_quiesced")
+@pytest.mark.parametrize("as_dict", [True, False], ids=["dict-chain", "list-chain"])
+def test_a_frame_too_deep_to_scrub_is_skipped_cheaply_and_recording_continues(
+    monkeypatch, tmp_path, caplog, as_dict
+):
+    """One deep frame stood the whole recording down (a RecursionError on the
+    writer), and a dict chain under the limit costs seconds of scrub walk; the
+    pre-check refuses it before any redaction runs."""
+    _clean(monkeypatch)
+    redacted: list = []
+    real_redact = _frame_record.redact_text
+    monkeypatch.setattr(
+        _frame_record, "redact_text", lambda t: redacted.append(t) or real_redact(t)
+    )
+    deep = _nested(sys.getrecursionlimit() * 3, as_dict=as_dict)
+    dest = str(tmp_path / "frames")
+
+    with caplog.at_level(logging.WARNING, logger=_frame_record.__name__):
+        _frame_record.write_frame("kas", {"jsonrpc": "2.0", "id": 1, "params": deep}, dest)
+    # Structural, not a CPU ceiling: the walk that costs seconds never ran.
+    assert redacted == [], "the deep frame reached the scrub walk"
+    _frame_record.write_frame("kas", {"jsonrpc": "2.0", "id": 2}, dest)
+
+    assert not _frame_record._stood_down, "one deep frame stood the whole recording down"
+    lines = (Path(dest) / "kas.jsonl").read_text(encoding="utf-8").splitlines()
+    assert [json.loads(ln)["id"] for ln in lines] == [2]
+    assert [m for m in _recorder_messages(caplog) if "skipped" in m] == [
+        f"{_frame_record.ENV_RECORD_FRAMES}: skipped 1 frame(s) that could not be scrubbed, "
+        f"recording continues: frame nested deeper than {sys.getrecursionlimit() // 2} levels"
+    ]
+
+
+def _recorder_messages(caplog) -> list[str]:
+    """The recorder's own records: caplog's root handler also captures a
+    WARNING another logger or thread emits inside the window."""
+    return [r.getMessage() for r in caplog.records if r.name == _frame_record.__name__]
+
+
+def _skip_counts(caplog) -> list[str]:
+    return [
+        m.split("skipped ", 1)[1].split(" ", 1)[0]
+        for m in _recorder_messages(caplog)
+        if "could not be scrubbed" in m
+    ]
+
+
+def test_skip_warnings_are_rate_limited_and_carry_the_count(monkeypatch, tmp_path, caplog):
+    _clean(monkeypatch)
+    monkeypatch.setattr(
+        _frame_record, "scrub_frame", lambda frame: (_ for _ in ()).throw(ValueError("bad"))
+    )
+    dest = str(tmp_path / "frames")
+    with caplog.at_level(logging.WARNING, logger=_frame_record.__name__):
+        for _ in range(3):
+            _frame_record.write_frame("kas", {"id": 1}, dest)
+        monkeypatch.setattr(_frame_record, "SKIP_WARNING_INTERVAL_SECS", 0.0)
+        _frame_record.write_frame("kas", {"id": 1}, dest)
+    # The first skip warns; the next two are held and folded into the next one.
+    assert _skip_counts(caplog) == ["1", "3"]
+    assert not _frame_record._stood_down, "a frame fault is not a destination fault"
+
+
+def test_a_held_skip_count_is_logged_when_recording_stands_down(monkeypatch, tmp_path, caplog):
+    """A burst after the last warning was folded into a warning that never came,
+    so the corpus showed one gap where there were many."""
+    _clean(monkeypatch)
+    monkeypatch.setattr(
+        _frame_record, "scrub_frame", lambda frame: (_ for _ in ()).throw(ValueError("bad"))
+    )
+    dest = str(tmp_path / "frames")
+    with caplog.at_level(logging.WARNING, logger=_frame_record.__name__):
+        for _ in range(3):
+            _frame_record.write_frame("kas", {"id": 1}, dest)
+        _frame_record._stand_down(OSError("disk gone"))
+    assert _skip_counts(caplog) == ["1", "2"]
+
+
+def test_a_held_skip_count_is_logged_by_the_idle_writer_once_due(monkeypatch, tmp_path, caplog):
+    """No further frame needs to arrive: the writer's idle pass reports it."""
+    _clean(monkeypatch)
+    monkeypatch.setattr(
+        _frame_record, "scrub_frame", lambda frame: (_ for _ in ()).throw(ValueError("bad"))
+    )
+    dest = str(tmp_path / "frames")
+    with caplog.at_level(logging.WARNING, logger=_frame_record.__name__):
+        for _ in range(4):
+            _frame_record.write_frame("kas", {"id": 1}, dest)
+        assert _skip_counts(caplog) == ["1"]
+        monkeypatch.setattr(_frame_record, "SKIP_WARNING_INTERVAL_SECS", 0.0)
+        _frame_record._flush_skipped_frames()
+    assert _skip_counts(caplog) == ["1", "3"]
+
+
+def test_a_stopping_writer_logs_a_held_skip_count(monkeypatch, tmp_path, caplog):
+    _clean(monkeypatch)
+    monkeypatch.setattr(
+        _frame_record, "scrub_frame", lambda frame: (_ for _ in ()).throw(ValueError("bad"))
+    )
+    dest = str(tmp_path / "frames")
+    # The idle path only: an empty backlog and a stop already requested.
+    writer = SimpleNamespace(items=collections.deque(), stop=threading.Event())
+    writer.stop.set()
+    with caplog.at_level(logging.WARNING, logger=_frame_record.__name__):
+        for _ in range(2):
+            _frame_record.write_frame("kas", {"id": 1}, dest)
+        _frame_record._drain(writer)
+    assert _skip_counts(caplog) == ["1", "1"]
+
+
+def test_a_lone_surrogate_is_recorded_escaped_not_a_stand_down(monkeypatch, tmp_path):
+    """A tool's text cut mid-emoji keeps a lone surrogate through ``json.loads``;
+    strict UTF-8 refused it at write time and stood recording down."""
+    _clean(monkeypatch)
+    dest = str(tmp_path / "frames")
+    _frame_record.write_frame("kas", {"id": 1, "text": "cut \ud83d"}, dest)
+    _frame_record.write_frame("kas", {"id": 2}, dest)
+
+    assert not _frame_record._stood_down
+    lines = (Path(dest) / "kas.jsonl").read_text(encoding="utf-8").splitlines()
+    assert [json.loads(ln)["id"] for ln in lines] == [1, 2]
+    assert json.loads(lines[0])["text"] == "cut \ud83d"
 
 
 def test_a_credential_is_scrubbed_before_it_is_written(monkeypatch, tmp_path):

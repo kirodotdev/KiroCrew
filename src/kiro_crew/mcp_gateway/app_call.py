@@ -38,12 +38,12 @@ from __future__ import annotations
 
 import asyncio
 import hmac
-import json
 import logging
 import time
 import uuid
 from typing import Any, Optional
 
+from kiro_crew.json_line import parse_json_object_line
 from kiro_crew.mcp_apps_render import load_spool
 from kiro_crew.mcp_caller import CallerContext, new_tenant_nonce
 from kiro_crew.mcp_gateway.apps import AUDIENCE_APP, visibility_allows
@@ -107,11 +107,8 @@ async def _roundtrip(
             if remaining <= 0:
                 raise asyncio.TimeoutError()
             data = await asyncio.wait_for(inbox.get(), timeout=remaining)
-            try:
-                msg = json.loads(data.decode("utf-8"))
-            except (ValueError, UnicodeDecodeError):
-                continue
-            if isinstance(msg, dict) and msg.get("id") == frame["id"] and (
+            msg = parse_json_object_line(data)
+            if msg is not None and msg.get("id") == frame["id"] and (
                 "result" in msg or "error" in msg
             ):
                 return msg

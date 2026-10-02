@@ -407,6 +407,14 @@ class TestNonMatchingPassthrough:
         line = b'not json "image" at all\n'
         assert enforce_image_budget(line, "test-server") is line
 
+    def test_a_line_nested_past_the_decoder_is_not_an_image_frame(self):
+        """``RecursionError`` is not a ``ValueError``: unlisted, the confirm
+        stage raised instead of answering "no image here"."""
+        from stray_line_helpers import too_deep_result_line
+
+        line = too_deep_result_line()
+        assert parse_image_bearing_frame(line) is None
+
     def test_non_dict_content_items_tolerated(self):
         line = _result_line(["bare-string", 42, {"type": "text", "text": "ok"}])
         assert enforce_image_budget(line, "test-server") is line

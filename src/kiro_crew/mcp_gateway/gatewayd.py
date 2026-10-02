@@ -258,6 +258,7 @@ from kiro_crew.mcp_gateway.daemon.wire import (  # noqa: F401
     _drain_inbox_to_stub,
     _is_ping_frame,
     _jsonrpc_error,
+    _jsonrpc_parse_error,
     _probe_stub_transports,
     _read_first_frame,
     _stub_probe_add,
