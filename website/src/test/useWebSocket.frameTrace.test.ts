@@ -893,10 +893,12 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
     'query setQueryData ["chat-folders"]',
     'query invalidateQueries ["chat-folders"]',
     'query invalidateQueries ["dashboardConfig"]',
+    'event mc:app:slots',
   ],
   "slots repeated frame is skipped": [],
   "slots unchanged generations": [
     'action dashboard/sseSlots [{"key":"slot-b","title":"Background","last_ts":"2026-09-01T00:00:00.000Z"},{"key":"slot-a","title":"Active","last_ts":"2026-09-01T00:00:00.000Z"}]',
+    'event mc:app:slots',
   ],
   "credential_redaction_changed": [
     'query setQueryData ["credential-redaction"]',
@@ -925,10 +927,12 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
   "slot_patch with an unknown row": [
     'action dashboard/fetchSlots/pending',
     'action dashboard/sseSlotPatch {"slots":[{"key":"slot-new","title":"New"}],"removed":[]}',
+    'event mc:app:slots',
   ],
   "slot_patch removing a row": [
     'query resetQueries ["dashboard-card","slot-gone"]',
     'action dashboard/sseSlotPatch {"slots":[{"key":"slot-gone","title":"Gone"}],"removed":["slot-gone"]}',
+    'event mc:app:slots',
   ],
   "dashboard_card update, removal and no slot": [
     'query invalidateQueries ["dashboard-card","slot-a"]',
