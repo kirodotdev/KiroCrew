@@ -15235,7 +15235,13 @@
         "allow_system_notifications": "允许系统通知",
         "system_notifications_blocked": "已被浏览器阻止。请在该网站的权限设置中重新开启。",
         "show_banner_for_new_notifications": "新通知显示横幅",
-        "show_banner_for_new_notifications_description": "通知到达时，一张卡片会从顶栏下方滑入，随后收进铃铛。"
+        "show_banner_for_new_notifications_description": "通知到达时，一张卡片会从顶栏下方滑入，随后收进铃铛。",
+        "mouse_haptics": "鼠标触觉反馈",
+        "mouse_haptics_description": "每次播放通知提示音时，通过 Logi Options+ 的 {{productName}} 插件让 Logitech MX Master 4 振动。振动不受音量影响，音量为 0% 时只振动、不出声。",
+        "mouse_haptics_checking": "正在查找 {{productName}} 插件…",
+        "mouse_haptics_connected": "插件已连接。可在 Logi Options+ 的“触觉反馈”中为每种提醒选择振动效果。",
+        "mouse_haptics_not_found": "未找到插件。请在 Logi Options+ 中打开 MX Master 4 → 触觉反馈 → 安装和卸载插件，并在该页面打开时打开插件文件。<guide>如何获取插件</guide>",
+        "mouse_haptics_loopback_only": "仅在 {{productName}} 桌面应用中可用，或在连接鼠标的电脑上用浏览器通过 localhost 地址打开仪表板时可用。"
       },
       "privacyPanel": {
         "recordMetricsLabel": "记录指标",

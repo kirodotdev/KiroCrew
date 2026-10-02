@@ -15693,7 +15693,13 @@
         "allow_system_notifications": "Permitir notificações do sistema",
         "system_notifications_blocked": "Bloqueadas no seu navegador. Reative-as nas permissões do site.",
         "show_banner_for_new_notifications": "Mostrar um banner para novas notificações",
-        "show_banner_for_new_notifications_description": "Quando chega uma notificação, um cartão desliza sob a barra superior e depois se recolhe no sino."
+        "show_banner_for_new_notifications_description": "Quando chega uma notificação, um cartão desliza sob a barra superior e depois se recolhe no sino.",
+        "mouse_haptics": "Háptica do mouse",
+        "mouse_haptics_description": "Faz um Logitech MX Master 4 vibrar a cada som de notificação, por meio do plug-in do {{productName}} para o Logi Options+. A vibração não depende do volume: em 0%, você sente os alertas sem ouvi-los.",
+        "mouse_haptics_checking": "Procurando o plug-in do {{productName}}…",
+        "mouse_haptics_connected": "Plug-in conectado. Escolha a vibração de cada alerta no Logi Options+, em Feedback háptico.",
+        "mouse_haptics_not_found": "Plug-in não encontrado. No Logi Options+, abra MX Master 4 → Feedback háptico → Instalar e desinstalar plug-ins e, com essa página aberta, abra o arquivo do plug-in. <guide>Como obter o plug-in</guide>",
+        "mouse_haptics_loopback_only": "Funciona apenas no app para desktop do {{productName}} ou em um navegador que abra o painel em um endereço localhost, no computador ao qual o mouse está conectado."
       },
       "privacyPanel": {
         "recordMetricsLabel": "Registrar métricas",

@@ -15464,7 +15464,13 @@
         "allow_system_notifications": "Systembenachrichtigungen erlauben",
         "system_notifications_blocked": "Im Browser blockiert. Schalte sie in den Berechtigungen der Website wieder ein.",
         "show_banner_for_new_notifications": "Banner für neue Benachrichtigungen anzeigen",
-        "show_banner_for_new_notifications_description": "Bei einer neuen Benachrichtigung gleitet eine Karte unter der oberen Leiste ein und verschwindet dann in der Glocke."
+        "show_banner_for_new_notifications_description": "Bei einer neuen Benachrichtigung gleitet eine Karte unter der oberen Leiste ein und verschwindet dann in der Glocke.",
+        "mouse_haptics": "Maus-Haptik",
+        "mouse_haptics_description": "Lässt eine Logitech MX Master 4 bei jedem Benachrichtigungston vibrieren, über das {{productName}}-Plug-in für Logi Options+. Die Vibration hängt nicht von der Lautstärke ab: Bei 0 % spürst du Hinweise, ohne sie zu hören.",
+        "mouse_haptics_checking": "Suche nach dem {{productName}}-Plug-in…",
+        "mouse_haptics_connected": "Plug-in verbunden. Die Vibration für jeden Hinweis wählst du in Logi Options+ unter „Haptisches Feedback“.",
+        "mouse_haptics_not_found": "Plug-in nicht gefunden. Öffne in Logi Options+ MX Master 4 → Haptisches Feedback → Plug-ins installieren und deinstallieren und öffne die Plug-in-Datei, während diese Seite angezeigt wird. <guide>So bekommst du das Plug-in</guide>",
+        "mouse_haptics_loopback_only": "Funktioniert nur in der {{productName}}-Desktop-App oder in einem Browser, der das Dashboard unter einer localhost-Adresse auf dem Computer öffnet, mit dem die Maus verbunden ist."
       },
       "privacyPanel": {
         "recordMetricsDescription": "Leistungsmetriken auf diesem Rechner erfassen.",

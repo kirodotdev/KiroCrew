@@ -15693,7 +15693,13 @@
         "allow_system_notifications": "Autoriser les notifications système",
         "system_notifications_blocked": "Bloquées par votre navigateur. Réactivez-les dans les autorisations du site.",
         "show_banner_for_new_notifications": "Afficher une bannière pour les nouvelles notifications",
-        "show_banner_for_new_notifications_description": "À l’arrivée d’une notification, une carte glisse sous la barre supérieure puis se range dans la cloche."
+        "show_banner_for_new_notifications_description": "À l’arrivée d’une notification, une carte glisse sous la barre supérieure puis se range dans la cloche.",
+        "mouse_haptics": "Retour haptique de la souris",
+        "mouse_haptics_description": "Fait vibrer une Logitech MX Master 4 à chaque son de notification, via le plug-in {{productName}} pour Logi Options+. La vibration ne dépend pas du volume : à 0 %, tu sens les alertes sans les entendre.",
+        "mouse_haptics_checking": "Recherche du plug-in {{productName}}…",
+        "mouse_haptics_connected": "Plug-in connecté. Choisis la vibration de chaque alerte dans Logi Options+, sous Retour haptique.",
+        "mouse_haptics_not_found": "Plug-in introuvable. Dans Logi Options+, ouvre MX Master 4 → Retour haptique → Installer et désinstaller des plug-ins, puis ouvre le fichier du plug-in pendant que cette page est affichée. <guide>Comment obtenir le plug-in</guide>",
+        "mouse_haptics_loopback_only": "Fonctionne uniquement dans l’application de bureau {{productName}}, ou dans un navigateur qui ouvre le tableau de bord à une adresse localhost, sur l’ordinateur auquel ta souris est connectée."
       },
       "privacyPanel": {
         "recordMetricsDescription": "Collecter les métriques de performance sur cette machine.",

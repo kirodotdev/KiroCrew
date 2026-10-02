@@ -6963,7 +6963,13 @@
         "allow_system_notifications": "Allow system notifications",
         "system_notifications_blocked": "Blocked in your browser. Turn it back on in the site's permission settings.",
         "show_banner_for_new_notifications": "Show a banner for new notifications",
-        "show_banner_for_new_notifications_description": "A card slides in under the top bar when a notification arrives, then tucks into the bell."
+        "show_banner_for_new_notifications_description": "A card slides in under the top bar when a notification arrives, then tucks into the bell.",
+        "mouse_haptics": "Mouse haptics",
+        "mouse_haptics_description": "Buzzes a Logitech MX Master 4 whenever a notification sound plays, through the {{productName}} plugin for Logi Options+. The buzz ignores the volume, so at 0% you feel alerts without hearing them.",
+        "mouse_haptics_checking": "Looking for the {{productName}} plugin…",
+        "mouse_haptics_connected": "Plugin connected. Choose each alert’s vibration in Logi Options+, under Haptic feedback.",
+        "mouse_haptics_not_found": "Plugin not found. In Logi Options+, open MX Master 4 → Haptic feedback → Install and uninstall plugins, then open the plugin file while that page is showing. <guide>How to get the plugin</guide>",
+        "mouse_haptics_loopback_only": "Works only in the {{productName}} desktop app, or in a browser that opens the dashboard at a localhost address on the computer your mouse is connected to."
       },
       "securityPanel": {
         "all_allowed": "All allowed",

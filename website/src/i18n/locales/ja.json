@@ -15235,7 +15235,13 @@
         "allow_system_notifications": "システム通知を許可",
         "system_notifications_blocked": "ブラウザーでブロックされています。サイトの権限設定で再度オンにしてください。",
         "show_banner_for_new_notifications": "新しい通知をバナーで表示",
-        "show_banner_for_new_notifications_description": "通知が届くとカードがトップバーの下にスライドして表示され、その後ベルに収まります。"
+        "show_banner_for_new_notifications_description": "通知が届くとカードがトップバーの下にスライドして表示され、その後ベルに収まります。",
+        "mouse_haptics": "マウスの触覚フィードバック",
+        "mouse_haptics_description": "通知音が鳴るたびに、Logi Options+ 用の {{productName}} プラグインを通じて Logitech MX Master 4 を振動させます。振動は音量の影響を受けないため、音量 0% でも音なしで通知に気付けます。",
+        "mouse_haptics_checking": "{{productName}} プラグインを探しています…",
+        "mouse_haptics_connected": "プラグインに接続しました。各通知の振動は Logi Options+ の「触覚フィードバック」で選べます。",
+        "mouse_haptics_not_found": "プラグインが見つかりません。Logi Options+ で MX Master 4 → 触覚フィードバック → プラグインのインストールとアンインストール を開き、そのページを表示したままプラグインファイルを開いてください。<guide>プラグインの入手方法</guide>",
+        "mouse_haptics_loopback_only": "{{productName}} デスクトップアプリ、またはマウスを接続しているコンピューターのブラウザーで localhost のアドレスからダッシュボードを開いている場合のみ動作します。"
       },
       "privacyPanel": {
         "recordMetricsDescription": "このマシンでパフォーマンスメトリクスを収集します。",

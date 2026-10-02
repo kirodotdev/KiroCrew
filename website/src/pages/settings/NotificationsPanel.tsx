@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Trans } from 'react-i18next'
 import { Lock, MonitorCog, Blocks, Check, RadioTower, Bell, Volume2, ListMusic } from 'lucide-react'
 import { SettingsSection, SettingsCard, SettingsToggle, SettingsSelect } from '../../components/settings'
 import { SettingsSubNav, type SubNavItem } from '../../components/SettingsSubNav'
@@ -15,6 +16,9 @@ import {
 import { loadChatCompleteNotify, saveChatCompleteNotify } from '../../hooks/chatCompleteNotify'
 import { loadBannerEnabled, saveBannerEnabled } from '../../hooks/notificationBanner'
 import { loadUnreadOnAttention, saveUnreadOnAttention } from '../../hooks/unreadOnAttention'
+import {
+  isLoopbackHostname, loadMouseHapticsEnabled, probeHapticsPlugin, requestHapticsRecheck, saveMouseHapticsEnabled,
+} from '../../hooks/useMouseHaptics'
 import { useNotificationPermission } from '../../hooks/useNotificationPermission'
 
 import { i18nT } from '../../i18n/t'
@@ -268,11 +272,65 @@ function SystemNotificationsRow() {
   )
 }
 
+const MOUSE_HAPTICS_PLUGIN_KEY = ['mouse-haptics-plugin'] as const
+const MOUSE_HAPTICS_SETUP_GUIDE = 'https://github.com/kirodotdev/KiroCrew/blob/main/src/kiro_crew/docs/dashboard.md#mouse-haptics'
+
+/**
+ * What the dashboard can see of the Options+ plugin, shown under the Mouse
+ * haptics switch. The plugin answers loopback pages only, so nothing is probed
+ * from any other origin. The probe runs again when the window regains focus, so
+ * a plugin installed in Options+ meanwhile shows up without a reload.
+ */
+function MouseHapticsPluginStatus() {
+  const onLoopback = isLoopbackHostname(window.location.hostname)
+  const pluginQuery = useQuery({
+    queryKey: MOUSE_HAPTICS_PLUGIN_KEY,
+    queryFn: () => probeHapticsPlugin(window.fetch.bind(window)),
+    enabled: onLoopback,
+    // "Not installed" is an answer, not a failure to retry.
+    retry: false,
+    staleTime: 0,
+  })
+  const pluginFound = pluginQuery.data === true
+  // The app-wide bridge may have probed before the install and still be waiting out its retry window.
+  useEffect(() => {
+    if (pluginFound) requestHapticsRecheck()
+  }, [pluginFound])
+
+  let status: ReactNode
+  if (!onLoopback) {
+    status = i18nT('pages.settings.notificationsPanel.mouse_haptics_loopback_only')
+  } else if (pluginQuery.isPending) {
+    status = i18nT('pages.settings.notificationsPanel.mouse_haptics_checking')
+  } else if (pluginFound) {
+    status = <><Check className="lucide-inline text-ok shrink-0" /> {i18nT('pages.settings.notificationsPanel.mouse_haptics_connected')}</>
+  } else {
+    // ONE key with the link interpolated as <guide>: two joined keys would pin every locale to English word order.
+    status = (
+      <Trans
+        i18nKey="pages.settings.notificationsPanel.mouse_haptics_not_found"
+        components={{
+          guide: (
+            // eslint-disable-next-line jsx-a11y/anchor-has-content, jsx-a11y/control-has-associated-label -- <Trans> substitutes this element for the <guide> run inside the `mouse_haptics_not_found` catalog value and supplies its children from that run, so the rendered anchor always carries the localized link text
+            <a href={MOUSE_HAPTICS_SETUP_GUIDE} target="_blank" rel="noopener noreferrer" className="text-accent hover:underline" />
+          ),
+        }}
+      />
+    )
+  }
+  return (
+    <div role="status" data-testid="mouse-haptics-status" className="flex items-center gap-1 text-[12px] text-muted pb-1.5">
+      <span>{status}</span>
+    </div>
+  )
+}
+
 export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
   const [settings, setSettings] = useState(() => loadSoundSettings())
   const [notifyChatComplete, setNotifyChatComplete] = useState(() => loadChatCompleteNotify())
   const [bannerEnabled, setBannerEnabled] = useState(() => loadBannerEnabled())
   const [unreadOnAttention, setUnreadOnAttention] = useState(() => loadUnreadOnAttention())
+  const [mouseHapticsEnabled, setMouseHapticsEnabled] = useState(() => loadMouseHapticsEnabled())
 
   // Cross-window sync: a settings write in ANOTHER tab (or the running session's
   // own useNotificationSound reacting to one) fires a DOM `storage` event here.
@@ -475,6 +533,17 @@ export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
               {i18nT('pages.settings.notificationsPanel.test_sound')}
             </button>
           </div>
+        </SettingsCard>
+        <SettingsCard index={1}>
+          {/* A buzz goes out only with an audible chime, so the switch does nothing while sound is off. */}
+          <SettingsToggle
+            label={i18nT('pages.settings.notificationsPanel.mouse_haptics')}
+            hint={i18nT('pages.settings.notificationsPanel.mouse_haptics_description')}
+            checked={mouseHapticsEnabled}
+            onChange={v => { if (saveMouseHapticsEnabled(v)) setMouseHapticsEnabled(v) }}
+            disabled={!settings.enabled}
+          />
+          {mouseHapticsEnabled && settings.enabled && <MouseHapticsPluginStatus />}
         </SettingsCard>
       </SettingsSection>
           )

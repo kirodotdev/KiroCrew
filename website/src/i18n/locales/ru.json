@@ -15922,7 +15922,13 @@
         "allow_system_notifications": "Разрешить системные уведомления",
         "system_notifications_blocked": "Заблокированы в браузере. Включите их снова в разрешениях сайта.",
         "show_banner_for_new_notifications": "Показывать баннер для новых уведомлений",
-        "show_banner_for_new_notifications_description": "Когда приходит уведомление, карточка выезжает под верхней панелью, а затем убирается в колокольчик."
+        "show_banner_for_new_notifications_description": "Когда приходит уведомление, карточка выезжает под верхней панелью, а затем убирается в колокольчик.",
+        "mouse_haptics": "Вибрация мыши",
+        "mouse_haptics_description": "Logitech MX Master 4 вибрирует при каждом звуке уведомления через плагин {{productName}} для Logi Options+. Вибрация не зависит от громкости, поэтому при громкости 0% ты чувствуешь оповещения, не слыша их.",
+        "mouse_haptics_checking": "Поиск плагина {{productName}}...",
+        "mouse_haptics_connected": "Плагин подключён. Вибрацию для каждого оповещения выбери в Logi Options+, в разделе «Тактильная обратная связь».",
+        "mouse_haptics_not_found": "Плагин не найден. В Logi Options+ открой MX Master 4 → Тактильная обратная связь → Установка и удаление плагинов и, не закрывая эту страницу, открой файл плагина. <guide>Как получить плагин</guide>",
+        "mouse_haptics_loopback_only": "Работает только в настольном приложении {{productName}} или в браузере, который открывает панель по адресу localhost на компьютере, к которому подключена мышь."
       },
       "privacyPanel": {
         "recordMetricsLabel": "Записывать метрики",
