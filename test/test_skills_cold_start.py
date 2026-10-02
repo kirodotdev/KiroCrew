@@ -233,6 +233,9 @@ def test_metadata_refresh_work_does_not_scan_other_skills(tmp_path, existing_cac
         "INSERT INTO skill_meta_term(term, path) VALUES (?, ?)",
         [(f"otherword{i:04}", f"other/{i}") for i in range(4096)],
     )
+    # Committed here: the index rolls back a transaction left open on its
+    # connection before handing it to the next call.
+    db.commit()
     assert index.store_metadata([("target", "before", {"name": "previousrare"})])
     if existing_cache:
         # Simulate the existing schema from before the access-path optimization.

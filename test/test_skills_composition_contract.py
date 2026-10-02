@@ -113,7 +113,7 @@ _LOADER_MEMBERS = {
         _ALLOWED_CANDIDATE_TOP
     """,
     "method": """
-        __init__ _admit_snapshot_path _adopt_catalog _adopt_extra_paths
+        __init__ _adopt_extra_paths _adopt_snapshot
         _append_project_skill_bodies _archive_root _audit_project_skill_enforcement
         _auto_activity _auto_created_ts _auto_slug_available _auto_slug_claim_lock
         _body_hits _body_matches _cached_frontmatter _candidate_layout_findings_at
@@ -131,7 +131,7 @@ _LOADER_MEMBERS = {
         _redact_validation_report _request_catalog_refresh _resolve_path
         _resolve_path_and_root _resolve_snapshot_version _run_catalog_build
         _scoped_entries _served_key_by_realpath _snapshot_admitted_roots
-        _trusted_project_key _validate_and_redact_candidate _versions_root
+        _trusted_project_key _validate_and_redact_candidate _versions_root _vet_unconfined_path
         approve_pending_skill approve_pending_skill_checked approve_pending_update
         approve_pending_update_checked archive_auto_skill catalog_project_skills
         catalog_status close create_auto_skill create_skill credit_skill_reads
@@ -160,8 +160,7 @@ _LOADER_MEMBERS = {
 _LOADER_SIGNATURES = {
     "_ALLOWED_CANDIDATE_TOP": "['.meta.json', 'SKILL.md', 'scripts']",
     "__init__": "(self, skills_path: 'Path | None' = None, install_builtins: 'bool' = True, config: 'KiroCrewConfig | None' = None)",
-    "_admit_snapshot_path": "(self, path: 'Path') -> 'bool'",
-    "_adopt_catalog": "(self, project_key: 'str', rows: 'list[tuple[str, Path, str | None]]', fingerprints: 'dict[str, str]', *, complete: 'bool') -> 'None'",
+    "_adopt_snapshot": "(self, project_key: 'str', snapshot: '_StoredCatalog', *, generation: 'int') -> 'list[tuple[str, Path, str | None]] | None'",
     "_adopt_extra_paths": "(self, resolved_paths: 'list[Path]') -> 'None'",
     "_append_project_skill_bodies": "(self, parts: 'list[str]', project_skills: 'list[dict]', project_dir: 'str | Path | None', budget: 'int | None', pinned: 'set[str] | None' = None) -> '_delivery.SkippedProjectSkills'",
     "_archive_root": "(self) -> 'Path'",
@@ -173,7 +172,7 @@ _LOADER_SIGNATURES = {
     "_auto_slug_from_name": "(name: 'str') -> 'str'",
     "_body_hits": "(self, skills: 'list[dict]', terms: 'Iterable[str]', live_keys: 'list[str]', project_dir: 'str | Path | None') -> 'dict[str, int]'",
     "_body_matches": "(self, skills: 'list[dict]', terms: 'Iterable[str]', live_keys: 'list[str]', project_dir: 'str | Path | None') -> 'tuple[dict[str, set[str]], bool]'",
-    "_cached_frontmatter": "(self, path: 'Path', mtime: 'float | None' = None, *, within: 'str | None', canonical_root: 'str | None' = None) -> 'dict[str, str]'",
+    "_cached_frontmatter": "(self, path: 'Path', mtime: 'float | None' = None, *, within: 'str | None', canonical_root: 'str | None' = None, for_write: 'bool' = False) -> 'dict[str, str]'",
     "_candidate_has_symlink": "(pdir: 'Path') -> 'bool'",
     "_candidate_layout_findings_at": "(self, root_fd: 'int') -> 'list[str]'",
     "_candidate_layout_ok": "(self, src: 'Path', name: 'str') -> 'bool'",
@@ -198,7 +197,7 @@ _LOADER_SIGNATURES = {
     "_iter_visible": "(self, project_dir: 'str | Path | None' = None) -> 'list[tuple[str, Path, str | None]]'",
     "_key_denotes_path": "(key: 'str', absolute: 'str', own_roots: 'tuple[Path, ...]', provider_roots: 'tuple[str, ...]') -> 'bool'",
     "_legacy_context": "(self, all_skills: 'list[dict]', restricted: 'bool' = False, project_dir: 'str | Path | None' = None, project_body_budget: 'int | None' = None) -> 'str'",
-    "_load_catalog_snapshot": "(self, project_key: 'str') -> 'tuple[list[tuple[str, Path, str | None]], float] | None'",
+    "_load_catalog_snapshot": "(self, project_key: 'str') -> '_StoredCatalog | None'",
     "_max_triggered_now": "(self) -> 'int'",
     "_on_config_change": "(self, change: \"'live.ConfigChange'\") -> 'None'",
     "_owned_hint": "(self, skill_file: 'Path') -> 'bool'",
@@ -237,6 +236,7 @@ _LOADER_SIGNATURES = {
     "_snapshot_admitted_roots": "(self) -> 'tuple[str, ...]'",
     "_trusted_project_key": "(self, project_dir: 'str | Path | None') -> 'str'",
     "_validate_and_redact_candidate": "(self, src: 'Path', name: 'str') -> 'dict[Path, bytes]'",
+    "_vet_unconfined_path": "(self, path: 'Path') -> 'bool'",
     "_versions_root": "(self, target_slug: 'str') -> 'Path'",
     "_write_skill_md": "(skill_file: 'Path', content: 'str', *, dir_fd: 'int | None') -> 'bool'",
     "approve_pending_skill": "(self, slug: 'str') -> 'str | None'",

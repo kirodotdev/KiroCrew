@@ -36,7 +36,10 @@ def get_auto_skill_version(loader: SkillsLoader, name: str) -> int:
 
     Accepts ``auto/<slug>`` or a bare ``<slug>``. Returns 1 when the skill
     is missing, has no ``version`` line, or the value is unparseable — so a
-    pre-versioning skill reads as version 1.
+    pre-versioning skill reads as version 1. Raises ``PermissionError`` when the
+    live file's metadata read is refused (see ``_cached_frontmatter``'s
+    ``for_write``): the answer feeds a rewrite, and a version guessed from a
+    refused read would stage one against the wrong base.
     """
     from kiro_crew import skills as sk  # circular import: the facade imports this module
 
@@ -46,7 +49,7 @@ def get_auto_skill_version(loader: SkillsLoader, name: str) -> int:
     skill_file = loader._dir / sk.AUTO_SKILL_NAMESPACE / slug / "SKILL.md"
     if not skill_file.exists():
         return 1
-    raw = loader._cached_frontmatter(skill_file, within=None).get("version", "")
+    raw = loader._cached_frontmatter(skill_file, within=None, for_write=True).get("version", "")
     try:
         v = int(raw)
     except (TypeError, ValueError):

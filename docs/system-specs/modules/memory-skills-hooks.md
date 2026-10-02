@@ -4026,12 +4026,34 @@ row and a read, split because they cost differently:
   selected the scope, and for a table past `_MAX_CATALOG_ROWS` (100,000 rows) or
   carrying a field wider than `_MAX_CATALOG_FIELD_CHARS` (4,096) — unbounded
   materialization of an adversary-controlled table is an out-of-memory crash on load.
-* **at the read, admission.** Containment does not say the file is still a regular
-  file in a non-sensitive place, so each surviving unconfined path is recorded in
-  `_snapshot_unadmitted` and `_admit_snapshot_path` re-runs `validate_file_path` on it
-  before its first read. Admitting retires it from the set, so a repeated read costs
-  nothing, and a walk that republishes the scope admitted every path it returned and
-  clears the set outright. A path this process walked never pays the check.
+* **at the read, admission, fail-closed.** Lexical containment does not say where the
+  file resolves now, so `_read_enumerated_skill_bytes` reads an unconfined path
+  unchecked only when this process has VETTED it, and otherwise checks it first
+  (`_vet_unconfined_path`). The check is never weaker than the walk:
+  `validate_file_path` (a representable path, the Windows UNC and link screens, not
+  sensitive), then the walk's containment on what that resolved to, so the target
+  must sit inside one of the admitted roots exactly as a walked file must, and a
+  stored row naming a link to an ordinary file outside them is refused. The walk's
+  inline sensitivity gate is not asked again: `validate_file_path` already decided
+  that on the same resolved path, through the gate that suits the calling thread.
+  The vetted paths are exactly those the NEWEST published walk returned (`_walk_vetted`,
+  one set whatever the scope, since every scope enumerates the same unconfined roots,
+  replaced whole by the next walk), plus those a check admitted (`_read_vetted`,
+  bounded to `_VETTED_READS_MAX`, the oldest admission evicted first, and emptied by
+  every invalidation and every published walk; a check that an invalidation or a walk
+  straddled is not remembered). A row from the stored snapshot is never vetted by
+  being adopted, so a reader still holding an adopted list across an invalidation, a
+  row the newest walk rejected and a skill deleted since are all checked again; a
+  missing entry costs one check, never an unchecked read. A forged table cannot grow
+  either set past its bound. A path a walk returned and that is swapped afterwards is
+  read unchecked until the next walk, the same window the walk's own list has. A
+  writer reading frontmatter it will rewrite (`_cached_frontmatter(for_write=True)`)
+  hears a refusal as `PermissionError` rather than "no metadata", which would have it
+  drop `version`, `pinned`, `inject_on_trigger` and `created_at`; a reader keeps the
+  empty answer. `update_auto_skill` answers that refusal with `False` and writes
+  nothing, so the consolidation refine path audits it as `rejected`/`update_failed`.
+  The admitted roots are resolved once per generation and root set
+  (`_admitted_roots_memo`), not once per check.
 
 That placement is what keeps the cost shape: the O(N) work stays on the walk, and
 admission is paid once per row actually read, at the one point every enumerated read
@@ -4053,7 +4075,74 @@ silently undoes. `_catalog_generation` fences this loader's own worker, and the
 index's `skill_catalog_epoch` — read before a walk and re-checked inside
 `store_catalog`'s own `IMMEDIATE` transaction, because a deferred one leaves the check
 and the insert open to another process's `drop_catalog` landing between them — fences
-a walk running in ANOTHER process. A ROOT-SET change is a mutation for the same reason
+a walk running in ANOTHER process.
+
+**Adopting a stored snapshot is fenced too.** A read can race a create or delete, and
+adopting what it read would cache the pre-mutation list for a whole TTL. The rules,
+each pinned by an interleaving test in `test_skill_catalog_snapshot.py`:
+
+- **One read.** `catalog_snapshot` reads the scope row and its rows in ONE
+  transaction and returns the epoch `store_catalog` wrote into that scope row. As two
+  statements, a drop committed between them would answer a build time with no rows,
+  adopted as a complete, empty catalog. `_db()` rolls back a transaction an earlier
+  failure left open on the shared connection before handing it out (and `sync` and
+  `store_catalog` roll back their own whichever way they fail), since `BEGIN` inside
+  it would fail.
+- **Publish, then re-read the epoch.** `_adopt_snapshot` publishes the rows and then
+  re-reads the index epoch, retracting them when it differs or cannot be read: that
+  is how a drop by ANOTHER loader or process shows. Re-read before publishing, a drop
+  landing between the two would leave the rows cached for a whole TTL. An epoch that
+  is not a SQLite INTEGER is "no usable epoch", so the caller walks: the index is
+  agent-writable, and INTEGER affinity still keeps a fractional, out-of-range or
+  infinite value as REAL (and a TEXT or BLOB that does not convert as it is), none of
+  which is an exact integer epoch. A drop resets such a value, and the largest
+  INTEGER, instead of carrying it forward, so `+ 1` never produces a REAL, and the
+  reset is always below the largest INTEGER, so it never rewrites the epoch it
+  replaces. A schema
+  version that is not an INTEGER is a version mismatch, compared by type before any
+  `int()` (which raises `OverflowError` on an infinite REAL): the index is dropped and
+  rebuilt, as for any other mismatch, rather than disabled for good.
+- **Generation and watermark.** Before publishing, the rows are refused when this
+  loader closed or moved its generation since `_iter` captured it; `_iter` reads the
+  snapshot only while every drop has landed. `_snapshot_clean_generation` is the newest
+  generation a committed drop covers, and the snapshot tier is used only while it
+  equals `_catalog_generation`. `_invalidate_iter_cache` moves the generation FIRST and
+  empties the frontmatter cache, the checked paths, the stat fingerprints and the
+  "still building" marks, then drops, then clears the in-memory lists cached before
+  the drop (in a `finally`, so a drop that raises cannot leave them served), so the
+  tier is off while the drop runs and a turn on this loader keeps its list meanwhile.
+  A mark a cold read sets while the drop waits describes the post-mutation tree, so
+  it survives the drop, and a list a post-mutation walk published meanwhile is kept.
+  The drop waits the index's own busy timeout and no longer: it holds the handle's
+  lock, so every reader of that handle waits as long. Only a drop that commits
+  advances the watermark (`_advance_clean_locked`), and only to the generation it read
+  before dropping, so it never vouches for a later invalidation whose own drop failed.
+- **A failed drop lands with the next store.** `_run_catalog_build` passes
+  `drop_first` when the watermark is behind its generation, and `store_catalog` lands
+  the drop in the same `IMMEDIATE` transaction, after its epoch check, storing the rows
+  under the epoch the drop moved to. As a write of its own the drop would refuse the
+  walk's rows before the store or delete them after it, and either would block the
+  serial worker. A walk whose generation moved before its store is neither stored nor
+  published: with a failed drop the epoch has not moved, so `store_catalog` alone would
+  accept those pre-mutation rows under a fresh build time.
+- **Drops and stores do not interleave.** `_catalog_drop_lock` is held across an
+  invalidation's drop and across a build's generation check and store. A mutation that
+  overtakes the check therefore drops AFTER the store and deletes its rows, and an
+  invalidation whose generation a drop that landed meanwhile already covers does not
+  drop again, so mutations queued behind one store cost one drop.
+- **A miss only.** A list already cached when the stored read returns, such as a walk
+  that published meanwhile, is served and kept; it is checked before the fence, so a
+  fresh list is never refused and walked again.
+
+A refused read does not serve its rows, which name what the mutation removed; it falls
+into the post-mutation cold window below, and its own cold path queues the walk. What
+the fence does not cover is stated rather than implied. It is per loader: a sibling
+loader in this process (the Slack Home tab, the metrics inventory, the dashboard's own
+loader) or in another process that already HOLDS a list keeps serving it until its
+`_ITER_CACHE_TTL_SECS` expires; a drop that commits after a reader's epoch re-read is
+the same case. And a drop that fails is known only to the loader that attempted it:
+another loader or process adopts the stored rows (including any a store it overtook
+put there) until a drop lands or its own revalidation re-walks. A ROOT-SET change is a mutation for the same reason
 and takes the same path: `_adopt_extra_paths` invalidates rather than only clearing
 the in-memory list, since the stored snapshot belongs to the old root set. And
 `_run_catalog_build` captures its scope id BEFORE the walk and refuses to publish when
@@ -4065,9 +4154,13 @@ than serving the pre-mutation one, so on a tree whose walk outlasts
 `_COLD_CATALOG_WAIT_SECS` the next turn re-enters the cold path and carries the
 *discovery in progress* notice, with `always: true` bodies not yet injected. Serving
 the pre-mutation list instead would contradict the one thing the mutation path
-guarantees — that a skill written through the app is visible immediately — and would
-do it silently. The invalidation therefore also QUEUES the re-walk rather than waiting
-for the next turn to demand it, which bounds that window to the walk's own duration.
+guarantees — that a skill written through the app is visible once the write returns —
+and would do it silently. A turn on the same loader that reads while the
+invalidation's drop waits is served the list it had, since that read is ordered
+before a write that has not returned yet. The invalidation therefore also QUEUES the re-walk of every scope it
+had cached rather than waiting for the next turn to demand it, which bounds that window
+to the walk's own duration; a scope it did not have cached, such as one whose snapshot
+read the fence refused, is queued by that read's own cold path.
 
 A refresh is single-flight per scope, and the worker drains scopes SERIALLY, so
 several sessions in different trusted projects cost one walk of the shared global tree
@@ -4089,8 +4182,11 @@ queued build the worker abandons never reaches the `finally` that would have set
 and a cold caller would otherwise sit out its whole budget.
 
 **The one case that waits, and what it is allowed to withhold.** A scope with no
-stored snapshot at all — a machine's first run, or one whose index file was deleted —
-waits on the background build for at most `_COLD_CATALOG_WAIT_SECS`. A small tree
+stored snapshot to serve — a machine's first run, one whose index file was deleted, or
+the post-mutation cold window (the rows were dropped, a drop has not landed, or a read
+that raced one was refused) — waits on the background build for at most
+`_COLD_CATALOG_WAIT_SECS`. After a burst of mutations a scope that would otherwise be
+served from the snapshot can therefore go cold briefly, the same intended window. A small tree
 finishes inside that budget, and finishing is what makes `always: true` bodies known
 and therefore honored. Past the budget the partial answer is served, the scope is
 marked in `_catalog_incomplete`, and `catalog_status()` reports `"building"` so a

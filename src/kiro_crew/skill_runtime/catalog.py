@@ -28,7 +28,7 @@ import threading
 import time
 from contextvars import copy_context
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 if TYPE_CHECKING:
     from kiro_crew.skills import SkillsLoader, _ScopedSkillEntry
@@ -215,11 +215,13 @@ def _iter(
        and every short-lived loader (the unsigned MCP fallback builds one per
        call), lands here rather than walking.
 
-    Only a scope with no snapshot at all — a machine's first run, or one whose
-    index file was deleted — waits, and then for at most
-    ``_COLD_CATALOG_WAIT_SECS`` on a background build. Past that the partial
-    answer is served with the scope marked incomplete, so a caller can say
-    "still discovering" instead of "no skills"; see :meth:`catalog_status`.
+    Only a scope with no snapshot to serve waits, and then for at most
+    ``_COLD_CATALOG_WAIT_SECS`` on a background build: a machine's first run,
+    one whose index file was deleted, and the post-mutation cold window, where
+    an invalidation has dropped the stored rows (or could not, and so stopped
+    trusting them) or fenced a read that raced it. Past that the partial answer
+    is served with the scope marked incomplete, so a caller can say "still
+    discovering" instead of "no skills"; see :meth:`catalog_status`.
 
     A served list says only which files EXIST. Mapping scope, disabled apps,
     project consent and ``repo_scope`` are all applied live on top of it, and
@@ -233,18 +235,25 @@ def _iter(
     with loader._catalog_lock:
         cached = loader._iter_cache.get(key)
         stale = cached is not None and now >= cached[0]
+        # Captured BEFORE the stored read, the fence `_run_catalog_build` applies
+        # to a walk; `_adopt_snapshot` refuses the rows if it has moved.
+        generation = loader._catalog_generation
+        trusted = _snapshot_trusted_locked(loader)
     if cached is not None:
         if stale:
             loader._request_catalog_refresh(key)
         return cached[1]
 
-    snapshot = loader._load_catalog_snapshot(key)
+    snapshot = loader._load_catalog_snapshot(key) if trusted else None
     if snapshot is not None:
-        rows, built_at = snapshot
-        loader._adopt_catalog(key, rows, {}, complete=True)
-        if time.time() - built_at >= sk._CATALOG_REVALIDATE_AFTER_SECS:
-            loader._request_catalog_refresh(key)
-        return rows
+        served = loader._adopt_snapshot(key, snapshot, generation=generation)
+        if served is not None:
+            return served
+        # Fenced: a mutation raced the read (its rows name what it removed, so
+        # serving them would hand back a deleted skill), the loader closed, or the
+        # epoch is unusable. The cold path below queues the re-walk itself and
+        # waits on it (joining the mutation's own, when the scope was cached).
+        logger.debug("skill catalog: the stored snapshot of %r was fenced", key or "<global>")
 
     with loader._catalog_lock:
         already_reported = key in loader._catalog_incomplete
@@ -265,6 +274,8 @@ def _iter(
     # not the same as the answer being ready.
     deadline = time.monotonic() + sk._COLD_CATALOG_WAIT_SECS
     while True:
+        # Load-bearing: a fenced snapshot read lands here for a scope the mutation
+        # did not have cached, so nothing else has queued its walk.
         done = loader._request_catalog_refresh(key)
         remaining = deadline - time.monotonic()
         if done is None or remaining <= 0:
@@ -353,19 +364,36 @@ def _snapshot_admitted_roots(loader: SkillsLoader) -> tuple[str, ...]:
     row read back from the index has neither guarantee, so it is held to the
     union of both: this loader's roots plus the same provider roots the mapping
     walker admits. Lexical, so screening a whole snapshot costs no syscalls.
+
+    Memoised per catalog generation and root set, because every unvetted read
+    checks against it: resolving each root per read would make a snapshot-served
+    listing pay one ``realpath`` per root per row. Every invalidation, a
+    root-set change included, moves the generation and so recomputes it.
     """
     from kiro_crew import skills as sk  # circular import: the facade imports this module
 
-    return (
+    memo_key = (loader._catalog_generation, loader._dir, tuple(loader._extra_paths))
+    memo = loader._admitted_roots_memo
+    if memo is not None and memo[0] == memo_key:
+        return memo[1]
+    roots = (
         os.path.realpath(loader._dir),
         *(os.path.realpath(path) for path in loader._extra_paths),
         *sk._trusted_skill_roots(),
     )
+    loader._admitted_roots_memo = (memo_key, roots)
+    return roots
 
 
-def _load_catalog_snapshot(
-    loader: SkillsLoader, project_key: str
-) -> tuple[list[tuple[str, Path, str | None]], float] | None:
+class _StoredCatalog(NamedTuple):
+    """A screened stored enumeration, with the epoch the index read it at."""
+
+    rows: list[tuple[str, Path, str | None]]
+    built_at: float
+    epoch: int
+
+
+def _load_catalog_snapshot(loader: SkillsLoader, project_key: str) -> _StoredCatalog | None:
     """Read this scope's stored enumeration, or ``None`` when there is none.
 
     ``None`` and an empty row list are different answers: the second means this
@@ -384,10 +412,10 @@ def _load_catalog_snapshot(
     stand between a row and a read. Here, every unconfined row must name a path
     under :meth:`_snapshot_admitted_roots` — lexical, so a whole snapshot is
     screened without a syscall — and rows that fail are dropped rather than
-    served. Then each surviving unconfined path is recorded as NOT YET ADMITTED,
-    because containment alone does not say the file is still a regular file in a
-    non-sensitive location; ``_read_enumerated_skill_bytes`` re-runs
-    ``validate_file_path`` on it before the first read.
+    served. Then, because lexical containment does not say where the file
+    resolves now, ``_read_enumerated_skill_bytes`` checks each unconfined path
+    before its first read: a stored row is never vetted
+    (see :meth:`_vet_unconfined_path`).
     """
     from kiro_crew import skills as sk  # circular import: the facade imports this module
 
@@ -396,13 +424,11 @@ def _load_catalog_snapshot(
     stored = loader._search_index.catalog_snapshot(loader._catalog_scope_id(project_key))
     if stored is None:
         return None
-    rows_raw, built_at = stored
     admitted_roots = loader._snapshot_admitted_roots()
     own_roots = (loader._dir, *loader._extra_paths)
     provider_roots = sk._trusted_skill_roots()
     rows: list[tuple[str, Path, str | None]] = []
-    unadmitted: set[str] = set()
-    for key, path, confine_root in rows_raw:
+    for key, path, confine_root in stored.rows:
         absolute = os.path.abspath(path)
         if confine_root:
             # A confined row's root decides which directory its body is read
@@ -430,33 +456,43 @@ def _load_catalog_snapshot(
             logger.warning("skill catalog: refusing a stored row whose key is not its path")
             return None
         rows.append((key, Path(path), None))
-        unadmitted.add(str(Path(path)))
-    with loader._catalog_lock:
-        loader._snapshot_unadmitted |= unadmitted
-    return rows, built_at
+    return _StoredCatalog(rows, stored.built_at, stored.epoch)
 
 
-def _admit_snapshot_path(loader: SkillsLoader, path: Path) -> bool:
-    """Re-run the walk's admission on an unconfined path read off disk.
+def _vet_unconfined_path(loader: SkillsLoader, path: Path) -> bool:
+    """May *path* be read unconfined? Fail-closed: anything not vetted is checked.
 
-    ``True`` — and free — for every path this process walked itself, which is
-    the normal case: the set only ever holds rows adopted from the stored
-    snapshot, and a walk that republishes the scope empties it. A path in the
-    set is put through ``validate_file_path`` exactly once; admitting it retires
-    it from the set so later reads cost nothing, and a refusal leaves it in so a
-    second attempt is refused again rather than silently admitted.
+    ``True`` and free for a path the newest published walk returned, which is the
+    normal case. Otherwise it is checked on terms never weaker than the walk's:
+    ``validate_file_path`` (a representable path, the Windows UNC and link screens,
+    not sensitive, through the thread-appropriate gate), then the walk's
+    containment on what that resolved to, so the target must also sit inside one
+    of :meth:`_snapshot_admitted_roots`, as a walked file must. The walk's own
+    sensitivity check is not repeated: ``validate_file_path`` already made that
+    decision on the same resolved path. A path it admits is remembered in the
+    bounded ``_read_vetted`` so a repeated read costs nothing, unless an
+    invalidation or a walk published while it was checked, since both empty that
+    set; a refusal is not remembered, so a second attempt is checked, and refused,
+    again. Membership is tested without the lock: the walk set is replaced whole,
+    never mutated, and a missed entry only costs one more check.
     """
     from kiro_crew import skills as sk  # circular import: the facade imports this module
 
     key = str(path)
+    if key in loader._walk_vetted or key in loader._read_vetted:
+        return True
     with loader._catalog_lock:
-        if key not in loader._snapshot_unadmitted:
-            return True
-    if sk.validate_file_path(key) is None:
-        logger.warning("Refusing a stored skill path that no longer admits: %s", path)
+        generation = loader._catalog_generation
+        walk_vetted = loader._walk_vetted
+    resolved = sk.validate_file_path(key)
+    if resolved is None or not sk._within_any(resolved, loader._snapshot_admitted_roots()):
+        logger.warning("Refusing an unvetted skill path that does not admit: %s", path)
         return False
     with loader._catalog_lock:
-        loader._snapshot_unadmitted.discard(key)
+        if generation == loader._catalog_generation and walk_vetted is loader._walk_vetted:
+            loader._read_vetted[key] = None
+            while len(loader._read_vetted) > sk._VETTED_READS_MAX:
+                loader._read_vetted.popitem(last=False)
     return True
 
 
@@ -496,22 +532,76 @@ def _key_denotes_path(
     )
 
 
-def _adopt_catalog(
-    loader: SkillsLoader,
-    project_key: str,
-    rows: list[tuple[str, Path, str | None]],
-    fingerprints: dict[str, str],
-    *,
-    complete: bool,
+def _snapshot_trusted_locked(loader: SkillsLoader) -> bool:
+    """May the stored snapshot be served? The caller holds ``_catalog_lock``.
+
+    Only while every invalidation on THIS loader has had its drop land (the
+    watermark is per loader, so another loader's failed drop does not turn this
+    one's tier off):
+    ``_snapshot_clean_generation`` is the newest generation a committed drop
+    covers. An invalidation moves ``_catalog_generation`` before it drops, so the
+    tier is off while that drop runs and stays off if it fails, until a later drop
+    lands: another invalidation's, or the next build's, which folds it into its
+    own store (``store_catalog(drop_first=True)``).
+    """
+    return loader._snapshot_clean_generation == loader._catalog_generation
+
+
+def _advance_clean_locked(loader: SkillsLoader, target: int) -> None:
+    """Record a committed drop as covering generations up to *target*; lock held.
+
+    *target* must be read BEFORE the drop: every invalidation up to it had already
+    changed the tree, so the drop covers it, while one that moves the generation
+    later can change the tree after the drop committed and stays uncovered.
+    """
+    loader._snapshot_clean_generation = max(loader._snapshot_clean_generation, target)
+
+
+def _publish_locked(
+    loader: SkillsLoader, project_key: str, rows: list[tuple[str, Path, str | None]]
 ) -> None:
+    """Serve *rows* as *project_key*'s list for a TTL. The caller holds ``_catalog_lock``."""
+    from kiro_crew import skills as sk  # circular import: the facade imports this module
+
+    loader._iter_cache[project_key] = (time.monotonic() + sk._ITER_CACHE_TTL_SECS, rows)
+    loader._catalog_incomplete.discard(project_key)
+
+
+def _adopt_snapshot(
+    loader: SkillsLoader, project_key: str, snapshot: _StoredCatalog, *, generation: int
+) -> list[tuple[str, Path, str | None]] | None:
+    """Serve a stored enumeration for *project_key*, or ``None`` when it is fenced.
+
+    It only fills a MISS: a list already cached (a walk that published while the
+    stored read ran) is the fresher answer and is returned instead. Otherwise the
+    rows are refused when this loader closed or moved its generation since
+    *generation*. ``_iter`` read them only while every drop had landed, and the
+    watermark never passes the generation, so an unchanged generation means that
+    still holds. Then they are published and the index epoch is re-read AFTER: a
+    different or unreadable value means a ``drop_catalog`` from another loader or
+    process committed after the stored read, and the rows are retracted. Re-read
+    before publishing instead, a drop landing between the two would leave them
+    cached for a whole TTL.
+    """
     from kiro_crew import skills as sk  # circular import: the facade imports this module
 
     with loader._catalog_lock:
-        loader._iter_cache[project_key] = (time.monotonic() + sk._ITER_CACHE_TTL_SECS, rows)
-        if fingerprints:
-            loader._catalog_fingerprints[project_key] = fingerprints
-        if complete:
-            loader._catalog_incomplete.discard(project_key)
+        cached = loader._iter_cache.get(project_key)
+        if cached is not None:
+            return cached[1]
+        if loader._closed or generation != loader._catalog_generation:
+            return None
+        _publish_locked(loader, project_key, snapshot.rows)
+        published = loader._iter_cache[project_key]
+        index = loader._search_index
+    if index is None or index.catalog_epoch() != snapshot.epoch:
+        with loader._catalog_lock:
+            if loader._iter_cache.get(project_key) is published:
+                del loader._iter_cache[project_key]
+        return None
+    if time.time() - snapshot.built_at >= sk._CATALOG_REVALIDATE_AFTER_SECS:
+        loader._request_catalog_refresh(project_key)
+    return snapshot.rows
 
 
 def _request_catalog_refresh(loader: SkillsLoader, project_key: str) -> threading.Event | None:
@@ -596,8 +686,6 @@ def _run_catalog_build(loader: SkillsLoader, project_key: str, generation: int) 
     is strictly better than failing a turn over a tree that could not be read
     this once.
     """
-    from kiro_crew import skills as sk  # circular import: the facade imports this module
-
     try:
         with loader._catalog_lock:
             if loader._closed:
@@ -625,15 +713,36 @@ def _run_catalog_build(loader: SkillsLoader, project_key: str, generation: int) 
         # `"unavailable"` is the opposite case — the rows are fine and only the
         # database is missing (a read-only home), and refusing to serve them
         # would make every turn re-walk.
-        outcome = (
-            index.store_catalog(
-                scope_id,
-                [(name, str(path), within or "") for name, path, within in rows],
-                epoch=epoch,
+        #
+        # Under the drop lock, which an invalidation holds across its own drop: a
+        # mutation that overtakes the check below therefore drops AFTER this store
+        # and deletes its rows, rather than dropping first and having them land
+        # on top.
+        with loader._catalog_drop_lock:
+            with loader._catalog_lock:
+                if generation != loader._catalog_generation:
+                    # A mutation landed while this walk ran. Its drop can have
+                    # FAILED, leaving the epoch unmoved, so the store below would
+                    # accept these pre-mutation rows under a fresh build time;
+                    # neither persist nor publish them.
+                    return
+                # A drop no invalidation could land goes into this store's own
+                # transaction. As a write of its own it would refuse these rows
+                # (it moves the epoch) or, after them, delete them.
+                drop_first = loader._snapshot_clean_generation < generation
+            outcome = (
+                index.store_catalog(
+                    scope_id,
+                    [(name, str(path), within or "") for name, path, within in rows],
+                    epoch=epoch,
+                    drop_first=drop_first,
+                )
+                if index is not None
+                else "unavailable"
             )
-            if index is not None
-            else "unavailable"
-        )
+            if outcome == "stored" and drop_first:
+                with loader._catalog_lock:
+                    _advance_clean_locked(loader, generation)
         if outcome == "stale":
             logger.debug("skill catalog: another process invalidated mid-walk; dropping")
             return
@@ -649,15 +758,21 @@ def _run_catalog_build(loader: SkillsLoader, project_key: str, generation: int) 
             if scope_id != loader._catalog_scope_id(project_key):
                 logger.debug("skill catalog: root set changed mid-walk; dropping the result")
                 return
-            loader._iter_cache[project_key] = (time.monotonic() + sk._ITER_CACHE_TTL_SECS, rows)
+            # A walk REPLACES whatever is cached: it read the live tree, so unlike
+            # a stored snapshot it is never the staler answer. That, the
+            # fingerprints and the paths it vets are why it does not go through
+            # `_adopt_snapshot`.
+            _publish_locked(loader, project_key, rows)
             loader._catalog_fingerprints[project_key] = fingerprints
-            loader._catalog_incomplete.discard(project_key)
-            # Only the paths THIS walk returned are admitted. A forged row the
-            # walk rejected keeps its marker, so a reader still holding the old
-            # list cannot read it unadmitted.
-            loader._snapshot_unadmitted -= {
+            # Exactly the paths THIS walk returned are vetted, replacing every
+            # earlier walk's set and every path a check admitted: a row the newest
+            # walk rejected, or a skill deleted since, is checked again if a reader
+            # still holding an older list reads it. Replaced whole so a lock-free
+            # reader never sees it change.
+            loader._walk_vetted = frozenset(
                 str(path) for _name, path, within in rows if within is None
-            }
+            )
+            loader._read_vetted.clear()
     except Exception:  # noqa: BLE001 — a failed walk must not kill the worker
         logger.warning("skill catalog: background walk failed", exc_info=True)
     finally:
@@ -671,6 +786,26 @@ def _run_catalog_build(loader: SkillsLoader, project_key: str, generation: int) 
             entry[0].set()
         if index_to_close is not None:
             index_to_close.close()
+
+
+def _land_invalidation_drop(loader: SkillsLoader, generation: int) -> None:
+    """Drop the stored catalog for the invalidation at *generation*.
+
+    Under ``_catalog_drop_lock``, the lock a build holds across its store, so a
+    drop and a store never interleave. Skipped when a drop that landed meanwhile
+    (another invalidation's, or a build's ``drop_first``) already covers
+    *generation*: a second one would only delete rows stored since and refuse
+    every walk in flight in other processes.
+    """
+    with loader._catalog_drop_lock:
+        with loader._catalog_lock:
+            if loader._snapshot_clean_generation >= generation:
+                return
+            target = loader._catalog_generation
+            index = loader._search_index
+        if index is None or index.drop_catalog():
+            with loader._catalog_lock:
+                _advance_clean_locked(loader, target)
 
 
 def _catalog_fingerprints_for(
@@ -875,25 +1010,56 @@ def _invalidate_iter_cache(loader: SkillsLoader) -> None:
     counter covers this loader's own worker; the index's epoch, which
     ``drop_catalog`` bumps, covers a walk running in another process.
 
+    The order is generation, drop, then the list. The generation moves first so
+    the snapshot tier is off while the drop runs; ``_snapshot_clean_generation``
+    catches up only once a drop has landed, and a failed drop leaves it behind
+    until a later one lands. The frontmatter cache, the checked paths, the stat
+    fingerprints and the "still building" marks go before the drop, since the
+    mutation already changed what they describe; a mark a cold read sets while
+    the drop waits describes the post-mutation tree, so it survives. Only the
+    list keeps being served while the drop waits, and the lists cached before it
+    are cleared even when the drop raises. A list a post-mutation walk published
+    during the wait is kept, since it already describes the changed tree.
+
     Emptying the list rather than serving the pre-mutation one is what makes the
-    mutator's edit visible immediately, and it is also why the re-walk is QUEUED
-    here instead of waiting for the next turn to demand it: on a tree whose walk
-    outlasts ``_COLD_CATALOG_WAIT_SECS`` the next turn would otherwise re-enter
-    the cold path, and starting the walk now bounds that window to the walk's own
-    duration.
+    mutator's edit visible as soon as the mutation returns. A turn that reads on
+    this loader while the drop waits is served the list it already had: that read
+    is ordered before the mutation, which has not returned yet. Emptying it is
+    also why the re-walk is QUEUED here instead of waiting for the next turn to
+    demand it: on a tree whose walk outlasts ``_COLD_CATALOG_WAIT_SECS`` the next
+    turn would otherwise re-enter the cold path, and starting the walk now bounds
+    that window to the walk's own duration.
     """
     loader._disabled_apps_cache = None
     with loader._catalog_lock:
-        scopes = list(loader._iter_cache)
-        loader._iter_cache = {}
+        # Moved BEFORE the drop: it fences every walk already in flight, and it
+        # turns the snapshot tier off (`_snapshot_trusted_locked`) until the drop
+        # lands, since the stored rows are the pre-mutation ones until then.
+        loader._catalog_generation += 1
+        generation = loader._catalog_generation
+        # A mutation can change what a path a check admitted now holds, so those
+        # are checked again. The walk set stays: the re-walk queued below
+        # replaces it, and it is what a walk itself vouched for.
+        loader._read_vetted.clear()
+        # Cleared here, with the generation, so a cold read that serves a
+        # partial answer while the drop waits keeps its "still building" mark.
         loader._catalog_fingerprints = {}
         loader._catalog_incomplete.clear()
-        loader._snapshot_unadmitted.clear()
-        loader._catalog_generation += 1
-        index = loader._search_index
+        listed = dict(loader._iter_cache)
     loader._fm_cache.clear()
-    if index is not None:
-        index.drop_catalog()
+    try:
+        _land_invalidation_drop(loader, generation)
+    finally:
+        with loader._catalog_lock:
+            # The lists go AFTER the drop, so a turn on this loader keeps being
+            # served while the drop waits on the database: a re-walk queued sooner
+            # would wait on the same index lock anyway. Only the entries cached
+            # before it: one a walk published since is post-mutation already.
+            scopes = [
+                scope for scope, entry in listed.items() if loader._iter_cache.get(scope) is entry
+            ]
+            for scope in scopes:
+                del loader._iter_cache[scope]
     for scope in scopes:
         loader._request_catalog_refresh(scope)
 

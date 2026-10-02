@@ -50,6 +50,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import threading
 import time
 from pathlib import Path
@@ -245,6 +246,64 @@ class SyncOutcome(NamedTuple):
     pending: frozenset[str]
 
 
+def _coerce_epoch(value: object) -> int | None:
+    """*value* as an invalidation epoch, or ``None`` unless it is a SQLite INTEGER.
+
+    The index is an agent-writable crew-home leaf, so a stored epoch can be any
+    SQLite value, and anything else is "no usable epoch", which the caller answers
+    by walking. A REAL, TEXT or BLOB is never an exact integer epoch, whatever the
+    column's INTEGER affinity: SQLite keeps a fractional REAL (``1.5``) and one
+    outside the 64-bit range as REAL, and an infinite one cannot become an
+    ``int`` at all.
+    """
+    return value if type(value) is int else None
+
+
+#: The epoch a drop writes: always a 64-bit INTEGER, never the one it replaces.
+#: One above the current value below the top of the range. Otherwise (a value an
+#: agent wrote, or the top, where ``+ 1`` would make a REAL) one above the scope
+#: epochs below ``top - 1``, so at most ``top - 1`` and never the top a walk or
+#: snapshot may hold. A scope epoch other than the current one was hand-written,
+#: and matching it gives an agent nothing it could not write directly, since the
+#: rows are vetted at read.
+_BUMP_EPOCH_SQL = (
+    "UPDATE skill_catalog_epoch SET epoch = CASE "
+    "WHEN typeof(epoch) = 'integer' AND epoch < 9223372036854775807 THEN epoch + 1 "
+    "ELSE (SELECT COALESCE(MAX(epoch), 0) + 1 FROM skill_catalog_scope "
+    "WHERE typeof(epoch) = 'integer' AND epoch < 9223372036854775806) END WHERE id = 0"
+)
+
+
+def _rollback_quietly(db: sqlite3.Connection) -> None:
+    """Roll back *db*'s open transaction, if any; a failure to do so is not raised."""
+    if db.in_transaction:
+        try:
+            db.rollback()
+        except sqlite3.Error:
+            pass
+
+
+def _drop_stored_catalog(db: sqlite3.Connection) -> None:
+    """Bump the epoch and forget every stored enumeration, inside the caller's transaction."""
+    db.execute(_BUMP_EPOCH_SQL)
+    db.execute("DELETE FROM skill_catalog")
+    db.execute("DELETE FROM skill_catalog_scope")
+
+
+class CatalogSnapshot(NamedTuple):
+    """One scope's stored enumeration, read in a single transaction.
+
+    *epoch* is the invalidation epoch that transaction saw. A caller that adopts
+    the rows later compares it with :meth:`SkillSearchIndex.catalog_epoch` to learn
+    whether a :meth:`SkillSearchIndex.drop_catalog`, from any connection, has
+    committed since the read.
+    """
+
+    rows: list[tuple[str, str, str]]
+    built_at: float
+    epoch: int
+
+
 class SkillSearchIndex:
     """Term vocabulary per skill key, persisted in one SQLite file.
 
@@ -265,6 +324,7 @@ class SkillSearchIndex:
         # it again. SQLite serializes writers anyway; this serializes the shared
         # connection object, which is what check_same_thread=False stops policing.
         self._lock = threading.RLock()
+        self._epoch_warned = False
 
     # ── connection ──
 
@@ -289,6 +349,13 @@ class SkillSearchIndex:
             if self._unusable:
                 return None
             if self._conn is not None:
+                if self._conn.in_transaction:
+                    # Every method finishes its own transaction before it returns
+                    # the lock, so one still open here was left by a failure. A
+                    # BEGIN inside it would fail, turning each later read, store
+                    # and drop into a silent no-op pinned to its stale view.
+                    logger.warning("skill-search-index: rolling back a transaction left open")
+                    _rollback_quietly(self._conn)
                 return self._conn
             try:
                 self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -307,10 +374,17 @@ class SkillSearchIndex:
                         "INSERT INTO skill_index_schema (version, tokenizer) VALUES (?, ?)",
                         (_SCHEMA_VERSION, signature),
                     )
-                elif int(row[0]) != _SCHEMA_VERSION or str(row[1]) != signature:
+                elif (
+                    type(row[0]) is not int or row[0] != _SCHEMA_VERSION or str(row[1]) != signature
+                ):
                     # A tokenizer change is as invalidating as a schema change:
                     # stored terms are its output, so old rows would simply stop
-                    # matching new queries with no error to notice.
+                    # matching new queries with no error to notice. A version that
+                    # is not an INTEGER is a mismatch too, compared by type first:
+                    # the file is agent-writable, and a REAL past the 64-bit range
+                    # (or an infinite one) raises OverflowError out of int(), so it
+                    # is rebuilt like any other mismatch rather than disabling
+                    # the index for good.
                     conn.executescript(_DROP)
                     conn.executescript(_DDL)
                     conn.execute(
@@ -380,10 +454,7 @@ class SkillSearchIndex:
                 db.commit()
                 return True
             except (sqlite3.Error, OSError):
-                try:
-                    db.rollback()
-                except sqlite3.Error:
-                    pass
+                _rollback_quietly(db)
                 logger.debug("skill-search-index: metadata persistence unavailable", exc_info=True)
                 return False
 
@@ -431,10 +502,21 @@ class SkillSearchIndex:
                 row = db.execute("SELECT epoch FROM skill_catalog_epoch WHERE id = 0").fetchone()
             except sqlite3.Error:
                 return None
-            return int(row[0]) if row is not None else None
+            return self._valid_epoch(row[0]) if row is not None else None
 
-    def catalog_snapshot(self, scope: str) -> tuple[list[tuple[str, str, str]], float] | None:
-        """The stored enumeration for *scope*, plus the wall clock it was built at.
+    def _valid_epoch(self, value: object) -> int | None:
+        """:func:`_coerce_epoch`, warning once per handle about an unusable value."""
+        epoch = _coerce_epoch(value)
+        if epoch is None and not self._epoch_warned:
+            self._epoch_warned = True
+            logger.warning(
+                "skill-search-index: the catalog epoch is not a finite integer; "
+                "the stored catalog is ignored until a drop resets it"
+            )
+        return epoch
+
+    def catalog_snapshot(self, scope: str) -> CatalogSnapshot | None:
+        """The stored enumeration for *scope*, the wall clock it was built at, and the epoch.
 
         ``None`` means there is nothing to serve — an unusable database, or a
         scope this machine has never enumerated — and the caller must then build
@@ -452,16 +534,28 @@ class SkillSearchIndex:
         are adversary-controlled numbers, and materializing an unbounded table would
         be an out-of-memory crash on every load; dropping only the offending rows
         would instead serve a truncated catalog as though it were complete.
+
+        The scope row and its rows are read in ONE transaction. As separate
+        statements, a :meth:`drop_catalog` committed by another connection between
+        them would answer the scope's ``built_at`` with no rows, which a caller
+        adopts as a complete, empty catalog. The epoch returned is the one
+        :meth:`store_catalog` wrote into the scope row, in its own transaction, so
+        it is the epoch these exact rows were stored under.
         """
         with self._lock:
             db = self._db()
             if db is None:
                 return None
             try:
+                db.execute("BEGIN")
                 scope_row = db.execute(
-                    "SELECT built_at FROM skill_catalog_scope WHERE scope = ?", (scope,)
+                    "SELECT built_at, epoch FROM skill_catalog_scope WHERE scope = ?", (scope,)
                 ).fetchone()
                 if scope_row is None:
+                    return None
+                epoch = self._valid_epoch(scope_row[1])
+                built_at = float(scope_row[0])
+                if epoch is None or not math.isfinite(built_at):
                     return None
                 rows = [
                     (str(key), str(path), str(confine_root))
@@ -480,12 +574,21 @@ class SkillSearchIndex:
                 if any(len(field) > _MAX_CATALOG_FIELD_CHARS for row in rows for field in row):
                     logger.warning("skill-search-index: refusing a catalog row field over cap")
                     return None
-                return rows, float(scope_row[0])
+                return CatalogSnapshot(rows, built_at, epoch)
             except (sqlite3.Error, ValueError, TypeError, MemoryError):
                 return None
+            finally:
+                # Read-only, so ending it by rollback discards nothing; it releases
+                # the WAL read mark the transaction holds.
+                _rollback_quietly(db)
 
     def store_catalog(
-        self, scope: str, rows: Sequence[tuple[str, str, str]], *, epoch: int | None
+        self,
+        scope: str,
+        rows: Sequence[tuple[str, str, str]],
+        *,
+        epoch: int | None,
+        drop_first: bool = False,
     ) -> str:
         """Replace *scope*'s stored enumeration with *rows*, in one transaction.
 
@@ -514,6 +617,12 @@ class SkillSearchIndex:
         deferred transaction would leave the check and the insert open to another
         process's :meth:`drop_catalog` landing between them, which is exactly the
         stale republish the epoch exists to stop.
+
+        *drop_first* lands a :meth:`drop_catalog` an earlier invalidation could not
+        commit, in this SAME transaction and after the epoch check, so the rows are
+        stored under the epoch the drop moves to. As a separate write before the
+        store, the drop would refuse this walk's own rows; after it, the drop would
+        delete them.
         """
         if epoch is None:
             return "unavailable"
@@ -526,9 +635,14 @@ class SkillSearchIndex:
                 current = db.execute(
                     "SELECT epoch FROM skill_catalog_epoch WHERE id = 0"
                 ).fetchone()
-                if current is None or int(current[0]) != epoch:
+                if current is None or _coerce_epoch(current[0]) != epoch:
                     db.rollback()
                     return "stale"
+                if drop_first:
+                    _drop_stored_catalog(db)
+                    epoch = db.execute(
+                        "SELECT epoch FROM skill_catalog_epoch WHERE id = 0"
+                    ).fetchone()[0]
                 db.execute("DELETE FROM skill_catalog WHERE scope = ?", (scope,))
                 db.executemany(
                     "INSERT INTO skill_catalog(scope, ordinal, key, path, confine_root) "
@@ -546,16 +660,16 @@ class SkillSearchIndex:
                 )
                 db.commit()
                 return "stored"
-            except (sqlite3.Error, OSError, ValueError, TypeError):
-                try:
-                    db.rollback()
-                except sqlite3.Error:
-                    pass
+            # OverflowError: a value that does not bind. The transaction is open, so
+            # it must be rolled back here like any other failure, never left holding
+            # the write lock.
+            except (sqlite3.Error, OSError, ValueError, TypeError, OverflowError):
+                _rollback_quietly(db)
                 logger.debug("skill-search-index: catalog persistence unavailable", exc_info=True)
                 return "unavailable"
 
-    def drop_catalog(self) -> None:
-        """Forget every stored enumeration and bump the epoch.
+    def drop_catalog(self) -> bool:
+        """Forget every stored enumeration and bump the epoch; ``True`` once committed.
 
         Called when a skill is created, updated or deleted. It clears ALL scopes
         rather than the mutating one: a scope is derived from a root set plus a
@@ -569,23 +683,31 @@ class SkillSearchIndex:
         afterwards and silently undo the invalidation for every later process. It
         shares one ``IMMEDIATE`` transaction with the delete so a concurrent
         :meth:`store_catalog` cannot land between the two.
+
+        ``False`` means the stored rows may still be there: no usable database,
+        or a neighbour held the write lock past the busy timeout. The caller must
+        then stop trusting what :meth:`catalog_snapshot` serves, since nothing
+        recorded the invalidation for it. The wait is the connection's own busy
+        timeout: this runs under ``self._lock``, so a longer one would stall every
+        reader of this handle for as long.
+
+        An epoch that is not a 64-bit INTEGER, or is the largest one, is reset (see
+        ``_BUMP_EPOCH_SQL``), so a tampered value heals on the next drop instead of
+        surviving it.
         """
         with self._lock:
             db = self._db()
             if db is None:
-                return
+                return False
             try:
                 db.execute("BEGIN IMMEDIATE")
-                db.execute("DELETE FROM skill_catalog")
-                db.execute("DELETE FROM skill_catalog_scope")
-                db.execute("UPDATE skill_catalog_epoch SET epoch = epoch + 1 WHERE id = 0")
+                _drop_stored_catalog(db)
                 db.commit()
+                return True
             except (sqlite3.Error, OSError):
-                try:
-                    db.rollback()
-                except sqlite3.Error:
-                    pass
+                _rollback_quietly(db)
                 logger.debug("skill-search-index: catalog invalidation failed", exc_info=True)
+                return False
 
     def sync(
         self,
@@ -630,6 +752,9 @@ class SkillSearchIndex:
         deferred: set[str] = set()
         pending: set[str] = set()
         deadline = time.monotonic() + budget_seconds if budget_seconds is not None else None
+        # Rolled back in the `finally` whichever way this fails: the writes open an
+        # implicit transaction, and one left open holds the write lock and fails
+        # every later explicit transaction on the shared connection.
         try:
             stored = dict(db.execute("SELECT key, fingerprint FROM skill_body").fetchall())
             for key, path, fingerprint in rows:
@@ -680,6 +805,8 @@ class SkillSearchIndex:
             if not _is_transient(exc):
                 self._unusable = True
             return None
+        finally:
+            _rollback_quietly(db)
 
     def _read_terms(
         self, path: str | Path, *, canonical_root: str | None = None

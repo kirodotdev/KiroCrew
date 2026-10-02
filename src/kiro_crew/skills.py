@@ -31,6 +31,7 @@ import shutil
 import stat
 import threading
 import time
+from collections import OrderedDict
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from contextvars import copy_context
@@ -102,6 +103,7 @@ from kiro_crew.skill_runtime.catalog import (  # noqa: F401
     _literal_split,
     _matches_any,
     _project_prefix,
+    _StoredCatalog,
     _with_canonical_globs,
 )
 from kiro_crew.skill_runtime.delivery import _family_line, _namespace_groups  # noqa: F401
@@ -238,7 +240,10 @@ _MAX_DOLLAR_SKILLS = 5
 # _request_catalog_refresh). So the deadline bounds how out-of-date an OUT OF BAND
 # change (an AIM sync, a manual cp) may be, and nothing else — the app's own
 # create/update/delete/refresh all call _invalidate_iter_cache(), so a skill
-# written through the app is visible immediately regardless of this value.
+# written through the app is visible at once to the loader that wrote it. The
+# fence is per loader: another loader, in this process or another one, that
+# already HOLDS a list keeps serving it until this deadline, and only a loader
+# that reads the stored snapshot afterwards sees the drop.
 #
 # The value is sized against the walk it amortizes, not picked for tidiness: a walk
 # of a real skills tree (645 files across 21 roots on a dev desktop, incl.
@@ -263,6 +268,11 @@ _ITER_CACHE_TTL_SECS = 60.0
 # 5,000-skill tree from turning that guarantee into a minute of silence — such a
 # tree is served from its snapshot on every run but the first.
 _COLD_CATALOG_WAIT_SECS = 2.0
+#: Paths a check admitted for an unconfined read are remembered up to this many,
+#: the oldest admission first out. The rows are agent-influenced (the stored
+#: snapshot), so the set must not grow with them; an evicted path only costs
+#: another check.
+_VETTED_READS_MAX = 4096
 
 # A snapshot read off disk is revalidated only when it is older than this, so a
 # process that starts, answers one call and exits does not queue a walk of a tree
@@ -2488,7 +2498,8 @@ class PendingApprovalRefused(Exception):
     target is gone), ``stale_base`` (an update merged against an older live
     version), ``invalid_layout`` (symlink / unexpected candidate entry),
     ``redaction_failed``, or ``promotion_failed`` (an OS-level I/O failure —
-    a read or write — after all checks passed). Raised by the ``*_checked`` approve variants so
+    a read or write, a refused read of the live skill's metadata included).
+    Raised by the ``*_checked`` approve variants so
     the dashboard can tell the user WHY the click did nothing; the legacy
     ``approve_pending_skill`` / ``approve_pending_update`` wrappers keep the
     ``None``-on-failure contract for existing callers.
@@ -2561,12 +2572,19 @@ class SkillsLoader:
         # search, a list or a directory build can say "still discovering" instead
         # of reporting a truncated answer as the whole truth.
         self._catalog_incomplete: set[str] = set()
-        # Unconfined paths adopted from the STORED snapshot that this process has not
-        # itself admitted. The index is an agent-writable crew-home leaf, so a stored
-        # row is not evidence anything vetted the path it names;
-        # `_read_enumerated_skill_bytes` re-runs `validate_file_path` on a path in
-        # here before its first read. A walk that republishes a scope clears it.
-        self._snapshot_unadmitted: set[str] = set()
+        # Unconfined paths this process has VETTED, the only ones
+        # `_read_enumerated_skill_bytes` reads without first checking them
+        # (`_vet_unconfined_path`). Fail-closed: any other path, such as a row
+        # adopted from the agent-writable stored snapshot, is checked before its
+        # first read. `_walk_vetted` holds exactly the paths the newest published
+        # walk returned, replaced whole by the next; `_read_vetted` holds the
+        # paths a check admitted, bounded to `_VETTED_READS_MAX` and emptied by
+        # every invalidation and every published walk.
+        self._walk_vetted: frozenset[str] = frozenset()
+        self._read_vetted: OrderedDict[str, None] = OrderedDict()
+        # `_snapshot_admitted_roots`, keyed by (generation, skills dir, extra
+        # paths), so a vet resolves the roots once per root set, not per read.
+        self._admitted_roots_memo: tuple[tuple[object, ...], tuple[str, ...]] | None = None
         # Single-flight background builds: scope key → the event its build sets on
         # completion. Concurrent sessions sharing this loader join one walk rather
         # than each walking the same tree.
@@ -2590,6 +2608,17 @@ class SkillsLoader:
         # result is dropped rather than allowed to overwrite the newer state. The
         # index's own epoch covers the same race BETWEEN processes.
         self._catalog_generation = 0
+        # The newest generation a committed `drop_catalog` covers. The stored
+        # snapshot is served only while it equals `_catalog_generation`: an
+        # invalidation moves the generation before it drops, so the tier is off
+        # while that drop runs, and a drop that FAILS (a neighbour held the write
+        # lock past the busy timeout) leaves it behind until a later one lands.
+        self._snapshot_clean_generation = 0
+        # Held across an invalidation's drop and across a build's store, so the
+        # two never interleave: a drop always lands after a store a mutation
+        # overtook, and a drop one of them landed is not repeated by the other.
+        # Ordered before the index's own lock, never inside it.
+        self._catalog_drop_lock = threading.Lock()
         self._closed = False
         self._disabled_apps_cache: tuple[float, frozenset[str]] | None = None
         # (canonical key, allowed) pairs already audited, so the enforcement
@@ -2888,15 +2917,13 @@ class SkillsLoader:
         """Roots an unconfined row read off disk may legitimately name."""
         return _catalog._snapshot_admitted_roots(self)
 
-    def _load_catalog_snapshot(
-        self, project_key: str
-    ) -> tuple[list[tuple[str, Path, str | None]], float] | None:
+    def _load_catalog_snapshot(self, project_key: str) -> _StoredCatalog | None:
         """Read this scope's stored enumeration, or ``None`` when there is none."""
         return _catalog._load_catalog_snapshot(self, project_key)
 
-    def _admit_snapshot_path(self, path: Path) -> bool:
-        """Re-run the walk's admission on an unconfined path read off disk."""
-        return _catalog._admit_snapshot_path(self, path)
+    def _vet_unconfined_path(self, path: Path) -> bool:
+        """May *path* be read unconfined? Checks it once unless a walk returned it."""
+        return _catalog._vet_unconfined_path(self, path)
 
     @staticmethod
     def _key_denotes_path(
@@ -2905,15 +2932,11 @@ class SkillsLoader:
         """Does *key* name the skill that *absolute* holds?"""
         return _catalog._key_denotes_path(key, absolute, own_roots, provider_roots)
 
-    def _adopt_catalog(
-        self,
-        project_key: str,
-        rows: list[tuple[str, Path, str | None]],
-        fingerprints: dict[str, str],
-        *,
-        complete: bool,
-    ) -> None:
-        return _catalog._adopt_catalog(self, project_key, rows, fingerprints, complete=complete)
+    def _adopt_snapshot(
+        self, project_key: str, snapshot: _StoredCatalog, *, generation: int
+    ) -> list[tuple[str, Path, str | None]] | None:
+        """Serve a stored enumeration for *project_key*, or ``None`` when it is fenced."""
+        return _catalog._adopt_snapshot(self, project_key, snapshot, generation=generation)
 
     def _request_catalog_refresh(self, project_key: str) -> threading.Event | None:
         """Queue one background walk of *project_key*'s roots; join any in flight."""
@@ -3029,17 +3052,15 @@ class SkillsLoader:
         after an ancestor swap. Their bodies retain the global read budget.
         """
         if within is None and canonical_root is None:
-            # A path this process never walked carries no admission: the index it
-            # came from is an agent-writable crew-home leaf, and the direct read
-            # below applies no sensitive-path or UNC screen of its own, so a row
-            # naming a link into a credential home would be read as a skill body.
-            # The walk's own admission (`validate_file_path`) is therefore re-run
-            # once per snapshot-derived path, at the single point every enumerated
-            # read goes through. The set is checked for emptiness first, which is
-            # the normal case and keeps the lock off this hot path: a scope's
-            # markers are written before its rows are published, so a caller that
-            # holds rows has already observed them.
-            if self._snapshot_unadmitted and not self._admit_snapshot_path(path):
+            # A path this process never walked carries no admission: a row from the
+            # stored snapshot came out of an agent-writable crew-home leaf, and the
+            # direct read below applies no sensitive-path or UNC screen of its own,
+            # so a row naming a link into a credential home would be read as a skill
+            # body. The walk's own admission is therefore run on every path that is
+            # not already vetted (`_vet_unconfined_path`), at the single point every
+            # enumerated read goes through. Fail-closed: a path missing from the
+            # vetted sets costs one check, never an unchecked read.
+            if not self._vet_unconfined_path(path):
                 if refusal_reasons is not None:
                     refusal_reasons.append("snapshot_path_refused")
                 return None
@@ -3090,6 +3111,7 @@ class SkillsLoader:
         *,
         within: str | None,
         canonical_root: str | None = None,
+        for_write: bool = False,
     ) -> dict[str, str]:
         """Parse frontmatter with mtime-based caching.
 
@@ -3102,6 +3124,11 @@ class SkillsLoader:
         call, and statting that link can initiate a Windows UNC connection.
         Those rows are read through the descriptor-pinned reader first and use
         a digest of the admitted bytes as their cache token.
+
+        *for_write* is set by a caller that rewrites the file from what it reads
+        here. A refused unconfined read then raises ``PermissionError`` instead of
+        answering "no metadata", which would have it rewrite the skill without its
+        ``version``, ``pinned``, ``inject_on_trigger`` and ``created_at``.
         """
         if within is not None:
             return self._confined_frontmatter_and_size(path, within)[0]
@@ -3128,6 +3155,8 @@ class SkillsLoader:
         # verbatim and attacker-set `triggers`/`always` decided what auto-loaded.
         raw = self._read_enumerated_skill_bytes(path, within, canonical_root=canonical_root)
         if raw is None:
+            if for_write:
+                raise PermissionError(f"refusing to read skill metadata for a rewrite: {path}")
             logger.warning("Refusing metadata for a skill outside its vetted root: %s", path)
             return {}
         # A confined path is read-only project/provider metadata: malformed bytes
@@ -4660,7 +4689,8 @@ class SkillsLoader:
         whose ``name`` / ``created_at`` / ``version`` lines are rewritten anyway.
 
         Returns ``None`` when the slug is unsafe, the candidate is missing or is
-        not an update, or its target is not a live auto-skill. Read-only:
+        not an update, or its target is not a live auto-skill whose metadata
+        can be read (a refused rewrite read included). Read-only:
         never mutates the candidate or the live skill.
         """
         if not self._is_pending_slug_safe(slug):
@@ -4692,8 +4722,11 @@ class SkillsLoader:
             cand_body = cand_file.read_text(encoding="utf-8")
         except OSError:
             return None
-        current_version = self.get_auto_skill_version(target_name)
-        _live_fm = self._cached_frontmatter(live_file, within=None)
+        try:
+            current_version = self.get_auto_skill_version(target_name)
+            _live_fm = self._cached_frontmatter(live_file, within=None, for_write=True)
+        except OSError:
+            return None
         proposed_body = self._rewrite_update_frontmatter(
             cand_body,
             target_name=target_name,
@@ -4815,6 +4848,19 @@ class SkillsLoader:
                     "script_validation_failed",
                     report=self._redact_validation_report(_fold_report),
                 )
+        # Read the live version and frontmatter BEFORE the candidate is redacted
+        # in place. These are rewrite reads, so a live path that does not vet
+        # raises rather than answering "no metadata", and that refusal must leave
+        # the candidate byte-identical to what was staged.
+        try:
+            current_version = self.get_auto_skill_version(target_name)
+            live_fm = self._cached_frontmatter(live_skill, within=None, for_write=True)
+        except OSError:
+            logger.warning(
+                "Refusing to approve update %s: could not read the live skill's metadata",
+                target_name,
+            )
+            raise PendingApprovalRefused("promotion_failed")
         # Re-validate + redact the candidate in place (restores originals on
         # fail, raising PendingApprovalRefused with the reason).
         redact_backup = self._validate_and_redact_candidate(src, target_name)
@@ -4833,7 +4879,6 @@ class SkillsLoader:
         except OSError:
             _restore_redacted()
             raise PendingApprovalRefused("promotion_failed")
-        current_version = self.get_auto_skill_version(target_name)
         # Snapshot under a number that is guaranteed free, so an earlier snapshot
         # can never be destroyed by drifted numbering.
         versions_dir = self._versions_root(target_slug)
@@ -4878,22 +4923,15 @@ class SkillsLoader:
                 },
             )
             raise PendingApprovalRefused("stale_base")
-        live_created_at = self._cached_frontmatter(live_skill, within=None).get("created_at", "")
+        live_created_at = live_fm.get("created_at", "")
         # Carry the live skill's pin forward: a pinned skill is exempt from the
         # lifecycle's inactivity / max-N archival, and silently dropping the flag
         # here would expose a user-pinned skill to being archived.
-        live_pinned = str(
-            self._cached_frontmatter(live_skill, within=None).get("pinned", "")
-        ).strip().lower() in ("true", "1", "yes")
+        live_pinned = str(live_fm.get("pinned", "")).strip().lower() in ("true", "1", "yes")
         # Same for the injection opt-out: the candidate never carries it, so
         # writing it over live without this would silently turn full-body
         # injection back on for a skill the user had made pointer-only.
-        live_pointer_only = (
-            str(self._cached_frontmatter(live_skill, within=None).get("inject_on_trigger", ""))
-            .strip()
-            .lower()
-            == "false"
-        )
+        live_pointer_only = str(live_fm.get("inject_on_trigger", "")).strip().lower() == "false"
         new_live_content = self._rewrite_update_frontmatter(
             candidate_body,
             target_name=target_name,
