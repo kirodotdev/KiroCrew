@@ -207,6 +207,17 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
     // The threshold lives here because this is where the resting height lives;
     // duplicating it in the card would let the two disagree about "at rest".
     const restingH = pinCollapsedHRef.current
+    // A prompt taller than the resting card is NOT pinned while any of it is
+    // still below the card's resting bottom. Pinning it there hid the real,
+    // scrollable bubble and grew the card over the page with a plain-text copy
+    // clipped to the prompt's FIRST lines, so the reader scrolled and the
+    // middle of a long message was unreachable. The real bubble stays in the
+    // transcript until it has scrolled behind the band; only then does the
+    // one-line card take over. No pin means the row stays visible.
+    if (bubbleBottom != null && bubbleBottom - foldY - ROW_PAD_Y > restingH + 0.5) {
+      setPinned(null)
+      return
+    }
     // The transcript FLOOR: the scroller's bottom edge minus its bottom padding.
     // That padding is each host's own statement of where readable content stops
     // — the main chat sets it to the floating composer dock's height plus a

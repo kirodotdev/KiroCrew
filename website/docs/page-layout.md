@@ -337,7 +337,10 @@ measures that floor off the scroller rather than taking it as a prop, clamps the
 fold's live height to it and hands it to the card as `maxH`, which lands as
 `max-height` on the bubble; the body is a shrinkable flex column so the cap
 scrolls the prompt instead of clipping it. A host that moves its floor (a dock
-that grows a status bar) only has to keep its `padding-bottom` honest.
+that grows a status bar) only has to keep its `padding-bottom` honest. A prompt
+whose part still below the band is taller than the resting card is not pinned
+at all: the real bubble stays in the transcript, so a long prompt reads and
+scrolls as itself, and the card takes over only once what remains fits it.
 
 | What moves the scroller | Owner (`website/src/hooks/virtualizer/`) |
 |---|---|
