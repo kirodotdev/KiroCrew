@@ -8,22 +8,23 @@
  * Takes a full run snapshot's events plus its terminal status / result and
  * renders:
  *   - one collapsible row per PHASE with a status icon (running spinner if any
- *     of its agents are still running, ✓ if all finished ok, ✗ if any failed),
- *     title, and agent count.
- *   - under each phase, the AGENTS with per-agent status (spinner / ✓ / ✗),
- *     their `label` (mono), `last_tool` if present, and the time the agent took
- *     once it has finished.
+ *     of its agents are still running, ✓ if all finished ok, ✗ if any failed,
+ *     a stop mark for the phase a cancel interrupted), title, and agent count.
+ *   - under each phase, the AGENTS with per-agent status (spinner / ✓ / ✗, or a
+ *     stop mark for an agent the run ended before it finished), their `label`
+ *     (mono), `last_tool` if present, and the time the agent took once it has
+ *     finished.
  *   - a narrator log strip (most recent `log` lines) and a budget readout.
  *
  * All LLM-derived strings are sanitized via sanitizeLlmOutput. Pure event-fold
  * logic lives in ./runModel and is unit-tested.
  */
 import { memo, useId, useMemo, useState } from 'react'
-import { CheckCircle2, XCircle, Loader2, ChevronRight, Workflow as WorkflowIcon } from 'lucide-react'
+import { CheckCircle2, XCircle, Loader2, ChevronRight, Square, Workflow as WorkflowIcon } from 'lucide-react'
 import ErrorNotice from '../../components/ErrorNotice'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import { redactSecrets, type ErrorReport } from '../../utils/errorReport'
-import { groupByPhase, latestBudget, type WfEvent } from './runModel'
+import { agentState, groupByPhase, isTerminalRunStatus, latestBudget, type WfEvent } from './runModel'
 import { fmtElapsed } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
@@ -52,22 +53,33 @@ export interface WorkflowRunTreeProps {
  * is already several phases ahead.
  *
  *   - `isLast` false  → the run advanced past this phase: ok, unless one of its
- *                       agents failed (then failed).
- *   - `isLast` true   → current phase: failed if any agent failed; ok if it has
- *                       agents and all finished ok; running if the run is still
- *                       going (agents in flight, or none spawned yet); else ok.
+ *                       agents failed (then failed) or the run ended while one of
+ *                       them was still in flight (then stopped: `pipeline()` has no
+ *                       barrier between stages, so a later phase can start while
+ *                       this one still has work, and a check above a stopped row
+ *                       would read two ways).
+ *   - `isLast` true   → current phase: failed if any agent failed; otherwise a
+ *                       terminal run decides it (finished → ok, failed →
+ *                       failed, cancelled → stopped: the run ended inside this
+ *                       phase, so the phase did not complete and a check would
+ *                       claim it did); an active run shows ok once every agent
+ *                       finished ok, else running (agents in flight, or none
+ *                       spawned yet).
  */
 function phaseStatus(
   agents: { ok?: boolean }[],
   runStatus: WorkflowRunTreeProps['status'],
   isLast: boolean,
-): 'running' | 'ok' | 'failed' {
+): 'running' | 'ok' | 'failed' | 'stopped' {
   if (agents.some(a => a.ok === false)) return 'failed'
-  if (!isLast) return 'ok' // a later phase started → this one is done
+  if (!isLast) {
+    // A later phase started → this one is done, unless the run ended with one of
+    // its agents still in flight: that row reads stopped, so the header must too.
+    return isTerminalRunStatus(runStatus) && agents.some(a => a.ok === undefined) ? 'stopped' : 'ok'
+  }
   // Last phase = the current one.
-  if (runStatus && runStatus !== 'running' && runStatus !== 'paused') {
-    // Run is terminal: reflect it (cancelled/failed → not ok unless agents ok).
-    return runStatus === 'finished' ? 'ok' : runStatus === 'failed' ? 'failed' : 'ok'
+  if (isTerminalRunStatus(runStatus)) {
+    return runStatus === 'finished' ? 'ok' : runStatus === 'failed' ? 'failed' : 'stopped'
   }
   if (agents.length > 0 && agents.every(a => a.ok === true)) return 'ok'
   return 'running'
@@ -102,6 +114,10 @@ const WorkflowRunTree = memo(function WorkflowRunTree({
     () => events.filter(e => e.type === 'log').slice(-maxLogs),
     [events, maxLogs],
   )
+  // The accessible name of the stop mark. The chat's stop card names the same
+  // state (an agent stopped before it finished) with the same glyph, so the two
+  // surfaces share one catalog entry rather than two spellings of one word.
+  const stoppedLabel = i18nT('pages.chat.stopEventCard.stopped')
 
   // Phases default to expanded. Track collapsed-state by title so the user can
   // hide noisy completed phases without losing the running one.
@@ -148,6 +164,8 @@ const WorkflowRunTree = memo(function WorkflowRunTree({
                 <Loader2 size={12} className="text-accent animate-spin shrink-0" />
               ) : ps === 'ok' ? (
                 <CheckCircle2 size={12} className="text-ok shrink-0" />
+              ) : ps === 'stopped' ? (
+                <Square size={12} fill="currentColor" className="text-muted shrink-0" role="img" aria-label={stoppedLabel} />
               ) : (
                 <XCircle size={12} className="text-danger shrink-0" />
               )}
@@ -161,14 +179,17 @@ const WorkflowRunTree = memo(function WorkflowRunTree({
                 {phase.agents.map(a => {
                   const label = sanitizeLlmOutput(a.label || a.agent_id).slice(0, 100)
                   const lastTool = a.last_tool ? sanitizeLlmOutput(a.last_tool).slice(0, 60) : ''
+                  const state = agentState(a, status)
                   return (
                     <li
                       key={a.agent_id}
                       className="flex items-center gap-2 px-3 py-1.5 text-[12px]"
                     >
-                      {a.ok === undefined ? (
+                      {state === 'running' ? (
                         <Loader2 size={12} className="text-accent animate-spin shrink-0" />
-                      ) : a.ok ? (
+                      ) : state === 'stopped' ? (
+                        <Square size={12} fill="currentColor" className="text-muted shrink-0" role="img" aria-label={stoppedLabel} />
+                      ) : state === 'ok' ? (
                         <CheckCircle2 size={12} className="text-ok shrink-0" />
                       ) : (
                         <XCircle size={12} className="text-danger shrink-0" />

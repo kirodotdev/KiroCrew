@@ -353,3 +353,41 @@ describe('a node a reader needs to read', () => {
     expect(planned!.getAttribute('title')).toContain('planned')
   })
 })
+
+describe('a run that was cancelled with an agent in flight', () => {
+  const INTERRUPTED = [
+    ev('phase_started', { title: 'Research' }, 0),
+    ev('agent_started', { agent_id: 'a0', label: 'spec', phase: 'Research' }, 1),
+    ev('agent_started', { agent_id: 'a1', label: 'code', phase: 'Research' }, 2),
+    ev('agent_finished', { agent_id: 'a0', ok: true }, 3, '2026-09-18T10:00:03.000Z'),
+  ]
+
+  it('draws the unfinished agent as stopped, and the phase as interrupted, not done', async () => {
+    await initI18n()
+    renderWithProviders(<WorkflowRunGraph events={INTERRUPTED} plan={PLAN} status="cancelled" />)
+
+    const graph = screen.getByTestId('workflow-run-graph')
+    expect(graph.querySelectorAll('.animate-spin')).toHaveLength(0)
+    const stopped = screen.getByText('code').closest('[data-testid="workflow-graph-node"]')
+    expect(stopped).toHaveAttribute('data-node-state', 'stopped')
+    // It ran, so it is a fact and not a prediction: solid border, like the other
+    // nodes that ran.
+    expect(stopped!.className).not.toContain('border-dashed')
+    expect(within(stopped!).getByRole('img', { name: 'Stopped' })).toBeInTheDocument()
+    const phase = screen.getByText('Research').closest('[data-testid="workflow-graph-phase"]')
+    expect(phase).toHaveAttribute('data-phase-state', 'stopped')
+    expect(phase!.querySelector(':scope > div > svg.text-ok')).toBeNull()
+    // The agent that finished before the cancel keeps its verdict.
+    const done = screen.getByText('spec').closest('[data-testid="workflow-graph-node"]')
+    expect(done).toHaveAttribute('data-node-state', 'ran_ok')
+  })
+
+  it('keeps the spinner while the same run is still going', async () => {
+    await initI18n()
+    renderWithProviders(<WorkflowRunGraph events={INTERRUPTED} plan={PLAN} status="running" />)
+
+    const running = screen.getByText('code').closest('[data-testid="workflow-graph-node"]')
+    expect(running).toHaveAttribute('data-node-state', 'running')
+    expect(running!.querySelectorAll('.animate-spin')).toHaveLength(1)
+  })
+})

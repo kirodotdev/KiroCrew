@@ -19,7 +19,14 @@
  *
  * Pure / non-mutating, and unit-tested in src/test/workflowPlanModel.test.ts.
  */
-import { groupByPhase, type AgentRow, type PhaseGroup, type WfEvent } from './runModel'
+import {
+  agentState,
+  groupByPhase,
+  isTerminalRunStatus,
+  type AgentRow,
+  type PhaseGroup,
+  type WfEvent,
+} from './runModel'
 
 /**
  * Anything, as text.
@@ -98,10 +105,13 @@ export interface RunPlan {
  * What the graph knows about one node's execution.
  *
  *  - `ran_ok` / `ran_failed` / `running` — the event stream has it; this is fact.
+ *  - `stopped` — the run is over and the stream has no finish for this agent, so
+ *    the run ended before the agent did (a cancel, a ceiling). Fact too, read
+ *    from the run status rather than from an event of the agent's own.
  *  - `planned` — nothing has run here yet.
  *  - `unknown` — a region the plan refuses to predict. Not work; an explanation.
  */
-export type GraphNodeState = 'ran_ok' | 'ran_failed' | 'running' | 'planned' | 'unknown'
+export type GraphNodeState = 'ran_ok' | 'ran_failed' | 'running' | 'stopped' | 'planned' | 'unknown'
 
 export interface GraphNode {
   id: string
@@ -119,8 +129,9 @@ export interface GraphNode {
   elapsedMs?: number
 }
 
-/** `planned` means the run has not entered the phase yet. */
-export type GraphPhaseState = 'running' | 'ok' | 'failed' | 'planned'
+/** `planned` means the run has not entered the phase yet; `stopped` that a cancel
+ *  ended the run inside it. */
+export type GraphPhaseState = 'running' | 'ok' | 'failed' | 'stopped' | 'planned'
 
 export interface GraphPhase {
   title: string
@@ -142,16 +153,22 @@ export interface RunGraph {
 
 export type RunStatus = 'running' | 'paused' | 'finished' | 'failed' | 'cancelled' | string
 
-function actualState(row: AgentRow): GraphNodeState {
-  if (row.ok === undefined) return 'running'
-  return row.ok ? 'ran_ok' : 'ran_failed'
+/** The tree's per-agent reading, in the graph's vocabulary. One rule, two views. */
+function actualState(row: AgentRow, status: RunStatus | undefined): GraphNodeState {
+  const state = agentState(row, status)
+  return state === 'ok' ? 'ran_ok' : state === 'failed' ? 'ran_failed' : state
 }
 
-function actualNode(row: AgentRow, id: string, predicted: boolean): GraphNode {
+function actualNode(
+  row: AgentRow,
+  id: string,
+  predicted: boolean,
+  status: RunStatus | undefined,
+): GraphNode {
   return {
     id,
     label: row.label || row.agent_id,
-    state: actualState(row),
+    state: actualState(row, status),
     predicted,
     elapsedMs: row.elapsed_ms,
   }
@@ -162,8 +179,14 @@ function actualNode(row: AgentRow, id: string, predicted: boolean): GraphNode {
  *
  * Phases are emitted in order and a phase persists until the next one starts, so a
  * phase the run has moved past is complete whatever it spawned — without that, a phase
- * whose work was pure narration would spin forever. This mirrors the run tree's own
- * rule so the two views cannot disagree about the same run.
+ * whose work was pure narration would spin forever. One exception: `pipeline()` has no
+ * barrier between stages, so a later phase can start while an earlier one still has an
+ * agent in flight; if the run ends there, that phase is `stopped`, not ok, because its
+ * row reads stopped and the header must agree. The current phase of a terminal
+ * run takes the run's own verdict: finished is ok, failed is failed, and a cancel is
+ * `stopped`, because the run ended inside the phase and a check would claim the phase
+ * completed. This mirrors the run tree's own rule so the two views cannot disagree
+ * about the same run.
  */
 function startedPhaseState(
   agents: AgentRow[],
@@ -171,9 +194,9 @@ function startedPhaseState(
   isLast: boolean,
 ): GraphPhaseState {
   if (agents.some(a => a.ok === false)) return 'failed'
-  if (!isLast) return 'ok'
-  if (status && status !== 'running' && status !== 'paused') {
-    return status === 'failed' ? 'failed' : 'ok'
+  if (!isLast) return isTerminalRunStatus(status) && agents.some(a => a.ok === undefined) ? 'stopped' : 'ok'
+  if (isTerminalRunStatus(status)) {
+    return status === 'finished' ? 'ok' : status === 'failed' ? 'failed' : 'stopped'
   }
   if (agents.length > 0 && agents.every(a => a.ok === true)) return 'ok'
   return 'running'
@@ -196,6 +219,7 @@ function mergeNodes(
   actual: AgentRow[],
   key: string,
   hasPlan: boolean,
+  status: RunStatus | undefined,
 ): GraphNode[] {
   const fence = planned.findIndex(n => n.kind === 'unknown')
   const pairUpTo = fence < 0 ? planned.length : fence
@@ -203,7 +227,7 @@ function mergeNodes(
 
   for (let i = 0; i < pairUpTo; i++) {
     const row = actual[i]
-    if (row) out.push(actualNode(row, `${key}:a${i}`, true))
+    if (row) out.push(actualNode(row, `${key}:a${i}`, true, status))
     else {
       out.push({ id: `${key}:p${i}`, label: planned[i].label, state: 'planned', predicted: true })
     }
@@ -213,7 +237,7 @@ function mergeNodes(
     // Nothing was left unpredicted, so anything past the plan's length is a surprise
     // and is marked as one rather than quietly filling a planned slot.
     for (let i = pairUpTo; i < actual.length; i++) {
-      out.push(actualNode(actual[i], `${key}:x${i}`, !hasPlan))
+      out.push(actualNode(actual[i], `${key}:x${i}`, !hasPlan, status))
     }
     return out
   }
@@ -238,7 +262,7 @@ function mergeNodes(
   if (tail.length > 0) {
     // ...then reality once reality exists. These are predicted in the honest sense: the
     // plan said work would happen here, it just could not say how much.
-    tail.forEach((row, i) => out.push(actualNode(row, `${key}:a${pairUpTo + i}`, true)))
+    tail.forEach((row, i) => out.push(actualNode(row, `${key}:a${pairUpTo + i}`, true, status)))
     return out
   }
   // Nothing has materialized yet, so the region's predicted work is still worth
@@ -310,6 +334,7 @@ export function buildGraph(
         actual?.agents ?? [],
         `${planned.title}#${phases.length}`,
         hasPlan,
+        status,
       ),
     })
   }
@@ -321,7 +346,7 @@ export function buildGraph(
       predicted: !hasPlan,
       certain: true, // it ran: nothing about it is uncertain any more
       state: startedPhaseState(actual.agents, status, i === lastActual),
-      nodes: mergeNodes([], actual.agents, `${actual.title}#${phases.length}`, hasPlan),
+      nodes: mergeNodes([], actual.agents, `${actual.title}#${phases.length}`, hasPlan, status),
     })
   })
 

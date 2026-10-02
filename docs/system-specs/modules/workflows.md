@@ -1214,6 +1214,28 @@ budget snapshot. On a terminal state, `dashboard/workflow_inject.py` posts the
 result into the originating chat slot and starts (or queues) an agent turn so the
 user gets a synthesized answer rather than a raw blob.
 
+An agent the run ends before it finishes has no `agent_finished`: `_RunContext.agent()`
+records that event only after its call returns, and a cancel leaves the call by
+`CancelledError`, which is not the `Exception` its handler catches, whether an operator
+cancelled the run or the wall-clock ceiling cancelled the script task before recording
+`run_failed` (`where="ceiling"`). A budget ceiling cannot leave an agent in flight:
+`BudgetExceeded` is raised before `agent_started` (see the order of operations above).
+The views therefore derive that agent's state from the RUN status, not from an
+event of its own (`runModel.agentState`): an agent with no finish reads as running
+only while the run is `running` or `paused`, and as **stopped** once the run is
+terminal (`finished`, `failed`, `cancelled`), drawn with the `Square` stop mark the
+subagent surfaces use for the same state and named with the chat stop card's
+catalog entry. The current phase of a cancelled run reads as **stopped** too, never
+as a success: the run ended inside it, so the phase did not complete. So does an
+earlier phase the run ended inside: `pipeline()` has no barrier between stages, so a
+later phase can start while an earlier one still has an agent in flight, and that
+phase reads **stopped** rather than ok beside its stopped row. A `finished`
+run's current phase is ok and a `failed` run's is failed. The tree
+(`WorkflowRunTree.tsx`) and the graph (`planModel.ts`, `WorkflowRunGraph.tsx`) share
+the rule so one run cannot read two ways; pinned by
+`website/src/test/WorkflowRunTree.cancelledAgents.test.tsx`,
+`WorkflowRunGraph.test.tsx` and `workflowPlanModel.test.ts`.
+
 ### Plan preview and the graph view
 
 The event stream says what a run DID. `workflows/preview.py` says what its script
