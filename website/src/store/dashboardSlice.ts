@@ -648,6 +648,14 @@ export interface SlotPatchFrame {
  *  `removeSlotOptimistic`): the reply's own membership is reconciled by the
  *  close-tombstone machinery and by `applySlots`, and those two are already
  *  ordered against each other. This guards row CONTENT. */
+/** A slot row's value for `field`, as a `slot_patch` row would state it. A full
+ *  frame omits `lineage_pending` when it is false, while a patch states it either
+ *  way, because a patch that omitted it could never clear a pending row. So an
+ *  absent flag reads as `false` here, and a patch saying `false` to a row that
+ *  never carried the flag is no write at all. */
+const slotPatchCurrent = (slot: Record<string, unknown>, field: string): unknown =>
+  field === 'lineage_pending' ? (slot[field] ?? false) : slot[field]
+
 const patchSlotRow = (state: DashboardState, key: string, patch: RowPatch): void => {
   const slot = (state.slots ?? []).find(s => s.key === key) // row-write: via patchSlotRow
   if (!slot) return
@@ -925,7 +933,7 @@ const dashboardSlice = createSlice({
         const { key, ...fields } = row
         patchSlotRow(state, key, slot => {
           if (Object.keys(fields).every(field => jsonEqual(
-            (slot as unknown as Record<string, unknown>)[field],
+            slotPatchCurrent(slot as unknown as Record<string, unknown>, field),
             (fields as Record<string, unknown>)[field],
           ))) return false
           Object.assign(slot, fields)

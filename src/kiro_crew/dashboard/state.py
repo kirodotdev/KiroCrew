@@ -474,21 +474,19 @@ def _attach_slot_parents(
     still disk, and disk on this loop stalls every other request and the heartbeat
     behind it.
 
-    It does NOT broadcast when the seed lands, and that is deliberate. Every path that
-    would -- ``push_slots_update``, the trailing timer, a frame of its own -- either
-    writes the coalescer's clock or adds a frame, and both are load-bearing elsewhere: a
-    request inside ``suspend_slots_push`` needs that window open so its own flush
-    broadcasts INLINE and a broadcast failure reaches its caller, and the create path
-    pins exactly one coalesced frame per change.
+    The seed landing does not broadcast a slots frame. Every path that would --
+    ``push_slots_update``, the trailing timer -- writes the coalescer's clock, and that
+    is load-bearing elsewhere: a request inside ``suspend_slots_push`` needs that window
+    open so its own flush broadcasts INLINE and a broadcast failure reaches its caller,
+    and the create path pins exactly one coalesced frame per change.
 
     Instead the frame SAYS it is provisional: while the projection is not seeded for this
-    store, every row carries ``lineage_pending: true``, and a client that sees it reads
-    the slot list again shortly. That keeps the recovery on the read side, where it costs
-    neither contract, and it closes the case a "next ordinary broadcast" cannot: an IDLE
-    gateway, where nothing is running and no further frame is coming, so an unnested cold
-    start would otherwise persist until the user happened to act. The flag is set only
-    when a later read would genuinely answer differently -- never with the crew log off,
-    and never after a failure this cannot promise will clear.
+    store, every row carries ``lineage_pending: true``. When the seed lands, the
+    projection announces it on the crew-log bus and :meth:`DashboardState.push_lineage_patch`
+    sends the settled rows as a ``slot_patch`` -- a frame outside the coalescer -- so an
+    IDLE gateway, where no other frame is coming, still nests without a client asking
+    again. The flag is set only when a later answer would genuinely differ -- never with
+    the crew log off, and never after a failure this cannot promise will clear.
 
     Nor is the seed started at boot, which would close that one-frame window: seeding is
     bound to one store and re-runs when the data home changes, so a process serving
@@ -569,8 +567,7 @@ def _attach_slot_parents(
             # the real one. Without it a cold start is indistinguishable from a store
             # with no lineage at all, and an idle sidebar -- nothing running, no frame
             # coming -- paints unnested and stays that way until the user happens to act.
-            # The seed does not broadcast when it lands (see above), so the recovery has
-            # to be a READ the client chooses to repeat, not a frame this pushes.
+            # The seed's announcement pushes the settled rows (see above).
             pending = True
     except Exception:
         # Reached only by a genuine failure. The crew log being off returns above, so
@@ -10064,6 +10061,48 @@ class DashboardState:
             if field in row:
                 patch[field] = row[field]
         self._send_slot_patch({"slots": [patch]})
+
+    def push_lineage_patch(self) -> None:
+        """Push every live slot whose ``parent`` moved, as one ``slot_patch`` frame.
+
+        The session tree's change event lands here (see ``CrewLogPublisher``), so the
+        sidebar nests a worker the moment its crew log says who opened it -- and un-nests
+        it the moment that creator closes or releases it -- without re-reading the slot
+        list. Each row carries ``parent`` and ``lineage_pending`` and nothing else, the
+        same two values a full frame computes for it through
+        :func:`_attach_slot_parents`, so a patch and a full frame never disagree.
+
+        Rows whose two values match what this method last sent are left out, which is
+        what makes an idle tree -- or a burst that moved nothing visible -- cost no
+        frame. The memory is pruned to the live keys on each pass.
+        """
+        under_construction = getattr(self, "_slots_under_construction", None) or ()
+        rows: list[dict[str, Any]] = [
+            {"key": k} for k in list(self._slots) if k not in under_construction
+        ]
+        if not rows:
+            return
+        _attach_slot_parents(rows, getattr(self, "spend_slot_by_session", None))
+        sent = getattr(self, "_lineage_sent", None)
+        if sent is None:
+            sent = {}
+            self._lineage_sent = sent
+        live = {row["key"] for row in rows}
+        for key in [k for k in sent if k not in live]:
+            del sent[key]
+        changed: list[dict[str, Any]] = []
+        for row in rows:
+            value = (row.get("parent"), bool(row.get("lineage_pending")))
+            if sent.get(row["key"]) == value:
+                continue
+            sent[row["key"]] = value
+            changed.append({"key": row["key"], "parent": value[0], "lineage_pending": value[1]})
+        if not changed:
+            return
+        if self._has_legacy_slots_audience():
+            self.push_slots_update(legacy_only=True)
+        if self._has_slot_patch_clients():
+            self._send_slot_patch({"slots": changed})
 
     def push_slot_removed(self, key: str) -> None:
         """Publish that slot *key* left the registry without re-sending the list.

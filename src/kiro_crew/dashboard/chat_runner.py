@@ -1734,6 +1734,70 @@ def _crew_log_lineage(slot: Any) -> tuple[str, str]:
     )
 
 
+async def _crew_log_seed_tree(slot: Any) -> None:
+    """Seed the crew log's session tree off the loop, for :func:`_crew_log_inherited_parent`.
+
+    A restored slot's first turn after a restart is the ordinary moment the projection
+    is still unseeded, and an unseeded read answers ``""``: the new log would then carry
+    no ``parent``, and once retention removes the first log the edge is gone for good.
+    ``ensure_seeded`` is idempotent, so every call after the first returns at once.
+
+    Awaited BEFORE the turn takes its predecessor latch, never between the take and the
+    emit: a cancellation here then leaves the latch as it was, while one after the take
+    would lose the predecessor the slot's next log has to cite. Only for a slot that came
+    back with a creator, the one case the read below can use. Never raises.
+    """
+    if not str(getattr(slot, "_created_by", "") or ""):
+        return
+    try:
+        if not crew_log_emit.enabled():
+            return
+        from kiro_crew.crew_log.session_tree_projection import projection
+
+        await asyncio.to_thread(projection().ensure_seeded)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        return
+
+
+def _crew_log_inherited_parent(slot: Any, head_sid: str) -> str:
+    """The creator the crew log's own tree holds for *slot*, or ``""``. No I/O, no await.
+
+    The fallback for a slot with no witness in this process (see
+    :func:`_crew_log_lineage`): its new log re-cites the edge the tree already folded,
+    so the edge survives the eviction and retention that remove the slot's FIRST log.
+    Read from the fold of the crew log, never from restored metadata, so the fence
+    above still holds. Never raises. Synchronous on purpose: it runs between the
+    predecessor take and the emit, where nothing may yield (see
+    :func:`_crew_log_seed_tree`, which seeds the tree before the take).
+
+    Only for a slot that came back with a creator, and only when the tree names the
+    SAME one. A slot key is reusable: a tab opened under the name of a closed worker
+    has no creator of its own, and the tree still holds the old unit's edge under that
+    key, so reading the tree alone would hand the new tab the old worker's lead. The
+    restored ``_created_by`` alone is not evidence either (see above). Each check
+    covers the other's gap: a metadata edit cannot name a creator the fold does not
+    hold, and the fold cannot attach a parent to a slot nobody restored.
+
+    *head_sid* is the predecessor the new log cites; ``""`` (no predecessor, or one
+    that could not be determined) answers ``""``, since the tree cannot be checked
+    against a log that is not named.
+    """
+    restored = str(getattr(slot, "_created_by", "") or "")
+    if not restored or not head_sid:
+        return ""
+    try:
+        if not crew_log_emit.enabled():
+            return ""
+        from kiro_crew.crew_log.session_tree_projection import inherited_parent
+
+        inherited = inherited_parent(str(getattr(slot, "key", "") or ""), head_sid)
+    except Exception:
+        return ""
+    return inherited if inherited == restored else ""
+
+
 #: Slot attribute carrying a channel binding that committed BEFORE the session had a
 #: crew log to record it in. The recorder sets it in that case instead of dropping the
 #: fact, and :func:`_crew_log_class` folds it in, so the opening entry of a log created
@@ -13026,7 +13090,13 @@ async def _run_chat(
         # Both fields are used ONLY when `_lineage_minted` says this process
         # stamped them -- see `_crew_log_lineage` for why a restored `_created_by`
         # must never be promoted to gateway-authored lineage.
+        # The one await on this path, and it comes FIRST: everything from the class read
+        # to the emit is recorded as one moment, so nothing in that span may yield. A
+        # yield after the class read would let a channel binding commit unseen; one
+        # after the predecessor take would lose the predecessor on a cancel.
         _creator_key, _creator_sid = _crew_log_lineage(slot)
+        if not _creator_key:
+            await _crew_log_seed_tree(slot)
         # Read HERE rather than at mint, because these are facts about the session
         # this log is being opened for and they are recorded as of this moment. A class
         # the session acquires LATER reaches the log through its own record: every
@@ -13047,6 +13117,10 @@ async def _run_chat(
         _crew_log_edge = slot.take_crew_log_previous(
             now_writing=_crew_log_sid, replay_pending=_crew_log_replay_owed
         )
+        if not _creator_key:
+            # After the take, because the walk starts from the log this one supersedes:
+            # the predecessor named here is exactly the one this entry will cite.
+            _creator_key = _crew_log_inherited_parent(slot, _crew_log_edge.sid)
         crew_log_emit.on_session_opened(
             _crew_log_sid,
             agent=slot.agent or "",

@@ -82,6 +82,7 @@ from kiro_crew.crew_log.session_tree import (
     OpenedRecord,
     TreeNode,
     TreeReading,
+    _ScanFaults,
     edge_supersedes,
     fold_tree,
     log_rank_of,
@@ -378,6 +379,18 @@ class SessionTreeProjection:
         self._nodes: Optional[dict[str, TreeNode]] = None
         self._incomplete = False
         self._over_cap = False
+        #: Units whose decision this state may have WRONG: one evicted past the cap, or
+        #: one whose bytes faulted after its head was read. The narrow half of
+        #: ``incomplete``, so a reader deciding about ONE slot can ask whether that
+        #: slot's own units are among them instead of refusing for the whole store. A
+        #: unit absent from ``_records`` needs no entry, and has none: a walk over the
+        #: slot's ``previous_sid`` chain finds the gap by itself, and keeping only held
+        #: units bounds this set by :data:`TREE_UNIT_CAP` like the records.
+        self._suspect_sids: set[str] = set()
+        #: A fault no unit can be named for -- the store root could not be listed, or
+        #: the seed itself raised. Any slot could be the one it hid, so a reader
+        #: deciding on an edge refuses for every slot while it stands.
+        self._unattributed_gap = False
         self._seeded = False
         #: When a seed that RAISED may be re-attempted, on the monotonic clock. ``None``
         #: means the state was established rather than given up on, which is the only
@@ -386,6 +399,8 @@ class SessionTreeProjection:
         #: reader its lineage until the gateway restarted, because nothing else clears
         #: :attr:`_seeded` for an unchanged root.
         self._seed_retry_at: Optional[float] = None
+        #: The armed re-attempt of a failed seed, if any. See :meth:`_arm_seed_retry`.
+        self._seed_retry_timer: Optional[threading.Timer] = None
         #: The store root this state was folded from, as a string. The fold's IDENTITY:
         #: a root that does not match means these records describe another store, so
         #: they are dropped rather than served or reconciled.
@@ -514,6 +529,63 @@ class SessionTreeProjection:
         with self._lock:
             return self._retry_due_locked()
 
+    def trusted_creator(self, slot: str, head_sid: str) -> str:
+        """*slot*'s creator, if the slot's OWN logs prove it still hangs there. No I/O.
+
+        The answer is WRITTEN into an append-only ``session/opened`` and re-cited by
+        every later log, so it decides on an edge, and a stale one would be durable. It
+        is still judged per slot rather than for the whole store: a store past
+        :data:`TREE_UNIT_CAP` is always partial, and those are exactly the stores whose
+        oldest logs eviction and retention remove first.
+
+        The walk goes back over *slot*'s ``previous_sid`` chain from *head_sid* to the
+        NEWEST log that cites a creator. Every log on that span must be held, belong to
+        *slot*, and not be suspect (a decision evicted or unread). Logs older than that
+        span cannot change the answer: a citation is only ever re-written while the tree
+        hangs the slot under that creator, so whatever was decided before it is already
+        reflected in it, and only a decision recorded at or after it can have moved the
+        slot. A log missing from the span -- evicted, skipped past the cap, or a head
+        that could not be read -- stops the walk, so that case needs no bookkeeping.
+
+        ``""`` while a fault with no owning unit stands (the root could not be listed,
+        or the seed raised), when the walk stops before finding a citation, when the
+        slot's node sits on a cycle the consumer will not nest anyway, and when the
+        tree hangs the slot somewhere other than that creator: a release or a takeover moved
+        it, and re-citing the creator would bring the old edge back once retention
+        removes the log that recorded the move. The creator, never the folded holder:
+        a takeover moves the node to the adopter, and writing that into a
+        ``session/opened`` would record the adopter as the one who opened it.
+        """
+        if not slot or not head_sid:
+            return ""
+        with self._lock:
+            if self._unattributed_gap:
+                return ""
+            creator = ""
+            sid = head_sid
+            for _ in range(TREE_UNIT_CAP):
+                record = self._records.get(sid)
+                if record is None or record.slot != slot or sid in self._suspect_sids:
+                    return ""
+                if record.parent_slot:
+                    creator = record.parent_slot
+                    break
+                # The id alone, as ``_chain_step`` follows it: a record built from a
+                # checkpoint or from the emitter's own values carries ``previous_sid``
+                # and leaves ``previous_edge`` at its default, so asking for the
+                # scanner's EDGE_NAMED here would stop at every such log.
+                if not record.previous_sid:
+                    return ""
+                sid = record.previous_sid
+            if not creator or creator == slot:
+                return ""
+            if self._nodes is None:
+                self._nodes = fold_tree(self._records.values(), self._edges.values())
+            node = self._nodes.get(slot)
+        if node is None or node.cycle or node.parent_slot != creator:
+            return ""
+        return creator
+
     # ── the delta ──────────────────────────────────────────────────────────
 
     def apply(self, record: OpenedRecord) -> None:
@@ -563,7 +635,7 @@ class SessionTreeProjection:
             self._evict_to_cap_locked()
             self._nodes = None
             self._dirty = True
-        self._schedule_checkpoint()
+        self._changed()
 
     def apply_edge(self, edge: EdgeRecord) -> None:
         """Fold ONE newly-committed decision in -- a takeover, or a release.
@@ -630,7 +702,7 @@ class SessionTreeProjection:
             self._evict_edges_to_cap_locked()
             self._nodes = None
             self._dirty = True
-        self._schedule_checkpoint()
+        self._changed()
 
     def _evict_edges_to_cap_locked(self) -> None:
         """Bring the decisions back within :data:`TREE_UNIT_CAP`. Caller holds the lock.
@@ -651,6 +723,10 @@ class SessionTreeProjection:
         doomed = sorted(self._edges.values(), key=lambda e: (e.at, e.slot, e.sid))
         for edge in doomed[:surplus]:
             self._edges.pop((edge.slot, edge.sid), None)
+            # Only for a unit still held: a unit with no record already stops the
+            # walk, so remembering it would only grow the set with history.
+            if edge.sid in self._records:
+                self._suspect_sids.add(edge.sid)
         self._incomplete = True
         self._over_cap = True
 
@@ -674,6 +750,7 @@ class SessionTreeProjection:
         doomed = sorted(self._records.values(), key=lambda r: (r.created_at, r.sid))
         for record in doomed[:surplus]:
             self._records.pop(record.sid, None)
+            self._suspect_sids.discard(record.sid)
         self._incomplete = True
         self._over_cap = True
 
@@ -708,7 +785,7 @@ class SessionTreeProjection:
             self._records[sid] = replace(held, parent_slot=None, previous_sid=None)
             self._nodes = None
             self._dirty = True
-        self._schedule_checkpoint()
+        self._changed()
 
     def reconcile_edge(self, sid: str, slot: str) -> None:
         """Re-derive ONE unit's decision from the segments that survive a partial removal.
@@ -762,6 +839,8 @@ class SessionTreeProjection:
         except (OSError, ValueError):
             with self._lock:
                 self._incomplete = True
+                if sid in self._records:
+                    self._suspect_sids.add(sid)
             return
         with self._lock:
             held = self._edges.get(key)
@@ -781,7 +860,7 @@ class SessionTreeProjection:
                 self._edges[key] = found
             self._nodes = None
             self._dirty = True
-        self._schedule_checkpoint()
+        self._changed()
 
     def forget(self, sid: str) -> None:
         """Drop one unit's record -- retention removed it, or a delete took it.
@@ -816,11 +895,12 @@ class SessionTreeProjection:
             # a unit that is gone, so the only thing it could still answer about is a
             # directory some later session happens to be given the same name.
             self._scans.pop(sid, None)
+            self._suspect_sids.discard(sid)
             if self._records.pop(sid, None) is None and not dropped_edges:
                 return
             self._nodes = None
             self._dirty = True
-        self._schedule_checkpoint()
+        self._changed()
 
     # ── cold start ─────────────────────────────────────────────────────────
 
@@ -879,6 +959,8 @@ class SessionTreeProjection:
                     self._nodes = None
                     self._incomplete = False
                     self._over_cap = False
+                    self._suspect_sids = set()
+                    self._unattributed_gap = False
                     self._seeded = False
                     self._seed_retry_at = None
                     self._dirty = False
@@ -908,6 +990,7 @@ class SessionTreeProjection:
                 with self._lock:
                     self._seeded = True
                     self._incomplete = True
+                    self._unattributed_gap = True
                     self._nodes = None
                     # A store fault is usually transient, and the state it leaves is an
                     # EMPTY tree, so latching it is a much worse answer than re-paying
@@ -921,12 +1004,24 @@ class SessionTreeProjection:
                     # long as the store stays broken, which is the cost this module
                     # exists to remove.
                     self._seed_retry_at = time.monotonic() + SEED_RETRY_COOLDOWN_SECS
+                    epoch = self._cancel_epoch
+                # The re-attempt is ARMED, not left to the next reader. The sidebar does
+                # not poll, and a quiet gateway may send no frame that would ask, so
+                # without this a failed seed leaves the tree empty until something else
+                # happens to read it. A seed that then lands announces, and the
+                # dashboard pushes the rows it settles.
+                self._arm_seed_retry(target, epoch)
             else:
                 with self._lock:
                     # Established, so nothing is owed. Cleared on the way out of a
                     # SUCCESSFUL seed only, which is what makes a recovered store stop
                     # re-scanning.
                     self._seed_retry_at = None
+            # Announced whether the seed succeeded or not, and even when it moved nothing
+            # since the checkpoint: either way the answer a reader gets has just gone from
+            # "pending" to final, and a sidebar that painted the pending frame learns it
+            # from this event instead of asking again.
+            self._announce()
 
     def _retry_due_locked(self) -> bool:
         """Whether a seed that failed earlier may be re-attempted now. ``_lock`` held.
@@ -985,6 +1080,9 @@ class SessionTreeProjection:
                 merged[sid] = held
         self._records = merged
         self._evict_to_cap_locked()
+        # The suspects a seed reported, cut to the units it installed: like every other
+        # field here, the set is bounded by the records it describes.
+        self._suspect_sids.intersection_update(self._records)
 
     def _install_seed_edges_locked(self, scanned: "dict[tuple[str, str], EdgeRecord]") -> None:
         """Install the decisions a seed established, keeping the NEWER of the two.
@@ -1051,6 +1149,8 @@ class SessionTreeProjection:
                 # assigning the scan's values afterwards would undo that escalation.
                 self._incomplete = reading.incomplete
                 self._over_cap = scanner.over_cap
+                self._suspect_sids = set(reading.suspect_sids)
+                self._unattributed_gap = reading.unattributed_fault
                 self._install_seed_locked({r.sid: r for r in reading.records if r.sid})
                 # EVERY decision the scan read, not one per slot. Reducing here would
                 # choose between two logs without the record order that ranks them --
@@ -1067,10 +1167,13 @@ class SessionTreeProjection:
                 self._dirty = True
             self._schedule_checkpoint()
             return
-        records, edges, scans, incomplete, over_cap = self._replay_tail(*loaded)
+        faults = _ScanFaults()
+        records, edges, scans, incomplete, over_cap = self._replay_tail(*loaded, faults=faults)
         with self._lock:
             self._incomplete = incomplete
             self._over_cap = over_cap
+            self._suspect_sids = set(faults.sids)
+            self._unattributed_gap = faults.unattributed
             self._install_seed_locked(records)
             self._install_seed_edges_locked(edges)
             # Kept only for units the merge actually holds, so the cache cannot outlive
@@ -1099,6 +1202,8 @@ class SessionTreeProjection:
         loaded: dict[str, OpenedRecord],
         loaded_edges: dict[tuple[str, str], EdgeRecord],
         loaded_scans: "dict[str, ScanIdentity] | None" = None,
+        *,
+        faults: "_ScanFaults | None" = None,
     ) -> "_ReplayResult":
         """Reconcile a loaded checkpoint against the store, at the cost of the DELTA.
 
@@ -1153,6 +1258,8 @@ class SessionTreeProjection:
                 "checkpoint could not be reconciled; lineage reads as incomplete",
                 exc_info=True,
             )
+            if faults is not None:
+                faults.unattributed = True
             return records, edges, scans, True, False
 
         held = {_store_name(sid): sid for sid in records}
@@ -1196,7 +1303,14 @@ class SessionTreeProjection:
         # OWN decision, so the comparison below settles two readings of one log; which
         # LOG speaks for a slot is the fold's single decision, made with the ranking it
         # derives from these same records.
-        for record in list(records.values())[:TREE_UNIT_CAP]:
+        held_records = list(records.values())
+        if faults is not None:
+            # Past the cap the pass below reads no decision, yet the record itself is
+            # kept until the install evicts down to the cap -- and the one kept need not
+            # be the one evicted. A unit whose decision was never read is suspect for the
+            # same reason one whose read faulted is.
+            faults.sids.extend(r.sid for r in held_records[TREE_UNIT_CAP:] if r.sid)
+        for record in held_records[:TREE_UNIT_CAP]:
             if not record.slot:
                 continue
             directory = root / _store_name(record.sid)
@@ -1206,6 +1320,8 @@ class SessionTreeProjection:
             except OSError:
                 # Could not even stat the unit, so nothing is established about it.
                 incomplete = True
+                if faults is not None:
+                    faults.sids.append(record.sid)
                 continue
             if identity is not None and key not in edges and scans.get(record.sid) == identity:
                 # An earlier complete read of these same bytes found no decision, and no
@@ -1222,6 +1338,8 @@ class SessionTreeProjection:
                 entry = find_last_tree_edge(directory)
             except (OSError, ValueError):
                 incomplete = True
+                if faults is not None:
+                    faults.sids.append(record.sid)
                 continue
             found = edge_record(record.slot, record.sid, entry)
             if found is None:
@@ -1246,6 +1364,28 @@ class SessionTreeProjection:
         return records, edges, scans, incomplete or over_cap, over_cap
 
     # ── the checkpoint ─────────────────────────────────────────────────────
+
+    def _changed(self) -> None:
+        """The state moved: tell the bus, then arm the checkpoint. Never raises.
+
+        Every incremental change ends here, OUTSIDE the lock, so the push to a browser
+        is the same event as the write to disk and neither can be forgotten for a path
+        the other covers. A seed is the one exception: :meth:`ensure_seeded` announces
+        once when it finishes, whatever the seed installed. The announcement goes first
+        because it is the one a person is waiting on; the checkpoint is a shortcut for
+        the next boot.
+        """
+        self._announce()
+        self._schedule_checkpoint()
+
+    def _announce(self) -> None:
+        """Publish one :class:`TreeAdvanced`. Never raises, never blocks on a subscriber's work."""
+        try:
+            from kiro_crew.crew_log import bus
+
+            bus.publish(bus.TREE_ADVANCED, bus.TreeAdvanced())
+        except Exception:  # pragma: no cover -- ``bus.publish`` guards its subscribers
+            log_exception_text(logger, logging.DEBUG, "session tree change could not be announced")
 
     def _schedule_checkpoint(self) -> None:
         """Arm ONE debounced background write. Never raises, never blocks the caller.
@@ -1288,6 +1428,55 @@ class SessionTreeProjection:
                 logger, logging.DEBUG, "session tree checkpoint could not be scheduled"
             )
 
+    def _arm_seed_retry(self, root: "str | None", epoch: int) -> None:
+        """Re-attempt a failed seed once its cooldown has passed. Never raises.
+
+        A :class:`threading.Timer`, not a sleep on the maintenance pool: a store that
+        stays broken would otherwise hold one of that pool's workers for every
+        cooldown, and the pool is shared with the checkpoint writes. The timer's own
+        thread runs the seed, so nothing shared waits.
+
+        Abandoned when the projection was discarded (the epoch moved), when the state
+        was established some other way, or when the store changed under it: in each case
+        the next reader seeds the store it has. A timer that fires a clock tick before
+        the deadline it was armed for (Windows ticks are about 16 ms) re-arms for the
+        rest instead of reading "not due" and giving up for good.
+        """
+
+        def _fire() -> None:
+            with self._lock:
+                self._seed_retry_timer = None
+                if epoch != self._cancel_epoch or self._seed_retry_at is None:
+                    return
+                remaining = self._seed_retry_at - time.monotonic()
+            if remaining > 0:
+                self._start_seed_retry_timer(remaining + 0.001, _fire)
+                return
+            if _current_root() != root:
+                return
+            self.ensure_seeded()
+
+        with self._lock:
+            at = self._seed_retry_at
+        delay = SEED_RETRY_COOLDOWN_SECS if at is None else max(0.0, at - time.monotonic())
+        self._start_seed_retry_timer(delay + 0.001, _fire)
+
+    def _start_seed_retry_timer(self, delay: float, fire: "Any") -> None:
+        """Start ONE daemon timer for :meth:`_arm_seed_retry`. Never raises."""
+        try:
+            timer = threading.Timer(delay, fire)
+            timer.daemon = True
+            with self._lock:
+                held = self._seed_retry_timer
+                self._seed_retry_timer = timer
+            if held is not None:
+                held.cancel()
+            timer.start()
+        except Exception:
+            log_exception_text(
+                logger, logging.DEBUG, "session tree seed retry could not be scheduled"
+            )
+
     def cancel_pending_checkpoint(self) -> None:
         """Abandon a debounced write that has not fired yet. Never blocks, never raises.
 
@@ -1302,6 +1491,12 @@ class SessionTreeProjection:
         """
         with self._lock:
             self._cancel_epoch += 1
+            timer = self._seed_retry_timer
+            self._seed_retry_timer = None
+        if timer is not None:
+            # Cancelled outright: unlike a pool worker, a timer can be, and a
+            # discarded projection should not keep a thread for its cooldown.
+            timer.cancel()
 
     def _debounced_write(self, target: "Path | None" = None, epoch: int = -1) -> None:
         """Wait out the debounce, then write once. Runs on the maintenance pool.
@@ -1533,6 +1728,42 @@ def reset_for_tests() -> None:
         _projection = None
     for proj in list(_LIVE_PROJECTIONS):
         proj.cancel_pending_checkpoint()
+
+
+def inherited_parent(slot: str, head_sid: str) -> str:
+    """The creator the tree already holds for *slot*, or ``""``. No I/O.
+
+    For a ``session/opened`` whose caller has no witness of its own -- a slot restored
+    after a restart, whose ``_created_by`` came back from transcript metadata and so is
+    not evidence. Without this the new log carries no ``parent`` and the slot's edge
+    lives ONLY in its first log: the one :meth:`SessionTreeProjection._evict_to_cap_locked`
+    drops first, being the oldest, and the one retention deletes first. A long-lived
+    worker then folds as a root with no citation at all, under a conductor that is still
+    open. Re-citing what the tree holds puts the edge in every log the slot writes, so
+    it lasts as long as the slot does.
+
+    The source is the crew log's own fold, never the slot's restored metadata, which is
+    what keeps the fence ``_crew_log_lineage`` guards: an agent that edits a transcript
+    file can change ``_created_by``, but not this.
+
+    *head_sid* is the log the new one supersedes -- the ``previous_sid`` it is about to
+    write. See :meth:`SessionTreeProjection.trusted_creator` for which of the slot's own
+    logs must be held, and held cleanly, for the answer to be written down.
+
+    ``""`` when the projection is not seeded for this store (an answer from another
+    store, or a provisional empty one, is not evidence), and whenever that method
+    answers ``""``.
+    """
+    if not slot or not head_sid:
+        return ""
+    try:
+        proj = projection()
+        if not proj.seeded_for_current_store:
+            return ""
+        return proj.trusted_creator(slot, head_sid)
+    except Exception:  # pragma: no cover -- defensive; a read must not fail an open
+        log_exception_text(logger, logging.DEBUG, "session tree parent could not be read")
+        return ""
 
 
 def record_opened(

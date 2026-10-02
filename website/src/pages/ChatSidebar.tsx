@@ -115,7 +115,7 @@ import { useSidebarResize } from './chat-sidebar/resize'
 import { useSidebarTags } from './chat-sidebar/tags'
 import { useBoardColumns, useColumnPopover, useBoardColumnMutations, useColumnMatches, useBoardFolderCollapse } from './chat-sidebar/board'
 import { useHoverHold, useHoverPinLiveness } from './chat-sidebar/hoverHold'
-import { useLineageSeed, useConductorLane, citedCreatorOf } from './chat-sidebar/conductor'
+import { useLineageAvailable, useConductorLane, citedCreatorOf } from './chat-sidebar/conductor'
 import { useShortcutOrder } from './chat-sidebar/shortcuts'
 import { useFolderDropOps, useSidebarMoveUndo, useSidebarDragHandlers, useNativeSessionDrag } from './chat-sidebar/dnd/useSidebarDrag'
 import { useSidebarReveal } from './chat-sidebar/reveal'
@@ -3162,7 +3162,7 @@ function ChatSidebar({
   )
   const flatLaneActive = !boardLaneActive && flatView && folders.length > 0
 
-  const { lineageAvailable } = useLineageSeed({ localSlots, dispatch, allRows })
+  const { lineageAvailable } = useLineageAvailable({ allRows })
   // Gated on `lineageAvailable` as well as the board, and the reason is the toggle:
   // it renders only when more than one lane is available, so with a persisted
   // conductor preference, no edges and no folders the cycle holds `tree` alone, the

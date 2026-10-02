@@ -50,6 +50,19 @@ describe('sseSlotPatch', () => {
     expect(after.slotWriteSeq).toBe(before.slotWriteSeq)
   })
 
+  it('reads an absent lineage_pending as false, so restating false is no write', () => {
+    const before = loaded()
+    const after = reducer(before, sseSlotPatch({ slots: [{ key: 'a', lineage_pending: false }] }))
+    expect(after.slots).toBe(before.slots)
+    expect(after.slotWriteSeq).toBe(before.slotWriteSeq)
+  })
+
+  it('clears a pending row when the patch says false', () => {
+    const before = reducer(undefined, sseSlots([row('a', { lineage_pending: true })]))
+    const after = reducer(before, sseSlotPatch({ slots: [{ key: 'a', lineage_pending: false }] }))
+    expect(after.slots.find(s => s.key === 'a')!.lineage_pending).toBe(false)
+  })
+
   it('drops a row for a key this tab does not hold', () => {
     const before = loaded()
     const after = reducer(before, sseSlotPatch({ slots: [{ key: 'zzz', pinned: true }] }))
