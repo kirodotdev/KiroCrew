@@ -1979,7 +1979,7 @@ class TestCommandsDiverged:
     def test_pathext_resolved_command_does_not_diverge(self, tmp_path, monkeypatch) -> None:
         """A bare name matches the ``shutil.which`` result that carries a PATHEXT suffix.
 
-        ``agent._resolve_command`` resolves ``npx`` to ``...\\npx.CMD`` because
+        ``agent._resolve_mcp_command`` resolves ``npx`` to ``...\\npx.CMD`` because
         ``shutil.which`` spells the extension as ``PATHEXT`` does. Treating that as
         divergence would re-sync and reset every session on every startup.
         """

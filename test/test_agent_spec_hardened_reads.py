@@ -1121,6 +1121,9 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
         ("side_readonly_spec", "dashboard"),
         ("side_readonly_spec", "dashboard"),
     ],
+    # Reads the shared primary spec (refused rewrite) only to skip aliases it
+    # already mounts; runs from whichever surface opens the session.
+    "kiro_crew/mcp_declined_home.py": [("declined_home_session_mcp", "unknown")],
     "kiro_crew/mcp_discovery.py": [("mcp_discovery_agent_config", "unknown")],
     "kiro_crew/member_essential_context.py": [
         ("member_essentials", "context"),

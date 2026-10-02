@@ -140,7 +140,7 @@ rendered entry did the rebuild compute?**
 that a field the user set and Kiro Crew never models survives a rebuild. One field
 in that output is not the user's — the resolved absolute `command`. Reading a
 computed value back as if it were authored is what makes it permanent:
-`_resolve_command` accepts an absolute existing executable without a PATH search,
+`_resolve_mcp_command` accepts an absolute existing executable without a PATH search,
 so no later change to how commands resolve can rebind one that was stored once
 (#4955).
 
