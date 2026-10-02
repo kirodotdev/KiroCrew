@@ -23,6 +23,7 @@ import { setRailWidth, railWidthFor } from '../hooks/useRailWidth'
 import { useFocusChrome } from './focus/focusChrome'
 import { useNativeNotification } from '../hooks/useNativeNotification'
 import { useNotificationSound } from '../hooks/useNotificationSound'
+import { useMouseHaptics } from '../hooks/useMouseHaptics'
 import { recordSessionStart } from '../rum'
 import { api, isAuthBannerShown } from '../api/client'
 import { useKiroUsageReadout } from './topbar/kiroUsageReadout'
@@ -324,6 +325,7 @@ export function useAppShell() {
   const { branding, botName, avatar } = useShellBranding({ colorTheme, brandName, brandLogo, brandFavicon })
   useRumPageView()
   useNotificationSound()
+  useMouseHaptics()
   const [navCollapsed, setNavCollapsed] = useState(() => localStorage.getItem('mc-nav') === '1')
   const navCollapsedRef = useRef(navCollapsed)
   navCollapsedRef.current = navCollapsed

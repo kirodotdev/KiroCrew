@@ -1,0 +1,53 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <RootNamespace>Loupedeck.KiroCrewPlugin</RootNamespace>
+    <AssemblyName>KiroCrewPlugin</AssemblyName>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+
+    <PluginApiDir Condition="$(OS) == 'Windows_NT'">C:\Program Files\Logi\LogiPluginService\</PluginApiDir>
+    <PluginApiDir Condition="$(OS) != 'Windows_NT'">/Applications/Utilities/LogiPluginService.app/Contents/MonoBundle/</PluginApiDir>
+    <InstalledPluginApi>$(PluginApiDir)PluginApi.dll</InstalledPluginApi>
+
+    <PluginDir Condition="$(OS) == 'Windows_NT'">$(LocalAppData)\Logi\LogiPluginService\Plugins\</PluginDir>
+    <PluginDir Condition="$(OS) != 'Windows_NT'">~/Library/Application\ Support/Logi/LogiPluginService/Plugins/</PluginDir>
+
+    <BaseOutputPath>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)../bin/'))</BaseOutputPath>
+    <OutputPath>$(BaseOutputPath)$(Configuration)/bin/</OutputPath>
+
+    <PluginShortName>KiroCrew</PluginShortName> <!-- brand-ok: Logi package id, never displayed -->
+  </PropertyGroup>
+
+  <!-- Logi Plugin Service loads its own PluginApi.dll, so the plugin compiles against it and never ships a copy.
+       Machines without the service (CI, Linux) build against the copy that ships inside LogiPluginTool, staged in ../lib. -->
+  <ItemGroup>
+    <Reference Include="PluginApi">
+      <HintPath Condition="Exists('$(InstalledPluginApi)')">$(InstalledPluginApi)</HintPath>
+      <HintPath Condition="!Exists('$(InstalledPluginApi)')">$(MSBuildThisFileDirectory)../lib/PluginApi.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <Target Name="CopyPackage" AfterTargets="PostBuildEvent">
+    <ItemGroup>
+      <PackageFiles Include="package/**/*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(PackageFiles)" DestinationFolder="$(OutputPath)../%(RecursiveDir)" />
+  </Target>
+
+  <!-- Debug builds use the Logi SDK development loop; Release builds are packed and installed through Options+. -->
+  <Target Name="LinkIntoLogiPluginService" AfterTargets="CopyPackage" Condition="Exists('$(InstalledPluginApi)') And '$(Configuration)' == 'Debug'">
+    <Exec Condition="$(OS) == 'Windows_NT'" Command="echo $(BaseOutputPath)$(Configuration)\ &gt; &quot;$(PluginDir)$(ProjectName).link&quot;" />
+    <Exec Condition="$(OS) != 'Windows_NT'" Command="echo $(BaseOutputPath)$(Configuration)/ &gt; $(PluginDir)$(ProjectName).link" />
+    <Exec Condition="$(OS) == 'Windows_NT'" Command="start loupedeck:plugin/$(PluginShortName)/reload" ContinueOnError="true" />
+    <Exec Condition="$(OS) != 'Windows_NT'" Command="open loupedeck:plugin/$(PluginShortName)/reload" ContinueOnError="true" />
+  </Target>
+
+</Project>
