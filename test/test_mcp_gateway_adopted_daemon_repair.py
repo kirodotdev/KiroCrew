@@ -1110,6 +1110,18 @@ async def test_a_stale_survivor_is_repaired_end_to_end(
             "KIROCREW_MCP_TARGET_PDF": "npx -y server-pdf --stdio",
         }
         _only_targets(monkeypatch, wanted)
+        # Wait on the replacement's bind itself, then run the real readiness
+        # check with production's unchanged 5 s ceiling. _await_endpoint's bound
+        # is only a lost-run ceiling: a daemon that never binds still fails.
+        original_wait_for_socket = mgr.GatewayManager._wait_for_socket
+
+        async def _wait_for_bound_socket(path: Path, timeout: float) -> bool:
+            await _await_endpoint(path)
+            return await original_wait_for_socket(path, timeout)
+
+        monkeypatch.setattr(
+            mgr.GatewayManager, "_wait_for_socket", staticmethod(_wait_for_bound_socket)
+        )
         manager = mgr.GatewayManager(
             mgr.GatewaySpec(
                 socket_path=sock,
