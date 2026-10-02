@@ -93,6 +93,7 @@ from kiro_crew.dashboard.create_rate_limit import (
     allow_create,
     has_create_budget,
 )
+from kiro_crew.dashboard.remote_relay import remote_bound_refusal
 from kiro_crew.dashboard.state import (
     MAX_LIVE_SLOTS,
     MAX_SLOTS_PER_CREATOR,
@@ -4492,6 +4493,116 @@ async def stop_target(
         },
     )
     return {"ok": True, "target": slot.key, **result}
+
+
+async def retry_target(
+    state: "DashboardState",
+    *,
+    caller_session_key: str,
+    target: str,
+    caller_fenced: bool | None = None,
+) -> dict[str, Any]:
+    """Re-run *target*'s failed last turn, via the same path as the Resume button.
+
+    Reuses ``chat_handlers.continue_slot_turn``, the mechanism behind
+    ``POST /api/chat/slots/{slot}/continue``: the recovery continuation is queued
+    at the head and dispatched, so the transcript gains the same recovery row a
+    Resume press leaves and no second copy of the user's message. Every refusal
+    Continue makes applies unchanged, including ``session_start_repeat`` after
+    two identical failed starts.
+
+    One refusal is this verb's own: ``turn_not_failed`` when
+    ``is_turn_interrupted`` says the last turn finished or was ended with Stop.
+    Continue carries on from a finished turn; a retry must not, or one session
+    could make another produce a fresh answer on top of a good one.
+
+    Not readiness-gated, for the reason ``api_chat_slot_continue`` gives: it
+    mutates nothing durable before dispatch, so the turn's own start is the
+    authority and a signed-out install reports in the transcript.
+
+    ``caller_fenced`` has the meaning :func:`stop_target` documents.
+    """
+    # Same prewarm ordering as `close_target`: the SEL and config reads must be
+    # warm before the synchronous gate, and the fence verdict is resolved once so
+    # the re-check under the slot lock never loads config on the loop.
+    try:
+        await asyncio.to_thread(sel)
+    except Exception:  # noqa: BLE001 - a prewarm failure must not fail the retry
+        logger.warning("session-control SEL prewarm failed", exc_info=True)
+    await prewarm_enabled_check()
+
+    caller_key = caller_slot_key(state, caller_session_key)
+    if caller_fenced is None:
+        caller_fenced = bool(caller_key) and _caller_is_ownership_fenced(state, caller_key)
+
+    slot = authorize_target(
+        state,
+        caller_session_key=caller_session_key,
+        target=target,
+        operation="retry",
+        precomputed_ownership_fenced=caller_fenced,
+    )
+    slot_key = slot.key
+    # Deferred for the same import cycle `stop_target` documents.
+    from kiro_crew.dashboard.chat_handlers import SlotContinueRefusal, continue_slot_turn
+
+    def _reassert_retryable() -> None:
+        # The slot lock `continue_slot_turn` takes, and its sub-agent probe, are
+        # awaits: a target that was reachable at the gate above can become
+        # channel-linked or mirrored, or be replaced under the same key, before
+        # the continuation is queued. Re-run the same gate here, synchronously
+        # and with no config read, as `close_target` does at its point of no
+        # return.
+        try:
+            live = authorize_target(
+                state,
+                caller_session_key=caller_session_key,
+                target=slot_key,
+                operation="retry",
+                skip_enabled_check=True,
+                precomputed_ownership_fenced=caller_fenced,
+            )
+        except SessionControlError as exc:
+            raise SlotContinueRefusal(exc.message, exc.code, status=exc.status) from exc
+        if live is not slot:
+            raise SlotContinueRefusal(
+                "the target session was replaced during the retry", "target_replaced"
+            )
+
+    with _audit_denials(
+        caller_session_key=caller_session_key, operation="retry", slot_key=slot_key
+    ):
+        # The same predicate the Continue endpoint refuses on, so the button and
+        # the verb cannot drift: a crew-bound slot would run the retried turn on
+        # this machine and diverge from the peer.
+        if remote_bound_refusal(slot) is not None:
+            raise SessionControlError(
+                "that session runs on a remote crew; retrying its turn from another "
+                "session is not supported yet",
+                code="remote_target_unsupported",
+                status=409,
+            )
+        try:
+            await continue_slot_turn(
+                state,
+                slot,
+                # An agent asked for this, not the person at the keyboard: the
+                # turn must not gain the authenticated-human flag.
+                directive_user_origin=False,
+                via="session_control",
+                require_interrupted=True,
+                before_dispatch=_reassert_retryable,
+                extra_meta=send_origin_meta(state, caller_key),
+            )
+        except SlotContinueRefusal as exc:
+            raise SessionControlError(exc.message, status=exc.status, code=exc.code) from exc
+    _audit(
+        caller_session_key=caller_session_key,
+        operation="retry",
+        slot_key=slot_key,
+        outcome="allowed",
+    )
+    return {"ok": True, "target": slot_key}
 
 
 async def end_wait_target(

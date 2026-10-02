@@ -553,6 +553,7 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         "/api/session-control/fork",
         "/api/session-control/stop",
         "/api/session-control/end-wait",
+        "/api/session-control/retry",
         "/api/session-control/set-model",
         "/api/session-control/reload",
         "/api/session-control/close",
@@ -1918,6 +1919,9 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_post(
         "/api/session-control/end-wait",
         _deferred("session_control", "api_session_control_end_wait"),
+    )
+    app.router.add_post(
+        "/api/session-control/retry", _deferred("session_control", "api_session_control_retry")
     )
     app.router.add_post(
         "/api/session-control/set-model",
