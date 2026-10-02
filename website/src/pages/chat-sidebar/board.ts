@@ -283,8 +283,10 @@ export function useBoardColumnMutations({ queryClient, setBoardError, orderedCol
 export type BoardColumnMutations = ReturnType<typeof useBoardColumnMutations>
 
 /** Whether a slot belongs in a column. */
-export function useColumnMatches({ subagentCounts, subagentApprovalCounts, workflowActiveSet, automationRunningSet }: {
-  subagentCounts: Record<string, number>
+export function useColumnMatches({ subagentStartedCounts, subagentApprovalCounts, workflowActiveSet, automationRunningSet }: {
+  /** STARTED children only (`selectSidebarStartedSubagentCounts`): a queued
+   *  child is not work, so it must never be what files a session as Working. */
+  subagentStartedCounts: Record<string, number>
   subagentApprovalCounts: Record<string, number>
   workflowActiveSet: Set<string>
   automationRunningSet: Set<string>
@@ -299,7 +301,7 @@ export function useColumnMatches({ subagentCounts, subagentApprovalCounts, workf
       // Clamped against the running count exactly as the row status chain does:
       // an approval count above the live agent count is stale, and unclamped it
       // would pin an otherwise-idle session to Needs Approval indefinitely.
-      const running = subagentCounts[slot.key] || 0
+      const running = subagentStartedCounts[slot.key] || 0
       // `slot` here is the raw payload, whose `running` covers only the slot's
       // own turn. A dynamic workflow and a goal loop are both live work that
       // outlive that flag, and the row status chain already reads them from the
@@ -320,7 +322,7 @@ export function useColumnMatches({ subagentCounts, subagentApprovalCounts, workf
     if (col.mode === 'all') return col.tag_ids.every(t => set.has(t))
     if (col.mode === 'none') return !col.tag_ids.some(t => set.has(t))
     return col.tag_ids.some(t => set.has(t))  // 'any'
-  }, [subagentApprovalCounts, subagentCounts, automationRunningSet, workflowActiveSet])
+  }, [subagentApprovalCounts, subagentStartedCounts, automationRunningSet, workflowActiveSet])
   return { columnMatches }
 }
 

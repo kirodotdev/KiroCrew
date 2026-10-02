@@ -142,13 +142,17 @@ class _PendingDepthEmit:
 
     ``again`` is set by a request the burst's current read does not answer;
     ``batch_ids`` collects the waves those requests named; ``attempt`` is the
-    retry budget already spent on an unreadable store; ``task`` runs the burst
-    (set right after construction, so it is left out of the repr).
+    retry budget already spent on an unreadable store; ``must_publish`` is
+    False only while every such request is a heal (a lifecycle edge re-deriving
+    a held published depth), which publishes a read only when it differs from
+    that depth; ``task`` runs the burst (set right after construction, so it is
+    left out of the repr).
     """
 
     batch_ids: set[str]
     attempt: int
     again: bool = False
+    must_publish: bool = True
     task: asyncio.Task[None] = field(init=False, repr=False)
 
 
@@ -975,11 +979,30 @@ class RunEventCoordinator(ManagerComponent):
     async def _fire_event_impl(
         self, etype: str, info: SubagentInfo, extra: dict | None = None
     ) -> None:
+        # Recorded before the frame goes out, so a slots push serialized after
+        # this frame can never carry an older depth than the frame did.
+        # ``getattr``: a manager stub built without ``__init__`` has no table.
+        published = getattr(self._manager, "_published_depths", None)
+        if etype == "subagent_queued" and published is not None:
+            published.record(info.parent_session_key, (extra or {}).get("queued"))
         if self._manager._on_event:
             try:
                 await self._manager._on_event(etype, info, extra or {})
             except Exception:
                 logger.warning("on_event failed for %s/%s", etype, info.id, exc_info=True)
+        # A child started or ended while its parent still advertises waiting rows:
+        # re-derive the depth from state, and publish it only if it changed. A path
+        # that pops or ends a row without its own emit would otherwise leave the
+        # table (and every slots push, including a reload's first) holding a count
+        # nothing will clear; a path that did emit already published this count, so
+        # a heal that agrees with it sends nothing. One read per lifecycle edge, and
+        # only for a parent with a non-zero entry.
+        if (
+            etype in ("subagent_spawn", "subagent_done")
+            and published is not None
+            and published.get(info.parent_session_key) > 0
+        ):
+            self._request_queue_depth(info.parent_session_key, set(), heal=True)
 
     def _queued_depth_impl(self, parent_session_key: str) -> int:
         """Number of spawns currently queued for *parent_session_key* (waiting
@@ -1160,9 +1183,15 @@ class RunEventCoordinator(ManagerComponent):
         return emit if emit is not None and not emit.task.done() else None
 
     def _request_queue_depth(
-        self, parent_session_key: str, batch_ids: set[str], attempt: int = 0
+        self,
+        parent_session_key: str,
+        batch_ids: set[str],
+        attempt: int = 0,
+        *,
+        heal: bool = False,
     ) -> None:
-        """Join the parent's burst, or start one."""
+        """Join the parent's burst, or start one. A *heal* request publishes only
+        a depth that differs from the one last published for the parent."""
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -1174,8 +1203,10 @@ class RunEventCoordinator(ManagerComponent):
             emit.batch_ids |= batch_ids
             # A fresh request restores the retry budget a failing burst spent.
             emit.attempt = min(emit.attempt, attempt)
+            if not heal:
+                emit.must_publish = True
             return
-        emit = _PendingDepthEmit(set(batch_ids), attempt)
+        emit = _PendingDepthEmit(set(batch_ids), attempt, must_publish=not heal)
         emit.task = loop.create_task(self._queue_depth_burst(parent_session_key, emit))
         manager._queue_depth_emits[parent_session_key] = emit
 
@@ -1202,23 +1233,32 @@ class RunEventCoordinator(ManagerComponent):
         while True:
             emit.again = False
             answering, emit.batch_ids = emit.batch_ids, set()
+            must_publish, emit.must_publish = emit.must_publish, False
             depth = await self._read_queue_depth(parent_session_key)
             if emit.again and _queue_depth_clock() - since < _QUEUE_DEPTH_MAX_WITHHOLD_SECS:
                 emit.batch_ids |= answering
+                emit.must_publish |= must_publish
                 continue
             overlapped = emit.again
             if depth is None:
                 self._arm_queue_depth_retry(parent_session_key, emit.attempt, answering)
             else:
                 self._disarm_queue_depth_retry(parent_session_key)
-                await self._publish_queue_depth(
-                    parent_session_key, depth, _one_wave(answering), forget_label=not overlapped
-                )
+                if must_publish or depth != self._published_depth(parent_session_key):
+                    await self._publish_queue_depth(
+                        parent_session_key, depth, _one_wave(answering), forget_label=not overlapped
+                    )
             if not emit.again:
                 return
             # Asked during the read (past the withhold cap) or while the frame
             # was being sent: not answered yet.
             since = _queue_depth_clock()
+
+    def _published_depth(self, parent_session_key: str) -> int | None:
+        """The depth last published for the parent, or ``None`` without a table
+        (a manager stub built without ``__init__``)."""
+        published = getattr(self._manager, "_published_depths", None)
+        return None if published is None else published.get(parent_session_key)
 
     async def _publish_queue_depth(
         self, parent_session_key: str, depth: int, batch_id: str, *, forget_label: bool

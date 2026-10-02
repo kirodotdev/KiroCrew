@@ -1,7 +1,7 @@
 import { useEffect, useCallback, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAppDispatch, useAppStore } from '../store'
-import { switchSlot, deleteSlot, openActivityToTab, selectSidebarSubagentCounts, selectSidebarApprovalCounts, selectSidebarWorkflowActive, selectSidebarAutomationRunningKeys } from '../store/chatSlice'
+import { switchSlot, deleteSlot, openActivityToTab, selectSidebarStartedSubagentCounts, selectSidebarApprovalCounts, selectSidebarWorkflowActive, selectSidebarAutomationRunningKeys } from '../store/chatSlice'
 import { inferLane } from '../pages/chat/sessionLane'
 import { normalizeRunSessionKey } from '../apps/workflows/runModel'
 import { loadChatConfig } from '../pages/chat/ChatSettings'
@@ -1021,12 +1021,15 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
         // of an armed goal loop, during a dynamic workflow, and while background
         // sub-agents run — all of which `deleteSlot` retires. Reusing `inferLane`
         // with the same extras the sidebar computes keeps this gate and the
-        // Working/Waiting/Needs-approval lanes from ever disagreeing.
+        // Working/Waiting/Needs-approval lanes from ever disagreeing. Queued
+        // children are not in the lane (nothing has started), but closing
+        // retires them too, so they confirm on their own term.
         'close-chat': () => {
           if (!activeSlot) return
           const slot = slots.find(s => s.key === activeSlot)
           const state = appStore.getState()
-          const subagentsRunning = selectSidebarSubagentCounts(state)[activeSlot] || 0
+          const subagentsRunning = selectSidebarStartedSubagentCounts(state)[activeSlot] || 0
+          const subagentsQueued = state.chat.subagentQueued?.[activeSlot] || 0
           const lane = slot ? inferLane(slot, {
             subagentAwaiting: Math.min(selectSidebarApprovalCounts(state)[activeSlot] || 0, subagentsRunning),
             workflowActive: normalizeRunSessionKey(activeSlot) in selectSidebarWorkflowActive(state),
@@ -1034,7 +1037,8 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
             detailedSubagentsRunning: subagentsRunning > 0,
           }) : 'idle'
           const modChord = e.metaKey || e.ctrlKey
-          const mustConfirm = loadChatConfig().confirmCloseSession || (modChord && lane !== 'idle')
+          const mustConfirm = loadChatConfig().confirmCloseSession
+            || (modChord && (lane !== 'idle' || subagentsQueued > 0))
           if (!mustConfirm || confirm(i18nT('hooks.useKeyboardShortcuts.close_this_session'))) {
             dispatch(deleteSlot(activeSlot))
           }

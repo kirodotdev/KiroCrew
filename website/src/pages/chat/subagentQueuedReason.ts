@@ -122,3 +122,13 @@ export const NEVER_STARTED_PREFIX = backendPhrases.neverStartedPrefix
 export function isNeverStarted(error: string | undefined): boolean {
   return typeof error === 'string' && error.startsWith(NEVER_STARTED_PREFIX)
 }
+
+/** Whether the wait is on host memory: the gate deferred the start until enough
+ *  memory is free (by its own measurement or the macOS pressure verdict), rather
+ *  than holding it behind the concurrency cap. The adaptive pause is left out
+ *  because its own sentence names overload as well. */
+export function isMemoryWait(reason: SubagentQueuedReason | undefined): boolean {
+  return reason?.reason === 'low_memory'
+    || reason?.reason === 'posture_critical'
+    || reason?.reason === 'memory_pressure'
+}

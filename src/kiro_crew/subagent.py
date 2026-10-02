@@ -195,6 +195,7 @@ from kiro_crew.subagent_manager import (
     ContinuationCoordinator,
     OrphanStallMonitor,
     PreparedSpawn,
+    PublishedQueueDepths,
     RunEventCoordinator,
     SpawnAdmissionCoordinator,
     TerminalCoordinator,
@@ -3754,6 +3755,10 @@ class SubagentManager:
         # submissions and no progress is force-reconciled). Pruned by
         # finalize_batch alongside _batch_submitted.
         self._batch_progress_ts: dict[str, float] = {}
+        # parent_session_key -> the ``subagent_queued`` depth last published for
+        # it, recorded by ``_fire_event`` and serialized on each slot as
+        # ``subagents_queued`` (see ``subagent_manager.published_depth``).
+        self._published_depths = PublishedQueueDepths()
         self._reaper_task: asyncio.Task | None = None  # type: ignore[type-arg]
         # Every ``_force_reap`` that runs OUTSIDE the reaper task -- a dashboard
         # Stop, a parent-end or stage-boundary cancel, each awaited inside its
@@ -6212,6 +6217,15 @@ class SubagentManager:
     async def queued_count_for_async(self, parent_session_key: str) -> int:
         return await self._run_events.queued_count_for_async_impl(parent_session_key)
 
+    def published_queued_depths(self) -> dict[str, int]:
+        """The queued depth last published per parent session key (non-zero only).
+
+        The values of the newest ``subagent_queued`` frames, not a fresh count: a
+        reader on the event loop (the slot list) gets them without a store read,
+        and they agree with what the frame stream told every client. A copy.
+        """
+        return self._published_depths.snapshot()
+
     async def queued_run_async(self, agent_id: str) -> "QueuedRun | None":
         """The accepted, not yet registered spawn *agent_id*, or None.
 
@@ -6612,6 +6626,9 @@ class SubagentManager:
         conversation whose runs these were; the ids themselves come from the snapshot,
         which is the only reading of them that cannot drift.
         """
+        # The parent is gone, so the depth its slot advertised goes with it; a
+        # frame a cancel path publishes after this records the new value again.
+        self._published_depths.forget(parent_session_key)
         return await self._cancellation.cancel_for_teardown_impl(
             agent_ids,
             parent_session_key=parent_session_key,

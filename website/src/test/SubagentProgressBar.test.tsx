@@ -3,7 +3,7 @@ import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { configureStore } from '@reduxjs/toolkit'
-import chatReducer, { setActiveSlot, sseSubagentSpawn, sseSubagentPending, sseSubagentQueued, sseSubagentDone, sseSubagentTool, sseSubagentStalled } from '../store/chatSlice'
+import chatReducer, { setActiveSlot, sseSubagentSpawn, sseSubagentPending, sseSubagentQueued, reconcileSubagentQueuedFromSlots, sseSubagentDone, sseSubagentTool, sseSubagentStalled } from '../store/chatSlice'
 import dashboardReducer from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 
@@ -148,6 +148,65 @@ describe('SubagentProgressBar — queued / waiting count', () => {
   })
 })
 
+// Ported from kyleseaman's #13921 (the REST-poll reconcile), re-pointed at the
+// `slots` push that now carries the gateway's published depth.
+describe('SubagentProgressBar — a slots push reconciles a stale queued count', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  it('clears a stale queued count and unmounts the chip when the push says 0', () => {
+    // The symptom: "running 0, queued 1" with Stop all, while the gateway holds
+    // nothing for this parent. The count comes from subagent_queued frames, so
+    // one left non-zero stays until something corrects it.
+    const store = makeStore([])
+    store.dispatch(sseSubagentQueued({ slot: SLOT, queued: 1 }))
+    const { container } = renderBar(store)
+    expect(screen.getByTestId('subagent-queued-count').textContent).toContain('1')
+
+    act(() => { store.dispatch(reconcileSubagentQueuedFromSlots([{ key: SLOT, subagents_queued: 0 }])) })
+
+    expect(store.getState().chat.subagentQueued[SLOT]).toBeUndefined()
+    expect(container).toBeEmptyDOMElement()
+  })
+
+  it('leaves the queued count alone when the row does not report one', () => {
+    // A `slot_patch` row, or an older gateway: no field is not a 0.
+    const store = makeStore([])
+    store.dispatch(sseSubagentQueued({ slot: SLOT, queued: 2 }))
+    renderBar(store)
+    act(() => { store.dispatch(reconcileSubagentQueuedFromSlots([{ key: SLOT }])) })
+    expect(store.getState().chat.subagentQueued[SLOT]).toBe(2)
+  })
+
+  it('keeps a cron-born tab\'s real queued count across a push', () => {
+    // A cron-born tab is named `cron-<id>` while its runs publish under
+    // `cron:<id>[:<run>]`. The gateway routes each published depth to the tab its
+    // frames reach (test_published_queue_depth.py pins that half), so the row
+    // carries the real depth under the TAB key and the chip keeps it.
+    const CRON_SLOT = 'cron-job-7'
+    const store = configureStore({
+      reducer: { chat: chatReducer, dashboard: dashboardReducer, notifications: notificationsReducer },
+    })
+    store.dispatch(setActiveSlot(CRON_SLOT))
+    store.dispatch(sseSubagentQueued({ slot: CRON_SLOT, queued: 2 }))
+    const queryClient = new QueryClient({ defaultOptions: { mutations: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <Provider store={store}>
+          <SubagentProgressBar slot={CRON_SLOT} />
+        </Provider>
+      </QueryClientProvider>,
+    )
+    act(() => {
+      store.dispatch(reconcileSubagentQueuedFromSlots([
+        { key: CRON_SLOT, subagents_queued: 2 },
+        { key: 'dashboard-other', subagents_queued: 0 },
+      ]))
+    })
+    expect(store.getState().chat.subagentQueued[CRON_SLOT]).toBe(2)
+    expect(screen.getByTestId('subagent-queued-count').textContent).toContain('2')
+  })
+})
+
 describe('SubagentProgressBar — overlay stacking', () => {
   beforeEach(() => vi.clearAllMocks())
 
@@ -186,6 +245,29 @@ describe('sseSubagentQueued reducer', () => {
     store.dispatch(sseSubagentQueued({ slot: SLOT, queued: 4 }))
     store.dispatch(sseSubagentQueued({ slot: SLOT, queued: 0 }))
     expect(store.getState().chat.subagentQueued[SLOT]).toBeUndefined()
+  })
+
+  it('a slots push keeps the wait label while rows still wait, and clears it at 0', () => {
+    const store = freshStore()
+    store.dispatch(sseSubagentQueued({ slot: SLOT, queued: 3, reason: 'low_memory' }))
+    store.dispatch(reconcileSubagentQueuedFromSlots([{ key: SLOT, subagents_queued: 2 }]))
+    expect(store.getState().chat.subagentQueued[SLOT]).toBe(2)
+    expect(store.getState().chat.subagentQueuedReason[SLOT]?.reason).toBe('low_memory')
+    store.dispatch(reconcileSubagentQueuedFromSlots([{ key: SLOT, subagents_queued: 0 }]))
+    expect(store.getState().chat.subagentQueued[SLOT]).toBeUndefined()
+    expect(store.getState().chat.subagentQueuedReason[SLOT]).toBeUndefined()
+  })
+
+  it('a slots push restores a count the client never heard, and ignores garbage', () => {
+    const store = freshStore()
+    store.dispatch(reconcileSubagentQueuedFromSlots([{ key: SLOT, subagents_queued: 2.9 }]))
+    expect(store.getState().chat.subagentQueued[SLOT]).toBe(2)
+    store.dispatch(reconcileSubagentQueuedFromSlots([
+      { key: SLOT, subagents_queued: 'x' as unknown as number },
+      { key: '__proto__', subagents_queued: 5 },
+    ]))
+    expect(store.getState().chat.subagentQueued[SLOT]).toBe(2)
+    expect(Object.prototype.hasOwnProperty.call(store.getState().chat.subagentQueued, '__proto__')).toBe(false)
   })
 
   it('clamps negative / garbage payloads to a non-negative integer', () => {

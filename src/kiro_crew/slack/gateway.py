@@ -10037,7 +10037,8 @@ class GatewayOrchestrator:
             event = LLMEvent(kind="permission_request", request_id=request_id, title=description)
             return await _approve_spawn_gate(event, parent_session_key)
 
-        # Debounced slots push: keep slots[].subagents_running live for every
+        # Debounced slots push: keep slots[].subagents_running and
+        # slots[].subagents_queued live for every
         # SSE consumer (composer busy affordance, Board "working" lane, and
         # external readers of the slots stream). Without this, the field is
         # only fresh on a full GET — serialize_slots() computes it at call
@@ -10130,9 +10131,11 @@ class GatewayOrchestrator:
                 if self._subagent_coalescer().handle(etype, {**base, **extra}):
                     return
                 self.dashboard_state.broadcast_ws(etype, {**base, **extra})
-                # subagents_running flips truth value exactly at spawn/done —
-                # push (debounced) so slots-stream consumers stay live.
-                if etype in ("subagent_spawn", "subagent_done"):
+                # subagents_running flips truth value exactly at spawn/done, and
+                # subagents_queued changes with every queued-depth frame — push
+                # (debounced) so slots-stream consumers stay live, and a client
+                # that missed a depth frame is corrected by the next push.
+                if etype in ("subagent_spawn", "subagent_done", "subagent_queued"):
                     _schedule_slots_push()
 
         async def _orphan_notify(parent_session: str, msg: str, meta: dict | None = None) -> bool:

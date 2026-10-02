@@ -8,7 +8,7 @@ import type { SessionFilterKey, Slot } from './types'
 import { safeSetItem } from '../../utils/safeStorage'
 import { readStoredHiddenFolders, HIDDEN_FOLDERS_LS_KEY, readStoredTagFilter, TAG_FILTER_LS_KEY, FOLDERS_SHELVED_LS_KEY, readStoredRecentWindow, RECENT_WINDOW_LS_KEY } from './persistence'
 import { useAppSelector } from '../../store'
-import { selectSidebarWorkflowActiveKeys, selectSidebarAutomationRunningKeys, selectSidebarSubagentCounts, selectSidebarApprovalCounts } from '../../store/chatSlice'
+import { selectSidebarWorkflowActiveKeys, selectSidebarAutomationRunningKeys, selectSidebarStartedSubagentCounts, selectSidebarSubagentCounts, selectSidebarApprovalCounts } from '../../store/chatSlice'
 import { decomposeRecentWindow, type RecentUnit, clampRecentAmount, customRecentWindowMs, recentTickIntervalMs, isWithinRecentWindow } from '../recentWindow'
 import { normalizeRunSessionKey } from '../../apps/workflows/runModel'
 import { slotActivityTs } from '../chat/sessionOrder'
@@ -237,6 +237,8 @@ export function useSessionStatusFilters({ unreadSlots, activeFilters, filtersPau
   )
   // NOT dashboardSlice.subagentRunning — that only broadcasts on "done", not spawn.
   const subagentCounts = useAppSelector(selectSidebarSubagentCounts, shallowEqual)
+  // Started children only: what the board's Working lane reads.
+  const subagentStartedCounts = useAppSelector(selectSidebarStartedSubagentCounts, shallowEqual)
   // Spawn approvals (pending + approval_id) — surfaced here since background chats have no inline prompt.
   const subagentApprovalCounts = useAppSelector(selectSidebarApprovalCounts, shallowEqual)
   // O(1) lookup set for the filter predicate (mirrors the `pinned` and
@@ -404,7 +406,7 @@ export function useSessionStatusFilters({ unreadSlots, activeFilters, filtersPau
     prevUnreadCount.current = unreadSlots.length
   }, [unreadSlots.length, slotsLoaded, disableFilter, filtersPaused])
   return {
-    slotsLoaded, workflowActiveSet, automationRunningSet, subagentCounts, subagentApprovalCounts, unreadSet,
+    slotsLoaded, workflowActiveSet, automationRunningSet, subagentCounts, subagentStartedCounts, subagentApprovalCounts, unreadSet,
     recentWindowMs, recentAmountDraft, setRecentAmountDraft, recentUnitDraft, selectRecentPreset,
     commitRecentAmount, changeRecentUnit, runningSet, _derivedLookup, filterCounts,
   }

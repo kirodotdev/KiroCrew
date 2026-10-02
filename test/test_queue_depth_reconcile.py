@@ -358,6 +358,31 @@ async def test_stopping_a_row_held_only_by_the_store_publishes_the_depth(
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(30)
+@PUMP_MODES
+async def test_a_lifecycle_edge_that_agrees_with_the_published_depth_sends_nothing(
+    monkeypatch: pytest.MonkeyPatch, pump_off_loop: bool
+) -> None:
+    """A child start re-derives its parent's held depth (the published-depth
+    heal), but a count that is already right is not published a second time."""
+    mgr = await _manager(monkeypatch, pump_off_loop=pump_off_loop)
+    try:
+        _defer(mgr, 2)
+        await _settle(mgr)
+        assert mgr.published_queued_depths() == {_PARENT: 2}
+        events = _record(mgr)
+
+        child = SubagentInfo(id="c1", task="t", parent_session_key=_PARENT)
+        await mgr._fire_event("subagent_spawn", child, {})
+        await _settle(mgr)
+
+        assert _depths(events) == []
+        assert mgr.published_queued_depths() == {_PARENT: 2}
+    finally:
+        _close(mgr)
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(30)
 async def test_a_failing_depth_emit_never_costs_the_parent_its_completion(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

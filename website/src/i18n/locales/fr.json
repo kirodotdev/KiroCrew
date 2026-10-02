@@ -11863,7 +11863,8 @@
       "archived_sessions_kept_other": "{{count}} sessions archivées restent dans Sessions plus anciennes",
       "archived_count_many": "{{count}} archivées",
       "archived_count_one": "{{count}} archivée",
-      "archived_count_other": "{{count}} archivées"
+      "archived_count_other": "{{count}} archivées",
+      "waiting_for_memory": "En attente de mémoire"
     },
     "connectionsPage": {
       "action_failed": "Échec de l’action : {{error}}",
