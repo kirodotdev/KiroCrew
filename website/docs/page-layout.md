@@ -339,6 +339,23 @@ fold's live height to it and hands it to the card as `maxH`, which lands as
 scrolls the prompt instead of clipping it. A host that moves its floor (a dock
 that grows a status bar) only has to keep its `padding-bottom` honest.
 
+The card RESERVES its space at the top the same way the dock reserves its space
+at the bottom — nothing floating over the transcript draws over readable rows.
+Because the card is an overlay sibling of the scroller, nothing in the scroller's
+own flow knows it is there, so without a reservation the first row (the "N agents
+queued" card, the earlier-messages bar) paints UNDER it. The transcript's visible
+region therefore STARTS BELOW the card: `usePinnedPrompt` sizes a top inset from
+the card's MEASURED resting height (`computePinnedTopReserve` = the `ROW_PAD_Y` it
+sits below the fold, its settled collapsed height, and a clearance), exposes it on
+the pinned state as `pinnedReserve`, and each host adds it to the scroller's
+`padding-top` — the exact mirror of the `padding-bottom` that keeps rows clear of
+the dock. It is sized from the SETTLED height the card reports (not its live fold
+height — a fold or peek grows the card downward over content it already stands in
+for, never upward past its top), so the inset is stable while the fold runs, and
+it is simply 0 when nothing is pinned, leaving the prior layout byte-for-byte. No
+fade band or gradient stands in for it: the rows begin below the card, they do not
+dissolve under it.
+
 | What moves the scroller | Owner (`website/src/hooks/virtualizer/`) |
 |---|---|
 | Following the live turn, the jump-to-latest pill, scrolling to a row | `followPolicy.ts` (every write goes through its `writeScrollTop`) |

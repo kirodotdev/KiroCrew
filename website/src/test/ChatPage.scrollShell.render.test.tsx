@@ -168,11 +168,11 @@ describe('ChatPage invocation: slot membership and prop threading', () => {
       'onScroll={onScrollPin}',
       'virt={virt}',
       'loadingOlder={loadingOlder}',
-      // A PREFIX, not the whole literal: the style object carries the two dock
-      // geometries (ChatPage.dockClearance.test.tsx pins them) and the
-      // restore-gate visibility flip, so pinning the closing braces would pin
-      // those into a test about prop THREADING. This still fails on a
-      // duplicated prop.
+      // A PREFIX, not the whole literal: the style object carries the
+      // pinned-prompt top reserve, the two dock geometries
+      // (ChatPage.dockClearance.test.tsx pins them) and the restore-gate
+      // visibility flip, so pinning the closing braces would pin those into a
+      // test about prop THREADING. This still fails on a duplicated prop.
       'scrollerStyle={{',
     ]) {
       expect(inv.split(pin).length - 1, pin).toBe(1)

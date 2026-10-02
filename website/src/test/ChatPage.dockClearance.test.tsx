@@ -49,7 +49,10 @@ const num = (re: RegExp, src: string): number => {
 
 describe('composer dock clearance', () => {
   it('pads the scroller by the measured dock height plus the px clearance while only the composer floats', () => {
-    expect(CHAT_PAGE).toMatch(/scrollerStyle=\{\{\s*\.\.\.\(dockReserved\s*\?[\s\S]{0,200}?:\s*\{ paddingBottom: dockH \+ DOCK_CLEARANCE_PX \}\)/)
+    // The style object now leads with the pinned-prompt top reserve (#15993's
+    // mirror of this bottom rule), so `...(dockReserved` is no longer the first
+    // entry — match it wherever it sits in the object.
+    expect(CHAT_PAGE).toMatch(/scrollerStyle=\{\{[\s\S]*?\.\.\.\(dockReserved\s*\?[\s\S]{0,200}?:\s*\{ paddingBottom: dockH \+ DOCK_CLEARANCE_PX \}\)/)
     expect(num(/const DOCK_CLEARANCE_PX = (\d+)/, CHAT_PAGE)).toBeGreaterThan(0)
     expect(num(/const TRANSCRIPT_TAIL_SPACER_PX = (\d+)/, CHAT_PAGE)).toBeGreaterThan(0)
   })

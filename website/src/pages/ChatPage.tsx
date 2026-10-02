@@ -5836,12 +5836,21 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               //   composer keeps its glass. Either way the transcript FLOOR the
               //   pinned-prompt card reads (scroller bottom less padding-bottom)
               //   stays where readable rows stop.
+              // `paddingTop` is the TOP mirror of either bottom geometry: the
+              // pinned-prompt card floats over the scroller's top edge exactly
+              // as the dock floats over its bottom, so the scroller reserves the
+              // card's measured footprint (`pinnedReserve`, 0 when nothing is
+              // pinned) and the first row — the "N agents queued" card included —
+              // starts below it instead of sliced under it. Zero reserve leaves
+              // the h-16 header spacer the sole top band, byte-for-byte the prior
+              // layout.
               // `visibility` is not one of the properties the shell claims, so
               // adding it here is inside its documented contract. Hiding rather
               // than unmounting keeps the scroller's geometry and the height
               // cache intact -- the restore needs to WRITE scrollTop while this
               // is up, which a display:none element cannot do.
               scrollerStyle={{
+                paddingTop: pinned?.pinnedReserve ?? 0,
                 ...(dockReserved
                   ? { marginBottom: dockH, paddingBottom: DOCK_CLEARANCE_PX }
                   : { paddingBottom: dockH + DOCK_CLEARANCE_PX }),

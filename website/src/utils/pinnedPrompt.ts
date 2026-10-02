@@ -304,6 +304,43 @@ export function computePinnedCardMaxH(foldY: number, floorY: number): number {
   return Math.max(0, floorY - foldY - ROW_PAD_Y)
 }
 
+/**
+ * Breathing room, in px, between the pinned card's bottom edge and the first
+ * line of the transcript — the TOP mirror of the composer dock's
+ * `DOCK_CLEARANCE_PX`. The card floats over the scroller's top edge the way the
+ * dock floats over its bottom, so the same rule applies: the scroller reserves
+ * exactly the strip the card covers plus this margin, and the first readable row
+ * starts clear of the card instead of sliced under it.
+ */
+export const PINNED_RESERVE_CLEARANCE_PX = 8
+
+/**
+ * Height, in px, the transcript scroller must reserve at its TOP so its visible
+ * region starts BELOW the pinned card — the mirror of `computePinnedCardMaxH`'s
+ * floor at the bottom (the dock) and of ChatPage's `paddingBottom: dockH + …`.
+ *
+ * The card is an overlay sibling of the scroller, resting at `foldY + ROW_PAD_Y`
+ * and `bannerH` tall, so nothing in the scroller's own flow knows it is there:
+ * without this the "N agents queued" card and every first row paint UNDER it.
+ * Reserving the card's own footprint (`ROW_PAD_Y` it sits below the fold, its
+ * measured resting height, and the clearance) pushes the scroller's content box
+ * down by exactly the strip the card covers.
+ *
+ * Measured, not configured: `bannerH` is the card's SETTLED collapsed height,
+ * which `usePinnedPrompt` already measures off the live card (`pinCollapsedHRef`,
+ * reported through `onCollapsedHeight`) — the same height the push and hand-off
+ * geometry read — so the reserve and the card can never disagree about the card's
+ * size. Zero when nothing is pinned (`bannerH <= 0`): the reserve exists only to
+ * clear a card that is actually there, exactly as the dock reserve is sized from
+ * the dock that is actually there.
+ *
+ * @param bannerH the card's settled collapsed height, or 0 when nothing is pinned
+ */
+export function computePinnedTopReserve(bannerH: number): number {
+  if (bannerH <= 0) return 0
+  return ROW_PAD_Y + bannerH + PINNED_RESERVE_CLEARANCE_PX
+}
+
 export function computePinPush(bannerH: number, foldY: number, nextTop: number | null): number {
   if (nextTop == null || bannerH <= 0) return 0
   const travel = pinPushTravel(bannerH)
@@ -618,6 +655,17 @@ export interface PinnedPromptState {
    * state only changes at the two edges where the marker flips.
    */
   stripUncovered?: boolean
+  /**
+   * Top inset, in px, the host must reserve on the transcript scroller so its
+   * visible region starts BELOW this card (`computePinnedTopReserve`). Derived
+   * from the SETTLED `bannerH` — the resting card is what the inset clears, and a
+   * fold or peek grows the card DOWNWARD over content it is already standing in
+   * for, never upward past its top — so this does not move with `liveH`. The
+   * mirror of the dock's `paddingBottom` at the other edge; the host adds it to
+   * the scroller's `paddingTop`, and it is simply absent (0 reserve) when nothing
+   * is pinned, since `pinned` is then null and there is no card to clear.
+   */
+  pinnedReserve: number
 }
 
 /** What the scroll recompute knows before any derivation is done. */
@@ -658,12 +706,19 @@ export function nextPinnedPromptState(
   const sameMsg = prev !== null && prev.idx === idx && prev.raw === raw && prev.ts === ts
   if (sameMsg && prev.push === push && prev.bannerH === bannerH && prev.liveH === liveH
     && prev.maxH === maxH && prev.stripUncovered === stripUncovered) return prev
+  // Reserved from the SETTLED banner height, so it moves only with `bannerH` (a
+  // font-size or wrap change), never with the per-frame fold — a card that folds
+  // or peeks grows downward over the content it already stands in for, so its TOP
+  // inset is fixed at the resting footprint. The same-message early-return above
+  // already keys on `bannerH`, so an unchanged banner leaves this value untouched.
+  const pinnedReserve = computePinnedTopReserve(bannerH)
   // `liveH` DOES move every frame — that is the fold. It is carried on the
   // same-message path for exactly that reason, unlike `push`/`bannerH` which only
   // change when the geometry does. `stripUncovered` flips on a later frame of
   // the same pin (the strip slides under the resting card), so it rides here too,
-  // as does `maxH`, which moves when the pane or the dock does.
-  if (sameMsg) return { ...prev, push, bannerH, liveH, maxH, stripUncovered }
+  // as does `maxH`, which moves when the pane or the dock does. `pinnedReserve`
+  // tracks `bannerH`, so it is re-stamped here for the font-size/wrap case.
+  if (sameMsg) return { ...prev, push, bannerH, liveH, maxH, stripUncovered, pinnedReserve }
   const { text, body: full, images } = derivePinnedPromptText(raw, pastes)
   return {
     idx,
@@ -680,6 +735,7 @@ export function nextPinnedPromptState(
     liveH,
     maxH,
     stripUncovered,
+    pinnedReserve,
   }
 }
 

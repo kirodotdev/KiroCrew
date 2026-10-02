@@ -11,6 +11,8 @@ import {
   pinPushTravel,
   computeLiveCardH,
   computePinnedCardMaxH,
+  computePinnedTopReserve,
+  PINNED_RESERVE_CLEARANCE_PX,
   ROW_PAD_Y,
   DEFAULT_PINNED_CARD_H,
   PINNED_PREVIEW_LINES,
@@ -455,5 +457,33 @@ describe('computePinnedCardMaxH', () => {
 
   it('never goes negative when the fold itself is below the floor', () => {
     expect(computePinnedCardMaxH(500, 400)).toBe(0)
+  })
+})
+
+describe('computePinnedTopReserve', () => {
+  // The TOP mirror of the dock floor: the card floats over the scroller's top
+  // edge, so the scroller reserves the card's footprint — the ROW_PAD_Y it sits
+  // below the fold, its measured resting height, and the clearance — and the
+  // first row starts below it instead of under it.
+  it('reserves the card top offset, its height and the clearance', () => {
+    expect(computePinnedTopReserve(48)).toBe(ROW_PAD_Y + 48 + PINNED_RESERVE_CLEARANCE_PX)
+  })
+
+  // Nothing pinned means no card to clear, so the reserve collapses to 0 and the
+  // scroller keeps its base top gutter alone — byte-for-byte the prior layout.
+  it('reserves nothing when no card is pinned (height 0)', () => {
+    expect(computePinnedTopReserve(0)).toBe(0)
+  })
+
+  it('reserves nothing for a degenerate negative height', () => {
+    expect(computePinnedTopReserve(-5)).toBe(0)
+  })
+
+  // The reserve is sized from the SETTLED resting height the card reports, which
+  // is the same height the dock floor's own `maxH` ceiling is read against — so a
+  // card capped to the floor and the top inset that clears it agree about how
+  // tall the card is.
+  it('is driven by the resting height, so a larger card reserves more', () => {
+    expect(computePinnedTopReserve(80)).toBeGreaterThan(computePinnedTopReserve(48))
   })
 })

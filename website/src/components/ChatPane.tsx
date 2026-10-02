@@ -1659,7 +1659,14 @@ export default function ChatPane({
             scrollerRef,
             onScroll: onScrollPin,
             onAtBottomChange: setIsAtBottom,
-            scrollerStyle: { paddingTop: 12, paddingBottom: 12, minHeight: 0 },
+            // Reserve the pinned card's footprint at the TOP so the first row
+            // starts below it instead of sliced under it — the mirror of the
+            // bottom `paddingBottom` that keeps rows clear of the composer. The
+            // card is an overlay sibling of the scroller, so nothing in flow
+            // knows its height; `pinnedReserve` is sized from the card's measured
+            // resting height (0 when nothing is pinned). Base 12px is the pane's
+            // own top gutter, kept when there is no card.
+            scrollerStyle: { paddingTop: 12 + (pinnedState?.pinnedReserve ?? 0), paddingBottom: 12, minHeight: 0 },
             aboveRows: (
               <>
                 {slotDetailFailed && (

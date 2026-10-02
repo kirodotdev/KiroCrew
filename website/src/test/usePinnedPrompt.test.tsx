@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ChatMessage } from '../types'
 import type { DisplayItem } from '../pages/chat/types'
 import { usePinnedPrompt } from '../pages/chat/usePinnedPrompt'
+import { computePinnedTopReserve } from '../utils/pinnedPrompt'
 
 /**
  * chat-core P5-d: the pinned-prompt geometry extracted from the main chat's
@@ -167,6 +168,10 @@ describe('usePinnedPrompt (shared pinned-prompt geometry)', () => {
       // live card rect (70). The push geometry is resting-height-derived so the
       // hover peek cannot feed its own push — see the peek test below.
       bannerH: 60,
+      // The TOP reserve the host applies to the scroller's paddingTop so the
+      // first row starts below the card — the mirror of the dock's paddingBottom.
+      // Sized from the SAME settled resting height (60), never the live rect.
+      pinnedReserve: computePinnedTopReserve(60),
     })
   })
 
