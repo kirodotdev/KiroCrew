@@ -95,6 +95,9 @@ whose app could be disabled by the time the row starts, and `approval_mode`, who
 `"auto"` skips the spawn gate AND pre-approves the run's tools. A recovered row
 faces the gate its caller faced. `scope_ref` still RECORDS both, which is why the
 schema calls that column references rather than grants: no start path reads it.
+The one in-process exception is the accepting process's own `approval_mode` for a
+row still waiting, restored on its window refill (subagent.md,
+`_held_approval_modes`); a restart never sees it.
 Pinned by
 `test_taskq_admission_integration.py::test_an_ad_hoc_auto_approval_is_never_persisted_on_the_row`,
 and the legacy importer drops a persisted `auto_approve` for the same reason

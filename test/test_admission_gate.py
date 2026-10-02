@@ -1294,6 +1294,49 @@ class TestSpawnAdmissionGate:
         held, waiting, released = asyncio.run(run())
         assert (held, waiting, released) == ("held", True, "released")
 
+    def test_a_held_app_spawn_keeps_its_auto_approval_across_a_refill(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The store never carries ``approval_mode``; a window refill restores it
+        from this process's side table, so the drained App Kit spawn raises no
+        prompt nobody can answer."""
+        mgr = self._mgr()
+        self._busy(mgr)
+        self._level(monkeypatch, 2)
+        info, _events, _sel = self._spawn_capturing_queued(
+            mgr, memory=(True, 8.0), admission=_admitted(), approval_mode="auto"
+        )
+        assert info is not None and info.queued_reason == "memory_pressure"
+        mgr._queue.clear()  # spilled to store-only, as a full window does
+        mgr._admission.taskq_refill_window()
+        entries = [p for p in mgr._queue if p.get("_preassigned_id") == info.id]
+        assert len(entries) == 1 and entries[0]["approval_mode"] == "auto"
+        mgr._agents["busy"].done = True
+        prompts = AsyncMock(return_value=True)
+        mgr._on_spawn_approval = prompts
+        monkeypatch.setattr(mgr, "_run", AsyncMock())
+        params = {k: v for k, v in entries[0].items() if k != "_lane"}
+
+        async def drain() -> Any:
+            with patch(
+                "kiro_crew.subagent.check_memory_available", return_value=(True, 8.0)
+            ), patch(
+                "kiro_crew.subagent.cached_admission_check", return_value=_admitted()
+            ), patch(
+                "kiro_crew.subagent.sel"
+            ) as mock_sel:
+                started = mgr.spawn(**params, _from_queue=True)
+                await asyncio.sleep(0)
+            return started, mock_sel
+
+        started, mock_sel = asyncio.run(drain())
+        assert started is not None and started.approval_mode == "auto"
+        assert self._sel_call(mock_sel, "auto_approved_spawn")["metadata"]["reason"] == (
+            "approval_mode_auto"
+        )
+        prompts.assert_not_called()
+        assert info.id not in mgr._held_approval_modes
+
     def test_an_unreadable_macos_figure_is_reported_like_linux(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1930,6 +1973,49 @@ def test_owns_dedicated_runtime(
     assert _owns_dedicated_runtime([_row(**r) for r in rows], claim_prices=claims) is owns
 
 
+def test_a_defer_write_outage_answers_still_queued_never_refused() -> None:
+    """A ``TaskStoreUnavailable`` leaves the row QUEUED and due: announcing a
+    refusal would give one id a refusal now and a completion when the pump starts
+    it later."""
+    from kiro_crew import taskq
+    from kiro_crew.subagent import SubagentInfo, SubagentManager
+
+    sessions = MagicMock()
+    sessions.get_agent_selection.return_value = ("template", "")
+    mgr = SubagentManager(
+        sessions=sessions, ctx_builder=MagicMock(), on_done=MagicMock(), max_concurrent=3
+    )
+    store = mgr._taskq
+    assert store is not None
+    queued = SubagentInfo(id="row1", task="t", parent_session_key="sess-1", queued=True)
+    refused = SubagentInfo(
+        id="row1", task="t", parent_session_key="sess-1", done=True, error="refused"
+    )
+    mgr._admission.park_defer(
+        "row1",
+        reason="low memory",
+        parent_session_key="sess-1",
+        batch_id="",
+        queued=queued,
+        refused=refused,
+        wait={"reason": "low_memory"},
+    )
+    announce = MagicMock(side_effect=lambda info: info)
+
+    async def _outage(*_args: Any, **_kwargs: Any) -> Any:
+        raise taskq.TaskStoreUnavailable("disk gone")
+
+    async def run() -> Any:
+        with patch.object(store, "run", _outage), patch.object(
+            mgr, "_announce_rejection", announce
+        ):
+            return await mgr._admission.finish_parked_defer(queued)
+
+    answer = asyncio.run(run())
+    assert answer is queued and answer.done is False
+    announce.assert_not_called()
+
+
 def test_a_queued_stop_drops_what_the_process_kept_for_the_start() -> None:
     from kiro_crew.subagent import SubagentManager
 
@@ -1938,6 +2024,7 @@ def test_a_queued_stop_drops_what_the_process_kept_for_the_start() -> None:
     mgr = SubagentManager(
         sessions=sessions, ctx_builder=MagicMock(), on_done=MagicMock(), max_concurrent=3
     )
+    mgr._held_approval_modes["x"] = "auto"
     mgr._pressure_holds["x"] = time.monotonic()
     mgr._pressure_hold_expired.add("x")
 
@@ -1946,6 +2033,7 @@ def test_a_queued_stop_drops_what_the_process_kept_for_the_start() -> None:
         await asyncio.sleep(0)
 
     asyncio.run(run())
+    assert "x" not in mgr._held_approval_modes
     assert "x" not in mgr._pressure_holds and "x" not in mgr._pressure_hold_expired
 
 

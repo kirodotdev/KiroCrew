@@ -707,6 +707,13 @@ class _GateMixin(ManagerComponent):
         _durable = (
             _memory_mode == "persistent" and self._manager._admission.taskq_store() is not None
         )
+        if _durable and approval_mode:
+            # The one process-local param a waiting row must keep: a window
+            # refill rebuilds its entry from the store, which never carries it
+            # (``_window_entry``), and the drain would then raise a prompt the
+            # caller -- an App Kit spawn, typically -- has no surface for. This
+            # process only; a restart replays the row without it, as documented.
+            self._manager._held_approval_modes[agent_id] = approval_mode
         admitted_memory_mode: str = _memory_mode
 
         def _deferred(

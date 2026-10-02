@@ -3724,6 +3724,10 @@ class SubagentManager:
         self._pressure_holds: dict[str, float] = {}
         self._pressure_hold_expired: set[str] = set()
         self._pressure_recheck_handle: asyncio.TimerHandle | None = None
+        # agent_id -> the ``approval_mode`` a durable row was accepted with, for
+        # as long as it waits: the store never carries it, so a window refill
+        # restores it from here (``_refill_apply``).
+        self._held_approval_modes: dict[str, str] = {}
         # Rows the pump has popped from the window but not yet claimed. Their
         # durable state is still QUEUED, so without this set every store-backed
         # depth read between pop and claim counts them as waiting.
@@ -5711,6 +5715,7 @@ class SubagentManager:
         """Drop what this process kept for a start that began or never will."""
         self._pressure_holds.pop(agent_id, None)
         self._pressure_hold_expired.discard(agent_id)
+        self._held_approval_modes.pop(agent_id, None)
 
     # ── Continuable conversations (keep=True) ─────────────────────────────
 

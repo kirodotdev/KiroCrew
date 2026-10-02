@@ -680,6 +680,23 @@ class TestSpawn:
         assert manager.spawn_async.await_args.kwargs["parent_session_key"] == "slack:C1:1"
 
     @pytest.mark.asyncio
+    async def test_a_refused_spawn_is_reported_as_refused_not_spawned(self) -> None:
+        """A refusal comes back as a terminal record, not None; a non-batch one is
+        announced nowhere else, so the reply must say it never started."""
+        manager = MagicMock(max_concurrent=2)
+        manager.spawn.return_value = SimpleNamespace(
+            id="r1", done=True, error="spawn refused: gateway admission is closed"
+        )
+        reply = await spawn_task_reply("do it", manager) or ""
+        assert reply.startswith("⚠️ Subagent `r1` was not started: gateway admission is closed")
+        assert "spawn refused" not in reply and "Spawned" not in reply
+        manager.spawn.return_value = SimpleNamespace(
+            id="r2", done=True, error="never started: waiting for memory (pressure)"
+        )
+        reply = await spawn_task_reply("do it", manager) or ""
+        assert reply.startswith("⚠️ Subagent `r2` was not started: waiting for memory")
+
+    @pytest.mark.asyncio
     async def test_an_empty_argument_declines(self) -> None:
         assert await spawn_task_reply("", MagicMock()) is None
         assert await spawn_command_reply("spawn    ", MagicMock()) is None

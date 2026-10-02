@@ -818,7 +818,9 @@ made; no gate reads it back. Two consumers:
   `{"status": "queued", ...}` record for a member that had not started when its
   wait ended (and reports it only there, never also as an error), `kirocrew spawn run` prints `Queued subagent <id> …`, and the
   channel `spawn <task>` keyword (`messaging/commands.py`) replies
-  `⏳ Queued subagent …` with the reason instead of `🚀 Spawned subagent …`. A
+  `⏳ Queued subagent …` with the reason instead of `🚀 Spawned subagent …`, and
+  `⚠️ Subagent … was not started: <error>` for a refusal (a terminal record, not
+  None). A
   `concurrency_limit` wait keeps `status: "spawned"`: it is the ordinary wave
   shape and clears within seconds. Neither the admission verdicts nor the memory
   pricing (`_startup_memory_reserve_gb`) are touched by the label.
@@ -1976,7 +1978,15 @@ Specified in [taskq.md](taskq.md); this section is the manager's side of it.
   trusting the row (`test_taskq_admission_integration.py::test_a_row_on_disk_carrying_auto_approval_faces_the_spawn_gate`
   drains a row that still holds the grant and asserts the approval callback ran).
   The value stays recorded in `scope_ref`, which the schema defines as references
-  rather than grants and which no start path reads.
+  rather than grants and which no start path reads. One in-process exception: the
+  process that ACCEPTED a durable row keeps its `approval_mode` in
+  `_held_approval_modes` (keyed by the freshly minted run id) for as long as the
+  row waits, and its window refill (`_refill_apply`) puts it back on that row's
+  entry. That is the same request's consent, which an entry that never left the
+  in-memory window carries anyway; without it a held or deferred App Kit spawn
+  would drain into a prompt nobody can answer. It is dropped when the row
+  registers, is refused or is stopped (`_forget_pending_start`), and a restart
+  replays the row without it, as above.
 - **A run id is 16 hex characters, minted at one site**
   (`SubagentManager._mint_agent_id`, `_RUN_ID_HEX_CHARS`; the gate, the
   continuation coordinator and the wave digest all call it and none of them
