@@ -20,10 +20,14 @@ from __future__ import annotations
 
 # Ensure SSL certs are found before any library caches its SSL context.
 # The ``kirocrew`` entry-point (console_scripts) bypasses ``__main__.py``,
-# so we must run this here as well.
+# so we must run this here as well. The inherited llama.cpp path is removed
+# before any thread or child process exists because a concurrent environment
+# snapshot can observe a removal between enumerating and reading the key.
+from kiro_crew._llama_lib_path import drop_inherited_lib_path
 from kiro_crew._ssl_compat import _ensure_ssl_certs
 
 _ensure_ssl_certs()
+drop_inherited_lib_path()
 
 import argparse
 import asyncio

@@ -8,6 +8,10 @@ deferred to call time, which makes this ordering EASIER to hold —
 but any module-scope import that reaches aiohttp, now or later, must still
 execute after ``_ensure_ssl_certs()``, so the prelude stays mandatory.
 
+``drop_inherited_lib_path()`` must run on the main thread before any thread or
+child process exists because a concurrent environment snapshot can observe a
+removal between enumerating and reading the key.
+
 aiohttp caches its default SSL context at import time
 (``aiohttp.connector._SSL_CONTEXT_VERIFIED``).  On AL2 / dev-desktops the
 BrazilPython cafile is missing, so the cached context ends up with zero CA
@@ -19,12 +23,14 @@ from __future__ import annotations
 import sys
 
 from kiro_crew import __version__, platform_compat
+from kiro_crew._llama_lib_path import drop_inherited_lib_path
 from kiro_crew._ssl_compat import _ensure_ssl_certs
 from kiro_crew.stdlib_shadow import refuse_if_stdlib_shadowed
 
 # Windows: force UTF-8 stdout/stderr before any non-ASCII output (no-op on POSIX).
 platform_compat.ensure_utf8_console()
 _ensure_ssl_certs()
+drop_inherited_lib_path()
 
 if __name__ == "__main__":
     # BEFORE the `--version` fast-path, not after: a stdlib shadowed from the

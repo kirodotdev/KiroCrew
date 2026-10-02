@@ -55,6 +55,13 @@ from pathlib import Path
 from typing import Any, BinaryIO, Callable, NamedTuple, Protocol
 
 from kiro_crew import asset_downloader
+from kiro_crew._llama_lib_path import (  # noqa: F401
+    _LIB_PATH_ENV,
+    _LIBS_DIR_NAME,
+    _REQUIRED_VENDORED_LIBS,
+    consume_dropped_inherited_lib_path,
+    operator_lib_path_override,
+)
 from kiro_crew.config.loader import config_path, read_config_text
 from kiro_crew.config.paths import config_dir
 from kiro_crew.cpu_affinity import affinity_cpu_count
@@ -336,11 +343,19 @@ _PROGRESS_EVERY_BYTES = 16 << 20
 # ── Vendored runtime loading ──
 
 _VENDOR_DIR = Path(__file__).resolve().parent / "_vendor"
-_LIBS_DIR_NAME = "llama_cpp_libs"
-# Upstream-supported override naming the directory ctypes loads the native libs
-# from (see _vendor/llama_cpp/llama_cpp.py). An operator-set value wins, which
-# is the escape hatch for a GPU build or a hand-assembled lib dir.
-_LIB_PATH_ENV = "LLAMA_CPP_LIB_PATH"
+# The process-local channel to the vendored loader: a module registered in
+# ``sys.modules`` under this key, carrying ``LIBS_DIR`` (see
+# _publish_lib_path_for_import). ``_vendor/llama_cpp/llama_cpp.py`` reads it
+# before ``LLAMA_CPP_LIB_PATH`` (its ``kiro_crew DIVERGENCE FROM UPSTREAM``).
+# Entry preludes remove inherited bundled or empty values before any thread or
+# child exists. A process that bypasses those preludes may still carry one; the
+# loader classifies and ignores it without writing the environment. The bundled
+# directory travels only through ``sys.modules``, which children do not inherit.
+# On Windows the upstream loader still prepends the directory to ``PATH`` for
+# its dependent DLLs (unchanged here, and it did so before the seam); that is a
+# search hint a successor's own prepend outranks, not an instruction to load
+# from a named directory.
+_LIB_PATH_SEAM = "_kiro_crew_llama_cpp_lib_path"
 # The upstream Linux x86_64 CPU wheel is built with these code-generation
 # switches enabled. Its startup path executes the corresponding instructions
 # before llama.cpp can make a runtime dispatch decision, so loading it on a
@@ -369,66 +384,6 @@ _WINDOWS_MSVC_RUNTIME_DLLS = (
     "VCRUNTIME140_1.dll",
     "VCOMP140.DLL",
 )
-
-# The native-library closure every supported platform MUST ship, keyed by the
-# `llama_cpp_libs/<dir>` name. `libllama` is the entry point ctypes opens by
-# base name; the `libggml*` files are its NEEDED/@rpath dependencies, so a
-# missing one fails the SAME way as a missing libllama — an unusable runtime.
-#
-# This is the single source of truth for "is the vendored payload complete",
-# consumed by `verify_vendored_libs()` and asserted per packaging lane. It is
-# deliberately CODE rather than a build-time glob: a glob over whatever is on
-# disk can only prove the files present are shippable, never that a file that
-# should exist was silently dropped by a packaging rule — which is exactly the
-# failure mode `MANIFEST.in`'s `global-exclude *.so` produced (it stripped
-# precisely `libllama.so`, since every other Linux lib ends `.so.0` and the
-# macOS/Windows libs are `.dylib`/`.dll`). `python -m build` builds the wheel
-# FROM the sdist, so that one glob shipped a Linux wheel whose vendored
-# llama_cpp could not load its own shared library, silently degrading vector
-# memory to keyword search on every pip-installed Linux host.
-#
-# No BLAS entry on Linux is intentional, not an omission: upstream publishes no
-# BLAS backend in its Linux CPU wheels (macOS gets `libggml-blas` only because
-# it links the system Accelerate framework). The Linux `libggml-cpu` carries the
-# optimized GEMM/repack kernels instead, so the CPU path is complete without it.
-_REQUIRED_VENDORED_LIBS: dict[str, tuple[str, ...]] = {
-    "linux_x86_64": (
-        "libllama.so",
-        "libggml.so.0",
-        "libggml-base.so.0",
-        "libggml-cpu.so.0",
-        "libgomp-a34b3233.so.1.0.0",
-    ),
-    "linux_aarch64": (
-        "libllama.so",
-        "libggml.so.0",
-        "libggml-base.so.0",
-        "libggml-cpu.so.0",
-        "libgomp-d22c30c5.so.1.0.0",
-    ),
-    "macos_arm64": (
-        "libllama.dylib",
-        "libggml.0.dylib",
-        "libggml-base.0.dylib",
-        "libggml-blas.0.dylib",
-        "libggml-cpu.0.dylib",
-        "libggml-metal.0.dylib",
-    ),
-    "macos_x86_64": (
-        "libllama.dylib",
-        "libggml.0.dylib",
-        "libggml-base.0.dylib",
-        "libggml-blas.0.dylib",
-        "libggml-cpu.0.dylib",
-        "libggml-metal.0.dylib",
-    ),
-    "win_amd64": (
-        "llama.dll",
-        "ggml.dll",
-        "ggml-base.dll",
-        "ggml-cpu.dll",
-    ),
-}
 
 
 def _platform_libs_dirname() -> str | None:
@@ -559,6 +514,10 @@ def _macos_x86_64_missing_cpu_flags() -> list[str] | None:
 def verify_vendored_libs(root: Path | None = None) -> dict[str, list[str]]:
     """Report vendored native libs that :data:`_REQUIRED_VENDORED_LIBS` expects but are absent.
 
+    The closure is declared in :mod:`kiro_crew._llama_lib_path` and re-exported
+    here; this module is where it is CHECKED, which is why the report lives
+    beside the loader that acts on it.
+
     Returns a mapping of platform dir -> sorted missing filenames; an empty
     mapping means the payload is complete for EVERY platform, not just the
     running one. ``root`` defaults to the installed ``_vendor`` directory, so
@@ -578,6 +537,37 @@ def verify_vendored_libs(root: Path | None = None) -> dict[str, list[str]]:
         if absent:
             missing[plat] = absent
     return missing
+
+
+def _publish_lib_path_for_import(libs_dir: Path | None) -> None:
+    """Hand *libs_dir* to the vendored loader through the process-local seam.
+
+    Registers a module under :data:`_LIB_PATH_SEAM` in ``sys.modules`` carrying
+    ``LIBS_DIR``; ``_vendor/llama_cpp/llama_cpp.py`` reads it when it is first
+    imported, before it consults ``LLAMA_CPP_LIB_PATH``. ``None`` removes the
+    seam, so an operator override in the environment is what the loader sees.
+
+    Deliberately not the environment variable, not even for the duration of
+    the import: the import runs on the embedder's loader thread while the
+    event loop keeps spawning children, and a child spawned in that window
+    snapshots ``os.environ`` -- an MCP server, a session, the gateway an in-app
+    restart execs into. One carrying its own llama-cpp bindings would dlopen
+    this install's native libs against them; a Kiro Crew successor would read
+    the PREVIOUS install's directory as an operator override, skip the
+    completeness and CPU gates, and load that install's libs -- or none, once
+    an upgrade has removed it, which surfaces as the upstream loader's bare
+    "Shared library with base name 'llama' not found" while vector memory
+    silently falls back to keyword search. ``sys.modules`` is not inherited.
+    """
+    if libs_dir is None:
+        sys.modules.pop(_LIB_PATH_SEAM, None)
+        return
+    seam = types.ModuleType(
+        _LIB_PATH_SEAM,
+        "Process-local seam: the bundled llama.cpp lib directory for the vendored loader.",
+    )
+    seam.LIBS_DIR = str(libs_dir)  # type: ignore[attr-defined]
+    sys.modules[_LIB_PATH_SEAM] = seam
 
 
 def _install_diskcache_stub() -> None:
@@ -623,16 +613,73 @@ def _harden_llama_null_streams() -> None:
             reconfigure(encoding="utf-8", errors="backslashreplace")
 
 
+def _log_dropped_inherited_lib_path() -> None:
+    """Emit the one INFO line for a value an entry prelude removed at startup.
+
+    The preludes remove a bundled-shaped or empty inherited value before any
+    thread or child exists, which is before logging is configured, so they only
+    record it. This runs on the loader path -- the first point that reads the
+    record with logging in place -- and
+    :func:`consume_dropped_inherited_lib_path` hands the value over once per
+    process, so a repeated loader call or a cleared ``lru_cache`` cannot repeat
+    the line. ``dropped_inherited_lib_path()`` still names the value for
+    ``kirocrew doctor`` afterwards.
+    """
+    removed = consume_dropped_inherited_lib_path()
+    if removed is None:
+        return
+    if removed:
+        logger.info(
+            "Ignoring %s=%s inherited from another Kiro Crew process; "
+            "this install resolves its own bundled llama.cpp libs",
+            _LIB_PATH_ENV,
+            removed,
+        )
+    else:
+        logger.info(
+            "Ignoring empty %s; this install resolves its own bundled llama.cpp libs",
+            _LIB_PATH_ENV,
+        )
+
+
 @functools.lru_cache(maxsize=1)
 def _load_llama_class():
     """Import the vendored llama-cpp-python runtime. Returns the Llama class or None.
 
-    Points ``LLAMA_CPP_LIB_PATH`` at the per-platform native libs (an
-    upstream-supported override — see ``_vendor/llama_cpp/llama_cpp.py``)
-    and prepends ``_vendor`` to ``sys.path`` so ``import llama_cpp``
-    resolves to the vendored copy. Never raises — unsupported platforms and
-    import failures degrade to keyword-only memory search.
+    Hands the per-platform native libs directory to the vendored loader through
+    the process-local seam (:func:`_publish_lib_path_for_import`, read by
+    ``_vendor/llama_cpp/llama_cpp.py``) -- never through ``LLAMA_CPP_LIB_PATH``,
+    which a child spawned during the import would inherit -- and prepends
+    ``_vendor`` to ``sys.path`` so ``import llama_cpp`` resolves to the vendored
+    copy. A value already in the environment is honoured as an operator override
+    unless it is a bundled directory inherited from another Kiro Crew process,
+    which is ignored without mutating the environment. Never raises -- unsupported
+    platforms and import failures degrade to keyword-only memory search.
     """
+    # Report what the prelude removed at startup, before anything about this
+    # process's own resolution: the prelude could not log it, and this is the
+    # first site that can.
+    _log_dropped_inherited_lib_path()
+    # Skipped when the operator set LLAMA_CPP_LIB_PATH: the libs then load from
+    # THEIR directory, so the bundled tree's contents do not decide whether
+    # the runtime works, and refusing on it would disable the documented escape
+    # hatch (a GPU build, or a hand-restored lib dir) for precisely the users an
+    # incomplete wheel stranded. Their directory is the loader's to validate.
+    #
+    # Entry preludes remove bundled-shaped and empty inherited values before any
+    # thread or child exists. A loader reached without a prelude still ignores
+    # such a value and publishes this install's directory through the process-local
+    # seam, but never removes or otherwise writes the environment.
+    override = operator_lib_path_override()
+    if override is None:
+        inherited = os.environ.get(_LIB_PATH_ENV)
+        if inherited is not None:
+            logger.info(
+                "Ignoring %s=%s left in the environment; this install resolves "
+                "its own bundled llama.cpp libs (entry preludes remove it at startup)",
+                _LIB_PATH_ENV,
+                inherited,
+            )
     libs_dirname = _platform_libs_dirname()
     if libs_dirname is None:
         logger.warning(
@@ -651,13 +698,7 @@ def _load_llama_class():
     # incomplete install and sent the real-world diagnosis of this bug chasing
     # a Graviton/architecture problem instead of the packaging rule that
     # dropped the file on every architecture.
-    #
-    # Skipped when the operator set LLAMA_CPP_LIB_PATH: the libs then load from
-    # THEIR directory, so the bundled tree's contents no longer decide whether
-    # the runtime works, and refusing on it would disable the documented escape
-    # hatch (a GPU build, or a hand-restored lib dir) for precisely the users an
-    # incomplete wheel stranded. Their directory is the loader's to validate.
-    if _LIB_PATH_ENV not in os.environ:
+    if override is None:
         absent = [
             name
             for name in _REQUIRED_VENDORED_LIBS.get(libs_dirname, ())
@@ -668,7 +709,9 @@ def _load_llama_class():
                 "Vendored llama.cpp install for %s is incomplete — missing %s in %s. "
                 "This is a packaging defect, not an unsupported platform; reinstall "
                 "Kiro Crew from a current release, or point %s at a complete lib "
-                "directory. Memory falls back to keyword search.",
+                "directory of your own (a path ending kiro_crew/_vendor/llama_cpp_libs/"
+                "<platform> is read as another install's and ignored). Memory "
+                "falls back to keyword search.",
                 libs_dirname,
                 ", ".join(absent),
                 libs_dir,
@@ -744,8 +787,10 @@ def _load_llama_class():
                     _LIB_PATH_ENV,
                 )
                 return None
-    # setdefault so an operator-provided override (e.g. a GPU build) wins.
-    os.environ.setdefault(_LIB_PATH_ENV, str(libs_dir))
+    # The bundled directory reaches the vendored loader through the process-local
+    # seam; an operator-provided override (e.g. a GPU build) is left in the
+    # environment as they set it, and the seam is absent so the loader reads it.
+    _publish_lib_path_for_import(None if override is not None else libs_dir)
     _install_diskcache_stub()
     vendor_str = str(_VENDOR_DIR)
     if vendor_str not in sys.path:

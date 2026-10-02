@@ -186,10 +186,16 @@ Honoured as an operator override, that value keeps the successor pointing at the
 previous install's bundle; once an upgrade or an installer re-run deletes that tree
 every TLS handshake fails until a restart from a clean environment (#15713).
 
-The rule is the one #15607 proposes for the other install-pinned runtime export,
-`LLAMA_CPP_LIB_PATH` (that change is not merged; its names are not cited here): **a value
-the runtime exported is its own transitional value, not an operator's, however it is
-inherited.** Here the export must stay in the environment — the children need it — so the
+The rule is shared with the other install-pinned runtime export,
+`LLAMA_CPP_LIB_PATH`: **a value the runtime exported is its own transitional value, not an
+operator's, however it is inherited.** That variable reaches the rule by the opposite
+route, because no child needs it: each entry prelude calls `drop_inherited_lib_path` to
+REMOVE an inherited bundled-shaped or empty value outright (keeping it in
+`dropped_inherited_lib_path` for `kirocrew doctor`), `operator_lib_path_override` is the
+one classifier for what counts as an operator's value, and the loader hands this install's
+directory to the vendored runtime through the process-local `sys.modules` seam
+`_LIB_PATH_SEAM` rather than the environment — so nothing is left in the environment for a
+marker to vouch for. Here the export must stay in the environment — the children need it — so the
 runtime publishes its provenance beside it, **one marker per variable it assigns**:
 `KIROCREW_EXPORTED_SSL_CERT_FILE` and `KIROCREW_EXPORTED_REQUESTS_CA_BUNDLE`, each holding
 the value `_export_ca_bundle` wrote into that variable, and each published only when the
@@ -234,9 +240,11 @@ would: the system bundle wins where there is one, the same install re-exports th
 path with nothing logged, both entry points running the prelude in one process see their
 own export and keep it silently, and an operator's `REQUESTS_CA_BUNDLE` beside the
 runtime's `SSL_CERT_FILE` survives the restart untouched. One `WARNING` line names each
-value that changed and the reason it was judged the runtime's — WARNING rather than the
-INFO #15607 proposes, because this runs in the prelude before logging is configured and
-the last-resort handler drops everything below WARNING. Not on Windows: the prelude
+value that changed and the reason it was judged the runtime's — WARNING rather than INFO,
+because this runs in the prelude before logging is configured and the last-resort handler
+drops everything below WARNING. `LLAMA_CPP_LIB_PATH` answers that same constraint the
+other way round: its prelude records the removal silently, and the embedding loader emits
+the one INFO line later, once logging is in place. Not on Windows: the prelude
 exports nothing there, so no Kiro Crew process can have left a value behind, and whatever
 is set is an operator's. `test/test_ssl_certs.py::TestInheritedInstallPinnedBundle` pins
 the rule, including the two-bootstrap restart with the first run's environment carried
