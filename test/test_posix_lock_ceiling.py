@@ -388,12 +388,27 @@ class TestInProcessOverlapOffTheLoop:
         finally:
             os.close(fd)
 
-    def test_a_brief_in_process_holder_is_waited_out(self, tmp_path: Path):
+    def test_a_brief_in_process_holder_is_waited_out(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
         lock_path = tmp_path / "overlap.lock"
-        thread, stop = self._hold_in_thread(lock_path, release_after=0.05)
+        thread, stop = self._hold_in_thread(lock_path, release_after=None)
+        attempting = threading.Event()
+        real_flock = platform_compat.fcntl.flock
+
+        def _observe_waiter(fd: int, operation: int) -> None:
+            attempting.set()
+            real_flock(fd, operation)
+
+        monkeypatch.setattr(platform_compat.fcntl, "flock", _observe_waiter)
 
         async def _main() -> float:
-            return await asyncio.to_thread(self._locked_section, lock_path, 2.0)
+            waiter = asyncio.create_task(asyncio.to_thread(self._locked_section, lock_path, 2.0))
+            assert await asyncio.to_thread(attempting.wait, 5), "waiter never attempted the lock"
+            await asyncio.sleep(0)
+            assert not waiter.done(), "waiter entered while the holder still owned the lock"
+            stop.set()
+            return await waiter
 
         try:
             waited = asyncio.run(_main())
@@ -401,8 +416,8 @@ class TestInProcessOverlapOffTheLoop:
             stop.set()
             thread.join(5)
 
-        # Entered after the holder let go: not refused at 0s, not at the 2s limit.
-        assert 0.03 <= waited < 1.0
+        # Entered after the explicitly observed contention, before the 2s limit.
+        assert 0 <= waited < 1.0
 
     def test_a_holder_that_never_releases_is_refused_at_the_timeout(self, tmp_path: Path):
         lock_path = tmp_path / "held-forever.lock"
