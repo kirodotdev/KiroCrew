@@ -15256,6 +15256,8 @@
         "single_line": "Una sola línea",
         "spellcheck_input": "Revisar la ortografía en la entrada de mensajes",
         "spellcheck_input_desc": "Subraya las palabras mal escritas en el campo de mensaje con una línea roja ondulada. Desactívalo para dejar de ver los subrayados rojos mientras escribes.",
+        "inline_markdown_input": "Dar formato al Markdown mientras escribes",
+        "inline_markdown_input_desc": "Muestra negrita, cursiva, tachado y código en línea en el campo de mensaje mientras escribes. Al activarlo, el campo de mensaje también pasa a un editor de texto enriquecido que aún está en beta; desactívalo para volver al campo simple. Las marcas de Markdown siguen visibles y el mensaje que envías no cambia.",
         "show_pasted_text_in_full": "Mostrar el texto pegado completo",
         "show_pasted_text_in_full_desc": "Mantener un pegado largo como texto editable en el campo de mensaje, en lugar de plegarlo en una etiqueta de pegado. Cuando está desactivado, {{chord}} mantiene un solo pegado como texto. Un pegado muy grande puede ralentizar la escritura.",
         "smooth": "Suave",

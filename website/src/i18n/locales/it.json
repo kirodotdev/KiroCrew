@@ -15256,6 +15256,8 @@
         "single_line": "Riga singola",
         "spellcheck_input": "Controlla l'ortografia nel campo messaggio",
         "spellcheck_input_desc": "Sottolinea le parole scritte male nel campo messaggio con una linea rossa ondulata. Disattivalo per non vedere più le sottolineature rosse mentre scrivi.",
+        "inline_markdown_input": "Formatta il Markdown mentre scrivi",
+        "inline_markdown_input_desc": "Mostra grassetto, corsivo, barrato e codice in linea nel campo messaggio mentre scrivi. Attivandolo, anche il campo messaggio passa a un editor di testo formattato ancora in beta; disattivalo per tornare al campo semplice. I marcatori Markdown restano visibili e il messaggio inviato non cambia.",
         "show_pasted_text_in_full": "Mostra per intero il testo incollato",
         "show_pasted_text_in_full_desc": "Mantiene un incollaggio lungo come testo modificabile nel campo del messaggio, invece di ridurlo a un chip di incollaggio. Quando è disattivata, {{chord}} mantiene un singolo incollaggio come testo. Un incollaggio molto grande può rallentare la digitazione.",
         "smooth": "Fluido",

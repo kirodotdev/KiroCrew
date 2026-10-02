@@ -69,6 +69,10 @@ function relativeTime(iso: string): string | null {  const diff = Date.now() - n
   return `${Math.floor(diff / (24 * 3600_000))}d`
 }
 
+/** How long the Select-to-Ask caret nudge waits for a composer that is still
+ *  lazy-loading (the Lexical editor) before it gives up on placing the caret. */
+const SEED_FOCUS_WAIT_MS = 5000
+
 export default function SideChat({ slot }: { slot: string }) {
   const connected = useConnected()
   const dispatch = useAppDispatch()
@@ -207,7 +211,7 @@ export default function SideChat({ slot }: { slot: string }) {
   }, [])
 
   /** Wrapper around the native composer; the Select-to-Ask seed resolves the
-   *  textarea through it (`textarea[data-composer-input]`) instead of a
+   *  composer through it (`[data-composer-input]`, textarea or Lexical div) instead of a
    *  dedicated ref prop on ChatInput. */
   const composerWrapRef = useRef<HTMLDivElement | null>(null)
 
@@ -546,19 +550,48 @@ export default function SideChat({ slot }: { slot: string }) {
   // member switch and back — leaves focus where the user has it.
   useEffect(() => {
     if (!seedTick) return
-    const frame = requestAnimationFrame(() => {
-      const el = composerWrapRef.current?.querySelector<HTMLTextAreaElement>('textarea[data-composer-input]')
-      if (el) {
-        el.focus()
+    const place = (el: HTMLElement) => {
+      el.focus()
+      if (el instanceof HTMLTextAreaElement) {
         const len = el.value.length
         el.setSelectionRange(len, len)
-        // Scroll to the top so the START of a long quote is visible (focusing
-        // + caret-at-end scrolls to the bottom otherwise, hiding the quote).
-        el.scrollTop = 0
+      } else {
+        // The Lexical composer (Style Markdown While Typing) is a
+        // contenteditable div; it follows the DOM selection.
+        const sel = window.getSelection()
+        sel?.selectAllChildren(el)
+        sel?.collapseToEnd()
       }
+      // Scroll to the top so the START of a long quote is visible (focusing
+      // + caret-at-end scrolls to the bottom otherwise, hiding the quote).
+      el.scrollTop = 0
+    }
+    const find = () => composerWrapRef.current?.querySelector<HTMLElement>('[data-composer-input]') ?? null
+    let observer: MutationObserver | null = null
+    let timer = 0
+    const finish = (el: HTMLElement | null) => {
+      observer?.disconnect()
+      observer = null
+      window.clearTimeout(timer)
+      if (el) place(el)
       consumeSideChatSeed(slot)
+    }
+    const frame = requestAnimationFrame(() => {
+      const el = find()
+      const wrap = composerWrapRef.current
+      if (el || !wrap) { finish(el); return }
+      // The Lexical composer is lazy-loaded, so it can be missing for a
+      // while. Wait for it to mount, up to a cap, instead of consuming the
+      // seed against an empty wrapper and leaving the quote unfocused.
+      observer = new MutationObserver(() => { const found = find(); if (found) finish(found) })
+      observer.observe(wrap, { childList: true, subtree: true })
+      timer = window.setTimeout(() => finish(find()), SEED_FOCUS_WAIT_MS)
     })
-    return () => cancelAnimationFrame(frame)
+    return () => {
+      cancelAnimationFrame(frame)
+      observer?.disconnect()
+      window.clearTimeout(timer)
+    }
   }, [seedTick, slot])
 
   // Auto-grow of the input is the SDK hook's job — the `min-h-[52px]` class below

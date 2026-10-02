@@ -15256,6 +15256,8 @@
         "single_line": "Une seule ligne",
         "spellcheck_input": "Vérifier l'orthographe dans la zone de message",
         "spellcheck_input_desc": "Souligne les mots mal orthographiés dans la zone de message d'un trait rouge ondulé. Désactive-le pour arrêter les soulignements rouges pendant que tu écris.",
+        "inline_markdown_input": "Mettre en forme le Markdown pendant la saisie",
+        "inline_markdown_input_desc": "Affiche le gras, l'italique, le barré et le code en ligne dans la zone de message pendant que tu écris. L'activer fait aussi passer la zone de message à un éditeur de texte enrichi encore en bêta ; désactive-le pour revenir à la zone de saisie simple. Les marqueurs Markdown restent visibles et le message envoyé ne change pas.",
         "show_pasted_text_in_full": "Afficher le texte collé en entier",
         "show_pasted_text_in_full_desc": "Conserver un collage long comme texte modifiable dans le champ de message, au lieu de le replier en pastille de collage. Lorsque cette option est désactivée, {{chord}} conserve un seul collage sous forme de texte. Un collage très volumineux peut ralentir la saisie.",
         "smooth": "Fluide",

@@ -321,7 +321,8 @@ export interface ChatInputProps {
    *  Cmd/Ctrl+Shift+V still forces one raw paste when this is off. */
   showFullPastes?: boolean
   /** Opt into the first Lexical composer migration slice. Defaults off so the
-   *  established textarea path remains the production fallback until parity is complete. */
+   *  established textarea path remains the production fallback until parity is complete.
+   *  The Style Markdown While Typing setting also turns it on for that user. */
   lexicalComposer?: boolean
   /** Optional knowledge chip rendered above the input */
   knowledgeChip?: React.ReactNode

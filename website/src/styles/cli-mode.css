@@ -23,7 +23,9 @@
      [data-role="assistant"]           — AssistantMessage root (added by us)
      .msg-content                      — message text container (already in tree)
      [data-testid="input-wrapper"]     — chat-input rounded card wrapper
-     textarea[data-composer-input]      — chat input
+     [data-composer-input]              — chat input (textarea, or the Lexical
+                                          div under Style Markdown While Typing)
+     [data-composer-placeholder]        — Lexical composer's placeholder overlay
      [style*="--mc-content-width"]     — chat pane root (scope anchor)
      [style*="var(--mc-content-width"] — per-message row wrappers
    ───────────────────────────────────────────────────────────────────────── */
@@ -231,15 +233,22 @@
   user-select: none;
 }
 
-/* One rule for the textarea and its paste-chip mirror (PasteHighlightLayer):
-   they must share the same text box, or each chip background sits 8px left
-   of its token text. */
-[data-ui="cli"] [style*="--mc-content-width"] :is(textarea[data-composer-input], [data-composer-typo][aria-hidden]) {
+/* One rule for the composer input (the textarea, or the Lexical div under
+   Style Markdown While Typing) and the textarea's paste-chip mirror
+   (PasteHighlightLayer): they must share the same text box, or each chip
+   background sits 8px left of its token text. */
+[data-ui="cli"] [style*="--mc-content-width"] :is([data-composer-input], [data-composer-typo][aria-hidden]) {
   padding-left: 24px !important;
 }
 
-[data-ui="cli"] [style*="--mc-content-width"] textarea[data-composer-input] {
+[data-ui="cli"] [style*="--mc-content-width"] [data-composer-input] {
   caret-color: var(--accent);
   /* font-family + font-size inherit from body; useZoom auto-resolves
      --font-body to mono in CLI mode by default. */
+}
+
+/* The Lexical composer's placeholder is an overlay beside the editor, not a
+   native ::placeholder, so it needs the same indent to clear the > glyph. */
+[data-ui="cli"] [style*="--mc-content-width"] [data-composer-placeholder] {
+  padding-left: 24px !important;
 }

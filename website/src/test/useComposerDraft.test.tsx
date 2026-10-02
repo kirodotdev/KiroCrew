@@ -82,12 +82,13 @@ describe('SideChat consumes the SDK draft behaviour', () => {
     expect(src).not.toMatch(/e\.key === 'Enter' && !e\.shiftKey/)
   })
 
-  it('resolves the composer textarea for the Select-to-Ask seed through its own wrapper', () => {
-    // The seed handler places the caret by querying the native composer's
-    // textarea inside SideChat's own wrapper — no dedicated ref prop on
-    // ChatInput. Without this the side-seed event prefills a draft the user
-    // cannot see focused.
-    expect(src).toContain("composerWrapRef.current?.querySelector<HTMLTextAreaElement>('textarea[data-composer-input]')")
+  it('resolves the composer for the Select-to-Ask seed through its own wrapper', () => {
+    // The seed handler places the caret by querying the native composer inside
+    // SideChat's own wrapper — no dedicated ref prop on ChatInput. Without this
+    // the side-seed event prefills a draft the user cannot see focused. The
+    // selector is element-agnostic so it also finds the Lexical composer's
+    // contenteditable div (Style Markdown While Typing).
+    expect(src).toContain("composerWrapRef.current?.querySelector<HTMLElement>('[data-composer-input]')")
   })
 })
 

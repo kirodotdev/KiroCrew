@@ -229,6 +229,43 @@ export function useUndoHistory({ value, pasteBlocks, autoFocusKey, composerContr
     onRemoveDir(path)
   }), [onRemoveDir])
 
+  /** Walk the explicit snapshot history one step. Shared by the textarea's
+   *  keydown and the Lexical composer's UNDO/REDO commands: both composers are
+   *  controlled, so a programmatic value reset (send-clear, ↑/↓ recall,
+   *  optimize) wipes the editor's own history and only this one survives it.
+   *  Returns false when there is nothing to undo/redo. */
+  const stepUndoHistory = useCallback((direction: 'undo' | 'redo'): boolean => {
+    if (optimizingRef.current) return false
+    const hist = undoHistoryRef.current
+    let ptr = undoPointerRef.current
+    if (direction === 'undo' && ptr > 0) ptr -= 1
+    else if (direction === 'redo' && ptr < hist.length - 1) ptr += 1
+    else return false // nothing to undo/redo
+    undoPointerRef.current = ptr
+    const snap = hist[ptr]
+    applyingUndoRef.current = true
+    onChange(snap.value)
+    // Restore the paste blocks captured in this snapshot so a `[ Paste #N ]`
+    // token brought back by the undo has its backing content again. Only
+    // emit when the set actually differs (identity or membership) to avoid a
+    // redundant parent render on plain-text undo. The pruneBlocks effect
+    // would otherwise strip a block whose token the undo just restored.
+    if (onPasteBlocksChange && !sameBlocks(pasteBlocksRef.current, snap.blocks)) {
+      onPasteBlocksChange(snap.blocks)
+    }
+    requestAnimationFrame(() => {
+      const el = inputRef.current
+      if (el) {
+        el.focus()
+        el.setSelectionRange(snap.selStart, snap.selEnd)
+        return
+      }
+      // No textarea mounted: the Lexical composer is the input.
+      composerControl()?.setSelection(snap.selStart, snap.selEnd, { focus: true })
+    })
+    return true
+  }, [optimizingRef, onChange, onPasteBlocksChange, pasteBlocksRef, inputRef, composerControl])
+
   /** Cmd/Ctrl+Z undoes, Cmd/Ctrl+Shift+Z or Ctrl+Y redoes. True when the key
    *  was one of those gestures, whether or not there was a step to take. */
   const handleUndoKey = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -243,34 +280,12 @@ export function useUndoHistory({ value, pasteBlocks, autoFocusKey, composerContr
       const isRedo = (k === 'z' && e.shiftKey) || k === 'y'
       if (isUndo || isRedo) {
         e.preventDefault()
-        const hist = undoHistoryRef.current
-        let ptr = undoPointerRef.current
-        if (isUndo && ptr > 0) ptr -= 1
-        else if (isRedo && ptr < hist.length - 1) ptr += 1
-        else return true // nothing to undo/redo
-        undoPointerRef.current = ptr
-        const snap = hist[ptr]
-        applyingUndoRef.current = true
-        onChange(snap.value)
-        // Restore the paste blocks captured in this snapshot so a `[ Paste #N ]`
-        // token brought back by the undo has its backing content again. Only
-        // emit when the set actually differs (identity or membership) to avoid a
-        // redundant parent render on plain-text undo. The pruneBlocks effect
-        // would otherwise strip a block whose token the undo just restored.
-        if (onPasteBlocksChange && !sameBlocks(pasteBlocksRef.current, snap.blocks)) {
-          onPasteBlocksChange(snap.blocks)
-        }
-        requestAnimationFrame(() => {
-          const el = inputRef.current
-          if (!el) return
-          el.focus()
-          el.setSelectionRange(snap.selStart, snap.selEnd)
-        })
+        stepUndoHistory(isRedo ? 'redo' : 'undo')
         return true
       }
     }
     return false
-  }, [ime, optimizingRef, onChange, onPasteBlocksChange, pasteBlocksRef, inputRef])
+  }, [ime, optimizingRef, stepUndoHistory])
 
   /** One undo boundary at `v` unless the tip already holds it: what makes a
    *  finished optimize a single restorable step. */
@@ -289,5 +304,5 @@ export function useUndoHistory({ value, pasteBlocks, autoFocusKey, composerContr
 
   const endUndoBurst = useCallback(() => { undoLastEditRef.current = 0 }, [])
 
-  return { handleUndoKey, appendBoundary, endUndoBurst, removeFileEndingUndoBurst, removeDirEndingUndoBurst }
+  return { handleUndoKey, stepUndoHistory, appendBoundary, endUndoBurst, removeFileEndingUndoBurst, removeDirEndingUndoBurst }
 }

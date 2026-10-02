@@ -15256,6 +15256,8 @@
         "single_line": "Linha única",
         "spellcheck_input": "Verificar a ortografia na entrada de mensagens",
         "spellcheck_input_desc": "Sublinha as palavras com erros de ortografia no campo de mensagem com um traço vermelho ondulado. Desative para parar os sublinhados vermelhos enquanto você digita.",
+        "inline_markdown_input": "Formatar Markdown enquanto você digita",
+        "inline_markdown_input_desc": "Mostra negrito, itálico, tachado e código em linha no campo de mensagem enquanto você digita. Ativar isso também muda o campo de mensagem para um editor de texto formatado que ainda está em beta; desative para voltar ao campo simples. Os marcadores Markdown continuam visíveis e a mensagem enviada não muda.",
         "show_pasted_text_in_full": "Mostrar o texto colado por completo",
         "show_pasted_text_in_full_desc": "Manter uma colagem longa como texto editável no campo de mensagem, em vez de dobrá-la em um chip de colagem. Quando está desativado, {{chord}} mantém uma única colagem como texto. Uma colagem muito grande pode deixar a digitação lenta.",
         "smooth": "Suave",

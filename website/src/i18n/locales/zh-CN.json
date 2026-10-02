@@ -14798,6 +14798,8 @@
         "single_line": "单行",
         "spellcheck_input": "检查消息输入的拼写",
         "spellcheck_input_desc": "在消息输入框中用红色波浪线标出拼写有误的词。想在输入时去掉红色下划线就把它关掉。",
+        "inline_markdown_input": "输入时显示 Markdown 样式",
+        "inline_markdown_input_desc": "在消息输入框中边输入边显示粗体、斜体、删除线和行内代码。开启后，消息输入框还会切换到仍处于测试阶段的富文本编辑器。关闭即可恢复为普通输入框。Markdown 标记仍然可见，发送的消息不会改变。",
         "show_pasted_text_in_full": "完整显示粘贴内容",
         "show_pasted_text_in_full_desc": "在消息输入框中把长内容保持为可编辑的文本，而不是折叠成一个粘贴块。关闭时 {{chord}} 仍可对单次粘贴这样做。粘贴内容非常大时输入可能变慢。",
         "smooth": "平滑",

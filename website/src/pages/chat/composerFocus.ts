@@ -35,7 +35,9 @@ import { isTouchDevice } from '../../utils/isTouchDevice'
  *     composer on the page (or focus outside any pane in a view with no
  *     focused marker) the first match IS the right one.
  *
- * The probe is the stable `data-composer-input` hook, NOT the textarea's
+ * The probe is the stable `data-composer-input` hook, on either composer: the
+ * plain textarea or the Lexical contenteditable div (the Style Markdown While
+ * Typing setting renders the latter), NOT the textarea's
  * aria-label: the label is `i18nT('components.chatInput.message_input')` and
  * every catalog translates it, so a label-based selector matches in English
  * only and focus silently no-ops in the other eleven languages. The `data-`
@@ -45,9 +47,9 @@ import { isTouchDevice } from '../../utils/isTouchDevice'
  * Steps 1 and 2 are `focusedPane()` below, shared with the pending-approval
  * lookup so both chords agree about which pane they are in.
  */
-export function queryComposer(): HTMLTextAreaElement | null {
+export function queryComposer(): HTMLElement | null {
   const pane = focusedPane()
-  const scoped = pane?.querySelector<HTMLTextAreaElement>('textarea[data-composer-input]')
+  const scoped = pane?.querySelector<HTMLElement>('[data-composer-input]')
   if (scoped) return scoped
   /**
    * Document-wide fallback, EXCLUDING the side chat's own composer.
@@ -71,7 +73,7 @@ export function queryComposer(): HTMLTextAreaElement | null {
    * `[data-side-chat-input]` is the marker ChatPage already uses to find that
    * composer (`handleAsk`'s mount probe), not one invented here.
    */
-  const all = document.querySelectorAll<HTMLTextAreaElement>('textarea[data-composer-input]')
+  const all = document.querySelectorAll<HTMLElement>('[data-composer-input]')
   for (const ta of all) {
     if (!ta.closest('[data-side-chat-input]')) return ta
   }
@@ -132,7 +134,7 @@ export function requestComposerExpand(): boolean {
  * synchronous: when the composer is already there the callback runs before this
  * returns, so neither caller loses the ordering its own comment relies on.
  */
-export function queryComposerOrExpand(then: (ta: HTMLTextAreaElement) => void): void {
+export function queryComposerOrExpand(then: (ta: HTMLElement) => void): void {
   const ta = queryComposer()
   if (ta) { then(ta); return }
   if (!requestComposerExpand()) return
@@ -463,7 +465,7 @@ const COMPOSER_RELEASE_TTL_MS = 1500
 export function releaseComposerForKeyboardSwitch(): void {
   composerReleaseArmedAt = Date.now()
   const ae = document.activeElement
-  if (ae instanceof HTMLTextAreaElement && ae.hasAttribute('data-composer-input')) ae.blur()
+  if (ae instanceof HTMLElement && ae.hasAttribute('data-composer-input')) ae.blur()
 }
 
 /** Consume the one-shot release. True = the autofocus effect must skip this transition. */

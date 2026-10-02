@@ -751,6 +751,13 @@
       "route": "/settings/chat/sessions?highlight=chat.split-view-session-grid"
     },
     {
+      "id": "chat.style-markdown-while-typing",
+      "label": "Style Markdown While Typing",
+      "tab": "chat",
+      "route": "/settings/chat/composer?highlight=chat.style-markdown-while-typing",
+      "description": "Show bold, italic, strikethrough and inline code in the message input as you type. Turning it on also switches the message input to a rich-text editor that is still in beta; turn this off to go back to the plain input. The markdown markers stay visible and the message you send is unchanged."
+    },
+    {
       "id": "chat.subagent-effort",
       "label": "Subagent Effort",
       "tab": "chat",
