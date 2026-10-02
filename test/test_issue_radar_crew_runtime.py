@@ -30,6 +30,7 @@ import re
 import tempfile
 import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, cast
 from unittest import mock
@@ -276,10 +277,89 @@ def _unit_for(crew_id: str) -> str:
 
 
 def _item(root, crew_id, number, **patch) -> dict[str, Any]:
-    """Seed one work item through the real write path: one entry in the crew's log."""
-    return cs.commit_work_progress(
-        OWNER, REPO, crew_id, number, patch, "claim", "seeded", root=root, session_id=_unit_for(crew_id)
-    )["item"]
+    """Seed one work item through the real write path: one entry in the crew's log.
+
+    The write runs on a worker thread, as every product caller runs it
+    (``asyncio.to_thread``). Most callers here are async tests, so a direct call
+    would run on the event-loop thread, where ``file_lock`` takes ONE attempt and
+    never waits: if the crew log's writer thread is still inside its brief critical
+    section, the read-back after the append is refused and the write raises
+    ``CrewLedgerNotRecorded``. On a worker thread the same contention is an ordinary
+    short wait.
+    """
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(
+            cs.commit_work_progress,
+            OWNER,
+            REPO,
+            crew_id,
+            number,
+            patch,
+            "claim",
+            "seeded",
+            root=root,
+            session_id=_unit_for(crew_id),
+        ).result()["item"]
+
+
+class TestSeedingSurvivesABriefLogLock:
+    """``_item`` must not depend on the crew log's writer having let go yet."""
+
+    def _hold_the_log_lock_during_read_back(self, monkeypatch) -> None:
+        from kiro_crew.crew_log import store as log_store
+        from kiro_crew.crew_log.schema import KIND_SESSION
+
+        real = cs._landed_since
+
+        def contended(projection, session_id, *args, **kwargs):
+            taken = threading.Event()
+            released = threading.Event()
+
+            def hold() -> None:
+                with log_store._open_lock(log_store._lock_path(KIND_SESSION, session_id)):
+                    taken.set()
+                    released.wait(0.3)
+
+            threading.Thread(target=hold, daemon=True).start()
+            assert taken.wait(5), "the competing holder never took the lock"
+            try:
+                return real(projection, session_id, *args, **kwargs)
+            finally:
+                released.set()
+
+        monkeypatch.setattr(cs, "_landed_since", contended)
+
+    def test_a_seed_from_an_async_test_waits_out_a_held_log_lock(self, tmp_path, monkeypatch):
+        crew = _crew(tmp_path, unattended=True)
+        _item(tmp_path, crew["id"], 2201, phase="awaiting-ci")
+        self._hold_the_log_lock_during_read_back(monkeypatch)
+
+        async def from_the_loop() -> dict[str, Any]:
+            return _item(tmp_path, crew["id"], 2201, phase="resolved")
+
+        assert asyncio.run(from_the_loop())["phase"] == "resolved"
+
+    def test_the_held_lock_is_real_contention(self, tmp_path, monkeypatch):
+        """Negative control: the same write made ON the loop is refused."""
+        crew = _crew(tmp_path, unattended=True)
+        _item(tmp_path, crew["id"], 2201, phase="awaiting-ci")
+        self._hold_the_log_lock_during_read_back(monkeypatch)
+
+        async def on_the_loop() -> None:
+            cs.commit_work_progress(
+                OWNER,
+                REPO,
+                crew["id"],
+                2201,
+                {"phase": "resolved"},
+                "claim",
+                "seeded",
+                root=tmp_path,
+                session_id=_unit_for(crew["id"]),
+            )
+
+        with pytest.raises(cs.CrewLedgerNotRecorded):
+            asyncio.run(on_the_loop())
 
 
 # ── brief injection ─────────────────────────────────────────────────────────

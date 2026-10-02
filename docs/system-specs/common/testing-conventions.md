@@ -3999,6 +3999,19 @@ timer: it races the waiter's own start (`test_posix_lock_ceiling` saw a 4e-05s
 and release it inside the coroutine, because `asyncio.run` joins its executor before
 an outer `finally` runs and a waiter cannot finish while the lock is held.
 
+A shared sync **seeding helper** is the quiet version of the same race, because it
+cannot see that its caller is async. `_item` in `test_issue_radar_crew_runtime.py`
+wrote a work item through the crew log -- whose writer is a background thread -- and
+read the entry back under the log's lock; called straight from an
+`IsolatedAsyncioTestCase` test it ran on the loop, so whenever the writer was still
+inside its critical section the read-back was refused and the seed raised
+`CrewLedgerNotRecorded` (Windows shard, unrelated PRs; 0 in 400 local runs, so only a
+held-lock probe reproduces it). A helper that writes through a store with a background
+writer runs the write on a worker thread itself, the way every product caller does,
+and carries a negative control proving the held lock is refused on the loop
+(`TestSeedingSurvivesABriefLogLock`). Do not fix it by patching `_on_event_loop`:
+that hides the on-loop hazard from the product code under test too.
+
 Two more shapes, both MEASURED in a 5x full-suite run on Windows:
 
 - **A completion signalled from another thread.** `await handler(...)` returning does
