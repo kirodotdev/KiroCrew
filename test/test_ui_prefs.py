@@ -312,3 +312,107 @@ def test_a_plain_read_still_degrades_to_empty(monkeypatch):
 def test_merge_over_a_corrupt_file_recovers():
     ui_prefs_path().write_text("{ truncated", encoding="utf-8")
     assert merge_ui_prefs({"mc-zoom": "1"}) == {"mc-zoom": "1"}
+
+
+class TestReplacingTheFile:
+    def test_a_put_cannot_land_while_the_file_is_being_swapped(self, tmp_path, monkeypatch):
+        """The reported loss: a PUT from another tab read the old document during an
+        import's swap and then published that stale copy over the restored file."""
+        import threading
+
+        monkeypatch.setattr(ui_prefs, "ui_prefs_path", lambda: tmp_path / "ui-prefs.json")
+        ui_prefs.merge_ui_prefs({"mc-nav": "old"})
+        landed = threading.Event()
+
+        def _put() -> None:
+            ui_prefs.merge_ui_prefs({"mc-other": "x"})
+            landed.set()
+
+        with ui_prefs.replacing_file():
+            worker = threading.Thread(target=_put)
+            worker.start()
+            assert not landed.wait(0.3)  # held off by the writer lock
+            (tmp_path / "ui-prefs.json").write_text(
+                json.dumps({"prefs": {"mc-nav": "restored"}}), encoding="utf-8"
+            )
+        worker.join(5)
+        assert landed.is_set()
+        assert ui_prefs.load_ui_prefs() == {"mc-nav": "restored", "mc-other": "x"}
+
+
+class TestImportingAnArchiveCopy:
+    """`parse_imported_ui_prefs` / `install_imported_ui_prefs`: the settings import's path in."""
+
+    def _archive(self, tmp_path, body):
+        src = tmp_path / "archive-ui-prefs.json"
+        src.write_text(body if isinstance(body, str) else json.dumps(body), encoding="utf-8")
+        return src
+
+    def test_each_entry_is_held_to_what_a_put_is_held_to(self, tmp_path):
+        src = self._archive(
+            tmp_path,
+            {
+                "prefs": {
+                    "mc-nav": "kept",
+                    "kiro_crew_token": "bearer",
+                    "my_api_key": "x",
+                    "mc-null": None,
+                    "mc-number": 3,
+                    "mc-huge": "x" * (MAX_VALUE_BYTES + 1),
+                }
+            },
+        )
+        patch, dropped = ui_prefs.parse_imported_ui_prefs(src)
+        assert patch == {"mc-nav": "kept"}
+        assert dropped == 5
+
+    @pytest.mark.parametrize("body", ["{not json", "[]", '{"prefs": []}', '{"other": {}}'])
+    def test_a_document_of_the_wrong_shape_is_refused_whole(self, tmp_path, body):
+        with pytest.raises(UiPrefsError):
+            ui_prefs.parse_imported_ui_prefs(self._archive(tmp_path, body))
+
+    def test_more_keys_than_the_store_holds_is_refused_whole(self, tmp_path):
+        """Each entry alone passes what a PUT is held to; the document as a whole
+        does not. A Replace copies the staged file instead of going through the
+        store's writer, so without the aggregate check it installed a file over
+        MAX_KEYS and every PUT after the import failed with "too many keys"."""
+        prefs = {f"mc-k{i}": "v" for i in range(MAX_KEYS + 1)}
+        src = self._archive(tmp_path, {"prefs": prefs})
+        assert src.stat().st_size <= MAX_TOTAL_BYTES  # the read path admits it
+        with pytest.raises(UiPrefsError, match="too many keys"):
+            ui_prefs.parse_imported_ui_prefs(src)
+        # Exactly at the cap is fine: the bound is the PUT's, not one tighter.
+        patch, dropped = ui_prefs.parse_imported_ui_prefs(
+            self._archive(tmp_path, {"prefs": {f"mc-k{i}": "v" for i in range(MAX_KEYS)}})
+        )
+        assert (len(patch), dropped) == (MAX_KEYS, 0)
+
+    def test_a_document_the_store_would_not_write_is_refused_whole(self, tmp_path):
+        """The archive is compact JSON, so it fits under the read cap while the
+        store's own rendering of the same entries (indented, newline-terminated)
+        does not -- the file a Replace would have installed and the next read
+        would have refused, losing every preference in it."""
+        base = {f"k{i}": "y" * MAX_VALUE_BYTES for i in range(7)}
+        fill = MAX_TOTAL_BYTES - _doc_bytes({**base, "k7": ""})
+        prefs = {**base, "k7": "z" * fill}
+        assert _doc_bytes(prefs) == MAX_TOTAL_BYTES  # one over once the newline lands
+        src = self._archive(tmp_path, {"prefs": prefs})
+        assert src.stat().st_size <= MAX_TOTAL_BYTES  # the read path admits it
+        with pytest.raises(UiPrefsError, match="would exceed"):
+            ui_prefs.parse_imported_ui_prefs(src)
+        # Dropped entries do not count: the bound is on what would be written.
+        prefs["k7"] = "z" * (fill - 1)
+        prefs["kiro_crew_token"] = "bearer"
+        src = self._archive(tmp_path, {"prefs": prefs})
+        assert src.stat().st_size <= MAX_TOTAL_BYTES
+        patch, dropped = ui_prefs.parse_imported_ui_prefs(src)
+        assert (len(patch), dropped) == (8, 1)
+
+    def test_an_archive_copy_is_installed_only_where_the_host_has_none(self):
+        assert ui_prefs.install_imported_ui_prefs({"mc-nav": "archive"}) is True
+        assert load_ui_prefs() == {"mc-nav": "archive"}
+        # The host now keeps a file: a second install leaves it whole.
+        merge_ui_prefs({"mc-ui": "cli"})
+        before = ui_prefs_path().read_bytes()
+        assert ui_prefs.install_imported_ui_prefs({"mc-nav": "other", "mc-x": "y"}) is False
+        assert ui_prefs_path().read_bytes() == before

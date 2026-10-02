@@ -517,6 +517,8 @@ let started = false
 let inFlight: Promise<void> | null = null
 /** A change arrived while a PUT was in flight: chain one more flush after it. */
 let dirtyDuringFlush = false
+/** Set while something else is rewriting the HOST copy (see `pauseUiPrefsSync`). */
+let paused = false
 
 function readLocalSnapshot(): Map<string, string> {
   const snapshot = new Map<string, string>()
@@ -821,6 +823,7 @@ export async function hydrateUiPrefs(): Promise<number> {
 
 /** PUT whatever changed since the last successful flush. */
 export async function flushUiPrefs(keepalive = false): Promise<void> {
+  if (paused) return
   if (inFlight) {
     // Do NOT hand back the in-flight promise: it carries the OLD snapshot, so a
     // caller awaiting it (pagehide) would believe a newer change had been sent.
@@ -913,8 +916,110 @@ export function startUiPrefsSync(): void {
   scheduleFlush()
 }
 
+/** Resolve once no PUT is in flight, including one a finished round chained. */
+async function settleInFlight(): Promise<void> {
+  while (inFlight) {
+    try {
+      await inFlight
+    } catch {
+      /* the flush reports its own failures; this only waits for it to end */
+    }
+  }
+}
+
+/**
+ * Upload what changed, then stop this page uploading preferences.
+ *
+ * For an operation that rewrites the HOST copy -- the settings import, whose
+ * Merge applies an archive's `ui-prefs.json` over this host's. A flush that
+ * lands after it would put this page's values straight back over the ones just
+ * restored, and the import has no way to tell. Paused before the import request
+ * is sent, so no PUT can start after it either. Every flush path checks the
+ * flag, the `pagehide` one included, so a reload that follows uploads nothing.
+ * `resumeUiPrefsSync` undoes it when the host copy did not change after all.
+ *
+ * Flushed FIRST, not dropped: a change still inside the debounce window, or one
+ * only the poll would have noticed, is otherwise never sent -- and the reload
+ * that adopts the host copy then replaces it with the host's older value. Only
+ * while the sync runs: a page that never started it (its hydrate failed) holds
+ * untrusted locals, and uploading them is the clobber main.tsx refuses. A
+ * failed flush does not stop the pause; the value stays local, as any failed
+ * flush leaves it.
+ */
+export async function pauseUiPrefsSync(): Promise<void> {
+  if (flushTimer !== undefined) {
+    clearTimeout(flushTimer)
+    flushTimer = undefined
+  }
+  if (started && !paused) {
+    try {
+      await settleInFlight()
+      await flushUiPrefs()
+      await settleInFlight()
+    } catch {
+      /* best-effort: the pause must hold whatever the upload did */
+    }
+  } else {
+    await settleInFlight()
+  }
+  paused = true
+  // A trigger that fired during the flush scheduled a timer; paused, it would
+  // only no-op, so drop it.
+  if (flushTimer !== undefined) {
+    clearTimeout(flushTimer)
+    flushTimer = undefined
+  }
+}
+
+/** Undo `pauseUiPrefsSync`: the host copy was left alone, so syncing resumes. */
+export function resumeUiPrefsSync(): void {
+  if (!paused) return
+  paused = false
+  if (started) scheduleFlush()
+}
+
+/**
+ * Make the NEXT page load take the host copy for every key the host holds,
+ * after something rewrote that copy (a settings import restored it).
+ *
+ * The cold hydrate is the only reader of the backup, and it runs only while the
+ * synced marker is absent -- so without this a restored `ui-prefs.json` is never
+ * read on a profile that has synced before, and the next flush overwrites it
+ * with this page's values. Removing the marker re-arms the hydrate; an EMPTY
+ * hydrate-pending list is what makes it hand the host every key it holds (a key
+ * not in that list is one the host wins, see `HYDRATE_PENDING_KEY`) instead of
+ * keeping the local value as a never-failed hydrate would. A key the host does
+ * not hold keeps its local value. The sync stays paused, so nothing uploads
+ * between this and the reload the caller performs; the hydrate then reloads once
+ * more for the module-scope readers, as it does for any restore.
+ * Returns true only after the pending marker is written and the synced marker
+ * is removed. On failure the synced marker stays in place, the pending marker
+ * is rolled back, and the sync resumes; the caller must not reload.
+ */
+export async function adoptHostUiPrefsOnNextLoad(): Promise<boolean> {
+  await pauseUiPrefsSync()
+  if (!safeSetItem(HYDRATE_PENDING_KEY, JSON.stringify([]))) {
+    resumeUiPrefsSync()
+    return false
+  }
+  try {
+    localStorage.removeItem(SYNCED_KEYS_KEY)
+  } catch {
+    try {
+      localStorage.removeItem(HYDRATE_PENDING_KEY)
+    } catch {
+      /* storage blocked: rollback is best-effort, but the synced marker stays */
+    }
+    resumeUiPrefsSync()
+    return false
+  }
+  lastSent = null
+  return true
+}
+
 export function __resetUiPrefsSyncForTests(): void {
   started = false
+  paused = false
   if (flushTimer !== undefined) clearTimeout(flushTimer)
   if (pollTimer !== undefined) clearInterval(pollTimer)
   flushTimer = undefined

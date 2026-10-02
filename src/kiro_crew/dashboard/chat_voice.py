@@ -22,7 +22,14 @@ from dataclasses import dataclass, field
 from aiohttp import web
 
 from kiro_crew import aws_consent
-from kiro_crew.config.loader import config_path, read_config_text
+from kiro_crew.config.loader import (
+    ConfigReadError,
+    ConfigWriteRefused,
+    coerce_dict_section,
+    config_path,
+    update_config_locked,
+)
+from kiro_crew.dashboard.chat_utils import run_config_write
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.piper_runtime import PiperRuntime
@@ -58,6 +65,26 @@ _MAX_SYNTHESIS_TEXT_CHARS = 20000
 _MAX_ACTIVE_SYNTHESES = 2
 _MAX_REQUEST_ID_CHARS = 128
 _CANCELLED_REQUEST_TTL = 60.0
+
+#: The live ``_vc`` attribute each config PUT field lands on, mapped to the key
+#: it is stored under in config.json's ``voice_reply`` block (the names the
+#: loader in slack/handler.py reads back).
+_VOICE_ATTR_TO_CONFIG_KEY: dict[str, str] = {
+    "global_enabled": "enabled",
+    "auto_speak": "auto_speak",
+    "provider": "provider",
+    "default_voice": "voice_id",
+    "default_engine": "engine",
+    "default_rate": "rate",
+    "default_pitch": "pitch",
+    "aws_profile": "aws_profile",
+    "region": "region",
+    "piper_binary": "piper_binary",
+    "piper_model": "piper_model",
+    "piper_model_config": "piper_model_config",
+    "piper_length_scale": "piper_length_scale",
+    "system_voice": "system_voice",
+}
 _MAX_CANCELLED_REQUESTS = 128
 
 
@@ -301,42 +328,42 @@ async def api_voice_config(request: web.Request) -> web.Response:
         # as unserializable JSON that breaks the browser's config GET.
         pending["piper_length_scale"] = validate_length_scale(body["piper_length_scale"])
 
+    # Persist FIRST, then apply to the live `_vc`: a write that failed must not
+    # leave the gateway running a setting the file does not hold, which the next
+    # restart would silently revert. The write is a locked delta RMW of the keys
+    # this request named, MERGED into the existing voice_reply block -- the
+    # loader (slack/handler.py) also reads auto_reply_to_voice from here, and
+    # every other section of config.json is left as it was. A truncate-then-write
+    # here would let a concurrent load read a torn file as defaults, so a failed
+    # write answers 5xx instead of {"ok": true}.
+    if pending:
+
+        def _apply_voice(doc: dict) -> dict:
+            vr = coerce_dict_section(doc, "voice_reply")
+            for _attr, _new in pending.items():
+                vr[_VOICE_ATTR_TO_CONFIG_KEY[_attr]] = _new
+            return doc
+
+        try:
+            await run_config_write(update_config_locked, config_path(), mutate=_apply_voice)
+        except ConfigReadError:
+            logger.warning("voice config PUT: config.json is unreadable", exc_info=True)
+            return web.json_response(
+                {"error": "config.json is corrupt", "code": "config_corrupt"}, status=500
+            )
+        except ConfigWriteRefused as exc:
+            return web.json_response(
+                {"error": str(exc), "code": "config_write_refused"}, status=400
+            )
+        except OSError:
+            logger.warning("voice config PUT: config.json write failed", exc_info=True)
+            return web.json_response(
+                {"error": "failed to write config file", "code": "config_write_failed"},
+                status=500,
+            )
+
     for _attr, _new in pending.items():
         setattr(_vc, _attr, _new)
-
-    # Persist to config.json. MERGE into the existing voice_reply block rather
-    # than rewriting it wholesale — the loader (slack/handler.py) also reads
-    # auto_speak / auto_reply_to_voice from here, and a wholesale rewrite would
-    # silently drop any key not in this handler's set.
-    try:
-        cfg_path = config_path()
-        cfg = json.loads(read_config_text(cfg_path))
-        vr = cfg.get("voice_reply")
-        if not isinstance(vr, dict):
-            vr = {}
-        vr.update(
-            {
-                "enabled": _vc.global_enabled,
-                "auto_speak": _vc.auto_speak,
-                "provider": _vc.provider,
-                "voice_id": _vc.default_voice,
-                "engine": _vc.default_engine,
-                "rate": _vc.default_rate,
-                "pitch": _vc.default_pitch,
-                "aws_profile": _vc.aws_profile,
-                "region": _vc.region,
-                "piper_binary": _vc.piper_binary,
-                "piper_model": _vc.piper_model,
-                "piper_model_config": _vc.piper_model_config,
-                "piper_length_scale": _vc.piper_length_scale,
-                "system_voice": _vc.system_voice,
-            }
-        )
-        cfg["voice_reply"] = vr
-        with open(cfg_path, "w") as f:
-            json.dump(cfg, f, indent=2)
-    except Exception:
-        logger.exception("Failed to persist voice config")
 
     return web.json_response({"ok": True})
 

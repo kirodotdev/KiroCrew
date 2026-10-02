@@ -6160,7 +6160,16 @@
         "network_error_during_preview": "Network error during preview",
         "mode": "Mode",
         "export_templates_not_included": "This export doesn't include the agent templates your crews use: {{names}}. Copy them from ~/.kiro/agents to the same folder on the other machine.",
-        "import_templates_missing": "Some crews use an agent template this machine doesn't have (crew → template): {{crews}}. Copy the missing templates into ~/.kiro/agents before you use these crews."
+        "import_templates_missing": "Some crews use an agent template this machine doesn't have (crew → template): {{crews}}. Copy the missing templates into ~/.kiro/agents before you use these crews.",
+        "import_items_refused": "Some items could not be imported and were left unchanged: {{names}}.",
+        "import_settings_kept": "This install kept its own {{files}}. To use the archive's instead, change Merge to Replace next to Choose file, then import again. Replace backs up this install first, then overwrites its settings with the archive's.",
+        "import_reloading_display_settings": "Import complete — reloading to apply your display settings…",
+        "import_complete_restart_gateway_one": "Import complete ({{count}} item). To apply every change, restart the gateway: Settings → About → Restart gateway.",
+        "import_complete_restart_gateway_other": "Import complete ({{count}} items). To apply every change, restart the gateway: Settings → About → Restart gateway.",
+        "settings_kept_name_config": "agent and gateway settings",
+        "settings_kept_name_config_local": "local settings overrides",
+        "settings_kept_name_ui_prefs": "display preferences",
+        "settings_kept_name_notifications": "notification settings"
       },
       "usageTab": {
         "credits": "Credits",

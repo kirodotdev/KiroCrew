@@ -248,7 +248,6 @@ src/kiro_crew/metrics/provider.py
 src/kiro_crew/metrics/recorder.py
 src/kiro_crew/notifications/bus.py
 src/kiro_crew/notifications/resource_pressure.py
-src/kiro_crew/notifications/settings.py
 src/kiro_crew/perf_sampler.py
 src/kiro_crew/platform/admission.py
 src/kiro_crew/platform/update_layout.py
@@ -697,7 +696,6 @@ test/test_node_version_pins.py
 test/test_notification_bus.py
 test/test_notification_legacy_actions.py
 test/test_notification_phase5.py
-test/test_notification_settings.py
 test/test_notifications_push.py
 test/test_official_catalog.py
 test/test_omc_ledger_sync_coverage.py

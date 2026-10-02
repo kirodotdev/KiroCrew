@@ -19,8 +19,10 @@ kirocrew config defaults               # stored values holding a superseded defa
 
 Every config change is audit-logged to the security event log.
 
-`config.local.json` holds overrides that survive an upgrade, which is what
-`--local` writes to. Its values win over `config.json`.
+Both files persist across gateway restarts and upgrades; nothing regenerates
+`config.json`. `config.local.json` is the overlay `--local` writes to: its values
+win over `config.json`, so put a value there when you want it pinned above
+whatever the dashboard or `config set` later writes.
 
 The dashboard port is **not** a config key: set `KIROCREW_PORT` instead.
 
@@ -698,7 +700,7 @@ rules so they cannot be opted out of at all.
 | Path | Purpose |
 |------|---------|
 | `~/.kiro/crew/config.json` | Main config |
-| `~/.kiro/crew/config.local.json` | Local overrides that survive upgrades |
+| `~/.kiro/crew/config.local.json` | Local overrides that win over `config.json` |
 | `~/.kiro/crew/.env` | Slack credentials |
 | `~/.kiro/crew/skills/` | User skills |
 | `~/.kiro/crew/crons.json` | Scheduled jobs |

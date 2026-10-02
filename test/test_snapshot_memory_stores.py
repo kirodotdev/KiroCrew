@@ -930,7 +930,7 @@ class TestThePortabilityRoutesAreOwnerOnly:
     async def test_a_non_owner_cannot_import(self, handlers, tmp_path):
         ph, _ = handlers
         applied = []
-        with patch.object(ph, "apply_import_zip", lambda p, m: applied.append(1)):
+        with patch.object(ph, "apply_import_zip", lambda p, m, **_kw: applied.append(1)):
             resp = await ph.api_portability_import(
                 self._request("POST", "/api/portability/import?mode=merge", user="guest")
             )
@@ -945,7 +945,7 @@ class TestThePortabilityRoutesAreOwnerOnly:
         async def _fake_read_upload(request):
             return upload, None
 
-        def _refuse(p, m):
+        def _refuse(p, m, **_kw):
             raise snap.SourceComponentUnsound("memory_stores/acme/memory.db is torn")
 
         with (

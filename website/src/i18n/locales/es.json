@@ -13647,7 +13647,17 @@
         "upload_a_kirocrew_export_zip_to_restore_settings": "Sube un zip de exportación de {{productName}} para restaurar los ajustes en esta instancia.\n          Los datos existentes se combinarán de forma predeterminada (se omiten los duplicados).",
         "workspace_files": "Archivos del espacio de trabajo:",
         "export_templates_not_included": "Esta exportación no incluye las plantillas de agente que usan tus equipos: {{names}}. Cópialas de ~/.kiro/agents a la misma carpeta en la otra máquina.",
-        "import_templates_missing": "Algunos equipos usan una plantilla de agente que no está en esta máquina (equipo → plantilla): {{crews}}. Copia las plantillas que faltan en ~/.kiro/agents antes de usar estos equipos."
+        "import_templates_missing": "Algunos equipos usan una plantilla de agente que no está en esta máquina (equipo → plantilla): {{crews}}. Copia las plantillas que faltan en ~/.kiro/agents antes de usar estos equipos.",
+        "import_items_refused": "Algunos elementos no se pudieron importar y se dejaron sin cambios: {{names}}.",
+        "import_settings_kept": "Esta instalación conservó sus propios ajustes: {{files}}. Para usar los del archivo, cambia Combinar a Reemplazar junto a Elegir archivo e importa de nuevo. Reemplazar primero hace una copia de seguridad de esta instalación y después sobrescribe sus ajustes con los del archivo.",
+        "import_reloading_display_settings": "Importación completada: recargando para aplicar tus ajustes de visualización…",
+        "import_complete_restart_gateway_one": "Importación completa ({{count}} elemento). Para aplicar todos los cambios, reinicia el gateway: Configuración → Acerca de → Reiniciar la pasarela.",
+        "import_complete_restart_gateway_many": "Importación completa ({{count}} elementos). Para aplicar todos los cambios, reinicia el gateway: Configuración → Acerca de → Reiniciar la pasarela.",
+        "import_complete_restart_gateway_other": "Importación completa ({{count}} elementos). Para aplicar todos los cambios, reinicia el gateway: Configuración → Acerca de → Reiniciar la pasarela.",
+        "settings_kept_name_config": "ajustes del agente y del gateway",
+        "settings_kept_name_config_local": "anulaciones locales de ajustes",
+        "settings_kept_name_ui_prefs": "preferencias de visualización",
+        "settings_kept_name_notifications": "ajustes de notificaciones"
       },
       "promptsTab": {
         "agent_sop_name": "@agent-sop:name",

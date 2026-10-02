@@ -163,6 +163,49 @@ class TestSaveHoldsTheAdvisoryLock:
         assert final["agent"]["log_level"] == "DEBUG", "save()'s own change was lost"
 
 
+class TestSaveRefusesASnapshotOfAnUnreadableFile:
+    """``save()`` never publishes a defaults-only instance over a real file.
+
+    A load that could not read config.json answers DEFAULTS; saving that object
+    erased every setting in the file with no backup. That is what the theme PUT
+    did on a torn read, and this backstop keeps any future caller from doing it.
+    """
+
+    @pytest.mark.parametrize("raw", [b'{"timezone": "Asia/Shanghai"', b"", b"[1]"])
+    def test_a_degraded_whole_load_is_refused_and_the_file_kept(self, cfg_home, raw):
+        path = cfg_home / "config.json"
+        path.write_bytes(raw)
+        cfg = KiroCrewConfig.load()
+        assert "*config.json" in cfg.degraded_sections, "the load did not degrade"
+        with pytest.raises(loader_module.ConfigReadError):
+            cfg.save()
+        assert path.read_bytes() == raw
+
+    def test_the_create_when_absent_callers_still_write(self, cfg_home):
+        """The gateway's boot default and ``config edit`` save a FRESH instance,
+        which carries no degradation, so they are unaffected."""
+        KiroCrewConfig().save()
+        assert "agent" in _read_config(cfg_home)
+
+    def test_a_degraded_instance_may_create_a_file_that_is_gone(self, cfg_home):
+        """Nothing to clobber: the refusal is about an EXISTING file."""
+        path = cfg_home / "config.json"
+        path.write_text("{", encoding="utf-8")
+        cfg = KiroCrewConfig.load()
+        path.unlink()
+        cfg.save()
+        assert path.is_file()
+
+    def test_a_healthy_load_still_saves(self, cfg_home):
+        _write_config(cfg_home, {"timezone": "Asia/Shanghai"})
+        cfg = KiroCrewConfig.load()
+        cfg.agent.log_level = "DEBUG"
+        cfg.save()
+        saved = _read_config(cfg_home)
+        assert saved["timezone"] == "Asia/Shanghai"
+        assert saved["agent"]["log_level"] == "DEBUG"
+
+
 class TestSidecarLifecycle:
     """The regression gate: the lock adds ONE shared sidecar, nothing else.
 
@@ -375,3 +418,127 @@ class TestNoInlineSaveOnTheEventLoop:
         offenders = self._offenders_in(ast.parse(source), "synthetic.py")
         names = {o.rsplit("(", 1)[1].rstrip(")") for o in offenders}
         assert names == {"offender_via_binding", "offender_chained"}, offenders
+
+
+class TestNoDashboardModuleSavesTheWholeConfig:
+    """Structural ratchet over ``src/kiro_crew/dashboard``: no ``KiroCrewConfig.save``.
+
+    A dashboard writer is a request handler or a coroutine it starts, and
+    ``save()`` publishes the snapshot its object was loaded from. When that load
+    could not read config.json the snapshot is DEFAULTS, and when it could, it
+    still carries load-time coercions and misses any write that landed since --
+    so a whole-document save from the dashboard is the "my settings reset
+    themselves" bug however it is offloaded. The theme PUT was such a writer
+    (``await asyncio.to_thread(cfg.save)``), a shape
+    ``TestNoInlineSaveOnTheEventLoop`` sanctions because it only asks whether
+    the loop blocks. Dashboard writes go through ``update_config_locked`` (via
+    ``run_config_write``) as deltas of the keys they own.
+
+    Unlike the inline-save ratchet this one matches a REFERENCE as well as a
+    call (``cfg.save`` handed to an offloader is the same publish), in sync and
+    async functions alike, and recognises a config bound from
+    ``await asyncio.to_thread(KiroCrewConfig.load)``. Baseline: empty.
+    """
+
+    @staticmethod
+    def _is_loader_reference(node: ast.AST) -> bool:
+        return (
+            isinstance(node, ast.Attribute)
+            and node.attr == "load"
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "KiroCrewConfig"
+        )
+
+    @classmethod
+    def _names_kirocrew_config(cls, node: ast.AST) -> bool:
+        """True for an expression that yields a ``KiroCrewConfig`` instance."""
+        if isinstance(node, ast.Await):
+            node = node.value
+        if not isinstance(node, ast.Call):
+            return False
+        func = node.func
+        if isinstance(func, ast.Name) and func.id == "KiroCrewConfig":
+            return True
+        if cls._is_loader_reference(func):
+            return True
+        # ``asyncio.to_thread(KiroCrewConfig.load)`` and friends: an offloader
+        # handed the loader itself.
+        return any(cls._is_loader_reference(arg) for arg in node.args)
+
+    @classmethod
+    def _offenders_in(cls, tree: ast.AST, filename: str) -> list[str]:
+        offenders: list[str] = []
+        funcs = [
+            n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+        ]
+        for func in funcs:
+            config_names: set[str] = {"KiroCrewConfig"}
+            for node in ast.walk(func):
+                if isinstance(node, ast.Assign):
+                    targets = node.targets
+                elif isinstance(node, ast.AnnAssign) and node.value is not None:
+                    targets = [node.target]
+                else:
+                    continue
+                if cls._names_kirocrew_config(node.value):
+                    config_names.update(t.id for t in targets if isinstance(t, ast.Name))
+            for node in ast.walk(func):
+                if not (isinstance(node, ast.Attribute) and node.attr == "save"):
+                    continue
+                recv = node.value
+                if (
+                    isinstance(recv, ast.Name) and recv.id in config_names
+                ) or cls._names_kirocrew_config(recv):
+                    offenders.append(f"{filename}:{node.lineno} ({func.name})")
+        return offenders
+
+    def test_no_dashboard_module_saves_the_whole_config(self):
+        root = pathlib.Path(__file__).resolve().parents[1] / "src" / "kiro_crew" / "dashboard"
+        offenders: list[str] = []
+        for path in root.rglob("*.py"):
+            src = path.read_text(encoding="utf-8", errors="replace")
+            if "KiroCrewConfig" not in src or ".save" not in src:
+                continue
+            offenders.extend(self._offenders_in(ast.parse(src), path.name))
+        assert not offenders, (
+            "A dashboard writer must not publish a whole KiroCrewConfig snapshot: "
+            "a load that could not read config.json is defaults, and saving it "
+            "erases every setting. Write the keys you own through "
+            "run_config_write(update_config_locked, config_path(), mutate=...).\n  "
+            + "\n  ".join(sorted(set(offenders)))
+        )
+
+    def test_the_ratchet_catches_every_save_spelling(self):
+        """Not vacuous: the reverted theme-PUT shape and its siblings are caught,
+        and a non-config ``.save`` is not."""
+        source = (
+            "async def offloaded_reference():\n"
+            "    cfg = await asyncio.to_thread(KiroCrewConfig.load)\n"
+            "    await asyncio.to_thread(cfg.save)\n"
+            "\n"
+            "def sync_call():\n"
+            "    cfg = KiroCrewConfig.load()\n"
+            "    cfg.save()\n"
+            "\n"
+            "async def annotated():\n"
+            "    cfg: KiroCrewConfig = KiroCrewConfig()\n"
+            "    await run_config_write(cfg.save)\n"
+            "\n"
+            "def chained():\n"
+            "    KiroCrewConfig.load().save()\n"
+            "\n"
+            "def unbound():\n"
+            "    KiroCrewConfig.save(obj)\n"
+            "\n"
+            "async def unrelated_store():\n"
+            "    await asyncio.to_thread(store.save, fresh)\n"
+        )
+        offenders = self._offenders_in(ast.parse(source), "synthetic.py")
+        names = {o.rsplit("(", 1)[1].rstrip(")") for o in offenders}
+        assert names == {
+            "offloaded_reference",
+            "sync_call",
+            "annotated",
+            "chained",
+            "unbound",
+        }, offenders

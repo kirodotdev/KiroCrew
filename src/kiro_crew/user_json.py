@@ -94,3 +94,34 @@ def load_user_json_object(path: Path) -> dict[str, Any]:
         logger.warning("Ignoring %s: top-level JSON is not an object", path)
         return {}
     return data
+
+
+#: Deepest container nesting an installed settings document may carry. The config
+#: readers walk a document recursively (``copy.deepcopy`` in the config cache, the
+#: overlay deep-merge), so one nested a few hundred levels deep parses fine and then
+#: raises ``RecursionError`` on every later load. Real settings documents nest under
+#: ten levels; this bound leaves ample room while staying far below the depth at which
+#: those recursive readers exhaust the interpreter's stack.
+MAX_DOCUMENT_NESTING = 64
+
+
+def exceeds_nesting(value: object, limit: int = MAX_DOCUMENT_NESTING) -> bool:
+    """Whether *value* nests dicts/lists more than *limit* levels deep.
+
+    Iterative, so measuring a hostile document cannot itself overflow the stack.
+    A scalar has depth 0; ``{}`` and ``[]`` have depth 1.
+    """
+    stack: list[tuple[object, int]] = [(value, 0)]
+    while stack:
+        node, depth = stack.pop()
+        if isinstance(node, dict):
+            children: Any = node.values()
+        elif isinstance(node, list):
+            children = node
+        else:
+            continue
+        depth += 1
+        if depth > limit:
+            return True
+        stack.extend((child, depth) for child in children)
+    return False

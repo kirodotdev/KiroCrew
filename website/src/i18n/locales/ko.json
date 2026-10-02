@@ -13237,7 +13237,15 @@
         "upload_a_kirocrew_export_zip_to_restore_settings": "{{productName}} 내보내기 zip을 업로드해 이 인스턴스의 설정을 복원합니다.\n 기존 데이터는 기본적으로 병합됩니다 (중복은 건너뜁니다).",
         "workspace_files": "워크스페이스 파일:",
         "export_templates_not_included": "이 내보내기에는 크루가 사용하는 에이전트 템플릿이 포함되지 않습니다: {{names}}. ~/.kiro/agents에서 다른 머신의 같은 폴더로 복사하세요.",
-        "import_templates_missing": "이 머신에 없는 에이전트 템플릿을 사용하는 크루가 있습니다 (크루 → 템플릿): {{crews}}. 이 크루를 사용하기 전에 없는 템플릿을 ~/.kiro/agents에 복사하세요."
+        "import_templates_missing": "이 머신에 없는 에이전트 템플릿을 사용하는 크루가 있습니다 (크루 → 템플릿): {{crews}}. 이 크루를 사용하기 전에 없는 템플릿을 ~/.kiro/agents에 복사하세요.",
+        "import_items_refused": "일부 항목을 가져오지 못해 변경되지 않았습니다: {{names}}.",
+        "import_settings_kept": "이 설치는 자체 {{files}}을(를) 유지했습니다. 대신 아카이브의 것을 사용하려면 파일 선택 옆의 병합을 덮어쓰기로 바꾼 뒤 다시 가져오세요. 덮어쓰기는 먼저 이 설치를 백업한 뒤 설정을 아카이브의 설정으로 덮어씁니다.",
+        "import_reloading_display_settings": "가져오기 완료 — 표시 설정을 적용하기 위해 다시 불러오는 중…",
+        "import_complete_restart_gateway_other": "가져오기가 완료되었습니다({{count}}개 항목). 모든 변경 사항을 적용하려면 게이트웨이를 다시 시작하세요: 설정 → 정보 → 게이트웨이 다시 시작.",
+        "settings_kept_name_config": "에이전트 및 게이트웨이 설정",
+        "settings_kept_name_config_local": "로컬 설정 재정의",
+        "settings_kept_name_ui_prefs": "표시 환경설정",
+        "settings_kept_name_notifications": "알림 설정"
       },
       "promptsTab": {
         "agent_sop_name": "@agent-sop:name",

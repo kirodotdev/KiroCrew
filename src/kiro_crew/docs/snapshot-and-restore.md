@@ -34,7 +34,7 @@ Both commands refuse to run on a platform that cannot open a directory relative 
 |-----------|-------|
 | memory | `memory.db`, `memory_index.db`, `workspace/memory/`, `workspace/knowledge/`, `memory_stores/` |
 | crons | `crons.json` |
-| config | `config.json`, `session_map.json`, `hooks.json`, `project_dir`, `workspace_dir` |
+| config | `config.json`, `config.local.json`, `session_map.json`, `hooks.json`, `ui-prefs.json` (the dashboard's browser-held settings), `notification_settings.json` (notification mutes and priorities), `project_dir`, `workspace_dir` |
 | skills | `skills/` directory |
 | workspace | `workspace/`, `plan_memory/` directories |
 | notifications | `notifications.jsonl` |
@@ -222,12 +222,41 @@ component was being replaced.
   imported with fresh IDs. If either cron file has a JSON shape the merger cannot use, the cron merge is skipped.
 - **Notifications**: deduplicated by timestamp
 - **Config and security**: only files that are missing are restored, never
-  overwritten
+  overwritten. Every running install already has a `config.json`, so a merge
+  usually restores none of the bundle's settings; each settings file kept that
+  way is named (`↩️  config.json: kept the existing file; the bundle's copy was
+  NOT merged into it ...`) and `✅ config` is printed only when no setting was
+  left behind. Host state in the same component (`session_map.json`,
+  `project_dir`, `workspace_dir`) keeps this machine's copy silently. A bundle
+  `ui-prefs.json` or `notification_settings.json` that its own store would read
+  as empty, or refuse, stops the restore before anything is installed, in either
+  mode. A restored `config.json`, `config.local.json` or `ui-prefs.json` is
+  installed owner-only, as its own writer creates it. A bundle's `config.local.json` is never installed by a merge, even
+  where the receiving install has none: that overlay outranks `config.json`, so
+  it is reported (`↩️  config.local.json: not applied ...`) instead. To take the
+  bundle's settings, re-run with `--mode replace --components config`, which
+  saves the current files in the pre-restore backup first.
 - **Workspace and skills**: only files that do not exist at the destination are
   copied
 
 So a merge never destroys anything on the receiving machine. If you want the
 snapshot to win, use `--mode replace`.
+
+**The dashboard's import follows the same rule for settings.** The import on
+Settings > Imports (a `.zip` from the dashboard's export) defaults to Merge too,
+and its Merge never overwrites a settings document: `config.json`,
+`ui-prefs.json` (the browser-held settings) and `notification_settings.json` are
+installed only where this install has none, and one this install already has is
+kept exactly as it is. Like `kirocrew restore`, it never installs the archive's
+`config.local.json`, even where this install has none, because that overlay
+outranks `config.json`. The result names every settings file it kept, so a Merge
+that brought none of your settings back says so. To restore the archive's
+settings over this install's, choose Replace in the mode menu and import again:
+Replace installs all four files, saving the ones it replaces to
+`pre-restore-<timestamp>/` first. A settings file in the archive that is not
+usable is named in the result and never installed, in either mode.
+Memory, crons, workspace files and skills follow the never-overwrite rules
+above in both tools.
 
 #### Known limitation: the knowledge database is not row-merged
 

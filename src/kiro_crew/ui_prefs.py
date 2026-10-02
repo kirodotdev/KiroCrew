@@ -49,7 +49,9 @@ import json
 import logging
 import os
 import stat
-from collections.abc import Mapping
+import threading
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -90,6 +92,29 @@ MAX_REQUEST_BYTES = 2 * MAX_TOTAL_BYTES
 #: same secret ("kiro_crew_token_v2") is refused too.
 DENY_KEYS = frozenset({"kiro_crew_token"})
 DENY_SUBSTRINGS = ("token", "secret", "password", "credential", "api_key", "apikey")
+
+
+#: Serializes every in-process read-modify-write of the file. The PUT handler
+#: also holds its own asyncio lock, which orders requests against each other but
+#: not against the settings import, which installs an archive's copy from a
+#: worker thread (`portability.apply_import_zip`) only where no file exists.
+#: Without this a PUT could create the file between that check and the write,
+#: and the import would replace it.
+_write_lock = threading.Lock()
+
+
+@contextmanager
+def replacing_file() -> Iterator[None]:
+    """Hold the writer lock while something other than this module swaps the file.
+
+    The settings import's replace mode installs ``ui-prefs.json`` under a running
+    gateway. A PUT from another open tab reads the document under this lock and
+    writes its merge back, so without the lock it could read the old file and then
+    publish that stale copy over the restored one. Nothing is cached in memory, so
+    holding the lock across the swap is the whole fix.
+    """
+    with _write_lock:
+        yield
 
 
 class UiPrefsError(ValueError):
@@ -289,6 +314,27 @@ def _validate_patch(patch: Mapping[str, Any]) -> dict[str, str | None]:
     return cleaned
 
 
+def render_document(prefs: Mapping[str, str]) -> str:
+    """Serialize a whole-document *prefs* as the store writes it, or reject it.
+
+    The ONE place the aggregate bounds live. Every path that ends in a
+    ``ui-prefs.json`` -- a PUT's merge, and the settings import's parse of an
+    archive copy -- goes through it, so a document can only land on disk when
+    the SAME ``MAX_KEYS`` / ``MAX_TOTAL_BYTES`` the PUT enforces hold for it.
+
+    The size bound measures the EXACT bytes that land on disk: the trailing
+    newline is part of the payload, and the payload is written as bytes so no
+    platform newline translation can add to it (text mode turned each "\\n"
+    into "\\r\\n" on Windows and pushed a near-cap file over the read limit).
+    """
+    if len(prefs) > MAX_KEYS:
+        raise UiPrefsError(f"too many keys ({len(prefs)} > {MAX_KEYS})")
+    text = json.dumps({"prefs": prefs}, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    if _utf8_len(text, "stored preferences") > MAX_TOTAL_BYTES:
+        raise UiPrefsError(f"stored preferences would exceed {MAX_TOTAL_BYTES} bytes")
+    return text
+
+
 def merge_ui_prefs(patch: Mapping[str, Any]) -> dict[str, str]:
     """Apply *patch* onto the stored preferences and persist the result.
 
@@ -296,14 +342,20 @@ def merge_ui_prefs(patch: Mapping[str, Any]) -> dict[str, str]:
     :class:`UiPrefsError` when the patch or the resulting document is out of
     bounds, in which case NOTHING is written.
 
-    Callers must serialize their own concurrency (the dashboard handler holds an
-    asyncio lock); the write itself is atomic, so a crash mid-write leaves the
-    previous file intact rather than a truncated one. A read failure PROPAGATES
+    In-process writers are serialized by ``_write_lock`` (the dashboard handler
+    also holds an asyncio lock); the write itself is atomic, so a crash mid-write
+    leaves the previous file intact rather than a truncated one. A read failure PROPAGATES
     as ``OSError`` (see ``_read_prefs``): this is a read-modify-write, so
     starting from ``{}`` because the existing file could not be read would
     replace it with just this patch.
     """
     cleaned = _validate_patch(patch)
+    with _write_lock:
+        return _merge_locked(cleaned)
+
+
+def _merge_locked(cleaned: Mapping[str, str | None]) -> dict[str, str]:
+    """Write an already validated patch; the caller holds ``_write_lock``."""
     merged = _read_prefs(ui_prefs_path(), strict=True)
     for key, value in cleaned.items():
         if value is None:
@@ -311,17 +363,7 @@ def merge_ui_prefs(patch: Mapping[str, Any]) -> dict[str, str]:
         else:
             merged[key] = value
 
-    if len(merged) > MAX_KEYS:
-        raise UiPrefsError(f"too many keys ({len(merged)} > {MAX_KEYS})")
-
-    document = {"prefs": merged}
-    # The bound below measures the EXACT bytes that land on disk: the trailing
-    # newline is part of the payload, and the payload is written as bytes so no
-    # platform newline translation can add to it (text mode turned each "\n"
-    # into "\r\n" on Windows and pushed a near-cap file over the read limit).
-    text = json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-    if _utf8_len(text, "stored preferences") > MAX_TOTAL_BYTES:
-        raise UiPrefsError(f"stored preferences would exceed {MAX_TOTAL_BYTES} bytes")
+    text = render_document(merged)
 
     # 0o600 plus restrict_to_owner: nothing here is a credential (see DENY_*), but
     # these are one user's personal settings on a possibly shared host and some
@@ -330,3 +372,76 @@ def merge_ui_prefs(patch: Mapping[str, Any]) -> dict[str, str]:
     # directory's DACL — restrict_to_owner is what narrows it there.
     atomic_write(ui_prefs_path(), text.encode("utf-8"), mode=0o600, restrict_to_owner=True)
     return merged
+
+
+def parse_imported_ui_prefs(source: Path) -> tuple[dict[str, str], int]:
+    """Read an archive's ``ui-prefs.json`` into a patch this store accepts.
+
+    Returns ``(patch, dropped)``. Raises :class:`UiPrefsError` when the file is
+    not this store's document at all -- not a regular file within the store's
+    size limit, not UTF-8 JSON, or not ``{"prefs": {...}}`` -- or when what
+    survives the per-entry filter is more than this store would hold, so the
+    import reports it and installs nothing.
+
+    The archive is untrusted input, so each entry is held to exactly what a PUT is
+    held to, one key at a time: a credential-shaped key, a non-string value, an
+    over-long key or an oversized value is DROPPED and counted, never written,
+    and so is a value the shared redactors would alter (the same test the read
+    path applies). Per key, so one unstorable entry does not cost the restore of
+    every other preference -- the rule the client's per-key retry follows too.
+
+    The surviving entries are then held, AS A WHOLE, to the same ``MAX_KEYS`` /
+    ``MAX_TOTAL_BYTES`` a PUT's merge enforces (:func:`render_document`). An
+    overflow is a refusal of the whole document, not a further drop: there is no
+    principled choice of WHICH entries to shed (the archive's order is the
+    archive author's), and a Merge already ends the same way -- the store's
+    writer raises on the install and the import reports the document skipped.
+    Without this a Replace, which copies the staged file instead of going
+    through the writer, installed a ``ui-prefs.json`` the PUT endpoint would
+    never have accepted: one over ``MAX_KEYS`` makes every later PUT fail with
+    "too many keys", and one over ``MAX_TOTAL_BYTES`` is refused by the next read.
+    """
+    raw = _read_raw(source, strict=True)
+    if raw is None:
+        raise UiPrefsError(f"not a readable regular UTF-8 file of at most {MAX_TOTAL_BYTES} bytes")
+    try:
+        doc: Any = json.loads(raw)
+    except (ValueError, RecursionError) as exc:
+        raise UiPrefsError(f"not valid JSON ({exc})") from None
+    prefs = doc.get("prefs") if isinstance(doc, dict) else None
+    if not isinstance(prefs, dict):
+        raise UiPrefsError('not a {"prefs": {...}} document')
+    patch: dict[str, str] = {}
+    dropped = 0
+    for key, value in prefs.items():
+        # A null would be a DELETE in a PUT; an archive deletes nothing.
+        if not isinstance(value, str) or not _is_clean(value):
+            dropped += 1
+            continue
+        try:
+            _validate_patch({key: value})
+        except UiPrefsError:
+            dropped += 1
+            continue
+        patch[key] = value
+    render_document(patch)
+    return patch, dropped
+
+
+def install_imported_ui_prefs(patch: Mapping[str, str]) -> bool:
+    """Install a :func:`parse_imported_ui_prefs` patch, only where this host has no file.
+
+    The dashboard Merge's path in, so it follows that merge's never-overwrite
+    contract: a host that already keeps a ``ui-prefs.json`` keeps it whole (the
+    browser adopts the host copy on its next load, so a write here would replace
+    choices made on this machine). Decided under ``_write_lock``, so a PUT that
+    creates the file first wins. Returns whether the file was written; bounds
+    apply exactly as for a PUT, so a patch that would breach them raises
+    :class:`UiPrefsError` and nothing is written.
+    """
+    cleaned = _validate_patch(patch)
+    with _write_lock:
+        if os.path.lexists(ui_prefs_path()):
+            return False
+        _merge_locked(cleaned)
+        return True

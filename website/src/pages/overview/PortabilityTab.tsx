@@ -1,10 +1,63 @@
-import { useState, useRef } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { Download, Upload, FileArchive, AlertCircle, CheckCircle } from 'lucide-react'
 import { Card, CardTitle } from '../../components/ui'
 import SimpleSelect from '../../components/SimpleSelect'
 import ErrorNotice from '../../components/ErrorNotice'
 
 import { i18nT } from '../../i18n/t'
+import { adoptHostUiPrefsOnNextLoad, pauseUiPrefsSync, resumeUiPrefsSync } from '../../lib/uiPrefs'
+
+/**
+ * Where a settings restore leaves its result for the load it triggers.
+ *
+ * A restore of browser settings reloads the page at once (the sync stays paused
+ * until a load adopts the host copy), which would wipe the success line and the
+ * warnings before anyone reads them; the tab re-shows them from here once, then
+ * drops the key.
+ */
+export const IMPORT_RESULT_KEY = 'kc-portability-import-result'
+
+interface ImportResult {
+  msg: string
+  warnings: string[]
+  /** Failures inside an import that otherwise succeeded: items it refused and left unchanged. */
+  errors: string[]
+}
+
+/** Non-empty strings only; anything else a stored record holds is dropped. */
+function storedStrings(raw: unknown): string[] {
+  return Array.isArray(raw) ? raw.filter((w): w is string => typeof w === 'string' && w !== '') : []
+}
+
+/** The result a restore carried across its reload, or null if none (or unreadable). */
+export function readCarriedImportResult(): ImportResult | null {
+  try {
+    const raw: unknown = JSON.parse(sessionStorage.getItem(IMPORT_RESULT_KEY) ?? 'null')
+    if (!raw || typeof raw !== 'object') return null
+    const { msg, warnings, errors } = raw as { msg?: unknown; warnings?: unknown; errors?: unknown }
+    if (typeof msg !== 'string' || !msg) return null
+    return { msg, warnings: storedStrings(warnings), errors: storedStrings(errors) }
+  } catch {
+    return null
+  }
+}
+
+function carryImportResult(result: ImportResult): void {
+  try {
+    sessionStorage.setItem(IMPORT_RESULT_KEY, JSON.stringify(result))
+  } catch {
+    /* storage blocked: the reload still has to happen, only the record is lost */
+  }
+}
+
+function dropCarriedImportResult(): void {
+  try {
+    sessionStorage.removeItem(IMPORT_RESULT_KEY)
+  } catch {
+    /* storage blocked: nothing was carried */
+  }
+}
+
 interface Manifest {
   version: number
   created_at: string
@@ -56,6 +109,74 @@ function joinWithMore(names: string[], more: number): string {
   return [...names, ...(more ? [i18nT('app.n_more', { count: more })] : [])].join(', ')
 }
 
+/** Strings only, empty ones and repeats dropped, in first-seen order. */
+function distinctNames(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return []
+  return [...new Set(raw.filter((n): n is string => typeof n === 'string' && n !== ''))]
+}
+
+/**
+ * The summary's `settings_kept`: the archive's settings documents a Merge left
+ * alone because this install keeps its own. The server only ever names its four
+ * fixed settings files, so four is the bound by construction; the cap here keeps
+ * a malformed response from growing the line.
+ */
+export function keptSettingsFiles(raw: unknown): string[] {
+  return distinctNames(raw).slice(0, 4)
+}
+
+/**
+ * What a kept settings file is called in the warning: the thing it holds, in the
+ * reader's words, not its file name. A name the server does not send today falls
+ * back to itself, so a new file still shows up rather than vanishing.
+ */
+export function settingsFileLabel(file: string): string {
+  switch (file) {
+    case 'config.json': return i18nT('pages.overview.portabilityTab.settings_kept_name_config')
+    case 'config.local.json': return i18nT('pages.overview.portabilityTab.settings_kept_name_config_local')
+    case 'ui-prefs.json': return i18nT('pages.overview.portabilityTab.settings_kept_name_ui_prefs')
+    case 'notification_settings.json': return i18nT('pages.overview.portabilityTab.settings_kept_name_notifications')
+    default: return file
+  }
+}
+
+/** How many refused items are named before the rest become "N more". */
+const REFUSED_SHOWN = 6
+
+/**
+ * The summary's `refused_merges`: the items an import refused and left unchanged
+ * (fixed labels such as `config` or `crons`), bounded with an "N more" overflow.
+ */
+export function refusedItems(raw: unknown): { names: string[]; more: number } {
+  const all = distinctNames(raw)
+  return { names: all.slice(0, REFUSED_SHOWN), more: Math.max(0, all.length - REFUSED_SHOWN) }
+}
+
+/**
+ * The parenthetical an item carries when the import did NOT apply it. These are
+ * the openers `portability.py` really emits, nothing broader: a refused document
+ * or store ("<label> (skipped: why)", "(SKIPPED: why)", "hooks (skipped, already
+ * exists)"), a settings file a Merge left as this install's ("(kept this
+ * install's; ...)", "memory_stores/<x> (kept the existing store; ...)"), the
+ * overlay a Merge never installs ("config.local (not installed: ...)"), and an
+ * archive copy with no storable entry ("ui-prefs (nothing to restore...)").
+ * Anchored to the opening paren so "skills (merged, auto/ skipped)" -- an item
+ * that WAS applied -- still counts.
+ */
+const NOT_APPLIED_ITEM = /\((?:skipped\b|kept\b|not installed\b|nothing to restore\b)/i
+
+/**
+ * How many summary items the import actually applied. An item it refused, kept,
+ * did not install or found nothing to restore from rides the list with one of the
+ * `NOT_APPLIED_ITEM` openers and is reported on its own warning line instead --
+ * counting it here too would tell the user N items were imported while the very
+ * next line says some of those N were left untouched.
+ */
+export function importedItemCount(items: unknown): number {
+  if (!Array.isArray(items)) return 0
+  return items.filter(i => !(typeof i === 'string' && NOT_APPLIED_ITEM.test(i))).length
+}
+
 /** A status line for a warning the call still succeeded through. */
 function WarnLine({ msg, testId }: { msg: string; testId: string }) {
   if (!msg) return null
@@ -69,13 +190,23 @@ function WarnLine({ msg, testId }: { msg: string; testId: string }) {
 
 export default function PortabilityTab() {
   const [exportStatus, setExportStatus] = useState<{ type: 'idle' | 'loading' | 'ok' | 'error'; msg: string }>({ type: 'idle', msg: '' })
-  const [importStatus, setImportStatus] = useState<{ type: 'idle' | 'loading' | 'ok' | 'error'; msg: string }>({ type: 'idle', msg: '' })
+  // Read during render without side effects; the key is dropped by the effect
+  // below, so a later mount does not show the same result again.
+  const [carried] = useState(readCarriedImportResult)
+  const [importStatus, setImportStatus] = useState<{ type: 'idle' | 'loading' | 'ok' | 'error'; msg: string }>(
+    carried ? { type: 'ok', msg: carried.msg } : { type: 'idle', msg: '' },
+  )
   const [exportWarning, setExportWarning] = useState('')
-  const [importWarning, setImportWarning] = useState('')
+  const [importWarnings, setImportWarnings] = useState<string[]>(carried?.warnings ?? [])
+  const [importErrors, setImportErrors] = useState<string[]>(carried?.errors ?? [])
   const [preview, setPreview] = useState<Manifest | null>(null)
   const [previewError, setPreviewError] = useState('')
   const [mode, setMode] = useState<'merge' | 'replace'>('merge')
   const fileRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    dropCarriedImportResult()
+  }, [])
 
   const handleExport = async () => {
     setExportStatus({ type: 'loading', msg: i18nT('pages.overview.portabilityTab.generating_export') })
@@ -111,7 +242,8 @@ export default function PortabilityTab() {
     setPreview(null)
     setPreviewError('')
     setImportStatus({ type: 'idle', msg: '' })
-    setImportWarning('')
+    setImportWarnings([])
+    setImportErrors([])
     if (!file) return
 
     const fd = new FormData()
@@ -135,20 +267,58 @@ export default function PortabilityTab() {
     if (mode === 'replace' && !confirm(i18nT('pages.overview.portabilityTab.replace_mode_will_overwrite_existing_data_contin'))) return
 
     setImportStatus({ type: 'loading', msg: i18nT('pages.overview.portabilityTab.importing') })
-    setImportWarning('')
+    setImportWarnings([])
+    setImportErrors([])
     const fd = new FormData()
     fd.append('file', file)
+    // The import may rewrite the host's copy of this browser's preferences, so
+    // no flush may race it (see pauseUiPrefsSync). Resumed below unless the
+    // copy really changed, in which case the page reloads to adopt it.
+    await pauseUiPrefsSync()
+    let adopting = false
     try {
       const resp = await fetch(`/api/portability/import?mode=${mode}`, { method: 'POST', body: fd })
       const data = await resp.json()
       if (data.ok) {
-        const items = data.summary?.items || []
-        setImportStatus({ type: 'ok', msg: `Import complete (${items.length} items). Restart gateway to apply all changes.` })
-        const missing: { crew: string; kiro_agent: string }[] = data.summary?.missing_agent_templates || []
+        const summary = data.summary || {}
+        const warnings: string[] = []
+        const missing: { crew: string; kiro_agent: string }[] = summary.missing_agent_templates || []
         if (missing.length) {
-          const more: number = data.summary?.missing_agent_templates_more || 0
+          const more: number = summary.missing_agent_templates_more || 0
           const crews = joinWithMore(missing.map(m => `${m.crew} → ${m.kiro_agent}`), more)
-          setImportWarning(i18nT('pages.overview.portabilityTab.import_templates_missing', { crews }))
+          warnings.push(i18nT('pages.overview.portabilityTab.import_templates_missing', { crews }))
+        }
+        // A refused item is a failure, not a caveat: it renders as an error even
+        // though the import as a whole succeeded.
+        const errors: string[] = []
+        const refused = refusedItems(summary.refused_merges)
+        if (refused.names.length) {
+          errors.push(i18nT('pages.overview.portabilityTab.import_items_refused', { names: joinWithMore(refused.names, refused.more) }))
+        }
+        const keptFiles = keptSettingsFiles(summary.settings_kept)
+        if (keptFiles.length) {
+          warnings.push(i18nT('pages.overview.portabilityTab.import_settings_kept', { files: keptFiles.map(settingsFileLabel).join(', ') }))
+        }
+        const msg = i18nT('pages.overview.portabilityTab.import_complete_restart_gateway', { count: importedItemCount(summary.items) })
+        setImportWarnings(warnings)
+        setImportErrors(errors)
+        setImportStatus({ type: 'ok', msg })
+        if (summary.ui_prefs_restored) {
+          // The restored browser settings live in localStorage, which only a
+          // fresh load re-reads from the host; config-owned ones (theme,
+          // language) are re-read by the same load. Adopting leaves the sync
+          // paused so nothing overwrites the restored copy, which is only safe
+          // if this page goes away now: a preference changed on it would be
+          // replaced by the host copy on the next load. So it reloads only
+          // after adoption is armed, and carries the result across for the next
+          // mount. A failed adoption leaves the result and warnings here.
+          if (!await adoptHostUiPrefsOnNextLoad()) return
+          adopting = true
+          // Said before the reload, so the page does not just blink: the full
+          // result is re-shown from sessionStorage once the next load mounts.
+          setImportStatus({ type: 'ok', msg: i18nT('pages.overview.portabilityTab.import_reloading_display_settings') })
+          carryImportResult({ msg, warnings, errors })
+          window.location.reload()
         }
       } else {
         setImportStatus({
@@ -158,6 +328,8 @@ export default function PortabilityTab() {
       }
     } catch (e: unknown) {
       setImportStatus({ type: 'error', msg: e instanceof Error ? e.message : i18nT('pages.overview.portabilityTab.network_error') })
+    } finally {
+      if (!adopting) resumeUiPrefsSync()
     }
   }
 
@@ -256,7 +428,16 @@ export default function PortabilityTab() {
               {importStatus.msg}
             </div>
           )}
-        <WarnLine msg={importWarning} testId="portability-import-warning" />
+        {/* No hand-off: the same unsaved archive selection as the import error
+            above -- the chosen file cannot be restored after this tab unmounts. */}
+        {importErrors.map((e, i) => (
+          <ErrorNotice key={i} variant="inline" message={e} className="mt-3" testId="portability-import-refused" />
+        ))}
+        {importWarnings.length > 0 && (
+          <div className="flex flex-col items-start">
+            {importWarnings.map((w, i) => <WarnLine key={i} msg={w} testId="portability-import-warning" />)}
+          </div>
+        )}
       </Card>
     </div>
   )

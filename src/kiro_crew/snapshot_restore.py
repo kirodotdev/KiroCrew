@@ -42,6 +42,7 @@ from kiro_crew.snapshot_archive import (
 from kiro_crew.snapshot_components import (
     _CORE_FILE_COMPONENTS,
     _DERIVED_INDEXES,
+    _FLAT_DOCUMENT_VALIDATORS,
     _JSON_OBJECT_LISTS,
     _LOCKED_DOCUMENT_TREES,
     _TREE_DOCUMENT_VALIDATORS,
@@ -57,6 +58,7 @@ from kiro_crew.snapshot_components import (
     is_product_tree_database,
     safe_tree_root,
 )
+from kiro_crew.user_json import MAX_DOCUMENT_NESTING, exceeds_nesting
 
 
 def _save_locked_document_to(backup: Path, rel: str) -> Callable[[Path], None]:
@@ -129,6 +131,23 @@ def _remove_locked_document(
     crew_teams.remove_document(mc / tree, save_existing=save_existing)
 
 
+def _refuse_dropped_entries(label: str, dropped: int) -> None:
+    """Raise when a settings document holds entries its own store would refuse.
+
+    A restore installs the bundle's file VERBATIM, not the reader's filtered copy, so
+    an entry the reader drops still lands: a key past the store's limits makes every
+    later save fail, and a non-boolean ``muted`` silences a channel. The product's own
+    writers never produce such an entry, so a bundle carrying one is refused whole.
+    """
+    if dropped:
+        raise SourceComponentUnsound(
+            f"{label} in this snapshot holds {dropped} entr{'y' if dropped == 1 else 'ies'} "
+            "its store would refuse.\n"
+            "   Refusing to restore it: the file is installed as-is, so those entries "
+            "would land and break later settings saves or silence notifications."
+        )
+
+
 def _refuse_unless_valid_tree_document(src: Path, label: str, validator: str) -> None:
     """Raise `SourceComponentUnsound` unless *src* passes its own consumer's reader."""
     if validator == "crew_teams":
@@ -142,6 +161,39 @@ def _refuse_unless_valid_tree_document(src: Path, label: str, validator: str) ->
                 "   Refusing to restore it: an installed document the team store cannot "
                 "read fails every team route and refuses every crew create."
             ) from e
+        return
+    if validator == "ui_prefs":
+        from kiro_crew import ui_prefs  # a store module; imported on first use only
+
+        try:
+            _, dropped = ui_prefs.parse_imported_ui_prefs(src)
+        except (ui_prefs.UiPrefsError, OSError, RecursionError) as e:
+            raise SourceComponentUnsound(
+                f"{label} in this snapshot would be refused by its reader ({e}).\n"
+                "   Refusing to restore it: the dashboard would read it as no saved "
+                "browser settings, or refuse every later settings save."
+            ) from e
+        _refuse_dropped_entries(label, dropped)
+        return
+    if validator == "notification_settings":
+        from kiro_crew.notifications import settings as notification_settings
+
+        try:
+            _, dropped = notification_settings.parse_imported_settings(
+                src.read_text(encoding="utf-8")
+            )
+        except (
+            notification_settings.ChannelSettingsError,
+            OSError,
+            ValueError,
+            RecursionError,
+        ) as e:
+            raise SourceComponentUnsound(
+                f"{label} in this snapshot would be refused by its reader ({e}).\n"
+                "   Refusing to restore it: the notification store would read it as no "
+                "saved mutes or priorities."
+            ) from e
+        _refuse_dropped_entries(label, dropped)
         return
     raise AssertionError(f"no validator named {validator!r}")
 
@@ -429,7 +481,11 @@ def _backup_and_copy(
                             # telemetry_salt. The reviewer's suggested fix was to drop
                             # the lockdown because "the copy already applies mode", which
                             # would have done exactly that: applied the ARCHIVE's mode.
-                            force_mode=0o600 if component == "security" else None,
+                            force_mode=(
+                                0o600
+                                if component == "security" or f in _OWNER_ONLY_SETTINGS_FILES
+                                else None
+                            ),
                             # The live file was moved aside two lines up, so a skip here
                             # finishes with the original gone AND the archive's version
                             # never written. Review's third instance of that rule; it is
@@ -458,8 +514,14 @@ def _backup_and_copy(
         os.close(src_fd)
 
 
+#: Settings documents whose own writers create them owner-only. The config overlay can
+#: hold channel tokens, so a restored copy must not inherit a looser directory ACL
+#: on Windows, or the umask default on POSIX, from the copy that installed it.
+_OWNER_ONLY_SETTINGS_FILES = frozenset({"config.json", "config.local.json", "ui-prefs.json"})
+
+
 def _lock_down_restored(path: Path, component: str) -> None:
-    """Apply the owner-only lockdown a restored security file needs.
+    """Apply the owner-only lockdown a restored security or settings file needs.
 
     restrict_to_owner (fail-loud), NOT chmod_safe (which swallows OSError): security
     files include sel_hmac.key. Mirrors the create path's deliberate fail-loud
@@ -469,7 +531,7 @@ def _lock_down_restored(path: Path, component: str) -> None:
     actually removes the exposed artifact, instead of leaving the restored secret
     under the destination's inherited DACL after the OSError propagates.
     """
-    if component != "security":
+    if component != "security" and path.name not in _OWNER_ONLY_SETTINGS_FILES:
         return
     try:
         platform_compat.restrict_to_owner(str(path))
@@ -637,6 +699,8 @@ def _refuse_corrupt_source_databases(
                 # schedule silently gone, nothing raised, nothing retried.
                 will_install = mc_for_merge is None or not (mc_for_merge / name).is_file()
                 _refuse_unless_json_object(src, name, installed=will_install)
+                if will_install and name in _FLAT_DOCUMENT_VALIDATORS:
+                    _refuse_unless_valid_tree_document(src, name, _FLAT_DOCUMENT_VALIDATORS[name])
 
     # A document inside a component tree is validated by ITS OWN reader. The tree is copied
     # wholesale on replace and file-by-file where the destination lacks the file on merge,
@@ -733,7 +797,7 @@ def _refuse_unless_json_object(src: Path, label: str, *, installed: bool) -> Non
     """
     try:
         parsed = json.loads(src.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as e:
+    except (OSError, ValueError, RecursionError) as e:
         if not installed:
             return
         raise SourceComponentUnsound(
@@ -762,6 +826,15 @@ def _refuse_unless_json_object(src: Path, label: str, *, installed: bool) -> Non
             "object.\n"
             "   Refusing to restore it over live state: its reader expects an object and "
             "treats anything else as empty."
+        )
+    # Parsing succeeds well past the depth the recursive readers (the config cache's
+    # deepcopy, the overlay deep-merge) can walk, so an over-deep document would install
+    # and then make every later load raise RecursionError.
+    if exceeds_nesting(parsed):
+        raise SourceComponentUnsound(
+            f"{label} in this snapshot nests deeper than {MAX_DOCUMENT_NESTING} levels.\n"
+            "   Refusing to restore it over live state: its reader cannot walk a "
+            "document that deep and would fail on every load."
         )
     # An object at the top is necessary and not sufficient: the readers iterate a named
     # list and call `.get` on each entry, so a `jobs` that is not a list of objects

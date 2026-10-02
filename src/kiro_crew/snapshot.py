@@ -21,6 +21,7 @@ imports it, and a patch of it belongs on that owner.
 from __future__ import annotations
 
 import argparse
+import filecmp
 import importlib
 import json
 import os
@@ -93,8 +94,10 @@ from kiro_crew.snapshot_archive import (  # noqa: F401 - facade re-exports
     _terminal_safe,
 )
 from kiro_crew.snapshot_components import (  # noqa: F401 - facade re-exports
+    _CONFIG_SETTINGS_DOCUMENTS,
     _CORE_FILE_COMPONENTS,
     _DERIVED_INDEXES,
+    _FLAT_DOCUMENT_VALIDATORS,
     _HOST_LOCAL_PATHS,
     _JSON_OBJECT_LISTS,
     _LOCKED_DOCUMENT_TREES,
@@ -149,6 +152,7 @@ from kiro_crew.snapshot_merge import (  # noqa: F401 - facade re-exports
     _validate_identifier,
 )
 from kiro_crew.snapshot_restore import (  # noqa: F401 - facade re-exports
+    _OWNER_ONLY_SETTINGS_FILES,
     NamedStoresInUse,
     RollbackIncomplete,
     SourceComponentUnsound,
@@ -164,6 +168,7 @@ from kiro_crew.snapshot_restore import (  # noqa: F401 - facade re-exports
     _install_locked_document,
     _lock_down_restored,
     _refuse_corrupt_source_databases,
+    _refuse_dropped_entries,
     _refuse_unless_json_object,
     _refuse_unless_sound,
     _refuse_unless_valid_tree_document,
@@ -1405,12 +1410,63 @@ def _do_merge(
             print("  ⚠️  crons: merge skipped (see warning above) — no jobs imported")
 
     if _want(components, "config"):
+        # Merge never overwrites, and for this component that usually means NOTHING is
+        # restored: every running install already has a config.json. So each bundle file
+        # kept that way is named, the way a kept named store is, and the tick is printed
+        # only when no bundle file was left behind -- a bare "✅ config" over a restore
+        # that took none of the bundle's settings read as "my settings came back".
+        kept_config: list[str] = []
         for f in CORE_FILES["config"]:
             s, d = snap / f, mc / f
-            if s.is_file() and not d.is_file():
-                shutil.copy2(str(s), str(d))
-                print(f"  {f}: restored (was missing)")
-        print("  ✅ config")
+            if not s.is_file():
+                continue
+            if os.path.lexists(d) and (d.is_symlink() or not d.is_file()):
+                # A link, directory or other non-file at the name: not a settings file
+                # to keep, and not a name to write through or read from. Refused BEFORE
+                # the comparison below, which would otherwise read a linked target --
+                # possibly a credential file outside the data home. Left as it is.
+                kept_config.append(f)
+                print(f"  ↩️  {f}: not restored; the existing entry is not a regular file.")
+                continue
+            if d.is_file() and filecmp.cmp(s, d, shallow=False):
+                continue  # the same bytes: nothing of the bundle's was left behind
+            if f == "config.local.json" and not d.is_file():
+                # Never installed by a merge: the overlay outranks config.json at load, so
+                # a bundle's copy dropped in raw would set every key it names -- sandbox,
+                # approval, channel tokens -- past the receiving install's own config.json
+                # with none of the dashboard Merge's filtering. Replace takes it.
+                kept_config.append(f)
+                print(
+                    f"  ↩️  {f}: not applied; a merge never installs the bundle's config "
+                    "overlay, which would outrank this install's config.json. To take it, "
+                    "re-run with --mode replace --components config."
+                )
+                continue
+            if not os.path.lexists(d):
+                # Missing means NOTHING at the name -- `is_file()` is also false for a
+                # dangling link, which `shutil.copy2` would follow and so write the
+                # bundle's file wherever it points, outside the data home. The pinned
+                # copy creates the destination O_CREAT|O_EXCL|O_NOFOLLOW, so a link
+                # planted after this check is refused too, never followed.
+                if pinned_fs.copy_file_pinned(
+                    str(s), str(d), skip_existing=True, on_skip=_report_skip
+                ):
+                    _lock_down_restored(d, "config")
+                    print(f"  {f}: restored (was missing)")
+                continue
+            if f not in _CONFIG_SETTINGS_DOCUMENTS:
+                # Host runtime state (`session_map.json`, the project and workspace
+                # pointers), not a setting: this host's copy is the right one, and a
+                # replace would install the source host's paths, which need not exist.
+                continue
+            kept_config.append(f)
+            print(
+                f"  ↩️  {f}: kept the existing file; the bundle's copy was NOT merged "
+                "into it. To take the bundle's settings instead, re-run with "
+                "--mode replace --components config."
+            )
+        if not kept_config:
+            print("  ✅ config")
 
     if _want(components, "notifications"):
         sn, dn = snap / "notifications.jsonl", mc / "notifications.jsonl"

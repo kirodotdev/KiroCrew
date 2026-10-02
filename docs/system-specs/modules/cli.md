@@ -247,7 +247,7 @@ choice blob makes the usage line unreadable.
 | `kirocrew snapshot --keep N` | Auto-prune to N most recent snapshots (default 7) |
 | `kirocrew snapshot --list` | List existing snapshots |
 | `kirocrew restore <file>` | Restore from a snapshot (auto-detects replace vs merge) |
-| `kirocrew restore <file> --mode replace\|merge` | Force restore mode; merge skips malformed incoming or local cron JSON with a file-specific warning |
+| `kirocrew restore <file> --mode replace\|merge` | Force restore mode; merge skips malformed incoming or local cron JSON with a file-specific warning, and never overwrites a `config` file the destination already has -- it names each settings file it kept (`↩️ <file>: kept the existing file ...`, pointing at `--mode replace --components config`) instead of printing `✅ config`, while host state (`session_map.json`, `project_dir`, `workspace_dir`) keeps this machine's copy silently; a bundle `ui-prefs.json` / `notification_settings.json` its own reader would refuse stops either mode before anything is installed; a bundle's `config.local.json` is never installed even where the destination has none (`↩️ config.local.json: not applied ...`), since that overlay outranks `config.json` |
 | `kirocrew restore <file> --components X,Y` | Selective component restore |
 | `kirocrew restore <file> --dry-run` | Preview restore without writing |
 | `kirocrew restore --list-components` | Show available component names |
@@ -345,6 +345,14 @@ returned summary, with a logged warning. Snapshot and restore keep refusing, bec
 `--allow-unpinned-staging` lets them ask. The per-entry screens apply on both paths — the
 copy opens `O_NOFOLLOW` and the walk rejects links and reparse points — so what the import
 path gives up is ancestor-swap resistance, not link resistance.
+
+The dashboard import's Merge follows the same never-overwrite rule as
+`kirocrew restore --mode merge` for the settings documents (`config.json`,
+`config.local.json`, `ui-prefs.json`, `notification_settings.json`): it installs one
+only where the destination has none, never installs the `config.local.json` overlay,
+and names each document it kept in the summary (`settings_kept`). Its Replace restores
+all four, backing up the replaced documents into `pre-restore-<ts>/` first. The rule
+and its writers are in [config](config.md#settings-import-dashboard-merge).
 
 Each rule above has one owner. `kiro_crew.snapshot` is the command and API facade: it
 holds `snapshot_main` and `restore_main`, the `MANIFEST.json` writer (`_build_snapshot`),

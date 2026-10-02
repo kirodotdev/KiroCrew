@@ -179,10 +179,30 @@ COMPONENTS: dict[str, ComponentSpec] = {
         help="crons.json (scheduled jobs)",
         files=("crons.json",),
     ),
+    # Every file a dashboard Settings choice is persisted in rides here, not only
+    # config.json: `config.local.json` is the overlay `config set --local` and
+    # `save()` keep overlay-owned values in (so they exist NOWHERE else),
+    # `ui-prefs.json` is the host backup of the browser-held Settings
+    # (`ui_prefs.py`), and `notification_settings.json` holds the Settings >
+    # Notifications mutes and priorities (`notifications/settings.py`). A bundle
+    # without them restores an install whose settings read as reset.
     "config": ComponentSpec(
         policy=SecretPolicy.UNRESOLVED,
-        help="config.json, session_map.json, hooks.json, project_dir, workspace_dir",
-        files=("config.json", "session_map.json", "hooks.json", "project_dir", "workspace_dir"),
+        help=(
+            "config.json, config.local.json, session_map.json, hooks.json, "
+            "ui-prefs.json (dashboard browser settings), notification_settings.json "
+            "(notification mutes and priorities), project_dir, workspace_dir"
+        ),
+        files=(
+            "config.json",
+            "config.local.json",
+            "session_map.json",
+            "hooks.json",
+            "ui-prefs.json",
+            "notification_settings.json",
+            "project_dir",
+            "workspace_dir",
+        ),
     ),
     "skills": ComponentSpec(
         policy=SecretPolicy.UNRESOLVED,
@@ -317,8 +337,11 @@ COMPONENT_JSON_OBJECTS: frozenset[str] = frozenset(
     {
         "crons.json",
         "config.json",
+        "config.local.json",
         "session_map.json",
         "hooks.json",
+        "ui-prefs.json",
+        "notification_settings.json",
     }
 )
 
@@ -341,6 +364,28 @@ _JSON_OBJECT_LISTS: dict[str, tuple[str, ...]] = {
 _TREE_DOCUMENT_VALIDATORS: tuple[tuple[str, str, str], ...] = (
     ("crew-teams", "crew-teams/teams.json", "crew_teams"),
 )
+
+#: The settings documents of the `config` component, the files a merge names when it
+#: keeps this install's copy. The component's other files are host runtime state.
+_CONFIG_SETTINGS_DOCUMENTS: frozenset[str] = frozenset(
+    {
+        "config.json",
+        "config.local.json",
+        "hooks.json",
+        "ui-prefs.json",
+        "notification_settings.json",
+    }
+)
+
+#: Flat component files whose own store reader is stricter than "a JSON object". An
+#: installed `{"prefs": []}` or `{"channel_settings": []}` passes that generic check and
+#: reads back EMPTY, and a prefs document past the store's key or byte limit makes every
+#: later save fail -- so an installed one is held to the same reader the dashboard
+#: import uses. Keyed by file name; the value names the validator.
+_FLAT_DOCUMENT_VALIDATORS: dict[str, str] = {
+    "ui-prefs.json": "ui_prefs",
+    "notification_settings.json": "notification_settings",
+}
 
 
 #: Component trees that are restored as ONE DOCUMENT under their owner's lock, never as a
