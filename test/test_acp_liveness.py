@@ -698,6 +698,52 @@ def test_stuck_input_detected_on_flat_tty_blocked_child(tmp_path):
     assert "stuck_input" in evidence and "/dev/tty" in evidence
 
 
+def _pipeline(tmp_path, *, writer_flags: str | None, producer_on_tty: bool = False):
+    """``sleep 70 | cat``: 300 writes pipe:[777], 301 is blocked reading it on fd 0."""
+    clock = _Clock()
+    fake = FakeProc(tmp_path / "proc")
+    fake.add_pid(100, children=[200])
+    fake.add_pid(200, cmdline="bash -c sleep 70 | cat", children=[300, 301], io_bytes=500)
+    fake.add_pid(300, cmdline="sleep 70", io_bytes=0)
+    fake.add_pid(301, cmdline="cat", wchan="pipe_read", io_bytes=0)
+    fake.set_blocked_read(301, 0, "pipe:[777]")
+    if writer_flags is not None:
+        (fake.root / "300" / "fd" / "1").symlink_to("pipe:[777]")
+        (fake.root / "300" / "fdinfo").mkdir()
+        (fake.root / "300" / "fdinfo" / "1").write_text(f"pos:\t0\nflags:\t{writer_flags}\n")
+    if producer_on_tty:  # e.g. ``ssh host cmd | cat`` prompting for a password
+        (fake.root / "300" / "wchan").write_text("n_tty_read")
+        fake.set_blocked_read(300, 3, "/dev/tty")
+    oracle = _oracle(fake, clock, sample_min=1.0)
+    tool = _shell_tool("sleep 70 | cat", clock)
+    assert oracle.check_tool(100, tool)[0] == VERDICT_WORKING
+    clock.advance(2.0)
+    return oracle.check_tool(100, tool)
+
+
+@pytest.mark.parametrize("flags", ["01", "02", "0100001"])  # O_WRONLY, O_RDWR, +O_LARGEFILE
+def test_pipe_reader_with_live_writer_is_a_producer_wait_not_stuck(tmp_path, flags):
+    verdict, evidence = _pipeline(tmp_path, writer_flags=flags)
+    assert verdict == VERDICT_WORKING, evidence
+
+
+def test_producer_blocked_on_tty_behind_a_pipe_reader_is_still_stuck(tmp_path):
+    verdict, evidence = _pipeline(tmp_path, writer_flags="01", producer_on_tty=True)
+    assert verdict == VERDICT_STUCK_INPUT
+    assert "pid 300" in evidence and "/dev/tty" in evidence
+
+
+def test_pipe_reader_without_a_writer_is_still_stuck_input(tmp_path):
+    verdict, evidence = _pipeline(tmp_path, writer_flags=None)
+    assert verdict == VERDICT_STUCK_INPUT
+    assert "pipe:[777]" in evidence
+
+
+def test_pipe_held_only_for_reading_is_not_a_writer(tmp_path):
+    verdict, _ = _pipeline(tmp_path, writer_flags="0100000")  # O_RDONLY | O_LARGEFILE
+    assert verdict == VERDICT_STUCK_INPUT
+
+
 def test_socket_blocked_child_is_not_stuck(tmp_path):
     clock = _Clock()
     fake = FakeProc(tmp_path / "proc")

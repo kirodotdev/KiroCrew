@@ -413,6 +413,30 @@ def fd_target(proc_root: str, pid: int, fd: int) -> str:
         return ""
 
 
+def pipe_writer_pid(proc_root: str, pids: list[int], target: str, reader: int) -> int | None:
+    """A pid in *pids* other than *reader* holding pipe *target* open for writing.
+
+    Reads ``/proc/<pid>/fd`` links and the ``flags`` line of ``fdinfo``
+    (``O_WRONLY`` / ``O_RDWR``). None when no such holder is found.
+    """
+    for p in pids:
+        if p == reader:
+            continue
+        try:
+            fds = os.listdir(f"{proc_root}/{p}/fd")
+        except OSError:
+            continue
+        for fd in fds:
+            if not fd.isdigit() or fd_target(proc_root, p, int(fd)) != target:
+                continue
+            m = re.search(
+                r"^flags:\s*([0-7]+)$", _read_text(f"{proc_root}/{p}/fdinfo/{fd}") or "", re.M
+            )
+            if m and int(m.group(1), 8) & 3:
+                return p
+    return None
+
+
 def socket_inodes(proc_root: str, pid: int) -> set[str]:
     """Socket inode numbers held open by *pid* (from ``/proc/<pid>/fd``)."""
     inodes: set[str] = set()
@@ -1564,6 +1588,12 @@ class LivenessOracle:
             if target.startswith(("/dev/tty", "/dev/pts")) or (
                 fd == 0 and target.startswith("pipe:")
             ):
+                # A live writer in the subtree (``producer | consumer``) means this
+                # reader waits on a producer; keep scanning (the producer may be on a
+                # tty). No procfs: keep the old verdict.
+                if target.startswith("pipe:") and os.path.isdir(self._proc):
+                    if pipe_writer_pid(self._proc, subtree, target, p) is not None:
+                        continue
                 blocked = (p, target)
                 break
         if blocked is None:
