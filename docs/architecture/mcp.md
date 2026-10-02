@@ -2415,7 +2415,8 @@ reply is: with nobody routed, the lease is released upstream (as the caller that
 took it on an identity-capable server) instead of being read as a refusal and
 left live. A `capabilities` that is present but not an object is cosmetic,
 so the handshake reads it as `{}` (logged) instead of failing the shared backend
-over it, on both the lazy path and `send_initialize`.
+over it, on both the lazy path and `send_initialize`. `prime_initialize` refuses
+a backend that is no longer alive even when its handshake state reads ready.
 
 ### Reference implementations
 

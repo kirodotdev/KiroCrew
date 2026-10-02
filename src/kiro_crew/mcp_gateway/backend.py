@@ -1865,7 +1865,9 @@ class Backend:
             with contextlib.suppress(Exception):
                 await self.shutdown()
             raise BackendGone(self._dead_reason) from exc
-        if self._init_state != "ready":
+        # ``is_alive`` too: a pump that ended after the handshake leaves the
+        # state "ready" on a backend nothing is reading any more.
+        if self._init_state != "ready" or not self.is_alive:
             raise BackendGone(
                 self._dead_reason or "backend initialize failed on respawn"
             )

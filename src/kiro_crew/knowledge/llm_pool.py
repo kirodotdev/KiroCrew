@@ -500,6 +500,10 @@ class AcpWorker(Worker):
 STDOUT_LINE_LIMIT = 10 * 1024 * 1024
 
 
+class CCWorkerReplyError(RuntimeError):
+    """The CLI answered this message with an error result."""
+
+
 def _text_blocks(container: Any) -> list[str]:
     """The ``text`` of each text block in ``container["content"]``, skipping bad shapes."""
     content = container.get("content") if isinstance(container, dict) else None
@@ -544,6 +548,16 @@ class CCWorker(Worker):
             except asyncio.CancelledError:
                 pass
             self._reader_task = None
+        try:
+            await self._spawn_process()
+        except BaseException:
+            # The old reader is gone, so the old process can deliver nothing
+            # any more: retire it, and the worker reads dead until a spawn
+            # succeeds instead of being handed out to a caller it cannot answer.
+            await self.shutdown()
+            raise
+
+    async def _spawn_process(self) -> None:
         assert self._claude_bin is not None
         cmd = [
             self._claude_bin,
@@ -658,20 +672,43 @@ class CCWorker(Worker):
             await self._spawn()
         assert self._proc is not None and self._proc.stdin is not None
 
+        stdin = self._proc.stdin
         msg = json.dumps({"type": "user", "message": {"role": "user", "content": prompt}})
-        self._proc.stdin.write((msg + "\n").encode())
-        await self._proc.stdin.drain()
 
+        async def _deliver_and_collect() -> str:
+            stdin.write((msg + "\n").encode())
+            await stdin.drain()
+            return await self._collect_response()
+
+        # The queue may hold only this prompt's events, so the worker survives
+        # a message only when its result event was consumed. Anything else (a
+        # timeout, a dead reader, a reply that broke off, a cancelled caller)
+        # leaves the rest of THIS reply queued, and the next prompt would read
+        # it as its own: retire the process instead. The write and its drain
+        # sit inside the same guard and the same timeout, because a prompt
+        # over the pipe's high-water mark is already delivered while drain()
+        # waits for the CLI to read it.
+        settled = False
         try:
-            return await asyncio.wait_for(self._collect_response(), timeout=timeout)
-        except asyncio.TimeoutError:
-            await self.shutdown()
+            reply = await asyncio.wait_for(_deliver_and_collect(), timeout=timeout)
+            settled = True
+            return reply
+        except CCWorkerReplyError:
+            settled = True  # the error result is the result event
             raise
+        finally:
+            if not settled:
+                await self.shutdown()
 
     async def _collect_response(self) -> str:
         """Collect text from events until a result event arrives.
 
-        A value of the wrong type is skipped at its own level.
+        A value of the wrong type is skipped at its own level. The real CLI's
+        ``result`` is the final answer, a string, and is the reply whenever it
+        is non-empty: the assistant turns before it may be narration around a
+        tool call. The assistant text is joined only when the result carries
+        no text of its own. A result with ``is_error: true`` fails this
+        message.
         """
         text_parts: list[str] = []
         while True:
@@ -685,24 +722,41 @@ class CCWorker(Worker):
                 text_parts.extend(_text_blocks(event.get("message")))
 
             elif event_type == "result":
-                text_parts.extend(_text_blocks(event.get("result")))
+                result = event.get("result")
+                if event.get("is_error") is True:
+                    detail = result if isinstance(result, str) else event.get("subtype", "")
+                    raise CCWorkerReplyError(f"CLI reported an error result: {str(detail)[:500]}")
+                if isinstance(result, str):
+                    if result:
+                        return result
+                else:
+                    text_parts.extend(_text_blocks(result))
                 break
 
         return "".join(text_parts)
 
     async def shutdown(self) -> None:
-        if self._reader_task is not None:
-            self._reader_task.cancel()
-            self._reader_task = None
-        if self._proc is not None:
+        # Both handles are dropped before the first await, so the worker reads
+        # dead from here on even when the reap itself is interrupted.
+        reader, self._reader_task = self._reader_task, None
+        proc, self._proc = self._proc, None
+        if reader is not None:
+            reader.cancel()
+        if proc is not None:
             try:
-                await platform_compat.kill_and_reap(self._proc)
+                await platform_compat.kill_and_reap(proc)
             except Exception:
                 logger.debug("CCWorker shutdown error", exc_info=True)
-            self._proc = None
 
     def is_alive(self) -> bool:
-        return self._proc is not None and self._proc.returncode is None
+        # A reader that ended leaves nothing to deliver a reply, even while the
+        # process itself is still running.
+        reader = self._reader_task
+        return (
+            self._proc is not None
+            and self._proc.returncode is None
+            and (reader is None or not reader.done())
+        )
 
     async def reset_conversation(self) -> None:
         """Respawn the CLI subprocess, discarding the accumulated transcript.
