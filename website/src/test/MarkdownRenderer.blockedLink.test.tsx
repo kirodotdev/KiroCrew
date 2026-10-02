@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
-import { render, fireEvent, waitFor, within } from '@testing-library/react'
+import { useLayoutEffect, useRef } from 'react'
+import { render, fireEvent, waitFor, within, act, cleanup } from '@testing-library/react'
 import MarkdownRenderer from '../components/MarkdownRenderer'
-import { RedactionCoach } from '../components/RedactionCards'
+import { BlockedLinkChip, RedactionCardSlot, RedactionCoach, RedactionProvider, REVEAL_MS, setAllowHold, useRedactionUi } from '../components/RedactionCards'
 import { api } from '../api/client'
 
 const copied: string[] = []
@@ -360,6 +361,153 @@ describe('credential lock tag', () => {
   it('a record with a multi-line command is dropped', () => {
     const { queryByTestId } = render(<MarkdownRenderer content={`x ${CRED}`} redactions={[cred({ label: '', view_command: 'a\nb' })]} />)
     expect(queryByTestId('credential-tag')).toBeNull()
+  })
+})
+
+describe('reveal focus ownership', () => {
+  const animateDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'animate')
+
+  beforeEach(() => {
+    // Keep closing cards mounted until animation completion, as in a browser.
+    // The tests advance the focus timer without completing these animations.
+    Object.defineProperty(HTMLElement.prototype, 'animate', {
+      configurable: true,
+      value: vi.fn(() => ({ cancel: vi.fn(), onfinish: null })),
+    })
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.useRealTimers()
+    if (animateDescriptor) Object.defineProperty(HTMLElement.prototype, 'animate', animateDescriptor)
+    else Reflect.deleteProperty(HTMLElement.prototype, 'animate')
+  })
+
+  it.each([
+    ['blocked link', PH('reviews.corp.example'), 'blocked-link-inspect', 'blocked-link-card'],
+    ['credential', CRED, 'credential-tag', 'credential-card'],
+  ])('hands focus from the %s opener to its revealed card', (_kind, content, triggerId, cardId) => {
+    const ui = render(<MarkdownRenderer content={content} blockedLinks={[link()]} redactions={[cred()]} slotKey="s1" />)
+    const trigger = ui.getByTestId(triggerId)
+    trigger.focus()
+    vi.useFakeTimers()
+    fireEvent.click(trigger)
+    expect(document.activeElement).toBe(trigger)
+    act(() => { vi.advanceTimersByTime(REVEAL_MS) })
+    expect(document.activeElement).toBe(ui.getByTestId(cardId))
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(document.activeElement).toBe(trigger)
+  })
+
+  it('hands focus to the card when the click left focus on the body', () => {
+    const ui = render(<MarkdownRenderer content={PH('reviews.corp.example')} blockedLinks={[link()]} />)
+    const trigger = ui.getByTestId('blocked-link-inspect')
+    ;(document.activeElement as HTMLElement | null)?.blur()
+    expect(document.activeElement).toBe(document.body)
+    vi.useFakeTimers()
+    // A mouse click that does not focus the button, as on Safari, iOS and Firefox on macOS.
+    fireEvent.click(trigger)
+    act(() => { vi.advanceTimersByTime(REVEAL_MS) })
+    expect(document.activeElement).toBe(ui.getByTestId('blocked-link-card'))
+  })
+
+  it('announces a held card that reopens when its reply remounts without an opener', () => {
+    const replyKey = 's1:held-remount'
+    setAllowHold(replyKey, 'reviews.corp.example', { workspace: 'w', records: [link()], outcome: 'allowed' })
+    try {
+      ;(document.activeElement as HTMLElement | null)?.blur()
+      vi.useFakeTimers()
+      const ui = render(
+        <RedactionProvider credentials={[]} blockedLinks={[link()]} replyKey={replyKey}>
+          <BlockedLinkChip domain="reviews.corp.example" placeholder={PH('reviews.corp.example')} />
+          <RedactionCardSlot ids="rx-link-reviews.corp.example" />
+        </RedactionProvider>,
+      )
+      act(() => { vi.advanceTimersByTime(REVEAL_MS) })
+      expect(document.activeElement).toBe(ui.getByTestId('blocked-link-card'))
+    } finally {
+      setAllowHold(replyKey, 'reviews.corp.example', null)
+    }
+  })
+
+  it('leaves focus on a control reached while the card reveals', () => {
+    const ui = render(<><MarkdownRenderer content={PH('reviews.corp.example')} blockedLinks={[link()]} /><input aria-label="Next request" /></>)
+    const trigger = ui.getByTestId('blocked-link-inspect')
+    trigger.focus()
+    vi.useFakeTimers()
+    fireEvent.click(trigger)
+    const input = ui.getByRole('textbox', { name: 'Next request' })
+    input.focus()
+    act(() => { vi.advanceTimersByTime(REVEAL_MS) })
+    expect(document.activeElement).toBe(input)
+  })
+
+  it('uses the actual opener when another control takes focus before passive effects', () => {
+    function NextRequest() {
+      const { openId } = useRedactionUi()
+      const ref = useRef<HTMLInputElement>(null)
+      useLayoutEffect(() => { if (openId) ref.current?.focus() }, [openId])
+      return <input ref={ref} aria-label="Next request" />
+    }
+    const ui = render(
+      <RedactionProvider credentials={[]} blockedLinks={[link()]}>
+        <BlockedLinkChip domain="reviews.corp.example" placeholder={PH('reviews.corp.example')} />
+        <RedactionCardSlot ids="rx-link-reviews.corp.example" />
+        <NextRequest />
+      </RedactionProvider>,
+    )
+    const trigger = ui.getByTestId('blocked-link-inspect')
+    trigger.focus()
+    vi.useFakeTimers()
+    fireEvent.click(trigger)
+    const input = ui.getByRole('textbox', { name: 'Next request' })
+    expect(document.activeElement).toBe(input)
+    act(() => { vi.advanceTimersByTime(REVEAL_MS) })
+    expect(document.activeElement).toBe(input)
+  })
+
+  it('preserves Cancel focus in a confirmation opened before reveal completes', () => {
+    const ui = render(<MarkdownRenderer content={PH('reviews.corp.example')} blockedLinks={[link()]} />)
+    const trigger = ui.getByTestId('blocked-link-inspect')
+    trigger.focus()
+    vi.useFakeTimers()
+    fireEvent.click(trigger)
+    fireEvent.click(ui.getByTestId('blocked-link-open-once'))
+    const cancel = within(ui.getByTestId('blocked-link-open-confirm')).getByRole('button', { name: 'Cancel' })
+    expect(document.activeElement).toBe(cancel)
+    act(() => { vi.advanceTimersByTime(REVEAL_MS) })
+    expect(document.activeElement).toBe(cancel)
+  })
+
+  it('does not focus a closed card that remains mounted during its exit', () => {
+    const ui = render(<MarkdownRenderer content={PH('reviews.corp.example')} blockedLinks={[link()]} />)
+    const trigger = ui.getByTestId('blocked-link-inspect')
+    trigger.focus()
+    vi.useFakeTimers()
+    fireEvent.click(trigger)
+    const card = ui.getByTestId('blocked-link-card')
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(card.isConnected).toBe(true)
+    expect(trigger.getAttribute('aria-expanded')).toBe('false')
+    act(() => { vi.advanceTimersByTime(REVEAL_MS) })
+    expect(document.activeElement).toBe(trigger)
+  })
+
+  it('cancels the old card handoff when another block opens, then focuses the new card', () => {
+    const ui = render(<MarkdownRenderer content={`${PH('reviews.corp.example')}\n\n${PH('other.corp.example')}`} blockedLinks={[link(), link({ domain: 'other.corp.example' })]} />)
+    const [first, next] = ui.getAllByTestId('blocked-link-inspect')
+    first.focus()
+    vi.useFakeTimers()
+    fireEvent.click(first)
+    const oldCard = ui.getByTestId('blocked-link-card')
+    act(() => { vi.advanceTimersByTime(REVEAL_MS / 2) })
+    next.focus()
+    fireEvent.click(next)
+    expect(oldCard.isConnected).toBe(true)
+    act(() => { vi.advanceTimersByTime(REVEAL_MS / 2) })
+    expect(document.activeElement).toBe(next)
+    act(() => { vi.advanceTimersByTime(REVEAL_MS / 2) })
+    expect(document.activeElement?.id).toBe('rx-link-other.corp.example')
   })
 })
 
