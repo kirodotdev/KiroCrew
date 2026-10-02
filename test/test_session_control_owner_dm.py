@@ -1021,14 +1021,13 @@ def test_a_retarget_landing_during_publication_never_reaches_the_new_room(
     the transcript was read under and the send resolves the guild thread that
     replaced it. So the channel-neutral leg reads the binding ONCE, judges that row
     against the turn's recorded admissions and resolves its transport from the same
-    row.
+    row, then re-reads before each part so a retarget mid-delivery stops the rest.
 
     Driven by a store that answers the owner's DM (A) for the first N reads of the
     reader's row during publication and a guild thread (B) after -- N walks the
     retarget across every read the leg might make, including before the first --
     and pinned from the outside: B never receives the reply; when the leg
-    delivers, it delivers to A, the room it judged; and the publication read the
-    row once."""
+    delivers, it delivers to A, the room it judged."""
     from kiro_crew.dashboard.chat_runner import _deliver_cross_surface_reply
 
     state = _state(tmp_path, monkeypatch)
@@ -1063,16 +1062,19 @@ def test_a_retarget_landing_during_publication_never_reaches_the_new_room(
 
     rooms = [call.args[0] for call in discord.send_message.await_args_list]
     assert THREAD not in rooms, "the retargeted room never receives the reply"
-    if retarget_lands_after_read == 0:
-        # The one read already saw B: a constraint newly holds, the leg withholds.
+    if retarget_lands_after_read < 2:
+        # Either the decision read already saw B (a constraint newly holds, the
+        # leg withholds), or the first part's own pre-send revalidation did: the
+        # leg stops before a byte reaches either room.
         assert rooms == [], rooms
     else:
-        # The one read saw A, the room the admission was judged under: delivered
-        # there, and only there.
+        # Both the decision and the part's revalidation saw A, the room the
+        # admission was judged under: delivered there, and only there.
         assert rooms == [DISCORD_DM_CONVERSATION.channel_id], rooms
-    # The mechanism: one read for the decision and the delivery, so there is no
-    # second read for a retarget to land between.
-    assert reads["n"] == 1, reads["n"]
+    # The mechanism: the decision and the transport resolution share one read,
+    # and every part re-reads before it is sent, so a retarget can only stop a
+    # send, never redirect one.
+    assert reads["n"] == (1 if retarget_lands_after_read == 0 else 2), reads["n"]
 
 
 def test_the_slack_legs_judge_the_thread_they_cached_not_the_live_binding(tmp_path, monkeypatch):

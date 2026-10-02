@@ -2084,8 +2084,9 @@ class CronService:
     def update_job(self, job_id: str, **kwargs: Any) -> CronJob | None:
         """Update fields on an existing job. Returns updated job or None if not found.
 
-        Accepted kwargs: name, message, every_secs, cron_expr, agent_id, channel,
-        approval_mode, silent, skip_dates, timezone, thread_ts, model,
+        Accepted kwargs: name, message, every_secs, cron_expr, at_ts (one-shot
+        fire time; mutually exclusive with recurring schedule fields), agent_id,
+        channel, approval_mode, silent, skip_dates, timezone, thread_ts, model,
         timeout_secs (per-wake execution budget, 1..86400).
 
         Raises :class:`CronStoreBusy` if the store lock is contended past the

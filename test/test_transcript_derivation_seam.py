@@ -126,6 +126,8 @@ PLUMBING: frozenset[tuple[str, str]] = frozenset(
         ("kiro_crew/history_projection.py", "_recent_via_tail"),
         ("kiro_crew/history_projection.py", "read_messages_chained"),
         ("kiro_crew/slack/gateway.py", "read_messages"),
+        # Scheduled-send rollback rewrites its OWN transcript to drop one row; no rows leave.
+        ("kiro_crew/slack/gateway.py", "_read_messages"),
         # A yes/no "does this session already have turns" check on its OWN
         # transcript, gating a write to that transcript; no rows leave.
         ("kiro_crew/slack/thread_parent.py", "recent"),

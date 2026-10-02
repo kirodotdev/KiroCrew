@@ -379,14 +379,12 @@ test/test_catalog_inventory.py
 test/test_cc_agent_resolution.py
 test/test_changelog_handler.py
 test/test_channel_activation.py
-test/test_channel_connect_row.py
 test/test_channel_fixtures.py
 test/test_channel_model_inheritance.py
 test/test_channel_registry.py
 test/test_channel_resolver.py
 test/test_channel_slots.py
 test/test_channel_transcript_migration.py
-test/test_chat_backfill.py
 test/test_chat_folder_app_isolation.py
 test/test_chat_folder_suggest.py
 test/test_chat_nav.py
@@ -806,8 +804,6 @@ test/test_slack_dashboard_live_sync.py
 test/test_slack_handler_coverage_branches.py
 test/test_slack_home_tab.py
 test/test_slack_linked_approval.py
-test/test_slack_mirror_unlink.py
-test/test_slack_options_lifecycle.py
 test/test_slack_pins_reactions.py
 test/test_slack_render_pipeline.py
 test/test_slack_scope_probe.py

@@ -27,6 +27,15 @@ const defaultProps = {
   onSend: vi.fn(),
 }
 
+// Optimize is hosted by the "+" drop-up (and the touch overflow), not the
+// action row, so a test that exercises it needs an attach handler (which is
+// what mounts the "+" trigger) and has to open the menu first. Every real
+// host that keeps `promptOptimizer` on also wires `onUploadFiles`.
+const optimizeHostProps = { ...defaultProps, onUploadFiles: vi.fn() }
+const openPlusMenu = () => fireEvent.click(screen.getByRole('button', { name: 'Add files & options' }))
+const optimizeRow = () => screen.getByTestId('plus-menu-optimize')
+const clickOptimize = () => { openPlusMenu(); fireEvent.click(optimizeRow()) }
+
 beforeEach(() => {
   vi.restoreAllMocks()
   // After restoreAllMocks: it would otherwise undo the layout stub. jsdom does
@@ -151,20 +160,23 @@ describe('ChatInput', () => {
       expect(screen.getByRole('button', { name: 'Send' })).not.toBeDisabled()
     })
 
-    it('disables Optimize button when connected=false even with text', () => {
-      renderWithProviders(<ChatInput {...defaultProps} value="hello" connected={false} />)
+    it('disables Optimize when connected=false even with text', () => {
+      renderWithProviders(<ChatInput {...optimizeHostProps} value="hello" connected={false} />)
+      openPlusMenu()
       const btn = screen.getByRole('button', { name: /Optimize disabled/ })
       expect(btn).toBeDisabled()
     })
 
-    it('exposes offline-aware aria-label and tooltip on Optimize button', () => {
-      renderWithProviders(<ChatInput {...defaultProps} value="hi" connected={false} />)
+    it('exposes offline-aware aria-label and tooltip on Optimize', () => {
+      renderWithProviders(<ChatInput {...optimizeHostProps} value="hi" connected={false} />)
+      openPlusMenu()
       const btn = screen.getByLabelText('Optimize disabled — gateway offline')
       expect(btn).toHaveAttribute('title', 'Gateway offline — reconnect to optimize')
     })
 
     it('keeps Optimize enabled when connected=true with text', () => {
-      renderWithProviders(<ChatInput {...defaultProps} value="hi" />)
+      renderWithProviders(<ChatInput {...optimizeHostProps} value="hi" />)
+      openPlusMenu()
       expect(screen.getByRole('button', { name: 'Optimize prompt' })).not.toBeDisabled()
     })
 
@@ -1173,7 +1185,7 @@ describe('ChatInput', () => {
     ) =>
       renderWithProviders(
         <SlotProvider slotId={slotId}>
-          <ChatInput {...defaultProps} {...props} />
+          <ChatInput {...optimizeHostProps} {...props} />
         </SlotProvider>,
       )
     const rerenderInSlot = (
@@ -1183,7 +1195,7 @@ describe('ChatInput', () => {
     ) =>
       rerender(
         <SlotProvider slotId={slotId}>
-          <ChatInput {...defaultProps} {...props} />
+          <ChatInput {...optimizeHostProps} {...props} />
         </SlotProvider>,
       )
 
@@ -1205,7 +1217,7 @@ describe('ChatInput', () => {
         const onChange = vi.fn()
         const onOptimizeResult = vi.fn()
         const { rerender } = renderInSlot('slot-A', { value: 'fix bug', onChange, onOptimizeResult })
-        fireEvent.click(screen.getByRole('button', { name: 'Optimize prompt' }))
+        clickOptimize()
         // Let the mutation start so variables.slotId is captured as 'slot-A'.
         await new Promise(r => setTimeout(r, 10))
         // Switch to slot B (new slotId + that session's draft as value).
@@ -1242,7 +1254,7 @@ describe('ChatInput', () => {
         const onChange = vi.fn()
         const onOptimizeResult = vi.fn()
         const { rerender } = renderInSlot('slot-A', { value: 'fix bug', onChange, onOptimizeResult })
-        fireEvent.click(screen.getByRole('button', { name: 'Optimize prompt' }))
+        clickOptimize()
         await new Promise(r => setTimeout(r, 10))
         rerenderInSlot(rerender, 'slot-B', { value: 'review CR-123', onChange, onOptimizeResult })
         await new Promise(r => setTimeout(r, 10))
@@ -1272,7 +1284,7 @@ describe('ChatInput', () => {
         const onChange = vi.fn()
         const onOptimizeResult = vi.fn()
         renderInSlot('slot-A', { value: 'fix bug', onChange, onOptimizeResult })
-        fireEvent.click(screen.getByRole('button', { name: 'Optimize prompt' }))
+        clickOptimize()
         await new Promise(r => setTimeout(r, 10))
         execSpy.mockClear()
         resolveFetch!(new Response(
@@ -1301,7 +1313,7 @@ describe('ChatInput', () => {
       try {
         const onChange = vi.fn()
         const { rerender } = renderInSlot('slot-A', { value: 'fix bug', onChange })
-        fireEvent.click(screen.getByRole('button', { name: 'Optimize prompt' }))
+        clickOptimize()
         await new Promise(r => setTimeout(r, 10))
         // Overlay present on the originating session.
         expect(screen.getByText(/Optimizing prompt/)).toBeInTheDocument()
@@ -1318,27 +1330,31 @@ describe('ChatInput', () => {
       }
     })
 
-    it('disables the Optimize button on another session while an optimize is in flight', async () => {
+    it('disables the Optimize row on another session while an optimize is in flight', async () => {
       // A single mutation backs the instance, so only one optimize runs at a
-      // time. The button must READ as busy (disabled) on the session the user
+      // time. The row must READ as busy (disabled) on the session the user
       // navigated to, matching the re-entrancy guard — not look clickable then
       // silently no-op. The originating session shows the spinner; the other
-      // session shows a disabled Sparkles button with an explanatory label.
+      // session shows a disabled Optimize row with an explanatory label.
       const fetchSpy = vi.spyOn(global, 'fetch').mockImplementation(() =>
         new Promise<Response>(() => { /* never resolves — stays pending */ })
       )
       try {
         const onChange = vi.fn()
         const { rerender } = renderInSlot('slot-A', { value: 'fix bug', onChange })
-        fireEvent.click(screen.getByRole('button', { name: 'Optimize prompt' }))
+        clickOptimize()
         await new Promise(r => setTimeout(r, 10))
         // Navigate to slot B — its own draft, its own value, request still pending.
         rerenderInSlot(rerender, 'slot-B', { value: 'review CR-123', onChange })
         await new Promise(r => setTimeout(r, 10))
-        // Button is present under a busy-aware label and is disabled.
+        // Row is present under a busy-aware label and is disabled; the menu
+        // subtitle carries the same explanation the tooltip does, since a
+        // touch user never sees a title.
+        openPlusMenu()
         const btn = screen.getByRole('button', { name: /busy optimizing another chat/i })
         expect(btn).toBeDisabled()
         expect(btn).toHaveAttribute('title', 'Optimizing another chat — please wait')
+        expect(btn).toHaveTextContent('Optimizing another chat — please wait')
       } finally {
         fetchSpy.mockRestore()
       }
@@ -1356,14 +1372,14 @@ describe('ChatInput', () => {
       try {
         const onChange = vi.fn()
         const { rerender } = renderWithProviders(
-          <ChatInput {...defaultProps} value="fix bug" onChange={onChange} />,
+          <ChatInput {...optimizeHostProps} value="fix bug" onChange={onChange} />,
         )
-        fireEvent.click(screen.getByRole('button', { name: 'Optimize prompt' }))
+        clickOptimize()
         await new Promise(r => setTimeout(r, 10)) // mutation starts → optimizing = true
         // Two streamed chunks arrive as prop updates while optimizing. Each must
         // be skipped by the recording effect (not recorded as its own boundary).
-        rerender(<ChatInput {...defaultProps} value="fix bug WITH" onChange={onChange} />)
-        rerender(<ChatInput {...defaultProps} value="fix bug WITH MORE DETAIL" onChange={onChange} />)
+        rerender(<ChatInput {...optimizeHostProps} value="fix bug WITH" onChange={onChange} />)
+        rerender(<ChatInput {...optimizeHostProps} value="fix bug WITH MORE DETAIL" onChange={onChange} />)
         // Completing the optimize flips optimizing → false; the completion effect
         // records the final value as a single boundary. (The mid-flight value
         // diverged from the prompt, so onSuccess drops its own write — irrelevant

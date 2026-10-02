@@ -11,6 +11,7 @@
  * about which rows draw. Mirrors the backend's `preview_text` handling, where
  * the same class of message must yield an empty sidebar preview.
  */
+import { isSystemNoticeKind } from '../lib/systemNotice'
 import type { ChatMessage } from '../types'
 
 const FORMAT_CHARS_RE = /\p{Cf}/gu
@@ -31,9 +32,10 @@ export function isInvisibleOnly(text: string): boolean {
  * and cost accounting lives in the usage panels, not the transcript.
  */
 export function isHiddenInvisibleAssistantRow(
-  m: Pick<ChatMessage, 'role' | 'content' | 'meta' | 'variants'>,
+  m: Pick<ChatMessage, 'role' | 'content' | 'kind' | 'meta' | 'variants'>,
 ): boolean {
   if (m.role !== 'assistant') return false
+  if (isSystemNoticeKind(m.kind ?? (m.meta?.kind as string | undefined))) return false
   const changes = m.meta?.file_changes
   if (Array.isArray(changes) && changes.length > 0) return false
   if (m.variants?.some(v => !isInvisibleOnly(v.content))) return false

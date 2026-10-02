@@ -263,20 +263,96 @@ class TestTheSendPathHonoursIt:
         assert mirror_is_paused(state, "dashboard:s2") is True
 
     def test_the_turn_path_asks_before_resolving_its_slack_target(self):
-        """Structural: the gate must sit on the chokepoint, not on each sender.
+        """Pause, selection, authorization, and delivery share one exact target.
 
-        Leaving `_mirror_thread`/`_mirror_chan` empty is what silences the echo,
-        the tool stream, the reply and the stream teardown together. Asserted on
-        source order because the alternative is four independent gates that drift.
+        The selector reads the binding once, authorizes those coordinates, and
+        returns those same coordinates to the turn path. A separate lookup after
+        the pause check can rebind the send to an identity the authorization did
+        not inspect, so this pins both sides of the handoff structurally.
         """
+        import ast
         import inspect
 
         from kiro_crew.dashboard import chat_runner
 
-        src = inspect.getsource(chat_runner)
-        gate = src.index("and not slack_mirror_is_paused(state, session_key)")
-        resolve = src.index("_mirror_thread, _mirror_chan = state.sessions.get_slack_link")
-        assert gate < resolve, "the pause gate must precede link resolution"
+        def one(tree, node_type, normalized):
+            matches = [
+                node
+                for node in ast.walk(tree)
+                if isinstance(node, node_type) and ast.unparse(node) == normalized
+            ]
+            assert len(matches) == 1, f"expected one AST node: {normalized}"
+            return matches[0]
+
+        SLACK_NAMESPACE = chat_runner.SLACK_NAMESPACE
+        ChannelLink = chat_runner.ChannelLink
+
+        select = chat_runner._select_slack_mirror_target
+        select_globals = select.__globals__
+
+        class _Sessions:
+            def __init__(self):
+                self.lookups = 0
+
+            def get_slack_link(self, key):
+                self.lookups += 1
+                return ("1700.1", "C123")
+
+        authorized = []
+        paused = {"value": True}
+        withheld = {"value": False}
+        state = type("S", (), {})()
+        state.sessions = _Sessions()
+        slot = object()
+
+        def fake_withheld(_state, _slot, *, selected_mirror=None):
+            authorized.append(selected_mirror)
+            return withheld["value"]
+
+        saved = {
+            name: select_globals[name]
+            for name in ("slack_mirror_is_paused", "cross_surface_withheld")
+        }
+        select_globals["slack_mirror_is_paused"] = lambda _s, _k: paused["value"]
+        select_globals["cross_surface_withheld"] = fake_withheld
+        try:
+            assert select(state, slot, "dashboard:s1") is None
+            assert state.sessions.lookups == 0, "a paused mirror must not resolve a target"
+
+            paused["value"] = False
+            assert select(state, slot, "dashboard:s1") == ("1700.1", "C123")
+            assert state.sessions.lookups == 1, "the target is resolved exactly once"
+            assert authorized == [
+                ChannelLink(SLACK_NAMESPACE, "C123", "1700.1")
+            ], "authorization must inspect the same coordinates that are returned"
+
+            withheld["value"] = True
+            assert select(state, slot, "dashboard:s1") is None
+        finally:
+            select_globals.update(saved)
+
+        module_tree = ast.parse(inspect.getsource(chat_runner))
+        turn_selection = one(
+            module_tree,
+            ast.Assign,
+            "_selected_slack_target = _select_slack_mirror_target(state, slot, session_key)",
+        )
+        turn_use = one(
+            module_tree,
+            ast.Assign,
+            "_mirror_thread, _mirror_chan = _selected_slack_target",
+        )
+        second_lookups = [
+            node
+            for node in ast.walk(module_tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "get_slack_link"
+            and turn_selection.lineno < node.lineno < turn_use.lineno
+        ]
+        assert (
+            not second_lookups
+        ), "the turn path must consume the selected target without re-resolving"
 
     def test_both_cross_surface_legs_are_gated(self):
         """The user echo and the assistant reply both stop, or the remote
@@ -289,9 +365,9 @@ class TestTheSendPathHonoursIt:
             chat_runner._deliver_cross_surface_reply,
             chat_runner._deliver_cross_surface_user_message,
         ):
-            assert "mirror_is_paused(state, session_key)" in inspect.getsource(fn), (
-                f"{fn.__name__} does not honour a disconnect"
-            )
+            assert "mirror_is_paused(state, session_key)" in inspect.getsource(
+                fn
+            ), f"{fn.__name__} does not honour a disconnect"
 
 
 class TestTheWireReportsIt:
@@ -763,12 +839,12 @@ class TestPersistBeforePublish:
                 resp = await client.post("/api/chat/slots/s1/slack-pause", json={"paused": True})
                 assert resp.status == 200
                 assert (await resp.json())["paused"] is True
-                assert "slack_paused" in self._on_disk(tmp_path), (
-                    "the answer was published while the pause was not yet on disk"
-                )
-            assert "slack_paused" in seen["on_disk_at_publish"], (
-                "the slots push went out while the pause was not yet on disk"
-            )
+                assert "slack_paused" in self._on_disk(
+                    tmp_path
+                ), "the answer was published while the pause was not yet on disk"
+            assert (
+                "slack_paused" in seen["on_disk_at_publish"]
+            ), "the slots push went out while the pause was not yet on disk"
         finally:
             await sm.aclose()
 
@@ -791,12 +867,12 @@ class TestPersistBeforePublish:
                 resp = await client.post("/api/chat/slots/s1/mirror-pause", json={"paused": True})
                 assert resp.status == 200
                 assert (await resp.json())["paused"] is True
-                assert "mirror_paused" in self._on_disk(tmp_path), (
-                    "the answer was published while the pause was not yet on disk"
-                )
-            assert "mirror_paused" in seen["on_disk_at_publish"], (
-                "the slots push went out while the pause was not yet on disk"
-            )
+                assert "mirror_paused" in self._on_disk(
+                    tmp_path
+                ), "the answer was published while the pause was not yet on disk"
+            assert (
+                "mirror_paused" in seen["on_disk_at_publish"]
+            ), "the slots push went out while the pause was not yet on disk"
         finally:
             await sm.aclose()
 
@@ -832,13 +908,13 @@ class TestPersistBeforePublish:
                 )
                 assert resp.status == 200
                 assert (await resp.json())["thread_ts"] == "1700.42"
-                assert "1700.42" in self._on_disk(tmp_path), (
-                    "the answer was published while the thread was not yet on disk"
-                )
+                assert "1700.42" in self._on_disk(
+                    tmp_path
+                ), "the answer was published while the thread was not yet on disk"
             assert pushes, "the route publishes a slots push"
-            assert "1700.42" in pushes[-1], (
-                "the route's slots push went out while the thread was not yet on disk"
-            )
+            assert (
+                "1700.42" in pushes[-1]
+            ), "the route's slots push went out while the thread was not yet on disk"
         finally:
             await sm.aclose()
 
@@ -884,12 +960,12 @@ class TestPersistBeforePublish:
                     json={"channel_type": "telegram", "target_id": "user:123"},
                 )
                 assert resp.status == 200, await resp.text()
-                assert '"123"' in self._on_disk(tmp_path), (
-                    "the answer was published while the binding was not yet on disk"
-                )
-            assert '"123"' in seen["on_disk_at_publish"], (
-                "the slots push went out while the binding was not yet on disk"
-            )
+                assert '"123"' in self._on_disk(
+                    tmp_path
+                ), "the answer was published while the binding was not yet on disk"
+            assert (
+                '"123"' in seen["on_disk_at_publish"]
+            ), "the slots push went out while the binding was not yet on disk"
         finally:
             await sm.aclose()
 
@@ -920,12 +996,12 @@ class TestPersistBeforePublish:
                 )
                 assert resp.status == 200
                 assert (await resp.json()) == {"ok": True, "was_linked": True}
-                assert "dm-chan-9" not in self._on_disk(tmp_path), (
-                    "the answer was published while the binding was still on disk"
-                )
-            assert "dm-chan-9" not in seen["on_disk_at_publish"], (
-                "the slots push went out while the binding was still on disk"
-            )
+                assert "dm-chan-9" not in self._on_disk(
+                    tmp_path
+                ), "the answer was published while the binding was still on disk"
+            assert (
+                "dm-chan-9" not in seen["on_disk_at_publish"]
+            ), "the slots push went out while the binding was still on disk"
         finally:
             await sm.aclose()
 
@@ -974,12 +1050,12 @@ class TestPersistBeforePublish:
                 )
                 assert resp.status == 200
                 assert (await resp.json()) == {"ok": True, "was_linked": True, "relinked": False}
-                assert "ts-1" not in self._on_disk(tmp_path), (
-                    "the answer was published while the thread was still on disk"
-                )
-            assert "ts-1" not in seen["on_disk_at_publish"], (
-                "the slots push went out while the thread was still on disk"
-            )
+                assert "ts-1" not in self._on_disk(
+                    tmp_path
+                ), "the answer was published while the thread was still on disk"
+            assert (
+                "ts-1" not in seen["on_disk_at_publish"]
+            ), "the slots push went out while the thread was still on disk"
         finally:
             await sm.aclose()
 
@@ -1029,9 +1105,9 @@ class TestCompareAndClearIsOneStep:
                 assert (await resp.json()) == {"ok": True, "was_linked": True}
             seen["thread"].join(5)
             assert seen["landed_inside"] is False, "the rebind landed inside the compare-and-clear"
-            assert sm.get_mirror_link(key) == rival, (
-                "the stale unlink cleared the binding it never named"
-            )
+            assert (
+                sm.get_mirror_link(key) == rival
+            ), "the stale unlink cleared the binding it never named"
 
     def test_a_rebinder_the_compare_never_released_exits_without_a_write(
         self, tmp_path, monkeypatch
@@ -1130,9 +1206,10 @@ class TestCompareAndClearIsOneStep:
                 assert (await resp.json()) == {"ok": True, "was_linked": True, "relinked": True}
             seen["thread"].join(5)
             assert seen["landed_inside"] is False, "the re-link landed inside the compare-and-clear"
-            assert sm.get_slack_link(key) == ("ts-new", "D-owner-dm"), (
-                "the stale unlink cleared the thread it never named"
-            )
+            assert sm.get_slack_link(key) == (
+                "ts-new",
+                "D-owner-dm",
+            ), "the stale unlink cleared the thread it never named"
 
     def test_a_rebind_that_lands_first_is_refused(self, tmp_path, monkeypatch):
         """The other ordering the lock allows: the rival is already there, so 409's mismatch."""
@@ -1146,7 +1223,9 @@ class TestCompareAndClearIsOneStep:
         assert sm.clear_mirror_link_if(key, "discord", stale_token) is False
         assert sm.get_mirror_link(key) == rival
         # And the row drawn from the rival clears exactly the rival.
-        assert sm.clear_mirror_link_if(key, "telegram", binding_token(rival, sm.mirror_link_nonce(key)))
+        assert sm.clear_mirror_link_if(
+            key, "telegram", binding_token(rival, sm.mirror_link_nonce(key))
+        )
         assert sm.get_mirror_link(key) is None
         # No binding matches nothing: a row whose binding is already gone is refused.
         assert sm.clear_mirror_link_if(key, "telegram", binding_token(rival)) is False
@@ -1175,7 +1254,9 @@ class TestCompareAndClearIsOneStep:
         registered = set()
         for source in route_dir.glob("*.py"):
             registered.update(
-                re.findall(r'"/api/chat/slots/\{[a-z]+\}/[a-z]+-unlink",\s*chat\.(\w+)', source.read_text())
+                re.findall(
+                    r'"/api/chat/slots/\{[a-z]+\}/[a-z]+-unlink",\s*chat\.(\w+)', source.read_text()
+                )
             )
         assert registered == {"api_chat_slot_mirror_unlink", "api_chat_slot_slack_unlink"}
 

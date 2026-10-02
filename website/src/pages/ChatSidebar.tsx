@@ -953,7 +953,10 @@ const SessionRow = memo(function SessionRow({ view, actions }: SessionRowProps) 
   // so this needs no own-property guard of its own.
   const statusDetail = useAppSelector(st => st.chat.slotStatusDetail?.[localSlotKey])
   const automation = useAppSelector(st => selectAutomationForSlot(st, localSlotKey))
-  const goalLoop = automation?.kind === 'legacy_goal_loop' ? automation : undefined
+  const goalLoop = automation?.kind === 'legacy_goal_loop'
+    && !(automation.scheduledAt && automation.scheduledAt > 0)
+    ? automation
+    : undefined
   const monitor = automation?.kind === 'structured_monitor' ? automation : null
   const queuedForSlot = useAppSelector(st => st.chat.subagentQueued?.[localSlotKey] || 0)
   const queuedReason = useAppSelector(st => st.chat.subagentQueuedReason?.[localSlotKey])

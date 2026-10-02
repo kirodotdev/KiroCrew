@@ -4757,7 +4757,7 @@ class SlotCloseError(Exception):
     would have rendered.
 
     Extracted alongside :func:`close_slot` so the DELETE endpoint and
-    session-control's ``close_target`` map the SAME four failures the same way.
+    session-control's ``close_target`` map the SAME failures the same way.
     ``code`` is the machine-readable contract; ``message`` is advisory prose;
     ``status`` is 500 for every close failure (each leaves the tab open and
     every partial step rolled back — a state the user can see and retry).

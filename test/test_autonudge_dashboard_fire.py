@@ -18,13 +18,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_crew.autonudge import NudgeLoop
+from kiro_crew.autonudge import (
+    AutoNudgeService,
+    NudgeLoop,
+    _release_mutation_lock,
+    is_scheduled_message,
+)
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.dashboard.session_directive_apply import apply_session_directive
 from kiro_crew.monitoring.completion import MonitorCompletionHook
 from kiro_crew.monitoring.models import MonitorState
 from kiro_crew.slack import gateway as gw
@@ -901,3 +908,244 @@ class TestFireScopesTheTurnToTheConfigGeneration:
         kwargs = run_chat.await_args.kwargs
         assert kwargs["_directive_loop_id"] == loop.id
         assert kwargs["_directive_loop_gen"] == 4
+
+
+class TestUnreachableScheduledSessionDiscard:
+    """The discard may not re-enter the store lock the timer already holds.
+
+    For a SCHEDULED record ``_timer`` takes ``_acquire_mutation_lock`` BEFORE
+    ``_on_fire`` and releases it only in the ``finally`` after the fire returns,
+    so the whole fire runs as that lock's owner task.
+    ``discard_scheduled_message`` acquires the same lock, and ``asyncio.Lock``
+    is not reentrant: awaiting it inline parked the owner task on its own lock,
+    so the fire never returned, the lock was never released, and every later
+    store mutation and session close wedged behind it permanently.
+    """
+
+    @pytest.mark.asyncio
+    async def test_fire_returns_and_the_store_still_takes_writes(self, tmp_path) -> None:
+        svc = AutoNudgeService(base_dir=tmp_path)
+        # Stub the arming so neither row leaves a live timer behind.
+        svc._arm_timer = lambda _loop, delay=None: None  # type: ignore[method-assign]
+        try:
+            scheduled = await svc.add(
+                slot_key="chat-1-1785",
+                message="deliver once",
+                scheduled_at=time.time() + 600,
+            )
+            assert is_scheduled_message(scheduled)
+            neighbour = await svc.add(
+                slot_key="chat-2-4242", message="keep watching", idle_secs=86400
+            )
+
+            orch = _orchestrator()
+            orch.autonudge_svc = svc
+
+            # EXACTLY what _timer does for a scheduled record, in THIS task, so
+            # the fire below runs as the lock's owner just as it does in prod.
+            delivery_lock = await svc._acquire_mutation_lock(scheduled.id)
+            assert delivery_lock is not None
+            try:
+                with patch.object(
+                    gw,
+                    "rehydrate_slot_from_history_async",
+                    new=AsyncMock(return_value=None),
+                ):
+                    # Far above the fix's cost, far below a deadlock. Before the
+                    # fix this raises TimeoutError instead of returning.
+                    fired = await asyncio.wait_for(orch._fire_dashboard_nudge(scheduled), timeout=5)
+                assert fired is False
+                # Still present: the discard must NOT have touched the held lock.
+                assert svc.get_by_id(scheduled.id) is scheduled
+            finally:
+                _release_mutation_lock(delivery_lock)
+
+            # Released; the detached discard now completes on its own.
+            assert orch._background_tasks
+            await asyncio.wait_for(asyncio.gather(*tuple(orch._background_tasks)), timeout=5)
+            assert svc.get_by_id(scheduled.id) is None
+
+            # The lock is free and unrelated mutations are not wedged.
+            updated = await asyncio.wait_for(
+                svc.update(neighbour.id, active=False, stopped_reason="manual"), timeout=5
+            )
+            assert updated is not None and updated.active is False
+        finally:
+            svc.stop()
+
+    @pytest.mark.asyncio
+    async def test_a_failing_discard_is_logged_not_swallowed(self, tmp_path, caplog) -> None:
+        """A detached task nobody reads would hide the only retiring writer."""
+        orch = _orchestrator()
+        orch.autonudge_svc.discard_scheduled_message = AsyncMock(
+            side_effect=RuntimeError("store is wedged")
+        )
+        loop = _loop()
+        loop.scheduled_message = True
+        loop.scheduled_at = time.time() + 600
+        with (
+            patch.object(gw, "rehydrate_slot_from_history_async", new=AsyncMock(return_value=None)),
+            patch.object(gw, "spawn_guarded_turn", _fake_spawn()),
+            caplog.at_level(logging.WARNING, logger=gw.logger.name),
+        ):
+            assert await orch._fire_dashboard_nudge(loop) is False
+            await asyncio.gather(*tuple(orch._background_tasks), return_exceptions=True)
+        assert loop.id in caplog.text
+        assert "still" in caplog.text and "disk" in caplog.text
+
+
+class TestWakeCarriesItsLoopIdentity:
+    """A structured-monitor wake must name the loop that delivered it.
+
+    The stale-wake gates in ``session_directive_apply`` are written
+    ``and producer_wake_loop_id and ...``, so withholding the id does not fail
+    closed -- it SKIPS the identity check, and a wake that outlived a person's
+    Stop could then stop or revise the loop armed in its place.
+    """
+
+    @staticmethod
+    def _spawn_capture() -> tuple[AsyncMock, list[asyncio.Task], object]:
+        run_chat = AsyncMock(side_effect=_run_chat_through_monitor_boundary)
+        spawned: list[asyncio.Task] = []
+
+        def _spawn(_state, _slot, coro, **_kw):
+            task = asyncio.create_task(coro)
+            spawned.append(task)
+            return task
+
+        return run_chat, spawned, _spawn
+
+    @pytest.mark.asyncio
+    async def test_monitor_wake_passes_the_loop_id_with_generation_zero(self) -> None:
+        orch = _orchestrator()
+        orch.dashboard_state.get_slot = MagicMock(return_value=_slot())
+        structured = _loop()
+        structured.monitor = MonitorState(
+            kind="github_pull_request",
+            target="owner/repo#123",
+            objective="review_ready",
+            created_ts=1_000.0,
+            last_wake_fingerprint="failure-a",
+            wake_in_flight=True,
+        )
+        run_chat, spawned, _spawn = self._spawn_capture()
+        with (
+            patch.object(gw, "spawn_guarded_turn", _spawn),
+            patch("kiro_crew.dashboard.chat._run_chat", new=run_chat),
+        ):
+            await orch._fire_dashboard_nudge(structured, "[Monitor wake]")
+            if spawned:
+                await spawned[0]
+        kwargs = run_chat.call_args.kwargs
+        assert kwargs["_directive_self_wake"] is True
+        # The identity the stale-wake gates read. Absent before the fix.
+        assert kwargs["_directive_loop_id"] == structured.id
+        # The generation fences only the message loop's structural verdict, and
+        # a monitor loop never reaches the arm that reads it.
+        assert kwargs["_directive_loop_gen"] == 0
+
+    @pytest.mark.asyncio
+    async def test_ordinary_message_loop_still_carries_its_fired_generation(self) -> None:
+        orch = _orchestrator()
+        orch.dashboard_state.get_slot = MagicMock(return_value=_slot())
+        loop = _loop()
+        loop.config_generation = 7
+        run_chat = AsyncMock(return_value=None)
+        spawned: list[asyncio.Task] = []
+
+        def _spawn(_state, _slot, coro, **_kw):
+            task = asyncio.create_task(coro)
+            spawned.append(task)
+            return task
+
+        with (
+            patch.object(gw, "spawn_guarded_turn", _spawn),
+            patch("kiro_crew.dashboard.chat._run_chat", new=run_chat),
+        ):
+            assert await orch._fire_dashboard_nudge(loop) is True
+            if spawned:
+                await spawned[0]
+        kwargs = run_chat.call_args.kwargs
+        assert kwargs["_directive_loop_id"] == loop.id
+        assert kwargs["_directive_loop_gen"] == 7
+
+    # The SCHEDULED arm (neither key present) is pinned with the full dashboard
+    # harness by test_slack_gateway_coverage.py's scheduled-delivery test; it
+    # needs a real slot/conversation-log state this module does not build.
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["monitor_update", "monitor_stop", "autonudge_stop"])
+async def test_stale_monitor_wake_cannot_touch_a_replacement_loop(tmp_path, kind) -> None:
+    """End to end: the id the gateway emits is what refuses the stale mutation.
+
+    The wake of loop A outlives the person's Stop and the loop they armed in its
+    place. Before the fix the gateway emitted no id for a monitor wake, the
+    guard's ``and producer_wake_loop_id`` short-circuited, and the stale turn
+    stopped or rewrote loop B.
+    """
+    svc = AutoNudgeService(base_dir=tmp_path)
+    svc._arm_timer = lambda _loop, delay=None: None  # type: ignore[method-assign]
+    try:
+        loop_a = await svc.add(slot_key="chat-1", message="old", idle_secs=86400)
+        loop_a.monitor = MonitorState(
+            kind="github_pull_request",
+            target="owner/repo#123",
+            objective="review_ready",
+            created_ts=1_000.0,
+            last_wake_fingerprint="failure-a",
+            wake_in_flight=True,
+        )
+
+        # 1. Capture what the gateway actually hands the runner for A's wake.
+        orch = _orchestrator()
+        orch.autonudge_svc = svc
+        orch.dashboard_state.get_slot = MagicMock(return_value=_slot(key="chat-1"))
+        orch.autonudge_svc.monitor_dispatch_is_authorized = AsyncMock(return_value=True)
+        run_chat = AsyncMock(side_effect=_run_chat_through_monitor_boundary)
+        spawned: list[asyncio.Task] = []
+
+        def _spawn(_state, _slot, coro, **_kw):
+            task = asyncio.create_task(coro)
+            spawned.append(task)
+            return task
+
+        with (
+            patch.object(gw, "spawn_guarded_turn", _spawn),
+            patch("kiro_crew.dashboard.chat._run_chat", new=run_chat),
+        ):
+            await orch._fire_dashboard_nudge(loop_a, "[Monitor wake]")
+            if spawned:
+                await spawned[0]
+        emitted = run_chat.call_args.kwargs
+
+        # 2. The person stops A and arms B in its place while the wake is live.
+        await svc.remove(loop_a.id)
+        loop_b = await svc.add(slot_key="chat-1", message="replacement", idle_secs=86400)
+
+        # 3. The stale wake issues its directive with the captured provenance.
+        args = (
+            {"patch": {"message": "stale rewrite"}}
+            if kind == "monitor_update"
+            else {"reason": "done"}
+        )
+        with (
+            patch("kiro_crew.autonudge.get_instance", return_value=svc),
+            patch("kiro_crew.autonudge_authz.sel", return_value=MagicMock()),
+        ):
+            result = await apply_session_directive(
+                SimpleNamespace(),
+                SimpleNamespace(key="chat-1", _app=""),
+                "dashboard:chat-1",
+                kind,
+                args,
+                producer_is_self_wake=emitted["_directive_self_wake"],
+                producer_wake_loop_id=emitted.get("_directive_loop_id", ""),
+            )
+
+        current = svc.get_by_slot("chat-1")
+        assert current is not None and current.id == loop_b.id and current.active
+        assert current.message == "replacement"
+        assert "new user request is required" in result
+    finally:
+        svc.stop()

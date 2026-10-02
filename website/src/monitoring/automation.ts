@@ -96,6 +96,10 @@ export interface LegacyGoalLoop {
   active: boolean
   lastFireAt: number
   nextDueAt?: number
+  /** Positive wire discriminator; present only for composer-authored one-shots. */
+  scheduledMessage?: true
+  /** Requested absolute time for a one-shot composer message; absent for goals. */
+  scheduledAt?: number
   maxRuntimeSecs?: number
   stoppedReason: string
   /** The settled outcome of the loop's own watch (`success` / `blocked`, '' while
@@ -369,6 +373,8 @@ export function normalizeAutomationRecord(raw: unknown): AutomationRecord | null
      seed then dropped, so a finished goal reloaded as no goal at all. */
   const gatedRecord = loop.gate === true ? object(loop.monitor) : null
   if (!owns(loop, 'monitor') || loop.gate === true) {
+    const scheduledMessage = loop.scheduled_message === true
+    const scheduledAt = scheduledMessage ? finite(loop.scheduled_at) : 0
     return {
       kind: 'legacy_goal_loop',
       id,
@@ -380,6 +386,8 @@ export function normalizeAutomationRecord(raw: unknown): AutomationRecord | null
       active: !removed && loop.active === true,
       lastFireAt: finite(loop.last_fire_ts),
       nextDueAt: finite(loop.next_due_ts),
+      scheduledMessage: scheduledMessage ? true : undefined,
+      scheduledAt: scheduledAt > 0 ? scheduledAt : undefined,
       maxRuntimeSecs: count(loop.max_runtime_secs),
       stoppedReason: text(loop.stopped_reason),
       monitorOutcome: text(loop.monitor_outcome, text(gatedRecord?.outcome)),

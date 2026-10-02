@@ -1504,6 +1504,24 @@ def containment_snapshot(
     )
 
 
+def containment_snapshot_for_selected_mirror(
+    slot: "_ChatSlot", selected_mirror: Any
+) -> dict[str, Any]:
+    """Containment snapshot bound to the exact mirror an egress sink selected.
+
+    The caller sends only to *selected_mirror*. This function deliberately does
+    not consult ``SessionMap``: a concurrent rebind may change the live mapping,
+    but it cannot substitute a different audience between this authorization and
+    the send. The identity is the probe's own room format
+    (:func:`_mirror_identity_of`), so :func:`mirror_audience` compares it exactly
+    as it compares a probed one. All non-mirror constraints remain live slot reads
+    and the existing :func:`newly_held_constraints` policy decides the result
+    unchanged.
+    """
+    identity = _mirror_identity_of((selected_mirror, "", ""))
+    return _containment_snapshot_from_mirror_probe(slot, identity, on_probe_failure=False)
+
+
 def _snapshot_from_probe(
     state: "DashboardState", slot: "_ChatSlot", probed: str | None, *, on_probe_failure: bool
 ) -> dict[str, Any]:
@@ -1515,6 +1533,13 @@ def _snapshot_from_probe(
     a retarget could slip in between validation and record. Every other field is a
     plain slot attribute read that cannot fail.
     """
+    return _containment_snapshot_from_mirror_probe(slot, probed, on_probe_failure=on_probe_failure)
+
+
+def _containment_snapshot_from_mirror_probe(
+    slot: "_ChatSlot", probed: str | None, *, on_probe_failure: bool
+) -> dict[str, Any]:
+    """Build one containment snapshot from an already-selected mirror identity."""
     snap: dict[str, Any] = {
         "linked": bool(getattr(slot, "linked_session_key", "")),
         "mirrored": on_probe_failure if probed is None else bool(probed),
@@ -1524,10 +1549,12 @@ def _snapshot_from_probe(
         "workspace": str(getattr(slot, "workspace", "default") or "default"),
     }
     if probed is not None:
-        # The mirror's identity, compared by its rooms (:func:`mirror_audience`):
-        # a RETARGETED mirror (A -> B) keeps the boolean true across the wait
-        # while substituting the audience, so identity is what the drain must
-        # compare -- and it must compare rooms, not the string, because a room
+        # The mirror's identity, compared by its rooms (:func:`mirror_audience`),
+        # NOT by string equality the way ``workspace`` is: a RETARGETED mirror
+        # (A -> B) keeps the boolean true across the wait while substituting the
+        # audience, so identity is what the drain must compare -- and it must
+        # compare rooms, because a room the admission never saw (retarget, or a
+        # thread bound beside the admitted mirror) drops the entry, while a room
         # dropped while the entry waited is a narrowing, not a change of audience.
         # Omitted on probe failure — there is no identity to compare then, and
         # the drain fails closed on the unverifiable boolean instead

@@ -2827,6 +2827,7 @@ class _ChatSlot:
         "_metadata_persist_inflight",
         "_guarded_history_writes",
         "recovery_retrigger_count",
+        "_history_persist_lock",
         "_last_turn_auth_required",
         "_cycle_reached_provider",
         "_recovery_chat_triggered",
@@ -3497,6 +3498,9 @@ class _ChatSlot:
         # retraction of this slot's name must order itself after the real write,
         # so it waits on these futures, which complete with the worker.
         self._guarded_history_writes: set[Any] = set()
+        # Serializes every history snapshot-to-commit span with corrective row
+        # deletion. Reentrant because locked persistence helpers can compose.
+        self._history_persist_lock = threading.RLock()
         # Set by _run_chat's teardown to that turn's ACP auth-required outcome.
         # The completion-sound gate reads it: a queue held for post-login resume
         # does not count as the session continuing.

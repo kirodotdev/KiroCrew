@@ -11,13 +11,17 @@ SessionMap so the link/unlink semantics are exercised end-to-end:
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from chat_test_helpers import _make_ready_kiro_prerequisite
 
+from kiro_crew.dashboard import session_control
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.history import ConversationLog
+from kiro_crew.messaging.link import ChannelLink
+from kiro_crew.messaging.transport import TransportCapabilities
 
 
 def _make_context_builder():
@@ -45,6 +49,8 @@ def _make_state(tmp_path, session_map):
     sessions.get_session_for_thread = session_map.get_session_for_thread
     # The unlink route lands the cleared link on disk before it answers.
     sessions.aflush = session_map.aflush
+    sessions.get_mirror_link = session_map.get_mirror_link
+    sessions.set_mirror_link = session_map.set_mirror_link
     sessions.set_approval_policy = MagicMock()
     state = DashboardState(
         sessions=sessions,
@@ -69,13 +75,20 @@ def _make_slack_client():
     return client
 
 
-def _fake_provider():
+def _fake_provider(*, include_tool: bool = False):
     from kiro_crew.providers.base import LLMEvent
 
     fake_client = AsyncMock()
 
     async def _stream(msg):
         yield LLMEvent(kind="text_chunk", text="hi")
+        if include_tool:
+            yield LLMEvent(
+                kind="tool_call",
+                tool_call_id="tool-1",
+                title="Inspect private state",
+                tool_purpose="Inspect private state",
+            )
         yield LLMEvent(kind="complete")
 
     fake_client.stream = _stream
@@ -110,9 +123,7 @@ class TestMirrorSuppressionAfterUnlink:
 
         state = _make_state(tmp_path, session_map)
         state.slack_client = _make_slack_client()
-        state.sessions.get_or_create = AsyncMock(
-            return_value=(_fake_provider(), False, False)
-        )
+        state.sessions.get_or_create = AsyncMock(return_value=(_fake_provider(), False, False))
 
         slot = state.get_or_create_slot("s1")
         session_key = _history_key_for(slot.key)
@@ -125,7 +136,9 @@ class TestMirrorSuppressionAfterUnlink:
 
         # ── Linked turn: mirror MUST fire ──
         await _run_chat(state, slot, "first message")
-        assert state.slack_client.post_message.await_count >= 1, "linked turn should mirror user msg"
+        assert (
+            state.slack_client.post_message.await_count >= 1
+        ), "linked turn should mirror user msg"
         assert state.slack_client.start_stream.await_count == 1, "linked turn should open a stream"
 
         # ── Unlink via the real endpoint ──
@@ -147,7 +160,630 @@ class TestMirrorSuppressionAfterUnlink:
         # ── Unlinked turn: NO mirror calls ──
         await _run_chat(state, slot, "second message")
         assert state.slack_client.post_message.await_count == 0, "unlinked turn must NOT mirror"
-        assert state.slack_client.start_stream.await_count == 0, "unlinked turn must NOT open a stream"
+        assert (
+            state.slack_client.start_stream.await_count == 0
+        ), "unlinked turn must NOT open a stream"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("change", ["unchanged", "added", "retargeted"])
+    async def test_scheduled_fence_guards_slack_user_and_reply_egress(
+        self, tmp_path, monkeypatch, change
+    ):
+        from kiro_crew.dashboard.chat import _history_key_for, _run_chat
+        from kiro_crew.session_map import SessionMap
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.chat.sel", lambda: MagicMock())
+        with patch("kiro_crew.session_map.config_dir", return_value=tmp_path):
+            session_map = SessionMap()
+        state = _make_state(tmp_path, session_map)
+        state.slack_client = _make_slack_client()
+        state.sessions.get_or_create = AsyncMock(return_value=(_fake_provider(), False, False))
+        slot = state.get_or_create_slot("s1")
+        session_key = _history_key_for(slot.key)
+        if change in {"unchanged", "retargeted"}:
+            state.sessions.set_slack_link(session_key, "thread-a", "C-A")
+        admission = session_control.containment_meta(state, slot)
+
+        def build(message, *_args, **_kwargs):
+            if change == "added":
+                state.sessions.set_slack_link(session_key, "thread-a", "C-A")
+            elif change == "retargeted":
+                state.sessions.set_slack_link(session_key, "thread-b", "C-B")
+            return message, None
+
+        state.context_builder.build_message.side_effect = build
+        await _run_chat(
+            state,
+            slot,
+            "scheduled text",
+            _audience_containment_admission=admission,
+        )
+
+        if change == "unchanged":
+            assert state.slack_client.post_message.await_count >= 2
+            assert state.slack_client.start_stream.await_count == 1
+        else:
+            state.slack_client.post_message.assert_not_awaited()
+            state.slack_client.start_stream.assert_not_awaited()
+        assert slot._steer_audience_fences == {}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "change",
+        ["unchanged", "newly-linked", "retargeted", "unverified"],
+    )
+    async def test_scheduled_auth_error_uses_exact_selected_mirror_containment(
+        self,
+        tmp_path,
+        monkeypatch,
+        change,
+    ):
+        from kiro_crew.acp.client import AcpAuthRequired
+        from kiro_crew.dashboard.chat import _history_key_for, _run_chat
+        from kiro_crew.session_map import SessionMap
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.chat.sel", lambda: MagicMock())
+        with patch("kiro_crew.session_map.config_dir", return_value=tmp_path):
+            session_map = SessionMap()
+        state = _make_state(tmp_path, session_map)
+        state.slack_client = _make_slack_client()
+        slot = state.get_or_create_slot("s1")
+        session_key = _history_key_for(slot.key)
+        if change != "newly-linked":
+            state.sessions.set_slack_link(session_key, "thread-a", "C-A")
+        admission = session_control.containment_meta(state, slot)
+        # The ordinary auth-error fallback trusts these slot fields. Keeping
+        # them populated proves a scheduled turn takes the selected-mirror path
+        # instead of publishing through that fallback.
+        slot._slack_linked = True
+        slot._slack_channel = "C-A"
+        slot._slack_thread_ts = "thread-a"
+
+        async def stream(_message):
+            if change == "newly-linked":
+                state.sessions.set_slack_link(session_key, "thread-a", "C-A")
+            elif change == "retargeted":
+                state.sessions.set_slack_link(session_key, "thread-b", "C-B")
+            elif change == "unverified":
+                state.sessions.get_slack_link = MagicMock(
+                    side_effect=OSError("session map unreadable")
+                )
+            raise AcpAuthRequired("kiro-cli is not logged in.")
+            yield  # pragma: no cover - async-generator shape only
+
+        provider = _fake_provider()
+        provider.stream = stream
+        provider.stream_command = stream
+        state.sessions.get_or_create = AsyncMock(return_value=(provider, False, False))
+
+        await _run_chat(
+            state,
+            slot,
+            "scheduled text",
+            _audience_containment_admission=admission,
+        )
+
+        auth_posts = [
+            call
+            for call in state.slack_client.post_message.await_args_list
+            if call.args[1] == "kiro-cli is not logged in."
+        ]
+        if change == "unchanged":
+            assert len(auth_posts) == 1
+            assert auth_posts[0].args == ("C-A", "kiro-cli is not logged in.", "thread-a")
+        else:
+            assert auth_posts == []
+        assert slot._steer_audience_fences == {}
+
+    @pytest.mark.asyncio
+    async def test_scheduled_fence_survives_prompts_get_recursion(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard import chat_runner
+        from kiro_crew.dashboard.chat import _history_key_for, _run_chat
+        from kiro_crew.session_map import SessionMap
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.chat.sel", lambda: MagicMock())
+        with patch("kiro_crew.session_map.config_dir", return_value=tmp_path):
+            session_map = SessionMap()
+        state = _make_state(tmp_path, session_map)
+        state.slack_client = _make_slack_client()
+        state.sessions.get_or_create = AsyncMock(return_value=(_fake_provider(), False, False))
+        slot = state.get_or_create_slot("s1")
+        session_key = _history_key_for(slot.key)
+        admission = session_control.containment_meta(state, slot)
+
+        async def expand(*_args, **_kwargs):
+            state.sessions.set_slack_link(session_key, "thread-a", "C-A")
+            return "expanded private text", "ok"
+
+        monkeypatch.setattr(chat_runner, "_expand_prompt_mention_off_loop", expand)
+
+        await _run_chat(
+            state,
+            slot,
+            "/prompts get private",
+            _audience_containment_admission=admission,
+        )
+
+        state.slack_client.post_message.assert_not_awaited()
+        state.slack_client.start_stream.assert_not_awaited()
+        assert slot._steer_audience_fences == {}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("change", ["unchanged", "added", "retargeted"])
+    async def test_scheduled_fence_guards_channel_user_and_reply_egress(
+        self, tmp_path, monkeypatch, change
+    ):
+        from kiro_crew.dashboard.chat import _history_key_for, _run_chat
+        from kiro_crew.session_map import SessionMap
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.chat.sel", lambda: MagicMock())
+        with patch("kiro_crew.session_map.config_dir", return_value=tmp_path):
+            session_map = SessionMap()
+        state = _make_state(tmp_path, session_map)
+        transport = SimpleNamespace(
+            channel_type="telegram",
+            capabilities=TransportCapabilities(supports_proactive_send=True),
+            may_send_to=lambda *_args, **_kwargs: True,
+            send_message=AsyncMock(return_value="sent"),
+        )
+        state.register_channel_transport(transport)
+        state.sessions.get_or_create = AsyncMock(return_value=(_fake_provider(), False, False))
+        slot = state.get_or_create_slot("s1")
+        session_key = _history_key_for(slot.key)
+        mirror_a = ChannelLink("telegram", "chat-a")
+        mirror_b = ChannelLink("telegram", "chat-b")
+        if change in {"unchanged", "retargeted"}:
+            state.sessions.set_mirror_link(session_key, mirror_a)
+        admission = session_control.containment_meta(state, slot)
+
+        def build(message, *_args, **_kwargs):
+            if change == "added":
+                state.sessions.set_mirror_link(session_key, mirror_a)
+            elif change == "retargeted":
+                state.sessions.set_mirror_link(session_key, mirror_b)
+            return message, None
+
+        state.context_builder.build_message.side_effect = build
+        await _run_chat(
+            state,
+            slot,
+            "scheduled text",
+            _audience_containment_admission=admission,
+        )
+
+        if change == "unchanged":
+            assert transport.send_message.await_count == 2
+        else:
+            transport.send_message.assert_not_awaited()
+        assert slot._steer_audience_fences == {}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("change", ["unchanged", "unlinked", "retargeted"])
+    async def test_slack_echo_reauthorizes_target_before_start_stream(
+        self, tmp_path, monkeypatch, change
+    ):
+        from kiro_crew.dashboard.chat import _history_key_for, _run_chat
+        from kiro_crew.session_map import SessionMap
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.chat.sel", lambda: MagicMock())
+        with patch("kiro_crew.session_map.config_dir", return_value=tmp_path):
+            session_map = SessionMap()
+
+        state = _make_state(tmp_path, session_map)
+        state.slack_client = _make_slack_client()
+        state.sessions.get_or_create = AsyncMock(return_value=(_fake_provider(), False, False))
+        slot = state.get_or_create_slot("s1")
+        session_key = _history_key_for(slot.key)
+        state.sessions.set_slack_link(session_key, "thread-a", "C-A")
+        slot._slack_linked = True
+        slot._slack_channel = "C-A"
+        slot._slack_thread_ts = "thread-a"
+
+        async def post_message(channel, text, thread):
+            if text.startswith("💬 "):
+                if change == "unlinked":
+                    state.sessions.clear_slack_link(session_key)
+                elif change == "retargeted":
+                    state.sessions.set_slack_link(session_key, "thread-b", "C-B")
+            return "mirror-ts"
+
+        state.slack_client.post_message = AsyncMock(side_effect=post_message)
+        await _run_chat(state, slot, "message")
+
+        first_post = state.slack_client.post_message.await_args_list[0]
+        assert first_post.args[0] == "C-A"
+        assert first_post.args[2] == "thread-a"
+        if change == "unchanged":
+            state.slack_client.start_stream.assert_awaited_once_with(
+                "C-A", "thread-a", initial_text="Thinking…"
+            )
+            assert state.slack_client.post_message.await_count >= 2
+            state.slack_client.stop_stream.assert_awaited_once_with("C-A", "stream-ts")
+        else:
+            # Only the already-authorized user echo may land. The stale target
+            # cannot open a stream, receive the reply, or receive teardown.
+            assert state.slack_client.post_message.await_count == 1
+            state.slack_client.start_stream.assert_not_awaited()
+            state.slack_client.stop_stream.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_slack_retarget_between_authorization_and_selection_never_substitutes_target(
+        self, tmp_path, monkeypatch
+    ):
+        from kiro_crew.dashboard import chat_runner
+        from kiro_crew.dashboard.chat import _history_key_for, _run_chat
+        from kiro_crew.session_map import SessionMap
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.chat.sel", lambda: MagicMock())
+        with patch("kiro_crew.session_map.config_dir", return_value=tmp_path):
+            session_map = SessionMap()
+        state = _make_state(tmp_path, session_map)
+        state.slack_client = _make_slack_client()
+        state.sessions.get_or_create = AsyncMock(
+            return_value=(_fake_provider(include_tool=True), False, False)
+        )
+        slot = state.get_or_create_slot("s1")
+        session_key = _history_key_for(slot.key)
+        state.sessions.set_slack_link(session_key, "thread-a", "C-A")
+        admission = session_control.containment_meta(state, slot)
+
+        real_gate = chat_runner.cross_surface_withheld
+        retargeted = False
+
+        def retarget_after_gate(state_arg, slot_arg, **kwargs):
+            nonlocal retargeted
+            withheld = real_gate(state_arg, slot_arg, **kwargs)
+            if not retargeted:
+                retargeted = True
+                state.sessions.set_slack_link(session_key, "thread-b", "C-B")
+            return withheld
+
+        monkeypatch.setattr(chat_runner, "cross_surface_withheld", retarget_after_gate)
+
+        await _run_chat(
+            state,
+            slot,
+            "scheduled private text",
+            _audience_containment_admission=admission,
+        )
+
+        assert retargeted is True
+        assert state.slack_client.post_message.await_count >= 1
+        assert all(
+            call.args[0] == "C-A" for call in state.slack_client.post_message.await_args_list
+        )
+        assert all(
+            call.args[0] != "C-B" for call in state.slack_client.start_stream.await_args_list
+        )
+        assert all(call.args[0] != "C-B" for call in state.slack_client.append_task.await_args_list)
+        assert all(call.args[0] != "C-B" for call in state.slack_client.stop_stream.await_args_list)
+
+    @pytest.mark.asyncio
+    async def test_channel_retarget_between_authorization_and_selection_never_substitutes_target(
+        self, tmp_path, monkeypatch
+    ):
+        from kiro_crew.dashboard import chat_runner
+        from kiro_crew.dashboard.chat import _history_key_for, _run_chat
+        from kiro_crew.session_map import SessionMap
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.chat.sel", lambda: MagicMock())
+        with patch("kiro_crew.session_map.config_dir", return_value=tmp_path):
+            session_map = SessionMap()
+        state = _make_state(tmp_path, session_map)
+        transport = SimpleNamespace(
+            channel_type="telegram",
+            capabilities=TransportCapabilities(supports_proactive_send=True),
+            may_send_to=lambda *_args, **_kwargs: True,
+            send_message=AsyncMock(return_value="sent"),
+        )
+        state.register_channel_transport(transport)
+        state.sessions.get_or_create = AsyncMock(return_value=(_fake_provider(), False, False))
+        slot = state.get_or_create_slot("s1")
+        session_key = _history_key_for(slot.key)
+        mirror_a = ChannelLink("telegram", "chat-a")
+        mirror_b = ChannelLink("telegram", "chat-b")
+        state.sessions.set_mirror_link(session_key, mirror_a)
+        admission = session_control.containment_meta(state, slot)
+
+        real_gate = chat_runner.cross_surface_withheld
+        retargeted = False
+
+        def retarget_after_gate(state_arg, slot_arg, **kwargs):
+            nonlocal retargeted
+            withheld = real_gate(state_arg, slot_arg, **kwargs)
+            if not retargeted:
+                retargeted = True
+                state.sessions.set_mirror_link(session_key, mirror_b)
+            return withheld
+
+        monkeypatch.setattr(chat_runner, "cross_surface_withheld", retarget_after_gate)
+
+        await _run_chat(
+            state,
+            slot,
+            "scheduled private text",
+            _audience_containment_admission=admission,
+        )
+
+        assert retargeted is True
+        assert transport.send_message.await_count == 1
+        assert transport.send_message.await_args.args[0] == "chat-a"
+        assert all(call.args[0] != "chat-b" for call in transport.send_message.await_args_list)
+
+    @pytest.mark.asyncio
+    async def test_user_message_target_is_looked_up_once_and_sent_unchanged(
+        self, tmp_path, monkeypatch
+    ):
+        from kiro_crew.dashboard import chat_runner
+        from kiro_crew.dashboard.chat import _history_key_for
+        from kiro_crew.session_map import SessionMap
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.chat.sel", lambda: MagicMock())
+        with patch("kiro_crew.session_map.config_dir", return_value=tmp_path):
+            session_map = SessionMap()
+        state = _make_state(tmp_path, session_map)
+        transport = SimpleNamespace(
+            channel_type="telegram",
+            capabilities=TransportCapabilities(supports_proactive_send=True),
+            may_send_to=lambda *_args, **_kwargs: True,
+            send_message=AsyncMock(return_value="sent"),
+        )
+        state.register_channel_transport(transport)
+        slot = state.get_or_create_slot("s1")
+        session_key = _history_key_for(slot.key)
+        mirror_a = ChannelLink("telegram", "chat-a")
+        mirror_b = ChannelLink("telegram", "chat-b")
+        state.sessions.set_mirror_link(session_key, mirror_a)
+        slot._steer_audience_fences["scheduled-message"] = session_control.containment_meta(
+            state, slot
+        )
+        state.sessions.get_mirror_link = MagicMock(side_effect=[mirror_a, mirror_b])
+
+        await chat_runner._deliver_cross_surface_user_message(
+            state,
+            session_key,
+            "private user text",
+            slot=slot,
+        )
+
+        state.sessions.get_mirror_link.assert_called_once_with(session_key)
+        transport.send_message.assert_awaited_once()
+        assert transport.send_message.await_args.args[0] == "chat-a"
+
+    @pytest.mark.asyncio
+    async def test_reply_target_is_reauthorized_before_single_part(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard import chat_runner
+        from kiro_crew.dashboard.chat import _history_key_for
+        from kiro_crew.session_map import SessionMap
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.chat.sel", lambda: MagicMock())
+        with patch("kiro_crew.session_map.config_dir", return_value=tmp_path):
+            session_map = SessionMap()
+        state = _make_state(tmp_path, session_map)
+        transport = SimpleNamespace(
+            channel_type="telegram",
+            capabilities=TransportCapabilities(supports_proactive_send=True),
+            may_send_to=lambda *_args, **_kwargs: True,
+            send_message=AsyncMock(return_value="sent"),
+        )
+        state.register_channel_transport(transport)
+        slot = state.get_or_create_slot("s1")
+        session_key = _history_key_for(slot.key)
+        mirror_a = ChannelLink("telegram", "chat-a")
+        state.sessions.set_mirror_link(session_key, mirror_a)
+        slot._steer_audience_fences["scheduled-message"] = session_control.containment_meta(
+            state, slot
+        )
+        state.sessions.get_mirror_link = MagicMock(side_effect=[mirror_a, mirror_a])
+
+        await chat_runner._deliver_cross_surface_reply(
+            state,
+            session_key,
+            "private reply text",
+            slot=slot,
+        )
+
+        assert state.sessions.get_mirror_link.call_count == 2
+        assert all(
+            call.args == (session_key,) for call in state.sessions.get_mirror_link.call_args_list
+        )
+        transport.send_message.assert_awaited_once()
+        assert transport.send_message.await_args.args[0] == "chat-a"
+
+    @pytest.mark.asyncio
+    async def test_reply_retarget_during_reauthorization_aborts_without_substitution(
+        self, tmp_path, monkeypatch
+    ):
+        from kiro_crew.dashboard import chat_runner
+        from kiro_crew.dashboard.chat import _history_key_for
+        from kiro_crew.session_map import SessionMap
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.chat.sel", lambda: MagicMock())
+        with patch("kiro_crew.session_map.config_dir", return_value=tmp_path):
+            session_map = SessionMap()
+        state = _make_state(tmp_path, session_map)
+        transport = SimpleNamespace(
+            channel_type="telegram",
+            capabilities=TransportCapabilities(supports_proactive_send=True),
+            may_send_to=lambda *_args, **_kwargs: True,
+            send_message=AsyncMock(return_value="sent"),
+        )
+        state.register_channel_transport(transport)
+        slot = state.get_or_create_slot("s1")
+        session_key = _history_key_for(slot.key)
+        mirror_a = ChannelLink("telegram", "chat-a")
+        mirror_b = ChannelLink("telegram", "chat-b")
+        state.sessions.set_mirror_link(session_key, mirror_a)
+        slot._steer_audience_fences["scheduled-message"] = session_control.containment_meta(
+            state, slot
+        )
+        state.sessions.get_mirror_link = MagicMock(side_effect=[mirror_a, mirror_b])
+
+        await chat_runner._deliver_cross_surface_reply(
+            state,
+            session_key,
+            "private reply text",
+            slot=slot,
+        )
+
+        assert state.sessions.get_mirror_link.call_count == 2
+        assert all(
+            call.args == (session_key,) for call in state.sessions.get_mirror_link.call_args_list
+        )
+        transport.send_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_withheld_reply_is_logged_before_any_part(self, tmp_path, monkeypatch, caplog):
+        """A fence that withholds the whole reply leaves an operator-visible record."""
+        from kiro_crew.dashboard import chat_runner
+        from kiro_crew.dashboard.chat import _history_key_for
+        from kiro_crew.session_map import SessionMap
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.chat.sel", lambda: MagicMock())
+        with patch("kiro_crew.session_map.config_dir", return_value=tmp_path):
+            session_map = SessionMap()
+        state = _make_state(tmp_path, session_map)
+        transport = SimpleNamespace(
+            channel_type="telegram",
+            capabilities=TransportCapabilities(supports_proactive_send=True),
+            may_send_to=lambda *_args, **_kwargs: True,
+            send_message=AsyncMock(return_value="sent"),
+        )
+        state.register_channel_transport(transport)
+        slot = state.get_or_create_slot("s1")
+        session_key = _history_key_for(slot.key)
+        # Admitted with no mirror; the channel was linked while the turn ran.
+        slot._steer_audience_fences["scheduled-message"] = session_control.containment_meta(
+            state, slot
+        )
+        state.sessions.set_mirror_link(session_key, ChannelLink("telegram", "chat-a"))
+
+        with caplog.at_level("INFO", logger=chat_runner.logger.name):
+            await chat_runner._deliver_cross_surface_reply(
+                state,
+                session_key,
+                "private reply text",
+                slot=slot,
+            )
+
+        transport.send_message.assert_not_awaited()
+        withheld = [r for r in caplog.records if r.getMessage().startswith("withholding")]
+        assert len(withheld) == 1
+        assert withheld[0].levelname == "INFO"
+        assert withheld[0].getMessage() == (
+            f"withholding cross-surface reply for {session_key}: 1 unresolved audience "
+            "fence(s) (peer steers into, or transcript reads by, this turn)"
+        )
+
+    @pytest.mark.asyncio
+    async def test_withheld_remainder_is_logged_with_parts_sent(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """A fence that newly holds mid-delivery logs how much already reached the channel."""
+        from kiro_crew.dashboard import chat_runner
+        from kiro_crew.dashboard.chat import _history_key_for
+        from kiro_crew.session_map import SessionMap
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.chat.sel", lambda: MagicMock())
+        with patch("kiro_crew.session_map.config_dir", return_value=tmp_path):
+            session_map = SessionMap()
+        state = _make_state(tmp_path, session_map)
+        slot = state.get_or_create_slot("s1")
+        session_key = _history_key_for(slot.key)
+
+        async def _send(_channel_id, _part, *, thread_id=None):
+            # The first part is on the wire; a link to another session now
+            # holds a constraint the admission never saw.
+            slot.linked_session_key = "other-session"
+            return "sent"
+
+        transport = SimpleNamespace(
+            channel_type="telegram",
+            capabilities=TransportCapabilities(supports_proactive_send=True, max_message_chars=100),
+            may_send_to=lambda *_args, **_kwargs: True,
+            send_message=AsyncMock(side_effect=_send),
+        )
+        state.register_channel_transport(transport)
+        state.sessions.set_mirror_link(session_key, ChannelLink("telegram", "chat-a"))
+        slot._steer_audience_fences["scheduled-message"] = session_control.containment_meta(
+            state, slot
+        )
+
+        with caplog.at_level("INFO", logger=chat_runner.logger.name):
+            await chat_runner._deliver_cross_surface_reply(
+                state,
+                session_key,
+                "x" * 250,
+                slot=slot,
+            )
+
+        transport.send_message.assert_awaited_once()
+        withheld = [r for r in caplog.records if r.getMessage().startswith("withholding")]
+        assert len(withheld) == 1
+        assert withheld[0].levelname == "INFO"
+        assert withheld[0].getMessage() == (
+            f"withholding cross-surface reply for {session_key} to telegram:chat-a: "
+            "1 unresolved steer audience fence(s) after 1 of 3 part(s) sent"
+        )
+        assert not any(r.getMessage().startswith("cross-surface: mirrored") for r in caplog.records)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("delivery", ["user", "reply"])
+    async def test_unreadable_channel_target_fails_closed_without_breaking_turn(
+        self, tmp_path, delivery
+    ):
+        from kiro_crew.dashboard import chat_runner
+
+        state = _make_state(tmp_path, MagicMock())
+        transport = SimpleNamespace(
+            channel_type="telegram",
+            capabilities=TransportCapabilities(supports_proactive_send=True),
+            may_send_to=lambda *_args, **_kwargs: True,
+            send_message=AsyncMock(return_value="sent"),
+        )
+        state.register_channel_transport(transport)
+        state.sessions.get_mirror_link = MagicMock(side_effect=OSError("map unreadable"))
+        slot = state.get_or_create_slot("s1")
+        slot._steer_audience_fences["scheduled-message"] = {
+            session_control.QUEUED_CONTAINMENT_META_KEY: {
+                "linked": False,
+                "mirrored": False,
+                "ephemeral": False,
+                "app": False,
+                "unattended": False,
+                "workspace": "default",
+                "mirror_identity": "",
+            }
+        }
+
+        if delivery == "user":
+            await chat_runner._deliver_cross_surface_user_message(
+                state,
+                "dashboard:s1",
+                "private user text",
+                slot=slot,
+            )
+        else:
+            await chat_runner._deliver_cross_surface_reply(
+                state,
+                "dashboard:s1",
+                "private reply text",
+                slot=slot,
+            )
+
+        transport.send_message.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_dual_key_inheritance_does_not_resurrect_link(self, tmp_path, monkeypatch):
@@ -167,13 +803,11 @@ class TestMirrorSuppressionAfterUnlink:
 
         state = _make_state(tmp_path, session_map)
         state.slack_client = _make_slack_client()
-        state.sessions.get_or_create = AsyncMock(
-            return_value=(_fake_provider(), False, False)
-        )
+        state.sessions.get_or_create = AsyncMock(return_value=(_fake_provider(), False, False))
 
         slot = state.get_or_create_slot("s1")
         session_key = _history_key_for(slot.key)  # "dashboard:s1"
-        raw_key = session_key[len("dashboard:"):]   # "s1"
+        raw_key = session_key[len("dashboard:") :]  # "s1"
 
         # Simulate the dual-key state: link on the dashboard:-prefixed key AND
         # the raw key (the runner's inheritance copy at chat_runner.py:807-817).
@@ -206,3 +840,50 @@ class TestMirrorSuppressionAfterUnlink:
         await _run_chat(state, slot, "after unlink")
         assert state.slack_client.post_message.await_count == 0
         assert state.slack_client.start_stream.await_count == 0
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("revoke_after_first_part", "expected_parts"),
+        [(False, ["part-1", "part-2"]), (True, ["part-1"])],
+    )
+    async def test_multipart_reply_rechecks_slack_binding_between_parts(
+        self,
+        tmp_path,
+        monkeypatch,
+        revoke_after_first_part,
+        expected_parts,
+    ):
+        """A mid-reply unlink stops the remainder; an unchanged link sends all parts."""
+        from kiro_crew.dashboard.chat import _history_key_for, _run_chat
+        from kiro_crew.session_map import SessionMap
+        from kiro_crew.slack import format as slack_format
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.chat.sel", lambda: MagicMock())
+        monkeypatch.setattr(slack_format, "render_for_slack", lambda _text: ["part-1", "part-2"])
+        with patch("kiro_crew.session_map.config_dir", return_value=tmp_path):
+            session_map = SessionMap()
+
+        state = _make_state(tmp_path, session_map)
+        state.slack_client = _make_slack_client()
+        state.sessions.get_or_create = AsyncMock(return_value=(_fake_provider(), False, False))
+        slot = state.get_or_create_slot("s1")
+        session_key = _history_key_for(slot.key)
+        state.sessions.set_slack_link(session_key, "thread-1", "C-1")
+        slot._slack_linked = True
+        slot._slack_channel = "C-1"
+        slot._slack_thread_ts = "thread-1"
+
+        posted_parts: list[str] = []
+
+        async def post_message(_channel, text, _thread):
+            if text in {"part-1", "part-2"}:
+                posted_parts.append(text)
+                if revoke_after_first_part and text == "part-1":
+                    state.sessions.clear_slack_link(session_key)
+            return "mirror-ts"
+
+        state.slack_client.post_message = AsyncMock(side_effect=post_message)
+        await _run_chat(state, slot, "message")
+
+        assert posted_parts == expected_parts

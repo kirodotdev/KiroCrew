@@ -106,7 +106,14 @@ export function usePlusMenu({ pickers, value, onChange, composerControl, fileInp
   // notably when the mobile keyboard closes (visualViewport-only signal).
   useAnchorRemeasure(plusOpen, measurePlus)
   const togglePlus = () => {
-    if (!plusOpen) measurePlus()
+    if (!plusOpen) {
+      measurePlus()
+      setSlashMenuOpen(false)
+      setFilePickerOpen(false)
+      setFileQuery('')
+      setSkillPickerOpen(false)
+      setSkillQuery('')
+    }
     setPlusOpen(o => !o)
   }
   // Open an in-input trigger picker from the + menu (mirrors typing the sigil):
@@ -139,7 +146,7 @@ export function usePlusMenu({ pickers, value, onChange, composerControl, fileInp
   return { plusOpen, setPlusOpen, sketchOpen, setSketchOpen, plusWrapRef, plusBtnRef, plusMenuRef, plusRect, togglePlus, openTrigger }
 }
 
-export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, directFilePicker, collapsible, fileInputId, openPicker, isMac, isMobile, onScreenshot, collapseMenuRow, typedCommandMenus, onFileSelect }: {
+export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, directFilePicker, collapsible, fileInputId, openPicker, isMac, isMobile, onScreenshot, collapseMenuRow, scheduleMenuRow, typedCommandMenus, onFileSelect }: {
   plus: ReturnType<typeof usePlusMenu>
   onUploadFiles?: (files: File[]) => void
   uploading: boolean
@@ -153,6 +160,8 @@ export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, dir
   onScreenshot?: () => void
   /** The collapse row the "+" menu hosts (null when the host did not opt in). */
   collapseMenuRow: ReactNode
+  /** Scheduled-send row supplied by the composer owner. */
+  scheduleMenuRow: ReactNode
   typedCommandMenus: boolean
   onFileSelect: ChatInputProps['onFileSelect']
 }) {
@@ -257,6 +266,7 @@ export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, dir
                   rejects. A stacked row (the same shape as the trigger
                   shortcuts below) is its own row by construction. */}
               <div className="mt-2 flex flex-col gap-0.5">
+                {scheduleMenuRow}
                 <button
                   type="button"
                   onClick={() => { setPlusOpen(false); setSketchOpen(true) }}

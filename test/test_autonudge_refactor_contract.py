@@ -27,6 +27,7 @@ import hashlib
 import inspect
 import json
 import logging
+import os
 import re
 import subprocess
 import sys
@@ -45,6 +46,12 @@ from kiro_crew.monitoring.models import (
     monitor_state_to_dict,
 )
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
+
+_LOCAL_SRC = Path(__file__).resolve().parents[1] / "src"
+_SUBPROCESS_ENV = os.environ.copy()
+_SUBPROCESS_ENV["PYTHONPATH"] = os.pathsep.join(
+    part for part in (str(_LOCAL_SRC), _SUBPROCESS_ENV.get("PYTHONPATH", "")) if part
+)
 
 #: Every function, class and constant the pre-split ``autonudge.py`` defined.
 _BASE_DEFINED = frozenset(
@@ -163,11 +170,11 @@ _BASE_REACHED_IMPORTS = frozenset(
 #: twelve hex digits of the SHA-256 of ``_signature_text`` -- every parameter, ``self``/``cls``
 #: included, with its kind, default and annotation, and the return annotation.
 _BASE_SERVICE_MEMBERS: dict[str, tuple[str, str]] = {
-    "__init__": ("method", "38ac57f125dd"),
+    "__init__": ("method", "f92c0b02fbed"),
     "_acquire_mutation_lock": ("method+async", "e26080a5a8bc"),
-    "_add_locked": ("method+async", "4c98efc62188"),
+    "_add_locked": ("method+async", "59b7e22c633d"),
     "_add_monitor_locked": ("method+async", "55179b26aeff"),
-    "_add_unserialized": ("method+async", "4c98efc62188"),
+    "_add_unserialized": ("method+async", "59b7e22c633d"),
     "_append_judge_labels": ("method", "05f9e694d3d7"),
     "_apply_monitor_budget_stop": ("method", "c05b26fec956"),
     "_apply_monitor_user_stop": ("method", "0d02c6c3b88e"),
@@ -190,7 +197,7 @@ _BASE_SERVICE_MEMBERS: dict[str, tuple[str, str]] = {
     "_judge_tick_is_quiet": ("method+async", "13350afdc048"),
     "_label_judge_delivery_locked": ("method+async", "ebb80b654e73"),
     "_load": ("method", "35d06f40fb45"),
-    "_mint_loop_id": ("method", "c54e236e2328"),
+    "_mint_loop_id": ("method", "84c7c97e1435"),
     "_monitor_snapshot_with_replacement": ("method", "889dae1a56cf"),
     "_monitor_tick_is_quiet": ("method+async", "3a33d55b099b"),
     "_move_aside_locked": ("method", "8bdc12b93966"),
@@ -208,25 +215,34 @@ _BASE_SERVICE_MEMBERS: dict[str, tuple[str, str]] = {
     "_record_judge_verdict": ("method", "6b6aa33c7755"),
     "_record_stops_committed": ("method", "b02c548f23ec"),
     "_refuse_writes_and_preserve_sidecar": ("method", "35d06f40fb45"),
-    "_remove_unserialized": ("method+async", "f25b8e2642a7"),
+    "_remove_unserialized": ("method+async", "25eb2df39370"),
     "_restore_provider_credentials": ("static+async", "c0e5298bfbb4"),
+    "_restore_scheduled_message_after_failed_session_close": (
+        "method+async",
+        "58d8ad218b5d",
+    ),
+    "_restore_scheduled_provenance": ("static+async", "fe74bc388b5d"),
     "_retain_accepted_terminal_completion": ("method", "0d02c6c3b88e"),
     "_revoke_provider_credentials_before_removal": ("static+async", "631ee4d210f4"),
-    "_revoke_self_arm": ("static", "631ee4d210f4"),
-    "_revoke_self_arm_for": ("method", "fa9fb3019298"),
+    "_revoke_scheduled_provenance_before_removal": ("static+async", "4c1de6c25903"),
+    "_revoke_self_arm": ("static", "6888c83def47"),
+    "_revoke_self_arm_for": ("method", "017caaf70fc4"),
     "_run_fire_cycle": ("method+async", "fa9fb3019298"),
     "_save": ("method", "35d06f40fb45"),
+    "_schedule_scheduled_settlement": ("method", "3d6ecba8e0de"),
+    "_scheduled_provenance_for_transition": ("static+async", "98bd3cb819a1"),
     "_serialize_loop": ("static", "25c5a9ba35d5"),
     "_serialize_state": ("method", "070d0bf328d9"),
     "_serialized_loops": ("method", "297c6249aa5f"),
     "_set_monitor_deadline": ("method", "a9f111186976"),
     "_sidecar_transaction": ("method", "140eaa502228"),
+    "_settle_scheduled_turn": ("method+async", "b3c8c9df668b"),
     "_sync_terminal_completion_timer": ("method", "fa9fb3019298"),
     "_terminal_still_holds": ("method+async", "75f382f079fb"),
     "_extend_for_open_ledger": ("method+async", "1d8c864f30a4"),
     "_timer": ("method+async", "e290ef84f151"),
-    "_update_locked": ("method+async", "db9765212236"),
-    "_update_unserialized": ("method+async", "db9765212236"),
+    "_update_locked": ("method+async", "c370990eeda0"),
+    "_update_unserialized": ("method+async", "c370990eeda0"),
     "_waits_for_terminal_completion": ("method", "3a33d55b099b"),
     "_withdraw_judge_suppression": ("method", "fa9fb3019298"),
     "_worker_running": ("method", "490393185551"),
@@ -240,12 +256,15 @@ _BASE_SERVICE_MEMBERS: dict[str, tuple[str, str]] = {
     "_write_quarantine_sidecar": ("method", "35d06f40fb45"),
     "_write_quarantine_sidecar_locked": ("method", "35d06f40fb45"),
     "_write_state": ("method", "b02c548f23ec"),
-    "add": ("method+async", "d490ef767593"),
+    "add": ("method+async", "38a6809811bf"),
     "add_monitor": ("method+async", "b07c1299b741"),
     "apply_monitor_probe": ("method+async", "7e318e77ec64"),
+    "bind_scheduled_delivery_task": ("method", "d448621609d8"),
+    "cleanup_completed_scheduled_message": ("method+async", "61dc2e194fa8"),
     "clear_terminal_monitor": ("method+async", "82db71923663"),
     "commit_monitor_replacement": ("method", "f7956b1e6531"),
     "deactivate_and_wait": ("method+async", "61dc2e194fa8"),
+    "discard_scheduled_message": ("method+async", "61dc2e194fa8"),
     "fire_now": ("method+async", "082992b0b249"),
     "get_by_id": ("method", "c7cdaf3c2920"),
     "get_by_slot": ("method", "1a9a46af4d72"),
@@ -254,13 +273,15 @@ _BASE_SERVICE_MEMBERS: dict[str, tuple[str, str]] = {
     "maintenance_service": ("class+acm", "f67271c49616"),
     "mark_monitor_action_in_flight": ("method+async", "c576214c1411"),
     "mark_monitor_turn_accepted": ("method", "ec9e933a59fb"),
+    "mark_scheduled_message_completed": ("method+async", "c7646439c4d6"),
     "mark_terminal_notification_delivered": ("method+async", "32d2569e33bd"),
     "monitor_dispatch_is_authorized": ("method+async", "909258b72a58"),
+    "note_scheduled_delivery_dispatched": ("method", "f7956b1e6531"),
     "notify_approval_stalled": ("method", "2a34976b11b0"),
     "notify_cycle_failed": ("method+async", "64f8660b7bbb"),
     "notify_cycle_landed": ("method", "2a34976b11b0"),
     "notify_cycle_start_failed": ("method", "2a34976b11b0"),
-    "notify_turn_complete": ("method", "295ffab180e4"),
+    "notify_turn_complete": ("method", "1384920cb0d8"),
     "notify_user_input": ("method", "fad3ce03aadf"),
     "record_monitor_completion_evidence_unavailable": ("method+async", "400845dc24be"),
     "release_approval_hold": ("method+async", "3e62765820c2"),
@@ -269,19 +290,26 @@ _BASE_SERVICE_MEMBERS: dict[str, tuple[str, str]] = {
     "record_monitor_dispatched": ("method+async", "400845dc24be"),
     "record_monitor_turn_completion": ("method+async", "fb6d81452a33"),
     "remove": ("method+async", "e208f07be797"),
-    "remove_by_slot": ("method+async", "1a9a46af4d72"),
-    "remove_sync": ("method", "e06f7146f393"),
+    "remove_by_slot": ("method+async", "c307248aa5ba"),
+    "remove_pending_scheduled_message": ("method+async", "ebdd0f75c69d"),
+    "remove_sync": ("method", "024ebf1446f3"),
     "restore_monitor_after_failed_session_close": ("method+async", "76282e020abf"),
+    "restore_scheduled_message_after_failed_session_close": (
+        "method+async",
+        "3367df4101cd",
+    ),
     "retire_monitor_for_session_close": ("method+async", "d67247ca6bd0"),
     "rollback_monitor_replacement": ("method+async", "61dc2e194fa8"),
     "rollback_monitor_update": ("method+async", "d86807019e86"),
+    "settle_unclaimed_scheduled_delivery": ("method+async", "61dc2e194fa8"),
     "start": ("method+async", "35d06f40fb45"),
     "stop": ("method", "35d06f40fb45"),
     "stop_monitor": ("method+async", "bddc1c278f12"),
     "stop_monitor_if_budget_exhausted": ("method+async", "7ab50d99dd32"),
     "subscribe": ("method", "7a1b8e1c52f1"),
-    "update": ("method+async", "db9765212236"),
+    "update": ("method+async", "f4dcade7257e"),
     "update_monitor": ("method+async", "15a27e52eef4"),
+    "update_pending_scheduled_message": ("method+async", "ad5e86fc0fe6"),
 }
 
 #: The same, for the maintenance view.
@@ -330,6 +358,10 @@ _BASE_NUDGELOOP_FIELDS: list[tuple[str, str | None]] = [
     ("self_armed", "False"),
     ("config_generation", "0"),
     ("default_patrol", "False"),
+    ("scheduled_message", "False"),
+    ("scheduled_at", "0.0"),
+    ("scheduled_completed", "False"),
+    ("scheduled_attempts", "0"),
 ]
 
 
@@ -375,7 +407,11 @@ _GOLDEN_STORE = """\
       "banner": "",
       "self_armed": false,
       "config_generation": 0,
-      "default_patrol": false
+      "default_patrol": false,
+      "scheduled_message": false,
+      "scheduled_at": 0.0,
+      "scheduled_completed": false,
+      "scheduled_attempts": 0
     },
     {
       "id": "claim001",
@@ -409,6 +445,10 @@ _GOLDEN_STORE = """\
       "self_armed": false,
       "config_generation": 0,
       "default_patrol": false,
+      "scheduled_message": false,
+      "scheduled_at": 0.0,
+      "scheduled_completed": false,
+      "scheduled_attempts": 0,
       "inflight_cycle": 4,
       "inflight_undelivered": true
     },
@@ -449,7 +489,11 @@ _GOLDEN_STORE = """\
       "banner": "patrol",
       "self_armed": true,
       "config_generation": 0,
-      "default_patrol": false
+      "default_patrol": false,
+      "scheduled_message": false,
+      "scheduled_at": 0.0,
+      "scheduled_completed": false,
+      "scheduled_attempts": 0
     },
     {
       "id": "struct01",
@@ -483,7 +527,11 @@ _GOLDEN_STORE = """\
       "banner": "",
       "self_armed": false,
       "config_generation": 0,
-      "default_patrol": false
+      "default_patrol": false,
+      "scheduled_message": false,
+      "scheduled_at": 0.0,
+      "scheduled_completed": false,
+      "scheduled_attempts": 0
     },
     {
       "id": "broken01",
@@ -626,7 +674,11 @@ class TestSurface:
             "print('\\n'.join(sorted(m for m in sys.modules if m.startswith('kiro_crew'))))"
         )
         loaded = subprocess.run(
-            [sys.executable, "-c", code], capture_output=True, check=True, **UTF8_TEXT
+            [sys.executable, "-c", code],
+            capture_output=True,
+            check=True,
+            env=_SUBPROCESS_ENV,
+            **UTF8_TEXT,
         ).stdout.split()
         for lazy in (
             "kiro_crew.autonudge_judge",
@@ -1105,6 +1157,11 @@ _BINDINGS = {
     "notify_cycle_failed": "timers",
     "notify_cycle_landed": "timers",
     "notify_turn_complete": "timers",
+    "note_scheduled_delivery_dispatched": "timers",
+    "bind_scheduled_delivery_task": "timers",
+    "_schedule_scheduled_settlement": "timers",
+    "settle_unclaimed_scheduled_delivery": "timers",
+    "_settle_scheduled_turn": "timers",
     "notify_user_input": "timers",
     "_cancel_timer": "timers",
     "_arm_timer": "timers",
@@ -1132,16 +1189,26 @@ _BINDINGS = {
     "_add_locked": "mutations",
     "_add_unserialized": "mutations",
     "update": "mutations",
+    "update_pending_scheduled_message": "mutations",
     "_update_locked": "mutations",
     "_update_unserialized": "mutations",
     "remove_sync": "mutations",
     "_revoke_self_arm_for": "mutations",
     "_revoke_self_arm": "mutations",
     "remove": "mutations",
+    "remove_pending_scheduled_message": "mutations",
+    "discard_scheduled_message": "mutations",
     "remove_by_slot": "mutations",
+    "restore_scheduled_message_after_failed_session_close": "mutations",
+    "_restore_scheduled_message_after_failed_session_close": "mutations",
+    "mark_scheduled_message_completed": "mutations",
+    "cleanup_completed_scheduled_message": "mutations",
     "clear_terminal_monitor": "mutations",
     "_remove_unserialized": "mutations",
     "_revoke_provider_credentials_before_removal": "mutations",
+    "_revoke_scheduled_provenance_before_removal": "mutations",
+    "_scheduled_provenance_for_transition": "mutations",
+    "_restore_scheduled_provenance": "mutations",
     "_provider_credentials_authorized": "mutations",
     "_restore_provider_credentials": "mutations",
     "add_monitor": "monitor_records",
@@ -1386,7 +1453,11 @@ class TestTheOwnersReadTheSeamsThroughTheFacade:
             "print('kiro_crew.autonudge' in sys.modules)"
         )
         out = subprocess.run(
-            [sys.executable, "-c", code], capture_output=True, check=True, **UTF8_TEXT
+            [sys.executable, "-c", code],
+            capture_output=True,
+            check=True,
+            env=_SUBPROCESS_ENV,
+            **UTF8_TEXT,
         ).stdout.strip()
         assert out == "False"
 
