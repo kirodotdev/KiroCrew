@@ -6,7 +6,7 @@ the pre-built frontend assets from ``src/kiro_crew/static/dist`` into the
 package.
 
 The frontend is built separately with npm/Vite in the ``website/`` directory
-and the resulting ``dist/`` is copied into ``src/kiro_crew/static/dist`` before
+and the resulting ``dist/`` is staged as ``src/kiro_crew/static/dist`` before
 packaging. Vite emits content-hashed filenames that change on every build, so
 ``static/dist/`` is intentionally excluded from the ``package_data`` globs in
 ``setup.cfg``; we copy the directory tree directly here instead.
@@ -93,10 +93,10 @@ class BuildWithFrontend(build_py):
     """Custom build_py that copies the pre-built frontend dist/ into the package.
 
     Expects ``src/kiro_crew/static/dist`` to already exist in-tree (built by
-    ``npm run build`` in the ``website/`` directory and copied in by the build
-    step). If it is missing we print a warning telling the user to build the
-    frontend, but do not fail — the backend is still usable without the bundled
-    web UI assets.
+    ``npm run build`` in the ``website/`` directory and staged by
+    ``python -m kiro_crew.frontend stage``). If it is missing we print a warning
+    telling the user to build the frontend, but do not fail — the backend is
+    still usable without the bundled web UI assets.
     """
 
     def run(self) -> None:
@@ -117,7 +117,8 @@ class BuildWithFrontend(build_py):
                 "         The bundled web UI will be missing from this build.\n"
                 "         Build the frontend first:\n"
                 "             cd website && npm install && npm run build\n"
-                "         then copy website/dist into src/kiro_crew/static/dist."
+                "         then stage it: make build, or\n"
+                "             PYTHONPATH=src python -m kiro_crew.frontend stage ."
             )
         self._copy_changelog(base)
 

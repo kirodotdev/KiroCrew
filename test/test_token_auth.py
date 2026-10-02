@@ -3920,7 +3920,9 @@ def test_app_window_entries_register_route_and_exclusion(tmp_path) -> None:
     for route_path, entry in discover_app_window_entries(tmp_path / "src" / "apps"):
         # Same handler factory the gateway uses — see server._window_entry_handler
         # for why the path is a closure cell and not a handler parameter.
-        app.router.add_get(route_path, _window_entry_handler(entry))
+        app.router.add_get(
+            route_path, _window_entry_handler(tmp_path, f"{entry.parent.name}/{entry.name}")
+        )
         window_paths.append(route_path)
 
     prior = ta._APP_WINDOW_EXCLUDED_PATHS

@@ -5967,8 +5967,8 @@ async def test_sync_never_stages_dist_on_an_edition_checkout(monkeypatch):
     monkeypatch.setattr(worktree_ops_mod.frontend, "edition_configured", lambda: True)
     argvs = await _sync_step_argvs(monkeypatch)
     assert not any(_is_stage_step(a) for a in argvs)
-    # The BUILD is skipped too. vite builds with emptyOutDir, so on a source-tree
-    # install -- where static/dist is a symlink to website/dist -- the stock build
+    # The BUILD is skipped too. The build publishes into website/dist, so on a
+    # source-tree install -- where static/dist is a symlink to it -- the stock build
     # alone would replace the served edition dashboard, staging step or not.
     assert not any(Path(a[0]).name == "npm" for a in argvs)
     # The backend half of the sync is untouched: an edition still gets the pull
@@ -8353,9 +8353,9 @@ def test_declared_platforms_all_resolve_to_a_real_sys_platform():
 async def test_sync_builds_and_stages_under_one_lock_holder(monkeypatch, tmp_path):
     """Pull+Build must build and stage inside ONE locked step.
 
-    Without a staging step the live gateway keeps serving through the symlink
-    ensure_dev_dist_symlink() points at ``website/dist``, so the build empties
-    and rewrites the assets it is serving. The step runs under the Dev Fleet
+    Without a staging step, an older target revision whose build still writes
+    ``website/dist`` in place would empty and rewrite the assets a live gateway
+    serves through the dev link ensure_dev_dist_symlink() makes. The step runs under the Dev Fleet
     backend's OWN interpreter with the target repo passed as an argument:
     resolving the helper from the target would make the step's existence
     contingent on the pulled revision carrying it, so an older target would turn
@@ -8402,8 +8402,8 @@ async def test_sync_builds_and_stages_under_one_lock_holder(monkeypatch, tmp_pat
         raise AssertionError(f"step not found in {argvs}")
 
     # Build and stage are ONE step so a single lock holder spans both: the build
-    # empties website/dist, and a peer flow staging concurrently would copy a
-    # partially written tree.
+    # swaps a new tree into website/dist, and a peer flow copying concurrently
+    # could copy half of each.
     stage_i = _index(lambda a: any("build_and_stage" in x for x in a))
     # THIS backend's interpreter, not the target checkout's: the logic is
     # revision-independent, while resolving it from the target would make the

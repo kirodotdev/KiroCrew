@@ -21,6 +21,7 @@ import asyncio
 import inspect
 import logging
 import os
+import shutil
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -30,8 +31,9 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 
-from conftest import requires_symlinks
+from conftest import make_dir_link, requires_symlinks
 from kiro_crew.dashboard import server as srv
+from kiro_crew.platform_compat import unlink_link_or_junction
 
 # ── helpers ─────────────────────────────────────────────────────────────
 
@@ -200,15 +202,41 @@ class TestWindowEntryHandler:
     async def test_handler_serves_the_file_bound_at_registration(
         self, tmp_path
     ) -> None:
-        entry = tmp_path / "board.html"
+        entry = tmp_path / "src" / "apps" / "papyrus" / "board.html"
+        entry.parent.mkdir(parents=True)
         entry.write_text("<h1>board</h1>", encoding="utf-8")
         app = web.Application()
-        app.router.add_get("/w.html", srv._window_entry_handler(entry))
+        app.router.add_get("/w.html", srv._window_entry_handler(tmp_path, "papyrus/board.html"))
 
         async with TestClient(TestServer(app)) as client:
             resp = await client.get("/w.html")
             assert resp.status == 200
             assert await resp.text() == "<h1>board</h1>"
+
+    @pytest.mark.asyncio
+    async def test_handler_follows_a_re_pointed_dist(self, tmp_path) -> None:
+        """A window route resolves the served dist per request, not at registration.
+
+        Staging re-points ``static/dist`` at a fresh copy and sweeps the old one;
+        a route pinned to the old copy at startup would 404 from then on.
+        """
+        for name, body in (("old", "<h1>old</h1>"), ("new", "<h1>new</h1>")):
+            entry = tmp_path / name / "src" / "apps" / "papyrus" / "board.html"
+            entry.parent.mkdir(parents=True)
+            entry.write_text(body, encoding="utf-8")
+        served = tmp_path / "served"
+        make_dir_link(served, tmp_path / "old")
+        app = web.Application()
+        app.router.add_get("/w.html", srv._window_entry_handler(served, "papyrus/board.html"))
+
+        async with TestClient(TestServer(app)) as client:
+            assert await (await client.get("/w.html")).text() == "<h1>old</h1>"
+            unlink_link_or_junction(served)
+            make_dir_link(served, tmp_path / "new")
+            shutil.rmtree(tmp_path / "old")
+            resp = await client.get("/w.html")
+            assert resp.status == 200
+            assert await resp.text() == "<h1>new</h1>"
 
     @pytest.mark.asyncio
     async def test_app_window_entries_are_registered_as_get_routes(
@@ -234,12 +262,7 @@ class TestWindowEntryHandler:
         assert f"/{srv.APP_WINDOW_URL_PREFIX}/papyrus/editor.html" in canonical
         # App Store brand assets: without this mount the builtin app icons and
         # hero images fall through to the SPA shell and render as placeholders.
-        prefixes = {
-            r.get_info().get("prefix")
-            for r in app.router.resources()
-            if r.get_info().get("prefix")
-        }
-        assert "/app-assets" in prefixes
+        assert "/app-assets/{tail}" in canonical
 
 
 # ── _precompute_telemetry ────────────────────────

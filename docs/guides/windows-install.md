@@ -233,7 +233,6 @@ The equivalent by hand, if you would rather not use the driver:
 ```powershell
 # Build the frontend first (optional but recommended) so the dashboard is bundled:
 #   cd website; npm install; npm run build; cd ..
-#   Copy-Item -Recurse website\dist src\kiro_crew\static\dist
 
 py -3.12 -m venv .venv
 .\.venv\Scripts\Activate.ps1
@@ -242,6 +241,8 @@ python -m pip install --upgrade pip
 # (setup.cfg already declares tzdata under a platform_system == "Windows" marker,
 #  so a plain `pip install -e .` pulls it in on Windows.)
 pip install -e ".[voice]"
+# Then stage the build as the served dashboard (a junction to website\dist):
+python -m kiro_crew.frontend stage .
 ```
 
 Then:

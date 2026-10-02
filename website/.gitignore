@@ -1,5 +1,9 @@
 node_modules
 dist
+# A build's scratch and swapped-aside trees (scripts/publish-dist.mjs).
+.dist*.next-*
+.dist*.ready-*
+.dist*.prev-*
 build
 coverage
 *.tsbuildinfo

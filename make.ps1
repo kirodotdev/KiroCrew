@@ -305,13 +305,17 @@ function Invoke-Frontend {
         Pop-Location
     }
 
-    # Stage into the package. The destination is CLEARED first: vite emits
-    # content-hashed filenames, so copying over an existing bundle accumulates
-    # stale assets that can then be served or packaged.
-    $staged = Join-Path $RepoRoot "src\kiro_crew\static\dist"
-    Remove-PathForce $staged
-    New-Item -ItemType Directory -Force -Path (Join-Path $RepoRoot "src\kiro_crew\static") | Out-Null
-    Copy-Item -Recurse -Path (Join-Path $RepoRoot "website\dist") -Destination $staged
+    Write-Ok "dashboard built into website\dist"
+}
+
+# Stage website\dist as the served src\kiro_crew\static\dist with the
+# package's own stager, as the Makefile does, through the .venv Invoke-Backend
+# just installed it into: it links static\dist to website\dist (a junction),
+# keeps that link, or points it at a fresh copy -- never remove + copy under a
+# running gateway. Separate from Invoke-Frontend so backend-bin, which copies
+# website\dist itself, needs no Python for it.
+function Invoke-StageDashboard {
+    Invoke-Step $VenvPython @("-m", "kiro_crew.frontend", "stage", $RepoRoot) "stage the dashboard"
     Write-Ok "dashboard staged into src\kiro_crew\static\dist"
 }
 
@@ -340,8 +344,8 @@ function Invoke-Backend {
     Invoke-Step $VenvPython @("-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel") `
         "pip install --upgrade pip setuptools wheel"
 
-    # KIROCREW_SKIP_FRONTEND: the frontend target already staged the dist, and
-    # the editable install must not try to rebuild it.
+    # KIROCREW_SKIP_FRONTEND: the frontend target already built the dist (it is
+    # staged after this install), and the editable install must not rebuild it.
     $prev = $env:KIROCREW_SKIP_FRONTEND
     $env:KIROCREW_SKIP_FRONTEND = "1"
     try {
@@ -368,11 +372,13 @@ function Invoke-Test {
 function Invoke-Build {
     Invoke-Frontend
     Invoke-Backend
+    Invoke-StageDashboard
 }
 
 function Invoke-Wheel {
     Invoke-Frontend
     Invoke-Backend
+    Invoke-StageDashboard
     Write-Step "building the wheel"
     Invoke-Step $VenvPython @("-m", "pip", "install", "--upgrade", "build") "pip install build"
     Invoke-Step $VenvPython @("-m", "build", "--wheel") "python -m build --wheel"
@@ -464,6 +470,17 @@ function Invoke-Clean {
     foreach ($egg in @(Get-ChildItem -Path $RepoRoot, (Join-Path $RepoRoot "src") `
                        -Filter "*.egg-info" -Directory -ErrorAction SilentlyContinue)) {
         Remove-PathForce $egg.FullName
+    }
+    # A build's scratch and swapped-aside trees (website/scripts/publish-dist.mjs).
+    foreach ($scratch in @(Get-ChildItem -Path (Join-Path $RepoRoot "website") -Filter ".dist*" `
+                           -Directory -Force -ErrorAction SilentlyContinue |
+                           Where-Object { $_.Name -match '^\.dist.*\.(next|ready|prev)-' })) {
+        Remove-PathForce $scratch.FullName
+    }
+    # The staged copies src\kiro_crew\static\dist links to (kiro_crew.frontend).
+    foreach ($staged in @(Get-ChildItem -Path (Join-Path $RepoRoot "src\kiro_crew\static") -Filter ".dist.*" `
+                          -Force -ErrorAction SilentlyContinue)) {
+        Remove-PathForce $staged.FullName
     }
     Get-ChildItem -Path $RepoRoot -Filter "__pycache__" -Directory -Recurse -ErrorAction SilentlyContinue |
         ForEach-Object { Remove-PathForce $_.FullName }
