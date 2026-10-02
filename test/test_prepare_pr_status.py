@@ -781,22 +781,6 @@ def test_visible_trailer_with_trailing_html_comment_still_confirms() -> None:
     assert module.closing_link_reason(body, [{"number": 7}]) is None
 
 
-def test_fenced_opt_out_example_does_not_silence_notice() -> None:
-    module = _load_script()
-    body = "```markdown\nno linked issue: example only\n```"
-    reason = module.closing_link_reason(body, [])
-    assert reason is not None
-    assert "no issue link" in reason
-
-
-def test_html_commented_opt_out_example_does_not_silence_notice() -> None:
-    module = _load_script()
-    body = "<!--\nno linked issue: example only\n-->"
-    reason = module.closing_link_reason(body, [])
-    assert reason is not None
-    assert "no issue link" in reason
-
-
 def test_fence_markers_inside_html_comment_do_not_hide_visible_trailer() -> None:
     module = _load_script()
     body = "<!--\n```markdown\nFixes #99\n```\n-->\nFixes #7"
@@ -1043,26 +1027,20 @@ def test_malformed_targets_are_not_trailers() -> None:
         assert module._CLOSING_KW_RE.search(body) is None, body
 
 
-def test_no_reference_at_all_is_reported_with_the_opt_out_named() -> None:
+def test_no_reference_at_all_is_reported_and_names_the_gate() -> None:
     module = _load_script()
     reason = module.closing_link_reason("A pure refactor with no tracked issue.", [])
     assert reason is not None
-    assert "no linked issue" in reason
+    assert "Issue Gate" in reason
 
 
-def test_safe_explicit_opt_out_silences_notice_when_reason_names_an_issue() -> None:
-    module = _load_script()
-    body = (
-        "A follow-up that deliberately closes nothing.\n\n"
-        "no linked issue: #3257 is resolved by the release, not this change."
-    )
-    assert module.closing_link_reason(body, []) is None
-
-
-def test_explicit_opt_out_silences_the_notice() -> None:
+def test_there_is_no_opt_out_line_that_silences_the_notice() -> None:
+    """The Issue Gate lane rejects an issue-less PR, so this module must not
+    accept a body line that the gate rejects."""
     module = _load_script()
     body = "A pure refactor.\n\nno linked issue: no ticket exists for this cleanup."
-    assert module.closing_link_reason(body, []) is None
+    assert module.closing_link_reason(body, []) is not None
+    assert not hasattr(module, "_NO_ISSUE_RE")
 
 
 def test_host_closure_without_an_explicit_trailer_is_reported() -> None:
@@ -1450,45 +1428,6 @@ def test_an_unterminated_nested_fence_does_not_swallow_a_real_trailer() -> None:
     module = _load_script()
     body = "- Example:\n\n      ~~~\n      stuff\n\nFixes #7"
     assert module.closing_link_reason(body, [{"number": 7}]) is None
-
-
-def test_opt_out_must_be_a_trailer_not_a_mention() -> None:
-    """Prose that merely discusses the check must NOT read as a declaration.
-
-    An unanchored substring match lets any body containing the phrase pass —
-    including a body that only explains what the phrase is for.
-    """
-    module = _load_script()
-    prose = "The gate accepts a `no linked issue: <why>` line as an opt-out."
-    assert module.closing_link_reason(prose, []) is not None
-    indented = "  no linked issue: buried in an instruction block"
-    assert module.closing_link_reason(indented, []) is not None
-    assert module.closing_link_reason("no linked issue but I forgot the colon", []) is not None
-
-
-def test_opt_out_phrasing_carries_no_closing_keyword() -> None:
-    """The opt-out line itself must never read as a close-on-merge trigger.
-
-    GitHub closes an issue on merge when the body matches
-    ``(close[sd]?|fix(e[sd])?|resolve[sd]?)\\s*:?\\s+#<n>``. A phrasing like
-    ``no issue closed: <why>`` puts the keyword ``closed`` directly
-    before the colon, so a ``<why>`` opening with an issue number
-    (``no issue closed: #<n> tracks the follow-up``) yields
-    ``closed: #<n>`` — auto-closing the very issue the line disclaims.
-    Lock in both properties: the canonical phrasing matches the opt-out
-    regex, and no closing keyword survives anywhere in it.
-    """
-    module = _load_script()
-    canonical = "no linked issue: kept open deliberately"
-    assert module._NO_ISSUE_RE.search(canonical) is not None
-    # Extract the literal prefix the regex anchors on and scan it (plus the
-    # full canonical line) for every GitHub closing-keyword inflection.
-    closing_kw = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b", re.IGNORECASE)
-    assert closing_kw.search(canonical) is None
-    assert closing_kw.search(module._NO_ISSUE_RE.pattern) is None
-    # The concrete failure mode: an issue number at the start of the <why>
-    # must not form a closing trailer with the phrasing's final word.
-    assert module._CLOSING_KW_RE.search("no linked issue: #1234 tracks the follow-up") is None
 
 
 def test_shipped_body_template_does_not_read_as_a_declaration() -> None:
@@ -3779,3 +3718,44 @@ def test_the_evaluator_itself_refuses_an_untrusted_override_record() -> None:
         [forged], _HEAD, bindings, only=["GPT"], authors=("coverage-app[bot]",)
     )
     assert widened["overridden"] == {"GPT": "maintainer"}, widened
+
+
+# --- declared_issue_numbers: the one public declaration grammar -----------------
+#
+# `.github/scripts/issue_gate_refs.py` (the Issue Gate) reads bodies through
+# this function, so the gate never re-derives masking or targets. It answers a
+# different question from closing_link_reason (which issue is this work FOR,
+# not why the host resolved no closure), hence its own line-start shape and
+# the non-closing `Refs` / `Part of` verbs.
+
+
+def test_declared_issue_numbers_line_start_reading_frees_the_rest_of_the_line() -> None:
+    module = _load_script()
+    body = (
+        "Fixes #7 (the Windows half), closes #8\n- Scope:\n    - Closes #9\n"
+        "> Closes #10\nDiscloses #11 prefixes #12\nThis PR Fixes #13 partially.\n"
+    )
+    assert module.declared_issue_numbers(body, "example/repo") == (["7", "8"], True)
+
+
+def test_declared_issue_numbers_tail_references_need_a_word_start() -> None:
+    module = _load_script()
+    body = "Fixes #1; the crash is unresolved: #2 and prefixes #3\n"
+    assert module.declared_issue_numbers(body, "example/repo") == (["1"], True)
+
+
+def test_declared_issue_numbers_accepts_non_closing_declarations() -> None:
+    module = _load_script()
+    body = "Part of #3\n- Refs #4 and ref #5\nRelated to #6\n"
+    assert module.declared_issue_numbers(body, "example/repo") == (["3", "4", "5"], True)
+
+
+def test_declared_issue_numbers_masks_and_filters_like_the_notice_path() -> None:
+    module = _load_script()
+    body = (
+        "<!-- Fixes #1 -->\n```\nCloses #2\n```\nsee `Closes #3`\n"
+        "Closes other/repo#4\nFixes Example/Repo#5\nResolves #99999999999\n"
+    )
+    numbers, well_formed = module.declared_issue_numbers(body, "example/repo")
+    assert numbers == ["5"]
+    assert well_formed is False

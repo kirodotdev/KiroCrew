@@ -52,6 +52,7 @@ pull_request
   |-- ci.yml            "CI"           lint, sharded tests, coverage gate, e2e
   |-- build.yml         "Build"        wheel + desktop/installer artifacts build
   |-- code-review.yml   "Code Review"  grep rules, woke, Semgrep, PR hygiene
+  |-- issue-gate.yml    "Issue Gate"   PR names a triaged issue, blocking
   |-- dependency-review.yml            license allowlist
   |-- docker-smoke.yml                 container contract (paths-filtered)
   |-- crew-image-build.yml             crew image recipes build (paths-filtered)
@@ -1462,6 +1463,164 @@ and `sys.executable`, so they stay green against a simulated environment. The
 cheap fix is to run the already-built launcher once in `build-desktop`, the
 packaged analogue of the wheel lane's `--version`.
 
+## `issue-gate.yml`: every PR traces to a triaged issue
+
+Nothing else stops a feature or fix from being built on impulse, reviewed on its
+own terms and merged with no record of why it exists or whether anyone agreed it
+should. Issues already carry that record, and `Issue Gate` is the link that makes
+a pull request consult it.
+
+**How it is enforced.** `PR Readiness` is the one status the branch ruleset
+requires, so the gate is enrolled as a lane in `pr-readiness.yml`'s spec list
+(`issue-gate.yml|Issue Gate`, appended beside `Code Review` because both run on
+`pull_request` with no base filter and a read token, forks and stacked PRs
+included) and in its `workflow_run` trigger list. A lane that list omits is a gate
+that can go red without reddening the PR -- that is why enrolment is here and not
+a second branch-protection entry. The merge queue needs no `merge_group` run of
+the file: the queue's own `PR Readiness` poll admits only heads whose pull-request
+verdict already included this lane.
+
+**Who writes the triage state.** Not a workflow in this repository.
+`issue-triage.yml` writes only `channel:`, the fixed type set, `area:` and
+`platform:`; it never touches `needs-triage` or a verdict. The `needs-triage` ->
+verdict transition is written by the maintainer-operated Kiro Crew auto-pipeline
+(the Issue Radar crews running against this repository, which also post the
+"Kiro Crew Auto-Pipeline: Routing to ..." comment on the issue). A new issue
+arrives with `needs-triage` and leaves triage with exactly one verdict label:
+`auto-fixable`, `needs-investigation` or `needs-human`. That pipeline is the
+"captain" the rule refers to; this repository holds the label contract
+(`TRIAGE_VERDICT_LABELS` in the workflow) and not the pipeline itself, so a
+change to the verdict set is a change in both places.
+
+**One grammar.** Which issues a body declares is decided by
+`.github/scripts/issue_gate_refs.py`, an adapter onto the declaration grammar
+`prepare-pr/scripts/pr_status.py` exports as its one public entry point
+`declared_issue_numbers(body, repo)` -- the masking and the issue targets the
+local prepare-pr loop uses too, so a change there reaches the gate and nothing is
+re-derived in the workflow (a hand-rolled grep there, or an adapter rewrapping a
+private pattern, drifts unnoticed). By reference to that grammar: a line that
+starts (three columns of indent at most, an optional bullet) with a closing verb
+(`close|closes|closed`, `fix|fixes|fixed`, `resolve|resolves|resolved` -- the
+issue auto-closes on merge) or a non-closing `Refs` / `Part of` (the issue stays
+open), plus `#N`, `OWNER/REPO#N` or a github.com issue URL, after HTML comments,
+fenced code blocks (an unclosed fence through end of body) and inline code spans
+are masked; every reference on that line is read, and what follows is free, so
+`Fixes #123 (the Windows half)` counts. The PR template's own `<!-- ... Fixes
+#123 -->` hint, a `>`-quoted or inline-code `Closes #N`, a four-column code line,
+a reference buried mid-sentence and a bare `#N` are not declarations. Only
+references naming this repository count, and a URL only on the github.com host,
+since GitHub resolves nothing from `https://example.com/.../issues/N`; that rule
+is part of the grammar itself, the adapter adds nothing to it. The verdict-label
+names the gate reads are pinned by `TestLabelContract` in
+`test/test_issue_gate_refs.py`, the one in-repo place both sides of the contract
+can read, so a rename shows up as a red test rather than as every PR going red.
+
+The gate asks which issue the work is FOR, not what closes. That is why the
+non-closing verbs count here: an author shipping half of an issue writes `Part of
+#N`, the gate checks the same triage labels, and the issue stays open for the rest;
+`Closes #N` is the author saying the merge finishes it. `pr_status.py`'s own
+`NOTICE:` path answers a different question (why did the HOST resolve no closure)
+and keeps its whole-line, closing-verbs-only classifier for it -- but it no longer
+accepts a `no linked issue:` opt-out line the gate would reject; its `NOTICE:`
+names the gate instead. A body declaring
+more than `MAX_DECLARED` (20) distinct issues is a finding, not a read: each
+declared issue is an API call against the shared hourly token pool, from a body an
+author controls, and a PR for that many issues is a PR to split.
+`test/test_issue_gate_refs.py` and the `declared_issue_numbers` tests in
+`test/test_prepare_pr_status.py` pin all of this.
+
+**The grammar comes from the default branch, not the PR.** The workflow checks
+out the repository's default branch at run time -- which the PR cannot write -- and
+runs the adapter from there, so a PR cannot change what counts as a declaration
+without that change first landing on `main`. Nothing from the PR's tree is
+executed. The default branch rather than `pull_request.base.sha` on purpose: a
+stacked PR's base is a feature branch, and one cut before the gate landed would
+carry no grammar script and read as bootstrap. The workflow FILE is still read
+from the merge ref, as every `pull_request` lane here is; the repository's answer
+to that is the fork approval gate and CODEOWNERS review (see
+`fork-workflow-guard.yml`), not something this lane can fix alone. Bootstrap: a
+default branch that predates the gate has no grammar script; that state is skipped
+with a notice, never filled by running PR code, and is dead once the gate is on
+`main`.
+
+**The rule, in full.** The visible body declares at least one issue of this
+repository. Every declared number must be an issue (not a pull request), not
+closed as `not_planned`, free of `needs-triage`, and carrying one of the verdict
+labels. One bad reference fails the whole PR: a triaged issue beside an untriaged
+one is still work nobody triaged. The job summary lists each problem and says
+how to go green: once the verdict label lands, any edit to the description
+re-runs the check, which is how a fork author -- who cannot press re-run -- gets
+there without a push.
+
+Deterministic on purpose: no model, one checkout of the default branch (for the
+grammar, nothing built), two API reads. The body is read from the API at run time rather than from
+the event payload, and `edited` and `labeled` are in the trigger list, so adding
+`Closes #N` to the description (or the waiver label) turns the check green
+without a no-op push. Every read fails closed -- an unreadable body or issue reds
+the check naming the read as the cause, re-runnable -- because a lane that passes
+on "nothing found" after reading nothing is the polarity `Screenshot Evidence`
+already had to fix once. The step keeps the runner's default `bash -e` and takes
+every verdict-bearing exit status (an API read, the grammar script) through `if`,
+so `-e` can only stop the step on a genuine bug, never skip the 404 or
+read-failure branch. The body is untrusted author input and only ever reaches the
+grammar script on stdin.
+
+**Two exemptions, both visible in the run log.** The `dependabot[bot]` author is
+skipped with a notice: its PRs are generated from a manifest and have no issue to
+point at. `github-actions[bot]` is deliberately not exempted: this repository
+leaves "Allow GitHub Actions to create and approve pull requests" off (see
+`test-durations.yml`), so no PR can carry that author and an arm for it would be
+dead code claiming coverage. The `issue-gate: waived`
+label, applied by a maintainer, waives the requirement with a WARNING. It covers
+the two PR shapes that legitimately have no issue: a production fire, whose issue
+is written once the fire is out, and a release PR -- the version-drop and
+CHANGELOG-section PRs that [release](../build/release.md) describes, which are
+maintainer work with no tracking issue. There is no self-service body marker:
+unlike the screenshot waiver, the whole point of this gate is that someone other
+than the author agreed to the work, so the waiver has to be a maintainer action.
+
+**Not a goal here, and what a stall looks like.** Triage is expected to reach an
+issue within 24 hours. An issue that sits in `needs-triage` longer is a defect in
+the triage pipeline, to be reported as such; it is never a reason to pick the
+issue up untriaged, and the gate deliberately has no "silence means yes"
+fallback. Nothing in this repository alarms on that overdue state yet -- the
+pipeline runs outside `.github/`, and an in-repo overdue sweep is a separate
+change, filed as [#16308](https://github.com/kirodotdev/KiroCrew/issues/16308).
+Until it lands, a stalled pipeline is visible as PRs red on "still carries
+`needs-triage`"; the maintainer's per-PR fallback is the `issue-gate: waived`
+label, and a run of those waivers is the signal to go fix the pipeline, not to
+loosen the gate. The cost this puts on a drive-by contributor -- a one-line fix
+waits on triage too -- is accepted by the maintainer as the price of the rule
+(decided in [#16064](https://github.com/kirodotdev/KiroCrew/issues/16064)); a
+lighter path for trivial fixes is a policy change to propose on an issue, not a
+waiver to add here.
+
+**Issue-less PR shapes this repository produces, and their path through the
+gate.** A `deferred-finding` issue filed from an accept-and-defer disposition
+must now also carry `needs-triage` (the prepare-pr deferral contract says so), so
+the pipeline's intake sees it and the follow-up PR can pass; of the deferred-finding
+issues open when the gate landed, only about one in ten carried a verdict, which is
+what that label fixes going forward. The three pull requests scheduled workflows
+generate -- `test-durations.yml` (`chore(test): refresh .test_durations`),
+`add-contributor.yml` (`docs: add new contributors to README`) and
+`memory-benchmark.yml` (`chore(bench): accept new memory-benchmark baseline`) --
+are opened by a maintainer from a compare link, so their author is human and no
+bot exemption applies; each generated body and each compare-link notice now
+carries `Part of #16362`, the standing tracking issue for workflow-generated PRs,
+so the gate passes mechanically once that issue is triaged. The release
+version-drop PR uses the waiver label, above.
+
+**Known residual.** The gate judges the declared issue when a PR event runs it.
+An issue that is closed as not planned, or loses its verdict label, after the PR's
+last `opened` / `synchronize` / `reopened` / `edited` / `labeled` / `unlabeled` event
+and before merge is not re-read: no issue-side event re-runs a `pull_request`
+lane, and `pr-readiness-sweep.yml` re-fires the readiness recompute, not the
+lanes. Both reversals are deliberate maintainer writes that no workflow in
+`.github/` performs, the window closes on any PR activity, and the remedy is a
+revert; an issue-side revalidation lane (a reverse index from issue to the open
+PRs declaring it, plus a write path to re-dispatch their gate runs) would exist for
+this path alone and is not built.
+
 ## `code-review.yml`: the deterministic pre-gate
 
 No model, no secrets, so it is safe on forks and always runs. It is the grep-half
@@ -2529,8 +2688,8 @@ reads the head's `pull_request` workflow runs **once** and picks the latest run 
 monitored workflow out of that page, and publishes **one `PR Readiness` commit
 status plus one `readiness:` label**.
 
-- **Always required:** Fast Gate, CI, Build, Code Review, and Internal Content
-  Scan (the same-repository workflow or the fork check-run). `Fast Gate` is a lane in
+- **Always required:** Fast Gate, CI, Build, Code Review, Issue Gate, and
+  Internal Content Scan (the same-repository workflow or the fork check-run). `Fast Gate` is a lane in
   its own right and not merely CI's precondition — a red gate must red the PR, and
   `await-fast-gate` reports `failure` rather than the gate that actually broke, so
   the readable verdict has to come from the gate workflow itself. It carries CI's
@@ -3193,7 +3352,7 @@ Making `PR Readiness` a required status remains an explicit branch-protection
 or ruleset setting outside the workflow.
 
 The aggregate covers the latest PR result for Fast Gate, CI, Build, Code Review,
-Internal Content Scan, Opus 5.5 Review, GPT 6.1 Review (two GPT passes plus
+Issue Gate, Internal Content Scan, Opus 5.5 Review, GPT 6.1 Review (two GPT passes plus
 conditional Opus adjudication), Security Scope Review, Design Review, UX Review,
 and First Principles Review. For managed CodeQL it requires
 both the dynamic analysis workflow and the exact-head `CodeQL` security result
