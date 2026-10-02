@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from kiro_crew.acp.types import STOP_REASON_END_TURN
 from kiro_crew.config.loader import KiroCrewConfig
@@ -246,12 +246,15 @@ async def generate_session_summary(
     *,
     cfg: KiroCrewConfig | None = None,
     force: bool = False,
+    still_current: Callable[[], bool] | None = None,
 ) -> bool:
     """Generate and cache an intent summary for *slot*. Never raises.
 
     Returns True when a new summary was stored. The in-flight guard is taken
     before the first await so a fast follow-up turn cannot start a second pass
-    over the same transcript.
+    over the same transcript. App-triggered passes supply ``still_current`` to
+    retain their slot identity through the read, model and publication awaits;
+    background and dashboard passes leave it unset.
 
     ``force`` marks a pass the person explicitly asked for; see
     :func:`_should_summarize` for exactly which gates that lifts. A forced pass
@@ -288,7 +291,9 @@ async def generate_session_summary(
     # the second write, after the tokens are already gone.
     slot._summary_in_flight = True
     try:
-        return await _generate_locked(state, slot, cfg, key, log, force=force)
+        return await _generate_locked(
+            state, slot, cfg, key, log, force=force, still_current=still_current
+        )
     except Exception:
         # A summary is a convenience. Losing one must never surface as a failed
         # turn, and the previous cached summary stays valid.
@@ -306,6 +311,7 @@ async def _generate_locked(
     log: Any,
     *,
     force: bool,
+    still_current: Callable[[], bool] | None = None,
 ) -> bool:
     """The body of a pass, run with ``slot._summary_in_flight`` already held.
 
@@ -313,6 +319,7 @@ async def _generate_locked(
     the whole function in one long ``try`` -- the caller owns setting and clearing
     it, and this stays a straight-line read of what a pass does.
     """
+
     # Land this slot's pending transcript write BEFORE capturing the signature.
     # ``_ChatSlot.append`` only marks the slot dirty; the bytes reach disk on the
     # 5s ``_flush_loop``. This pass is dispatched from ``_finish_queue_cycle`` in
@@ -327,7 +334,13 @@ async def _generate_locked(
     # the flush loop's dirty-bit bookkeeping, which matters here — a write that
     # left the slot dirty would just be re-saved by the loop moments later,
     # moving the mtime again and refusing the payload regardless.
-    await asyncio.to_thread(state.flush_slot_now, slot)
+    def _flush_if_current() -> None:
+        if still_current is None or still_current():
+            state.flush_slot_now(slot)
+
+    await asyncio.to_thread(_flush_if_current)
+    if still_current is not None and not still_current():
+        return False
     # The flush may have folded the line's mode stricter than the slot's own;
     # let the slot follow before the row read so the live gates agree with it.
     apply_pending_slot_memory_mode(state, slot)
@@ -386,6 +399,8 @@ async def _generate_locked(
         return False
 
     cached = await asyncio.to_thread(log.get_cached_intent_summary, key)
+    if still_current is not None and not still_current():
+        return False
     if cached is not None:
         # The transcript has not changed since the last pass, so the stored
         # summary is still exactly right and the pass would cost tokens for
@@ -407,6 +422,8 @@ async def _generate_locked(
         crew_log_kind="summary",
         crew_log_session_key=effective_session_key(slot),
     )
+    if still_current is not None and not still_current():
+        return False
     payload = normalize_payload(
         _parse_reply(text),
         max_intents=cfg.session_summary.max_intents,
@@ -443,6 +460,8 @@ async def _generate_locked(
         # across model latency. The publication seam keeps the privacy line
         # stable through the guarded sidecar write.
         with log.publication_hold(key):
+            if still_current is not None and not still_current():
+                return False
             return log.set_cached_intent_summary(key, payload, sig, generation)
 
     try:
@@ -466,6 +485,8 @@ async def _generate_locked(
         # Don't push a WS update for a summary that was never stored, and
         # don't advance the turn mark -- the next turn should retry.
         logger.info("Session summary discarded for %s: transcript gone or moved", key)
+        return False
+    if still_current is not None and not still_current():
         return False
     slot._summary_turn_mark = user_turns
     logger.info(

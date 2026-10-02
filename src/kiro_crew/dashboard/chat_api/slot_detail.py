@@ -25,13 +25,13 @@ if TYPE_CHECKING:
         _attach_variants,
         _ChatSlot,
         _collapse_wire_rows,
-        _deny_cross_app_slot_access,
         _live_child_instance,
         _prepare_messages,
         _redact_for_display,
         _redact_meta_for_role,
         _slots_serialization_note,
         carry_provenance,
+        deny_app_slot_access,
         effective_session_key,
         history_corpus_unreadable,
         logger,
@@ -40,6 +40,7 @@ if TYPE_CHECKING:
         redact_credentials,
         redact_exfiltration_urls,
         slot_history_key,
+        slot_not_found,
     )
 
 
@@ -725,8 +726,8 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
     name = request.match_info["slot"]
     slot = state._slots.get(name)
     if not slot:
-        return web.json_response({"error": "not found"}, status=404)
-    denied = _deny_cross_app_slot_access(request, slot, name, "slot_detail")
+        return slot_not_found()
+    denied = deny_app_slot_access(request.get("app", ""), slot, name, "slot_detail")
     if denied is not None:
         return denied
 

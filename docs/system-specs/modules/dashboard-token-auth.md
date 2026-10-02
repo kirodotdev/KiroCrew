@@ -100,12 +100,18 @@ Middleware chain (explicit ordering in `server.py`):
 
 ```mermaid
 graph LR
-    Z[deny_audit] --> A[host_canonical_redirect] --> B[host_validation] --> C[no_cache] --> D[csrf] --> E[token_auth] --> F[sel_audit] --> G[spa_fallback]
+    Z[deny_audit] --> A[host_canonical_redirect] --> B[host_validation] --> C[no_cache] --> D[csrf] --> E[token_auth] --> F[sel_audit] --> S[slot_ownership] --> G[spa_fallback]
 ```
 
 1. CSRF checks run first (reject cross-origin mutating requests)
 2. Token auth validates identity
 3. SEL audit logs the authenticated operation
+4. The per-slot checkpoint (`slot_ownership_middleware`,
+   `dashboard/slot_ownership.py`) decides an app caller's reach on every
+   `/api/chat/slots/{slot}/*` route before its handler runs. It reads the `app`
+   claim token auth published, and a refusal it answers is inside the SEL audit
+   record. It is not an auth layer: a request with no app claim passes it
+   untouched. Contract: [App Kit platform §13](app-kit-platform.md).
 
 `deny_audit` (`_make_deny_audit_middleware`, installed on both entrypoints) is
 outer to every barrier that can refuse, and `sel_audit` is inner to all of them —
@@ -118,7 +124,9 @@ for the mutating `/api/` requests it actually logs, and the two WebSocket-origin
 handlers that log their own denial. `token_auth` RETURNS its 401/403 rather than
 raising and audits each itself, so returned responses are not inspected. Not
 claiming is the safe direction — the boundary then records the refusal under a
-generic reason.
+generic reason. The per-slot checkpoint is the one refusing layer inner to
+`sel_audit`: it RETURNS a 404 rather than raising, and writes its own
+`app_isolation` row for a slot that exists, so the boundary never sees it.
 
 ## Components
 
@@ -521,6 +529,7 @@ app.middlewares[:] = [
     csrf_middleware,
     token_auth_middleware(local_only=local_only),
     sel_audit_middleware,
+    slot_ownership_middleware,
     spa_fallback,
 ]
 site = web.TCPSite(runner, bind_address_for(local_only), port)
@@ -540,7 +549,7 @@ The `--slack-only` gateway starts `start_api_server()` instead of
 token_auth_middleware(
 internal_paths=_STRICT_INTERNAL_API_PATHS,
 mixed_internal_paths=_MIXED_INTERNAL_API_PATHS, spa_shell_handler=None) →
-sel_audit_middleware`. It generates and persists the same
+sel_audit_middleware → slot_ownership_middleware`. It generates and persists the same
 `~/.kiro/crew/.local_secret` (or the explicit `KIROCREW_HOME`), sets
 `app["local_secret"]`, and builds
 `app["allowed_origins"]`. `spa_shell_handler=None` because there is no UI — a
@@ -806,4 +815,4 @@ token flow, which could not clear it.
 9. Bounded concurrent nonces (`TokenStateManager`) — prevents unbounded memory growth while allowing active link nonces to refresh their eviction position
 10. Explicit revocation via `kirocrew logout` — clears all nonces, IP bindings, and consumed tokens, and bumps the persisted revocation generation, ending every outstanding access cookie and refresh chain
 11. App-token scope confinement (CWE-269) — an `app`-claim token is confined deny-by-default to its own namespace (`/apps/<name>`, `/api/apps/<name>`) + its manifest `permissions.api` allowlist, enforced at every grant point; no-op for dashboard-user tokens
-12. Headless (`--slack-only`) auth parity — `start_api_server()` serves the same MCP route surface as the dashboard and mounts the same `deny_audit → host_validation → csrf → token_auth → sel_audit` chain against the shared `_STRICT_INTERNAL_API_PATHS`/`_MIXED_INTERNAL_API_PATHS` sets. Internal MCP routes require loopback **plus** `X-Internal-Secret` (loopback alone is not sufficient for these paths — port forwarders can spoof `127.0.0.1`); `sel_audit_middleware` alone only logs and is never a substitute for the token-auth chain
+12. Headless (`--slack-only`) auth parity — `start_api_server()` serves the same MCP route surface as the dashboard and mounts the same `deny_audit → host_validation → csrf → token_auth → sel_audit → slot_ownership` chain against the shared `_STRICT_INTERNAL_API_PATHS`/`_MIXED_INTERNAL_API_PATHS` sets. Internal MCP routes require loopback **plus** `X-Internal-Secret` (loopback alone is not sufficient for these paths — port forwarders can spoof `127.0.0.1`); `sel_audit_middleware` alone only logs and is never a substitute for the token-auth chain

@@ -699,7 +699,7 @@ workspace is never removed.
 | POST | `/api/taskrunner/{task_id}/retry` | Retry from step N (`{from_step}` in body) |
 | POST | `/api/taskrunner/{task_id}/pause` | Pause a running project |
 | POST | `/api/taskrunner/{task_id}/execute` | Execute or resume a planned project |
-| POST | `/api/taskrunner/{task_id}/to-chat` | Open task results in a new chat slot for manual review |
+| POST | `/api/taskrunner/{task_id}/to-chat` | Open task results in a new chat slot for manual review: `task-review-<token>`, linked to the `taskrunner:<task_id>:chat:<token>` session minted for it and owned by the app the task ran for, which passes the per-slot checkpoint on it ([App Kit platform §13](app-kit-platform.md)); export and rewind still refuse an app any slot with a linked session, this one included |
 | GET | `/api/taskrunner/{task_id}/plan-context` | Return plan text for chat pre-fill |
 | GET | `/api/taskrunner/{task_id}/plan.yaml` | Export the plan as YAML |
 | POST | `/api/taskrunner/refine` | Start background user-input → task-spec refinement; progress arrives via `refine` WS events or GET polling |

@@ -716,7 +716,8 @@ async def test_an_app_cannot_export_a_slot_it_does_not_own():
     resp = await se.api_chat_slot_export(_request(state, app="my-app"))
 
     assert resp.status == 404
-    assert json.loads(resp.body)["code"] == "export_slot_not_found"
+    # The per-slot checkpoint's body, so the handler and the checkpoint agree.
+    assert json.loads(resp.body) == {"error": "not found", "code": "slot_not_found"}
 
 
 @pytest.mark.asyncio
@@ -1082,9 +1083,9 @@ async def test_an_app_cannot_export_a_channel_linked_slot_it_owns():
     resp = await se.api_chat_slot_export(_request(state, app="my-app"))
 
     assert resp.status == 404
-    # Indistinguishable from an unknown slot: a separate code would let an app
+    # Indistinguishable from an unknown slot: a separate body would let an app
     # learn which of its slots carry a channel link.
-    assert json.loads(resp.body)["code"] == "export_slot_not_found"
+    assert json.loads(resp.body) == {"error": "not found", "code": "slot_not_found"}
 
 
 @pytest.mark.asyncio

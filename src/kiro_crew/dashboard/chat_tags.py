@@ -39,6 +39,11 @@ from kiro_crew.dashboard.chat_utils import slot_history_key
 from kiro_crew.dashboard.create_rate_limit import TAG_COLUMN_CREATE, TAG_CREATE, allow_create
 from kiro_crew.dashboard.handlers._shared import _owner_denial_response, read_bounded_json
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+from kiro_crew.dashboard.slot_ownership import (
+    audit_app_slot_denial,
+    deny_app_slot_access,
+    slot_not_found,
+)
 from kiro_crew.dashboard.state import DashboardState, mint_tags_revision
 from kiro_crew.dashboard.token_auth import (
     MEMBER_CHAT_PRINCIPAL_KEY,
@@ -1352,20 +1357,8 @@ async def api_chat_slot_tags(request: web.Request) -> web.Response:
     if refused is not None:
         return refused
     request_app = effective_request_app(state, request)
-    if request_app and getattr(slot, "_app", "") != request_app:
-        sel().log_api_access(
-            caller=request_app,
-            operation="chat.slot_tags",
-            outcome="denied",
-            source="app_isolation",
-            resources=f"slot={slot.key}",
-            error=(
-                "app cannot access unscoped slots"
-                if not getattr(slot, "_app", "")
-                else "app does not own this slot"
-            ),
-        )
-        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+    if (denied := deny_app_slot_access(request_app, slot, slot.key, "chat.slot_tags")) is not None:
+        return denied
     # Capture the transcript key the lookup above just covered, BEFORE the
     # body-parse and lock awaits: ``linked_session_key`` is rebound on
     # already-live slots with no ``running`` gate (cron completions, workflow
@@ -1380,15 +1373,10 @@ async def api_chat_slot_tags(request: web.Request) -> web.Response:
     # carry an app's tags into a conversation it cannot be shown to own. Same
     # indistinguishable 404, for the same reason.
     if not app_owns_transcript(state._slots, request_app, authorized_history_key):
-        sel().log_api_access(
-            caller=request_app,
-            operation="chat.slot_tags",
-            outcome="denied",
-            source="app_isolation",
-            resources=f"slot={slot.key}",
-            error="app does not own this slot's transcript",
+        audit_app_slot_denial(
+            request_app, "chat.slot_tags", slot.key, "app does not own this slot's transcript"
         )
-        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+        return slot_not_found()
     body, body_err = await read_bounded_json(request)
     if body_err is not None:
         return body_err

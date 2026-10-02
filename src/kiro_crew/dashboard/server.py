@@ -161,6 +161,7 @@ from kiro_crew.dashboard.port_reclaim import (
     reclaim_stale_gateway_port,
 )
 from kiro_crew.dashboard.routes import register_all
+from kiro_crew.dashboard.slot_ownership import slot_ownership_middleware
 from kiro_crew.dashboard.slowloris import build_hardened_runner
 from kiro_crew.dashboard.state import _DEFAULT_PORT, DashboardState
 from kiro_crew.dashboard.token_auth import (
@@ -624,8 +625,22 @@ def audit_actor(request: web.Request, caller: str) -> str:
     here. This makes the ordinary product paths distinguishable, which is what
     the log could not do at all before; it is not a boundary against a forwarder
     that is deliberately hiding.
+
+    An APP-token request is filed under the app's name, read from the ``app``
+    claim ``token_auth_middleware`` publishes, rather than under ``caller``:
+    otherwise every app call reads as the person's own action. That is the name
+    every app-isolation row and the deny-audit boundary already record. An
+    internal-secret request whose app claim was DERIVED from the calling session
+    (a managed tool call made by an app's agent) keeps its transport in the
+    label, ``<caller>:<app>``, so it is never filed as the app's own client. A
+    request that carries no claim (the claim is ``""`` for the dashboard user,
+    absent before token auth runs) keeps ``caller``.
     """
-    return f"{caller}{_VIA_PROXY_SUFFIX}" if is_proxied_request(request) else caller
+    request_app = request.get("app", "")
+    actor = caller
+    if isinstance(request_app, str) and request_app:
+        actor = f"{caller}:{request_app}" if request.get("internal_auth") is True else request_app
+    return f"{actor}{_VIA_PROXY_SUFFIX}" if is_proxied_request(request) else actor
 
 
 async def _audit_denied(caller: str, request: web.Request, error: str) -> None:
@@ -754,8 +769,10 @@ def _make_deny_audit_middleware(caller: str) -> Callable:
                 # already carries method, path and caller; what a claimed record
                 # adds is the deny site's own explanation, which by definition
                 # is missing here.
+                # ``audit_actor`` adds the app claim itself, so pass the
+                # transport label only and the app is named once.
                 await _audit_denied(
-                    request.get("app") or request.get("user") or caller,
+                    request.get("user") or caller,
                     request,
                     f"refused with {exc.status} {exc.reason} before the audit middleware",
                 )
@@ -6384,6 +6401,10 @@ async def start_dashboard(
                 tailnet_trust=_tailnet_trust,
             ),
             sel_audit_middleware,
+            # Inner to token auth (it reads the ``app`` claim) and to the audit
+            # record: every /api/chat/slots/{slot}/* route takes one app-ownership
+            # decision here before its handler runs (dashboard/slot_ownership.py).
+            slot_ownership_middleware,
             spa_fallback,
         ]
 
@@ -7502,6 +7523,9 @@ async def start_api_server(
             tailnet_trust=_tailnet_trust,
         ),
         sel_audit_middleware,
+        # Same per-slot app-ownership checkpoint as the dashboard chain, so a
+        # per-slot route registered on this server is decided the same way.
+        slot_ownership_middleware,
     ]
 
     _register_mcp_routes(app)

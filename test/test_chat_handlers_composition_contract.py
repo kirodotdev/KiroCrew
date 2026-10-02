@@ -38,7 +38,7 @@ from chat_test_helpers import _make_state
 from source_corpus import repo_files_named, repo_root
 
 import kiro_crew.dashboard.chat_handlers as ch
-from kiro_crew.dashboard import chat_api
+from kiro_crew.dashboard import chat_api, slot_ownership
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 _FACADE = ch.__name__
@@ -46,7 +46,8 @@ _FACADE_PATH = Path(ch.__file__).resolve()
 
 #: Every module-level name ``chat_handlers`` bound at the base the split was cut
 #: from: what it defined and what it imported, private names included, because tests
-#: and production read private names off it too.
+#: and production read private names off it too. The per-slot app ownership helpers
+#: that ``slot_ownership`` holds instead are not all in it.
 _BASE_NAMES = frozenset("""
         ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS ADOPT_PEER_MODE_UNKNOWN ADOPT_TARGET_UNKNOWN
         ARTIFACT_SLUG_RE AUTOCOMPACT_PCT_MAX AUTOCOMPACT_PCT_MIN AcpModelUnavailable AcpProvider
@@ -57,7 +58,7 @@ _BASE_NAMES = frozenset("""
         NamedTuple OversizedRecord Path RESERVED_ROW_META_KEYS RemoteTurnError ResumeOutcome
         ResumeRefusal SESSION_RELOAD_KIND SESSION_START_FAILED_KIND SLOT_DETAIL_MAX_LIMIT
         STEER_AUTO STEER_REQUEUED STEER_STEERED SUGGEST_FOLLOWUP_SCHEMA SYNTHETIC_RECOVERY_KIND
-        SelectionChange SlotCloseError SlotOrigin SplitlinesBoundaryRecord TURN_ACTOR_META_KEY
+        SelectionChange SlotCloseError SplitlinesBoundaryRecord TURN_ACTOR_META_KEY
         TYPE_CHECKING TranscriptRevisionChanged UnknownMemoryStore ValidationError
         _CREATABLE_MODES _ChatSlot _CommitToken _DEFERRED_PLAIN_CREATE_KNOWN_KEYS
         _DurablePrefixMismatch _FLUSH_SNAPSHOT_RETRIES _FOLLOWUP_TEXT_FIELDS
@@ -68,17 +69,17 @@ _BASE_NAMES = frozenset("""
         _SLOT_SCOPED_TRUST_MODES _SOURCE_CTRL_RE _STRUCTURED_CONTENT_MAX_CHARS
         _STRUCTURED_CONTENT_PLACEHOLDER _TEARDOWN_INCOMPLETE_WARNING _TRANSIENT_ROLES
         _TURN_OPENER_ROLES _TURN_OPENING_INJECT_KINDS _UNOWED_WINDOW_ROLES _UNPINNED _UNSET
-        _app_cancel_denied _app_may_send_to_slot _app_slot_is_local_user_session
+        _app_cancel_denied _app_may_send_to_slot
         _append_unflushed_tail _append_unflushed_tail_from_offset _apply_remote_pick
         _apply_remote_pick_locked _apply_source_link_unlink _attach_variants
         _audit_source_link_unlink _autocompact_txn_lock _autocompact_txn_locks
         _await_guarded_history_write _bounded_slot_page _broadcast_context_reset
         _broadcast_expired_oauth_banners _build_pending_context_entry _build_stream_chunk
-        _bump_slot_tags_revision _cancel_target _check_slot_app_ownership _close_slot
+        _bump_slot_tags_revision _cancel_target _close_slot
         _coerce_requested_mode _collapse_wire_rows _compaction_in_flight
         _configured_backend_for_slot _context_reading _context_snapshot_fields
         _context_snapshot_fields_inner _context_usage_payload _deny_app_yolo _deny_approval_mode
-        _deny_cross_app_slot_access _deny_trust_pattern _discard_held_note
+        _deny_trust_pattern _discard_held_note
         _durable_prefix_counter _edit_queued_by_id _emit_agent_assignment _end_trust_scope
         _end_trust_scopes _enqueue_pending_context _finite_number _generate_state
         _get_pattern_from_pending _has_conversation _has_validated_effort_marker
@@ -122,7 +123,7 @@ _BASE_NAMES = frozenset("""
         api_chat_slot_source_link_unlink api_chat_slot_source_links api_chat_slot_stop
         api_chat_slot_summary api_chat_slot_summary_generate api_chat_slot_workspace
         api_chat_slots api_chat_slots_cleanup api_chat_slots_model api_recent_projects
-        app_permissions apply_adopted_backfill approval_mode_permitted asyncio attachment_meta
+        apply_adopted_backfill approval_mode_permitted asyncio attachment_meta
         base_consent_pattern base_trust_patterns cached_project_agent_names canonical_key
         cap_effort_capability_levels capabilities_of carry_provenance channel_slot_name
         chat_message_frame close_slot compaction_in_flight config_dir context_entry_expired
@@ -312,14 +313,14 @@ def _app_with(state, *routes_: tuple[str, str, object], app_claim: str = "") -> 
 
 
 @pytest.mark.asyncio
-async def test_deleting_a_missing_slot_answers_a_bare_not_found(tmp_path) -> None:
-    """The tab-close client reads any 404 as "already gone"; the body carries no code."""
+async def test_deleting_a_missing_slot_answers_the_uniform_not_found(tmp_path) -> None:
+    """The tab-close client reads any 404 as "already gone"; the body is the uniform one."""
     state = _make_state(tmp_path)
     app = _app_with(state, ("DELETE", "/api/chat/slots/{slot}", ch.api_chat_slot_delete))
     async with TestClient(TestServer(app)) as client:
         resp = await client.delete("/api/chat/slots/nope")
         assert resp.status == 404
-        assert await resp.json() == {"error": "not found"}
+        assert await resp.json() == {"error": "not found", "code": "slot_not_found"}
 
 
 @pytest.mark.parametrize("owner", ["other-app", ""], ids=["foreign", "unscoped"])
@@ -328,10 +329,9 @@ async def test_an_app_cannot_delete_a_slot_it_does_not_own(
     tmp_path, monkeypatch, owner: str
 ) -> None:
     """A slot an app does not own reads exactly like a missing one, and the true
-    reason goes to the audit log instead. An unscoped slot fails the ownership test
-    first, so it is audited with the same reason as a foreign one."""
+    reason goes to the audit log instead, recorded by the ownership decision."""
     audit = MagicMock()
-    monkeypatch.setattr(ch, "sel", lambda: audit)
+    monkeypatch.setattr(slot_ownership, "sel", lambda: audit)
     state = _make_state(tmp_path)
     slot = state.get_or_create_slot("s1")
     slot._app = owner
@@ -341,7 +341,7 @@ async def test_an_app_cannot_delete_a_slot_it_does_not_own(
     async with TestClient(TestServer(app)) as client:
         resp = await client.delete("/api/chat/slots/s1")
         assert resp.status == 404
-        assert await resp.json() == {"error": "not found"}
+        assert await resp.json() == {"error": "not found", "code": "slot_not_found"}
     assert state._slots.get("s1") is slot
     audit.log_api_access.assert_called_once_with(
         caller="my-app",
@@ -349,7 +349,7 @@ async def test_an_app_cannot_delete_a_slot_it_does_not_own(
         outcome="denied",
         source="app_isolation",
         resources="slot=s1",
-        error="app does not own this slot",
+        error="app does not own this slot" if owner else "app cannot access unscoped slots",
     )
 
 

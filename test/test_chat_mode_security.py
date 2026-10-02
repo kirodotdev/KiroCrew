@@ -42,7 +42,6 @@ from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard import chat_persistence, chat_runner, session_control
 from kiro_crew.dashboard.chat_delivery import TURN_ACTOR_META_KEY, queue_for_next_turn
 from kiro_crew.dashboard.chat_handlers import (
-    _app_may_send_to_slot,
     api_chat,
     api_chat_mode,
     api_chat_slot_approve,
@@ -62,6 +61,7 @@ from kiro_crew.dashboard.chat_utils import (
     _dequeue_next_message,
 )
 from kiro_crew.dashboard.handlers.sessions import api_approval_resolve
+from kiro_crew.dashboard.slot_ownership import app_may_control_session
 from kiro_crew.dashboard.slot_queue_repository import (
     durable_queue_entries,
     sanitize_restored_queue,
@@ -217,48 +217,25 @@ def _make_app_control_target(state, target: str):
 
 
 @pytest.mark.parametrize(("target", "allowed"), _APP_CONTROL_TARGETS)
-@pytest.mark.asyncio
-async def test_app_send_target_boundary(state, target: str, allowed: bool) -> None:
+def test_app_send_target_boundary(state, target: str, allowed: bool) -> None:
     slot = _make_app_control_target(state, target)
-    with patch(
-        "kiro_crew.apps.permissions.app_can_manage_session_approvals",
-        return_value=True,
-    ):
-        assert await _app_may_send_to_slot("crew-keyboard", slot) is allowed
+    assert app_may_control_session("crew-keyboard", slot, True) is allowed
 
 
-@pytest.mark.asyncio
-async def test_app_without_grant_cannot_send_to_user_slot(state) -> None:
+def test_app_without_grant_cannot_send_to_user_slot(state) -> None:
     slot = state.get_or_create_slot("s1", origin=SlotOrigin.USER)
-    with patch(
-        "kiro_crew.apps.permissions.app_can_manage_session_approvals",
-        return_value=False,
-    ):
-        assert await _app_may_send_to_slot("crew-keyboard", slot) is False
+    assert app_may_control_session("crew-keyboard", slot, False) is False
 
 
-@pytest.mark.asyncio
-async def test_app_cannot_send_to_another_apps_slot(state) -> None:
+def test_app_cannot_send_to_another_apps_slot(state) -> None:
+    """The grant never crosses into another app's session."""
     slot = state.get_or_create_slot("s1", app="other-app")
-    check_grant = MagicMock(return_value=True)
-    with patch(
-        "kiro_crew.apps.permissions.app_can_manage_session_approvals",
-        check_grant,
-    ):
-        assert await _app_may_send_to_slot("crew-keyboard", slot) is False
-    check_grant.assert_not_called()
+    assert app_may_control_session("crew-keyboard", slot, True) is False
 
 
-@pytest.mark.asyncio
-async def test_app_keeps_own_slot_send_without_session_grant(state) -> None:
+def test_app_keeps_own_slot_send_without_session_grant(state) -> None:
     slot = state.get_or_create_slot("s1", app="crew-keyboard")
-    check_grant = MagicMock(return_value=False)
-    with patch(
-        "kiro_crew.apps.permissions.app_can_manage_session_approvals",
-        check_grant,
-    ):
-        assert await _app_may_send_to_slot("crew-keyboard", slot) is True
-    check_grant.assert_not_called()
+    assert app_may_control_session("crew-keyboard", slot, False) is True
 
 
 @pytest.mark.asyncio
@@ -422,7 +399,6 @@ async def test_app_on_its_own_slot_keeps_agent_and_theme_writes(state) -> None:
 
     assert sent.status == 200, sent.data
     sent.run_chat.assert_called_once()
-    sent.grant_check.assert_not_called()
     assert _settings(slot) == ("researcher", "custom-pack", True, _CONSENT_SHA)
 
 
@@ -827,10 +803,17 @@ async def test_app_send_refused_when_the_slot_closes_during_the_permission_read(
             resp = await send
             data = await resp.json()
 
-    assert resp.status == 404
-    assert data["code"] == "slot_not_found"
-    run_chat.assert_not_called()
     assert _user_rows(slot) == []
+    if closes == "begin-close":
+        assert resp.status == 404
+        assert data["code"] == "slot_not_found"
+        run_chat.assert_not_called()
+    else:
+        # A slot removed before the lookup leaves a free name with no
+        # transcript; the app may only open its own session under it.
+        current = state._slots.get("s1")
+        assert current is not slot
+        assert current is None or current._app == "crew-keyboard"
 
 
 @pytest.mark.asyncio

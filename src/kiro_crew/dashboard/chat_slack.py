@@ -26,6 +26,7 @@ from kiro_crew.dashboard.chat_utils import (
     remember_slack_options,
     slack_options_owner_keys_snapshot,
 )
+from kiro_crew.dashboard.slot_ownership import checkpoint_slot_replaced, slot_not_found
 from kiro_crew.dashboard.state import (
     DashboardState,
     _expected_binding,
@@ -792,8 +793,10 @@ async def api_chat_slot_slack_unlink(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     name = request.match_info.get("name") or request.match_info.get("slot", "")
     slot = state.get_slot(name) or state._slots.get(name)
-    if not slot:
-        return web.json_response({"error": "not found"}, status=404)
+    # Reached from mirror-unlink after its body read, so the slot found now must
+    # be the one the per-slot checkpoint judged.
+    if not slot or checkpoint_slot_replaced(request, slot):
+        return slot_not_found()
 
     # Authoritative key = the slot's own session key. Deriving it from the slot
     # NAME instead would build "dashboard:slack:<ts>" for a channel-born slot,

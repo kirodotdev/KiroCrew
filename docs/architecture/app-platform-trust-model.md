@@ -130,6 +130,25 @@ prevents one app call from silently widening every session, and are limited to
 Normal, Reads and Trust. YOLO is a process-global override: an app token can
 neither arm it nor revoke it, so it stays a dashboard-only decision.
 
+Every `/api/chat/slots/{slot}/*` route takes the same ownership decision before
+its handler runs (`dashboard/slot_ownership.py`). This holds because a
+`permissions.api` entry such as `/api/chat` matches that whole family. An app
+passes only on a slot it owns that still runs on its own session (a task-runner
+result tab's own session is the one minted for it). Approving or
+denying a pending tool request is the one per-slot action the `sessionApproval`
+grant also reaches on a local user session. Any other app, on any other slot,
+gets the same `404 slot_not_found` a missing slot gets, and a refusal for a slot
+that exists is recorded in the security-event log. The decision is keyed by the
+slot in the path. The `/api/approvals` and `/api/sessions` families and
+`POST /v1/chat/completions` are outside it. A request to `POST /api/chat`,
+`POST /api/chat/slots` or the resume route that names a slot to create is
+decided the same way before anything is created. A persisted transcript that
+records a different app, or none, counts as not owned, and so do member, cron and
+workflow keys and a key that matches a live slot's key or transcript only up to
+letter case. So an app cannot reopen a closed user session as
+its own, or hold a key a scheduled job's results are bound to. The full contract
+is in [App Kit platform contracts §13](../system-specs/modules/app-kit-platform.md).
+
 The guard reads the live manifest so that removing the flag revokes the grant at
 once. Live-read is not a grant path for this flag: `update_app` compares the old
 and new manifests, and a version that newly declares `sessionApproval` on an

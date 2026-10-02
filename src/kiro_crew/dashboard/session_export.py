@@ -88,6 +88,7 @@ from kiro_crew.dashboard.session_transfer import (
     release_bundle_files,
     write_bundle_file,
 )
+from kiro_crew.dashboard.slot_ownership import deny_app_slot_access, slot_not_found
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.sel import sel
 
@@ -328,6 +329,9 @@ async def api_chat_slot_export(request: web.Request) -> web.StreamResponse:
     slot = state._slots.get(slot_key)
     if slot is None:
         _audit("denied", error="slot not found")
+        if request_app:
+            # The per-slot checkpoint's body: an app gets one 404 on this route.
+            return slot_not_found()
         return web.json_response(
             {"error": "session not found", "code": "export_slot_not_found"}, status=404
         )
@@ -338,12 +342,12 @@ async def api_chat_slot_export(request: web.Request) -> web.StreamResponse:
     # exfiltration path straight out of the app sandbox. 404 rather than 403: a
     # slot owned by another app has to be indistinguishable from one that does not
     # exist, or the status code itself enumerates slots across the isolation
-    # boundary (CWE-204). The real reason is recorded server-side instead.
-    if request_app and (not getattr(slot, "_app", "") or slot._app != request_app):
-        _audit("denied", error=f"app {request_app!r} does not own this slot")
-        return web.json_response(
-            {"error": "session not found", "code": "export_slot_not_found"}, status=404
-        )
+    # boundary (CWE-204). The real reason is recorded server-side instead. The
+    # body is the per-slot checkpoint's, which has already refused such a caller
+    # before this handler runs; this catches the handler mounted outside the chain.
+    denied = deny_app_slot_access(request_app, slot, slot_key, "chat.slot_export")
+    if denied is not None:
+        return denied
     # Owning the SLOT is not owning the TRANSCRIPT. A channel-linked slot displays
     # a conversation that lives on the channel's own session, and
     # ``get_or_create_slot`` auto-binds that link from a channel-shaped NAME --
@@ -353,13 +357,11 @@ async def api_chat_slot_export(request: web.Request) -> web.StreamResponse:
     # closed, because the cost of being wrong is a foreign conversation leaving the
     # sandbox. The dashboard owner is unaffected -- they are entitled to both.
     #
-    # Same 404 as above, for the same reason: a distinguishable code would let an
-    # app learn which of its slots carry a channel link.
+    # The checkpoint's 404, for the same reason: a distinguishable body would let
+    # an app learn which of its slots carry a channel link.
     if request_app and getattr(slot, "linked_session_key", ""):
         _audit("denied", error=f"app {request_app!r} may not export a channel-linked slot")
-        return web.json_response(
-            {"error": "session not found", "code": "export_slot_not_found"}, status=404
-        )
+        return slot_not_found()
 
     def _refuse_restricted(reason: str) -> web.Response:
         # An incognito or temporary transcript is kept for the user's own History

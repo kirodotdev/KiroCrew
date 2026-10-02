@@ -6,7 +6,7 @@ import asyncio
 import logging
 import re
 import unicodedata
-from typing import Any
+from typing import Any, Callable
 
 from aiohttp import web
 
@@ -21,6 +21,7 @@ from kiro_crew.dashboard.chat_utils import (
     slot_history_key,
     tighten_replacement_to_restricted_original,
 )
+from kiro_crew.dashboard.slot_ownership import slot_not_found
 from kiro_crew.dashboard.state import NEW_SESSION_TITLE, DashboardState, _ChatSlot
 from kiro_crew.execution_context import canonical_memory_mode, stricter_memory_mode
 from kiro_crew.history import is_incognito_transcript
@@ -848,7 +849,12 @@ async def _generate_refreshed_title(
     return title
 
 
-async def _persist_title(state: DashboardState, slot: _ChatSlot) -> bool:
+async def _persist_title(
+    state: DashboardState,
+    slot: _ChatSlot,
+    *,
+    still_current: Callable[[], bool] | None = None,
+) -> bool:
     """Save the slot title (and its provenance) to the conversation history file.
 
     ``update_metadata`` -> ``_locked`` (cross-process flock acquire +
@@ -866,7 +872,9 @@ async def _persist_title(state: DashboardState, slot: _ChatSlot) -> bool:
     conversation log to write to — in which case there is nothing a restart
     could reload either), ``False`` when the off-thread write failed. Callers
     that must not proceed on a non-durable mark (the refresh's token budget)
-    check the result; best-effort callers ignore it.
+    check the result; best-effort callers ignore it. ``still_current`` is the
+    app request's identity predicate, checked inside the metadata write lock;
+    background and dashboard callers leave it unset.
 
     WRITE-ORDER GUARD: two concurrent persists (a background titler's and a
     manual rename's) race on worker threads, and flock acquisition order is
@@ -921,6 +929,10 @@ async def _persist_title(state: DashboardState, slot: _ChatSlot) -> bool:
         # leaves an ordinary line's mode to the transcript save.
 
         def _fold_memory_mode(metadata: dict) -> bool:
+            # App-triggered generation must still own the live slot when the
+            # worker obtains the transcript lock, not only when it is queued.
+            if still_current is not None and not still_current():
+                return False
             retained_mode = stricter_memory_mode(
                 canonical_memory_mode(metadata.get("memory_mode")), slot_mode
             )
@@ -1400,6 +1412,9 @@ async def api_chat_slot_generate_title(request: web.Request) -> web.Response:
         title = _fallback_title_from_messages(slot.messages)
         fallback_is_placeholder = title == NEW_SESSION_TITLE
 
+    if request.get("app", "") and state._slots.get(name) is not slot:
+        return slot_not_found()
+
     # RACE GUARD: a manual rename landing during the generation await bumps the
     # epoch, and its name outranks ours -- stand down instead of overwriting it,
     # the same contract ``maybe_refresh_title`` states in its docstring. The
@@ -1425,7 +1440,12 @@ async def api_chat_slot_generate_title(request: web.Request) -> web.Response:
         slot._title_low_signal = False
         slot._title_epoch += 1
         epoch = slot._title_epoch
-        await _persist_title(state, slot)
+        if request.get("app", ""):
+            await _persist_title(state, slot, still_current=lambda: state._slots.get(name) is slot)
+            if state._slots.get(name) is not slot:
+                return slot_not_found()
+        else:
+            await _persist_title(state, slot)
         # RE-CHECK after the persist await, mirroring the refresh path: a rename
         # landing during the write has already pushed ITS name, so pushing our
         # now-stale local ``title`` would overwrite it in the sidebar (the disk
@@ -1470,8 +1490,9 @@ async def api_chat_slot_rename(request: web.Request) -> web.Response:
     # projected (redacted) title to patch-capable tabs in place of a full list.
     state.push_slot_title(slot.key, title, full=False)
     state.push_slot_patch(slot.key, ("title",))
+    request_app = request.get("app", "")
     sel().log_api_access(
-        caller="dashboard",
+        caller=request_app or "dashboard",
         operation="chat.slot_rename",
         outcome="allowed",
         source="dashboard",

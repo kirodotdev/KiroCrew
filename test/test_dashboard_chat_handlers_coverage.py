@@ -42,7 +42,11 @@ MOD = "kiro_crew.dashboard.chat_handlers"
 def _sel():
     """Neutralize the security event log (it otherwise opens the real store)."""
     fake = MagicMock()
-    with patch(f"{MOD}.sel", return_value=fake):
+    # The app-isolation denials are written by the shared per-slot decision.
+    with (
+        patch(f"{MOD}.sel", return_value=fake),
+        patch("kiro_crew.dashboard.slot_ownership.sel", return_value=fake),
+    ):
         yield fake
 
 

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import enum
 import json
 import logging
 import math
@@ -29,7 +28,6 @@ from kiro_crew.agent_discovery import cached_project_agent_names, warm_project_a
 from kiro_crew.agent_sdk.backends import ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS
 from kiro_crew.agent_sdk.capabilities import MODEL_NAMESPACE_ACP, capabilities_of
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
-from kiro_crew.apps import permissions as app_permissions
 from kiro_crew.config.loader import (
     AUTOCOMPACT_PCT_MAX,
     AUTOCOMPACT_PCT_MIN,
@@ -240,6 +238,23 @@ from kiro_crew.dashboard.slot_buffers import (
     note_hold_durable,
     persist_deferred_notes_sync,
 )
+from kiro_crew.dashboard.slot_ownership import (  # noqa: F401
+    SESSION_CONTROL_DENIED,
+    app_may_control_session,
+    app_new_key_refusal,
+    app_owns_slot_session,
+    app_owns_transcript_meta,
+    app_slot_is_local_user_session,
+    audit_app_slot_denial,
+    deny_app_session_control,
+    deny_app_slot_access,
+    deny_app_slot_session_access,
+    own_session_key,
+    read_session_grant,
+    session_grant,
+    slot_not_found,
+    transcript_acquisition_reason,
+)
 from kiro_crew.dashboard.slot_projection import (  # noqa: F401
     resolved_row_identity,
     stop_declined_armed,
@@ -248,7 +263,6 @@ from kiro_crew.dashboard.slot_queue_repository import warn_if_not_durable
 from kiro_crew.dashboard.state import (  # noqa: F401
     _MAX_DISMISSED_SOURCE_LINKS,
     DashboardState,
-    SlotOrigin,
     _ChatSlot,
     _mark_permission_resolved,
     _normalize_slot_key,
@@ -377,58 +391,79 @@ def _sweep_stale_permissions(slot: "_ChatSlot") -> None:
         )
 
 
-def _app_slot_is_local_user_session(slot: Any) -> bool:
-    """A USER-origin, dashboard-run slot: the only kind the grant reaches.
+async def _app_slot_acquisition_denial(
+    request: web.Request,
+    state: "DashboardState",
+    request_app: str,
+    slot_name: str,
+    operation: str,
+    *,
+    session_grant_route: bool,
+) -> tuple[web.Response | None, Any]:
+    """The app-ownership decision for a request that may CREATE the slot it names.
 
-    Judged on the EFFECTIVE session, not the origin alone -- a user-created slot
-    that a cron injection or channel binder re-linked to ``cron:<id>`` /
-    ``slack:<ts>`` runs its turns on that foreign session.
+    ``POST /api/chat`` and ``POST /api/chat/slots`` resolve their slot through
+    ``get_or_create_slot``, which refuses a memory-mode mismatch or an
+    under-construction slot with a 409. That 409 must not tell an app that a
+    session it may not see exists, or what its memory mode is, so for an app
+    caller this runs first, on a lookup that creates nothing, and answers the
+    same 404 for every refusal:
+
+    * a member, cron or workflow key (:func:`app_reserved_key_reason`): an app
+      never owns one, and the cron and workflow binders would link a slot under
+      that key to the job's or run's own transcript. So is a ``dashboard_`` key,
+      whose transcript is another slot's;
+    * a key under construction, in any letter case: a session being imported is
+      nobody's to name yet (the person still gets the 409; the app gets the 404,
+      with no audit row);
+    * a key that differs from another live slot's key, or names its transcript,
+      only in letter case (:func:`live_case_alias_reason`): on a case-insensitive
+      filesystem both slots would write one file;
+    * a live slot: the per-slot decision (owner app on its own session and
+      transcript, or the ``sessionApproval`` grant when *session_grant_route*);
+    * no live slot but a persisted transcript under that key: the transcript must
+      record this app (:func:`transcript_acquisition_reason`). Without it a closed
+      user session could be re-created as an app-owned slot that reopens and
+      appends to the user's transcript.
+
+    *slot_name* is the RAW requested name, normalized here exactly once, as
+    ``get_or_create_slot`` will normalize it. Returns ``(refusal, judged)``:
+    *judged* is the live slot the decision was made on, or ``None``. It is an
+    early out, not the last word: the caller awaits again before it acquires the
+    slot, so it re-checks synchronously that the slot it acquires is *judged*
+    (:func:`_acquired_slot_was_judged`) and keeps its own post-create check.
     """
-    if str(getattr(slot, "_origin", "") or "") != SlotOrigin.USER:
-        return False
-    if getattr(slot, "mode", "") == "member" or bool(getattr(slot, "is_remote", False)):
-        return False
-    return effective_session_key(slot).startswith("dashboard:")
-
-
-class SlotAccess(enum.Enum):
-    """How a session-API caller reaches a slot.
-
-    ``DASHBOARD`` and ``OWNER`` may change the slot's settings; ``GRANT`` is an
-    app on a user-owned session through ``permissions.sessionApproval`` and may
-    send a turn and nothing else; ``NONE`` is refused.
-    """
-
-    NONE = "none"
-    DASHBOARD = "dashboard"
-    OWNER = "owner"
-    GRANT = "grant"
-
-
-async def _app_slot_access(request_app: str, slot: Any) -> SlotAccess:
-    """Return how *request_app* reaches *slot* through the session APIs."""
-
-    if not request_app:
-        return SlotAccess.DASHBOARD
-    slot_app = str(getattr(slot, "_app", "") or "")
-    if slot_app:
-        return SlotAccess.OWNER if slot_app == request_app else SlotAccess.NONE
-    if not _app_slot_is_local_user_session(slot):
-        return SlotAccess.NONE
-    granted = await asyncio.to_thread(
-        app_permissions.app_can_manage_session_approvals,
-        request_app,
-    )
-    # Re-judge the slot AFTER the await: a cron/channel binder can re-link it
-    # while the permission read runs off-loop.
-    if granted and _app_slot_is_local_user_session(slot):
-        return SlotAccess.GRANT
-    return SlotAccess.NONE
-
-
-async def _app_may_send_to_slot(request_app: str, slot: Any) -> bool:
-    """Return whether an app may control this slot through session APIs."""
-    return await _app_slot_access(request_app, slot) is not SlotAccess.NONE
+    key = _normalize_slot_key(slot_name)
+    history_key = _history_key_for(key)
+    granted = False
+    if session_grant_route:
+        # Read before anything about the slot is looked at, for every app caller,
+        # so the cost of the answer does not depend on which session was named.
+        granted = await session_grant(request, request_app)
+    refused, reason = app_new_key_refusal(state, key, history_key)
+    if refused:
+        if reason:
+            audit_app_slot_denial(request_app, operation, key, reason)
+        return slot_not_found(), None
+    existing = state._slots.get(key)
+    if existing is not None:
+        allowed = (
+            app_may_control_session(request_app, existing, granted)
+            if session_grant_route
+            else app_owns_slot_session(request_app, existing)
+        )
+        if allowed:
+            return None, existing
+        audit_app_slot_denial(request_app, operation, key, SESSION_CONTROL_DENIED)
+        return slot_not_found(), None
+    log = state.conversation_log
+    if log is None:
+        return None, None
+    reason = await asyncio.to_thread(transcript_acquisition_reason, log, history_key, request_app)
+    if not reason:
+        return None, None
+    audit_app_slot_denial(request_app, operation, key, reason)
+    return slot_not_found(), None
 
 
 def _send_binds_agent(agent: str, slot: Any) -> bool:
@@ -458,6 +493,76 @@ async def _send_harness_command(message: str) -> str:
     cfg = await asyncio.to_thread(KiroCrewConfig.load)
     cc_provider = is_claude_code(cfg.agent.provider)
     return first_word if is_harness_slash_command(first_word, cc_provider=cc_provider) else ""
+
+
+async def _app_slot_acquisition_recheck(
+    state: "DashboardState", request_app: str, key: str, judged: Any, operation: str
+) -> web.Response | None:
+    """Recheck a named acquisition after setup, without publishing an unjudged slot.
+
+    A free key is reserved through the off-loop transcript read. Other acquirers
+    respect the construction marker, so a create-and-close cannot hide between
+    that read and the loop resuming. The caller must acquire synchronously after
+    this returns; releasing the marker does not yield.
+    """
+    history_key = _history_key_for(key)
+    refused, reason = app_new_key_refusal(state, key, history_key)
+    if not refused and not _acquired_slot_was_judged(state, key, judged):
+        refused, reason = True, "slot was replaced while the request was authorized"
+    if not refused and judged is None and state._slots.get(key) is None:
+        state.begin_slot_construction(key)
+        try:
+            log = state.conversation_log
+            if log is not None:
+                reason = await asyncio.to_thread(
+                    transcript_acquisition_reason, log, history_key, request_app
+                )
+                refused = bool(reason)
+        finally:
+            state.end_slot_construction(key)
+        if not refused:
+            refused, reason = app_new_key_refusal(state, key, history_key)
+        if not refused and state._slots.get(key) is not None:
+            refused, reason = True, "slot was replaced while the request was authorized"
+    if refused:
+        if reason:
+            audit_app_slot_denial(request_app, operation, key, reason)
+        return slot_not_found()
+    return None
+
+
+def _acquired_slot_was_judged(state: "DashboardState", key: str, judged: Any) -> bool:
+    """Whether the slot about to be acquired under *key* is the one ownership was decided on.
+
+    Synchronous, for the moment right before ``get_or_create_slot``. A slot the
+    pre-check approved that has since been closed would otherwise be minted
+    afresh, app-owned, on the key of a session the app was only granted to act
+    in -- and the post-create check passes on the new object. A slot that
+    appeared where none was judged is decided by the post-create check; that
+    acquisition performs no transcript-read await.
+    """
+    return judged is None or state._slots.get(key) is judged
+
+
+def _app_acquisition_conflict(
+    state: "DashboardState", request_app: str, key: str, judged: Any, exc: ValueError
+) -> web.Response:
+    """An app's answer when ``get_or_create_slot`` refused *key* with a ValueError.
+
+    The 409 text stays only for the app's OWN live slot, the one the pre-check
+    judged and that still holds *key*: it tells the app nothing it does not
+    already know, and a 404 there would tell it its live session is gone. Every
+    other conflict is the uniform 404, because its text names a session the app
+    may not see.
+    """
+    if (
+        judged is not None
+        and state._slots.get(key) is judged
+        and key not in getattr(state, "_slots_under_construction", ())
+        and app_owns_slot_session(request_app, judged)
+    ):
+        return web.json_response({"error": str(exc)}, status=409)
+    return slot_not_found()
 
 
 def _deny_app_yolo(request_app: str, operation: str) -> web.Response:
@@ -625,18 +730,23 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     if not isinstance(slot_name, str) and slot_name is not None:
         slot_name = None  # coerce non-string slot to auto-generate
     _requested_key = _normalize_slot_key(slot_name) if slot_name else ""
-    if request.get("app", "") and _requested_key.casefold().startswith(
-        members_mod.DM_SLOT_KEY_PREFIX
-    ):
-        sel().log_api_access(
-            caller=request.get("app", ""),
-            operation="chat_send",
-            outcome="denied",
-            source="app_isolation",
-            resources=f"slot={_requested_key}",
-            error="app cannot access member slots",
+    # Ownership BEFORE get_or_create_slot below, whose memory-mode and
+    # under-construction 409s would otherwise answer an app about a session it
+    # may not see. Member, cron and workflow keys are refused here too. The
+    # post-create check further down stays authoritative.
+    acquisition_judged: Any = None
+    request_app = request.get("app", "")
+    if request_app and slot_name:
+        denied, acquisition_judged = await _app_slot_acquisition_denial(
+            request,
+            state,
+            request_app,
+            slot_name,
+            "chat_send",
+            session_grant_route=True,
         )
-        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+        if denied is not None:
+            return denied
     existing = state._slots.get(_requested_key) if _requested_key else None
     # An app's auto-created slot must not land on a transcript it does not own:
     # its first save would stamp the app onto that transcript's metadata line.
@@ -648,7 +758,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             state, request.get("app", ""), "chat_send", (_history_key_for(_requested_key),)
         )
     ):
-        return _slot_not_found()
+        return slot_not_found()
     if (
         existing is not None
         and existing.mode == members_mod.DM_SLOT_MODE
@@ -746,6 +856,12 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         if request.get("app", "") or not relay_key or relay_key not in state._slots:
             return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
 
+    if request_app and _requested_key:
+        denied = await _app_slot_acquisition_recheck(
+            state, request_app, _requested_key, acquisition_judged, "chat_send"
+        )
+        if denied is not None:
+            return denied
     created_in_send = slot_name is None or _normalize_slot_key(slot_name) not in state._slots
     try:
         slot = state.get_or_create_slot(
@@ -768,6 +884,10 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             resources=f"slot={slot_name}",
             error=str(exc),
         )
+        if request_app:
+            return _app_acquisition_conflict(
+                state, request_app, _requested_key, acquisition_judged, exc
+            )
         return web.json_response({"error": str(exc)}, status=409)
     if cron_creator and created_in_send:
         # Attribute the slot to the cron that opened it, inside the synchronous
@@ -779,26 +899,14 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     # Apps keep access to their own slots. The sessionApproval grant lets an
     # enabled app send a turn into an existing user-owned slot. A response
     # option click is one such turn. The grant never crosses into another
-    # app's slot.
-    request_app = request.get("app", "")
-    access = await _app_slot_access(request_app, slot)
-    if access is SlotAccess.NONE:
-        slot_app = str(getattr(slot, "_app", "") or "")
-        sel().log_api_access(
-            caller=request_app,
-            operation="chat_send",
-            outcome="denied",
-            source="app_isolation",
-            resources=f"slot={slot.key}",
-            error=(
-                "app does not own this slot" if slot_app else "app cannot access unscoped slots"
-            ),
-        )
-        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+    # app's slot. The grant verdict is the one this request already read.
+    denied = await deny_app_session_control(request, request_app, slot, slot.key, "chat_send")
+    if denied is not None:
+        return denied
     # The dashboard user and the slot's owning app may change the slot's settings
     # through this route; the sessionApproval grant reaches a user's session to
     # send a turn and nothing else.
-    may_configure = access in (SlotAccess.DASHBOARD, SlotAccess.OWNER)
+    may_configure = not request_app or bool(getattr(slot, "_app", ""))
     steer = body.get("steer") if may_configure else None
     if not may_configure:
         # The dedicated agent route refuses an app on a slot it does not own, and
@@ -810,22 +918,19 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         command = await _send_harness_command(message)
         # The slot may have closed, or a cron or channel binder may have
         # re-linked it, during the permission and config reads; the grant
-        # reaches only a local user session (`_app_slot_access` re-judges after
-        # its own await for the same reason).
+        # reaches only a local user session.
         if (
             state._slots.get(slot.key) is not slot
             or slot.is_closing
-            or not _app_slot_is_local_user_session(slot)
+            or not app_slot_is_local_user_session(slot)
         ):
-            sel().log_api_access(
-                caller=request_app,
-                operation="chat_send",
-                outcome="denied",
-                source="app_isolation",
-                resources=f"slot={slot.key}",
-                error="slot closed or re-linked during the permission read",
+            audit_app_slot_denial(
+                request_app,
+                "chat_send",
+                slot.key,
+                "slot closed or re-linked during the permission read",
             )
-            return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+            return slot_not_found()
         # No await sits between this check and the agent write below for a slot
         # this grant reaches: the member awaits never run for one, and the
         # mismatch branch's awaits run only on a slot that already has an agent.
@@ -1705,17 +1810,9 @@ async def api_chat_slot_summary(request: web.Request) -> web.Response:
     # not make it readable. Dashboard users carry an explicit empty request_app
     # and are unaffected; an app token may only read summaries for slots it
     # created, never for unscoped slots.
-    request_app = request.get("app", "")
-    if request_app and (not slot._app or slot._app != request_app):
-        sel().log_api_access(
-            caller=request_app,
-            operation="slot_summary_read",
-            outcome="denied",
-            source="app_isolation",
-            resources=f"slot={name}",
-            error="app does not own this slot",
-        )
-        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+    denied = deny_app_slot_access(request.get("app", ""), slot, name, "slot_summary_read")
+    if denied is not None:
+        return denied
 
     cfg = await asyncio.to_thread(KiroCrewConfig.load)
     enabled = bool(cfg.session_summary.enabled)
@@ -1813,19 +1910,13 @@ async def api_chat_slot_summary_generate(request: web.Request) -> web.Response:
 
     # Same App Kit §5.2 isolation as the GET: generating is strictly more
     # privileged than reading, so it can never be the laxer of the two.
-    request_app = request.get("app", "")
-    if request_app and (not slot._app or slot._app != request_app):
-        sel().log_api_access(
-            caller=request_app,
-            operation="slot_summary_generate",
-            outcome="denied",
-            source="app_isolation",
-            resources=f"slot={name}",
-            error="app does not own this slot",
-        )
-        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+    denied = deny_app_slot_access(request.get("app", ""), slot, name, "slot_summary_generate")
+    if denied is not None:
+        return denied
 
     cfg = await asyncio.to_thread(KiroCrewConfig.load)
+    if request.get("app", "") and state._slots.get(name) is not slot:
+        return slot_not_found()
     if not cfg.session_summary.enabled:
         return web.json_response(
             {"error": "session summaries are switched off", "code": "summary_disabled"},
@@ -1853,7 +1944,18 @@ async def api_chat_slot_summary_generate(request: web.Request) -> web.Response:
             status=409,
         )
 
-    await generate_session_summary(state, slot, cfg=cfg, force=True)
+    if request.get("app", ""):
+        await generate_session_summary(
+            state,
+            slot,
+            cfg=cfg,
+            force=True,
+            still_current=lambda: state._slots.get(name) is slot,
+        )
+        if state._slots.get(name) is not slot:
+            return slot_not_found()
+    else:
+        await generate_session_summary(state, slot, cfg=cfg, force=True)
 
     # Read back rather than trusting the return value: a forced pass returns
     # False both when it produced nothing AND when the cached summary was
@@ -1862,6 +1964,8 @@ async def api_chat_slot_summary_generate(request: web.Request) -> web.Response:
     # ``memory_mode`` must not be answered with a sidecar left over from the
     # key's earlier persistent life.
     payload, stale = await read_cached_intent_summary(log, slot)
+    if request.get("app", "") and state._slots.get(name) is not slot:
+        return slot_not_found()
     if payload is None:
         return web.json_response(
             {"error": "could not summarize this session", "code": "summary_unavailable"},
@@ -1989,6 +2093,17 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             status=400,
         )
     request_app = request.get("app", "")
+    # Ownership of a NAMED slot for an app caller, before any refusal below can
+    # answer about it (get_or_create_slot's memory-mode 409 among them) and
+    # before anything is written. The post-create check stays authoritative.
+    acquisition_judged: Any = None
+    if request_app and name:
+        denied, acquisition_judged = await _app_slot_acquisition_denial(
+            request, state, request_app, str(name), "chat_slot_create", session_grant_route=False
+        )
+        if denied is not None:
+            return denied
+        existing_slot = state._slots.get(_normalize_slot_key(str(name)))
     if instance_id:
         # (1) Binding a session to a crew is a human act: it comes from the
         # composer's crew picker, which an app credential has no surface for. So
@@ -2409,7 +2524,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             state, request_app, "chat_slot_create", (_history_key_for(_requested_key),)
         )
     ):
-        return _slot_not_found()
+        return slot_not_found()
 
     if remote_slot_key and adopt_remote_slot:
         # The DECIDING idempotency check for an adopt. The one at the top of the
@@ -2456,6 +2571,13 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     )
     async with contextlib.AsyncExitStack() as creation_stack:
         request_deferred_flush = creation_stack.enter_context(state.suspend_slots_push())
+        if request_app and _requested_key:
+            denied = await _app_slot_acquisition_recheck(
+                state, request_app, _requested_key, acquisition_judged, "chat_slot_create"
+            )
+            if denied is not None:
+                return denied
+            is_new_slot = _requested_key not in state._slots
         try:
             slot = state.get_or_create_slot(
                 name,
@@ -2474,6 +2596,14 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                 count_user_session=not cron_creator,
             )
         except ValueError as exc:
+            if request_app:
+                return _app_acquisition_conflict(
+                    state,
+                    request_app,
+                    _normalize_slot_key(str(name)) if name else "",
+                    acquisition_judged,
+                    exc,
+                )
             return web.json_response({"error": str(exc)}, status=409)
         if cron_creator and is_new_slot:
             # Same attribution as the send auto-create: a cron-opened slot
@@ -2524,27 +2654,18 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         # consulting ownership, and everything below mutates it (folder, title,
         # artifact binding). Without this an app token could refile or retitle
         # another app's — or the dashboard's — session. A slot this request just
-        # created carries `_app == request_app`, so the new-slot path is
-        # unaffected; a dashboard caller (empty app) keeps full access.
+        # created carries `_app == request_app`, so it passes unless
+        # get_or_create_slot linked it to another conversation's session (the
+        # session half, same rule as every per-slot route); a dashboard caller
+        # (empty app) keeps full access.
         # `request_app` is read once at the top of the handler, because the remote
         # binding gate up there needs the same value before the peer is touched.
-        if request_app and slot._app != request_app:
-            sel().log_api_access(
-                caller=request_app,
-                operation="chat_slot_create",
-                outcome="denied",
-                source="app_isolation",
-                resources=f"slot={slot.key}",
-                error=(
-                    "app cannot access unscoped slots"
-                    if not slot._app
-                    else "app does not own this slot"
-                ),
-            )
-            # One code for BOTH reasons on purpose: a distinct code per reason
-            # would turn this 404 into an existence oracle for slots the caller
-            # may not know about. The prose stays in `error` for logs.
-            return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+        # One body for every reason on purpose: a distinct code per reason would
+        # turn this 404 into an existence oracle for slots the caller may not
+        # know about. The reason stays in the audit row.
+        denied = deny_app_slot_session_access(request_app, slot, slot.key, "chat_slot_create")
+        if denied is not None:
+            return denied
         # Pin title if explicitly provided (prevents auto-title from overwriting)
         title = (body.get("title") or "").strip()[:200] if isinstance(body, dict) else ""
         # An adopted session takes the PEER's title, ahead of anything the caller
@@ -3756,14 +3877,20 @@ def _make_stop_resolver(
 
 
 def _slot_not_found() -> web.Response:
-    """The one 404 every cancel-route refusal returns.
+    """The uniform per-slot 404, :func:`slot_ownership.slot_not_found`."""
+    return slot_not_found()
 
-    A denial and a genuinely missing slot MUST be byte-identical, or an app can
-    tell "this slot is not mine" from "this slot does not exist" and enumerate
-    foreign slot names. Single-sourced so the two cannot diverge; the shape
-    matches ``api_chat_slot_continue``.
+
+async def _app_may_send_to_slot(request_app: str, slot: Any) -> bool:
+    """Whether *request_app* may control *slot* through the session APIs.
+
+    The session-control rule (:func:`app_may_control_session`) on a live read of
+    the ``sessionApproval`` grant, judged after that read completes.
     """
-    return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+    if not request_app:
+        return True
+    granted = await read_session_grant(request_app)
+    return app_may_control_session(request_app, slot, granted)
 
 
 async def _app_claim_refused(
@@ -3832,8 +3959,8 @@ def _app_cancel_denied(
     ownership of the session the cancel would land on:
 
     1. the app owns the slot (App Kit §5.2, deny-by-default), and
-    2. the session about to be cancelled is still the slot's own dashboard
-       session, not one the app has no claim on.
+    2. the session about to be cancelled is still the slot's own session
+       (``slot_ownership.own_session_key``), not one the app has no claim on.
 
     Condition 2 is load-bearing. ``get_or_create_slot`` takes ``app`` and, for a
     name shaped like a channel session stem, resolves ``linked_session_key``
@@ -3851,30 +3978,19 @@ def _app_cancel_denied(
     A dashboard caller has no app scope and may cancel either kind.
 
     Shared by the cancel routes so /stop and /interrupt cannot drift onto two
-    policies.
+    policies. Condition 1 is :func:`deny_app_slot_access`, the decision the
+    per-slot checkpoint already made; condition 2 is layered on top of it.
     """
     request_app = request.get("app", "")
-    if not request_app:
+    denied = deny_app_slot_access(request_app, slot, slot.key, operation)
+    if denied is not None or not request_app:
+        return denied
+    if target_key == own_session_key(slot):
         return None
-
-    if request_app != slot._app:
-        reason = (
-            "app cannot access unscoped slots" if not slot._app else "app does not own this slot"
-        )
-    elif target_key != _history_key_for(slot.key):
-        reason = "app does not own the session this slot is linked to"
-    else:
-        return None
-
-    sel().log_api_access(
-        caller=request_app,
-        operation=operation,
-        outcome="denied",
-        source="app_isolation",
-        resources=f"slot={slot.key}",
-        error=reason,
+    audit_app_slot_denial(
+        request_app, operation, slot.key, "app does not own the session this slot is linked to"
     )
-    return _slot_not_found()
+    return slot_not_found()
 
 
 async def _settle_discarded_stage_deliveries(
@@ -4258,8 +4374,8 @@ async def api_chat_slot_stop(request: web.Request) -> web.Response:
     name = request.match_info["slot"]
     slot = state._slots.get(name)
     if not slot:
-        return _slot_not_found()
-    denied = _deny_cross_app_slot_access(request, slot, name, "slot_stop")
+        return slot_not_found()
+    denied = deny_app_slot_access(request.get("app", ""), slot, name, "slot_stop")
     if denied is not None:
         return denied
     # A peer-bound stop travels over the owner's tunnel and aborts a turn on the
@@ -4337,20 +4453,9 @@ async def api_chat_slot_continue(request: web.Request) -> web.Response:
     # indistinguishable 404 as the send path, so the response cannot be used to
     # probe which foreign slots exist.
     request_app = request.get("app", "")
-    if request_app and request_app != slot._app:
-        sel().log_api_access(
-            caller=request_app,
-            operation="chat_continue",
-            outcome="denied",
-            source="app_isolation",
-            resources=f"slot={slot.key}",
-            error=(
-                "app cannot access unscoped slots"
-                if not slot._app
-                else "app does not own this slot"
-            ),
-        )
-        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+    denied = deny_app_slot_access(request_app, slot, slot.key, "chat_continue")
+    if denied is not None:
+        return denied
 
     # A crew-bound slot has no local continue: it queues a synthetic turn that the
     # runner would dispatch on THIS machine, diverging from the peer. AFTER the
@@ -4613,7 +4718,7 @@ async def api_chat_slot_end_wait(request: web.Request) -> web.Response:
     slot = state._slots.get(name)
     if not slot:
         return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
-    denied = _deny_cross_app_slot_access(request, slot, name, "slot_end_wait")
+    denied = deny_app_slot_access(request.get("app", ""), slot, name, "slot_end_wait")
     if denied is not None:
         return denied
     body, body_err = await read_bounded_json(request, allow_absent=True)
@@ -4659,10 +4764,7 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
     name = request.match_info["slot"]
     slot = state._slots.get(name)
     if not slot:
-        return _slot_not_found()
-    denied = _deny_cross_app_slot_access(request, slot, name, "slot_interrupt")
-    if denied is not None:
-        return denied
+        return slot_not_found()
     # Before the _stop_state claim and the queue promotion below, both of which
     # mutate the slot ahead of stop_turn.
     # Resolved once, before the request-body await below, and used for both the
@@ -4705,7 +4807,7 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
             # by same-name recreation during either await must not let this stale
             # object dispatch work into the replacement's session namespace.
             if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_interrupt"):
-                return _slot_not_found()
+                return slot_not_found()
             if slot.running:
                 return web.json_response(
                     {"error": "slot started running", "code": "slot_running"}, status=409
@@ -4964,8 +5066,8 @@ async def api_chat_slot_queue_cancel(request: web.Request) -> web.Response:
     queue_id = request.match_info["queue_id"]
     slot = state._slots.get(name)
     if not slot:
-        return web.json_response({"error": "not found"}, status=404)
-    denied = _deny_cross_app_slot_access(request, slot, name, "slot_queue_cancel")
+        return slot_not_found()
+    denied = deny_app_slot_access(request.get("app", ""), slot, name, "slot_queue_cancel")
     if denied is not None:
         return denied
     # Read the entry's origin before removing it: a cancel puts the text back in
@@ -5006,8 +5108,8 @@ async def api_chat_slot_queue_edit(request: web.Request) -> web.Response:
     queue_id = request.match_info["queue_id"]
     slot = state._slots.get(name)
     if not slot:
-        return web.json_response({"error": "not found"}, status=404)
-    denied = _deny_cross_app_slot_access(request, slot, name, "slot_queue_edit")
+        return slot_not_found()
+    denied = deny_app_slot_access(request.get("app", ""), slot, name, "slot_queue_edit")
     if denied is not None:
         return denied
     body, body_err = await read_bounded_json(request, max_bytes=None)
@@ -5070,8 +5172,8 @@ async def api_chat_slot_queue_reorder(request: web.Request) -> web.Response:
     name = request.match_info["slot"]
     slot = state._slots.get(name)
     if not slot:
-        return web.json_response({"error": "not found"}, status=404)
-    denied = _deny_cross_app_slot_access(request, slot, name, "slot_queue_reorder")
+        return slot_not_found()
+    denied = deny_app_slot_access(request.get("app", ""), slot, name, "slot_queue_reorder")
     if denied is not None:
         return denied
     body, body_err = await read_bounded_json(request)
@@ -5455,7 +5557,7 @@ def _slot_replaced_while_queued(
     ``api_access`` denial (an app caller's under ``app_isolation``, a dashboard
     caller's like the tags handler's) and the caller answers the same 404 a
     missing slot gets, so a denial cannot be told from a name that never
-    existed (``_slot_not_found``).
+    existed (``slot_ownership.slot_not_found``).
     """
     if state._slots.get(name) is slot:
         return False
@@ -5539,8 +5641,8 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
     name = request.match_info["slot"]
     slot = state._slots.get(name)
     if not slot:
-        return web.json_response({"error": "not found"}, status=404)
-    denied = _deny_cross_app_slot_access(request, slot, name, "slot_agent")
+        return slot_not_found()
+    denied = deny_app_slot_access(request.get("app", ""), slot, name, "slot_agent")
     if denied is not None:
         return denied
     body, body_err = await read_bounded_json(request)
@@ -5622,7 +5724,7 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
         # ``name`` can be recreated for a different app while this request
         # queued, and every read of ``slot`` below would be of the stale one.
         if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_agent"):
-            return _slot_not_found()
+            return slot_not_found()
         # The session the switch resets — ``effective_session_key``, never
         # ``_history_key_for`` (see api_chat_slot_model): a channel- or
         # cron-born slot runs its turns under its linked key, and the
@@ -5641,7 +5743,7 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
         # Second lock-acquisition await, second re-check: a same-name
         # recreate lands during this wait just as easily as during the first.
         if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_agent"):
-            return _slot_not_found()
+            return slot_not_found()
         # App isolation on the SESSION, not just the slot (the cancel routes'
         # policy): slot ownership does not imply ownership of a linked
         # channel session, so an app caller may not switch the agent a
@@ -6668,8 +6770,8 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
     name = request.match_info["slot"]
     slot = state._slots.get(name)
     if not slot:
-        return web.json_response({"error": "not found"}, status=404)
-    denied = _deny_cross_app_slot_access(request, slot, name, "slot_model")
+        return slot_not_found()
+    denied = deny_app_slot_access(request.get("app", ""), slot, name, "slot_model")
     if denied is not None:
         return denied
     body, body_err = await read_bounded_json(request)
@@ -6744,7 +6846,7 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
         # ``name`` can be recreated for a different app while this request
         # queued, and every read of ``slot`` below would be of the stale one.
         if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_model"):
-            return _slot_not_found()
+            return slot_not_found()
         # The session the switch will probe and, on the reset path, tear
         # down. ``effective_session_key``, never ``_history_key_for`` (the
         # reload handler's rule): a channel- or cron-born slot runs its turns
@@ -6767,7 +6869,7 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
         # Two more lock-acquisition awaits, one re-check: nothing reads
         # ``slot`` between them, so a check after the last one covers both.
         if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_model"):
-            return _slot_not_found()
+            return slot_not_found()
         # App isolation on the SESSION, not just the slot (the cancel
         # routes' policy): slot ownership does not imply ownership of a
         # linked channel session, so an app caller may not switch the model
@@ -7179,10 +7281,10 @@ async def api_chat_slot_autocompact(request: web.Request) -> web.Response:
     # Session-aware ownership gate, not the slot-only check: the POST writes the
     # override keyed by effective_session_key(slot), so a linked app-owned slot
     # (channel stem) would let an app modify a foreign session's threshold and
-    # metadata. _check_slot_app_ownership authorizes the key the write actually
+    # metadata. deny_app_slot_session_access authorizes the key the write actually
     # lands on, same as /context and /note.
     request_app = request.get("app", "")
-    denied = _check_slot_app_ownership(slot, name, request_app, "slot_autocompact")
+    denied = deny_app_slot_session_access(request_app, slot, name, "slot_autocompact")
     if denied is not None:
         return denied
     if request.method == "GET":
@@ -7665,8 +7767,8 @@ async def api_chat_slot_selection_capabilities(request: web.Request) -> web.Resp
     name = request.match_info["slot"]
     slot = state._slots.get(name)
     if slot is None:
-        return _slot_not_found()
-    denied = _deny_cross_app_slot_access(request, slot, name, "slot_selection_capabilities")
+        return slot_not_found()
+    denied = deny_app_slot_access(request.get("app", ""), slot, name, "slot_selection_capabilities")
     if denied is not None:
         return denied
     if slot.is_remote:
@@ -7805,8 +7907,8 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
     name = request.match_info["slot"]
     slot = state._slots.get(name)
     if not slot:
-        return web.json_response({"error": "not found"}, status=404)
-    denied = _deny_cross_app_slot_access(request, slot, name, "slot_reasoning_effort")
+        return slot_not_found()
+    denied = deny_app_slot_access(request.get("app", ""), slot, name, "slot_reasoning_effort")
     if denied is not None:
         return denied
     body, body_err = await read_bounded_json(request)
@@ -7845,7 +7947,7 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
         # ``name`` can be recreated for a different app while this request
         # queued, and every read of ``slot`` below would be of the stale one.
         if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_reasoning_effort"):
-            return _slot_not_found()
+            return slot_not_found()
         # The session the switch will probe and, on the fallback path, reset —
         # ``effective_session_key``, never ``_history_key_for`` (see
         # api_chat_slot_model): a channel- or cron-born slot runs its turns
@@ -7865,7 +7967,7 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
         # Second lock-acquisition await, second re-check: a same-name
         # recreate lands during this wait just as easily as during the first.
         if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_reasoning_effort"):
-            return _slot_not_found()
+            return slot_not_found()
         # App isolation on the SESSION, not just the slot (the cancel routes'
         # policy), BEFORE the same-value fast path so the denial is
         # indistinguishable from a missing slot for every request shape.
@@ -8171,7 +8273,7 @@ async def api_chat_slot_reload(request: web.Request) -> web.Response:
     name = request.match_info["slot"]
     slot = state._slots.get(name)
     if not slot:
-        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+        return slot_not_found()
 
     def _still_ours(_after_reset: bool) -> bool:
         # Re-authorize after every await: ``name`` can be recreated for a
@@ -8263,7 +8365,7 @@ async def reload_slot_session(
         # Re-authorize after the await above. A mismatch here is
         # indistinguishable from a missing slot.
         if not still_ours(False):
-            return _slot_not_found()
+            return slot_not_found()
         # The session the reload will tear down. ``effective_session_key``,
         # never ``_history_key_for``: a channel- or cron-born slot runs its
         # turns under its linked key, and the dashboard-prefixed spelling
@@ -8286,7 +8388,7 @@ async def reload_slot_session(
         # await and leave the exact gap it exists to close open on the
         # second.
         if not still_ours(False):
-            return _slot_not_found()
+            return slot_not_found()
         # Re-derive rather than trust the captured session_key: it names a
         # MUTABLE attribute (slot.linked_session_key), so a cron/channel
         # rebind landing on the SAME slot object during the session-lock wait
@@ -8326,7 +8428,7 @@ async def reload_slot_session(
         # is the last pre-reset check, so a refusal here still means nothing
         # was torn down.
         if not still_ours(False):
-            return _slot_not_found()
+            return slot_not_found()
         teardown_incomplete = False
 
         async def _reset() -> bool:
@@ -8392,7 +8494,7 @@ async def reload_slot_session(
         # this last await. Same response as those checks: a mismatch here is
         # indistinguishable from a missing slot.
         if not still_ours(True):
-            return _slot_not_found()
+            return slot_not_found()
         if effective_session_key(slot) != session_key:
             return web.json_response(
                 {"error": "slot session was rebound during the switch", "code": "session_rebound"},
@@ -8426,8 +8528,8 @@ async def api_chat_slot_workspace(request: web.Request) -> web.Response:
     name = request.match_info["slot"]
     slot = state._slots.get(name)
     if not slot:
-        return web.json_response({"error": "not found"}, status=404)
-    denied = _deny_cross_app_slot_access(request, slot, name, "slot_workspace")
+        return slot_not_found()
+    denied = deny_app_slot_access(request.get("app", ""), slot, name, "slot_workspace")
     if denied is not None:
         return denied
     body, body_err = await read_bounded_json(request)
@@ -8474,7 +8576,7 @@ async def api_chat_slot_workspace(request: web.Request) -> web.Response:
         # ``name`` can be recreated for a different app while this request
         # queued, and every read of ``slot`` below would be of the stale one.
         if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_workspace"):
-            return _slot_not_found()
+            return slot_not_found()
         # The session the reset tears down — effective_session_key, never
         # _history_key_for (see api_chat_slot_model), resolved INSIDE the lock
         # so a binding that lands while this request waits on it is what the
@@ -8491,7 +8593,7 @@ async def api_chat_slot_workspace(request: web.Request) -> web.Response:
         # Second lock-acquisition await, second re-check: a same-name
         # recreate lands during this wait just as easily as during the first.
         if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_workspace"):
-            return _slot_not_found()
+            return slot_not_found()
         denied = _app_cancel_denied(request, slot, "chat.slot_workspace", session_key)
         if denied is not None:
             return denied
@@ -8679,8 +8781,8 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
     name = request.match_info["slot"]
     slot = state._slots.get(name)
     if not slot:
-        return web.json_response({"error": "not found"}, status=404)
-    denied = _deny_cross_app_slot_access(request, slot, name, "slot_project")
+        return slot_not_found()
+    denied = deny_app_slot_access(request.get("app", ""), slot, name, "slot_project")
     if denied is not None:
         return denied
     body, body_err = await read_bounded_json(request)
@@ -8857,35 +8959,6 @@ def _redact_followup_item(item: dict) -> dict:
     return out
 
 
-def _deny_cross_app_slot_access(
-    request: web.Request, slot, name: str, operation: str
-) -> web.Response | None:
-    """Deny app tokens acting on slots they don't own (App Kit §5.2).
-
-    Returns a 404 response if the caller is an app that doesn't own this slot,
-    or None to proceed. Dashboard users (empty request_app) always pass.
-    Anti-enumeration: uses 404 not 403 (CWE-204).
-    """
-    request_app = request.get("app", "")
-    if not request_app:
-        return None  # Dashboard user -- no restriction
-    if slot._app and request_app == slot._app:
-        return None  # App owns this slot
-    reason = "app does not own this slot" if slot._app else "app cannot access unscoped slots"
-    try:
-        sel().log_api_access(
-            caller=request_app,
-            operation=operation,
-            outcome="denied",
-            source="app_isolation",
-            resources=f"slot={name}",
-            error=reason,
-        )
-    except Exception:
-        pass
-    return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
-
-
 def deny_non_owner_remote_operation(
     request: web.Request, slot, operation: str
 ) -> web.Response | None:
@@ -8898,7 +8971,7 @@ def deny_non_owner_remote_operation(
     remembers to copy a guard. ``test_remote_crew_execution`` asserts that
     property statically against the relay entry points.
 
-    Why the existing guards are not enough. ``_deny_cross_app_slot_access``
+    Why the existing guards are not enough. ``deny_app_slot_access``
     returns ``None`` for any caller with an empty ``request["app"]`` — that is
     its whole contract, "dashboard users pass". But ``send_dashboard_link``
     mints ``generate_token(user_id, …)`` with ``app=""``, so a Slack-allowlisted
@@ -8974,14 +9047,18 @@ def deny_non_dashboard_caller(request: web.Request, operation: str) -> web.Respo
 
 
 async def deny_session_approval_caller(request: web.Request, operation: str) -> web.Response | None:
-    """Allow the dashboard owner or an app with the live session approval grant."""
+    """Allow the dashboard owner or an app with the live session approval grant.
+
+    The grant verdict is this request's one read (:func:`session_grant`), shared
+    with the per-slot checkpoint that already ran for a per-slot route.
+    """
     if request.get("internal_auth") is True:
         return None
     request_app = str(request.get("app") or "")
     if not request_app:
         return deny_non_dashboard_caller(request, operation)
 
-    if await asyncio.to_thread(app_permissions.app_can_manage_session_approvals, request_app):
+    if await session_grant(request, request_app):
         try:
             sel().log_api_access(
                 caller=request_app,
@@ -9030,7 +9107,7 @@ async def api_chat_slot_followup(request: web.Request) -> web.Response:
     name = request.match_info["slot"]
     slot = state._slots.get(name)
     if not slot:
-        return web.json_response({"error": "not found"}, status=404)
+        return slot_not_found()
     body, body_err = await read_bounded_json(request, max_bytes=None)
     if body_err is not None:
         return body_err
@@ -9175,6 +9252,55 @@ class ResumeRefusal(NamedTuple):
     error: str
     code: str
     status: int
+
+
+#: The one refusal an app gets from resume for a session it may not open. It is
+#: the body the per-slot checkpoint answers, so resume cannot tell an app "not
+#: yours" from "does not exist" either.
+_RESUME_APP_NOT_FOUND = ResumeRefusal("not found", "slot_not_found", 404)
+
+
+async def _app_resume_refusal(
+    state: "DashboardState", request_app: str, name: str, history_key: str, meta: dict
+) -> ResumeRefusal | None:
+    """Whether an app may resume *history_key* into a slot published as *name*.
+
+    Two transcripts are at stake, and both must be the app's. The one READ is
+    *history_key*, whose metadata line *meta* must record this app. The one the
+    new slot WRITES is ``dashboard:<name>``, because a resumed slot saves under
+    its own key: when that is a different key, the same acquisition rule as
+    send and create applies to it (no member, cron or workflow name; no
+    transcript there that records anyone else). Without the second check an app
+    could load its own transcript under the name of a person's closed session
+    and be handed that session's live slot.
+
+    A publish name under construction is the same 404, with no audit row, as on
+    send and create: a session being imported is nobody's to name yet. So is one
+    that aliases another live slot by letter case, recorded as on send and create.
+    """
+    log = state.conversation_log
+    if not app_owns_transcript_meta(meta, request_app):
+        # Re-read to file the refusal under its real reason: an unreadable line
+        # is a read fault, not an isolation breach, and no transcript at all is a
+        # missing session, which is answered without an audit row.
+        reason = ""
+        if log is not None:
+            reason = await asyncio.to_thread(
+                transcript_acquisition_reason, log, history_key, request_app
+            )
+        if reason:
+            audit_app_slot_denial(request_app, "slot_resume", name, reason)
+        return _RESUME_APP_NOT_FOUND
+    publish_key = _history_key_for(name)
+    refused, reason = app_new_key_refusal(state, name, publish_key)
+    if not refused and publish_key != history_key and log is not None:
+        reason = await asyncio.to_thread(
+            transcript_acquisition_reason, log, publish_key, request_app
+        )
+        refused = bool(reason)
+    if reason:
+        audit_app_slot_denial(request_app, "slot_resume", name, reason)
+    return _RESUME_APP_NOT_FOUND if refused else None
 
 
 class ResumeOutcome(NamedTuple):
@@ -9338,15 +9464,19 @@ async def api_chat_mode(request: web.Request) -> web.Response:
             if slot is None:
                 denied = web.json_response({"ok": False, "error": "unknown slot"}, status=400)
     if denied is not None:
-        return denied
+        # An app gets the 404 a slot it may not control gets, so this answer
+        # cannot tell it which session names are live.
+        return slot_not_found() if request_app else denied
 
     if request_app:
         assert slot is not None  # app requests require and resolve a slot above
-        if not await _app_may_send_to_slot(request_app, slot):
-            return web.json_response(
-                {"error": "not found", "code": "slot_not_found"},
-                status=404,
-            )
+        # A FRESH grant read: the body upload and the governance check above
+        # can outlast a removal of the flag since the caller check read it.
+        denied = await deny_app_session_control(
+            request, request_app, slot, str(slot_key), "chat_mode", fresh=True
+        )
+        if denied is not None:
+            return denied
 
     # The safety override (YOLO) is PROCESS-GLOBAL while an approval mode is
     # per-slot, so revoking it on behalf of a request that named ONE slot drops
@@ -9716,7 +9846,7 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
 
     slot = state._slots.get(name)
     if not slot:
-        return web.json_response({"error": "not found"}, status=404)
+        return slot_not_found()
     body, body_err = await read_bounded_json(request)
     if body_err is not None:
         return body_err
@@ -9726,11 +9856,13 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
     request_id = body.get("request_id", "")
     if request_app and original_action == "yolo":
         return _deny_app_yolo(request_app, "tool_approval:yolo")
-    if request_app and not await _app_may_send_to_slot(request_app, slot):
-        return web.json_response(
-            {"error": "not found", "code": "slot_not_found"},
-            status=404,
-        )
+    # A FRESH grant read: the body upload above can take long enough for the
+    # flag to have been removed from the manifest since the checkpoint read it.
+    denied = await deny_app_session_control(
+        request, request_app, slot, name, "chat_slot_approve", fresh=True
+    )
+    if denied is not None:
+        return denied
     strict_native = "origin" in body
     if strict_native:
         request_mid = body.get("request_mid")
@@ -9792,11 +9924,11 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
         else:
             fut = None
     if request_app and owner is not slot:
-        if not await _app_may_send_to_slot(request_app, owner):
-            return web.json_response(
-                {"error": "not found", "code": "slot_not_found"},
-                status=404,
-            )
+        denied = await deny_app_session_control(
+            request, request_app, owner, owner.key, "chat_slot_approve"
+        )
+        if denied is not None:
+            return denied
     if request_app and (not fut or fut.done()):
         # No slot-level future means the id names (at most) a STATE-level
         # approval. Those are raised only by background sources -- cron,
@@ -9804,10 +9936,7 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
         # tab, so the grant, which reaches the user's own session only, never
         # resolves one. The user's own tool prompts live on the slot future
         # handled above. Same 404 as any other out-of-scope target.
-        return web.json_response(
-            {"error": "not found", "code": "slot_not_found"},
-            status=404,
-        )
+        return slot_not_found()
     # A state-level approval carries only a boolean decision and has no owning
     # slot, canonical command card, or scoped-pattern store.  Do not let a
     # durable-trust action fall through to ``resolve_state_approval`` as ``True``:
@@ -10016,7 +10145,7 @@ async def api_chat_slot_color(request: web.Request) -> web.Response:
     name = request.match_info["slot"]
     slot = state._slots.get(name)
     if not slot:
-        return web.json_response({"error": "not found"}, status=404)
+        return slot_not_found()
     body, body_err = await read_bounded_json(request)
     if body_err is not None:
         return body_err
@@ -10201,89 +10330,6 @@ def _validate_max_age(max_age: object) -> web.Response | None:
     return None
 
 
-def _check_slot_app_ownership(
-    slot: _ChatSlot, name: str, request_app: str, operation: str
-) -> web.Response | None:
-    """App ownership gate (App Kit §5.2). Returns a 404 response if denied, else None.
-
-    Apps can only touch slots they own; dashboard users (empty ``request_app``)
-    can touch everything. The denial is a 404 rather than a 403 so a non-owning
-    app token cannot use the status code to probe which slots exist -- the SEL
-    event still records the real reason.
-
-    Owning the slot is not sufficient, because it does not imply owning the
-    session the write lands on. ``get_or_create_slot`` sets ``_app`` from its
-    caller and, for a name shaped like a channel session stem, resolves
-    ``linked_session_key`` from the session map in the same call -- so an app
-    that names a live channel thread ends up owning a slot bound to a
-    conversation it has no claim on. Both callers of
-    this gate write into that session: the visible row lands in the channel's
-    own transcript and the queued half drains into its next turn. Ownership
-    alone would turn a slot binding into capability escalation, which is the
-    same second condition ``_app_cancel_denied`` already applies to /stop.
-
-    That session check cannot fire for an UNBOUND channel slot, and the write
-    does not follow the session there. When ``surface_channel_session`` cannot
-    resolve a thread's key it surfaces the slot with ``linked_session_key``
-    empty and ``channel_origin`` set, so ``effective_session_key`` falls back to
-    ``_history_key_for`` and the condition above compares a value against
-    itself. ``slot_history_key`` does not: it resolves a ``channel_origin`` slot
-    through ``slot_transcript_key``, onto the channel's own transcript. So the
-    visible row lands in a foreign conversation while the slot's session
-    identity stays local and every session-shaped check passes. The third
-    condition therefore tests the TRANSCRIPT key -- the thing the write actually
-    addresses -- which is the discipline ``_app_cancel_denied`` states at
-    :2299-2301: authorize the key the caller will really act on, so
-    authorization and action cannot disagree.
-
-    The denials are single-sourced through :func:`_slot_not_found` so the four
-    cannot drift apart -- byte-identity is the property being defended.
-    """
-    if not request_app:
-        return None
-    if not slot._app:
-        sel().log_api_access(
-            caller=request_app,
-            operation=operation,
-            outcome="denied",
-            source="app_isolation",
-            resources=f"slot={name}",
-            error="app cannot access unscoped slots",
-        )
-        return _slot_not_found()
-    if request_app != slot._app:
-        sel().log_api_access(
-            caller=request_app,
-            operation=operation,
-            outcome="denied",
-            source="app_isolation",
-            resources=f"slot={name}",
-            error="app does not own this slot",
-        )
-        return _slot_not_found()
-    if effective_session_key(slot) != _history_key_for(slot.key):
-        sel().log_api_access(
-            caller=request_app,
-            operation=operation,
-            outcome="denied",
-            source="app_isolation",
-            resources=f"slot={name}",
-            error="app does not own the session this slot is linked to",
-        )
-        return _slot_not_found()
-    if slot_history_key(slot) != _history_key_for(slot.key):
-        sel().log_api_access(
-            caller=request_app,
-            operation=operation,
-            outcome="denied",
-            source="app_isolation",
-            resources=f"slot={name}",
-            error="app does not own the transcript this slot writes to",
-        )
-        return _slot_not_found()
-    return None
-
-
 def _reauthorize_after_await(
     state: DashboardState, slot: _ChatSlot, name: str, request_app: str, operation: str
 ) -> web.Response | None:
@@ -10313,8 +10359,8 @@ def _reauthorize_after_await(
                 resources=f"slot={name}",
                 error="slot was replaced while the request body was read",
             )
-        return _slot_not_found()
-    return _check_slot_app_ownership(slot, name, request_app, operation)
+        return slot_not_found()
+    return deny_app_slot_session_access(request_app, slot, name, operation)
 
 
 def _source_cap_reached(slot: _ChatSlot, source: str) -> bool:
@@ -10439,10 +10485,10 @@ async def api_chat_slot_context(request: web.Request) -> web.Response:
     if not slot:
         # Same body as the ownership denial below: two shapes would let an app
         # token tell "not mine" from "does not exist" and enumerate slot names.
-        return _slot_not_found()
+        return slot_not_found()
 
     request_app = request.get("app", "")
-    denied = _check_slot_app_ownership(slot, name, request_app, "context_inject")
+    denied = deny_app_slot_session_access(request_app, slot, name, "context_inject")
     if denied is not None:
         return denied
 
@@ -10624,7 +10670,7 @@ async def _persist_deferred_note_hold(
             error="slot was rebound to another session while the hold was persisting",
         )
         _discard_held_note(slot, note)
-        return _slot_not_found()
+        return slot_not_found()
     except DeferredHoldFull as exc:
         if exc.evidence.durable or exc.evidence.committed or _note_delivered_live(slot, note):
             return None
@@ -10685,7 +10731,7 @@ async def _persist_deferred_note_hold(
             error="held note was dropped at the rebind seam while the hold was persisting",
         )
         _discard_held_note(slot, note)
-        return _slot_not_found()
+        return slot_not_found()
     if had_durable_identity:
         # The guard saw NO metadata line for a slot whose file existed when
         # this write began: a permanent delete won the lock. The session and
@@ -10696,7 +10742,7 @@ async def _persist_deferred_note_hold(
         if outcome.evidence.committed or _note_delivered_live(slot, note):
             return None
         _discard_held_note(slot, note)
-        return _slot_not_found()
+        return slot_not_found()
     return None
 
 
@@ -10795,10 +10841,10 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
     if not slot:
         # Byte-identical to the ownership denial below, or an app token could tell
         # "not mine" from "does not exist" and enumerate foreign slot names.
-        return _slot_not_found()
+        return slot_not_found()
 
     request_app = request.get("app", "")
-    denied = _check_slot_app_ownership(slot, name, request_app, "note_post")
+    denied = deny_app_slot_session_access(request_app, slot, name, "note_post")
     if denied is not None:
         return denied
 

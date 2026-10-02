@@ -41,6 +41,7 @@ from kiro_crew.dashboard.chat_runner import (
 )
 from kiro_crew.dashboard.chat_slack import api_chat_slot_slack_unlink, list_slack_channels
 from kiro_crew.dashboard.chat_utils import effective_session_key
+from kiro_crew.dashboard.slot_ownership import checkpoint_slot_replaced, slot_not_found
 from kiro_crew.dashboard.state import (
     DashboardState,
     _expected_binding,
@@ -930,8 +931,10 @@ async def api_chat_slot_mirror_unlink(request: web.Request) -> web.Response:
         return await api_chat_slot_slack_unlink(request)
     name = request.match_info.get("name") or request.match_info.get("slot", "")
     slot = state.get_slot(name)
-    if not slot:
-        return web.json_response({"error": "not found"}, status=404)
+    # The body read above can outlast a close and a same-name create; the slot the
+    # per-slot checkpoint judged is the only one this may unlink.
+    if not slot or checkpoint_slot_replaced(request, slot):
+        return slot_not_found()
 
     session_key = effective_session_key(slot)
     if expected is not None:

@@ -17,10 +17,11 @@ if TYPE_CHECKING:
         _UNPINNED,
         DashboardState,
         _ChatSlot,
-        _check_slot_app_ownership,
         _reauthorize_after_await,
         _source_link_txn_locks,
         _source_link_unlink_tasks,
+        deny_app_slot_access,
+        deny_app_slot_session_access,
         logger,
         resolved_row_identity,
         sel,
@@ -57,20 +58,9 @@ async def api_chat_slot_source_links(request: web.Request) -> web.Response:
     # path -- SAME error code too, so the response cannot serve to probe which
     # foreign slots exist.
     request_app = request.get("app", "")
-    if request_app and request_app != slot._app:
-        sel().log_api_access(
-            caller=request_app,
-            operation="chat_source_links",
-            outcome="denied",
-            source="app_isolation",
-            resources=f"slot={slot.key}",
-            error=(
-                "app cannot access unscoped slots"
-                if not slot._app
-                else "app does not own this slot"
-            ),
-        )
-        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+    denied = deny_app_slot_access(request_app, slot, slot.key, "chat_source_links")
+    if denied is not None:
+        return denied
     if request_app:
         # The ALLOW is a permission decision too, and an audit trail that records
         # only refusals cannot answer which app actually read a slot's links.
@@ -260,11 +250,11 @@ async def _apply_source_link_unlink(request: web.Request) -> web.Response:
     # Session-aware ownership gate, NOT the slot-only check: the dismissal is
     # persisted (forced save) into the transcript this slot routes to, so a
     # linked app-owned slot (a channel stem) would otherwise let an app write
-    # metadata into a foreign human conversation. _check_slot_app_ownership
+    # metadata into a foreign human conversation. deny_app_slot_session_access
     # authorizes the transcript key the write actually lands on -- same as
     # /autocompact, /context and /note, all of which persist slot metadata.
     request_app = request.get("app", "")
-    denied = _check_slot_app_ownership(slot, name, request_app, "slot_source_link_unlink")
+    denied = deny_app_slot_session_access(request_app, slot, name, "slot_source_link_unlink")
     if denied is not None:
         return _reject(denied, error="app_isolation", phase="ownership")
 

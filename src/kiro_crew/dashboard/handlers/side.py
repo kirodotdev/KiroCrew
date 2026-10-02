@@ -36,6 +36,7 @@ from kiro_crew.dashboard.side_state import (
     STEER_REQUEUED,
     SideState,
 )
+from kiro_crew.dashboard.slot_ownership import deny_app_slot_access, slot_not_found
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.dashboard.ws import broadcast_side_queue, broadcast_side_result
 from kiro_crew.executors import subprocess_executor
@@ -808,44 +809,14 @@ def _check_slot_ownership(
     slot,
     operation: str,
 ) -> web.Response | None:
-    """Return 403 if the request app can't access ``slot``; mirrors ``api_chat``.
+    """The uniform app-isolation 404 if the request app can't access ``slot``, else None.
 
     App Kit §5.2: dashboard users (empty ``request_app``) can access everything.
-    The auth gate is upstream in ``token_auth_middleware``; this is the
-    app-vs-dashboard scope check, matching ``chat_handlers.py`` and ``chat_fork.py``.
+    The auth gate is upstream in ``token_auth_middleware`` and the per-slot
+    checkpoint (``slot_ownership_middleware``) has already made this decision for
+    every /side route; this re-applies the same shared decision at the handler.
     """
-    request_app = request.get("app", "")
-    if not request_app:
-        return None
-    if not slot._app:
-        sel().log_api_access(
-            caller=request_app,
-            operation=operation,
-            outcome="denied",
-            source="app_isolation",
-            resources=f"slot={slot.key}",
-            error="app cannot access unscoped slots",
-        )
-        return web.json_response(
-            {"error": "not found"},
-            status=404,
-        )
-    if slot._app != request_app:
-        sel().log_api_access(
-            caller=request_app,
-            operation=operation,
-            outcome="denied",
-            source="app_isolation",
-            resources=f"slot={slot.key}",
-            error="app does not own this slot",
-        )
-        # 404 (not 403) so a foreign/unscoped slot is indistinguishable from a
-        # missing one — anti-enumeration (CWE-204); true reason logged via SEL.
-        return web.json_response(
-            {"error": "not found"},
-            status=404,
-        )
-    return None
+    return deny_app_slot_access(request.get("app", ""), slot, slot.key, operation)
 
 
 async def api_side_open(request: web.Request) -> web.Response:
@@ -854,7 +825,7 @@ async def api_side_open(request: web.Request) -> web.Response:
     name = request.match_info["slot"]
     slot = state._slots.get(name)
     if not slot:
-        return web.json_response({"error": "not found"}, status=404)
+        return slot_not_found()
 
     own = _check_slot_ownership(request, slot, "chat.side_open")
     if own is not None:
@@ -899,7 +870,7 @@ async def api_side_turn(request: web.Request) -> web.Response:
     name = request.match_info["slot"]
     slot = state._slots.get(name)
     if not slot:
-        return web.json_response({"error": "not found"}, status=404)
+        return slot_not_found()
 
     # Owner identity is a property of a dashboard-user request: ``app == ""`` is
     # the class ``is_owner_dashboard_request`` can rule on at all. An app token
@@ -1230,7 +1201,7 @@ def _resolve_side_queue_slot(
     state: DashboardState = request.app["state"]
     slot = state._slots.get(request.match_info["slot"])
     if not slot:
-        return None, web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+        return None, slot_not_found()
     own = _check_slot_ownership(request, slot, operation)
     if own is not None:
         return None, own
@@ -1348,7 +1319,7 @@ async def api_side_close(request: web.Request) -> web.Response:
     name = request.match_info["slot"]
     slot = state._slots.get(name)
     if not slot:
-        return web.json_response({"error": "not found"}, status=404)
+        return slot_not_found()
 
     own = _check_slot_ownership(request, slot, "chat.side_close")
     if own is not None:

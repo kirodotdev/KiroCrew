@@ -16615,7 +16615,8 @@ class TestForkSlot:
         from unittest.mock import MagicMock
 
         mock_sel = MagicMock()
-        monkeypatch.setattr("kiro_crew.dashboard.chat_fork.sel", lambda: mock_sel)
+        # The refusal is the per-slot checkpoint's, so its row is written there.
+        monkeypatch.setattr("kiro_crew.dashboard.slot_ownership.sel", lambda: mock_sel)
 
         state = _make_state(tmp_path)
         slot = state.get_or_create_slot("src", app="app-B")

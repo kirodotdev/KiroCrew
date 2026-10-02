@@ -344,6 +344,7 @@ class TestManualRegenerateWindow:
         state = _fake_state()
         state._slots = {slot.key: slot}
         request = MagicMock()
+        request.get.return_value = ""
         request.app = {"state": state}
         request.match_info = {"slot": slot.key}
 
@@ -391,6 +392,7 @@ class TestManualRegenerateRaceGuard:
         state._slots = {slot.key: slot}
         epoch_after_rename = slot._title_epoch + 1
         request = MagicMock()
+        request.get.return_value = ""
         request.app = {"state": state}
         request.match_info = {"slot": slot.key}
 
@@ -434,6 +436,7 @@ class TestManualRegenerateRaceGuard:
         state = _fake_state()
         state._slots = {slot.key: slot}
         request = MagicMock()
+        request.get.return_value = ""
         request.app = {"state": state}
         request.match_info = {"slot": slot.key}
 
@@ -468,6 +471,7 @@ class TestManualRegenerateRaceGuard:
         state._slots = {slot.key: slot}
         epoch_before = slot._title_epoch
         request = MagicMock()
+        request.get.return_value = ""
         request.app = {"state": state}
         request.match_info = {"slot": slot.key}
 
@@ -942,6 +946,7 @@ class TestRenameIsFinal:
         state = _fake_state()
         state._slots = {"chat-1-1": slot}
         request = MagicMock()
+        request.get.return_value = ""
         request.app = {"state": state}
         request.match_info = {"slot": "chat-1-1"}
 
@@ -1918,6 +1923,7 @@ class TestLowSignalLockSites:
 
         state = _fake_state()
         request = MagicMock()
+        request.get.return_value = ""
         request.app = {"state": state}
         request.match_info = {"slot": "chat-1-1"}
         state._slots = {"chat-1-1": slot}

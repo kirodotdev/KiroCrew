@@ -35,6 +35,7 @@ from kiro_crew.dashboard.chat_utils import slot_history_key
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
 from kiro_crew.dashboard.request_priority import owner_start_priority
 from kiro_crew.dashboard.side_readonly_spec import ReadOnlySpecError, publish_readonly_spec
+from kiro_crew.dashboard.slot_ownership import deny_app_slot_access
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 from kiro_crew.dashboard.ws import broadcast_thread_reply
 from kiro_crew.history import (
@@ -357,23 +358,7 @@ def build_thread_message(
 def _deny_foreign_app(request: web.Request, slot: _ChatSlot, operation: str) -> web.Response | None:
     """App tokens see only their own slots (App Kit §5.2); a crewmate chat is
     never app-owned, so an app caller gets the anti-enumeration 404."""
-    request_app = request.get("app", "")
-    if not request_app:
-        return None
-    if slot._app and request_app == slot._app:
-        return None
-    try:
-        sel().log_api_access(
-            caller=request_app,
-            operation=operation,
-            outcome="denied",
-            source="app_isolation",
-            resources=f"slot={slot.key}",
-            error="app does not own this slot",
-        )
-    except Exception:  # noqa: BLE001 -- the refusal must reach the caller regardless
-        logger.debug("SEL audit unavailable for thread refusal", exc_info=True)
-    return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+    return deny_app_slot_access(request.get("app", ""), slot, slot.key, operation)
 
 
 async def threads_enabled() -> bool:

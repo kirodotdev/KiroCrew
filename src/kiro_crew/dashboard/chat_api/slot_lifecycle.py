@@ -27,12 +27,14 @@ if TYPE_CHECKING:
         _subagents_attached_response,
         _sync_dashboard_slots,
         _unblock_pending_waits,
+        deny_app_slot_access,
         effective_session_key,
         logger,
         note_slot_closed,
         read_bounded_json,
         save_slot_off_loop,
         sel,
+        slot_not_found,
         stage_boundary_for,
         time,
     )
@@ -994,34 +996,14 @@ async def api_chat_slot_delete(request: web.Request) -> web.Response:
     name = request.match_info["slot"]
     slot = state._slots.get(name)
     if not slot:
-        return web.json_response({"error": "not found"}, status=404)
+        return slot_not_found()
 
     # App ownership check (App Kit §5.2): app can only delete slots it created.
     # Unscoped slots (empty _app) cannot be deleted by app tokens.
     # Dashboard users (empty request_app) can delete anything.
-    request_app = request.get("app", "")
-    if request_app and slot._app != request_app:
-        sel().log_api_access(
-            caller=request_app,
-            operation="slot_delete",
-            outcome="denied",
-            source="app_isolation",
-            resources=f"slot={name}",
-            error="app does not own this slot",
-        )
-        return web.json_response({"error": "not found"}, status=404)
-    if request_app and not slot._app:
-        sel().log_api_access(
-            caller=request_app,
-            operation="slot_delete",
-            outcome="denied",
-            source="app_isolation",
-            resources=f"slot={name}",
-            error="app cannot delete unscoped slots",
-        )
-        # 404 (not 403): a foreign/unscoped slot is indistinguishable from a
-        # missing one — anti-enumeration (CWE-204); true reason logged via SEL.
-        return web.json_response({"error": "not found"}, status=404)
+    denied = deny_app_slot_access(request.get("app", ""), slot, name, "slot_delete")
+    if denied is not None:
+        return denied
 
     try:
         await close_slot(state, slot, name)

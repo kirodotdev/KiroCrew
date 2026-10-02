@@ -14,6 +14,7 @@ from aiohttp import web
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_handlers import (
+        _RESUME_APP_NOT_FOUND,
         _STRUCTURED_CONTENT_MAX_CHARS,
         _STRUCTURED_CONTENT_PLACEHOLDER,
         COLOR_HEX_RE,
@@ -21,6 +22,8 @@ if TYPE_CHECKING:
         ResumeOutcome,
         ResumeRefusal,
         _app_claim_refused,
+        _app_resume_refusal,
+        _app_slot_acquisition_recheck,
         _attach_variants,
         _bump_slot_tags_revision,
         _ChatSlot,
@@ -44,8 +47,11 @@ if TYPE_CHECKING:
         _sync_dashboard_slots,
         _unhide_folder,
         _validate_autocompact_pct,
+        app_owns_transcript_meta,
+        audit_app_slot_denial,
         carry_provenance,
         channel_slot_name,
+        deny_app_slot_session_access,
         durable_row_count,
         effective_session_key,
         is_channel_session_key,
@@ -227,27 +233,11 @@ async def _live_slot_for_resume(
                 existing = slot
                 break
     if existing:
-        if request_app:
-            if not existing._app:
-                sel().log_api_access(
-                    caller=request_app,
-                    operation="slot_resume",
-                    outcome="denied",
-                    source="app_isolation",
-                    resources=f"slot={existing.key}",
-                    error="app cannot access unscoped slots",
-                )
-                return ResumeOutcome(refusal=ResumeRefusal("not found", "slot_not_found", 404))
-            elif request_app != existing._app:
-                sel().log_api_access(
-                    caller=request_app,
-                    operation="slot_resume",
-                    outcome="denied",
-                    source="app_isolation",
-                    resources=f"slot={existing.key}",
-                    error="app does not own this slot",
-                )
-                return ResumeOutcome(refusal=ResumeRefusal("not found", "slot_not_found", 404))
+        if (
+            deny_app_slot_session_access(request_app, existing, existing.key, "slot_resume")
+            is not None
+        ):
+            return ResumeOutcome(refusal=_RESUME_APP_NOT_FOUND)
         if (
             existing.mode == members_mod.DM_SLOT_MODE
             and not members_mod.is_dispatchable_member_name(existing.agent)
@@ -973,6 +963,11 @@ async def resume_slot_from_history(
     name = _normalize_slot_key(name)
     if history_key is None:
         history_key = name
+    if request_app and history_key == name:
+        # An app naming no key, or the bare slot name, means the slot's own
+        # transcript. Its ownership can only be read from that canonical key: the
+        # bare name has no transcript of its own, so it would read as nobody's.
+        history_key = _history_key_for(name)
     if not state.conversation_log:
         return ResumeOutcome(
             refusal=ResumeRefusal("no conversation log", "no_conversation_log", 400)
@@ -991,7 +986,7 @@ async def resume_slot_from_history(
             resources=f"slot={name}",
             error="app cannot access member slots",
         )
-        return ResumeOutcome(refusal=ResumeRefusal("not found", "slot_not_found", 404))
+        return ResumeOutcome(refusal=_RESUME_APP_NOT_FOUND)
 
     # If slot already exists (active session), just return it — no duplicate.
     # Check both by slot name AND by canonical session key to prevent two
@@ -1036,6 +1031,18 @@ async def resume_slot_from_history(
     # app token, otherwise leaves it untagged, which is invisible to cross-slot
     # scopes) rather than claiming USER on a conversation we cannot attribute.
     meta = state.conversation_log.get_metadata(history_key)
+
+    # An app may open only a transcript it owns, and only under a name it may
+    # hold. A persisted conversation has no live slot for the per-slot checkpoint
+    # to judge, so the app recorded on the transcript is its owner record.
+    # Identity is positive: a transcript with no recorded app is the person's,
+    # never an app's. Checked before every mutation below and before the
+    # member-mode 409, so the refusal is the same 404 a missing transcript gets
+    # and reveals nothing about the session.
+    if request_app:
+        refusal = await _app_resume_refusal(state, request_app, name, history_key, meta)
+        if refusal is not None:
+            return ResumeOutcome(refusal=refusal)
 
     # ── Member-thread EARLY refusal, before any persistent mutation ────────
     # ``_unhide_folder`` and ``clear_closed`` below write durable state. A
@@ -1134,7 +1141,10 @@ async def resume_slot_from_history(
         # coded conflict is answered again at construction (the window can open
         # after this read); asking here first means the common case refuses
         # BEFORE the eager clear below has dropped the ``closed`` marker, so a
-        # click that lost the race leaves the line as it found it.
+        # click that lost the race leaves the line as it found it. An app gets
+        # the uniform 404 (see _app_resume_refusal).
+        if request_app:
+            return ResumeOutcome(refusal=_RESUME_APP_NOT_FOUND)
         return ResumeOutcome(
             refusal=ResumeRefusal(
                 "this session is being resumed elsewhere; try again", "resume_in_progress", 409
@@ -1198,6 +1208,24 @@ async def resume_slot_from_history(
     if resume_outcome is not None:
         return resume_outcome
 
+    destination_refusal = None
+    if request_app:
+        # Reserve the publish name through its off-loop ownership read. Source
+        # identity and ownership checks follow it without yielding on success.
+        # A refusal reaches the app barrier's closed-marker rollback below.
+        destination_refusal = await _app_slot_acquisition_recheck(
+            state, request_app, name, None, "slot_resume"
+        )
+        if destination_refusal is None:
+            # The recheck reserves only the publish name. A concurrent resume of
+            # the same transcript under another name can publish during its read,
+            # so the session-key dedup runs again before the synchronous publish.
+            resume_outcome = await _live_slot_for_resume(
+                state, request_app, history_key, name, caller_label
+            )
+            if resume_outcome is not None:
+                return resume_outcome
+
     # Re-check DELETION in the same window and for the same reason. The transcript
     # loaded above can be permanently deleted while we are suspended, and
     # ``delete_session`` leaves NO tombstone -- its own docstring notes that once
@@ -1236,7 +1264,7 @@ async def resume_slot_from_history(
     # conversation rather than a deletion. A legitimately empty session that is
     # still PRESENT is protected by the other terms instead -- ``post_read_meta``
     # is non-empty below, and the identity arm needs two DIFFERING stamps.
-    if meta_readable and not post_read_meta and session_existed:
+    if destination_refusal is None and meta_readable and not post_read_meta and session_existed:
         logger.info(
             "chat resume: session %s was deleted during the transcript read; "
             "refusing to publish a slot that would resurrect it",
@@ -1274,7 +1302,8 @@ async def resume_slot_from_history(
     pre_identity = meta.get("created_at")
     post_identity = post_read_meta.get("created_at")
     if (
-        meta_readable
+        destination_refusal is None
+        and meta_readable
         and post_read_meta
         and session_existed
         and pre_identity
@@ -1382,30 +1411,6 @@ async def resume_slot_from_history(
                 "this thread changed while resuming; open it again", "member_resume_conflict", 409
             )
         )
-    meta = post_read_meta
-    if _member_binding is None and str(meta.get("mode", "")) == members_mod.DM_SLOT_MODE:
-        sel().log_api_access(
-            caller=caller_label,
-            operation="chat_resume",
-            outcome="denied",
-            source="member_pin",
-            resources=f"slot={name} key={history_key}",
-            error="member transcript on an ordinary key (late barrier)",
-        )
-        return ResumeOutcome(
-            refusal=ResumeRefusal(
-                "a member thread can only be resumed on its own member slot",
-                "member_mode_key_mismatch",
-                409,
-            )
-        )
-
-    # Redact only the newest 500 rows -- the live window the next save
-    # re-serializes -- before construction. The older frozen prefix is already
-    # redacted on disk and only counted, never rewritten, so redacting it would
-    # put transcript-sized GIL regex on the loop for bytes that never change.
-    # Bounded by the window, so a long transcript costs the same as a short one.
-    all_messages = _redact_history_rows(all_messages, window_limit=500)
 
     # mypy defers this function (it is checked before the inferred attribute types of
     # ``DashboardState``), and a deferred function's closures do not inherit the
@@ -1462,6 +1467,50 @@ async def resume_slot_from_history(
         # restore, and nothing of ours that would reopen at the next start.
         return not current or not _same_transcript(current) or "closed" in current
 
+    meta = post_read_meta
+    # Late twin of the transcript-ownership refusal above, on the post-await
+    # snapshot: a delete and same-key recreate inside the reads replaces the
+    # metadata line, so ownership the old snapshot earned says nothing about the
+    # transcript about to be adopted. Like every refusal after the eager clear,
+    # it puts back the ``closed`` marker that clear dropped.
+    if request_app and (
+        destination_refusal is not None or not app_owns_transcript_meta(meta, request_app)
+    ):
+        if destination_refusal is None:
+            audit_app_slot_denial(
+                request_app, "slot_resume", name, "app does not own this transcript (late barrier)"
+            )
+        if cleared_closed and not await _restore_closed_marker():
+            logger.error(
+                "app resume of %s was refused after its closed marker was cleared, and "
+                "the marker could not be confirmed restored; the session may restore as open",
+                history_key,
+            )
+        return ResumeOutcome(refusal=_RESUME_APP_NOT_FOUND)
+    if _member_binding is None and str(meta.get("mode", "")) == members_mod.DM_SLOT_MODE:
+        sel().log_api_access(
+            caller=caller_label,
+            operation="chat_resume",
+            outcome="denied",
+            source="member_pin",
+            resources=f"slot={name} key={history_key}",
+            error="member transcript on an ordinary key (late barrier)",
+        )
+        return ResumeOutcome(
+            refusal=ResumeRefusal(
+                "a member thread can only be resumed on its own member slot",
+                "member_mode_key_mismatch",
+                409,
+            )
+        )
+
+    # Redact only the newest 500 rows -- the live window the next save
+    # re-serializes -- before construction. The older frozen prefix is already
+    # redacted on disk and only counted, never rewritten, so redacting it would
+    # put transcript-sized GIL regex on the loop for bytes that never change.
+    # Bounded by the window, so a long transcript costs the same as a short one.
+    all_messages = _redact_history_rows(all_messages, window_limit=500)
+
     if name in getattr(state, "_slots_under_construction", ()):
         # Another resume of this key is between hydration and publish with the
         # slot retracted (the containment hook's window; the import path's tail
@@ -1474,7 +1523,9 @@ async def resume_slot_from_history(
         # marker, and if the resume it lost to is then refused (a hooked revive
         # discards its build and restores only what IT cleared) the archived
         # session would come back as a sidebar row at the next start. Put the
-        # marker back, compare-and-set, before answering.
+        # marker back, compare-and-set, before answering. An app gets the
+        # uniform 404 whatever the restore did (see _app_resume_refusal), as at
+        # the late ownership barrier above.
         if cleared_closed and not await _restore_closed_marker():
             logger.error(
                 "resume of %s lost to a concurrent resume after its closed marker was "
@@ -1482,6 +1533,8 @@ async def resume_slot_from_history(
                 "may restore as open",
                 history_key,
             )
+            if request_app:
+                return ResumeOutcome(refusal=_RESUME_APP_NOT_FOUND)
             # The same answer ``_discard`` gives for this failure: the caller
             # must hear that the durable session is not as it found it, not an
             # ordinary conflict that a retry would clear.
@@ -1493,6 +1546,8 @@ async def resume_slot_from_history(
                     503,
                 )
             )
+        if request_app:
+            return ResumeOutcome(refusal=_RESUME_APP_NOT_FOUND)
         return ResumeOutcome(
             refusal=ResumeRefusal(
                 "this session is being resumed elsewhere; try again", "resume_in_progress", 409

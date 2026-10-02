@@ -901,15 +901,9 @@ class TestSendHandlerHook:
             sl.append("done", "", "done", broadcast=False)
 
         monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", fake_run_chat)
-        from kiro_crew.dashboard.chat_handlers import SlotAccess
-
         # The app reaches this user session through its sessionApproval grant.
         monkeypatch.setattr(
-            "kiro_crew.dashboard.chat_handlers._app_slot_access",
-            AsyncMock(return_value=SlotAccess.GRANT),
-        )
-        monkeypatch.setattr(
-            "kiro_crew.dashboard.chat_handlers._app_may_send_to_slot",
+            "kiro_crew.dashboard.slot_ownership.read_session_grant",
             AsyncMock(return_value=True),
         )
         app = _make_app(state)

@@ -20,6 +20,11 @@ from kiro_crew.dashboard.chat_utils import (
 )
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.remote_relay import remote_bound_refusal
+from kiro_crew.dashboard.slot_ownership import (
+    checkpoint_slot_replaced,
+    deny_app_slot_session_access,
+    slot_not_found,
+)
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 from kiro_crew.dashboard.system_notices import is_system_notice
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -80,8 +85,13 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     name = request.match_info["slot"]
     slot = state._slots.get(name)
-    if not slot:
-        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+    # The app claim, recorded on the audit row below. Ownership itself is decided
+    # before this handler runs, by the per-slot checkpoint (slot_ownership.py),
+    # on the slot that was live then. The readiness await above can outlast a
+    # close and a same-name create, so the slot looked up now must be that one.
+    request_app = request.get("app", "")
+    if not slot or checkpoint_slot_replaced(request, slot):
+        return slot_not_found()
     under_construction = reject_if_slot_under_construction(state, slot)
     if under_construction is not None:
         return under_construction
@@ -93,6 +103,8 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
         return refusal
 
     async with slot._lock:
+        if request_app and state._slots.get(name) is not slot:
+            return slot_not_found()
         busy = _destructive_history_busy(slot)
         if busy is not None:
             return busy
@@ -198,6 +210,8 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
         except Exception:
             logger.warning("Regenerate: failed to rewrite session history", exc_info=True)
             committed = True
+        if request_app and state._slots.get(name) is not slot:
+            return slot_not_found()
         if not committed:
             # The save's own guards refused the write: the slot was rebound to
             # another transcript, or a same-name recreate replaced it, while the
@@ -220,7 +234,7 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
             )
 
         sel().log_api_access(
-            caller="dashboard",
+            caller=request_app or "dashboard",
             operation="chat.regenerate",
             outcome="allowed",
             source="dashboard",
@@ -266,8 +280,11 @@ async def api_chat_slot_switch_variant(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     name = request.match_info["slot"]
     slot = state._slots.get(name)
+    # The app claim, recorded on the audit row below. Ownership itself is decided
+    # before this handler runs, by the per-slot checkpoint (slot_ownership.py).
+    request_app = request.get("app", "")
     if not slot:
-        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+        return slot_not_found()
     under_construction = reject_if_slot_under_construction(state, slot)
     if under_construction is not None:
         return under_construction
@@ -284,6 +301,8 @@ async def api_chat_slot_switch_variant(request: web.Request) -> web.Response:
         return web.json_response({"error": "invalid index", "code": "index_invalid"}, status=400)
 
     async with slot._lock:
+        if request_app and state._slots.get(name) is not slot:
+            return slot_not_found()
         busy = _destructive_history_busy(slot)
         if busy is not None:
             return busy
@@ -340,6 +359,8 @@ async def api_chat_slot_switch_variant(request: web.Request) -> web.Response:
         except Exception:
             logger.warning("switch-variant: failed to persist", exc_info=True)
             committed = True
+        if request_app and state._slots.get(name) is not slot:
+            return slot_not_found()
         if not committed:
             # The save's guards refused: the slot was rebound or a same-name
             # recreate replaced it while the write awaited its lock. The chosen
@@ -358,7 +379,7 @@ async def api_chat_slot_switch_variant(request: web.Request) -> web.Response:
                 status=409,
             )
         sel().log_api_access(
-            caller="dashboard",
+            caller=request_app or "dashboard",
             operation="chat.switch_variant",
             outcome="allowed",
             source="dashboard",
@@ -382,7 +403,6 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
     # ``import kiro_crew.dashboard.chat_regenerate`` fail on its own. Same reason
     # ``session_control`` and ``handlers/core`` reach it this way.
     from kiro_crew.dashboard.chat_handlers import (
-        _check_slot_app_ownership,
         _reauthorize_after_await,
         _subagents_attached_response,
     )
@@ -398,7 +418,7 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
     slot = state._slots.get(name)
     request_app = request.get("app", "")
     if not slot:
-        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+        return slot_not_found()
     under_construction = reject_if_slot_under_construction(state, slot)
     if under_construction is not None:
         return under_construction
@@ -406,7 +426,9 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
     # App-ownership gate (App Kit §5.2). This endpoint discards the slot's
     # NATIVE ACP conversation below, so an app token reaching a slot it does not
     # own destroys a resume identity it has no claim on -- the same capability
-    # every other app-reachable write authorizes first. Reuse the shared gate
+    # every other app-reachable write authorizes first (slot_ownership_middleware
+    # makes that slot-ownership decision for every per-slot route; this gate adds
+    # the session and transcript halves). Reuse the shared gate
     # rather than a second spelling of it: it authorizes all four keys
     # (``_app`` presence, ``_app`` match, the effective SESSION key, and the
     # TRANSCRIPT key), so a channel-linked slot -- whose effective session is a
@@ -414,7 +436,7 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
     # are both already covered, with no separate link check to keep in sync.
     # Denials are 404, not 403: indistinguishable from a missing slot
     # (anti-enumeration, CWE-204); the true reason is logged via SEL inside.
-    denied = _check_slot_app_ownership(slot, name, request_app, "chat.slot_edit_resend")
+    denied = deny_app_slot_session_access(request_app, slot, name, "chat.slot_edit_resend")
     if denied is not None:
         return denied
 
