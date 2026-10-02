@@ -69,7 +69,7 @@ from kiro_crew.dashboard.slot_queue_repository import (
 )
 from kiro_crew.dashboard.slot_registry import SlotRegistry
 from kiro_crew.dashboard.system_notices import is_system_notice
-from kiro_crew.dashboard.websocket_hub import SLOT_PATCH_WS_FLAG, WebSocketHub
+from kiro_crew.dashboard.websocket_hub import SLOT_PATCH_WS_FLAG, WebSocketHub, WsPayload
 from kiro_crew.deny_guidance import remediation_for
 from kiro_crew.deny_notice import (  # noqa: F401 -- re-exported for dashboard importers
     _DENY_CAUSE_TEXT,
@@ -2778,6 +2778,7 @@ class _ChatSlot:
         "_in_stage_execution",
         "stage_boundary",
         "_last_turn_auth_required",
+        "_cycle_reached_provider",
         "_recovery_chat_triggered",
         "_slack_linked",
         "_slack_channel",
@@ -2825,7 +2826,6 @@ class _ChatSlot:
         "_refusal_replay_stop_gen",
         "_refusal_replay_session_stop_gen",
         "_model_access_fallback_used",
-        "_model_access_recovery_pending",
         "_model_access_recovery_stop_gen",
         "_model_access_recovery_session_stop_gen",
         "_model_access_recovery_session_key",
@@ -3484,6 +3484,12 @@ class _ChatSlot:
         # post-login resume" guard on its end-of-plan handoff (a signed-out CLI
         # must not pop the held follow-up into another auth failure).
         self._last_turn_auth_required: bool = False
+        # Whether a turn of the current queue cycle reached a provider (it opened
+        # its stream). Set by each turn's tail, read and cleared where the cycle
+        # ends (``_finish_queue_cycle``): only such a cycle has a reply to title
+        # and summarize, however many local commands or cancelled replays it
+        # also ran.
+        self._cycle_reached_provider: bool = False
         self._recovery_chat_triggered: bool = False  # guard against concurrent failure recovery
         self._slack_linked: bool = False  # True when linked to a Slack thread
         self._slack_channel: str = ""
@@ -3649,17 +3655,10 @@ class _ChatSlot:
         # the first reply. One attempt only, so an account entitled to nothing
         # falls through to the terminal entitlement error naming what was tried
         # instead of looping. Refreshed at the start of a genuine user turn but
-        # NOT when the incoming turn is the swap's own replay (the
-        # _model_access_recovery_pending latch below carries that fact across),
+        # NOT when the incoming turn is the swap's own replay (the drain names it
+        # by the queue id below, as ``_run_chat(..., _model_access_replay=True)``),
         # so a still-unentitled candidate cannot trigger a second swap.
         self._model_access_fallback_used: bool = False
-        # Set when a model-access swap re-queues the user's ORIGINAL message as a
-        # synthetic recovery. That replay is indistinguishable from a fresh user
-        # turn at reset time (it carries the user's own words, not a synthetic
-        # marker), so this one-turn latch tells the reset to preserve
-        # _model_access_fallback_used for exactly that replay and is consumed
-        # there.
-        self._model_access_recovery_pending: bool = False
         # _stop_generation snapshotted when that recovery is enqueued. A soft Stop
         # (first press) does NOT clear the queue and the drain's continuation
         # purge does not cover a message replay, so the drain compares this
@@ -3680,10 +3679,12 @@ class _ChatSlot:
         #: binding an unbound slot mid-episode cannot replay the original prompt
         #: into the newly bound session.
         self._model_access_recovery_session_key: str = ""
-        #: The queue id of the model-access recovery replay, recorded at enqueue
-        #: so the drain abort removes only THIS entry. SYNTHETIC_RECOVERY_KIND is
-        #: shared across recovery paths, so a blanket removal by kind would
-        #: destroy co-queued unrelated recoveries.
+        #: The queue id of the model-access recovery replay, recorded at enqueue.
+        #: It is the replay's identity: non-empty is the family's "pending"
+        #: signal, the drain matches it to name the replay turn, and the drain
+        #: abort removes only THIS entry. SYNTHETIC_RECOVERY_KIND is shared
+        #: across recovery paths, so a blanket removal by kind would destroy
+        #: co-queued unrelated recoveries.
         self._model_access_recovery_queue_id: str = ""
         #: The queue id of the unsupported-history-image recovery turn, recorded
         #: at enqueue so the drain abort removes only THIS entry. Non-empty is
@@ -10315,7 +10316,7 @@ class DashboardState:
         else:
             _websocket_for(self)._send_ws_owners(msg)
 
-    def broadcast_ws(self, msg_type: str, data: object) -> None:
+    def broadcast_ws(self, msg_type: str, data: WsPayload) -> None:
         # Mirror first, broadcast second. A relay reader consumes the SSE stream,
         # so the mirrored copy must be queued before the frame fans out to local
         # WebSocket clients — otherwise a turn that ends inside the broadcast
@@ -10336,10 +10337,10 @@ class DashboardState:
     def _persist_context_snapshots(self) -> None:
         _persistence_for(self)._persist_context_snapshots(self)
 
-    async def deliver_ws_owners(self, msg_type: str, data: object) -> int:
+    async def deliver_ws_owners(self, msg_type: str, data: WsPayload) -> int:
         return await _websocket_for(self).deliver_ws_owners(msg_type, data)
 
-    def broadcast_ws_owners(self, msg_type: str, data: object) -> None:
+    def broadcast_ws_owners(self, msg_type: str, data: WsPayload) -> None:
         _websocket_for(self).broadcast_ws_owners(msg_type, data)
 
     def ws_client_count(self) -> int:
@@ -10375,7 +10376,7 @@ class DashboardState:
     def unsubscribe_subagents(self, ws: web.WebSocketResponse) -> None:
         _websocket_for(self).unsubscribe_subagents(ws)
 
-    def broadcast_ws_subagent_subscribers(self, msg_type: str, data: object) -> None:
+    def broadcast_ws_subagent_subscribers(self, msg_type: str, data: WsPayload) -> None:
         _websocket_for(self).broadcast_ws_subagent_subscribers(msg_type, data)
 
     async def close_all_ws(self) -> None:

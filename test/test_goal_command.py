@@ -4,6 +4,7 @@ Covers ``_handle_goal_command`` in isolation — the pure glue over the async
 and the AutoNudge-disabled path. The judge gate at ``HOOK_EVENT_STOP`` is a
 follow-up CR and is not exercised here.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -68,9 +69,9 @@ async def test_status_no_active_goal(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "No active goal" in body
     svc.add.assert_not_awaited()
     svc.remove.assert_not_awaited()
-    # Always finalizes the turn.
     state.push_slots_update.assert_called_once()
-    assert any(c.args and c.args[0] == "done" for c in slot.append.call_args_list)
+    # The reply only: the turn's exit guard ends the cycle, with the done row.
+    assert not any(c.args and c.args[0] == "done" for c in slot.append.call_args_list)
 
 
 @pytest.mark.asyncio
@@ -88,9 +89,7 @@ async def test_status_with_active_goal_shows_budget(monkeypatch: pytest.MonkeyPa
 
 
 @pytest.mark.asyncio
-async def test_arm_default_budget(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+async def test_arm_default_budget(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     svc = _fake_service(loop=None)
     audit = _install(monkeypatch, svc)
     monkeypatch.setattr(chat_runner.Path, "home", classmethod(lambda cls: tmp_path))

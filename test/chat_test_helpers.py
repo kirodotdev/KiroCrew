@@ -77,6 +77,35 @@ async def drain_background_tasks(state) -> None:
     )
 
 
+def chat_done_frames(state) -> list:
+    """Every ``chat_done`` payload sent through a ``MagicMock`` ``broadcast_ws``."""
+    return [
+        c.args[1] for c in state.broadcast_ws.call_args_list if c.args and c.args[0] == "chat_done"
+    ]
+
+
+#: The bound on every turn a test awaits: a regression that hangs a hand-off then
+#: fails its own test by name instead of losing the worker (testing-conventions
+#: class 6).
+TURN_WAIT_SECS = 5
+
+
+async def run_as_slot_task(slot, coro) -> "asyncio.Task":
+    """Run *coro* as ``slot.task``, the way a dispatcher does, and await it."""
+    task = asyncio.ensure_future(coro)
+    slot.task = task
+    await asyncio.wait_for(task, timeout=TURN_WAIT_SECS)
+    return task
+
+
+async def await_successor(slot, predecessor) -> "asyncio.Task":
+    """Await the turn *predecessor*'s queue hand-off published in ``slot.task``."""
+    successor = slot.task
+    assert successor is not None and successor is not predecessor, "no successor dispatched"
+    await asyncio.wait_for(successor, timeout=TURN_WAIT_SECS)
+    return successor
+
+
 class _ReadyKiroPrerequisiteService(KiroPrerequisiteService):
     async def session_ready(self) -> bool:
         return True

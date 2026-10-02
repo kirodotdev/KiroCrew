@@ -3268,6 +3268,7 @@ class TestFinishQueueCycle:
     @pytest.mark.asyncio
     async def test_idle_cycle_emits_done_and_refreshes_the_sidebar(self, tmp_path):
         state, slot = _state(tmp_path), _slot()
+        slot._cycle_reached_provider = True  # a provider served this cycle
 
         with patch.object(chat_runner, "title_then_refresh", new=AsyncMock()):
             await chat_runner._finish_queue_cycle(state, slot)
@@ -3279,6 +3280,7 @@ class TestFinishQueueCycle:
         state.broadcast_ws.assert_any_call(
             "chat_done", {"slot": slot.key, "continuing": False, "needs_input": False}
         )
+        assert slot._cycle_reached_provider is False, "the next cycle starts unserved"
 
 
 class TestTtftMetric:

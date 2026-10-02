@@ -48,6 +48,21 @@ def _isolate_home(tmp_path, monkeypatch):
     h._prompt_cache_ts = 0
 
 
+@pytest.fixture(autouse=True)
+def _no_turn_tail(monkeypatch):
+    """Skip the turn's tail, which needs far more of a slot than ``_Slot`` models.
+
+    The tail (and the done row the cycle's end appends) is pinned with a real
+    slot in ``test/test_dashboard_chat.py::TestRunChatEarlyExitHandOff``; here
+    only what prompt expansion writes is asserted.
+    """
+
+    async def _skip(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr("kiro_crew.dashboard.chat_runner._end_turn_tail", _skip)
+
+
 @pytest.fixture()
 def aim_dir(tmp_path, monkeypatch):
     """Base dir whose child package dirs are exposed via the prompt_source_roots seam.
@@ -210,12 +225,9 @@ class _Slot:
         self._queue = []
         self._stop_generation = 0
         self._stopping = False
-        # Mirrors _ChatSlot's model-access / fallback defaults. _run_chat's
-        # per-turn reset reads _model_access_recovery_pending on EVERY turn
-        # (including the slash-command turns these tests drive); the companion
-        # fields are read/written in that same block once the guard is True.
-        self._model_access_recovery_pending = False
-        self._model_access_recovery_stop_gen = 0
+        # Mirrors _ChatSlot's model-access / fallback defaults: _run_chat's
+        # per-turn reset writes the one-shot flag on EVERY turn, including the
+        # slash-command turns these tests drive.
         self._model_access_fallback_used = False
         self._active_fallback_model = ""
         # Mirrors _ChatSlot._chunk_seq: the per-slot chunk counter _run_chat continues.
@@ -1340,12 +1352,12 @@ class TestRunChatPrompts:
         _aim_pkg(aim_dir, "Pkg-1.0", "1", {"review": "# R\nDo review."})
         s, sl = _ss()
         asyncio.run(_run_chat(s, sl, "/prompts"))
-        assert "@agent-sop:review" in sl.messages[-2][1]
+        assert "@agent-sop:review" in sl.messages[-1][1]
 
     def test_slash_list_empty(self):
         s, sl = _ss()
         asyncio.run(_run_chat(s, sl, "/prompts"))
-        assert "No prompts found" in sl.messages[-2][1]
+        assert "No prompts found" in sl.messages[-1][1]
 
     def test_slash_get_ok(self, aim_dir, mock_sel, monkeypatch):
         _aim_pkg(aim_dir, "Pkg-1.0", "1", {"review": "# R\nDo review."})
@@ -1369,19 +1381,19 @@ class TestRunChatPrompts:
         _aim_pkg(aim_dir, "Pkg-1.0", "1", {"review": "# R\nDo review."})
         s, sl = _ss()
         asyncio.run(_run_chat(s, sl, "/prompts get"))
-        assert "@agent-sop:review" in sl.messages[-2][1]
+        assert "@agent-sop:review" in sl.messages[-1][1]
 
     def test_slash_list_explicit(self, aim_dir, mock_sel):
         """``/prompts list`` works the same as ``/prompts``."""
         _aim_pkg(aim_dir, "Pkg-1.0", "1", {"review": "# R\nDo review."})
         s, sl = _ss()
         asyncio.run(_run_chat(s, sl, "/prompts list"))
-        assert "@agent-sop:review" in sl.messages[-2][1]
+        assert "@agent-sop:review" in sl.messages[-1][1]
 
     def test_slash_get_not_found(self, mock_sel):
         s, sl = _ss()
         asyncio.run(_run_chat(s, sl, "/prompts get nonexistent"))
-        assert "not found" in sl.messages[-2][1]
+        assert "not found" in sl.messages[-1][1]
 
     def test_slash_get_blocked(self, aim_dir, mock_sel, monkeypatch):
         """Prompt discovered but blocked at read time by chat-level check."""
