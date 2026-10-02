@@ -279,6 +279,14 @@ silent until some assertion happens to expect a non-empty one.
 pins the import for every module that spawns the fake, because co-location alone does
 not stop a second consumer from hand-rolling the read.
 
+**Delete a file a background thread may have open the way the product deletes it.**
+Windows refuses to unlink a file while any handle holds it (`[WinError 32]`), and a
+test that removes crew-log segments with a bare `path.unlink()` races the eager folder,
+which reads the unit on its own thread after every entry. Retention removes them inside
+`crew_log.eager.paused()`, which holds the folder between batches; a test does the same
+after `eager.drain()`, and asserts the hold was granted rather than proceeding without it
+(`test_issue_radar_crew_store.py::test_a_unit_recreated_under_its_id_folds_cold_however_far_its_seq_climbed`).
+
 ### Host tool dialects
 
 A test double for a platform-specific CLI must not depend on another host's
