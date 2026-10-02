@@ -22,16 +22,12 @@
  * fork behavior from the card list it replaces.
  *
  * Reachability: the action row sits IN FLOW (reserved height, never
- * floating over the neighbouring grid row) and reveals on `group-hover` /
- * `group-focus-within` for pointer+keyboard, stays force-revealed while its
- * menu is open (Radix portals the menu, so focus-within alone would drop),
- * and under `(hover: none)` is ALWAYS visible — the touchActions escape
- * hatch (issues #2014/#3584): a hover-revealed affordance is otherwise
- * permanently unreachable on touch. Every management verb is also in the
- * 40px-friendly menu, so the 18px pin badge is a shortcut, not the only
- * path.
+ * floating over the neighbouring grid row) and is ALWAYS visible, on
+ * pointer and touch alike: its overflow menu is the tile's route to the
+ * detail page, so no device or input mode hides it. Every management verb
+ * is also in the 40px-friendly menu, so the 18px pin badge is a shortcut,
+ * not the only path.
  */
-import { useState } from 'react'
 import { ArrowUp, Check, ExternalLink, Info, MoreHorizontal, Pin, PinOff, Plus, Power, PowerOff, RefreshCw, Trash2 } from 'lucide-react'
 import AppIconTile from '../../components/appstore/AppIconTile'
 import { appDisplayName } from '../../components/appstore/appManifest'
@@ -92,11 +88,6 @@ export default function LaunchpadTile({
   const hasUI = !!(m?.ui?.entry) || (m?.ui?.pages?.length || 0) > 0
   const openable = app.enabled && (hasUI || !!m?.openCommand)
   const canUninstall = app.lifecycle !== 'locked'
-
-  // The menu lives in a portal, so while it is open the tile loses
-  // focus-within and the hover-revealed row would vanish under the open
-  // menu's own trigger. Track open state and force the reveal.
-  const [menuOpen, setMenuOpen] = useState(false)
 
   // Status caption under the name: an in-flight management action wins (the
   // overflow menu closes on click, so this caption is the only in-view
@@ -181,18 +172,12 @@ export default function LaunchpadTile({
 
       {/* Action row — IN FLOW under the caption (reserved height, no float
           over the next grid row), at most two peers: Open + overflow menu.
-          Revealed on hover / focus-within / open menu; permanently visible
-          under (hover: none), where hover can never fire (touchActions
-          escape hatch — the row is compact so the always-on form stays
-          inside the tile). */}
+          Always visible: the overflow menu is the tile's route to its detail
+          page, so it is never hover-only. */}
       <div
         role="toolbar"
         aria-label={i18nT('pages.libraryPage.tile_actions', { name: display })}
-        className={`flex items-center gap-0.5 rounded-lg transition-opacity [@media(hover:none)]:opacity-100 [@media(hover:none)]:pointer-events-auto ${
-          menuOpen
-            ? 'opacity-100 pointer-events-auto'
-            : 'opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto'
-        }`}
+        className="flex items-center gap-0.5 rounded-lg"
       >
         {openable && (
           <button
@@ -203,7 +188,7 @@ export default function LaunchpadTile({
             <ExternalLink size={11} aria-hidden /> {i18nT('components.appstore.installedAppCard.open')}
           </button>
         )}
-        <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
+        <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button
               type="button"

@@ -359,6 +359,20 @@ describe('LibraryPage — action dispatch', () => {
     expect(await screen.findByTestId('route-probe')).toHaveAttribute('data-path', '/apps/detail/secretary')
   })
 
+  it('the action row is visible at rest, so Details never needs hover or focus', async () => {
+    renderLibrary()
+    const el = await tile('secretary')
+    const toolbar = within(el).getByRole('toolbar', { name: 'Actions for Secretary' })
+    for (const cls of ['opacity-0', 'pointer-events-none']) {
+      expect(toolbar.className.split(/\s+/)).not.toContain(cls)
+    }
+    // No hover, no focus: Open and the Details route are both one click away.
+    expect(within(toolbar).getByRole('button', { name: 'Open' })).toBeInTheDocument()
+    fireEvent.click(within(toolbar).getByRole('button', { name: 'More actions for Secretary' }))
+    fireEvent.click(within(el).getByRole('menuitem', { name: 'Details' }))
+    expect(await screen.findByTestId('route-probe')).toHaveAttribute('data-path', '/apps/detail/secretary')
+  })
+
   it('Disable dispatches to the disable API', async () => {
     renderLibrary()
     const scope = await openTileMenu('secretary', 'Secretary')
