@@ -73,8 +73,8 @@ as the tool takes them.
       for the whole stale window.
 
       Because the user is watching that panel, they can also approve tool calls
-      from it: an approval card rendered in the embed resolves through
-      `/api/approvals/<id>/approve`. So when you need permission for a read-only
+      from it: an approval card rendered in the embed resolves through the
+      slot route, `/api/chat/slots/<slot>/approve`. So when you need permission for a read-only
       probe, ASK — do not silently skip the step.
 
    d. `POST /incident/transition` to

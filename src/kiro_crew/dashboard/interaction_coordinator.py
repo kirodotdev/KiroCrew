@@ -41,6 +41,13 @@ def _bounded_purpose(text: str) -> str:
     return _redact_tool_field(text, limit=_MAX_TOOL_PURPOSE)
 
 
+def _slot_decision(approved: bool, rejected_once: bool) -> str:
+    """The decision string a slot's approval future carries."""
+    if approved:
+        return "approved"
+    return "rejected_once" if rejected_once else "rejected"
+
+
 class ApprovalCoordinator:
     """Own registration, waiting, auditing, and resolution of approvals."""
 
@@ -203,32 +210,57 @@ class ApprovalCoordinator:
         rejected_once: bool,
         permission_marker: Callable[[list[dict], str, str], bool],
     ) -> bool:
-        if approved:
-            decision = "approved"
-        elif rejected_once:
-            decision = "rejected_once"
-        else:
-            decision = "rejected"
         if state.resolve_state_approval(approval_id, approved):
             if rejected_once:
                 state._log.warning(
                     "approval %s resolved at state level; decision %r downgraded to rejected",
                     approval_id,
-                    decision,
+                    _slot_decision(approved, rejected_once),
                 )
             return True
         for slot in state._slots.values():
-            future = slot._approval_futures.get(approval_id)
-            if future and not future.done():
-                future.set_result(decision)
-                if permission_marker(slot.messages, approval_id, decision):
-                    # The periodic flush skips clean slots; the resolved marker
-                    # must become durable before its future disappears.
-                    slot._dirty = True
-                state._audit_and_broadcast_approval(slot.key, approval_id, approved, decision)
-                state.push_slots_update()
+            if ApprovalCoordinator.resolve_on_slot(
+                state,
+                slot,
+                approval_id,
+                approved,
+                rejected_once=rejected_once,
+                permission_marker=permission_marker,
+            ):
                 return True
         return False
+
+    @staticmethod
+    def resolve_on_slot(
+        state: Any,
+        slot: Any,
+        approval_id: str,
+        approved: bool,
+        *,
+        rejected_once: bool,
+        permission_marker: Callable[[list[dict], str, str], bool],
+        expected_future: asyncio.Future[str] | None = None,
+    ) -> bool:
+        """Resolve *approval_id* on *slot*'s own future only; never a state-level one.
+
+        With *expected_future*, resolve only while the slot still holds THAT
+        future under the id: request ids recur within one slot, so a caller that
+        judged one request across an await must not settle a newer same-id one.
+        """
+        future = slot._approval_futures.get(approval_id)
+        if not future or future.done():
+            return False
+        if expected_future is not None and future is not expected_future:
+            return False
+        decision = _slot_decision(approved, rejected_once)
+        future.set_result(decision)
+        if permission_marker(slot.messages, approval_id, decision):
+            # The periodic flush skips clean slots; the resolved marker
+            # must become durable before its future disappears.
+            slot._dirty = True
+        state._audit_and_broadcast_approval(slot.key, approval_id, approved, decision)
+        state.push_slots_update()
+        return True
 
 
 class QuestionCoordinator:

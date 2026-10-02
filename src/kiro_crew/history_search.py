@@ -16,7 +16,7 @@ import math
 import os
 import re
 import time as _time
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Container, Iterable, Iterator, Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING, NamedTuple
 
@@ -1076,20 +1076,26 @@ class SessionCatalogProjection:
             stripped = stripped[len("dashboard_") :]
         return f"dashboard_{stripped}" if stripped else key
 
-    def list_sessions(self) -> list[dict]:
-        """Return metadata for all session files, newest first.
+    def list_sessions(self, *, keys: Iterable[str] | None = None) -> list[dict]:
+        """Return metadata for session files, newest first.
 
         Deduplicates stacked ``dashboard_`` prefix files, keeping the
         most recently modified version. Uses the metadata cache
         when available, falling back to reading only the first line for
-        title extraction.
+        title extraction. Explicit *keys* read only those files, so a caller
+        holding one transcript lock can refresh its row without a directory scan.
         """
         sessions: list[dict] = []
         if not self._log._dir.exists():
             return sessions
         # Deduplicate stacked dashboard_ prefixes by canonical key, keeping newer
         by_canon: dict[str, dict] = {}
-        for path in self._log._dir.glob("*.jsonl"):
+        paths = (
+            self._log._dir.glob("*.jsonl")
+            if keys is None
+            else (self._log._path(key) for key in keys)
+        )
+        for path in paths:
             key = path.stem
             # Snapshot the invalidation generation BEFORE the stat: the
             # The first-line fill records this stat's cache identity. The
@@ -1216,7 +1222,9 @@ class SessionCatalogProjection:
             usage[agent] = (count + 1, max(last_used, meta.get("modified", 0.0)))
         return usage
 
-    def search_sessions(self, query: str, limit: int = 50) -> list[dict]:
+    def search_sessions(
+        self, query: str, limit: int = 50, *, keys: Container[str] | None = None
+    ) -> list[dict]:
         """Return session metadata for files whose message content matches *query*.
 
         This is the ONE ranking every transcript-search consumer shares — the
@@ -1299,6 +1307,13 @@ class SessionCatalogProjection:
         ``list_sessions`` order - newest first).  Caps results at *limit*.
         Only the ``_SEARCH_SCAN_WINDOW`` most recent files are scored, so
         I/O stays bounded even with hundreds of sessions.
+
+        *keys*, when given, restricts scoring to those session keys (as
+        ``list_sessions`` spells them) inside that same window. It is applied
+        BEFORE ranking and the *limit* cap, so sessions outside it can never
+        crowd an allowed one off the page; an app-token caller passes the keys
+        it owns. Membership is re-judged under the transcript lock through snippet
+        extraction for each output row; a failed check or lock timeout drops the row.
         """
         if not query or limit <= 0 or not self._log._dir.exists():
             return []
@@ -1320,6 +1335,10 @@ class SessionCatalogProjection:
         scored: list[tuple[float, int, dict, bool]] = []
         window = self._log.list_sessions()[: _facade_search_scan_window()]
         self._log._prune_search_memos({m["key"] for m in window})
+        if keys is not None:
+            # After the prune, which must see the whole window: the memos are
+            # shared with every unrestricted search.
+            window = [m for m in window if m["key"] in keys]
         allowed, rowids = self._index_shortlist(window, needles)
         for rank, meta in enumerate(window):
             key = meta["key"]
@@ -1401,7 +1420,25 @@ class SessionCatalogProjection:
         # itself was memoized.
         out: list[dict] = []
         for _score, _rank, meta, needs_snippet in scored[:limit]:
-            snippet = self._log._content_snippet(meta["key"], query) if needs_snippet else ""
+            if keys is not None:
+                # Scoring-time folds may race ownership and affect ranking/inclusion
+                # only; the lock-held re-judge keeps foreign rows/snippets out of output.
+                try:
+                    with self._log._locked(meta["key"]):
+                        if meta["key"] not in keys:
+                            continue
+                        # The scored title/count may predate the owned incarnation.
+                        current = self._log.list_sessions(keys=(meta["key"],))
+                        if not current:
+                            continue
+                        meta = current[0]
+                        snippet = (
+                            self._log._content_snippet(meta["key"], query) if needs_snippet else ""
+                        )
+                except _history_lock_timeout():
+                    continue
+            else:
+                snippet = self._log._content_snippet(meta["key"], query) if needs_snippet else ""
             out.append({**meta, "snippet": snippet} if snippet else meta)
         return out
 

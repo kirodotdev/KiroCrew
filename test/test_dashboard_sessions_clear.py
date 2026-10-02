@@ -130,6 +130,7 @@ def _make_request(
     state.crons = None
 
     request = MagicMock(spec=web.Request)
+    request.get = {}.get  # the dashboard user: no app claim
     request.app = {"state": state}
     return request, state, deleted_keys
 
@@ -233,6 +234,7 @@ async def test_returns_400_when_no_conversation_log() -> None:
     state = MagicMock()
     state.conversation_log = None
     request = MagicMock(spec=web.Request)
+    request.get = {}.get  # the dashboard user: no app claim
     request.app = {"state": state}
 
     resp = await api_sessions_clear(request)

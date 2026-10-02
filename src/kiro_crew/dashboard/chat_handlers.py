@@ -13,7 +13,7 @@ import tempfile
 import time
 import uuid
 import weakref
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from datetime import datetime, timezone
 from itertools import islice  # noqa: F401
 from pathlib import Path
@@ -192,6 +192,7 @@ from kiro_crew.dashboard.chat_utils import (
 from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     restore_replacement_if_handover_did_not_land,
     slot_history_key,
+    slot_transcript_key,
     subagents_attached_async,
     tighten_live_slot_memory_mode,
 )
@@ -636,6 +637,17 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         )
         return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
     existing = state._slots.get(_requested_key) if _requested_key else None
+    # An app's auto-created slot must not land on a transcript it does not own:
+    # its first save would stamp the app onto that transcript's metadata line.
+    # Before the relay check below, which must not await before its creation.
+    if (
+        _requested_key
+        and existing is None
+        and await _app_claim_refused(
+            state, request.get("app", ""), "chat_send", (_history_key_for(_requested_key),)
+        )
+    ):
+        return _slot_not_found()
     if (
         existing is not None
         and existing.mode == members_mod.DM_SLOT_MODE
@@ -2339,6 +2351,17 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     # from; an omitted (or degenerate) name is always a mint.
     _requested_key = _normalize_slot_key(str(name)) if name else ""
     is_new_slot = not _requested_key or _requested_key not in state._slots
+    # A named NEW app slot must not land on a transcript the app does not own:
+    # the slot's first save would stamp the app onto that metadata line, which is
+    # what /api/sessions trusts. An app never reaches the adopt branch below.
+    if (
+        is_new_slot
+        and _requested_key
+        and await _app_claim_refused(
+            state, request_app, "chat_slot_create", (_history_key_for(_requested_key),)
+        )
+    ):
+        return _slot_not_found()
 
     if remote_slot_key and adopt_remote_slot:
         # The DECIDING idempotency check for an adopt. The one at the top of the
@@ -3693,6 +3716,37 @@ def _slot_not_found() -> web.Response:
     matches ``api_chat_slot_continue``.
     """
     return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+
+
+async def _app_claim_refused(
+    state: DashboardState, request_app: str, operation: str, keys: Iterable[str]
+) -> bool:
+    """True, audited, when an app's NEW slot would bind to a transcript it does not own.
+
+    Any of *keys* (the transcripts the new slot would read or save) that exists
+    and does not record *request_app* refuses it; see
+    ``handlers.sessions._app_may_claim_transcript``. The caller answers with the
+    uniform ``slot_not_found`` 404. A dashboard caller (no app) is never refused.
+    """
+    log = state.conversation_log
+    if not request_app or log is None:
+        return False
+    # Imported here: this module imports the handlers package at module scope.
+    from kiro_crew.dashboard.handlers.sessions import (
+        _NOT_TRANSCRIPT_OWNER,
+        _app_may_claim_transcript,
+        _audit_app_allow,
+        _audit_app_denial,
+    )
+
+    claimed = list(dict.fromkeys(keys))
+    for key in claimed:
+        if not await asyncio.to_thread(_app_may_claim_transcript, log, request_app, key):
+            _audit_app_denial(request_app, operation, f"session={key}", _NOT_TRANSCRIPT_OWNER)
+            return True
+    for key in claimed:
+        _audit_app_allow(request_app, operation, f"session={key}")
+    return False
 
 
 def _cancel_target(slot: _ChatSlot) -> str:

@@ -3498,14 +3498,18 @@ class ConversationLog:
     def _canonical_key(key: str) -> str:
         return SessionCatalogProjection._canonical_key(key)
 
-    def list_sessions(self) -> list[dict]:
-        return self._catalog_projection.list_sessions()
+    def list_sessions(self, *, keys: Iterable[str] | None = None) -> list[dict]:
+        if keys is None:
+            return self._catalog_projection.list_sessions()
+        return self._catalog_projection.list_sessions(keys=keys)
 
     def agent_usage(self) -> dict[str, tuple[int, float]]:
         return self._catalog_projection.agent_usage()
 
-    def search_sessions(self, query: str, limit: int = 50) -> list[dict]:
-        return self._catalog_projection.search_sessions(query, limit)
+    def search_sessions(
+        self, query: str, limit: int = 50, *, keys: Container[str] | None = None
+    ) -> list[dict]:
+        return self._catalog_projection.search_sessions(query, limit, keys=keys)
 
     def _folded_content(self, key: str) -> tuple[int, str]:
         return self._catalog_projection._folded_content(key)

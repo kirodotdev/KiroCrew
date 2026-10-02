@@ -60,6 +60,7 @@ from kiro_crew.dashboard.handlers._shared import (
     guard_owner_surface_routes,
     internal_memory_scope,
 )
+from kiro_crew.dashboard.interaction_coordinator import _slot_decision
 from kiro_crew.dashboard.kiro_readiness import (
     _POLL_GATE_MAX_AGE_SECS,
     reject_if_kiro_unverified,
@@ -1476,6 +1477,153 @@ def _is_machine_only_session(key: str) -> bool:
     return any(_in_namespace(key, ns) for ns in _MACHINE_NAMESPACES)
 
 
+#: The SEL reason for every refusal of a transcript the caller app does not own.
+_NOT_TRANSCRIPT_OWNER = "app does not own this transcript"
+#: The approvals list contains state-level requests, which no app may resolve.
+_STATE_APPROVALS_NOT_APP_VISIBLE = "state-level approvals are not app-visible"
+
+
+def _audit_app_decision(
+    request_app: str, operation: str, resource: str, outcome: str, reason: str = ""
+) -> None:
+    """Record one app-isolation decision in the SEL, best-effort.
+
+    A log fault never turns the caller's answer into a 500.
+    """
+    try:
+        _sel().log_api_access(
+            caller=request_app,
+            operation=operation,
+            outcome=outcome,
+            source="app_isolation",
+            resources=resource,
+            error=reason,
+        )
+    except Exception:  # pragma: no cover - audit is best-effort
+        logger.debug("SEL audit failed for %s %s", operation, outcome, exc_info=True)
+
+
+def _audit_app_denial(request_app: str, operation: str, resource: str, reason: str) -> None:
+    """Record one app-isolation refusal in the SEL, best-effort."""
+    _audit_app_decision(request_app, operation, resource, "denied", reason)
+
+
+def _audit_app_allow(request_app: str, operation: str, resource: str) -> None:
+    """Record one app-isolation grant, so every ownership decision leaves a record."""
+    _audit_app_decision(request_app, operation, resource, "allowed")
+
+
+def _app_not_found(request_app: str, operation: str, resource: str, reason: str) -> web.Response:
+    """Audit one app-isolation refusal and return the uniform 404.
+
+    The body is the one every app refusal and every genuinely missing target
+    shares, so an app cannot tell "not yours" from "does not exist"; the reason
+    goes to the security-event log instead.
+    """
+    # Imported here: chat_handlers imports this package at module scope.
+    from kiro_crew.dashboard.chat_handlers import _slot_not_found
+
+    _audit_app_denial(request_app, operation, resource, reason)
+    return _slot_not_found()
+
+
+def _app_transcript_busy() -> web.Response:
+    """The retryable answer when an owned read could not take the transcript lock.
+
+    Only reached after the unlocked ownership check passed, so it says nothing
+    about a transcript the app does not own.
+    """
+    return web.json_response(
+        {"error": "This session is busy. Try again in a moment.", "code": "session_busy"},
+        status=503,
+    )
+
+
+def _app_owns_transcript(log: ConversationLog, request_app: str, key: str) -> bool:
+    """Whether the transcript *key* records *request_app* as its owner app.
+
+    THE transcript-owner rule for app-token callers on ``/api/sessions*``: the
+    ``app`` field the slot save writes on the metadata line must equal the caller.
+    Identity is positive -- a transcript with no recorded app (every user, cron
+    and channel session) belongs to no app, and a missing transcript to nobody.
+    Blocking file IO; call it off the event loop.
+    """
+    if not log.has_log(key):
+        return False
+    return str(log.get_metadata(key).get("app") or "") == request_app
+
+
+def _app_may_claim_transcript(log: ConversationLog, request_app: str, key: str) -> bool:
+    """Whether a NEW slot *request_app* opens may bind to transcript *key*.
+
+    The marker :func:`_app_owns_transcript` trusts is written by the slot save,
+    so an app slot born over somebody else's transcript would rewrite it to name
+    the app. The chat create, send and resume routes therefore admit a new app
+    slot only onto a transcript that is missing or already the app's own.
+    Blocking file IO; call it off the event loop.
+    """
+    return not log.has_log(key) or _app_owns_transcript(log, request_app, key)
+
+
+def _app_owned_messages(log: ConversationLog, request_app: str, key: str) -> list[dict] | None:
+    """*key*'s rows while *request_app* owns it, else None.
+
+    The ownership verdict and the read run under one hold of *key*'s transcript
+    locks, so a same-key delete and recreate cannot land between them and hand
+    the app a transcript it does not own. Callers run the unlocked
+    :func:`_app_transcript_refusal` first, so no lock sidecar is created for a
+    key the app has no claim on. Blocking; off the loop. A lock timeout raises
+    ``HistoryLockTimeout``.
+    """
+    with log.locked_stems(transcript_lock_stems(key)):
+        if not _app_owns_transcript(log, request_app, key):
+            return None
+        return log.read_messages(key)
+
+
+async def _app_transcript_refusal(
+    request: web.Request, state: DashboardState, key: str, operation: str
+) -> web.Response | None:
+    """The uniform 404 for an app caller naming a transcript it does not own, else None."""
+    request_app = str(request.get("app") or "")
+    if not request_app:
+        return None
+    log = state.conversation_log
+    if log is not None and await asyncio.to_thread(_app_owns_transcript, log, request_app, key):
+        return None
+    return _app_not_found(request_app, operation, f"session={key}", _NOT_TRANSCRIPT_OWNER)
+
+
+def _app_owned_sessions(log: ConversationLog, request_app: str, sessions: list[dict]) -> list[dict]:
+    """The rows of *sessions* whose transcript *request_app* owns. Blocking; off the loop."""
+    owned: list[dict] = []
+    for row in sessions:
+        key = row.get("key", "")
+        if not _app_owns_transcript(log, request_app, key):
+            continue
+        try:
+            with log._locked(key):
+                if not _app_owns_transcript(log, request_app, key):
+                    continue
+                # The unlocked catalog row may describe a foreign incarnation.
+                owned.extend(log.list_sessions(keys=(key,)))
+        except HistoryLockTimeout:
+            continue
+    return owned
+
+
+def _app_bulk_history_refusal(request: web.Request, operation: str) -> web.Response | None:
+    """The uniform 404 for an app caller on a whole-history route, else None.
+
+    ``DELETE /api/sessions`` and its ``clearable/count`` act on every closed
+    transcript at once, and no app owns that set, so an app is refused outright.
+    """
+    request_app = str(request.get("app") or "")
+    if not request_app:
+        return None
+    return _app_not_found(request_app, operation, "sessions=*", "whole-history route")
+
+
 async def api_sessions(request: web.Request) -> web.Response:
     """GET /api/sessions — list conversation session files.
 
@@ -1525,6 +1673,14 @@ async def api_sessions(request: web.Request) -> web.Response:
     # the event loop freezes chat, heartbeat, and every other coroutine for the
     # full duration. Offload to a worker thread.
     all_sessions = await asyncio.to_thread(state.conversation_log.list_sessions)
+    request_app = str(request.get("app") or "")
+    if request_app:
+        # Before every count, so ``total`` and ``has_more`` describe the app's
+        # own list rather than the size of everyone else's.
+        all_sessions = await asyncio.to_thread(
+            _app_owned_sessions, state.conversation_log, request_app, all_sessions
+        )
+        _audit_app_allow(request_app, "session_list", f"sessions={len(all_sessions)}")
     if exclude_open:
         open_keys = _open_slot_transcript_keys(state)
         # Fold through ``_canonical_key`` as well: ``list_sessions`` deduplicates
@@ -1556,6 +1712,19 @@ async def api_sessions(request: web.Request) -> web.Response:
                 return True
 
         def _user_rows(sessions: list[dict]) -> list[dict]:
+            if request_app:
+                owned: list[dict] = []
+                for row in sessions:
+                    key = row.get("key", "")
+                    if _is_machine_only_session(key):
+                        continue
+                    try:
+                        with log._locked(key):
+                            if _app_owns_transcript(log, request_app, key) and _has_content(row):
+                                owned.append(row)
+                    except HistoryLockTimeout:
+                        continue
+                return owned
             return [
                 s
                 for s in sessions
@@ -1580,18 +1749,42 @@ async def api_sessions(request: web.Request) -> web.Response:
                 text, _ = _h.redact_credentials(text)
                 return text
 
+            if request_app:
+                owned: list[dict] = []
+                for row in sessions:
+                    key = row.get("key", "")
+                    try:
+                        # Keep the verdict, metadata and preview in one incarnation.
+                        with log._locked(key):
+                            if not _app_owns_transcript(log, request_app, key):
+                                continue
+                            current = log.list_sessions(keys=(key,))
+                            if not current:
+                                continue
+                            row = current[0]
+                            preview = log.last_message_preview(key, sanitize=_sanitize)
+                            if preview:
+                                row["preview"] = preview
+                            owned.append(row)
+                    except HistoryLockTimeout:
+                        continue
+                sessions[:] = owned
+                return
             for s in sessions:
                 preview = log.last_message_preview(s.get("key", ""), sanitize=_sanitize)
                 if preview:
                     s["preview"] = preview
 
         # Tail reads are sync file IO — keep them off the event loop.
+        page_size = len(page)
         await asyncio.get_running_loop().run_in_executor(None, _attach_previews, page)
+        if request_app:
+            total -= page_size - len(page)
     return web.json_response(
         {
             "sessions": page,
             "total": total,
-            "has_more": offset + limit < total,
+            "has_more": offset + (len(page) if request_app else limit) < total,
         }
     )
 
@@ -1663,13 +1856,18 @@ def _build_summary_prompt(messages: list[dict]) -> str | None:
     return _SUMMARIZE_PROMPT.format(transcript="\n".join(lines))
 
 
-async def _summarize_one(state: DashboardState, key: str) -> str:
+async def _summarize_one(state: DashboardState, key: str, *, owner_app: str = "") -> str:
     """Generate a one-line LLM summary for a single session. "" on any failure.
 
     Mirrors dashboard.chat_title._generate_title_via_kiro: uses an ephemeral
     background session on the cheap/fast model and destroys it in a finally.
     Best-effort — every failure path returns "" so the caller falls back to the
     session's stored title.
+
+    With *owner_app* set (an app caller), both transcript reads -- the cached
+    summary and the rows -- re-judge :func:`_app_owns_transcript` inside their own
+    lock hold, so a same-key delete and recreate after the caller's check yields
+    "" instead of a summary of somebody else's transcript.
     """
     log = state.conversation_log
     if not log:
@@ -1683,6 +1881,11 @@ async def _summarize_one(state: DashboardState, key: str) -> str:
         # persistent summary readable. Unreadable fails closed.
         with log.derivation_hold(transcript_lock_stems(key)):
             if transcript_withholds_derivation(log, key):
+                return None, False
+            if owner_app and not _app_owns_transcript(log, owner_app, key):
+                _audit_app_denial(
+                    owner_app, "session_summarize", f"session={key}", _NOT_TRANSCRIPT_OWNER
+                )
                 return None, False
             return log.get_cached_summary(key), True
 
@@ -1708,22 +1911,32 @@ async def _summarize_one(state: DashboardState, key: str) -> str:
     # preserves the mtime while advancing this counter, and stamping the new
     # content identity onto the older summary would bless it as fresh.
     generation = await loop.run_in_executor(None, log.rotation_generation, key)
+
     # Through the DERIVATION seam, not the plain ``recent``: the line checked
     # above is a snapshot, and a writer can tighten it before the rows are read
     # (a same-key hand-over landing a closed restricted tab's rows). The seam
     # validates the line with the rows under one lock hold and raises instead of
     # yielding rows a restricted (or unreadable) line governs.
-    try:
-        messages = await loop.run_in_executor(
-            None,
-            functools.partial(
-                log.derive_recent,
-                key,
-                max_messages=_SUMMARIZE_MSG_LIMIT,
-                roles={"user", "assistant"},
-            ),
+    def _derive_rows() -> list[dict] | None:
+        derive = functools.partial(
+            log.derive_recent, key, max_messages=_SUMMARIZE_MSG_LIMIT, roles={"user", "assistant"}
         )
+        if not owner_app:
+            return derive()
+        # derive_recent re-enters the same (reentrant) hold.
+        with log.derivation_hold(transcript_lock_stems(key)):
+            if not _app_owns_transcript(log, owner_app, key):
+                _audit_app_denial(
+                    owner_app, "session_summarize", f"session={key}", _NOT_TRANSCRIPT_OWNER
+                )
+                return None
+            return derive()
+
+    try:
+        messages = await loop.run_in_executor(None, _derive_rows)
     except TranscriptWithheld:
+        return ""
+    if messages is None:
         return ""
     prompt = _build_summary_prompt(messages)
     if not prompt:
@@ -1815,14 +2028,44 @@ async def api_sessions_summarize(request: web.Request) -> web.Response:
             ordered.append(k)
     ordered = ordered[:_SUMMARIZE_MAX_SESSIONS]
 
+    log = state.conversation_log
+    request_app = str(request.get("app") or "")
     summaries: dict[str, str] = {}
     for key in ordered:
-        if not state.conversation_log.has_log(key):
+        if request_app:
+            # Skipped like a missing key, so the reply cannot tell the two apart.
+            if not await asyncio.to_thread(_app_owns_transcript, log, request_app, key):
+                _audit_app_denial(
+                    request_app, "session_summarize", f"session={key}", _NOT_TRANSCRIPT_OWNER
+                )
+                continue
+            _audit_app_allow(request_app, "session_summarize", f"session={key}")
+        elif not log.has_log(key):
             continue
-        summary = await _summarize_one(state, key)
+        summary = await _summarize_one(state, key, owner_app=request_app)
         if summary:
             summaries[key] = summary
     return web.json_response({"summaries": summaries})
+
+
+class _AppOwnedKeys:
+    """The transcript keys *request_app* owns, judged per lookup.
+
+    Lazy, so a search reads the owner marker of only the keys in its own scan
+    window instead of listing and judging every transcript up front.
+    """
+
+    def __init__(self, log: ConversationLog, request_app: str) -> None:
+        self._log = log
+        self._request_app = request_app
+
+    def __contains__(self, key: object) -> bool:
+        return isinstance(key, str) and _app_owns_transcript(self._log, self._request_app, key)
+
+
+def _app_search(log: ConversationLog, request_app: str, q: str, limit: int) -> list[dict]:
+    """*q* ranked over only the transcripts *request_app* owns. Blocking; off the loop."""
+    return log.search_sessions(q, limit, keys=_AppOwnedKeys(log, request_app))
 
 
 async def api_sessions_search(request: web.Request) -> web.Response:
@@ -1845,9 +2088,17 @@ async def api_sessions_search(request: web.Request) -> web.Response:
         limit = max(1, min(int(request.query.get("limit", "50")), 200))
     except (TypeError, ValueError):
         limit = 50
-    sessions = await asyncio.get_running_loop().run_in_executor(
-        None, state.conversation_log.search_sessions, q, limit
-    )
+    request_app = str(request.get("app") or "")
+    if request_app:
+        # The ownership filter runs inside the ranking, before the limit cap, so
+        # other sessions' matches cannot crowd the app's off the page.
+        log = state.conversation_log
+        sessions = await asyncio.to_thread(_app_search, log, request_app, q, limit)
+        _audit_app_allow(request_app, "session_search", f"sessions={len(sessions)}")
+    else:
+        sessions = await asyncio.get_running_loop().run_in_executor(
+            None, state.conversation_log.search_sessions, q, limit
+        )
     for s in sessions:
         for field in SESSION_SEARCH_TEXT_FIELDS:
             value = s.get(field)
@@ -1860,8 +2111,26 @@ async def api_session_detail(request: web.Request) -> web.Response:
     """GET /api/sessions/{key} — return messages for a session."""
     state: DashboardState = request.app["state"]
     key = request.match_info["key"]
+    refusal = await _app_transcript_refusal(request, state, key, "session_detail")
+    if refusal is not None:
+        return refusal
     if not state.conversation_log:
         return web.json_response([])
+    log = state.conversation_log
+    request_app = str(request.get("app") or "")
+    if request_app:
+        # Re-judged with the read under one lock hold: the check above is a
+        # snapshot a same-key delete and recreate can outlive.
+        try:
+            messages = await asyncio.to_thread(_app_owned_messages, log, request_app, key)
+        except HistoryLockTimeout:
+            return _app_transcript_busy()
+        if messages is None:
+            return _app_not_found(
+                request_app, "session_detail", f"session={key}", _NOT_TRANSCRIPT_OWNER
+            )
+        _audit_app_allow(request_app, "session_detail", f"session={key}")
+        return web.json_response(messages)
     # read_messages() opens and parses the transcript on a cache miss, which for
     # the multi-MB sessions a long-lived store accumulates is 100-300 ms of
     # blocking file IO — on the event loop, stalling every other request. Off the
@@ -2126,6 +2395,14 @@ CRON_OWNERSHIP_UNKNOWN_CODE = "cron_ownership_unknown"
 #: left alone: deleting it would leave its work state readable by the next session
 #: in the same slot, which is not recoverable by the person it happens to.
 LEDGER_EXCLUSION_UNWRITABLE_CODE = "ledger_exclusion_unwritable"
+
+
+class _AppOwnershipLost(Exception):
+    """An app's delete REFUSED because the transcript stopped recording that app.
+
+    Raised by :func:`_delete_history_session` inside the transcript hold, before
+    any exclusion or unlink, so the row is intact.
+    """
 
 
 class _OwnerKeyUnreadable(Exception):
@@ -2539,8 +2816,14 @@ def _delete_history_session(
     # the functions that use it -- this handler does not import the ledger at module
     # scope, and the tests pass a stub in its place.
     exclude: "Callable[[str], Any] | None" = None,
+    owner_app: str = "",
 ) -> tuple[bool | None, _HistoryDeleteClaim]:
     """Bind slot and cron ownership, then unlink under one transcript lock.
+
+    With *owner_app* set (an app caller), :func:`_app_owns_transcript` is re-judged
+    first inside the hold and a failure raises :class:`_AppOwnershipLost` before
+    anything is excluded or unlinked, so the handler's earlier check cannot be
+    outlived by a same-key delete and recreate.
 
     *exclude* records this slot's ledger units and answers the ids it added. It runs
     INSIDE the lock and only once the claim is RESOLVED, because that is the first point
@@ -2554,6 +2837,8 @@ def _delete_history_session(
     # and a legacy-file delete cannot synchronize on different sidecars.
     try:
         with log.locked_stems(transcript_lock_stems(key)):
+            if owner_app and not _app_owns_transcript(log, owner_app, key):
+                raise _AppOwnershipLost(key)
             resolved_claim = _resolve_history_delete_claim(log, key, claim)
             linked, readable = _linked_session_key_for_history_key(log, key)
             if not readable:
@@ -2802,12 +3087,27 @@ async def api_session_delete(request: web.Request) -> web.Response:
     """DELETE /api/sessions/{key} — permanently delete a history session."""
     state: DashboardState = request.app["state"]
     key = request.match_info["key"]
+    refusal = await _app_transcript_refusal(request, state, key, "session_delete")
+    if refusal is not None:
+        return refusal
     if not state.conversation_log:
         return web.json_response({"error": "no conversation log"}, status=400)
 
     # Freeze the slot/transcript/manager route before the first await. The strict
     # cron-store scan establishes exact owner keys independently of that route.
     delete_claim = _capture_history_delete_claim(state, key)
+    request_app = str(request.get("app") or "")
+    if (
+        request_app
+        and delete_claim.slot is not None
+        and getattr(delete_claim.slot, "_app", "") != request_app
+    ):
+        # The transcript records this app, but the live slot the cleanup would
+        # pop is not the app's: the slot is the server-side record, the metadata
+        # line is not, so the slot decides. Same 404 as any other refusal.
+        return _app_not_found(
+            request_app, "session_delete", f"session={key}", "app does not own the live slot"
+        )
     crons = getattr(state, "crons", None)
     try:
         swept = await _owner_keys_bound_to_transcript(crons, (key,))
@@ -2835,6 +3135,11 @@ async def api_session_delete(request: web.Request) -> web.Response:
             delete_claim,
             exact_owner_keys=swept.get(key, ()),
             exclude=lambda _slot: _exclude_slot_units(state, session_ledger, delete_claim),
+            owner_app=request_app,
+        )
+    except _AppOwnershipLost:
+        return _app_not_found(
+            request_app, "session_delete", f"session={key}", _NOT_TRANSCRIPT_OWNER
         )
     except _OwnerKeyUnreadable:
         return _cron_ownership_unknown_refusal(crons, swept.get(key, ()))
@@ -2863,6 +3168,9 @@ async def api_session_delete(request: web.Request) -> web.Response:
             return _ledger_rollback_refusal()
 
     if ok:
+        if request_app:
+            # Only a completed delete proves the in-hold ownership check ran.
+            _audit_app_allow(request_app, "session_delete", f"session={key}")
         try:
             await _unstrand_shared_ledger_unit(state, session_ledger, delete_claim)
         except session_ledger.LedgerExclusionError:
@@ -3411,6 +3719,9 @@ def _remove_session_crew_logs(
 
 async def api_sessions_clear(request: web.Request) -> web.Response:
     """DELETE /api/sessions — permanently delete closed history sessions only."""
+    refusal = _app_bulk_history_refusal(request, "sessions_clear")
+    if refusal is not None:
+        return refusal
     state: DashboardState = request.app["state"]
     if not state.conversation_log:
         return web.json_response({"error": "no conversation log"}, status=400)
@@ -3630,6 +3941,9 @@ async def api_sessions_clearable_count(request: web.Request) -> web.Response:
     :func:`_clearable_history_keys` for why offering one here would report a
     subset of what the delete actually takes.
     """
+    refusal = _app_bulk_history_refusal(request, "sessions_clearable_count")
+    if refusal is not None:
+        return refusal
     state: DashboardState = request.app["state"]
     if not state.conversation_log:
         return web.json_response(
@@ -3646,9 +3960,86 @@ async def api_sessions_clearable_count(request: web.Request) -> web.Response:
 
 
 async def api_approvals(request: web.Request) -> web.Response:
-    """GET /api/approvals — list pending tool approvals."""
+    """GET /api/approvals — list pending tool approvals.
+
+    The list holds only STATE-level approvals (cron, autonudge, subagent,
+    taskrunner), and an app token never resolves one of those -- the same rule
+    ``POST /api/chat/slots/{slot}/approve`` applies. So an app caller is shown
+    none of them rather than every pending request on the instance.
+    """
     state: DashboardState = request.app["state"]
+    request_app = str(request.get("app") or "")
+    if request_app:
+        _audit_app_denial(
+            request_app, "approval_list", "approvals=*", _STATE_APPROVALS_NOT_APP_VISIBLE
+        )
+        return web.json_response([])
     return web.json_response(list(state._pending_approvals.values()))
+
+
+async def _resolve_app_approval(
+    request: web.Request, state: DashboardState, request_app: str, approval_id: str, action: str
+) -> web.Response:
+    """Resolve *approval_id* for an app caller, or refuse it.
+
+    The slot approve route's rule, in its order: ``deny_session_approval_caller``
+    first, so an app without ``permissions.sessionApproval`` gets the same 403
+    there and here, even for its own slot; then ``_app_may_send_to_slot`` on the
+    slot whose future owns the id. A state-level approval is never resolvable by
+    an app, so the coordinator target and the state registry are not consulted.
+
+    ACP request ids are connection-scoped and recur across slots, so the id must
+    name exactly ONE pending request the app may control. Two or more is refused
+    rather than guessed: the slot route, which names the slot, is the way to
+    decide one of them. The candidates are the (slot, future) pairs live BEFORE
+    the awaited permission reads, and only the judged future itself is resolved:
+    a request settled meanwhile is never replaced by a same-id sibling, on
+    another slot or on the same one. Every other refusal and a missing id return
+    the same 404 body, so an app cannot tell "not yours" from "does not exist".
+    A resolution is recorded in the SEL under the app's name, as the slot route
+    records it.
+    """
+    # Imported here: chat_handlers imports this package at module scope.
+    from kiro_crew.dashboard.chat_handlers import (
+        _app_may_send_to_slot,
+        deny_session_approval_caller,
+    )
+
+    denied = await deny_session_approval_caller(request, "approval_resolve")
+    if denied is not None:
+        return denied
+    live: list[tuple[Any, asyncio.Future[str]]] = []
+    if "origin" not in request.query:
+        # Snapshot before any await: the permission reads below yield the loop.
+        live = [
+            (slot, future)
+            for slot in list(state._slots.values())
+            if (future := slot._approval_futures.get(approval_id)) and not future.done()
+        ]
+    controllable = [pair for pair in live if await _app_may_send_to_slot(request_app, pair[0])]
+    if len(controllable) == 1:
+        slot, future = controllable[0]
+        approved, rejected_once = action == "approve", action == "reject_once"
+        if state.resolve_slot_approval(
+            slot, approval_id, approved, rejected_once=rejected_once, expected_future=future
+        ):
+            # The slot route's record shape, so either route's decision names the app.
+            try:
+                _sel().log_api_access(
+                    caller=f"app:{request_app}",
+                    operation=f"tool_approval:{action}",
+                    outcome=_slot_decision(approved, rejected_once),
+                    resources=approval_id,
+                )
+            except Exception:  # pragma: no cover - audit is best-effort
+                logger.warning("SEL audit failed for approval %s", approval_id, exc_info=True)
+            return web.json_response({"ok": True})
+    reason = (
+        "approval id is pending on more than one session this app may control"
+        if len(controllable) > 1
+        else "no pending approval on a session this app may control"
+    )
+    return _app_not_found(request_app, "approval_resolve", f"approval={approval_id}", reason)
 
 
 async def api_approval_resolve(request: web.Request) -> web.Response:
@@ -3658,6 +4049,9 @@ async def api_approval_resolve(request: web.Request) -> web.Response:
     action = request.match_info["action"]
     if action not in ("approve", "reject", "reject_once"):
         return web.json_response({"error": "invalid action"}, status=400)
+    request_app = str(request.get("app") or "")
+    if request_app:
+        return await _resolve_app_approval(request, state, request_app, approval_id, action)
     if "origin" in request.query:
         # Dynamic Dashboard echoes the inventory record's origin, exact slot and
         # instance. Do not fall through to native futures when that displayed

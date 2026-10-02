@@ -20,6 +20,7 @@ if TYPE_CHECKING:
         DashboardState,
         ResumeOutcome,
         ResumeRefusal,
+        _app_claim_refused,
         _attach_variants,
         _bump_slot_tags_revision,
         _ChatSlot,
@@ -58,6 +59,7 @@ if TYPE_CHECKING:
         redact_exfiltration_urls,
         sel,
         slot_history_key,
+        slot_transcript_key,
         time,
     )
 
@@ -1006,6 +1008,17 @@ async def resume_slot_from_history(
     )
     if resume_outcome is not None:
         return resume_outcome
+    # No live slot: an app's resume builds a NEW slot of its own over this
+    # transcript, so it is admitted only to one the app already owns (both the
+    # transcript it reads and the one its key would save to). Before any side
+    # effect below.
+    if await _app_claim_refused(
+        state,
+        request_app,
+        "chat_resume",
+        (history_key, _history_key_for(name), slot_transcript_key(name)),
+    ):
+        return ResumeOutcome(refusal=ResumeRefusal("not found", "slot_not_found", 404))
 
     # Boundary for the compare-and-clear below, captured BEFORE the metadata read
     # it is compared against. Everything from here to the ``clear_closed`` call is
