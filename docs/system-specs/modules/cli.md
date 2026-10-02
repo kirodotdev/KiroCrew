@@ -1469,7 +1469,9 @@ that must not change, because the SPA's per-origin `localStorage` is keyed on it
      loaded install can take 25-35 s to boot; `KIROCREW_RESTART_READY_TIMEOUT`
      overrides it, fractional values round up to whole seconds, the result is
      clamped to 15..180 s, and an unset, non-numeric, non-finite, zero or
-     negative value falls back to the default. When the deadline exceeds
+     negative value falls back to the default. A set value that falls back
+     or gets clamped prints one `KIROCREW_RESTART_READY_TIMEOUT='V' ...;
+     using Ns.` line to stderr. When the deadline exceeds
      15 s, the wait prints one `Still starting (Ns elapsed), continuing to
      wait...` line on the first check after 15 s. The service path (step 1)
      does not use this deadline and is unchanged. On both paths, the

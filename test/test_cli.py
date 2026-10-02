@@ -6931,6 +6931,61 @@ class TestResolveRestartReadyTimeout:
 
         assert cli_server._resolve_restart_ready_timeout() == expected
 
+    @pytest.mark.parametrize("raw", ["", "   ", "90", "45.7", "15", "180", "179.2"])
+    def test_unset_or_in_range_value_is_silent(self, monkeypatch, capsys, raw):
+        from kiro_crew import cli_server
+
+        monkeypatch.setenv("KIROCREW_RESTART_READY_TIMEOUT", raw)
+
+        cli_server._resolve_restart_ready_timeout()
+
+        captured = capsys.readouterr()
+        assert captured.err == ""
+        assert captured.out == ""
+
+    @pytest.mark.parametrize(
+        "raw, message",
+        [
+            ("abc", "KIROCREW_RESTART_READY_TIMEOUT='abc' is not a positive number; using 60s."),
+            ("-5", "KIROCREW_RESTART_READY_TIMEOUT='-5' is not a positive number; using 60s."),
+            ("nan", "KIROCREW_RESTART_READY_TIMEOUT='nan' is not a positive number; using 60s."),
+            ("300", "KIROCREW_RESTART_READY_TIMEOUT='300' is outside 15..180s; using 180s."),
+            ("5", "KIROCREW_RESTART_READY_TIMEOUT='5' is outside 15..180s; using 15s."),
+            ("0.5", "KIROCREW_RESTART_READY_TIMEOUT='0.5' is outside 15..180s; using 15s."),
+        ],
+    )
+    def test_fallback_or_clamp_prints_one_stderr_line(self, monkeypatch, capsys, raw, message):
+        from kiro_crew import cli_server
+
+        monkeypatch.setenv("KIROCREW_RESTART_READY_TIMEOUT", raw)
+
+        cli_server._resolve_restart_ready_timeout()
+
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert captured.err.count("\n") == 1
+        assert message in captured.err
+
+    def test_cli_spec_states_the_current_deadline_values(self):
+        from kiro_crew import cli_server
+
+        spec = Path(__file__).resolve().parent.parent / "docs/system-specs/modules/cli.md"
+        text = " ".join(spec.read_text(encoding="utf-8").split())
+
+        default = cli_server._RESTART_READY_TIMEOUT_DEFAULT
+        low = cli_server._RESTART_READY_TIMEOUT_MIN
+        high = cli_server._RESTART_READY_TIMEOUT_MAX
+        checkpoint = cli_server._RESTART_READY_SOFT_CHECKPOINT
+        token_wait = cli_server._RESTART_TOKEN_WAIT
+        for phrase in (
+            f"it defaults to {default} s because",
+            f"clamped to {low}..{high} s",
+            f"When the deadline exceeds {checkpoint} s",
+            f"on the first check after {checkpoint} s",
+            f"keeps its fixed {token_wait} s budget",
+        ):
+            assert phrase in text, f"cli.md no longer states {phrase!r}"
+
 
 class TestWaitGatewayReady:
     """Unit tests for the post-spawn readiness wait (`_wait_gateway_ready`).

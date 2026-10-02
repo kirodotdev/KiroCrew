@@ -1068,13 +1068,34 @@ def _resolve_restart_ready_timeout() -> int:
     cannot make restart fail instantly or hang for an unbounded time.
     """
     raw = os.environ.get("KIROCREW_RESTART_READY_TIMEOUT", "")
+    if not raw.strip():
+        return _RESTART_READY_TIMEOUT_DEFAULT
     try:
         value = float(raw)
     except ValueError:
-        return _RESTART_READY_TIMEOUT_DEFAULT
+        value = math.nan
     if not math.isfinite(value) or value <= 0:
+        _warn_restart_ready_override(
+            raw, _RESTART_READY_TIMEOUT_DEFAULT, "is not a positive number"
+        )
         return _RESTART_READY_TIMEOUT_DEFAULT
-    return max(_RESTART_READY_TIMEOUT_MIN, min(_RESTART_READY_TIMEOUT_MAX, math.ceil(value)))
+    requested = math.ceil(value)
+    resolved = max(_RESTART_READY_TIMEOUT_MIN, min(_RESTART_READY_TIMEOUT_MAX, requested))
+    if resolved != requested:
+        _warn_restart_ready_override(
+            raw,
+            resolved,
+            f"is outside {_RESTART_READY_TIMEOUT_MIN}..{_RESTART_READY_TIMEOUT_MAX}s",
+        )
+    return resolved
+
+
+def _warn_restart_ready_override(raw: str, used: int, problem: str) -> None:
+    print(
+        f"⚠️  KIROCREW_RESTART_READY_TIMEOUT={raw!r} {problem}; using {used}s.",
+        file=sys.stderr,
+        flush=True,
+    )
 
 
 def _print_still_starting(elapsed: float) -> None:
