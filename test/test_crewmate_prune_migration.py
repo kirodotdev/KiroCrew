@@ -221,6 +221,35 @@ class TestThePass:
         assert marker["kept"] == ["radar"]
         assert marker["doubted"] == {}
 
+    def test_records_bound_to_a_removed_row_stay_executable(
+        self, old_style_config, bindings_dir, log
+    ):
+        """Removing a row must never strand the records that picked it.
+
+        Chats, forks, subagent runs and cron jobs that picked a synced crewmate
+        persist a ``member`` record naming it. After the pass removes the row,
+        each such record must decode as the installed template on the shared
+        store -- otherwise every reader refuses it as an unavailable member.
+        """
+        from kiro_crew.execution_context import (
+            EXECUTION_CONTEXT_KEY,
+            ExecutionContext,
+            MemoryStoreRef,
+            execution_from_record,
+        )
+
+        report = _run(old_style_config, log)
+        assert report.removed
+        for name in report.removed:
+            record = ExecutionContext(
+                None, MemoryStoreRef("default"), "member", name, selection_name=name
+            )
+            decoded = execution_from_record({EXECUTION_CONTEXT_KEY: record.to_record()})
+            assert decoded.selection_kind == "template", name
+            assert decoded.template_id == name
+            assert decoded.store.store_id == "default"
+            assert _spec_path(name).exists()
+
     def test_a_session_that_ran_the_agent_elsewhere_does_not_count(
         self, old_style_config, bindings_dir, log
     ):

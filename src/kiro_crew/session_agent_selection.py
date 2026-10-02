@@ -13,6 +13,7 @@ from kiro_crew.config.loader import ResolvedBindings, resolve_agent_bindings
 from kiro_crew.execution_context import (
     ExecutionContext,
     MemoryStoreRef,
+    adopt_removed_synced_crewmate,
     bind_session_execution,
     member_config_for_id,
     read_session_execution,
@@ -72,25 +73,6 @@ def _source_of_view(name: str) -> str:
         return name
 
 
-def _is_removed_synced_crewmate(config, execution: ExecutionContext, selected: str) -> bool:
-    """Whether *execution* names an identity-less crewmate whose row is gone.
-
-    ``crewmate_prune_migration`` removes rows an older agent sync generated: no
-    ``member_id``, the shared ``default`` store, and a name equal to its
-    ``kiro_agent``. A chat that picked one recorded exactly that shape. Only that
-    shape qualifies -- a member with an identity or its own store is never
-    re-read as a template, so its refusal stands.
-    """
-    return (
-        execution.selection_kind == "member"
-        and execution.member_id is None
-        and execution.store.store_id == "default"
-        and bool(selected)
-        and selected == _source_of_view(execution.template_id)
-        and selected not in config.agents
-    )
-
-
 def resolve_session_agent_bindings(
     resolver, config, session_key: str, agent_name: str | None, *project_dir
 ) -> ResolvedBindings:
@@ -106,14 +88,11 @@ def resolve_session_agent_bindings(
         else:
             selected = execution.selection_name or execution.template_id
     selected = _source_of_view(selected)
-    selection_kind = execution.selection_kind if execution else ""
-    if execution is not None and _is_removed_synced_crewmate(config, execution, selected):
-        # The startup crewmate prune deleted the ``config.agents`` row this chat
-        # was bound to, but the agent it named is still installed. That row had
-        # no identity and sat on the shared Global store, so the installed agent
-        # on that same store is the exact binding the row carried; resolving it
-        # as a template keeps the chat resumable without reaching any other store.
-        selection_kind = "template"
+    if execution is not None:
+        # The decoder already re-reads a record bound to a pruned synced
+        # crewmate as its template; answering against the CALLER's config
+        # snapshot keeps this resolve consistent with the config it is given.
+        execution = adopt_removed_synced_crewmate(execution, config)
     try:
         bindings = resolver(
             config,
@@ -121,7 +100,7 @@ def resolve_session_agent_bindings(
             *project_dir,
             validate_memory_files=False,
             **(
-                {"selection_kind": selection_kind, "execution_context": execution}
+                {"selection_kind": execution.selection_kind, "execution_context": execution}
                 if execution
                 else {}
             ),

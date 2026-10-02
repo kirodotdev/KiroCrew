@@ -97,9 +97,10 @@ Design:
   A session with no execution record gets that from the installed-agent
   lookup in ``resolve_agent_bindings``. One whose record names the crewmate as
   a ``member`` selection does not, because a member selection never takes that
-  lookup; ``session_agent_selection.resolve_session_agent_bindings`` resolves
-  exactly the shape this pass removes (the shared store, named after its
-  agent) as that agent instead, and every other missing member stays refused.
+  lookup; ``execution_context.adopt_removed_synced_crewmate`` re-reads exactly
+  the shape this pass removes (the shared store, named after its agent, and
+  listed in this pass's marker) as that agent when the record is decoded, so
+  every reader agrees. Every other missing member stays refused.
   That
   function's middleware holds every mutating request on it -- the chat send,
   slot create, slot agent switch, member thread, channel and import routes
@@ -264,6 +265,56 @@ class SyncedCandidate:
 
 def marker_path() -> Path:
     return config_dir() / PRUNE_MARKER
+
+
+#: Every marker a prune pass has written, oldest first. Each body's ``removed``
+#: list names rows that pass deleted.
+_ALL_MARKERS = ("crewmate_prune_migrated.json", "crewmate_prune_v2_migrated.json", PRUNE_MARKER)
+
+#: A marker is a short list of names; anything larger is not one this module wrote.
+_MARKER_READ_CAP = 1 << 20
+
+_removed_cache: tuple[tuple, frozenset[str]] | None = None
+
+
+def removed_crewmate_names() -> frozenset[str]:
+    """The ``config.agents`` names any prune pass recorded as removed.
+
+    This is the provenance :func:`kiro_crew.execution_context.adopt_removed_synced_crewmate`
+    keys on: a record is re-read as its template only when the row it names is
+    one THIS migration deleted, never because some member row happens to be
+    absent. An unreadable or malformed marker contributes nothing. Cached on
+    each marker's size and mtime, so the hot decode path costs a few ``stat``
+    calls.
+    """
+    global _removed_cache
+    root = config_dir()
+    paths = [root / name for name in _ALL_MARKERS]
+    stamps: list[tuple[str, int, int]] = []
+    for path in paths:
+        try:
+            info = path.stat()
+        except OSError:
+            continue
+        stamps.append((path.name, info.st_mtime_ns, info.st_size))
+    key = tuple(stamps)
+    cached = _removed_cache
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    names: set[str] = set()
+    for name, _mtime, size in stamps:
+        if size > _MARKER_READ_CAP:
+            continue
+        try:
+            body = json.loads((root / name).read_text(encoding="utf-8"))
+        except (OSError, ValueError, UnicodeDecodeError, RecursionError):
+            continue
+        removed = body.get("removed") if isinstance(body, dict) else None
+        if isinstance(removed, list):
+            names.update(n for n in removed if isinstance(n, str) and n)
+    result = frozenset(names)
+    _removed_cache = (key, result)
+    return result
 
 
 def lock_path() -> Path:

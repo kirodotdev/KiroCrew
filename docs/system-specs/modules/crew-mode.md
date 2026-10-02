@@ -106,10 +106,15 @@ The chrome follows the same one-kind rule, decided on the unfiltered roster so a
 filter that narrows to one group keeps its header; the `role="group"` label stays
 for assistive technology either way. Callers that do not opt in, and any name-only
 roster, render flat as before. Temporarily,
-`HIDE_CREWMATE_CHOICES` in `useAgents.ts` withholds the member rows from `choices`,
-so the pop-up offers templates only -- a plain list, no header -- and a crewmate is
-reached from its DM thread instead; the folded `agents` list and the request
-contract below are unaffected, and turning the flag off restores the two groups.
+`HIDE_CREWMATE_CHOICES` in `useAgents.ts` withholds from `choices` every member row
+a listed template already COVERS (`withoutCoveredCrewmates`): a template of the same
+name is listed, or the member has no memory of its own (`memory_store` is `default`)
+and runs a listed template, which is the identical binding (the built-in `default`
+crew is this case). A crewmate no template covers stays pickable: one made by hand
+with its own memory, and one running its own private copy, which the catalog never
+lists as a template. Withholding those left the agent unreachable from any chat,
+since neither group offered it. The folded `agents` list and the request contract
+below are unaffected, and turning the flag off restores the two groups.
 A pick sends `agent_kind` with the name on slot create and on
 `/api/chat/slots/{slot}/agent`; the slot stores the committed kind, persists it with
 the other slot-owned metadata (`SLOT_OWNED_META_KEYS`, so a restart restores a
@@ -892,9 +897,9 @@ crew's workspace and memory — the binding the removed row carried — so no
 restore depends on the row. A session with no execution record gets that from
 the installed-agent lookup in `resolve_agent_bindings`; one whose record names
 the crewmate as a `member` selection does not, because a member selection never
-takes that lookup, so `resolve_session_agent_bindings` resolves exactly the shape
-this pass removes (the shared store, named after its agent) as that agent, and
-every other missing member stays refused. A recorded `kirocrew-skill-view-*`
+takes that lookup, so the record decoder re-reads exactly the shape this pass
+removes as that agent (see "Records that picked a removed row" below), and every
+other missing member stays refused. A recorded `kirocrew-skill-view-*`
 name is mapped back to its source agent through the projection's sidecar
 (`source_agent_name`) before either lookup. The headless `start_api_server` / `--slack-only`
 entrypoint has no dashboard and does not run it) and settles that without any
@@ -1071,6 +1076,35 @@ UI — removal only; nothing is created or rebound:
   and skipped every row bound to a skill-view alias, since no installed spec
   matches one. Both markers are left in place and do not stop the current
   pass, which runs once on those installs too.
+
+### Records that picked a removed row
+
+Removing a row must never strand a record that picked it. A chat, a fork, a
+subagent run or a cron job that picked a synced crewmate persists an execution
+record of exactly the removed shape: `selection_kind == "member"`, no
+`member_id`, the `default` store, and `selection_name == template_id`. After
+the row is gone that record names a member that no longer exists, and every
+reader that checks the kind used to refuse it -- a resumed or forked chat
+(`Crew Member '<name>' is unavailable`), a continued subagent (`selected member
+is unavailable`), and the prompt builder's member lookup.
+
+So the record DECODER answers once for every reader:
+`execution_from_record` passes each decoded record through
+`adopt_removed_synced_crewmate`, which re-reads exactly that shape as the
+installed template on the same `default` store when its name is absent from
+`config.agents`. That is the binding the removed row carried, so no other store
+becomes reachable. A member with an identity, its own store, or a name that
+differs from its template keeps refusing, and so does a record whose config
+cannot be read. A template that is no longer installed still fails at the
+resolver. The spawn gate applies the same rule to the one input that is not a
+record: a slot's inherited `("member", name)` selection whose row is gone keeps
+its template on the shared store, and refuses on any other store.
+
+Any future pass that deletes `config.agents` rows must either preserve this
+invariant or rewrite the records first. `test_crewmate_prune_migration.py`
+pins it (`test_records_bound_to_a_removed_row_stay_executable`: every row the
+pass removes decodes as an executable template), and
+`test_pruned_crewmate_records.py` pins each reader.
 
 Removed rows do not come back: since #12224 the dashboard pickers read
 `GET /api/agents/catalog` and nothing calls `POST /api/agents/sync`, so the rows
@@ -1299,6 +1333,7 @@ name, and it resolves an empty crew too so the concrete template stays inside
 
 | Test | What it holds |
 |---|---|
+| `test/test_pruned_crewmate_records.py` | Records bound to a pruned synced crewmate decode as their template for every reader (chat resume, subagent continuation and inheritance, prompt builder); owned members still refuse |
 | `test/test_agent_execution_catalog.py` | Read-only catalog, same-name member/template choices, requesting-project isolation, private-template exclusion and explicit discovery failure |
 | `test/test_agent_templates_endpoint.py` | Templates roster marks editability (a row with no spec file beneath the agents directory — empty, foreign or absent `filename` — is read-only for the runtime's reason) and references (crews, default, schedules by what they dispatch — sequence over dormant `agent_id`, the captured execution's template over a stale or empty `agent_id`, script jobs over neither — chat-folder pins, webhook pins, private copies) and masks package-controlled strings like the sibling rosters (the delete refusal's references too); a row whose filename is absolute, traversing or nested names nothing to delete (404, file intact); create writes a minimal runnable spec or a lineage-free copy (re-read inside the spec lock, where the source name is re-resolved and must reach exactly the probed file — a second claimant or a replacement refuses, nothing written) and refuses taken, bound (in the base or only in the overlay), reserved, ambiguous and malformed names; delete refuses read-only and referenced templates (listing the references), a name two files reach — a crossover or a same-name twin the roster would collapse (neither unlinked), a row whose file does not answer to the requested name, a second claimant that lands after the probe (ambiguity re-checked under the lock) and a row that calls a package file plain (the file re-read and classified under the lock), checks and unlinks inside one folder-store hold rather than from a snapshot, counts a binding that lives only in `config.local.json`, does not count a template that merely shares the default crew's alias, holds the schedule store's own lock from the reference walk through the rename (probed on both sides) and answers 503 `schedule_store_busy` with the file intact when another holder keeps it past the bounded wait, names a schedule written past the lock (warning + SEL row), fails closed on an unreadable cron store before the unlink (503, file intact) and only warns after it, retires the file as a one-deep tombstone (renamed before the older grave goes, so a refused rename keeps both; same-second graves stay distinct; the sweep spares a live template whose name looks like a grave), runs both mutations through the drained seam, and removes an unreferenced one; create re-scans by declared name under the lock; a successful create and delete emit operation-labelled SEL events; a create publishes its name to the dispatch snapshot before scheduling the rescan and a delete awaits the rescan before answering (a refusal touches neither); the detail PATCH writes the definition keys on an owned template, refuses them on a package one, refuses every key on an ambiguous name (neither file touched) and a claimant landing after the scan (re-checked under the write lock), classifies the targeted file rather than its name, and validates their shape |
 | `website/src/test/AgentTemplatesTab.test.tsx` | Grouping by origin, the two-control action row with its overflow menu (enroll hint, Delete vs Duplicate-to-edit by editability), the definition save through the detail PATCH (changed keys only — a prompt-only save never resends the model), the dirty-draft guard on row switch, on a background refetch, on Discard (asks; declined keeps the draft) and on New template (a create never inherits the previous draft), a saved skill list written into the detail cache before the refetch lands, the saved confirmation in the bar's slot and the visible Add tool label, a delete naming the deleted template over the next row and, on a narrow viewport, returning to the list, every in-app link routed through the shell's leave gate with its target, `beforeunload` armed only while dirty, a rejected detail read rendering its error rather than Loading, a refused save reported inside the save bar beside Save and cleared by Discard, resources as plain rows, string-only MCP fields from a hand-edited spec, one Skills heading, the referenced-delete dialog (opened directly from the row's own holders with no confirm or request, and from the server's refusal when a holder landed later; including a chat-folder row and a private-copy row that links to its crew), a private copy's Open crewmate, the usage line naming folder and webhook holders with each holder linked to where it is held, blank vs `from` create with the created row selected after the roster refetch, and chat-with in the template namespace (enabled while dirty, behind the discard confirm) |

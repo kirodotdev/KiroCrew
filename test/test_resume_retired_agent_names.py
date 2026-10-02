@@ -11,6 +11,7 @@ the projection's ownership sidecar before deciding the turn is unavailable.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
 import pytest
 
@@ -48,6 +49,11 @@ def installed(monkeypatch):
     monkeypatch.setattr(
         "kiro_crew.config.loader._materialized_kiro_agent",
         lambda name, project_dir=None: name if name in names else "",
+    )
+    # The fallback applies only to a row the prune recorded as removed.
+    monkeypatch.setattr(
+        "kiro_crew.crewmate_prune_migration.removed_crewmate_names",
+        lambda: frozenset({AGENT, VIEW}),
     )
     return names
 
@@ -130,7 +136,7 @@ def test_recorded_view_selection_resolves_to_its_agent(monkeypatch, installed, v
     assert bindings.selection_kind == "template"
     assert bindings.kiro_agent == AGENT
     assert bindings.memory_store_name == "default"
-    assert bindings.execution_context is captured
+    assert bindings.execution_context == replace(captured, selection_kind="template")
 
 
 def test_a_view_nothing_records_still_fails_closed(monkeypatch, installed, view_sidecar):

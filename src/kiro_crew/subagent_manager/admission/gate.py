@@ -129,15 +129,27 @@ class _GateMixin(ManagerComponent):
                     template_id=agent or inherited[1],
                 )
                 if inherited[0] == "member":
-                    selected = KiroCrewConfig.load().agents.get(inherited[1])
-                    if selected is None:
-                        raise ValueError("selected member is unavailable")
-                    execution = replace(
-                        execution,
-                        selection_kind="member",
-                        selection_name=inherited[1],
-                        template_id=selected.kiro_agent or "kirocrew",
+                    from kiro_crew.crewmate_prune_migration import (
+                        removed_crewmate_names as _removed_crewmate_names,
                     )
+
+                    selected = KiroCrewConfig.load().agents.get(inherited[1])
+                    if selected is not None:
+                        execution = replace(
+                            execution,
+                            selection_kind="member",
+                            selection_name=inherited[1],
+                            template_id=selected.kiro_agent or "kirocrew",
+                        )
+                    elif (
+                        execution.store.store_id != "default"
+                        or execution.member_id is not None
+                        or inherited[1] not in _removed_crewmate_names()
+                    ):
+                        raise ValueError("selected member is unavailable")
+                    # Otherwise the member is a synced crewmate the startup prune
+                    # removed: same rule ``adopt_removed_synced_crewmate`` applies
+                    # to records, so the run keeps its template on the shared store.
             execution = derive_execution(
                 execution,
                 target_member=target_member or crew or None,

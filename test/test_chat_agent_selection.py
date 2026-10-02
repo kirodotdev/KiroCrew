@@ -77,6 +77,14 @@ def test_global_session_binding_matches_equivalent_alias(monkeypatch):
     assert not stored.same_dispatch_binding(replace(requested, memory_store_name="other-store"))
 
 
+@pytest.fixture
+def pruned_marker(monkeypatch):
+    monkeypatch.setattr(
+        "kiro_crew.crewmate_prune_migration.removed_crewmate_names",
+        lambda: frozenset({"synced-agent"}),
+    )
+
+
 def _pruned_crewmate_record(execution_context, *, store="default", member_id=None):
     return execution_context.ExecutionContext(
         member_id,
@@ -87,7 +95,7 @@ def _pruned_crewmate_record(execution_context, *, store="default", member_id=Non
     )
 
 
-def test_resume_after_crewmate_prune_resolves_installed_agent(monkeypatch):
+def test_resume_after_crewmate_prune_resolves_installed_agent(monkeypatch, pruned_marker):
     """A chat bound to a sync-generated crewmate stays resumable after the prune.
 
     The startup prune deletes the crewmate's ``config.agents`` row but leaves the
@@ -115,14 +123,16 @@ def test_resume_after_crewmate_prune_resolves_installed_agent(monkeypatch):
     assert bindings.kiro_agent == "synced-agent"
     assert bindings.memory_store_name == "default"
     assert bindings.selection_kind == "template"
-    assert bindings.execution_context is record
+    assert bindings.execution_context == replace(record, selection_kind="template")
 
 
 @pytest.mark.parametrize(
     "store, member_id",
     [("private-store", None), ("member-store", "member-1")],
 )
-def test_resume_after_crewmate_prune_keeps_refusing_owned_members(monkeypatch, store, member_id):
+def test_resume_after_crewmate_prune_keeps_refusing_owned_members(
+    monkeypatch, pruned_marker, store, member_id
+):
     """Only the identity-less, Global-store shape the prune removes falls back."""
     from kiro_crew import execution_context, session_agent_selection
 
@@ -143,7 +153,7 @@ def test_resume_after_crewmate_prune_keeps_refusing_owned_members(monkeypatch, s
     assert not bindings.requested_resolved
 
 
-def test_resume_after_crewmate_prune_refuses_uninstalled_agent(monkeypatch):
+def test_resume_after_crewmate_prune_refuses_uninstalled_agent(monkeypatch, pruned_marker):
     """The fallback reaches only an agent that is still installed."""
     from kiro_crew import execution_context, session_agent_selection
 

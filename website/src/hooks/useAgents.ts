@@ -3,7 +3,8 @@ import { api } from '../api/client'
 import type { KiroCrewAgent } from '../components/AgentSelector'
 
 /**
- * TEMPORARY: keep crewmates out of the chat agent pop-up. Only the picker's
+ * TEMPORARY: keep crewmates a listed template already covers out of the chat
+ * agent pop-up (see `withoutCoveredCrewmates`). Only the picker's
  * `choices` list is affected -- the folded `agents` list (cron, channel, project
  * bindings, the keyboard cycle) still sees every name, so a slot already
  * running a member keeps working and nothing is written. Flip to `false` to
@@ -33,9 +34,9 @@ export const HIDE_CREWMATE_CHOICES = true
  *
  * @returns `choices` — the catalog rows a namespace-aware picker (the chat agent
  *   pop-up) renders, keyed by (selection_kind, name). While
- *   `HIDE_CREWMATE_CHOICES` is on, member rows are withheld and the pop-up offers
- *   templates only; a member is still reachable from its DM thread on the Crew
- *   Members page. With the flag off, a member and a template of one name are two
+ *   `HIDE_CREWMATE_CHOICES` is on, a member row is withheld when a listed
+ *   template reaches the same binding; a crewmate no template covers (made by
+ *   hand, or running its own private copy) stays pickable. With the flag off, a member and a template of one name are two
  *   rows here, and picking one sends its kind.
  * @returns `agents` — the same catalog folded to ONE row per name for the
  *   name-only consumers (the schedule form's `agent_id`, the channel and project
@@ -112,11 +113,34 @@ export function useAgents(refreshTrigger: number, sessionKey?: string, projectDi
   // Filtered AFTER the fold, so hiding a member from the pop-up never changes
   // which row a bare name resolves to for the name-only consumers.
   const pickerChoices = useMemo(
-    () => (HIDE_CREWMATE_CHOICES ? choices.filter(c => c.selection_kind !== 'member') : choices),
+    () => (HIDE_CREWMATE_CHOICES ? withoutCoveredCrewmates(choices) : choices),
     [choices],
   )
 
   return { agents, choices: pickerChoices, defaultAgent, error, reload, reloading }
+}
+
+/**
+ * The pop-up's rows while `HIDE_CREWMATE_CHOICES` is on. A crewmate is withheld
+ * only when a listed template already reaches the same thing:
+ *
+ * - a template of the SAME name is listed, or
+ * - the crewmate has no memory of its own (`memory_store === 'default'`) and runs
+ *   a listed template -- picking that template is the identical binding (the
+ *   built-in `default` crew is this case).
+ *
+ * Every other crewmate stays: one made by hand under its own name with its own
+ * memory, and one whose agent is its own private copy (the catalog never lists a
+ * private copy as a template). Withholding those left no way to pick them from a
+ * chat at all.
+ */
+export function withoutCoveredCrewmates(choices: KiroCrewAgent[]): KiroCrewAgent[] {
+  const templates = new Set(
+    choices.filter(c => c.selection_kind === 'template').map(c => c.name),
+  )
+  const covered = (c: KiroCrewAgent) =>
+    templates.has(c.name) || (c.memory_store === 'default' && templates.has(c.kiro_agent))
+  return choices.filter(c => c.selection_kind !== 'member' || !covered(c))
 }
 
 /** One row per name, member first — see `agents` in the hook's docs. */
