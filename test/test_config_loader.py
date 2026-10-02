@@ -710,6 +710,15 @@ class TestFallbackModelLoad:
         loaded = _load_from_dict({"agent": {"fallback_model": {"not": "a string"}}})
         assert loaded.agent.fallback_model == "auto"
 
+    def test_loads_ordered_fallback_models(self) -> None:
+        loaded = _load_from_dict(
+            {"agent": {"fallback_models": ["xai/grok-4.7", "openai-codex/gpt-6-luna"]}}
+        )
+        assert loaded.agent.fallback_models == [
+            "xai/grok-4.7",
+            "openai-codex/gpt-6-luna",
+        ]
+
     def test_round_trips_through_to_dict(self) -> None:
         loaded = _load_from_dict({"agent": {"fallback_model": "claude-opus-5"}})
         assert loaded.to_dict()["agent"]["fallback_model"] == "claude-opus-5"

@@ -2807,6 +2807,7 @@ class _ChatSlot:
         "_fallback_candidate_idx",
         "_fallback_walked",
         "_active_fallback_model",
+        "_fallback_restore_after",
         "_fallback_primary_model",
         "_fallback_slot_model",
         "_model_pick_gen",
@@ -3571,6 +3572,9 @@ class _ChatSlot:
         self._fallback_candidate_idx: int = 0
         self._fallback_walked: list[str] = []
         self._active_fallback_model: str = ""
+        # A spent provider allowance should not be probed on every patrol
+        # turn. Epoch seconds; zero means the ordinary next-turn restore probe.
+        self._fallback_restore_after: float = 0.0
         self._fallback_primary_model: str = ""
         # Snapshot of slot.model taken when the fallback activated, used to heal
         # slot.model if the automatic provider backfill wrote the fallback id
