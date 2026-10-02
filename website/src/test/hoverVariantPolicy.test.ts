@@ -129,7 +129,6 @@ const DECORATIVE: Array<[file: string, snippet: string, why: string]> = [
   ['pages/ArtifactDetailPage.tsx', '<Pencil size={14}', 'edit glyph inside the always-visible rename button'],
   ['pages/chat/SessionTitleControl.tsx', '<Pen size=', 'edit glyph beside the always-visible title'],
   ['pages/settings/SecurityPanel.tsx', '<ExternalLink size={11}', 'external-link glyph on an always-visible row'],
-  ['components/WelcomeView.tsx', 'sm:group-hover:line-clamp-none', 'unclamps a suggestion\'s text on hover; one tap sends the full text to the composer'],
 ]
 
 /** Files no route or component mounts, so no user can reach their hover-only

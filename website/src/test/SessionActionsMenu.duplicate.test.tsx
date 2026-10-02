@@ -1,6 +1,6 @@
 /**
  * The sidebar row's single-menu form (phones, and any touch screen) replaces the
- * hover cluster that hosts Duplicate, so the menu must carry Duplicate itself
+ * hover cluster that hosts the fork action, so the menu must carry it (labelled "Fork chat" since #16101) itself
  * when the row passes it. Surfaces that pass no handler get no item.
  */
 import { describe, it, expect, vi } from 'vitest'
@@ -56,16 +56,16 @@ function renderMenu(onDuplicate?: () => void) {
 }
 
 describe('SessionActionsMenu Duplicate item', () => {
-  it('renders Duplicate when the row passes a handler, and selecting it calls the handler', async () => {
+  it('renders Fork chat when the row passes a handler, and selecting it calls the handler', async () => {
     const onDuplicate = vi.fn()
     renderMenu(onDuplicate)
-    fireEvent.click(await screen.findByText('Duplicate'))
+    fireEvent.click(await screen.findByText('Fork chat'))
     expect(onDuplicate).toHaveBeenCalledTimes(1)
   })
 
-  it('renders no Duplicate item when no handler is passed', async () => {
+  it('renders no Fork chat item when no handler is passed', async () => {
     renderMenu()
     expect(await screen.findByText('Pin')).toBeTruthy()
-    expect(screen.queryByText('Duplicate')).toBeNull()
+    expect(screen.queryByText('Fork chat')).toBeNull()
   })
 })
