@@ -79,6 +79,37 @@
     var bootFailureTimer = null;
     var bootFailureSrc = '';
     var bootFailureNote = '';
+    // Scripts the retry button refetches past the HTTP cache. Hashed assets are
+    // served `immutable` for a year, so a chunk that once arrived cut short (a
+    // proxy or tunnel that ended the body early still answers 200) is replayed
+    // from that cache on every reload, and dropping the service worker and
+    // CacheStorage does not touch it. On `window` because the button's wiring is
+    // a separate script in the body.
+    window.__kcBootRefetch = [];
+    function rememberBootRefetch(url) {
+      try {
+        url = String(url || '');
+        if (!url) return;
+        var list = window.__kcBootRefetch;
+        for (var i = 0; i < list.length; i++) if (list[i] === url) return;
+        if (list.length < 20) list.push(url);
+      } catch (err) {}
+    }
+    // Where an evaluation error came from, as a path plus line and column. The
+    // message alone ("Invalid or unexpected token") cannot say which of a few
+    // hundred chunks failed, and that is what tells a truncated download apart
+    // from a broken build.
+    function bootErrorLocation(e) {
+      var file = '';
+      try { file = String((e && e.filename) || ''); } catch (err) { return ''; }
+      if (!file) return '';
+      var where = file.split('?')[0];
+      try { where = new URL(file).pathname; } catch (err) {}
+      var line = Number(e.lineno) || 0;
+      var col = Number(e.colno) || 0;
+      if (line > 0) where += ':' + line + (col > 0 ? ':' + col : '');
+      return ' (in ' + where + ')';
+    }
     function hideBootFailure(panel) {
       panel.hidden = true;
       try { panel.style.display = ''; } catch (err) {}
@@ -195,7 +226,7 @@
         if (t.tagName !== 'SCRIPT' || t.type !== 'module') return;
         var src = String(t.src || '').split('?')[0];
         try { console.error('[boot] module script failed to load: ' + src); } catch (err) {}
-        if (!bootFailureIsEmbedded()) { revealBootFailure(src); return; }
+        if (!bootFailureIsEmbedded()) { rememberBootRefetch(t.src); revealBootFailure(src); return; }
         try {
           // nosemgrep: javascript.browser.security.wildcard-postmessage-configuration.wildcard-postmessage-configuration
           window.parent.postMessage({ type: 'mc-embedded-boot', v: 1, stage: 'script-error', src: src }, '*');
@@ -219,8 +250,10 @@
       if (!bootFailureIsEmbedded()) {
         // Always the same shape, so the detail line has exactly two variants rather
         // than three: an engine that reports no message changes the PAYLOAD, not the
-        // state, the same way one URL differs from another.
-        revealBootFailure('', 'Startup error: ' + (msg || '(no message reported)'));
+        // state, the same way one URL differs from another. The location is part of
+        // that payload when the engine reports one.
+        try { if (e && e.filename) rememberBootRefetch(e.filename); } catch (err) {}
+        revealBootFailure('', 'Startup error: ' + (msg || '(no message reported)') + bootErrorLocation(e));
       }
     }, true);
     // There is deliberately NO `unhandledrejection` listener. A rejected promise
@@ -338,12 +371,34 @@
       // dimming and cursor go with the relabel because a reader shown only the new
       // text could not tell whether the busy button was still clickable.
       try {
-        kcRetry.textContent = 'Clearing cache...'
+        // A refetch of a large file can take a while on a slow link; say what it is
+        // waiting for, or a reader reloads by hand and aborts it.
+        kcRetry.textContent = (window.__kcBootRefetch && window.__kcBootRefetch.length)
+          ? 'Re-downloading the broken file...'
+          : 'Clearing cache...'
         kcRetry.style.opacity = '0.65'
         kcRetry.style.cursor = 'default'
       } catch (e) { }
       var done = function () { try { location.reload() } catch (e) { } }
       var jobs = []
+      // The scripts that failed, refetched with `cache: 'reload'`: that request
+      // goes to the network and REPLACES the HTTP-cache entry, which a plain reload
+      // of an `immutable` asset never does. Same-origin only, since the shell has no
+      // business re-requesting someone else's URL.
+      try {
+        var refetch = window.__kcBootRefetch || []
+        for (var ri = 0; ri < refetch.length; ri++) {
+          var target = null
+          try { target = new URL(refetch[ri], location.href) } catch (e) { target = null }
+          if (!target || target.origin !== location.origin || !window.fetch) continue
+          // Counted done only once the BODY is read: fetch resolves at the headers,
+          // and a reload before the body finishes aborts the transfer that was to
+          // replace the cache entry.
+          jobs.push(window.fetch(target.href, { cache: 'reload', credentials: 'same-origin' })
+            .then(function (r) { return r && r.arrayBuffer ? r.arrayBuffer() : null })
+            .catch(function () { }))
+        }
+      } catch (e) { }
       try {
         if (navigator.serviceWorker && navigator.serviceWorker.getRegistrations) {
           jobs.push(navigator.serviceWorker.getRegistrations().then(function (rs) {
@@ -361,7 +416,10 @@
       // Reload even if clearing fails, and never wait on it forever: a reload
       // that happens anyway is strictly better than a dead button.
       Promise.all(jobs).catch(function () { }).then(done)
-      window.setTimeout(done, 3000)
+      // Longer when a script is being refetched: a reload aborts that request
+      // before it can replace the cache entry, and a multi-megabyte chunk over a
+      // slow phone link takes more than three seconds.
+      window.setTimeout(done, window.__kcBootRefetch && window.__kcBootRefetch.length ? 15000 : 3000)
     })
   </script>
 </body>
