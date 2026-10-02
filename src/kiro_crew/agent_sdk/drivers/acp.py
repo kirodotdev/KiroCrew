@@ -63,6 +63,7 @@ __all__ = [
     "drain_skill_view_aliases",
     "skill_view_alias_census",
     "skill_view_sidecar_dirs",
+    "skill_view_source_agent",
 ]
 
 
@@ -675,6 +676,21 @@ def drain_skill_view_aliases() -> int:
     from kiro_crew.acp.skill_projection import drain_stale_aliases
 
     return drain_stale_aliases()
+
+
+def skill_view_source_agent(name: str) -> str | None:
+    """The agent a skill-view name was built from; a plain agent name is itself.
+
+    ``None`` when *name* is a view whose source nothing records, so the caller
+    refuses it rather than guessing an agent. Which record answers is the
+    projection module's rule. Blocking: it may read one sidecar.
+    """
+    from kiro_crew.acp.skill_projection import RetiredSkillView, source_agent_name
+
+    try:
+        return source_agent_name(name)
+    except RetiredSkillView:
+        return None
 
 
 def skill_view_sidecar_dirs() -> tuple[str, str]:

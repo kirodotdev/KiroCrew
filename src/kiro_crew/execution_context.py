@@ -389,12 +389,9 @@ def _same_agent(name: str, template_id: str) -> bool:
 
     if not template_id.startswith(NATIVE_SKILL_ALIAS_PREFIX):
         return False
-    from kiro_crew.acp.skill_projection import RetiredSkillView, source_agent_name
+    from kiro_crew.agent_sdk.drivers import acp as acp_driver
 
-    try:
-        return source_agent_name(template_id) == name
-    except RetiredSkillView:
-        return False
+    return acp_driver.skill_view_source_agent(template_id) == name
 
 
 def is_removed_synced_crewmate(
@@ -1019,6 +1016,29 @@ def capture_session_execution(session_key: str, *, template_id: str = "") -> Exe
     return ExecutionContext(None, MemoryStoreRef("default"), "template", template_id, mode)
 
 
+def _carrier_still(meta: Mapping[str, Any], expected: ExecutionContext | None) -> bool:
+    """Whether the carrier stored in *meta* still decodes to *expected*.
+
+    *expected* is a DECODED record, and the decoder re-reads a record bound to a
+    pruned synced crewmate as its template (:func:`adopt_removed_synced_crewmate`).
+    Its ``to_record()`` therefore differs from the bytes still on disk, and a
+    compare-and-set of one against the other refuses every such session as
+    concurrently changed. So the stored side is decoded the same way: two values
+    of one kind. Identical bytes are answered first, without the decode. A
+    stored carrier that does not decode, or decodes to anything else, is a
+    change.
+    """
+    payload = meta.get(EXECUTION_CONTEXT_KEY)
+    if expected is None:
+        return payload is None
+    if payload == expected.to_record():
+        return True
+    try:
+        return execution_from_record(meta) == expected
+    except ValueError:
+        return False
+
+
 def bind_session_execution(
     session_key: str,
     execution: ExecutionContext,
@@ -1093,7 +1113,7 @@ def bind_session_execution(
             if retained != durable and not log.update_metadata_if(
                 session_key,
                 {EXECUTION_CONTEXT_KEY: retained.to_record(), "memory_mode": retained.memory_mode},
-                lambda meta: meta.get(EXECUTION_CONTEXT_KEY) == durable.to_record(),
+                lambda meta: _carrier_still(meta, durable),
             ):
                 raise _unavailable("session changed during privacy tightening")
         elif metadata:
@@ -1121,15 +1141,12 @@ def bind_session_execution(
 
         forget_durable_vouch(session_key)
         return
-    expected = current.to_record() if current is not None else None
     fields = {
         EXECUTION_CONTEXT_KEY: execution.to_record(),
         "memory_store": execution.store.legacy_name,
         "memory_mode": execution.memory_mode,
     }
-    if not log.update_metadata_if(
-        session_key, fields, lambda meta: meta.get(EXECUTION_CONTEXT_KEY) == expected
-    ):
+    if not log.update_metadata_if(session_key, fields, lambda meta: _carrier_still(meta, current)):
         raise _unavailable("session changed during admission")
     # Vouch for what was just committed, AFTER the compare-and-set above, so this
     # process never vouches for an identity the durable record does not carry.
