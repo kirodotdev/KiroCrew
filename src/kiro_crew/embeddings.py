@@ -30,6 +30,7 @@ import abc
 import asyncio
 import ctypes
 import ctypes.util
+import errno
 import functools
 import hashlib
 import heapq
@@ -1371,6 +1372,54 @@ def _model_file_stamp(path: Path) -> tuple[int, ...]:
     return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
 
 
+def _model_file_stamp_unaliased(path: Path) -> tuple[int, ...] | None:
+    """:func:`_model_file_stamp` for a load, judged on one descriptor. ``None`` refuses it.
+
+    The bundled GGUF has no digest at load, so a second hard link sitting in a tree the
+    sandbox can write is a writable handle onto the weights the next load maps. For a file
+    under the live :func:`models_dir`, the file is opened ``O_NOFOLLOW`` and
+    ``sandbox.require_unaliased_model_file`` judges that descriptor; the stamp comes from
+    the same ``fstat``, so the comparison after the constructor proves llama.cpp mapped the
+    inode judged here. A hard-linked or symlinked file refuses this LOAD, never a spawn. A
+    custom model outside ``models_dir`` is the operator's own file, outside the seal, and
+    keeps the plain stamp.
+    """
+    models_root = os.path.abspath(models_dir())
+    try:
+        inside = os.path.commonpath([os.path.abspath(path), models_root]) == models_root
+    except ValueError:  # different Windows drives: not under the models tree
+        inside = False
+    if not inside:
+        return _model_file_stamp(path)
+    # Lazy: keeps the sandbox module out of this module's import graph, the same
+    # direction sandbox itself uses when it reads _GGUF_FILENAME.
+    from kiro_crew import sandbox
+
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    try:
+        try:
+            fd = os.open(path, flags)
+        except OSError as exc:
+            if exc.errno not in (errno.ELOOP, errno.EMLINK) and not os.path.islink(path):
+                raise
+            shown = sandbox.safe_terminal_line(str(path))
+            raise sandbox.SandboxCeilingUnsealable(
+                f"the embedding model file {shown} is a SYMLINK. The seal covers paths, so "
+                "its target could remain writable outside the model tree. Keep the weights "
+                "as real files under models/; to put them on another disk, relocate the "
+                "whole data home (KIROCREW_HOME), so the seal covers them."
+            ) from exc
+        try:
+            sandbox.require_unaliased_model_file(str(path), fd=fd)
+            info = os.fstat(fd)
+        finally:
+            os.close(fd)
+    except sandbox.SandboxCeilingUnsealable as exc:
+        logger.error("Refusing to load the embedding model: %s", exc)
+        return None
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
 def _custom_model_id(path: Path, configured: str, *, recorded_stamp: object = None) -> str:
     """Reuse a verified file stamp; never hash model weights on the event loop."""
     stamp = _model_file_stamp(path)
@@ -2170,7 +2219,12 @@ class LlamaCppEmbedder(EmbeddingBackend):
             # the path a second time, so a file replaced in between would get a
             # context sized from the previous header (decoder sizes on an
             # encoder are the >512-token abort the policy exists to prevent).
-            stamp = _model_file_stamp(self._model_path)
+            # Judged on one descriptor too: a second name on the bundled GGUF refuses
+            # this load (logged, retried on the usual cooldown), never a spawn.
+            stamp = _model_file_stamp_unaliased(self._model_path)
+            if stamp is None:
+                self._load_failed_at = time.monotonic()
+                return
             policy = _model_context_policy(self._model_path)
             if policy.n_ctx < _N_CTX:
                 # Once per model load, not per embed call: the binding truncates

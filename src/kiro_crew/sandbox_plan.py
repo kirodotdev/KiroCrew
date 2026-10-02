@@ -518,10 +518,19 @@ def writable_carveouts(
 ) -> tuple[list[str], list[Refusal]]:
     """Validate write carve-outs against the sandbox's own seals.
 
-    ``extra_writable_dirs`` exists for exactly one purpose: a caller that hands a child
-    its private scratch directory INSIDE the sealed runtime parent (``<data home>/run``)
-    needs that one directory writable -- the MCP probe's ``TMPDIR`` lives at
-    ``run/mcp-tmp/<probe>``. Everything else stays sealed.
+    ``extra_writable_dirs`` is NOT general-purpose: it exists for a caller that hands a
+    child its OWN self-derived directory INSIDE the sealed runtime parent
+    (``<data home>/run``) and needs that one directory writable. The uses are:
+
+    * ``run/mcp-tmp/<probe>`` -- the MCP probe's private ``TMPDIR``;
+    * the npm resolver's private install prefix (``mcp_gateway.resolve_once``);
+    * ``run/decisions/<id>`` -- the local decision runtime's own work dir
+      (``decisions.local_runtime.WORK_SUBDIR``), holding the preset's uv environment
+      and ``server.log``; the sandboxed uv and the model server both write there, and
+      it cannot live under ``models`` because that leaf is READONLY and a private
+      window opens only inside a HIDDEN tree.
+
+    Everything else stays sealed.
 
     Both renderers apply a carve-out with override semantics (Seatbelt is
     last-match-wins; the launcher remounts a fresh bind read-write), so an unvalidated
