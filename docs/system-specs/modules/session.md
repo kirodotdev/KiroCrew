@@ -2015,10 +2015,33 @@ state a close compensates is not all scoped the same way.
   `messages[_disk_window_len:]`, plus a note the bulk path is still holding in
   `_deferred_notes` — would simply cease to exist from this gateway's own
   delivery paths. (Since #4093 a held note also has a durable copy in the
-  slot's metadata line, so a dropped hold is re-delivered after the NEXT
-  restart rather than lost outright — but deferring an acknowledged note to a
-  hypothetical future restart is not delivery, so the hand-over drain below
-  is still what honors it in this lifetime. One version-skew caveat: the
+  slot's metadata line, so a dropped hold is re-delivered the next time its
+  transcript loads, at a restart or a History resume, rather than lost outright
+  — but deferring an acknowledged note to a hypothetical future load is not
+  delivery, so the hand-over drain below
+  is still what honors it in this lifetime. The hold's states and transitions,
+  for both kinds of entry (the id a row carries is `meta.noteId`; the merge card
+  is the entry with a `merged_from` block):
+
+  | Event | Plain note | Merge card |
+  |---|---|---|
+  | Held at delivery | `deliver_note` (`chat_handlers.py`) appends the note to `_deferred_notes` and `_persist_deferred_note_hold` writes the hold into the slot's metadata line (`persist_deferred_notes_sync`, `slot_buffers.py`) before the 200; an idle slot flushes it at once (`flush_deferred_notes`), stamping the visible row with the note's id. | Same path, with the `merged_from` block. The flush also queues the card's context on `_pending_context`, stamped `noteId` and `noteTranscript` (`flush_deferred_notes`). |
+  | Full save commits the row | `build_full_line` (`slot_persistence/metadata_line.py`) drops every plain entry whose id a row in the written window carries: row and retirement land in one atomic file replace. | Entry kept, marked `delivered` (`_stamp_delivered_merge_cards`): the parent's agent reads the queued context, not the row, so the row alone retires nothing. |
+  | Restart or History resume loads the transcript | `restore_deferred_note_hold` (`slot_buffers.py`, from both boot paths and `_hydrate_slot_from_history`): a committed row leaves the entry out of the live hold (`drop_committed_restored_notes`) and records its id in `_dropped_note_ids` for row-less retirement at the next save (`committed_filtered_note_ids`); an uncommitted note stays held for the next flush. | Same loader: a committed row, or the `delivered` mark, queues the card's context again (`committed_merge_card_contexts`) and the entry stays durable; an uncommitted card stays held. |
+  | A turn takes the context | The note's context half, when it has one, drains with the rest of the queue (`drain_pending_context`, `chat_turn/turn_context.py`); the hold is untouched, the row having retired it. | `take_turn_context` (`chat_turn/turn_context.py`) drains the queue and reports the card's context consumed (`_consumed_merge_contexts`); `chat_runner.py` keeps that list on `slot._inflight_merge_contexts` for the turn. |
+  | That turn completes | Nothing. | `_record_consumed_merge_contexts` adds the card's id to `_dropped_note_ids` on every slot whose transcript the card is stamped with, before the save that writes the reply (`chat_runner.py`, when the turn lands); that save retires the entry. |
+  | That turn fails or is cancelled | Nothing. | The runner's `finally` (`chat_runner.py`) calls `_restore_consumed_merge_contexts`, which puts the context back at the queue front for the next turn to take; `_dropped_note_ids` is untouched, so the entry survives every save until a turn completes with it. |
+  | The hold is full | Refused when the plain count would exceed `_MAX_PLAIN_DURABLE_HOLD_ENTRIES` or the whole hold `_MAX_DURABLE_HOLD_ENTRIES` (`persist_deferred_notes_sync` raises `DeferredHoldFull`). | Refused only when the whole hold would exceed `_MAX_DURABLE_HOLD_ENTRIES`, so cards alone may fill the third share. |
+
+  Merge cards never expire: an entry stays on disk until a turn takes its context
+  and completes. The hold's ceiling is split the same way
+  (`slot_buffers.py`): plain notes up to `_MAX_PLAIN_DURABLE_HOLD_ENTRIES`
+  (`2 * MAX_DEFERRED_NOTES`, 20 with `MAX_DEFERRED_NOTES = 10`), and the whole
+  hold up to `_MAX_DURABLE_HOLD_ENTRIES` (`_MAX_PLAIN_DURABLE_HOLD_ENTRIES +
+  MAX_DEFERRED_NOTES`, 30), so only merge cards may fill the third share;
+  `persist_deferred_notes_sync` refuses a new hold with `DeferredHoldFull` rather
+  than evict a retained entry when either ceiling would be exceeded. One
+  version-skew caveat: the
   retirement invariant holds only for gateways that stamp `meta.noteId` on
   delivered rows. An older gateway carries `deferred_notes` as unowned
   metadata, its flush stamps no id and its save retires nothing, so a

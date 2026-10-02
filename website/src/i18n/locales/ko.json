@@ -7999,7 +7999,7 @@
       "open_in_new_tab": "세션 탭에서 열기",
       "pin": "고정",
       "pop_out_to_window": "별도 창으로 분리",
-      "reload_blocked_running": "턴 진행 중",
+      "reload_blocked_running": "턴이 아직 진행 중입니다",
       "reload_blocked_subagents": "하위 에이전트 작업 중",
       "reload_session": "세션 다시 로드",
       "reload_session_tooltip": "에이전트 프로세스를 다시 시작하여 새 MCP/설정 변경을 반영합니다. 대화는 유지됩니다.",
@@ -9240,6 +9240,45 @@
       "moreCols": "열 늘리기",
       "fewerRows": "행 줄이기",
       "moreRows": "행 늘리기"
+    },
+    "mergeBackMenuItem": {
+      "merge_into_parent": "원래 채팅에 병합…",
+      "running": "턴이 아직 진행 중입니다",
+      "incognito": "시크릿 채팅에서는 아무것도 나가지 않습니다",
+      "temporary": "임시 채팅에서는 아무것도 나가지 않습니다",
+      "parent_not_dashboard": "원래 채팅이 대시보드 밖에서 실행됩니다",
+      "parent_channel": "원래 채팅이 {{channel}} 채팅입니다",
+      "parent_direct_message": "원래 채팅이 다이렉트 메시지입니다",
+      "parent_scheduled_job": "원래 채팅이 예약된 작업입니다"
+    },
+    "mergeBackDialog": {
+      "title": "원래 채팅에 병합",
+      "title_named": "‘{{parent}}’에 병합",
+      "description": "이 요약을 원래 채팅의 에이전트에게 보냅니다. 이 포크는 열린 채로 남습니다.",
+      "drafting": "새 메시지 요약을 작성하는 중…",
+      "covers_other": "아직 병합하지 않은 메시지 {{count}}개를 요약합니다",
+      "covers_partial_other": "아직 병합하지 않은 메시지 {{count}}개 중 처음 {{covered}}개를 요약합니다",
+      "remaining_other": "메시지 {{count}}개가 더 있지만 이 초안에 들어가지 않았습니다. 보내려면 이번 병합 뒤에 다시 병합하세요.",
+      "length": "{{chars}} / {{max}}",
+      "placeholder": "이 포크에서 원래 채팅이 알아야 할 내용은?",
+      "edit_hint": "쓰인 그대로 전달되며, 마지막 안내문도 포함됩니다.",
+      "gap_sentence": "이 포크를 만든 뒤 원래 채팅이 계속 진행되었다면, 포크는 그 메시지들을 보지 못했습니다.",
+      "merge": "병합",
+      "merging": "병합하는 중…",
+      "cancel": "취소",
+      "close": "닫기",
+      "draft_again": "다시 작성",
+      "redraft_confirm": "고친 텍스트를 새 초안으로 바꿀까요?",
+      "redraft_replace": "바꾸기",
+      "redraft_keep": "내 텍스트 유지",
+      "redraft_outdated_confirm": "이 초안을 쓴 뒤로 채팅이 바뀌어 병합에는 새 초안이 필요합니다. 텍스트를 그대로 유지하시겠습니까, 아니면 새 초안으로 바꾸시겠습니까?",
+      "redraft_outdated_keep": "다시 작성, 내 텍스트 유지",
+      "close_confirm": "닫고 고친 텍스트를 잃으시겠습니까?",
+      "close_discard": "버리고 닫기",
+      "cut": "요약이 제한에 맞게 잘렸습니다. 마지막 안내문 바로 위의 ‘…’에서 끝납니다. 병합하기 전에 그 줄을 확인하세요.",
+      "open_parent": "원래 채팅 열기",
+      "parent_not_reopened": "원래 채팅을 열 수 없습니다. 기록에서 연 다음 다시 시도하세요.",
+      "held": "병합했습니다. 원래 채팅이 턴을 진행하는 중이라, 그 턴이 끝나면 요약이 표시됩니다."
     }
   },
   "hooks": {
@@ -11091,6 +11130,11 @@
         "rate_right": "Jev의 판단이 맞음",
         "rate_wrong": "Jev의 판단이 틀림",
         "not_scored": "(+{{count}}개는 평가 안 함)"
+      },
+      "mergedFromLabel": {
+        "merged_from": "<fork>{{title}}</fork>에서 병합",
+        "untitled_fork": "포크",
+        "messages_other": "메시지 {{count}}개"
       }
     },
     "chatPage": {
@@ -17312,6 +17356,26 @@
       "search_in": "{{path}}에서 ‘{{query}}’ 검색",
       "search_web": "웹에서 ‘{{query}}’ 검색",
       "view_image": "이미지 {{path}} 보기"
+    },
+    "mergeBackError": {
+      "parent_not_open": "원래 채팅이 닫혀 있습니다.",
+      "parent_deleted": "원래 채팅이 삭제되었습니다. 이 포크는 그 자리를 대신한 채팅에 병합할 수 없습니다.",
+      "parent_unconfirmed": "원래 채팅이 이 포크를 만든 채팅인지 확인할 수 없어, 이 포크를 거기에 병합할 수 없습니다.",
+      "parent_not_dashboard": "병합은 대시보드에서 실행되는 채팅에만 할 수 있습니다. 이 채팅의 원래 채팅은 대시보드 밖에서 실행됩니다.",
+      "parent_channel": "병합은 대시보드에서 실행되는 채팅에만 할 수 있습니다. 이 채팅의 원래 채팅은 {{channel}} 채팅입니다.",
+      "parent_direct_message": "병합은 대시보드에서 실행되는 채팅에만 할 수 있습니다. 이 채팅의 원래 채팅은 다이렉트 메시지입니다.",
+      "parent_scheduled_job": "병합은 대시보드에서 실행되는 채팅에만 할 수 있습니다. 이 채팅의 원래 채팅은 예약된 작업입니다.",
+      "nothing_to_merge": "원래 채팅에 이 포크의 내용이 이미 모두 있습니다.",
+      "fork_running": "이 포크는 아직 턴을 실행하고 있습니다. 끝난 뒤에 병합하세요.",
+      "restricted": "시크릿 채팅이나 임시 채팅에서는 아무것도 파생하지 않으므로 병합할 수 없습니다.",
+      "draft_in_flight": "이 포크의 요약을 이미 작성하고 있습니다.",
+      "summary_failed": "요약을 작성하지 못했습니다. 다시 시도하세요.",
+      "merge_point_missing": "요약을 쓴 뒤로 이 포크가 바뀌었습니다. 다시 작성하세요.",
+      "already_merged": "원래 채팅에 다른 병합으로 이 메시지들이 이미 있습니다.",
+      "queue_full": "원래 채팅에 에이전트가 아직 읽지 않은 병합이 있습니다. 먼저 메시지를 보내세요.",
+      "parent_holds_too_many": "원래 채팅이 현재 턴 동안 보류 중인 메모가 너무 많습니다. 턴이 끝나면 다시 시도하세요.",
+      "summary_too_long": "요약이 길이 제한을 넘었습니다. 줄여 주세요.",
+      "failed": "병합하지 못했습니다. 다시 시도하세요."
     }
   },
   "memoryV2": {

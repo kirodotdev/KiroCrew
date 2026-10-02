@@ -1662,7 +1662,7 @@ existing session, on either side. Consequences worth stating:
 | **`project`** | **no** | The headline decision. The source's checkout path almost never exists on the target (a Mac worktree path on a Linux dev desk), and a slot pointing at a missing directory scopes file search and steering to nothing. The session arrives **unscoped** and the user re-picks a project. |
 | `model` | no | Accounts differ in entitlement, so an id the source is served can fail at runtime on the target. The target resolves its own default ([model-selection](../common/model-selection.md)). |
 | `workspace` | no | Workspaces are per-instance memory scopes; a matching name still means a different memory. |
-| `folder_id`, `tags`, `tags_revision`, `pinned`, `artifact`, `app`, `linked_session_key`, `forked_from` | no | Local-graph references that would dangle (`tags_revision` is the per-instance change identity of `tags`; it travels with them). |
+| `folder_id`, `tags`, `tags_revision`, `pinned`, `artifact`, `app`, `linked_session_key`, `forked_from`, `forked_from_created_at` | no | Local-graph references that would dangle (`tags_revision` is the per-instance change identity of `tags`; it travels with them). |
 
 `bundle_version` is refused when **outside the supported set** (`{1, 2}`) rather
 than best-effort parsed: the two ends are independently-updated installs, and a

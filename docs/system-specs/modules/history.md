@@ -977,7 +977,9 @@ no longer destroy older turns.
   survival contract).** The `meta` a dashboard send carries (`POST /api/chat`
   body) rides onto the user row it becomes and reaches every
   reader unchanged: ingress drops only `RESERVED_ROW_META_KEYS` (today
-  `decisions_strip`, the gateway's own receipt carrier -- `chat_handlers.py`),
+  `decisions_strip`, the gateway's own receipt carrier, the `human` turn stamp,
+  and the note identity keys `mergedFrom` and `noteId` that make a row a merge
+  card -- `chat_handlers.py`),
   `_redact_meta` (`chat_utils.py`) redacts credential- and exfiltration-shaped
   STRING values recursively and is not a key allowlist, `slot.append` broadcasts
   the row's `meta` on the WebSocket `chat_message` echo

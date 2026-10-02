@@ -15,6 +15,7 @@ The actual implementation lives in:
 - chat_voice.py       — TTS config + synthesis (optional)
 - chat_slack.py       — Slack link, handoff, channels
 - chat_fork.py        — fork session
+- chat_merge_back.py  — merge a fork back into its parent
 """
 
 from __future__ import annotations
@@ -82,6 +83,10 @@ from kiro_crew.dashboard.chat_handlers import (  # noqa: F401
     api_chat_slots_cleanup,
     api_chat_slots_model,
     api_recent_projects,
+)
+from kiro_crew.dashboard.chat_merge_back import (  # noqa: F401
+    api_chat_slot_merge_back,
+    api_chat_slot_merge_back_draft,
 )
 from kiro_crew.dashboard.chat_mirror import (  # noqa: F401
     api_channel_targets,

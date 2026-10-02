@@ -8237,7 +8237,7 @@
       "open_in_new_tab": "Ouvrir dans un onglet de session",
       "pin": "Épingler",
       "pop_out_to_window": "Détacher dans une fenêtre",
-      "reload_blocked_running": "tour en cours",
+      "reload_blocked_running": "Un tour est encore en cours",
       "reload_blocked_subagents": "sous-agents au travail",
       "reload_session": "Recharger la session",
       "reload_session_tooltip": "Redémarre le processus de l'agent pour prendre en compte les changements MCP/configuration. La conversation est conservée.",
@@ -9492,6 +9492,51 @@
       "moreCols": "plus de colonnes",
       "fewerRows": "moins de lignes",
       "moreRows": "plus de lignes"
+    },
+    "mergeBackMenuItem": {
+      "merge_into_parent": "Fusionner dans la conversation d’origine…",
+      "running": "Un tour est encore en cours",
+      "incognito": "Rien ne sort d’une conversation incognito",
+      "temporary": "Rien ne sort d’une conversation temporaire",
+      "parent_not_dashboard": "La conversation d’origine fonctionne hors du tableau de bord",
+      "parent_channel": "La conversation d’origine est une conversation {{channel}}",
+      "parent_direct_message": "La conversation d’origine est un message privé",
+      "parent_scheduled_job": "La conversation d’origine est une tâche planifiée"
+    },
+    "mergeBackDialog": {
+      "title": "Fusionner dans la conversation d’origine",
+      "title_named": "Fusionner dans « {{parent}} »",
+      "description": "Envoie ce résumé à l’agent de la conversation d’origine. Cette dérivation reste ouverte.",
+      "drafting": "Rédaction d’un résumé des nouveaux messages…",
+      "covers_one": "Résume {{count}} message pas encore fusionné",
+      "covers_many": "Résume {{count}} messages pas encore fusionnés",
+      "covers_other": "Résume {{count}} messages pas encore fusionnés",
+      "covers_partial_one": "Résume le premier {{covered}} de {{count}} message pas encore fusionné",
+      "covers_partial_many": "Résume les {{covered}} premiers des {{count}} messages pas encore fusionnés",
+      "covers_partial_other": "Résume les {{covered}} premiers des {{count}} messages pas encore fusionnés",
+      "remaining_one": "{{count}} message de plus n’a pas tenu dans ce brouillon. Fusionne à nouveau après celui-ci pour l’envoyer.",
+      "remaining_many": "{{count}} messages de plus n’ont pas tenu dans ce brouillon. Fusionne à nouveau après celui-ci pour les envoyer.",
+      "remaining_other": "{{count}} messages de plus n’ont pas tenu dans ce brouillon. Fusionne à nouveau après celui-ci pour les envoyer.",
+      "length": "{{chars}} / {{max}}",
+      "placeholder": "Que doit savoir la conversation d’origine de cette dérivation ?",
+      "edit_hint": "Envoyé tel qu’écrit, note de fin comprise.",
+      "gap_sentence": "Si la conversation d’origine a continué après la création de cette dérivation, la dérivation n’a pas vu ces messages.",
+      "merge": "Fusionner",
+      "merging": "Fusion…",
+      "cancel": "Annuler",
+      "close": "Fermer",
+      "draft_again": "Rédiger à nouveau",
+      "redraft_confirm": "Remplacer le texte que tu as modifié par un nouveau brouillon ?",
+      "redraft_replace": "Remplacer",
+      "redraft_keep": "Garder mon texte",
+      "redraft_outdated_confirm": "Les conversations ont changé depuis la rédaction de ce brouillon, donc Fusionner a besoin d’un nouveau brouillon. Garder ton texte tel quel ou le remplacer par le nouveau brouillon ?",
+      "redraft_outdated_keep": "Rédiger à nouveau, garder mon texte",
+      "close_confirm": "Fermer et perdre le texte que tu as modifié ?",
+      "close_discard": "Abandonner et fermer",
+      "cut": "Le résumé a été coupé pour tenir dans la limite. Il se termine par «…» juste au-dessus de la note de fin. Vérifie cette ligne avant de fusionner.",
+      "open_parent": "Ouvrir la conversation d’origine",
+      "parent_not_reopened": "Impossible d’ouvrir la conversation d’origine. Ouvre-la depuis l’historique, puis réessaie.",
+      "held": "Fusionné. La conversation d’origine est en plein tour, donc le résumé y apparaîtra à la fin de ce tour."
     }
   },
   "hooks": {
@@ -11403,6 +11448,13 @@
         "rate_right": "Jev a bien lu ce compactage",
         "rate_wrong": "Jev a mal lu ce compactage",
         "not_scored": "(+{{count}} non évalués)"
+      },
+      "mergedFromLabel": {
+        "merged_from": "Fusionné depuis <fork>{{title}}</fork>",
+        "untitled_fork": "une dérivation",
+        "messages_one": "{{count}} message",
+        "messages_many": "{{count}} messages",
+        "messages_other": "{{count}} messages"
       }
     },
     "chatPage": {
@@ -17808,6 +17860,26 @@
       "search_in": "Rechercher '{{query}}' dans {{path}}",
       "search_web": "Rechercher « {{query}} » sur le Web",
       "view_image": "Voir l’image {{path}}"
+    },
+    "mergeBackError": {
+      "parent_not_open": "La conversation d’origine est fermée.",
+      "parent_deleted": "La conversation d’origine a été supprimée. Cette dérivation ne peut pas être fusionnée dans la conversation qui l’a remplacée.",
+      "parent_unconfirmed": "Impossible de confirmer que la conversation d’origine est bien celle dont cette dérivation est issue, donc la dérivation ne peut pas y être fusionnée.",
+      "parent_not_dashboard": "Une fusion ne peut aller que dans une conversation qui fonctionne dans le tableau de bord. La conversation d’origine de ce chat fonctionne en dehors.",
+      "parent_channel": "Une fusion ne peut aller que dans une conversation qui fonctionne dans le tableau de bord. La conversation d’origine de ce chat est une conversation {{channel}}.",
+      "parent_direct_message": "Une fusion ne peut aller que dans une conversation qui fonctionne dans le tableau de bord. La conversation d’origine de ce chat est un message privé.",
+      "parent_scheduled_job": "Une fusion ne peut aller que dans une conversation qui fonctionne dans le tableau de bord. La conversation d’origine de ce chat est une tâche planifiée.",
+      "nothing_to_merge": "La conversation d’origine contient déjà tout ce qui vient de cette dérivation.",
+      "fork_running": "Cette dérivation exécute encore un tour. Fusionne-la quand il est terminé.",
+      "restricted": "Une conversation incognito ou temporaire ne peut pas être fusionnée, car rien n’en est dérivé.",
+      "draft_in_flight": "Un résumé de cette dérivation est déjà en cours de rédaction.",
+      "summary_failed": "Le résumé n’a pas pu être rédigé. Réessaie.",
+      "merge_point_missing": "Cette dérivation a changé depuis la rédaction du résumé. Rédige-le à nouveau.",
+      "already_merged": "La conversation d’origine a déjà ces messages grâce à une autre fusion.",
+      "queue_full": "La conversation d’origine a des fusions que son agent n’a pas encore lues. Envoie-lui d’abord un message.",
+      "parent_holds_too_many": "La conversation d’origine retient trop de notes pendant son tour en cours. Réessaie à la fin de ce tour.",
+      "summary_too_long": "Le résumé dépasse la longueur maximale. Raccourcis-le.",
+      "failed": "La fusion n’a pas abouti. Réessaie."
     }
   },
   "memoryV2": {

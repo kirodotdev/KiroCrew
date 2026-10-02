@@ -1168,6 +1168,7 @@ async def fork_slot(
                 return _store_unavailable_response(inherited_store, exc)
             raise
     new_slot.forked_from = effective_session_key(slot)
+    new_slot.forked_from_created_at = slot._disk_meta_created_at
     new_slot.reasoning_effort = slot.reasoning_effort
     # Inherited beside the model it belongs to: the constructor takes `model` and
     # the routing choice is the other half of the same answer, so a fork of an

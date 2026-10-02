@@ -8237,7 +8237,7 @@
       "open_in_new_tab": "Abrir em uma aba de sessão",
       "pin": "Fixar",
       "pop_out_to_window": "Destacar em uma janela",
-      "reload_blocked_running": "turno em andamento",
+      "reload_blocked_running": "Um turno ainda está em andamento",
       "reload_blocked_subagents": "subagentes trabalhando",
       "reload_session": "Recarregar sessão",
       "reload_session_tooltip": "Reinicia o processo do agente para aplicar mudanças de MCP/configuração. A conversa é preservada.",
@@ -9492,6 +9492,51 @@
       "moreCols": "mais colunas",
       "fewerRows": "menos linhas",
       "moreRows": "mais linhas"
+    },
+    "mergeBackMenuItem": {
+      "merge_into_parent": "Mesclar no chat de origem…",
+      "running": "Um turno ainda está em andamento",
+      "incognito": "Nada sai de um chat anônimo",
+      "temporary": "Nada sai de um chat temporário",
+      "parent_not_dashboard": "O chat de origem funciona fora do painel",
+      "parent_channel": "O chat de origem é um chat do {{channel}}",
+      "parent_direct_message": "O chat de origem é uma mensagem direta",
+      "parent_scheduled_job": "O chat de origem é uma tarefa agendada"
+    },
+    "mergeBackDialog": {
+      "title": "Mesclar no chat de origem",
+      "title_named": "Mesclar em “{{parent}}”",
+      "description": "Envia este resumo ao agente do chat de origem. Este fork continua aberto.",
+      "drafting": "Escrevendo um resumo das mensagens novas…",
+      "covers_one": "Resume {{count}} mensagem ainda não mesclada",
+      "covers_many": "Resume {{count}} mensagens ainda não mescladas",
+      "covers_other": "Resume {{count}} mensagens ainda não mescladas",
+      "covers_partial_one": "Resume a primeira {{covered}} de {{count}} mensagem ainda não mesclada",
+      "covers_partial_many": "Resume as primeiras {{covered}} de {{count}} mensagens ainda não mescladas",
+      "covers_partial_other": "Resume as primeiras {{covered}} de {{count}} mensagens ainda não mescladas",
+      "remaining_one": "{{count}} mensagem a mais não coube neste rascunho. Mescle de novo depois deste para enviá-la.",
+      "remaining_many": "{{count}} mensagens a mais não couberam neste rascunho. Mescle de novo depois deste para enviá-las.",
+      "remaining_other": "{{count}} mensagens a mais não couberam neste rascunho. Mescle de novo depois deste para enviá-las.",
+      "length": "{{chars}} / {{max}}",
+      "placeholder": "O que o chat de origem precisa saber deste fork?",
+      "edit_hint": "Enviado exatamente como está escrito, nota final incluída.",
+      "gap_sentence": "Se o chat de origem seguiu em frente depois que este fork foi criado, o fork não viu essas mensagens.",
+      "merge": "Mesclar",
+      "merging": "Mesclando…",
+      "cancel": "Cancelar",
+      "close": "Fechar",
+      "draft_again": "Redigir de novo",
+      "redraft_confirm": "Substituir o texto que você editou por um rascunho novo?",
+      "redraft_replace": "Substituir",
+      "redraft_keep": "Manter meu texto",
+      "redraft_outdated_confirm": "Os chats mudaram desde que este rascunho foi escrito, então Mesclar precisa de um rascunho novo. Manter seu texto como está ou substituí-lo pelo rascunho novo?",
+      "redraft_outdated_keep": "Redigir de novo, manter meu texto",
+      "close_confirm": "Fechar e perder o texto que você editou?",
+      "close_discard": "Descartar e fechar",
+      "cut": "O resumo foi cortado para caber no limite. Ele termina em “…” logo acima da nota final. Veja essa linha antes de mesclar.",
+      "open_parent": "Abrir o chat de origem",
+      "parent_not_reopened": "Não foi possível abrir o chat de origem. Abra-o pelo histórico e tente de novo.",
+      "held": "Mesclado. O chat de origem está no meio de um turno, então o resumo aparece lá quando esse turno terminar."
     }
   },
   "hooks": {
@@ -11403,6 +11448,13 @@
         "rate_right": "O Jev leu bem esta compactação",
         "rate_wrong": "O Jev leu mal esta compactação",
         "not_scored": "(+{{count}} não avaliadas)"
+      },
+      "mergedFromLabel": {
+        "merged_from": "Mesclado de <fork>{{title}}</fork>",
+        "untitled_fork": "um fork",
+        "messages_one": "{{count}} mensagem",
+        "messages_many": "{{count}} mensagens",
+        "messages_other": "{{count}} mensagens"
       }
     },
     "chatPage": {
@@ -17808,6 +17860,26 @@
       "search_in": "Pesquisar '{{query}}' em {{path}}",
       "search_web": "Pesquisar “{{query}}” na web",
       "view_image": "Ver imagem {{path}}"
+    },
+    "mergeBackError": {
+      "parent_not_open": "O chat de origem está fechado.",
+      "parent_deleted": "O chat de origem foi excluído. Este fork não pode ser mesclado no chat que o substituiu.",
+      "parent_unconfirmed": "Não é possível confirmar que o chat de origem é aquele do qual este fork foi feito, então o fork não pode ser mesclado nele.",
+      "parent_not_dashboard": "Uma mesclagem só pode ir para um chat que funciona no painel. O chat de origem deste chat funciona fora dele.",
+      "parent_channel": "Uma mesclagem só pode ir para um chat que funciona no painel. O chat de origem deste chat é um chat do {{channel}}.",
+      "parent_direct_message": "Uma mesclagem só pode ir para um chat que funciona no painel. O chat de origem deste chat é uma mensagem direta.",
+      "parent_scheduled_job": "Uma mesclagem só pode ir para um chat que funciona no painel. O chat de origem deste chat é uma tarefa agendada.",
+      "nothing_to_merge": "O chat de origem já tem tudo deste fork.",
+      "fork_running": "Este fork ainda está executando um turno. Mescle quando ele terminar.",
+      "restricted": "Um chat anônimo ou temporário não pode ser mesclado, porque nada é derivado dele.",
+      "draft_in_flight": "Já está sendo escrito um resumo para este fork.",
+      "summary_failed": "Não foi possível escrever o resumo. Tente de novo.",
+      "merge_point_missing": "Este fork mudou desde que o resumo foi escrito. Redija-o de novo.",
+      "already_merged": "O chat de origem já tem estas mensagens de outra mesclagem.",
+      "queue_full": "O chat de origem tem mesclagens que o agente dele ainda não leu. Envie uma mensagem a ele primeiro.",
+      "parent_holds_too_many": "O chat de origem está segurando notas demais durante o turno atual. Tente de novo quando o turno terminar.",
+      "summary_too_long": "O resumo passou do limite de tamanho. Encurte-o.",
+      "failed": "A mesclagem não deu certo. Tente de novo."
     }
   },
   "memoryV2": {

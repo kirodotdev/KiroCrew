@@ -7999,7 +7999,7 @@
       "open_in_new_tab": "セッションタブで開く",
       "pin": "ピン留め",
       "pop_out_to_window": "ウィンドウにポップアウト",
-      "reload_blocked_running": "ターン実行中",
+      "reload_blocked_running": "ターンがまだ実行中です",
       "reload_blocked_subagents": "サブエージェント動作中",
       "reload_session": "セッションを再読み込み",
       "reload_session_tooltip": "エージェントプロセスを再起動して新しい MCP/設定の変更を反映します。会話は保持されます。",
@@ -9240,6 +9240,45 @@
       "moreCols": "列を増やす",
       "fewerRows": "行を減らす",
       "moreRows": "行を増やす"
+    },
+    "mergeBackMenuItem": {
+      "merge_into_parent": "元のチャットにマージ…",
+      "running": "ターンがまだ実行中です",
+      "incognito": "シークレットチャットからは何も出ません",
+      "temporary": "一時チャットからは何も出ません",
+      "parent_not_dashboard": "元のチャットはダッシュボード外で動作します",
+      "parent_channel": "元のチャットは{{channel}}のチャットです",
+      "parent_direct_message": "元のチャットはダイレクトメッセージです",
+      "parent_scheduled_job": "元のチャットはスケジュールされたジョブです"
+    },
+    "mergeBackDialog": {
+      "title": "元のチャットにマージ",
+      "title_named": "「{{parent}}」にマージ",
+      "description": "この要約を元のチャットのエージェントに送ります。このフォークは開いたままです。",
+      "drafting": "新しいメッセージの要約を作成しています…",
+      "covers_other": "まだマージしていないメッセージ {{count}} 件を要約します",
+      "covers_partial_other": "まだマージしていない {{count}} 件のメッセージのうち、先頭の {{covered}} 件を要約します",
+      "remaining_other": "あと {{count}} 件のメッセージはこの下書きに収まりませんでした。送るには、このマージの後にもう一度マージしてください。",
+      "length": "{{chars}} / {{max}}",
+      "placeholder": "このフォークから元のチャットに伝えることは？",
+      "edit_hint": "書かれたとおりに送られます。末尾の注記も含まれます。",
+      "gap_sentence": "このフォークが作られた後に元のチャットが進んでいた場合、フォークはそれらのメッセージを見ていません。",
+      "merge": "マージ",
+      "merging": "マージしています…",
+      "cancel": "キャンセル",
+      "close": "閉じる",
+      "draft_again": "もう一度作成",
+      "redraft_confirm": "編集したテキストを新しい下書きで置き換えますか？",
+      "redraft_replace": "置き換える",
+      "redraft_keep": "テキストを残す",
+      "redraft_outdated_confirm": "この下書きの作成後にチャットが変わったため、マージには新しい下書きが必要です。テキストはそのまま残しますか、それとも新しい下書きで置き換えますか？",
+      "redraft_outdated_keep": "テキストを残してもう一度作成",
+      "close_confirm": "閉じて編集したテキストを失いますか？",
+      "close_discard": "破棄して閉じる",
+      "cut": "要約は上限に収めるために切り詰められています。末尾の注記のすぐ上にある「…」で終わっています。マージする前にその行を確認してください。",
+      "open_parent": "元のチャットを開く",
+      "parent_not_reopened": "元のチャットを開けませんでした。履歴から開いてから、もう一度お試しください。",
+      "held": "マージしました。元のチャットはターンの途中なので、そのターンが終わると要約が表示されます。"
     }
   },
   "hooks": {
@@ -11091,6 +11130,11 @@
         "rate_right": "Jev の判断は正しい",
         "rate_wrong": "Jev の判断は誤り",
         "not_scored": "（+{{count}} 件は未評価）"
+      },
+      "mergedFromLabel": {
+        "merged_from": "<fork>{{title}}</fork> からマージ",
+        "untitled_fork": "フォーク",
+        "messages_other": "{{count}} 件のメッセージ"
       }
     },
     "chatPage": {
@@ -17312,6 +17356,26 @@
       "search_in": "{{path}} 内で「{{query}}」を検索",
       "search_web": "ウェブで「{{query}}」を検索",
       "view_image": "画像 {{path}} を表示"
+    },
+    "mergeBackError": {
+      "parent_not_open": "元のチャットが閉じています。",
+      "parent_deleted": "元のチャットは削除されました。このフォークは、その代わりに作られたチャットにはマージできません。",
+      "parent_unconfirmed": "元のチャットが、このフォークの作成元のチャットであることを確認できないため、このフォークはそこにマージできません。",
+      "parent_not_dashboard": "マージはダッシュボードで動作するチャットにしか行えません。このチャットの元のチャットはダッシュボード外で動作します。",
+      "parent_channel": "マージはダッシュボードで動作するチャットにしか行えません。このチャットの元のチャットは{{channel}}のチャットです。",
+      "parent_direct_message": "マージはダッシュボードで動作するチャットにしか行えません。このチャットの元のチャットはダイレクトメッセージです。",
+      "parent_scheduled_job": "マージはダッシュボードで動作するチャットにしか行えません。このチャットの元のチャットはスケジュールされたジョブです。",
+      "nothing_to_merge": "元のチャットには、このフォークの内容がすべてそろっています。",
+      "fork_running": "このフォークはまだターンを実行中です。終わってからマージしてください。",
+      "restricted": "シークレットチャットや一時チャットからは何も派生させないため、マージできません。",
+      "draft_in_flight": "このフォークの要約はすでに作成中です。",
+      "summary_failed": "要約を作成できませんでした。もう一度お試しください。",
+      "merge_point_missing": "要約の作成後にこのフォークが変わりました。もう一度作成してください。",
+      "already_merged": "元のチャットには、別のマージでこれらのメッセージがすでに届いています。",
+      "queue_full": "元のチャットには、エージェントがまだ読んでいないマージがあります。先にメッセージを送ってください。",
+      "parent_holds_too_many": "元のチャットは現在のターン中に保留しているメモが多すぎます。ターンが終わってからもう一度お試しください。",
+      "summary_too_long": "要約が長さの上限を超えています。短くしてください。",
+      "failed": "マージできませんでした。もう一度お試しください。"
     }
   },
   "memoryV2": {

@@ -8118,7 +8118,7 @@
       "open_in_new_tab": "In einem Sitzungs-Tab öffnen",
       "pin": "Anpinnen",
       "pop_out_to_window": "In ein Fenster auskoppeln",
-      "reload_blocked_running": "Zug läuft",
+      "reload_blocked_running": "Ein Zug läuft noch",
       "reload_blocked_subagents": "Unteragenten arbeiten",
       "reload_session": "Sitzung neu laden",
       "reload_session_tooltip": "Startet den Agentenprozess neu, um MCP-/Konfigurationsänderungen zu übernehmen. Die Unterhaltung bleibt erhalten.",
@@ -9366,6 +9366,48 @@
       "moreCols": "mehr Spalten",
       "fewerRows": "weniger Zeilen",
       "moreRows": "mehr Zeilen"
+    },
+    "mergeBackMenuItem": {
+      "merge_into_parent": "In den Ursprungschat übernehmen…",
+      "running": "Ein Zug läuft noch",
+      "incognito": "Aus einem Inkognito-Chat geht nichts hinaus",
+      "temporary": "Aus einem temporären Chat geht nichts hinaus",
+      "parent_not_dashboard": "Der Ursprungschat läuft außerhalb des Dashboards",
+      "parent_channel": "Der Ursprungschat ist ein {{channel}}-Chat",
+      "parent_direct_message": "Der Ursprungschat ist eine Direktnachricht",
+      "parent_scheduled_job": "Der Ursprungschat ist ein geplanter Job"
+    },
+    "mergeBackDialog": {
+      "title": "In den Ursprungschat übernehmen",
+      "title_named": "In „{{parent}}“ übernehmen",
+      "description": "Schickt diese Zusammenfassung an den Agenten des Ursprungschats. Diese Verzweigung bleibt offen.",
+      "drafting": "Zusammenfassung der neuen Nachrichten wird geschrieben…",
+      "covers_one": "Fasst {{count}} noch nicht übernommene Nachricht zusammen",
+      "covers_other": "Fasst {{count}} noch nicht übernommene Nachrichten zusammen",
+      "covers_partial_one": "Fasst die erste {{covered}} von {{count}} noch nicht übernommenen Nachricht zusammen",
+      "covers_partial_other": "Fasst die ersten {{covered}} von {{count}} noch nicht übernommenen Nachrichten zusammen",
+      "remaining_one": "{{count}} weitere Nachricht hat nicht in diesen Entwurf gepasst. Übernimm nach diesem noch einmal, um sie zu senden.",
+      "remaining_other": "{{count}} weitere Nachrichten haben nicht in diesen Entwurf gepasst. Übernimm nach diesem noch einmal, um sie zu senden.",
+      "length": "{{chars}} / {{max}}",
+      "placeholder": "Was soll der Ursprungschat aus dieser Verzweigung erfahren?",
+      "edit_hint": "Wird genau so gesendet, wie hier geschrieben, Schlusshinweis eingeschlossen.",
+      "gap_sentence": "Falls der Ursprungschat weiterging, nachdem diese Verzweigung erstellt wurde, hat die Verzweigung diese Nachrichten nicht gesehen.",
+      "merge": "Übernehmen",
+      "merging": "Wird übernommen…",
+      "cancel": "Abbrechen",
+      "close": "Schließen",
+      "draft_again": "Neu entwerfen",
+      "redraft_confirm": "Deinen bearbeiteten Text durch einen neuen Entwurf ersetzen?",
+      "redraft_replace": "Ersetzen",
+      "redraft_keep": "Meinen Text behalten",
+      "redraft_outdated_confirm": "Die Chats haben sich seit diesem Entwurf geändert, deshalb braucht Übernehmen einen neuen Entwurf. Deinen Text so lassen oder durch den neuen Entwurf ersetzen?",
+      "redraft_outdated_keep": "Neu entwerfen, meinen Text behalten",
+      "close_confirm": "Schließen und deinen bearbeiteten Text verlieren?",
+      "close_discard": "Verwerfen und schließen",
+      "cut": "Die Zusammenfassung wurde auf das Limit gekürzt. Sie endet mit „…“ direkt über dem Schlusshinweis. Prüfe diese Zeile, bevor du übernimmst.",
+      "open_parent": "Ursprungschat öffnen",
+      "parent_not_reopened": "Der Ursprungschat ließ sich nicht öffnen. Öffne ihn über den Verlauf und versuche es dann erneut.",
+      "held": "Übernommen. Der Ursprungschat steckt gerade mitten in einem Zug, deshalb erscheint die Zusammenfassung dort, sobald dieser Zug endet."
     }
   },
   "hooks": {
@@ -11247,6 +11289,12 @@
         "rate_right": "Jev hat diese Verdichtung richtig eingeschätzt",
         "rate_wrong": "Jev hat diese Verdichtung falsch eingeschätzt",
         "not_scored": "(+{{count}} nicht bewertet)"
+      },
+      "mergedFromLabel": {
+        "merged_from": "Übernommen aus <fork>{{title}}</fork>",
+        "untitled_fork": "einer Verzweigung",
+        "messages_one": "{{count}} Nachricht",
+        "messages_other": "{{count}} Nachrichten"
       }
     },
     "chatPage": {
@@ -17560,6 +17608,26 @@
       "search_in": "'{{query}}' in {{path}} suchen",
       "search_web": "Im Web nach „{{query}}“ suchen",
       "view_image": "Bild {{path}} ansehen"
+    },
+    "mergeBackError": {
+      "parent_not_open": "Der Ursprungschat ist geschlossen.",
+      "parent_deleted": "Der Ursprungschat wurde gelöscht. Diese Verzweigung kann nicht in den Chat übernommen werden, der ihn ersetzt hat.",
+      "parent_unconfirmed": "Es lässt sich nicht bestätigen, dass der Ursprungschat derjenige ist, aus dem diese Verzweigung erstellt wurde. Deshalb kann die Verzweigung nicht in ihn übernommen werden.",
+      "parent_not_dashboard": "Eine Übernahme kann nur in einen Chat gehen, der im Dashboard läuft. Der Ursprungschat dieses Chats läuft außerhalb davon.",
+      "parent_channel": "Eine Übernahme kann nur in einen Chat gehen, der im Dashboard läuft. Der Ursprungschat dieses Chats ist ein {{channel}}-Chat.",
+      "parent_direct_message": "Eine Übernahme kann nur in einen Chat gehen, der im Dashboard läuft. Der Ursprungschat dieses Chats ist eine Direktnachricht.",
+      "parent_scheduled_job": "Eine Übernahme kann nur in einen Chat gehen, der im Dashboard läuft. Der Ursprungschat dieses Chats ist ein geplanter Job.",
+      "nothing_to_merge": "Der Ursprungschat hat bereits alles aus dieser Verzweigung.",
+      "fork_running": "Diese Verzweigung führt noch einen Zug aus. Übernimm sie, wenn er fertig ist.",
+      "restricted": "Ein Inkognito- oder temporärer Chat lässt sich nicht übernehmen, weil aus ihm nichts abgeleitet wird.",
+      "draft_in_flight": "Für diese Verzweigung wird bereits eine Zusammenfassung geschrieben.",
+      "summary_failed": "Die Zusammenfassung konnte nicht geschrieben werden. Versuche es erneut.",
+      "merge_point_missing": "Diese Verzweigung hat sich seit der Zusammenfassung geändert. Entwirf sie neu.",
+      "already_merged": "Der Ursprungschat hat diese Nachrichten bereits aus einer anderen Übernahme.",
+      "queue_full": "Der Ursprungschat hat Übernahmen, die sein Agent noch nicht gelesen hat. Schreib ihm zuerst eine Nachricht.",
+      "parent_holds_too_many": "Der Ursprungschat hält in seinem aktuellen Zug zu viele Notizen zurück. Versuche es nach diesem Zug erneut.",
+      "summary_too_long": "Die Zusammenfassung ist länger als erlaubt. Kürze sie.",
+      "failed": "Die Übernahme hat nicht geklappt. Versuche es erneut."
     }
   },
   "memoryV2": {
