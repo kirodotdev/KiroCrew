@@ -748,6 +748,67 @@ class TestDefaultAgentGuard:
                 assert resp.status == 200
                 assert json.loads(tmp.read_text())["default_agent"] == "default"
 
+    @staticmethod
+    def _installed(**kw):
+        from kiro_crew.agent_discovery import AgentInfo
+
+        fields = {"name": "atlas", "filename": "atlas.json", "description": "d", "model": "auto"}
+        fields.update(kw)
+        return AgentInfo(**fields)
+
+    @pytest.mark.asyncio
+    async def test_installed_template_is_enrolled_and_made_default(self, tmp_path: Path) -> None:
+        """An installed user-level template the picker offers can become the
+        default: it is enrolled as an alias with default bindings in the same
+        write, so the default resolves to exactly that template."""
+        tmp = tmp_path / "config.json"
+        tmp.write_text(json.dumps(_seed_config()), encoding="utf-8")
+        found = [self._installed(source="package")]
+        with (
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp),
+            unittest.mock.patch("kiro_crew.dashboard.handlers.config_path", return_value=tmp),
+            unittest.mock.patch(
+                "kiro_crew.dashboard.handlers.agents.list_agents", return_value=found
+            ),
+        ):
+            async with TestClient(TestServer(self._default_agent_app())) as client:
+                resp = await client.put("/api/config/default-agent", json={"agent": "atlas"})
+                assert resp.status == 200, await resp.text()
+        saved = json.loads(tmp.read_text())
+        assert saved["default_agent"] == "atlas"
+        assert saved["agents"]["atlas"]["kiro_agent"] == "atlas"
+        assert saved["agents"]["atlas"]["memory_store"] == "default"
+        assert saved["agents"]["atlas"]["source"] == "package"
+        # The existing alias is untouched.
+        assert saved["agents"]["default"]["kiro_agent"] == "kirocrew"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "info_kw",
+        [{"scope": "project"}, {"private_to": "someone"}, {"name": "other"}],
+        ids=["project-scope", "private-copy", "not-installed"],
+    )
+    async def test_non_global_template_is_still_rejected(self, info_kw, tmp_path: Path) -> None:
+        """The default is global, so a project agent, a crew's private copy and
+        a name nothing installs stay refused, and nothing is written."""
+        tmp = tmp_path / "config.json"
+        tmp.write_text(json.dumps(_seed_config()), encoding="utf-8")
+        found = [self._installed(**info_kw)]
+        with (
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp),
+            unittest.mock.patch("kiro_crew.dashboard.handlers.config_path", return_value=tmp),
+            unittest.mock.patch(
+                "kiro_crew.dashboard.handlers.agents.list_agents", return_value=found
+            ),
+        ):
+            async with TestClient(TestServer(self._default_agent_app())) as client:
+                resp = await client.put("/api/config/default-agent", json={"agent": "atlas"})
+                assert resp.status == 400
+                assert (await resp.json())["code"] == "default_agent_not_alias"
+        saved = json.loads(tmp.read_text())
+        assert saved["default_agent"] == "default"
+        assert "atlas" not in saved["agents"]
+
 
 # ---------------------------------------------------------------------------
 # Non-object request body rejection (regression: a JSON array/scalar body must

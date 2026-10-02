@@ -46,6 +46,7 @@ from kiro_crew.agent import (
 )
 from kiro_crew.agent_capabilities import CapabilityError, require_unmanaged_template
 from kiro_crew.agent_discovery import (
+    SCOPE_GLOBAL,
     _read_agent_spec,
     clear_list_agents_cache,
     list_agents,
@@ -1344,6 +1345,31 @@ async def api_agent_config(request: web.Request) -> web.Response:
     return web.json_response(redact_oauth_client_secrets(data))
 
 
+async def _installed_template_alias(name: str) -> KiroCrewAgentConfig | None:
+    """The alias record that enrolls installed template *name*, or ``None``.
+
+    Only a USER-LEVEL template qualifies: the default is global, so a project
+    agent (reachable from one checkout only) and one crew's private copy stay
+    refused. A credential- or URL-shaped name is refused as the sync loop
+    refuses it. The scan runs off the loop, like every other list_agents call.
+    """
+    if _name_would_be_masked(name):
+        return None
+    try:
+        found = await asyncio.get_running_loop().run_in_executor(
+            discovery_executor(), lambda: list(list_agents())
+        )
+    except Exception:
+        logger.warning("default agent: installed-agent scan failed", exc_info=True)
+        return None
+    for info in found:
+        if info.name == name and info.scope == SCOPE_GLOBAL and not info.private_to:
+            return KiroCrewAgentConfig(
+                kiro_agent=name, description=info.description, source=info.source
+            )
+    return None
+
+
 async def api_default_agent(request: web.Request) -> web.Response:
     """GET/PUT /api/config/default-agent — read or set the default agent."""
     import kiro_crew.dashboard.handlers as _h  # noqa: F811
@@ -1383,7 +1409,17 @@ async def api_default_agent(request: web.Request) -> web.Response:
         # rejected, not waved through. A valid config always has at least one
         # agent (load() guarantees default_agent exists in agents), so an empty
         # set never rejects a legitimate alias.
-        if name and name not in known:
+        # An installed template (one the user made, or one AIM / an app put in
+        # ~/.kiro/agents) is offered by the chat picker's "Set as default" row
+        # but is not an alias yet. Choosing it IS the request to enroll it: the
+        # alias is added with default bindings -- the same record the old
+        # agents/sync wrote, so the default runs exactly what picking the
+        # template runs -- in the SAME locked write that sets the default. Only
+        # when the config is readable (`known` non-empty): fail-closed stays.
+        enroll: KiroCrewAgentConfig | None = None
+        if name and name not in known and known:
+            enroll = await _installed_template_alias(name)
+        if name and name not in known and enroll is None:
             return web.json_response(
                 {
                     "error": f"agent {name!r} is not a configured agent alias",
@@ -1416,12 +1452,25 @@ async def api_default_agent(request: web.Request) -> web.Response:
         # flight. Composing those three by hand here would be a third copy of a
         # helper that already exists, free to drift from it.
         def _set_default(data: dict) -> dict:
+            if enroll is not None:
+                agents = coerce_dict_section(data, "agents")
+                if name not in agents:
+                    # Every path that registers a name purges a stale team
+                    # membership first, inside the lock (see the sync loop).
+                    teams_mod.release_for_create(name)
+                    agents[name] = dataclasses.asdict(enroll)
             data["default_agent"] = name
             return data
 
         try:
             await run_config_write(
                 update_config_locked, path, mutate=_set_default, stamp_meta=False
+            )
+        except teams_mod.TeamsUnavailable:
+            logger.warning("Refusing to set default agent: team state unavailable", exc_info=True)
+            return web.json_response(
+                {"error": "team state unavailable; try again", "code": "teams_unavailable"},
+                status=409,
             )
         except ConfigReadError:
             # Fail closed: writing back a {} baseline would drop every other
