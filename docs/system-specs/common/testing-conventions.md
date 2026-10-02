@@ -2024,6 +2024,26 @@ about the code. Each is a hermeticity gap, and each has one fix:
   succeeds but encode fails" for a 2,000-deep JSON body met an interpreter that did both;
   assert the invariant across all three outcomes, and walk a deep structure iteratively
   in the assertion itself.
+- **A fixed loopback port is the host's, not the test's.** `SshTunnelManager.connect`
+  probes the port it allocated, for real, and gives up with "local port N was taken
+  while connecting" when it lost a race for it. `TestProxyRequest` handed the manager
+  `base_port=53500` and left the probe real, so on a busy macOS runner the remint test
+  read `False`: 53500 sits in the ephemeral range, and any outgoing connect on the box
+  can be using it. A test about what the manager does once connected pins the probe
+  with `_patch_port_probe`; a test about real port ownership binds port 0 and uses
+  the port the kernel picked. `test_every_manager_connect_test_pins_the_port_probe`
+  fails any test class that connects a manager, and any module-level helper that
+  builds one for a file that connects it, unless the probe is pinned outside a single
+  `test_` method or `_REAL_PORT_PROBE_CLASSES` names it with the reason the real probe
+  is the subject.
+- **`http.server` looks the host up between `bind()` and `listen()`.**
+  `HTTPServer.server_bind` calls `socket.getfqdn(host)`, a system-resolver call that
+  can stall on a macOS runner while the socket is bound but refuses every connect. A
+  parent that waits on a deadline for a spawned server to answer then reads a live
+  child that never comes up (`runtime stayed {'state': 'starting'}`). A server a test
+  spawns and waits for overrides `server_bind` to call `socketserver.TCPServer.server_bind`
+  and set `server_name` from the address it already has, as the stand-in in
+  `test_decisions_local_runtime_real_spawn.py` and `plumb_cpu.py` do.
 
 ### What a fifth five-run pass found (macOS, uv venv, ~106k tests per run)
 
@@ -4265,6 +4285,16 @@ mark is the tool for a test that genuinely cannot share a worker.
 
 Mutate process globals through `monkeypatch`, which reverts on teardown even when the
 test fails. Raw assignment does not.
+
+**A process-wide verdict cache decides whether the code under test runs at all.**
+`cron_script._shell_is_posix_strict` caches its answer per shell for the life of the
+process. Any earlier test on the same worker that ran the real probe leaves `/bin/sh`
+decided, so the cancel test's probe never ran, the blip it patched in never fired, and
+the cancel had nowhere to land (`assert [] == [True]`, two macOS runs out of two). A
+test that patches a step behind such a cache rebinds the cache to a fresh dict with
+`monkeypatch.setattr` for its own duration, as `_probe_blip` in
+`test_sandbox_interpreter_enoent_retry.py` does. To prove the fix, pre-fill the cache
+in a plugin: the test must fail on the old code and pass on the new.
 
 **Sharding does not just scatter this class, it hides it — so a full-suite run is the wrong
 place to be finding it.** `ci.yml` assigns whole files to Linux/Windows shards

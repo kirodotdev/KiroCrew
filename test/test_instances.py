@@ -1482,6 +1482,89 @@ def _patch_port_probe(monkeypatch, *, manager_free: bool = True, allocator_free:
     monkeypatch.setattr(pa, "_is_port_free", lambda port, host="127.0.0.1": allocator_free)
 
 
+#: Test classes that drive ``SshTunnelManager.connect`` on the REAL port probe on
+#: purpose, each with the reason. Everything else must pin the probe.
+_REAL_PORT_PROBE_CLASSES = {
+    "test_instances.py::TestOrphanForwarderReclaim": "occupancy of a real port is the trigger",
+}
+
+
+def test_every_manager_connect_test_pins_the_port_probe():
+    """A test that connects a manager must not depend on the host's free ports.
+
+    ``connect()`` probes its allocated loopback port for real. A test that hands
+    the manager a fixed ``base_port`` and leaves the probe real passes only where
+    nothing else holds that port; on a shared macOS runner something does, and
+    ``connect()`` quietly returns an error status instead of a tunnel.
+
+    Two shapes are checked: a class that builds and connects a manager, and a
+    module-level helper that builds one for other tests to connect. Either must
+    pin the probe outside any single ``test_`` method -- ``_patch_port_probe``
+    or a patch of ``_is_port_free``, written in place or reached through a
+    module-level helper that does it -- or be named above with the reason the
+    real probe is the subject.
+    """
+    import ast
+
+    def _seg(src: str, node) -> str:
+        return ast.get_source_segment(src, node) or ""
+
+    def _pins(seg: str, helpers: set) -> bool:
+        if "_patch_port_probe(" in seg or '"_is_port_free", lambda' in seg:
+            return True
+        return any(f"{name}(" in seg for name in helpers)
+
+    def _pinned(src: str, node, helpers: set) -> bool:
+        if not isinstance(node, ast.ClassDef):
+            return _pins(_seg(src, node), helpers)
+        return any(
+            isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and not m.name.startswith("test_")
+            and _pins(_seg(src, m), helpers)
+            for m in node.body
+        )
+
+    offenders = []
+    for path in sorted(Path(__file__).parent.rglob("test_*.py")):
+        src = path.read_text(encoding="utf-8")
+        if "SshTunnelManager(" not in src:
+            continue
+        top = [
+            n
+            for n in ast.parse(src).body
+            if isinstance(n, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+        ]
+        # Module-level helpers that pin the probe themselves, e.g. a `_free_ports`.
+        helpers = {
+            n.name
+            for n in top
+            if not isinstance(n, ast.ClassDef)
+            and not n.name.startswith("test_")
+            and _pins(_seg(src, n), set())
+        }
+        for node in top:
+            seg = _seg(src, node)
+            if "SshTunnelManager(" not in seg:
+                continue
+            # A builder matters only where the same file connects what it builds.
+            builder = (
+                not isinstance(node, ast.ClassDef)
+                and not node.name.startswith("test_")
+                and ".connect(" in src
+            )
+            if ".connect(" not in seg and not builder:
+                continue
+            if _pinned(src, node, helpers):
+                continue
+            key = f"{path.name}::{node.name}"
+            if key not in _REAL_PORT_PROBE_CLASSES:
+                offenders.append(key)
+    assert offenders == [], (
+        "these build or connect a SshTunnelManager on the host's real port probe; "
+        f"pin it with _patch_port_probe: {offenders}"
+    )
+
+
 class _FakeTunnel:
     def __init__(
         self,
@@ -8534,6 +8617,13 @@ class TestOrphanForwarderReclaim:
 class TestProxyRequest:
     """SshTunnelManager.proxy_request — the remote-crew chat carrier."""
 
+    @pytest.fixture(autouse=True)
+    def _free_ports(self, monkeypatch):
+        # connect() re-probes the fixed base port 53500 for real; on a busy macOS
+        # runner something else can hold it, connect() returns an error status, and
+        # the remint test then answers False.
+        _patch_port_probe(monkeypatch)
+
     def _mgr(self, tmp_path, *, mint=None, factory=_FakeTunnel):
         from kiro_crew.instances.registry import InstancesRegistry
         from kiro_crew.instances.ssh_tunnel_manager import SshTunnelManager
@@ -9193,6 +9283,10 @@ class TestPeerRequestSharedDance:
     `_peer_cookie_header` so it is stated once. What is NOT shared is each
     method's error contract, and that is what these tests pin.
     """
+
+    @pytest.fixture(autouse=True)
+    def _free_ports(self, monkeypatch):
+        _patch_port_probe(monkeypatch)
 
     def _mgr(self, tmp_path):
         from kiro_crew.instances.registry import InstancesRegistry
