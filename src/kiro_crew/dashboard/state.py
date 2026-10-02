@@ -2840,6 +2840,11 @@ class _ChatSlot:
         "_last_turn_structural_terminal_loop_gen",
         "_prestream_exhausted_cycles",
         "_poisoned_reset_used",
+        "_session_not_found_retry_used",
+        "_session_not_found_queue_id",
+        "_session_not_found_stop_gen",
+        "_session_not_found_session_stop_gen",
+        "_session_not_found_session_key",
         "_empty_response_retries",
         "_empty_episode_productive",
         "_carried_ttft_clock",
@@ -3746,6 +3751,19 @@ class _ChatSlot:
         # outage gets at most one fresh-conversation attempt, never a
         # discard loop.
         self._poisoned_reset_used: bool = False
+        # One-shot guard for the lost-backend-session recovery: a live backend
+        # answering 'Session not found' gets ONE fresh process that re-loads the
+        # mapped id and one retry of the turn. Re-armed only by a LANDED turn,
+        # so a backend that keeps losing the session ends on a clear error.
+        self._session_not_found_retry_used: bool = False
+        # The queued replay of that recovery, and the Stop counters and session
+        # binding it was enqueued under. The reset between enqueue and dispatch
+        # is awaited, so a soft Stop can land there with the queue preserved;
+        # the drain and the consume seam compare these to veto the replay.
+        self._session_not_found_queue_id: str = ""
+        self._session_not_found_stop_gen: int = 0
+        self._session_not_found_session_stop_gen: int = 0
+        self._session_not_found_session_key: str = ""
         self._empty_response_retries: int = 0
         # True once any turn of the CURRENT empty-turn episode was productive.
         self._empty_episode_productive: bool = False

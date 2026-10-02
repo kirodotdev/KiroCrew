@@ -282,6 +282,7 @@ from kiro_crew.llm_helpers import (
     TURN_FALLBACK_ATTR,
     FallbackState,
     PromptBusyExhaustedError,
+    acp_error_is_session_not_found,
     acp_error_is_transient,
     advance_fallback_candidate,
     configured_fallback_chain,
@@ -418,6 +419,15 @@ from kiro_crew.wakatime.heartbeats import (
 from kiro_crew.widget_artifacts import register_widgets_off_loop
 
 logger = logging.getLogger(__name__)
+
+#: Shown once when a live backend lost this chat's session and a fresh
+#: runtime re-loads it; the turn is retried once behind it.
+SESSION_NOT_FOUND_RETRY_TEXT = "⟳ The agent lost this chat's session — reconnecting…"
+#: Shown when the one reconnect also failed to get a usable session.
+SESSION_NOT_FOUND_GIVE_UP_TEXT = (
+    "❌ Could not reconnect this chat's session. Send your message again, "
+    "or start a new chat if this keeps happening."
+)
 
 # The synthetic recovery message constants live in chat_utils (single source
 # of truth shared with the queue/merge predicates — is_system_injection must
@@ -8899,6 +8909,38 @@ def _retry_cancel_reason(rebound: bool, superseded: bool, stopped: bool) -> str:
     return "the turn was stopped."
 
 
+def _session_not_found_replay_revoked(state: Any, slot: Any) -> tuple[bool, bool, bool]:
+    """Whether the queued lost-session replay was revoked since it was enqueued.
+
+    Returns ``(stopped, superseded, rebound)``: a Stop on the slot or its session
+    counted since the enqueue, a user follow-up or steer queued behind it, or the
+    slot bound to a different session than the one the replay belongs to.
+    """
+    bound_key = getattr(slot, "_session_not_found_session_key", "")
+    live_key = effective_session_key(slot)
+    rebound = bool(bound_key) and live_key != bound_key
+    cur_stop_gen = getattr(slot, "_stop_generation", 0)
+    cur_session_stop_gen = _session_stop_generation_for(
+        getattr(state, "sessions", None), bound_key or live_key
+    )
+    stopped = cur_stop_gen != getattr(
+        slot, "_session_not_found_stop_gen", cur_stop_gen
+    ) or cur_session_stop_gen != getattr(
+        slot, "_session_not_found_session_stop_gen", cur_session_stop_gen
+    )
+    superseded = bool(getattr(slot, "_pending_steers", None)) or _has_user_queued_followup(slot)
+    return stopped, superseded, rebound
+
+
+def _clear_session_not_found_replay(slot: Any) -> None:
+    """Forget the queued lost-session replay's identity and binding."""
+    slot._session_not_found_queue_id = ""
+    slot._session_not_found_session_key = ""
+
+
+SESSION_NOT_FOUND_CANCELLED_TEXT = "ℹ️ Session reconnect cancelled — nothing was run."
+
+
 async def _start_next_queued_turn(
     state: DashboardState,
     slot: _ChatSlot,
@@ -9151,6 +9193,47 @@ async def _start_next_queued_turn(
                 )
             if not slot._queue:
                 return False
+
+    # The lost-session replay is enqueued at index 0 under the shared
+    # SYNTHETIC_RECOVERY_KIND, and the session reset that follows its enqueue is
+    # awaited: a soft Stop landing there preserves the queue and leaves
+    # `_stopping` back at idle. Identified by queue id, purged on any revocation.
+    _snf_qid = getattr(slot, "_session_not_found_queue_id", "")
+    if _snf_qid:
+        if not any(q.get("id") == _snf_qid for q in slot._queue):
+            _clear_session_not_found_replay(slot)
+        else:
+            _snf_stopped, _snf_superseded, _snf_rebound = _session_not_found_replay_revoked(
+                state, slot
+            )
+            if (
+                _should_suppress_requeue(slot)
+                or slot._stopping
+                or _snf_stopped
+                or _snf_superseded
+                or _snf_rebound
+            ):
+                slot.queue_remove_by_id(_snf_qid)
+                if _remove_queued_by_id(slot.messages, _snf_qid):
+                    state.broadcast_ws(
+                        "queue_pop",
+                        {"slot": slot.key, "content": "", "queue_id": _snf_qid},
+                    )
+                _clear_session_not_found_replay(slot)
+                # Aborted before dispatch: refund the one-shot so the user's own
+                # next turn keeps its reconnect.
+                slot._session_not_found_retry_used = False
+                slot.append("notice", SESSION_NOT_FOUND_CANCELLED_TEXT, "msg msg-info")
+                logger.info(
+                    "Dropped lost-session replay before dispatch for slot %s "
+                    "(stop_since_enqueue=%s superseded=%s rebound=%s)",
+                    slot.key,
+                    _snf_stopped,
+                    _snf_superseded,
+                    _snf_rebound,
+                )
+                if not slot._queue:
+                    return False
 
     # The unsupported-history-image recovery carries the identical hazard, and it
     # is NOT covered by either guard above: it is enqueued at index 0 under the
@@ -9722,6 +9805,9 @@ async def _start_next_queued_turn(
         and consumed[0].get("id") == _replay_dispatch_qid
     ):
         _run_kwargs["_refusal_replay"] = True
+    _snf_dispatch_qid = getattr(slot, "_session_not_found_queue_id", "")
+    if _snf_dispatch_qid and len(consumed) == 1 and consumed[0].get("id") == _snf_dispatch_qid:
+        _run_kwargs["_session_not_found_recovery"] = True
     _image_dispatch_qid = getattr(slot, "_image_recovery_queue_id", "")
     if _image_dispatch_qid and len(consumed) == 1 and consumed[0].get("id") == _image_dispatch_qid:
         _run_kwargs["_image_recovery"] = True
@@ -10441,6 +10527,9 @@ async def _run_chat(
     # the drain so a Stop or correction in the spawn-to-consume window can veto
     # the destructive continuation before the provider sees it.
     _image_recovery: bool = False,
+    # The drained entry is the lost-session replay whose queue id matched the
+    # slot's recorded one; the consume seam re-checks its Stop snapshots.
+    _session_not_found_recovery: bool = False,
     # The drained entry carried the synthetic-recovery ``kind`` tag (a runner
     # requeue after a pre-output failure, including a re-queue of the USER'S OWN
     # words on a poisoned-conversation discard). Structural, from the entry --
@@ -11201,6 +11290,38 @@ async def _run_chat(
                 getattr(slot, "_refusal_fallback_session_key", "") or session_key,
             )
         return _recovery_qid
+
+    if _session_not_found_recovery:
+        # Task scheduling after the drain's check is another revocation window.
+        _snf_stopped_c, _snf_superseded_c, _snf_rebound_c = _session_not_found_replay_revoked(
+            state, slot
+        )
+        _clear_session_not_found_replay(slot)
+        if (
+            _snf_stopped_c
+            or _snf_superseded_c
+            or _snf_rebound_c
+            or slot._stopping
+            or _should_suppress_requeue(slot)
+        ):
+            slot._session_not_found_retry_used = False
+            slot.append("notice", SESSION_NOT_FOUND_CANCELLED_TEXT, "msg msg-info")
+            logger.info(
+                "Lost-session replay aborted at consume for slot %s "
+                "(stopped=%s superseded=%s rebound=%s)",
+                slot.key,
+                _snf_stopped_c,
+                _snf_superseded_c,
+                _snf_rebound_c,
+            )
+            try:
+                state.broadcast_ws("chat_done", await chat_done_payload(state, slot))
+            except Exception:  # pragma: no cover - unblock is best-effort
+                logger.debug(
+                    "chat_done broadcast failed for aborted lost-session replay",
+                    exc_info=True,
+                )
+            return
 
     if _image_recovery:
         # The drain validated this replay before spawning the guarded task, but
@@ -19321,6 +19442,7 @@ async def _run_chat(
             # turn must not re-arm a second discard without that evidence.
             slot._prestream_exhausted_cycles = 0
             slot._poisoned_reset_used = False
+            slot._session_not_found_retry_used = False
             # This turn landed: the prompt (including any re-injected skills
             # index) reached the model, so the `finally` must NOT restore the
             # one-shot flag.
@@ -19938,6 +20060,52 @@ async def _run_chat(
                     else "⟳ Session busy — please retry."
                 )
                 slot.append("error", _retry_msg, "msg msg-err")
+        elif acp_error_is_session_not_found(exc):
+            # The backend process is alive but holds no session under the id this
+            # chat is bound to, so the dead-provider eviction never fires and a
+            # plain retry draws the same answer. Reset drops the live binding and
+            # keeps the session-map entry, so the next claim spawns a fresh
+            # process that session/loads the SAME backend id (falling back to a
+            # new session plus history replay only when that load fails). ONE
+            # retry per landed turn: a backend that loses it again ends here.
+            logger.warning(
+                "Backend lost the session for slot %s — re-loading on a fresh runtime",
+                slot.key,
+            )
+            needs_session_reset = True  # checked in finally block
+            _persist_partial_reply()
+            if _should_suppress_requeue(slot):
+                pass
+            elif _prompt_depth == 0 and not slot._session_not_found_retry_used:
+                slot._session_not_found_retry_used = True
+                slot.append(
+                    "error",
+                    SESSION_NOT_FOUND_RETRY_TEXT,
+                    "msg msg-err",
+                    meta={"kind": TRANSIENT_RETRY_KIND},
+                )
+                _requeue_text, _requeue_payload = build_recovery_requeue(
+                    message,
+                    _turn_emitted,
+                    cause=ResetCause.CONNECTION_LOST,
+                    message_is_synthetic=_is_synthetic,
+                )
+                # Snapshot BEFORE the enqueue: the reset in this turn's finally is
+                # awaited, and a Stop landing there must veto the replay.
+                slot._session_not_found_stop_gen = getattr(slot, "_stop_generation", 0)
+                slot._session_not_found_session_stop_gen = _session_stop_generation()
+                slot._session_not_found_session_key = session_key
+                slot._session_not_found_queue_id = (
+                    _queue_recovery(
+                        0,
+                        _requeue_text,
+                        kind=SYNTHETIC_RECOVERY_KIND,
+                        payload=_requeue_payload,
+                    )
+                    or ""
+                )
+            else:
+                slot.append("error", SESSION_NOT_FOUND_GIVE_UP_TEXT, "msg msg-err")
         elif (
             getattr(exc, "image_format_unsupported", False)
             and not _attachments
