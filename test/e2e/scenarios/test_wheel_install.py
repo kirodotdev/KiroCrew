@@ -111,10 +111,18 @@ def test_built_wheel_installs_and_the_cli_answers(
     py = bin_dir / ("python.exe" if os.name == "nt" else "python")
     cli = bin_dir / ("kirocrew.exe" if os.name == "nt" else "kirocrew")
 
+    # The suite's conftest puts the checkout's `src/` on PYTHONPATH for every
+    # child, so a child imports the tree under test. This scenario tests the
+    # WHEEL, so its children must not see that entry: with it, the CLI would
+    # import the source tree and a wheel missing a module would still pass.
+    wheel_env = dict(os.environ)
+    wheel_env.pop("PYTHONPATH", None)
+
     install = _run(
         [str(py), "-m", "pip", "install", "--no-input", str(wheel)],
         cwd=tmp_path,
         timeout=INSTALL_TIMEOUT,
+        env=wheel_env,
     )
     if install.returncode != 0:
         pytest.fail(
@@ -125,7 +133,7 @@ def test_built_wheel_installs_and_the_cli_answers(
 
     # Point the installed CLI at its own throwaway data home, so neither command
     # can read or write the developer's real ~/.kiro/crew.
-    env = dict(os.environ)
+    env = dict(wheel_env)
     env["KIROCREW_HOME"] = str(tmp_path / "home")
     env.pop("KIROCREW_KIRO_BIN", None)
 
