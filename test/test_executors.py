@@ -74,9 +74,11 @@ def test_shutdown_is_idempotent_and_resets() -> None:
 
 
 def test_pools_execute_work() -> None:
-    assert ex.maintenance_executor().submit(lambda: 1 + 1).result(timeout=5) == 2
-    assert ex.subprocess_executor().submit(lambda: 4 + 4).result(timeout=5) == 8
-    assert ex.cron_executor().submit(lambda: 2 + 3).result(timeout=5) == 5
+    # The timeout only stops a dead pool from hanging the run. A loaded CI
+    # shard can take seconds to start a fresh worker thread, so keep it wide.
+    assert ex.maintenance_executor().submit(lambda: 1 + 1).result(timeout=60) == 2
+    assert ex.subprocess_executor().submit(lambda: 4 + 4).result(timeout=60) == 8
+    assert ex.cron_executor().submit(lambda: 2 + 3).result(timeout=60) == 5
 
 
 def test_path_resolve_pool_is_isolated_bounded_named_and_reset() -> None:
