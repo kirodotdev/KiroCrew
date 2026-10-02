@@ -2781,7 +2781,28 @@ and it is deliberately NOT re-exported from `loader.py` — the loader's
   (`GET /api/appearances/{id}/sound/{state}`), so it needs no `motions` on the
   record. It keeps accepting `sounds` for the same reason the picture tier does --
   that key is audible today on every tier -- and retires it in the change that
-  makes the pack's own audio what plays. **A pack survives a faceless save.** The
+  makes the pack's own audio what plays.
+- `{"kind": "icon", "pose": "pose-N", "bg": "#rrggbb"}` — the crew wears a
+  shipped ghost POSE over a solid background. This is the PRIMARY tier new crews
+  are built with (the ghost "捏脸" builder and the pack library stay for crews
+  already wearing them). The whole override is `pose` + `bg`: `pose` names one of
+  the hand-drawn silhouettes in `website/src/lib/avatarPoses.ts` (`POSE_IDS`),
+  `bg` is the colour painted behind it. The
+  silhouette stays white and the eyes stay black — the background is the whole
+  colour model, seeded from the active theme's `--accent` when the builder opens.
+  `pose` is a bounded (`_AVATAR_TRAIT_MAX_LEN`), charset-safe (`_AVATAR_POSE_RE`)
+  string, NOT a membership test against the shipped pose set: like a ghost trait, an
+  unknown-but-well-formed value is the renderer's to resolve (`resolvePose` falls
+  back to the default pose), so pinning it here would drop a pose a newer client
+  wrote and wipe the face on an unrelated save. A record naming no `pose` (or a
+  junk one) collapses to `{}` the way a pack with no id does — a pose IS the
+  icon's whole identity. `bg` is pinned to `#rrggbb` by the same `_safe_color`
+  validator `tile` uses, because it is interpolated into SVG markup on the
+  client; a dropped `bg` renders the art's shipped purple. An icon is a static
+  drawing like a picture, so it carries NO reaction keys (`motions`, `sounds`,
+  `expressions`).
+
+  **A pack survives a faceless save.** The
   shipped crew editor rebuilds the override from a closed ghost/picture shape,
   so for a pack-wearing crew it renders the name-derived face and any unrelated
   save (a model change, a colour) submits `{}` — or `{"kind": "ghost", ...}`

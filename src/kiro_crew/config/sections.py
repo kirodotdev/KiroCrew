@@ -512,6 +512,14 @@ _AVATAR_MOTIONS: dict[str, tuple[str, ...]] = {
 #: silent) -- so a crew can opt one state out of a fleet-wide cue.
 _AVATAR_SOUNDS = ("none", "chime", "ding", "blip", "pop", "pulse")
 
+#: Shape a stored icon ``pose`` must match: ASCII letters, digits, dash and
+#: underscore. Deliberately NOT a membership test against the shipped pose set --
+#: an unknown-but-well-formed pose a newer client wrote is kept so an unrelated
+#: save does not wipe it (the client resolves it to the default). The bound is
+#: applied separately (``_AVATAR_TRAIT_MAX_LEN``); this only rejects a value that
+#: could bloat config.json with junk or reach the client's SVG template as markup.
+_AVATAR_POSE_RE = _re.compile(r"[A-Za-z0-9_-]+")
+
 
 #: The only trait axes a per-state ghost expression may move. The identity axes
 #: (brows/accessory/prop/tile/blush/flip) are excluded: a crew must stay
@@ -680,6 +688,33 @@ def _safe_avatar(value: object) -> dict:
         if sounds:
             out["sounds"] = sounds
         return out
+    if value.get("kind") == "icon":
+        # The ICON tier: a shipped pose over a solid background. The whole
+        # override is `pose` + `bg` -- no face to move and no cue of its own, so
+        # it carries none of the reaction keys (a static drawing like a picture).
+        #
+        # `pose` is a bounded, charset-safe string rather than a value checked
+        # against the shipped pose set: like a ghost trait, an unknown value is
+        # the renderer's to resolve (it falls back to the default pose), so
+        # pinning it here would drop a pose a newer client wrote and wipe the
+        # face on the next unrelated save. The bound and charset exist only so a
+        # hand-written junk value cannot bloat config.json or reach a template as
+        # markup. `bg` is pinned to a hex colour by the same validator `tile`
+        # uses, because it IS interpolated into SVG markup on the client.
+        pose = value.get("pose")
+        if not isinstance(pose, str) or not pose:
+            # A pose is the whole of an icon avatar's identity -- an override that
+            # names none has nothing to draw, so it collapses like a pack with no
+            # id rather than storing a faceless `{"kind": "icon"}`.
+            return {}
+        safe_pose = pose[:_AVATAR_TRAIT_MAX_LEN]
+        if _AVATAR_POSE_RE.fullmatch(safe_pose) is None:
+            return {}
+        bg = _safe_color(value.get("bg", ""))
+        icon: dict[str, object] = {"kind": "icon", "pose": safe_pose}
+        if bg:
+            icon["bg"] = bg
+        return icon
     if value.get("kind") == "pack":
         ident = _safe_pack_id(value.get("id"))
         if ident is None:

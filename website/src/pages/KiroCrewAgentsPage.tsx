@@ -19,7 +19,7 @@ import ErrorBoundary from '../components/ErrorBoundary'
 import InfoTip from '../components/InfoTip'
 import { FOCUSABLE } from '../hooks/useDialogFocusTrap'
 import SimpleSelect from '../components/SimpleSelect'
-import CrewAvatar, { ghostTraitsFrom, imageAvatarFrom, packAvatarFrom, unclaimedAvatarFrom, type CrewAvatarOverride } from '../components/CrewAvatar'
+import CrewAvatar, { ghostTraitsFrom, iconAvatarFrom, imageAvatarFrom, packAvatarFrom, unclaimedAvatarFrom, type CrewAvatarOverride } from '../components/CrewAvatar'
 import CrewStateAvatar from '../components/CrewStateAvatar'
 import CrewAvatarBuilder from '../components/CrewAvatarBuilder'
 import {
@@ -1109,6 +1109,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     const storedTraits = ghostTraitsFrom(a.avatar)
     const storedImage = imageAvatarFrom(a.avatar)
     const storedPack = packAvatarFrom(a.avatar)
+    const storedIcon = iconAvatarFrom(a.avatar)
     // The reaction layer is the ghost's, and rides on a ghost that pins nothing:
     // a record with no traits that carries motions or sounds is still an
     // override ("the name-derived face, plus these reactions"). Both readers are
@@ -1132,15 +1133,17 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
         ? null
         : storedTraits
           ? { kind: 'ghost', traits: storedTraits, ...reactions }
-          : storedImage
-            ? { kind: 'image', v: storedImage.v }
-            : storedPack
-              ? // Loaded so Save writes the pack back verbatim. Without this the
-                // draft was null for a pack crew, and `avatarPayload`'s
-                // `editAvatar ?? {}` reset the record to "no override" — so
-                // changing only the model undressed the crew.
-                { kind: 'pack', id: storedPack.id }
-              : Object.keys(reactions).length
+          : storedIcon
+            ? { kind: 'icon', pose: storedIcon.pose, bg: storedIcon.bg }
+            : storedImage
+              ? { kind: 'image', v: storedImage.v }
+              : storedPack
+                ? // Loaded so Save writes the pack back verbatim. Without this the
+                  // draft was null for a pack crew, and `avatarPayload`'s
+                  // `editAvatar ?? {}` reset the record to "no override" — so
+                  // changing only the model undressed the crew.
+                  { kind: 'pack', id: storedPack.id }
+                : Object.keys(reactions).length
                 ? { kind: 'ghost', ...reactions }
                 : null,
     )
@@ -1673,16 +1676,19 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     // picture IS an unsaved change.
     const savedNorm =
       ghostTraitsFrom(editingAgent.avatar) ??
+      iconAvatarFrom(editingAgent.avatar) ??
       imageAvatarFrom(editingAgent.avatar) ??
       packAvatarFrom(editingAgent.avatar)
     const draftNorm =
       editAvatar?.kind === 'ghost'
         ? (editAvatar.traits ?? null)
-        : editAvatar?.kind === 'image'
-          ? { v: editAvatar.v, pendingData: editAvatar.pendingData }
-          : editAvatar?.kind === 'pack'
-            ? { id: editAvatar.id }
-            : null
+        : editAvatar?.kind === 'icon'
+          ? { pose: editAvatar.pose, bg: editAvatar.bg }
+          : editAvatar?.kind === 'image'
+            ? { v: editAvatar.v, pendingData: editAvatar.pendingData }
+            : editAvatar?.kind === 'pack'
+              ? { id: editAvatar.id }
+              : null
     if (JSON.stringify(draftNorm) !== JSON.stringify(savedNorm)) out.add('routing')
     // Compared separately from the face, and BOTH sides go through the same
     // coercion — which is what makes the comparison sound rather than merely

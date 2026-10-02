@@ -148,6 +148,62 @@ class TestSafeAvatar:
         assert _safe_avatar(raw)["traits"]["tile"] == "#21a5de"
 
 
+class TestSafeAvatarIconKind:
+    """The icon tier: a shipped pose over a solid background."""
+
+    def test_valid_icon_round_trips(self):
+        icon = {"kind": "icon", "pose": "pose-3", "bg": "#21a5de"}
+        assert _safe_avatar(icon) == icon
+
+    def test_bg_normalized_lowercase(self):
+        out = _safe_avatar({"kind": "icon", "pose": "pose-1", "bg": "#21A5DE"})
+        assert out["bg"] == "#21a5de"
+
+    def test_bg_pinned_to_hex(self):
+        """bg is interpolated into SVG markup, so junk must not survive."""
+        out = _safe_avatar({"kind": "icon", "pose": "pose-1", "bg": '"><script>'})
+        assert "bg" not in out
+        assert out == {"kind": "icon", "pose": "pose-1"}
+
+    def test_missing_pose_collapses(self):
+        """A pose IS the icon's whole identity — no pose, nothing to draw."""
+        assert _safe_avatar({"kind": "icon", "bg": "#21a5de"}) == {}
+        assert _safe_avatar({"kind": "icon", "pose": "", "bg": "#21a5de"}) == {}
+        assert _safe_avatar({"kind": "icon", "pose": 42}) == {}
+
+    def test_unknown_pose_is_kept_not_dropped(self):
+        """Forgiving like a ghost trait: a pose a newer client wrote survives so
+        an unrelated save does not wipe it; the client resolves it."""
+        out = _safe_avatar({"kind": "icon", "pose": "pose-99", "bg": "#21a5de"})
+        assert out == {"kind": "icon", "pose": "pose-99", "bg": "#21a5de"}
+
+    def test_junk_charset_pose_collapses(self):
+        """A pose that could reach the SVG template as markup is refused."""
+        assert _safe_avatar({"kind": "icon", "pose": '"><script>'}) == {}
+
+    def test_pose_bounded_in_length(self):
+        out = _safe_avatar({"kind": "icon", "pose": "p" * 200})
+        assert len(out["pose"]) == _AVATAR_TRAIT_MAX_LEN
+
+    def test_icon_carries_no_reaction_keys(self):
+        """An icon is static — motions/sounds/expressions never ride on it."""
+        out = _safe_avatar(
+            {
+                "kind": "icon",
+                "pose": "pose-1",
+                "bg": "#21a5de",
+                "motions": {"done": "bounce"},
+                "sounds": {"done": "chime"},
+                "expressions": {"done": {"eyes": "wink"}},
+            }
+        )
+        assert out == {"kind": "icon", "pose": "pose-1", "bg": "#21a5de"}
+
+    def test_absent_bg_drops_the_key(self):
+        out = _safe_avatar({"kind": "icon", "pose": "pose-2"})
+        assert out == {"kind": "icon", "pose": "pose-2"}
+
+
 class TestKiroCrewAgentConfigAvatar:
     """avatar field on KiroCrewAgentConfig."""
 

@@ -95,7 +95,8 @@ const mockApi = vi.hoisted(() => ({
 vi.mock('../api/client', () => ({ api: mockApi }))
 
 import KiroCrewAgentsPage from '../pages/KiroCrewAgentsPage'
-import CrewAvatar, { hasAvatarOverride, seededTraits } from '../components/CrewAvatar'
+import CrewAvatar, { hasAvatarOverride, iconAvatarFrom, seededTraits } from '../components/CrewAvatar'
+import { poseDataUri } from '../lib/avatarPoses'
 import { BRAND_PURPLE } from '../lib/kiroGhostAvatar'
 
 function createTestStore() {
@@ -909,6 +910,9 @@ describe('crew avatar builder', () => {
     fireEvent.click(within(sheet).getByTestId('header-avatar-button'))
     const builder = await screen.findByRole('dialog', { name: 'Customize avatar' })
 
+    // The builder opens on the Icon pane for a crew with no override; this test
+    // exercises the ghost tier, so select Ghost face first (as a user would).
+    fireEvent.click(within(builder).getByRole('radio', { name: 'Ghost face' }))
     // Pre-filled with the name-derived face; pick a different eye option.
     fireEvent.click(within(builder).getByTestId('avatar-opt-wink'))
     fireEvent.click(within(builder).getByTestId('avatar-builder-save'))
@@ -926,6 +930,7 @@ describe('crew avatar builder', () => {
     fireEvent.click(within(sheet).getByTestId('header-avatar-button'))
     const builder = await screen.findByRole('dialog', { name: 'Customize avatar' })
 
+    fireEvent.click(within(builder).getByRole('radio', { name: 'Ghost face' }))
     fireEvent.click(within(builder).getByTestId('avatar-opt-wink'))
     fireEvent.click(within(builder).getByTestId('avatar-builder-reset'))
     fireEvent.click(within(builder).getByTestId('avatar-builder-save'))
@@ -933,6 +938,24 @@ describe('crew avatar builder', () => {
     // Nothing pending: the draft round-tripped back to "no override", so Save
     // stays disabled — the dirty check compares normalized traits, not clicks.
     expect(within(sheet).getByRole('button', { name: 'Save changes' })).toBeDisabled()
+  })
+
+  it('picks an icon pose and persists the icon override on Save', async () => {
+    await renderRoster()
+    const sheet = await openEditor('oncall')
+    fireEvent.click(within(sheet).getByTestId('header-avatar-button'))
+    const builder = await screen.findByRole('dialog', { name: 'Customize avatar' })
+
+    // The builder opens on the Icon pane for a crew with no override — the
+    // primary creation path. Pick a pose and a background, Apply, then Save.
+    fireEvent.click(within(builder).getByTestId('avatar-icon-pose-pose-4'))
+    fireEvent.click(within(builder).getByTestId('avatar-icon-bg-25679d'))
+    fireEvent.click(within(builder).getByTestId('avatar-builder-save'))
+
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Save changes' }))
+    await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalled())
+    const body = mockApi.updateKirocrewAgent.mock.calls[0][1]
+    expect(body.avatar).toEqual({ kind: 'icon', pose: 'pose-4', bg: '#25679d' })
   })
 })
 
@@ -1102,6 +1125,7 @@ describe('crew editor — appearance pack round-trip', () => {
 
     fireEvent.click(within(sheet).getByTestId('header-avatar-button'))
     const builder = await screen.findByRole('dialog', { name: 'Customize avatar' })
+    fireEvent.click(within(builder).getByRole('radio', { name: 'Ghost face' }))
     fireEvent.click(within(builder).getByTestId('avatar-opt-wink'))
     fireEvent.click(within(builder).getByTestId('avatar-builder-save'))
     fireEvent.click(within(sheet).getByRole('button', { name: 'Save changes' }))
@@ -1228,6 +1252,39 @@ describe('avatar editor entry — discoverability (issue #9103)', () => {
     expect(hasAvatarOverride({ kind: 'ghost' })).toBe(false) // no traits → renderer falls back
     expect(hasAvatarOverride({ kind: 'ghost', traits: seededTraits('oncall') })).toBe(true)
     expect(hasAvatarOverride({ kind: 'image', v: 1 })).toBe(true)
+    expect(hasAvatarOverride({ kind: 'icon', pose: 'pose-1', bg: '#9046ff' })).toBe(true)
+  })
+
+  it('iconAvatarFrom preserves an unknown pose RAW, so an unrelated save cannot wipe it', () => {
+    // Forward-compat invariant: a pose a newer client wrote (`pose-99`) must
+    // round-trip through this build untouched. The reader returns it raw and the
+    // renderer resolves it only at draw time — so the editor seeds the raw value
+    // and an unrelated save (a model change) ships `pose-99` back, not `pose-1`.
+    // Resolving here is exactly the wipe GPT F2 / the Design Watch flagged.
+    expect(iconAvatarFrom({ kind: 'icon', pose: 'pose-99', bg: '#25679d' })).toEqual({
+      pose: 'pose-99',
+      bg: '#25679d',
+    })
+    // A known pose rides through verbatim too.
+    expect(iconAvatarFrom({ kind: 'icon', pose: 'pose-3', bg: '#21a5de' })).toEqual({
+      pose: 'pose-3',
+      bg: '#21a5de',
+    })
+    // Not an icon / no pose → null, so no unrelated save reads it as one.
+    expect(iconAvatarFrom({ kind: 'icon' })).toBeNull()
+    expect(iconAvatarFrom({ kind: 'ghost', traits: {} })).toBeNull()
+  })
+
+  it('a prototype-key pose does not crash rendering — it degrades to the default', () => {
+    // `_AVATAR_POSE_RE` admits `constructor`/`toString`/`__proto__`, and a
+    // truthy `POSE_SVG[pose]` lookup would walk the prototype chain and return a
+    // FUNCTION, which poseDataUri then calls `.replace` on and throws (a render
+    // crash behind only the app-shell boundary). `resolvePose` uses Object.hasOwn,
+    // so each resolves to the default and the data URI is produced, never thrown.
+    for (const key of ['constructor', 'toString', '__proto__', 'hasOwnProperty']) {
+      expect(() => poseDataUri(key, '#25679d')).not.toThrow()
+      expect(poseDataUri(key, '#25679d')).toContain('data:image/svg+xml')
+    }
   })
 
   it('every face in the editor is an "Edit avatar" button with the scrim affordance', async () => {

@@ -146,6 +146,13 @@ def _roster_avatar(value: object) -> dict:
       through ``_roster_mask`` like any other roster string. The renderer resolves
       an unrecognized trait to absent (``EYES[k] ?? ''``), so a masked trait
       degrades that axis rather than breaking the face.
+    - the icon ``pose`` is a sibling user-authored free-text leaf: ``_safe_avatar``
+      keeps any value up to ``_AVATAR_TRAIT_MAX_LEN`` matching ``_AVATAR_POSE_RE``
+      (so a credential-shaped token fits) to stay forward-compatible with a newer
+      client's pose, so it goes through ``_roster_mask`` here too. The renderer
+      resolves an unrecognized pose to the default (``resolvePose`` gates on
+      ``Object.hasOwn``), so a masked pose degrades to the default face rather than
+      leaking the stored value or breaking the icon.
     - ``motions`` and ``sounds`` values are constrained by ``_safe_motions`` and
       ``_safe_sounds`` to a shipped animation or preset name, so they are pinned
       rather than masked -- the same reason ``file`` is.
@@ -186,6 +193,10 @@ def _roster_avatar(value: object) -> dict:
             for state, axes in expressions.items()
             if isinstance(axes, dict)
         }
+    pose = safe.get("pose")
+    if isinstance(pose, str):
+        safe = dict(safe)
+        safe["pose"] = _roster_mask(pose)
     return safe
 
 

@@ -32,6 +32,7 @@ import { i18nT } from '../../i18n/t'
 import { useAvailableModelsQuery } from '../../hooks/useAvailableModels'
 import {
   ghostTraitsFrom,
+  iconAvatarFrom,
   imageAvatarFrom,
   packAvatarFrom,
   unclaimedAvatarFrom,
@@ -461,6 +462,7 @@ export function useCrewEditor(args: UseCrewEditorArgs): CrewEditorController {
     const storedTraits = ghostTraitsFrom(a.avatar)
     const storedImage = imageAvatarFrom(a.avatar)
     const storedPack = packAvatarFrom(a.avatar)
+    const storedIcon = iconAvatarFrom(a.avatar)
     // The reaction layer is the ghost's, and rides on a ghost that pins nothing:
     // a record with no traits that carries motions or sounds is still an
     // override ("the name-derived face, plus these reactions"). Both readers are
@@ -484,13 +486,15 @@ export function useCrewEditor(args: UseCrewEditorArgs): CrewEditorController {
         ? null
         : storedTraits
           ? { kind: 'ghost', traits: storedTraits, ...reactions }
-          : storedImage
-            ? { kind: 'image', v: storedImage.v }
-            : storedPack
-              ? { kind: 'pack', id: storedPack.id }
-              : Object.keys(reactions).length
-                ? { kind: 'ghost', ...reactions }
-                : null,
+          : storedIcon
+            ? { kind: 'icon', pose: storedIcon.pose, bg: storedIcon.bg }
+            : storedImage
+              ? { kind: 'image', v: storedImage.v }
+              : storedPack
+                ? { kind: 'pack', id: storedPack.id }
+                : Object.keys(reactions).length
+                  ? { kind: 'ghost', ...reactions }
+                  : null,
     )
     setAvatarPassthrough(storedUnclaimed)
     setRetiredCarry(retiredCarryFrom(a.avatar))
@@ -808,16 +812,19 @@ export function useCrewEditor(args: UseCrewEditorArgs): CrewEditorController {
     if (sessionColor !== (editingAgent.session_color || '')) out.add('routing')
     const savedNorm =
       ghostTraitsFrom(editingAgent.avatar) ??
+      iconAvatarFrom(editingAgent.avatar) ??
       imageAvatarFrom(editingAgent.avatar) ??
       packAvatarFrom(editingAgent.avatar)
     const draftNorm =
       editAvatar?.kind === 'ghost'
         ? (editAvatar.traits ?? null)
-        : editAvatar?.kind === 'image'
-          ? { v: editAvatar.v, pendingData: editAvatar.pendingData }
-          : editAvatar?.kind === 'pack'
-            ? { id: editAvatar.id }
-            : null
+        : editAvatar?.kind === 'icon'
+          ? { pose: editAvatar.pose, bg: editAvatar.bg }
+          : editAvatar?.kind === 'image'
+            ? { v: editAvatar.v, pendingData: editAvatar.pendingData }
+            : editAvatar?.kind === 'pack'
+              ? { id: editAvatar.id }
+              : null
     if (JSON.stringify(draftNorm) !== JSON.stringify(savedNorm)) out.add('routing')
     const unclaimed = unclaimedAvatarFrom(editingAgent.avatar) !== null
     const savedReactions = unclaimed
