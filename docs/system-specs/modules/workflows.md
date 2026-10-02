@@ -1027,7 +1027,20 @@ Each failed attempt is destroyed before the next. Authentication, configuration,
 permission, arbitrary, model-prompt, and validation failures are not startup
 retries. Once a session is ready, script validation still loops up to
 `_AUTHOR_RETRIES + 1` = 3 attempts and feeds the validation errors back on each
-retry. `_strip_fence` peels only the opening fence line and a trailing fence,
+retry. When the previous reply was cut off, the retry says so and asks for a
+shorter complete script instead of "fix it", since a same-length regeneration
+stops in the same place. A reply counts as cut off when its turn ended with ACP
+stop reason `max_tokens`, even when the script validates, or when it fails to
+parse because it ends mid-construct: a bracket or triple-quoted string still
+open at end of input, or a syntax error on its last line
+(`_ends_mid_construct`). When every attempt fails,
+the result's `errors` keeps each attempt's errors, prefixed `attempt N/3:`, so
+the failed run shows what every attempt hit rather than only the last. Because
+that list is stored and served verbatim as the run's error, each attempt
+retains at most `_AUTHOR_ERRORS_PER_ATTEMPT` errors, each cut to
+`_AUTHOR_ERROR_CHARS` characters, plus one `+N more errors` entry counting the
+rest; the retry prompt still receives every error in full.
+`_strip_fence` peels only the opening fence line and a trailing fence,
 never splitting on every ``` , because a literal triple backtick inside the
 script body would otherwise truncate it mid-statement.
 

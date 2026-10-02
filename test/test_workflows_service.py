@@ -408,6 +408,178 @@ async def test_author_all_invalid_fails_clean(monkeypatch) -> None:
     assert out["errors"]
 
 
+# Replies that stop mid-generation: the source ends inside an open bracket, an
+# open string, or an unfinished statement.
+_CUT_OFF_REPLIES = [
+    GOOD_SCRIPT.replace("    return {'ok': True}\n", "    r = await ctx.parallel([\n        1,\n"),
+    GOOD_SCRIPT.replace("    return {'ok': True}\n", "    return ctx.agent('summarise the"),
+    GOOD_SCRIPT.replace("    return {'ok': True}\n", "    if ctx.args:\n"),
+]
+
+
+def _record_prompts(
+    monkeypatch, replies: list[str], stop_reason: str | list[str] = ""
+) -> list[str]:
+    """Patch stream_and_collect to return ``replies`` in order, ending each turn
+    with a shared or per-turn ``stop_reason`` like the provider's EVENT_COMPLETE."""
+    import kiro_crew.workflows.service as svc_mod
+    from kiro_crew.acp.types import EVENT_COMPLETE, AcpEvent
+
+    prompts: list[str] = []
+
+    async def generate(provider, message, **kwargs):
+        prompts.append(message)
+        on_complete = kwargs.get("on_complete")
+        reason = (
+            stop_reason[min(len(prompts) - 1, len(stop_reason) - 1)]
+            if isinstance(stop_reason, list)
+            else stop_reason
+        )
+        if reason and on_complete is not None:
+            on_complete(AcpEvent(kind=EVENT_COMPLETE, stop_reason=reason))
+        return replies[min(len(prompts) - 1, len(replies) - 1)]
+
+    monkeypatch.setattr(svc_mod, "stream_and_collect", generate)
+    return prompts
+
+
+@pytest.mark.parametrize("cut_off", _CUT_OFF_REPLIES, ids=["bracket", "string", "statement"])
+async def test_author_retry_says_previous_script_was_cut_off(monkeypatch, cut_off) -> None:
+    prompts = _record_prompts(monkeypatch, [cut_off, GOOD_SCRIPT])
+    svc = WorkflowService(sessions=FakeSessions([]), persist=False)
+
+    out = await svc.author("x")
+
+    assert out["ok"] is True
+    assert len(prompts) == 2
+    assert "CUT OFF" in prompts[1]
+    assert "SHORTER" in prompts[1]
+    assert "INVALID" not in prompts[1]
+
+
+async def test_author_retry_says_cut_off_when_turn_hit_output_limit(monkeypatch) -> None:
+    # The provider says the turn ended on the token limit; the parse error alone
+    # (an import, mid-file) would not look cut off.
+    bad = "import os\n" + GOOD_SCRIPT
+    prompts = _record_prompts(
+        monkeypatch, [bad, GOOD_SCRIPT], stop_reason=["max_tokens", "end_turn"]
+    )
+    svc = WorkflowService(sessions=FakeSessions([]), persist=False)
+
+    out = await svc.author("x")
+
+    assert out["ok"] is True
+    assert "CUT OFF" in prompts[1]
+
+
+async def test_author_retry_rejects_valid_script_at_output_limit(monkeypatch) -> None:
+    prompts = _record_prompts(
+        monkeypatch, [GOOD_SCRIPT, GOOD_SCRIPT], stop_reason=["max_tokens", "end_turn"]
+    )
+    svc = WorkflowService(sessions=FakeSessions([]), persist=False)
+
+    out = await svc.author("x")
+
+    assert out["ok"] is True
+    assert len(prompts) == 2
+    assert "CUT OFF" in prompts[1]
+    assert "SHORTER" in prompts[1]
+    assert "output length limit" in prompts[1]
+
+
+async def test_author_failure_reports_every_valid_script_at_output_limit(monkeypatch) -> None:
+    from kiro_crew.workflows.service import _AUTHOR_RETRIES
+
+    attempts = _AUTHOR_RETRIES + 1
+    prompts = _record_prompts(monkeypatch, [GOOD_SCRIPT], stop_reason="max_tokens")
+    svc = WorkflowService(sessions=FakeSessions([]), persist=False)
+
+    out = await svc.author("x")
+
+    assert out["ok"] is False
+    assert len(prompts) == attempts
+    assert len(out["errors"]) == attempts
+    for n, error in enumerate(out["errors"], start=1):
+        assert error.startswith(f"attempt {n}/{attempts}:")
+        assert "output length limit" in error
+
+
+async def test_author_failure_bounds_each_attempts_errors(monkeypatch) -> None:
+    # The failed run's error is stored and served verbatim, so what is retained
+    # per attempt is bounded in count and in length, with one "+N more" marker.
+    from kiro_crew.workflows.service import (
+        _AUTHOR_ERROR_CHARS,
+        _AUTHOR_ERRORS_PER_ATTEMPT,
+        _AUTHOR_RETRIES,
+    )
+
+    attempts = _AUTHOR_RETRIES + 1
+    many = _AUTHOR_ERRORS_PER_ATTEMPT + 7
+    # ``many`` validator errors on every attempt: one from a dunder name long
+    # enough to exceed the per-error character cap, placed first so it is kept,
+    # then one per import line.
+    noisy = "x = __" + "a" * _AUTHOR_ERROR_CHARS + "__\n" + "\n".join(["import os"] * (many - 1))
+    noisy += "\n" + GOOD_SCRIPT
+    prompts = _record_prompts(monkeypatch, [noisy])
+    svc = WorkflowService(sessions=FakeSessions([]), persist=False)
+
+    out = await svc.author("x")
+
+    assert out["ok"] is False
+    assert len(prompts) == attempts
+    assert len(out["errors"]) == attempts * (_AUTHOR_ERRORS_PER_ATTEMPT + 1)
+    for n in range(1, attempts + 1):
+        prefix = f"attempt {n}/{attempts}: "
+        kept = [e for e in out["errors"] if e.startswith(prefix)]
+        assert len(kept) == _AUTHOR_ERRORS_PER_ATTEMPT + 1
+        assert kept[-1] == f"{prefix}+{many - _AUTHOR_ERRORS_PER_ATTEMPT} more errors"
+        for error in kept:
+            assert len(error) <= len(prefix) + _AUTHOR_ERROR_CHARS
+        assert any(len(error) == len(prefix) + _AUTHOR_ERROR_CHARS for error in kept)
+    # The retry prompt still carries every validator error, untruncated.
+    assert prompts[1].count("'import os' is not allowed") == many - 1
+    assert "a" * _AUTHOR_ERROR_CHARS in prompts[1]
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        "import os\n" + GOOD_SCRIPT,
+        GOOD_SCRIPT.replace("async def workflow(ctx):", "async def workflow(ctx)"),
+    ],
+    ids=["validator-error", "mid-file-syntax-error"],
+)
+async def test_author_retry_keeps_invalid_wording_for_a_complete_script(
+    monkeypatch, invalid
+) -> None:
+    prompts = _record_prompts(monkeypatch, [invalid, GOOD_SCRIPT], stop_reason="end_turn")
+    svc = WorkflowService(sessions=FakeSessions([]), persist=False)
+
+    out = await svc.author("x")
+
+    assert out["ok"] is True
+    assert "INVALID" in prompts[1]
+    assert "CUT OFF" not in prompts[1]
+
+
+async def test_author_failure_reports_every_attempts_error(monkeypatch) -> None:
+    from kiro_crew.workflows.service import _AUTHOR_RETRIES
+
+    attempts = _AUTHOR_RETRIES + 1
+    _record_prompts(monkeypatch, _CUT_OFF_REPLIES[:attempts])
+    svc = WorkflowService(sessions=FakeSessions([]), persist=False)
+
+    out = await svc.author("x")
+
+    assert out["ok"] is False
+    assert len(out["errors"]) == attempts
+    assert "'[' was never closed" in out["errors"][0]
+    assert "unterminated string literal" in out["errors"][1]
+    assert "expected an indented block" in out["errors"][2]
+    for n, error in enumerate(out["errors"], start=1):
+        assert error.startswith(f"attempt {n}/{attempts}: syntax error:")
+
+
 async def test_author_strips_code_fence(monkeypatch) -> None:
     fenced = "```python\n" + GOOD_SCRIPT + "```"
     _patch_stream(monkeypatch, [fenced])
@@ -1283,6 +1455,19 @@ async def test_start_from_intent_authoring_failure_is_failed_run(monkeypatch) ->
     assert "run_id" in out
     snap = await _wait_terminal(svc, out["run_id"])
     assert snap["status"] == "failed"
+
+
+async def test_start_from_intent_failure_error_lists_every_attempt(monkeypatch) -> None:
+    """The run's failure text names each attempt's error, not only the last."""
+    _record_prompts(monkeypatch, _CUT_OFF_REPLIES)
+    svc = WorkflowService(sessions=FakeSessions([]), persist=False)
+    out = await svc.start_from_intent("a large multi-phase intent")
+    snap = await _wait_terminal(svc, out["run_id"])
+    assert snap["status"] == "failed"
+    error = snap["error"] or ""
+    for n in (1, 2, 3):
+        assert f"attempt {n}/3: syntax error:" in error
+    assert "'[' was never closed" in error
 
 
 async def test_start_from_intent_requires_intent() -> None:
