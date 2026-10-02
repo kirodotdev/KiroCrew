@@ -146,6 +146,9 @@ _LOADER_MEMBERS = {
         run_skill_lifecycle scoped_skills search_skills search_skills_report
         set_inject_on_trigger set_pinned split_triggered stage_skill_candidate sync_builtins trigger_hint
         update_auto_skill update_skill
+        _approval_meta _bounded_catalog_entries _list_row_skip_reason _pending_entry
+        _read_pending_meta_checked _snapshot_row_checker list_pending_skills_bounded
+        list_skills_bounded
     """,
     "static": """
         _auto_slug_from_name _candidate_has_symlink _catalog_fingerprints_for
@@ -173,7 +176,7 @@ _LOADER_SIGNATURES = {
     "_auto_slug_from_name": "(name: 'str') -> 'str'",
     "_body_hits": "(self, skills: 'list[dict]', terms: 'Iterable[str]', live_keys: 'list[str]', project_dir: 'str | Path | None') -> 'dict[str, int]'",
     "_body_matches": "(self, skills: 'list[dict]', terms: 'Iterable[str]', live_keys: 'list[str]', project_dir: 'str | Path | None') -> 'tuple[dict[str, set[str]], bool]'",
-    "_cached_frontmatter": "(self, path: 'Path', mtime: 'float | None' = None, *, within: 'str | None', canonical_root: 'str | None' = None) -> 'dict[str, str]'",
+    "_cached_frontmatter": "(self, path: 'Path', mtime: 'float | None' = None, *, within: 'str | None', canonical_root: 'str | None' = None, max_bytes: 'int | None' = None, refusal_reasons: 'list[str] | None' = None) -> 'dict[str, str]'",
     "_candidate_has_symlink": "(pdir: 'Path') -> 'bool'",
     "_candidate_layout_findings_at": "(self, root_fd: 'int') -> 'list[str]'",
     "_candidate_layout_ok": "(self, src: 'Path', name: 'str') -> 'bool'",
@@ -214,7 +217,7 @@ _LOADER_SIGNATURES = {
     "_read_enumerated_skill_bytes": "(self, path: 'Path', within: 'str | None', *, max_bytes: 'int | None' = None, refusal_reasons: 'list[str] | None' = None, canonical_root: 'str | None' = None) -> 'bytes | None'",
     "_read_exact_key": "(self, key: 'str', *, only: 'list[str] | None', project_dir: 'str | Path | None', max_bytes: 'int') -> '_ExactRead'",
     "_read_global_skill_text": "(self, path: 'Path', max_bytes: 'int | None', *, canonical_root: 'str | None' = None, refusal_reasons: 'list[str] | None' = None) -> 'str | None'",
-    "_readable_frontmatter": "(self, path: 'Path', *, within: 'str | None', mtime: 'float | None' = None, canonical_root: 'str | None' = None) -> 'dict[str, str] | None'",
+    "_readable_frontmatter": "(self, path: 'Path', *, within: 'str | None', mtime: 'float | None' = None, canonical_root: 'str | None' = None, max_bytes: 'int | None' = None, refusal_reasons: 'list[str] | None' = None) -> 'dict[str, str] | None'",
     "_read_pending_meta": "(self, slug: 'str') -> 'dict'",
     "_recency_boost": "(self, path_str: 'str', fingerprint: 'str' = '') -> 'float'",
     "_record_use": "(self, key: 'str') -> 'None'",
@@ -265,7 +268,15 @@ _LOADER_SIGNATURES = {
     "list_archived_auto_skills": "(self) -> 'list[dict]'",
     "list_auto_skills": "(self) -> 'list[dict]'",
     "list_pending_skills": "(self) -> 'list[dict]'",
-    "list_skills": "(self, project_dir: 'str | Path | None' = None, *, _entries: 'list[_ScopedSkillEntry] | None' = None) -> 'list[dict]'",
+    "list_skills": "(self, project_dir: 'str | Path | None' = None, *, _entries: 'list[_ScopedSkillEntry] | None' = None, _max_file_bytes: 'int | None' = None, _refused: 'dict[str, str] | None' = None) -> 'list[dict]'",
+    "list_skills_bounded": "(self, project_dir: 'str | Path | None' = None) -> 'tuple[list[dict], int]'",
+    "list_pending_skills_bounded": "(self) -> 'tuple[list[dict], int]'",
+    "_approval_meta": "(self, slug: 'str') -> 'dict'",
+    "_bounded_catalog_entries": "(self, key: 'str') -> 'tuple[list[_ScopedSkillEntry], int] | None'",
+    "_list_row_skip_reason": "(self, entry: '_ScopedSkillEntry') -> 'str | None'",
+    "_pending_entry": "(self, child: 'Path') -> 'dict | None'",
+    "_read_pending_meta_checked": "(self, slug: 'str') -> 'dict | None'",
+    "_snapshot_row_checker": "(self, project_key: 'str') -> 'Callable[[str, str, str], tuple[str, Path, str | None] | None]'",
     "load_skill": "(self, name: 'str', project_dir: 'str | Path | None' = None, *, max_bytes: 'int | None' = None, refusal_reasons: 'list[str] | None' = None) -> 'str | None'",
     "pending_candidate_is_staged": "(self, slug: 'str') -> 'bool'",
     "preview_pending_update": "(self, slug: 'str') -> 'dict | None'",

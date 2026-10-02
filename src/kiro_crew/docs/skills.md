@@ -51,6 +51,33 @@ Instructions, examples, and reference material that the agent reads when this sk
 | `inject_on_trigger` | No | Defaults to `true`. For non-project skills, `false` contributes a one-line pointer instead of the full body. Trusted project skills always inject their body. |
 | `repo_scope` | No | Restricts injection to a session whose active project or an ancestor contains the specified relative path. |
 
+## Inspecting Skills from the CLI
+
+Use the read-only CLI commands to inspect candidates and the live catalog:
+
+```bash
+kirocrew skills list                         # pending candidates (default)
+kirocrew skills list --live                  # active skills
+kirocrew skills list --all --json            # both sets as JSON
+kirocrew skills show <slug>                  # body, metadata, validation status
+```
+
+Skill-derived output is redacted as stored, then again after terminal controls and invisible
+characters are removed, so a split credential is still hidden.
+Each `SKILL.md` and helper-script line starts with `| ` so candidate text cannot imitate the
+command's validation section. `show` uses the dashboard's own bounded detail read. It prints a
+candidate whole or not at all: a candidate holding a link, a hard link, an oversized file or text
+that is not UTF-8 exits `candidate_unreadable` with nothing printed. A single overlong line is
+shortened with `…` when printed. `.meta.json` is read with a 64 KiB no-link cap. `list` reads a
+larger, hard-linked or too-deeply-nested file as empty metadata; `show` refuses that candidate as
+`candidate_unreadable`, and approving it is refused. `list` shows a candidate whose directory is a
+link without reading anything through it, and reads at most 500 skills per section, counting the
+rest.
+The validation block comes from the loader's original-byte, fail-closed verdict. If that verdict
+cannot be computed, the CLI reports `status: unavailable` rather than a clean result. A
+filesystem read failure produces a coded error without a traceback. Approve or dismiss a candidate
+in **Skills → Pending review** in the dashboard; the CLI does not expose those mutations.
+
 ## Creating Skills
 
 ### Via Dashboard

@@ -53,7 +53,7 @@ import logging
 import threading
 import time
 from pathlib import Path
-from typing import Iterable, NamedTuple, Sequence
+from typing import Callable, Iterable, NamedTuple, Sequence
 
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
@@ -75,10 +75,19 @@ _SCHEMA_VERSION = 7
 #: let the caller read files this once rather than block a chat turn on a lock.
 _BUSY_TIMEOUT_SECS = 2.0
 
+#: Paths per ``WHERE path IN (...)`` read, under SQLite's bound-parameter limit.
+_METADATA_READ_CHUNK = 500
+
 #: Above this size, decline the index for the current search so the caller uses
 #: the legacy full-body reader. Indexing only a prefix would silently hide terms
 #: later in an otherwise valid global skill.
 _MAX_INDEXED_BODY_BYTES = 1_000_000
+
+#: Cached frontmatter is derived from a listing-bounded SKILL.md read. Apply this
+#: ceiling in SQLite before Python retains or decodes the value, because the
+#: crew-home index is agent-writable and a forged row must be a cache miss. The
+#: listing facade imports the same name for its source-file read bound.
+LISTING_ROW_MAX_FILE_BYTES = 1024 * 1024
 
 #: Ceilings on what a stored CATALOG may claim. The index is an agent-writable
 #: crew-home leaf, so its row count and field widths are adversary-controlled, and
@@ -332,24 +341,51 @@ class SkillSearchIndex:
 
     # ── writing ──
 
-    def metadata_snapshot(self) -> dict[str, tuple[str, dict]]:
-        """One bulk read of derived global metadata; project grants never enter it."""
+    def metadata_snapshot(self, paths: Sequence[str] | None = None) -> dict[str, tuple[str, dict]]:
+        """Read derived global metadata; project grants never enter it.
+
+        ``paths`` limits the read to those rows, so a bounded caller loads only
+        the rows it will render. ``None`` reads every row.
+        """
         with self._lock:
             db = self._db()
             if db is None:
                 return {}
             try:
+                queries: list[tuple[str, tuple[object, ...]]]
+                if paths is None:
+                    queries = [
+                        (
+                            "SELECT path, fingerprint, metadata FROM skill_metadata "
+                            "WHERE length(CAST(metadata AS BLOB)) <= ?",
+                            (LISTING_ROW_MAX_FILE_BYTES,),
+                        )
+                    ]
+                else:
+                    wanted = list(dict.fromkeys(paths))
+                    # SQLite caps bound parameters per statement, so read in chunks.
+                    queries = [
+                        (
+                            "SELECT path, fingerprint, metadata FROM skill_metadata "
+                            "WHERE length(CAST(metadata AS BLOB)) <= ?"
+                            f" AND path IN ({','.join('?' * len(chunk))})",
+                            (LISTING_ROW_MAX_FILE_BYTES, *chunk),
+                        )
+                        for chunk in (
+                            wanted[i : i + _METADATA_READ_CHUNK]
+                            for i in range(0, len(wanted), _METADATA_READ_CHUNK)
+                        )
+                    ]
                 result = {}
-                for path, fingerprint, raw in db.execute(
-                    "SELECT path, fingerprint, metadata FROM skill_metadata"
-                ):
-                    meta = json.loads(raw)
-                    if isinstance(meta, dict) and all(
-                        isinstance(k, str) and isinstance(v, str) for k, v in meta.items()
-                    ):
-                        result[path] = (fingerprint, meta)
+                for sql, params in queries:
+                    for path, fingerprint, raw in db.execute(sql, params):
+                        meta = json.loads(raw)
+                        if isinstance(meta, dict) and all(
+                            isinstance(k, str) and isinstance(v, str) for k, v in meta.items()
+                        ):
+                            result[path] = (fingerprint, meta)
                 return result
-            except (sqlite3.Error, ValueError):
+            except (sqlite3.Error, ValueError, RecursionError):
                 return {}
 
     def store_metadata(self, rows: Sequence[tuple[str, str, dict]]) -> bool:
@@ -483,6 +519,56 @@ class SkillSearchIndex:
                 return rows, float(scope_row[0])
             except (sqlite3.Error, ValueError, TypeError, MemoryError):
                 return None
+
+    def scan_catalog_snapshot(
+        self, scope: str, visit: Callable[[str, str, str], bool]
+    ) -> bool | None:
+        """Stream *scope*'s stored rows to *visit* in ``ordinal`` order, one at a time.
+
+        The bounded counterpart of :meth:`catalog_snapshot` for a caller that shows
+        only the first rows and counts the rest: no row list is built, so memory
+        stays constant however many rows are stored. One statement under the index
+        lock is one consistent read, so a concurrent ``store_catalog`` cannot splice
+        two enumerations into one answer.
+
+        *visit* returns ``False`` to refuse the whole snapshot. ``True`` means every
+        row was visited. ``False`` means there is no trustworthy snapshot for this
+        scope or a row exceeded the catalog limits. ``None`` means the database is
+        unavailable, so a caller may serve an already-published in-memory catalog.
+        """
+        with self._lock:
+            db = self._db()
+            if db is None:
+                return None
+            try:
+                if (
+                    db.execute(
+                        "SELECT 1 FROM skill_catalog_scope WHERE scope = ?", (scope,)
+                    ).fetchone()
+                    is None
+                ):
+                    return False
+                cursor = db.execute(
+                    "SELECT key, path, confine_root FROM skill_catalog "
+                    "WHERE scope = ? ORDER BY ordinal LIMIT ?",
+                    (scope, _MAX_CATALOG_ROWS + 1),
+                )
+                seen = 0
+                for key, path, confine_root in cursor:
+                    seen += 1
+                    fields = (str(key), str(path), str(confine_root))
+                    if seen > _MAX_CATALOG_ROWS or any(
+                        len(field) > _MAX_CATALOG_FIELD_CHARS for field in fields
+                    ):
+                        logger.warning("skill-search-index: refusing a catalog over its limits")
+                        return False
+                    if not visit(*fields):
+                        return False
+                return True
+            except sqlite3.Error:
+                return None
+            except (ValueError, TypeError, MemoryError):
+                return False
 
     def store_catalog(
         self, scope: str, rows: Sequence[tuple[str, str, str]], *, epoch: int | None
