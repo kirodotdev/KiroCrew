@@ -6181,6 +6181,27 @@ class TestSeedDispatch:
         mock_gateway.assert_called_once()
         assert order == ["disarm", "gateway"]
 
+    def test_gateway_dispatch_line_buffers_stdout_before_the_gateway_starts(self, monkeypatch):
+        """Every gateway launcher reaches this branch, and the first status
+        print happens inside the gateway coroutine, so the stdout seam must run
+        here, once, before that coroutine exists."""
+        monkeypatch.setattr(sys, "argv", ["kirocrew", "gateway"])
+        order: list[str] = []
+        mock_gateway = MagicMock(side_effect=lambda **_kw: order.append("gateway") or object())
+        with (
+            patch(
+                "kiro_crew.platform_compat.ensure_line_buffered_stdout",
+                side_effect=lambda: order.append("line-buffer"),
+            ) as line_buffer,
+            patch("kiro_crew.cli_server._gateway", mock_gateway),
+            patch("kiro_crew.cli.asyncio.run"),
+        ):
+            from kiro_crew.cli import main
+
+            main()
+        line_buffer.assert_called_once_with()
+        assert order == ["line-buffer", "gateway"]
+
     def test_seed_calls_seed_cmd(self, monkeypatch):
         """When --seed is provided, seed_cmd should be called before gateway."""
         monkeypatch.setattr(sys, "argv", ["kirocrew", "gateway", "--seed", "demo"])

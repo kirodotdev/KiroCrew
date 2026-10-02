@@ -265,7 +265,7 @@ gateway constructs every Slack client with `SLACK_BOT_TOKEN`; it does not read
 or store the user token.
 
 ### `run_gateway(cfg: KiroCrewConfig, *, no_dashboard=False, no_crons=False) -> None`
-Starts the Socket Mode listener. Blocks until SIGINT/SIGTERM. When `no_crons=True`, the `CronService` is instantiated but not started — cron jobs are visible in the dashboard but not executed. Use for multi-instance setups where a single primary instance handles cron execution. On shutdown, calls `dashboard_state.close_all_ws()` before `AppRunner.cleanup()` to prevent 30s hang from blocked WebSocket `async for msg` loops.
+Starts the Socket Mode listener. Blocks until SIGINT/SIGTERM. When `no_crons=True`, the `CronService` is instantiated but not started — cron jobs are visible in the dashboard but not executed. Use for multi-instance setups where a single primary instance handles cron execution. On shutdown, calls `dashboard_state.close_all_ws()` before `AppRunner.cleanup()` to prevent 30s hang from blocked WebSocket `async for msg` loops. Its `👻` status lines are plain `print()` calls; the `gateway` entrypoint line-buffers a non-terminal stdout once before this runs, so they reach a service manager's log as they are printed — the contract is in [cli](cli.md#gateway-stdout-is-line-buffered-off-a-terminal).
 
 ### Restart after update
 

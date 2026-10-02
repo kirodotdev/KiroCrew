@@ -796,6 +796,41 @@ def ensure_utf8_console() -> None:
             pass
 
 
+def ensure_line_buffered_stdout() -> None:
+    """Make every ``print()`` reach a non-terminal stdout as it is printed.
+
+    CPython line-buffers ``sys.stdout`` only when it is attached to a terminal.
+    A pipe or a file -- the journal socket under systemd, the launchd stdout
+    file, the Desktop supervisor's log descriptor, a detached gateway's own
+    ``gateway.log`` -- gets a block buffer that drains when it fills or when
+    the interpreter exits cleanly, so a status line printed at boot surfaces
+    hours late, stamped with the stop time, or not at all after a kill or an
+    ``os.execv`` (which flushes nothing).  Switching the stream to line
+    buffering once is the single seam every status print goes through; the
+    lines themselves and their destination do not change.
+
+    A terminal is left untouched: the interpreter already line-buffers it, and
+    skipping ``reconfigure`` there spares even its flush.  ``sys.stderr`` is
+    not touched either, because CPython line-buffers it whatever it is
+    attached to, and :func:`ensure_utf8_console`'s fallback wrapper keeps it
+    that way.
+
+    Best-effort: a stream that is absent (``pythonw``), closed, or not a
+    ``TextIOWrapper`` (a test's ``StringIO``, a plain object left by a launcher
+    up a multi-process spawn chain) is left as it is.  Boot never fails over
+    its console.
+    """
+    stream = getattr(sys, "stdout", None)
+    if stream is None:
+        return
+    try:
+        if stream.isatty():
+            return
+        stream.reconfigure(line_buffering=True)
+    except (AttributeError, ValueError, OSError):
+        pass
+
+
 # ---------------------------------------------------------------------------
 # File locking
 # ---------------------------------------------------------------------------

@@ -1009,6 +1009,55 @@ runtime that still ships the API keeps the mitigation. Without that guard the
 Linux pidfd branch raised `AttributeError` and `kirocrew gateway` died before
 binding its port, while every other subcommand kept working.
 
+### Gateway stdout is line-buffered off a terminal
+
+`platform_compat.ensure_line_buffered_stdout()` runs once on the **`gateway`
+command path only**, as the first statement of the dispatch branch, before the
+first status line prints. The gateway's `👻` status lines (`Checking for
+updates…`, `Probing MCP servers…`, `Kiro Crew gateway starting…`, the
+update-check outcome, `Shutting down…`) are plain `print()` calls. CPython
+line-buffers `sys.stdout` only when it is a terminal; a pipe or a file gets a
+block buffer that drains when it fills or when the interpreter exits cleanly.
+Every service launcher hands the gateway that kind of stdout — the journal
+socket under `systemd`, the launchd `gateway.log` file, the Desktop
+supervisor's log descriptor, `_spawn_detached_gateway`'s own `gateway.log` —
+so without this seam a status line reaches the log when the process stops,
+stamped with the stop time, or never after a `SIGKILL` or an in-app
+`os.execv` (which flushes nothing), while `logging` records from the same
+process arrive on time.
+
+The contract:
+
+- When `sys.stdout.isatty()` is false, the stream is reconfigured with
+  `line_buffering=True`. Each `print()` reaches the launcher's log as it is
+  printed, so the log stamps it with the time it was printed, and a kill or an
+  exec loses nothing already printed. One `write(2)` per line; the gateway
+  prints a few dozen lines per lifetime.
+- A terminal is not touched. It is line-buffered already, and the seam skips
+  even the flush `reconfigure` would do.
+- `sys.stderr` needs nothing: CPython line-buffers it on every attachment, and
+  `ensure_utf8_console()`'s Windows fallback wrapper is built line-buffered.
+- A stream that cannot be reconfigured — absent under `pythonw`, closed, or not
+  a `TextIOWrapper` (a plain object a launcher left up a spawn chain, a test's
+  `StringIO`) — is left as it is. The gateway never fails to boot over its
+  console.
+- Independent of `ensure_utf8_console()`, which keeps the encoding job and
+  runs first, at the top of `main()`. Whichever shape it leaves stdout in on
+  Windows (reconfigured in place, or re-wrapped — the re-wrap is already
+  line-buffered), this seam reconfigures or finds nothing to do.
+- ONE seam, deliberately: `flush=True` on each `print()` is a rule every new
+  print has to remember; `PYTHONUNBUFFERED=1` in `service_environment()`
+  reaches newly generated Linux units only, while installed units, launchd, the
+  Desktop app and a detached gateway keep block buffering; and converting the
+  prints to `logging` changes what the log carries. What is printed, and where,
+  does not change.
+
+Pinned by `test_platform_compat.py::TestLineBufferedStdout` (a non-tty
+`TextIOWrapper` holds the bytes of one unflushed `print()`; a tty stream is
+not reconfigured; a stream without `reconfigure` does not raise) and
+`test_cli.py::TestSeedDispatch::test_gateway_dispatch_line_buffers_stdout_before_the_gateway_starts`
+(the dispatch calls the seam once, before the gateway coroutine exists).
+
 ### Linux gateway heap reclamation
 
 The event-loop heartbeat offers a self-gating maintenance object a tick every
