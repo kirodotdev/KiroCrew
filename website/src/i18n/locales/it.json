@@ -63,6 +63,7 @@
     "source_views": "le viste pubblicate dagli agenti nella «Dashboard» di una sessione",
     "stale": "Alcune fonti non sono disponibili. L’ultimo stato noto potrebbe non essere aggiornato.",
     "no_input": "Niente in questa categoria richiede il tuo intervento.",
+    "options_question": "La sessione attende la tua scelta.",
     "open_session": "Apri sessione",
     "open_to_answer": "Questa vista non può verificare la richiesta. Apri la sessione per esaminarla e rispondere.",
     "explicit_input": "Solo il tuo invio esplicito trasmette una risposta o un’approvazione.",

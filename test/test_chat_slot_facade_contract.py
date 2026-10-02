@@ -65,6 +65,7 @@ _TO_DICT_KEYS = (
     "todo",
     "mcp_report",
     "has_options",
+    "options_ts",
     "options",
     "prompt_preview",
     "trust",

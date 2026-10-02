@@ -63,6 +63,7 @@
     "source_views": "les vues publiées par les agents dans le « Tableau de bord » d’une session",
     "stale": "Certaines sources sont indisponibles. Le dernier état connu peut être obsolète.",
     "no_input": "Rien dans cette catégorie ne demande ton attention.",
+    "options_question": "La session attend ton choix.",
     "open_session": "Ouvrir la session",
     "open_to_answer": "Cette vue ne peut pas vérifier la demande. Ouvre la session pour l’examiner et répondre.",
     "explicit_input": "Seule ta validation explicite envoie une réponse ou une approbation.",

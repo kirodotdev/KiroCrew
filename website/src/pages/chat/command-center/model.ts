@@ -37,7 +37,17 @@ export interface PendingQuestion {
   ask_id?: string
   card_id?: string
   native?: boolean
+  /** Built from the session's newest reply ending in `[OPTIONS: ...]`, not from a
+   * question card. Answering sends the picked labels as an ordinary message,
+   * exactly like the composer's follow-up chips; there is no card to dismiss.
+   * Its question text is empty here and translated at render (`questionText`). */
+  followUp?: boolean
   questions: { question: string; header?: string; options: { label: string; description?: string }[]; multiSelect?: boolean }[]
+}
+/** A follow-up ask carries no agent wording; its heading is ours, translated at
+ * render so a language switch reaches it without a data refresh. */
+export function questionText(question: PendingQuestion, index = 0): string {
+  return question.followUp ? i18nT('commandCenter.options_question') : question.questions[index]?.question || ''
 }
 export interface PendingApproval {
   id: string
@@ -138,6 +148,21 @@ export function buildCommandCenter(source: CommandCenterSources) {
   for (const q of source.questions) {
     const slot = slotKey(q.slot)
     if (keys.has(slot)) addAttention({ id: `question:${slot}:${q.ask_id || q.card_id || slot}`, slot, kind: 'question', question: q })
+  }
+  // An idle session whose newest reply ends in `[OPTIONS: ...]` is waiting on
+  // the user's choice just as a question card is; the sessions board already
+  // files it under "waiting" (`inferLane`). `has_options` is computed from the
+  // NEWEST reply only, so an ask a later turn talked over never comes back.
+  // A real question card for the same session wins: it is the richer ask. A
+  // queued prompt may already be the answer: it writes no transcript row until
+  // it runs, so `has_options` stays true and the ask must not be offered twice.
+  for (const s of slots) {
+    // A model-authored label sent bare would be parsed as a slash command.
+    const labels = s.has_options ? (s.options || []).filter(label => label && !label.trimStart().startsWith('/')) : []
+    if (!labels.length || s.running || s.interrupted || (s.queue_depth ?? 0) > 0
+      || attention.some(a => a.slot === s.key && a.kind === 'question')) continue
+    addAttention({ id: `options:${s.key}:${s.options_ts || ''}:${labels.join('\u0000')}`, slot: s.key, kind: 'question',
+      question: { slot: s.key, followUp: true, questions: [{ question: '', options: labels.map(label => ({ label })) }] } })
   }
   for (const s of slots) {
     const approval = s.pending_approval_info

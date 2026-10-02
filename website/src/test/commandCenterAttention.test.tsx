@@ -284,6 +284,37 @@ describe('task dashboard input routing', () => {
     expect(send).toHaveBeenCalledWith({ slot: 'child', message: 'Which scope?: Backend', ...(steer ? { steer: true } : {}) })
   })
 
+  it('sends only the latest trailing [OPTIONS:] choice as a bare label when the user changes their mind', async () => {
+    const send = vi.spyOn(transport, 'sendTurn').mockResolvedValue({ status: 'dispatched', body: {} })
+    const dismiss = vi.spyOn(api, 'dismissQuestionCard')
+    const [item] = buildCommandCenter({ root: 'child', slots: [{ key: 'child', messages: 2, running: false, has_options: true, options: ['Fix all 3', 'Keep it'] }],
+      subagents: {}, workflows: [], questions: [], approvals: [] }).attention
+    renderWithProviders(<AttentionCard item={item} title="Worker" />)
+    expect(screen.getByText('The session is waiting for your choice.')).toBeVisible()
+    fireEvent.click(screen.getByText('Fix all 3'))
+    fireEvent.click(screen.getByText('Keep it'))
+    fireEvent.click(screen.getByRole('button', { name: 'Send answer' }))
+    await screen.findByText('Your response was recorded.')
+    expect(send).toHaveBeenCalledWith({ slot: 'child', message: 'Keep it' })
+    expect(dismiss).not.toHaveBeenCalled()
+  })
+
+  it('keeps an in-progress options pick through a language switch', async () => {
+    const { i18next } = await import('../i18n/all')
+    const [item] = buildCommandCenter({ root: 'child', slots: [{ key: 'child', messages: 2, running: false, has_options: true, options: ['Fix all 3', 'Keep it'] }],
+      subagents: {}, workflows: [], questions: [], approvals: [] }).attention
+    const view = renderWithProviders(<AttentionCard item={item} title="Worker" />)
+    fireEvent.click(screen.getByText('Fix all 3'))
+    expect(screen.getByRole('button', { name: 'Send answer' })).toBeEnabled()
+    try {
+      await act(async () => { await i18next.changeLanguage('ja') })
+      view.rerender(<AttentionCard item={{ ...item, question: { ...item.question!, questions: item.question!.questions.map(q => ({ ...q })) } }} title="Worker" />)
+      expect(screen.getByText('Fix all 3').closest('[aria-pressed="true"], [aria-checked="true"]')).not.toBeNull()
+    } finally {
+      await act(async () => { await i18next.changeLanguage('en') })
+    }
+  })
+
   it('treats a card the answer already retired as done, not as an error', async () => {
     vi.spyOn(transport, 'sendTurn').mockResolvedValue({ status: 'dispatched', body: { ok: true } })
     const dismiss = vi.spyOn(api, 'dismissQuestionCard').mockRejectedValue(new ApiError(404, 'no pending question card for that slot and card_id'))

@@ -4,7 +4,7 @@ import { PanelRightOpen } from 'lucide-react'
 import { Btn } from '../../../components/ui'
 import ErrorNotice from '../../../components/ErrorNotice'
 import { fmtNumber } from '../../../i18n/format'
-import { approvalTitle, runTitle, type AttentionItem, type CommandCenterModel, type RunNode } from './model'
+import { approvalTitle, questionText, runTitle, type AttentionItem, type CommandCenterModel, type RunNode } from './model'
 import type { Tile } from './StatusTiles'
 
 /** Rows one list shows before the rest is left to the side panel. */
@@ -89,9 +89,12 @@ export default function TileList({ tile, data, onOpen }: { tile: Tile; data: Dat
       // One row is one request, so its badge is singular: the plural tab names
       // (Approvals, Questions) stay with the panel's tabs.
       const kind = item.kind === 'approval' ? t('commandCenter.badge_approval') : item.kind === 'question' ? t('commandCenter.badge_question') : t('commandCenter.state_needs_input')
+      // A follow-up ask has no wording of its own, so its row leads with the
+      // session it belongs to; two waiting sessions must read as two rows.
+      const followUp = !!item.question?.followUp && !!node
       const title = item.approval ? approvalTitle(item.approval) || t('commandCenter.approval_needed')
-        : item.question?.questions[0]?.question || (node ? runTitle(node) : '')
-      return row(item.id, title, undefined, kind)
+        : followUp ? runTitle(node!) : (item.question && questionText(item.question)) || (node ? runTitle(node) : '')
+      return row(item.id, title, followUp ? questionText(item.question!) : undefined, kind)
     })
     if (!rows.length) rows = [<li key="empty" className="text-[12px] text-muted">{t('commandCenter.no_input')}</li>]
   }

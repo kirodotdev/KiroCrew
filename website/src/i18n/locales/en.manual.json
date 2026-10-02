@@ -63,6 +63,7 @@
     "source_views": "views agents published to a session’s “Dashboard”",
     "stale": "Some sources are unavailable. The last known state may be out of date.",
     "no_input": "Nothing in this category is waiting for you.",
+    "options_question": "The session is waiting for your choice.",
     "open_session": "Open session",
     "open_to_answer": "This view cannot verify the request. Open the session to review and respond.",
     "explicit_input": "Only your explicit submission sends an answer or approval.",

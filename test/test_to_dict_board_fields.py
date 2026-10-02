@@ -19,7 +19,33 @@ def test_options_from_assistant():
     d = s.to_dict()
     assert d["has_options"] is True
     assert d["options"] == ["A", "B", "C"]
+    assert d["options_ts"] == "t1"
     assert "[OPTIONS:" not in d["prompt_preview"]
+
+
+def test_options_ts_stays_on_reply_after_system_notice():
+    s = _slot({"role": "assistant", "content": "Pick one.\n[OPTIONS: A | B]", "ts": "t1"})
+    before = s.to_dict()
+    s.messages.append(
+        {
+            "role": "assistant",
+            "content": "Session reloaded.",
+            "meta": {"kind": "session_reload"},
+            "ts": "t2",
+        }
+    )
+    after = s.to_dict()
+    assert before["last_ts"] == "t1"
+    assert after["last_ts"] == "t2"
+    assert after["has_options"] is True
+    assert after["options"] == before["options"] == ["A", "B"]
+    assert after["options_ts"] == before["options_ts"] == "t1"
+
+
+def test_options_ts_empty_without_options():
+    assert _slot().to_dict()["options_ts"] == ""
+    s = _slot({"role": "assistant", "content": "Done.", "ts": "t1"})
+    assert s.to_dict()["options_ts"] == ""
 
 
 def test_no_options_when_user_last():
@@ -30,6 +56,7 @@ def test_no_options_when_user_last():
     d = s.to_dict()
     assert d["has_options"] is False
     assert d["options"] == []
+    assert d["options_ts"] == ""
 
 
 def test_waiting_for_input_assistant_last():

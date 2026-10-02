@@ -63,6 +63,7 @@
     "source_views": "as visualizações que os agentes publicaram no “Painel” de uma sessão",
     "stale": "Algumas fontes estão indisponíveis. O último estado conhecido pode estar desatualizado.",
     "no_input": "Nada nesta categoria precisa de você.",
+    "options_question": "A sessão está aguardando sua escolha.",
     "open_session": "Abrir sessão",
     "open_to_answer": "Esta visualização não pode verificar a solicitação. Abra a sessão para revisar e responder.",
     "explicit_input": "Somente seu envio explícito transmite uma resposta ou aprovação.",

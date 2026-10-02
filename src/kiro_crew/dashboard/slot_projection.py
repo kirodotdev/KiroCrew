@@ -253,6 +253,7 @@ class SlotProjection:
         )
         last_msg = ""
         has_options = False
+        options_ts = ""
         options: list[str] = []
         prompt_preview = ""
         last_conv_role = ""
@@ -278,6 +279,7 @@ class SlotProjection:
                             options = parse_options(text)
                             has_options = bool(options)
                             if has_options:
+                                options_ts = str(message.get("ts") or "")
                                 stripped = redact(strip_options(text))
                                 prompt_preview = (
                                     stripped[:240] + "…" if len(stripped) > 240 else stripped
@@ -465,6 +467,7 @@ class SlotProjection:
             # look like it had confirmed a server the session never mounted.
             "mcp_report": slot.mcp_report_payload(),
             "has_options": has_options,
+            "options_ts": options_ts,
             "options": [redact(option) for option in options],
             "prompt_preview": prompt_preview,
             "trust": slot._trust,

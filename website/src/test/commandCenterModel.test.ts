@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildCommandCenter, runTitle, scopedSlots, slotKey, type CommandCenterSources } from '../pages/chat/command-center/model'
+import { buildCommandCenter, questionText, runTitle, scopedSlots, slotKey, type CommandCenterSources } from '../pages/chat/command-center/model'
 import type { ChatSlot, SubagentActivity } from '../types'
 
 const slot = (key: string, extra: Partial<ChatSlot> = {}): ChatSlot => ({ key, messages: 0, running: false, ...extra })
@@ -45,6 +45,42 @@ describe('command center projection', () => {
     }))
     expect(model.nodes.map(n => n.id)).toEqual(['session:root', 'session:child', 'session:grandchild'])
     expect(model.attention.map(a => a.id)).toEqual(['question:child:q1'])
+  })
+  it('lists an idle session\'s trailing [OPTIONS:] ask as a question, unless a real card, live turn or queued answer outranks it', () => {
+    const asking = { has_options: true, options: ['Keep the blur', 'Make it clear'] }
+    const model = buildCommandCenter(sources({ slots: [slot('root', asking), slot('child', { created_by: 'root', ...asking, running: true }),
+      slot('stalled', { created_by: 'root', ...asking, interrupted: true }), slot('queued', { created_by: 'root', ...asking, queue_depth: 1 }),
+      slot('carded', { created_by: 'root', ...asking }), slot('other', asking)],
+      questions: [{ slot: 'carded', card_id: 'c', questions: [] }] }))
+    expect(model.attention.map(a => [a.kind, a.slot, !!a.question?.followUp])).toEqual([['question', 'carded', false], ['question', 'root', true]])
+    expect(model.attention[1].question!.questions[0].options.map(o => o.label)).toEqual(['Keep the blur', 'Make it clear'])
+    expect(questionText(model.attention[1].question!)).toBe('The session is waiting for your choice.')
+    expect(model.settled).toBe(false)
+    expect(buildCommandCenter(sources({ slots: [slot('root', { has_options: false, options: ['stale'] })] })).attention).toEqual([])
+  })
+  it.each(['/clear', '  /model x'])('drops the slash-command follow-up label %j while keeping a safe choice', label => {
+    const model = buildCommandCenter(sources({ slots: [slot('root', { has_options: true, options: [label, 'Keep it'] })] }))
+    expect(model.attention).toHaveLength(1)
+    expect(model.attention[0].question!.questions[0].options).toEqual([{ label: 'Keep it' }])
+  })
+  it('omits a follow-up question when every option is a slash command', () => {
+    const model = buildCommandCenter(sources({ slots: [slot('root', { has_options: true, options: ['/clear'] })] }))
+    expect(model.attention).toEqual([])
+  })
+  it('keys identical options separately for each new reply but keeps the same reply stable', () => {
+    const card = (options_ts: string) => buildCommandCenter(sources({ slots: [slot('root', {
+      options_ts, has_options: true, options: ['Keep the blur', 'Make it clear'],
+    })] })).attention[0]
+    const first = '2026-10-01T12:00:00-07:00'
+    const second = '2026-10-01T12:01:00-07:00'
+    expect(card(first).id).toBe(card(first).id)
+    expect(card(first).id).not.toBe(card(second).id)
+  })
+  it('keeps an options question stable when a passive row advances last_ts', () => {
+    const card = (last_ts: string) => buildCommandCenter(sources({ slots: [slot('root', {
+      last_ts, options_ts: '2026-10-01T12:00:00-07:00', has_options: true, options: ['Keep the blur', 'Make it clear'],
+    })] })).attention[0]
+    expect(card('2026-10-01T12:00:00-07:00').id).toBe(card('2026-10-01T12:01:00-07:00').id)
   })
   it('does not loop on cyclic or orphaned creator edges', () => {
     expect(scopedSlots([slot('a', { created_by: 'b' }), slot('b', { created_by: 'a' }), slot('orphan', { created_by: 'missing' })], 'a').map(s => s.key)).toEqual(['a', 'b'])

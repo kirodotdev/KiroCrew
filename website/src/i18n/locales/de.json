@@ -63,6 +63,7 @@
     "source_views": "von Agents veröffentlichte Ansichten im „Dashboard“ einer Sitzung",
     "stale": "Einige Quellen sind nicht verfügbar. Der letzte bekannte Stand kann veraltet sein.",
     "no_input": "In dieser Kategorie wartet nichts auf dich.",
+    "options_question": "Die Sitzung wartet auf deine Auswahl.",
     "open_session": "Sitzung öffnen",
     "open_to_answer": "Diese Ansicht kann die Anfrage nicht verifizieren. Öffne die Sitzung, um sie zu prüfen und zu antworten.",
     "explicit_input": "Erst dein ausdrückliches Absenden übermittelt eine Antwort oder Genehmigung.",

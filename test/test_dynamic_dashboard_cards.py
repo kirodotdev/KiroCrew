@@ -1955,3 +1955,14 @@ def test_cdata_is_kept_as_text_where_the_browser_would_hide_it():
     assert (
         card_lifecycle._html_texts("<math><mi>AKIA<![CDATA[IOSF]]>X</mi></math>")[1] == "AKIAIOSFX"
     )
+
+
+def test_card_prompt_leaves_pending_questions_to_the_host():
+    """The card is a model-written summary; a "Needs you" copy of an ask goes
+    stale on answer and disagrees with the Questions tab, which is the source."""
+    from kiro_crew.dashboard import card_lifecycle
+
+    prompt = " ".join(card_lifecycle._ROOT_PROMPT.split())
+    assert "Do not restate questions, choices or decisions waiting for the user" in prompt
+    assert "Questions tab is the one place they appear" in prompt
+    assert "return replacement html without it" in prompt
