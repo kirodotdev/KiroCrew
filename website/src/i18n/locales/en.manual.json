@@ -6092,7 +6092,13 @@
         "validation_findings": "Validation findings",
         "version_range": "(v{{from}} → v{{to}})",
         "workspace": "workspace",
-        "detail_unreadable": "This candidate's files can't be read safely, so review is unavailable. Dismiss it to remove it from the queue."
+        "detail_unreadable": "This candidate's files can't be read safely, so review is unavailable. Dismiss it to remove it from the queue.",
+        "usage_short": "{{uses}}× · {{when}}",
+        "usage_title": "Loaded {{uses}}× · last loaded {{when}}.",
+        "sort_label": "Sort skills",
+        "sort_default": "Default order",
+        "sort_most_used": "Most used",
+        "sort_recently_used": "Recently used"
       },
       "steeringTab": {
         "delete_confirm": "Delete “{{path}}”?",

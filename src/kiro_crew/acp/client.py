@@ -309,7 +309,7 @@ from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exf
 from kiro_crew.security.credential_sources import tool_output_fingerprints
 from kiro_crew.sel import sel
 from kiro_crew.session_token_sig import schedule_session_token_publish
-from kiro_crew.skill_usage import get_global_skill_read_observer
+from kiro_crew.skill_usage import get_global_skill_read_observer, names_skill_file
 
 logger = logging.getLogger(__name__)
 
@@ -2745,36 +2745,11 @@ _MAX_CONSECUTIVE_EMPTY = 5
 # backstop for the pathological no-permission case).
 _MAX_CACHED_TOOL_PARAMS = 256
 
-#: Basename a skill body lives under. Duplicated from ``skills`` deliberately —
-#: the ACP layer must not import the skills machinery just to test a substring.
-_SKILL_FILE_BASENAME = "SKILL.md"
 
 #: Backstop on the per-session set of tool-call ids already credited as skill
 #: reads. Far above any real turn's distinct skill reads; bounds memory for a
 #: long-lived session at the cost of at most one duplicate credit after a reset.
 _MAX_NOTED_SKILL_READS = 512
-
-
-def _mentions_skill_file(raw_params: dict | None, command: str | None) -> bool:
-    """Whether a tool call's arguments name a skill body at all.
-
-    A cheap pre-filter so observing skill reads costs a substring scan on the
-    overwhelming majority of tool calls, which touch no skill. Scans only string
-    and string-sequence values, since a model-authored argument dict may hold
-    arbitrary shapes.
-    """
-    if isinstance(command, str) and _SKILL_FILE_BASENAME in command:
-        return True
-    if not isinstance(raw_params, dict):
-        return False
-    for value in raw_params.values():
-        if isinstance(value, str):
-            if _SKILL_FILE_BASENAME in value:
-                return True
-        elif isinstance(value, (list, tuple)):
-            if any(isinstance(v, str) and _SKILL_FILE_BASENAME in v for v in value):
-                return True
-    return False
 
 
 # Emitted by kiro-cli as a plain agent_message_chunk when its built-in, non-overridable
@@ -12639,7 +12614,7 @@ class AcpClient:
             return
         raw_params = tool_event.raw_tool_params
         command = tool_event.shell_command
-        if not _mentions_skill_file(raw_params, command):
+        if not names_skill_file(raw_params, command):
             return
         if tool_id:
             if len(self._skill_read_noted) >= _MAX_NOTED_SKILL_READS:

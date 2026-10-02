@@ -2300,6 +2300,10 @@ async def api_skills(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": "Invalid search limit.", "code": "invalid_limit"}, status=400
             )
+        # The skill_search tool reads through POST. The GET read stays for
+        # compatibility, and its reader may be a script or a person, so it
+        # does not count as a model load.
+        model_read = request.method == "POST"
 
         def search():
             slot = _named_slot(state, session_key)
@@ -2321,6 +2325,14 @@ async def api_skills(request: web.Request) -> web.Response:
                 )
                 if isinstance(outcome, SkillReadRefusal):
                     return {"matches": [], "next_offset": None, "refusal": outcome._asdict()}
+                if model_read and offset == 0:
+                    # An exact read hands the model the body it asked for, the
+                    # same delivery a `$name` token credits. A paged read is one
+                    # load, so only the page that starts at the body's first
+                    # line credits it. Search and list rows are candidates, not
+                    # a chosen load, so they credit nothing, even a confined
+                    # project row that carries its body.
+                    skills.credit_skill_reads([key])
                 match: dict[str, Any] = {
                     "key": key,
                     "name": key,

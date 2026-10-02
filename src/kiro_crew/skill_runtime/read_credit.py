@@ -42,6 +42,15 @@ def _tool_read_path_candidates(
                 out.append(value)
             elif isinstance(value, (list, tuple)):
                 out.extend(v for v in value if isinstance(v, str))
+        # kiro-cli's `read` batches its targets. Only a Line operation returns a
+        # file's text: Directory lists names and Image reads `image_paths`.
+        operations = raw_params.get("operations")
+        if isinstance(operations, (list, tuple)):
+            for op in operations:
+                if isinstance(op, dict) and op.get("mode") == "Line":
+                    path = op.get("path")
+                    if isinstance(path, str):
+                        out.append(path)
     if isinstance(command, str) and command:
         for segment in _shell_segments_reading_content(command):
             out.extend(sk._SHELL_SKILL_PATH_RE.findall(segment))
@@ -66,30 +75,6 @@ def _shell_segments_reading_content(command: str) -> list[str]:
                 reading.append(segment)
             break  # only the segment's first bare token is its verb
     return reading
-
-
-def _mentions_skill_basename(raw_params: dict | None, command: str | None) -> bool:
-    """Whether a tool call's arguments name a skill body at all.
-
-    Independent of read intent: used only to tell "this call had nothing to do
-    with skills" apart from "this call named a skill but our read-intent
-    allowlists did not recognise it", which is what a provider tool rename looks
-    like from here.
-    """
-    from kiro_crew import skills as sk  # circular import: the facade imports this module
-
-    if isinstance(command, str) and sk._SKILL_FILE in command:
-        return True
-    if not isinstance(raw_params, dict):
-        return False
-    for value in raw_params.values():
-        if isinstance(value, str):
-            if sk._SKILL_FILE in value:
-                return True
-        elif isinstance(value, (list, tuple)):
-            if any(isinstance(v, str) and sk._SKILL_FILE in v for v in value):
-                return True
-    return False
 
 
 def _served_key_by_realpath(loader: SkillsLoader) -> dict[str, str]:
@@ -152,7 +137,7 @@ def resolve_tool_read_keys(
         # nothing failing, so a call that clearly names a skill yet yields no
         # candidate is logged — the one signal that distinguishes drift from
         # a legitimately non-reading tool call.
-        if _mentions_skill_basename(raw_params, command):
+        if sk.names_skill_file(raw_params, command):
             logger.debug(
                 "skill-read: %r names a skill but is not a content read "
                 "(tool=%r); check the read-intent allowlists if the provider "

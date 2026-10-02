@@ -13384,7 +13384,13 @@
         "validation_findings": "検証結果",
         "version_range": "(v{{from}} → v{{to}})",
         "workspace": "ワークスペース",
-        "detail_unreadable": "この候補のファイルは安全に読み取れないため、レビューできません。却下するとキューから削除されます。"
+        "detail_unreadable": "この候補のファイルは安全に読み取れないため、レビューできません。却下するとキューから削除されます。",
+        "usage_short": "{{uses}}回 · {{when}}",
+        "usage_title": "{{uses}}回読み込み · 最終読み込み: {{when}}。",
+        "sort_label": "スキルの並び替え",
+        "sort_default": "標準の順序",
+        "sort_most_used": "よく使う順",
+        "sort_recently_used": "最近使った順"
       },
       "steeringTab": {
         "always_on_markdown_conventions_injected_into_eve": "エージェントが読む Markdown 規約。適用タイミングは各ファイルのインクルードモードで決まります: 常時、一致するファイルのときだけ、または必要時。グローバルファイルは ~/.kiro/steering にあり、どこでも適用されます。ワークスペースファイルは <project>/.kiro/steering にあり、そのプロジェクトだけに適用されます。",

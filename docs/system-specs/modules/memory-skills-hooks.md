@@ -3640,7 +3640,7 @@ See
 [context management](../../architecture/context-management.md#4-default-agent-vs-other-agents)
 for native view and inherited steering behavior.
 
-**Usage ledger (`skill_usage.py`, `SkillUsageLedger`):** in-memory per-skill hit tally with debounced, atomic persistence to `skill-usage.json` (`SKILL_USAGE_FILENAME`, co-located with the Kiro Crew home). Entries older than a 30-day TTL (`_MAX_AGE_SECS`) are dropped on load/flush so a stale skill stops occupying a top-K slot. Hits are recorded in two places: the **body-delivery loop** in `context.py` (`_record_use`, called only after `load_skill` succeeds and the body is appended to the prompt) and in `resolve_dollar_skills`. However, since `max_triggered` defaults to 0 the body-delivery recorder is inactive in stock config — `$skillname` is the only source of hits, so lazy-load ranking is effectively recency-only unless the trigger matcher is re-enabled (`max_triggered > 0`). A trigger match alone does NOT earn a hit — only actual delivery does, so pointer-only skills and false-positive matches do not inflate the ranking. Best-effort: ledger init failure falls back to recency-only / unweighted ranking without breaking skill loading.
+**Usage ledger (`skill_usage.py`, `SkillUsageLedger`):** in-memory per-skill hit tally with debounced, atomic persistence to `skill-usage.json` (`SKILL_USAGE_FILENAME`, co-located with the Kiro Crew home). Entries older than a 30-day TTL (`_MAX_AGE_SECS`) are dropped on load/flush so a stale skill stops occupying a top-K slot. Hits are recorded wherever a body reaches the model: the **body-delivery loop** in `context.py` (`_record_use`, called only after `load_skill` succeeds and the body is appended to the prompt), `resolve_dollar_skills`, an exact `skill_search` read (below), and direct reads of `SKILL.md` (see **Direct reads**). Since `max_triggered` defaults to 0 the body-delivery recorder is inactive in stock config, so the other three supply the hits unless the trigger matcher is re-enabled (`max_triggered > 0`). A trigger match alone does NOT earn a hit — only actual delivery does, so pointer-only skills and false-positive matches do not inflate the ranking. Best-effort: ledger init failure falls back to recency-only / unweighted ranking without breaking skill loading.
 
 **`skill_search` MCP tool (`kirocrew-core`):** supports `search`, `list` and `read`.
 A signed session resolves its active template and project at the gateway. An
@@ -3800,6 +3800,16 @@ The same signed session, app-slot guard, mapping and project consent determine
 access. An unresolvable bound agent fails closed with HTTP 409 and
 `skill_scope_unavailable`, without falling back to the global catalog.
 
+An exact read that returns a body credits the usage ledger once, at the gateway
+(`credit_skill_reads`), the same delivery a `$name` token credits. A paged read
+is one load, so only the page that starts at line 0 credits it, and a refused
+read credits nothing. Only the POST read the MCP tool sends credits: the GET
+read stays for compatibility, and its reader may be a script or a person. Search and
+list credit nothing, even a confined project row that carries its body: a search
+hit is not a load. The MCP tool's unsigned fallback reads through its own loader
+in the MCP process and credits nothing: that process's tally and the gateway's
+would overwrite each other in the one ledger file.
+
 **Direct reads.** The model reaches most skills by reading `SKILL.md` itself — a
 file-read tool, or `cat` in a shell — which bypasses the loader and so recorded
 nothing. Unrecorded, the ledger described one access route only, pushing
@@ -3820,7 +3830,12 @@ up the ranking. The shell path attributes a verb **per command segment**
 (`_shell_segments_reading_content`), so `cat a.txt && rm x/SKILL.md` does not
 read as a `cat` of the skill; the structured path allowlists content-returning
 tools (`_CONTENT_READ_TOOLS`), so an edit or grep tool carrying a `path` is not
-mistaken for a delivery.
+mistaken for a delivery. kiro-cli's own `read` batches its targets as
+`{"operations": [{"mode": "Line", "path": ...}]}`, and only a `Line` operation
+counts: `Directory` lists names and `Image` reads images. The cheap pre-filter
+that runs before any filesystem work, `names_skill_file` (`skill_usage.py`, shared
+by the ACP client and the loader's rename diagnostic), therefore looks inside the
+objects of a sequence as well as at top-level values.
 
 Reads are attributed through `_served_key_by_realpath()`, which applies the same
 canonical rule as `resolve_ledger_aliases` (real file beats symlink, then
@@ -4260,6 +4275,17 @@ untracked, which is NOT zero — an entry can also age out of the 30-day window.
 Consumers must also join against live skill keys: the ledger retains keys for
 skills that have since moved or been removed, and ranking naively by them puts a
 nonexistent skill first.
+
+`last_used_at` rides beside it: the unix time of the latest delivery, or `None`
+when `deliveries` is `None`. The ledger drops an entry whose time is not finite
+(`NaN`, `Infinity`) when it loads its file, because no TTL can expire it, so no
+consumer sees one and the next flush writes the file without it.
+The Skills list prints both on each row (`12× · 2d ago`, with the exact time in
+the row's tooltip) and can sort by either (Most used, Recently used); its default
+keeps the listing's own order. Neither is a rolling window: hits accumulate while
+a skill stays in use. The 30-day TTL applies when the ledger loads its file at
+gateway start, so a running gateway keeps counting a key that has been idle for
+longer.
 
 It also carries `owned` — whether the `SKILL.md` sits under the directory
 Kiro Crew owns. A skill reached through `skills.extra_paths` still reports

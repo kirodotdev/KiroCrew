@@ -602,6 +602,10 @@ export interface Skill {
    *  its figure historical. `null`/absent means no ledger entry, which is NOT
    *  the same as zero (an entry can also age out of the window). */
   deliveries?: number | null
+  /** Unix time (seconds) of the latest delivery; `null`/absent exactly when
+   *  `deliveries` is. Drives the Skills list's "last used" text and its
+   *  Recently used sort. */
+  last_used_at?: number | null
   /** False when the SKILL.md lives outside the directory Kiro Crew owns (e.g. a
    *  `skills.extra_paths` entry). Such a skill is listed but not ours to rewrite,
    *  so the injection toggle must not be offered — the endpoint refuses it. */
