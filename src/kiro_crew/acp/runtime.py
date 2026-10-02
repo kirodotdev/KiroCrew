@@ -14,6 +14,7 @@ exceptions) keeps working for existing callers and tests.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
 import importlib
 import json
@@ -29,7 +30,7 @@ import weakref  # noqa: F401  (read at call time by session-start admission)
 from collections import deque
 from pathlib import Path
 from types import ModuleType
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, NamedTuple, TypeVar
+from typing import TYPE_CHECKING, Any, AsyncIterator, Awaitable, Callable, NamedTuple, TypeVar
 
 from kiro_crew import acp_tool_gate, agent_scratch, platform_compat, runtime_death
 from kiro_crew.acp import runtime_process_tree, runtime_start
@@ -1022,6 +1023,7 @@ class AcpRuntime:
         memory_mode: str = "persistent",
         tool_search: ToolSearchSettings | None = None,
         shared_scratch: Path | None = None,
+        forward_ssh_auth_sock: bool | None = None,
     ):
         if work_dir:
             self._work_dir = Path(work_dir)
@@ -1077,6 +1079,15 @@ class AcpRuntime:
                 )
         self._model = model
         self._sandbox_mode = sandbox_mode
+        # A FROZEN SSH_AUTH_SOCK-forwarding decision, or None to resolve it at
+        # spawn. The chat-sharing placement reads the operator's consent ONCE
+        # before it acquires a runtime and keys on it, then hands the same value
+        # here so the process it founds forwards exactly what the key promised --
+        # a consent toggled between the read and the spawn cannot desync the key
+        # from the process, and a joiner never inherits a forwarding state its own
+        # key did not account for. Every other caller passes None and keeps the
+        # spawn-time resolution unchanged.
+        self._forward_ssh_auth_sock_override = forward_ssh_auth_sock
         self._member_context = member_context
         if memory_mode not in {"persistent", "incognito", "temporary"}:
             raise ValueError("Invalid session memory mode")
@@ -1363,6 +1374,25 @@ class AcpRuntime:
         # until the backend response arrives — either would make routing
         # believe a consumer exists and park a child request unread.
         self._turn_active_sessions: set[str] = set()
+        # Serializes CHAT co-tenant turns on this shared process so at most one
+        # is in flight at a time. The reader loop routes an ownerless
+        # session-control frame (compaction / clear / agent switch — see the
+        # broadcast site) to the sessions with an ACTIVE TURN, but that frame
+        # carries no sessionId, so with two chat turns overlapping it would fan
+        # to BOTH and a peer's compaction / clear / switch would corrupt a
+        # co-tenant. The backend already answers one prompt at a time on the
+        # shared stdin, so serializing the chat turn adds no real parallelism the
+        # process could have given, and it makes the single active turn the
+        # unambiguous owner of any ownerless control frame produced during it.
+        #
+        # Held ONLY by shared CHAT sessions (``AcpSessionProvider`` with
+        # ``shared_runtime=True``, founder or joiner). A subagent turn is
+        # EXEMPT: it runs on its parent's process while the parent's turn is
+        # still open (parked at a yield, lock held), so making the subagent
+        # contend for this same lock would deadlock the parent→subagent await.
+        # A subagent's turn produces no user compaction / clear, and an
+        # agent-switch on it is its own, so it needs no serialization here.
+        self._chat_turn_lock = asyncio.Lock()
         self._dropped_frames_flushed_at: float = 0.0
 
     @property
@@ -2033,7 +2063,13 @@ class AcpRuntime:
         # Resolve the SSH_AUTH_SOCK forward opt-in off-loop ONCE
         # (config read) and pass it to both the sandbox wrap and the parent scrub
         # below, so neither reads config on the loop. Scoped to this agent spawn.
-        forward_ssh_auth_sock = await asyncio.to_thread(_forward_ssh_auth_sock)
+        # A frozen override (the chat-sharing placement, which read consent before
+        # it keyed on it) is used verbatim so the process matches its key; every
+        # other caller resolves it here.
+        if self._forward_ssh_auth_sock_override is not None:
+            forward_ssh_auth_sock = self._forward_ssh_auth_sock_override
+        else:
+            forward_ssh_auth_sock = await asyncio.to_thread(_forward_ssh_auth_sock)
         argv, self._sandbox_cleanup = await wrap_argv_async(
             argv,
             mode=self._sandbox_mode,
@@ -4153,11 +4189,31 @@ class AcpRuntime:
                     _t.add_done_callback(self._answer_tasks.discard)
                     continue
 
-                # No sessionId → genuinely global notification; broadcast to all.
+                # No sessionId → global or ownerless-control notification.
                 if self._session_queues:
                     # Snapshot: `await queue.put` yields, and a concurrent
                     # unregister_session() could pop mid-iteration otherwise.
                     _queues = list(self._session_queues.values())
+                    # A SESSION-CONTROL notification (compaction / clear / agent
+                    # switch) that names no session is produced by the ONE chat
+                    # session whose turn triggered it, but the frame does not say
+                    # which. It is delivered to EVERY queue and marked
+                    # ``fanout_no_owner`` below; two mechanisms keep that from
+                    # corrupting a co-tenant, and neither is a reader-side guess
+                    # at the owner (an earlier revision routed by active turn and
+                    # MIS-attributed a co-tenant's frame to a lone turn-active
+                    # SUB-AGENT, whose own-progress clock reads an unmarked frame
+                    # as its own — see ``subagent_manager.run``): (1) chat turns
+                    # are SERIALIZED per shared process
+                    # (``AcpSessionProvider._chat_turn_gate``), so at most one
+                    # chat turn is in flight and an idle co-tenant is not
+                    # consuming its queue — the frame it receives is discarded by
+                    # its next turn's pre-turn drain, never applied; (2) the
+                    # consumer gates the cross-session STATE mutations on
+                    # ``owns_frame`` (``session_handle``). The MCP roster and the
+                    # subagent list are genuinely process-wide and reach everyone
+                    # the same way.
+                    #
                     # Fanning one ownerless frame out to SEVERAL sessions means
                     # at most one recipient produced it and nothing says which,
                     # so mark it: a consumer that measures its own activity (the
@@ -5212,6 +5268,23 @@ class AcpRuntime:
         else:
             self._turn_active_sessions.discard(session_id)
 
+    @contextlib.asynccontextmanager
+    async def chat_turn_gate(self) -> "AsyncIterator[None]":
+        """Serialize CHAT co-tenant turns on this shared process, one at a time.
+
+        Held for the WHOLE turn — from before the prompt is written through the
+        last event the consumer pulls — so that while it is held at most one chat
+        session is turn-active, which makes that session the unambiguous owner of
+        any ownerless session-control frame (compaction / clear / agent switch)
+        the reader loop routes by active turn. Only shared CHAT sessions enter
+        this gate (:class:`AcpSessionProvider` with ``shared_runtime=True``); a
+        subagent turn is deliberately kept out of it, because it runs while its
+        parent's turn is still open and would otherwise deadlock on the lock the
+        parent holds. See ``_chat_turn_lock``.
+        """
+        async with self._chat_turn_lock:
+            yield
+
     async def terminate_session(self, session_id: str) -> None:
         """Evict a session from kiro-cli (freeing its memory), then unregister locally.
 
@@ -5700,6 +5773,7 @@ class AcpRuntime:
         budget: float,
         payload_snapshot: Any,
         wire_registered: bool,
+        skip_projection_refresh: bool = False,
     ) -> None:
         """Send ``session/set_mode`` for *mode_agent* inside the derived-spec bracket.
 
@@ -5736,6 +5810,16 @@ class AcpRuntime:
         landing after cannot change what was already consumed. Same answer as the
         ``initialize`` bracket -- a session that may have activated an unverified spec
         must not survive.
+
+        ``skip_projection_refresh`` is set by a session that JOINED a process another
+        session already runs on. The native skill projection is one object per process
+        and its sidecar is one directory per work directory, so rebuilding it from a
+        per-session start replaces the object the co-tenants' in-flight frames are
+        being translated through. The founder built it at spawn under the same inputs
+        this session's compatibility key required, so there is nothing for a joiner to
+        refresh -- only something to break. The ``set_mode`` itself still happens, and
+        so does the derived-spec bracket around it: what is skipped is the rebuild, not
+        the verification.
         """
         from kiro_crew.agent import (
             DerivedSpecStale,
@@ -5756,7 +5840,8 @@ class AcpRuntime:
         try:
             projection_now: Any = None
             used_generation = 0
-            if getattr(self, "_native_skill_projection", None) is not None:
+            previous = getattr(self, "_native_skill_projection", None)
+            if not skip_projection_refresh and previous is not None:
                 from kiro_crew.acp.skill_projection import prepare_native_skill_projection
 
                 # Preparation and adoption run under the per-runtime projection
@@ -6524,6 +6609,7 @@ class AcpRuntime:
         on_gate_acquired: Callable[[float], None] | None = None,
         late_adopter: "Callable[[AcpSessionHandle], Awaitable[bool]] | None" = None,
         on_gate_queued: Callable[[], None] | None = None,
+        skip_projection_refresh: bool = False,
     ) -> AcpSessionHandle:
         """Create a new ACP session on this runtime. Returns a session handle.
 
@@ -6822,6 +6908,7 @@ class AcpRuntime:
                 late_adopter=late_adopter,
                 memory_mode=memory_mode,
                 session_key=session_key,
+                skip_projection_refresh=skip_projection_refresh,
             )
             if collector is None:
                 permit.release()
@@ -6852,6 +6939,7 @@ class AcpRuntime:
             projected_sources=projected_sources,
             payload_snapshot=payload_snapshot,
             session_key=session_key,
+            skip_projection_refresh=skip_projection_refresh,
         )
 
     def _collect_late_start(
@@ -6875,6 +6963,7 @@ class AcpRuntime:
         late_adopter: "Callable[[AcpSessionHandle], Awaitable[bool]] | None",
         memory_mode: str = "persistent",
         session_key: str = "",
+        skip_projection_refresh: bool = False,
     ) -> StartCollector | None:
         """Hand a timed-out ``session/new`` to a :class:`StartCollector`.
 
@@ -6957,6 +7046,7 @@ class AcpRuntime:
                     projected_sources=projected_sources,
                     payload_snapshot=payload_snapshot,
                     session_key=session_key,
+                    skip_projection_refresh=skip_projection_refresh,
                 )
                 # A declining (or raising) adopter answers False and the
                 # collector performs the one teardown.
@@ -7052,6 +7142,7 @@ class AcpRuntime:
         payload_snapshot: Any,
         memory_mode: str = "persistent",
         session_key: str = "",
+        skip_projection_refresh: bool = False,
     ) -> AcpSessionHandle:
         """Everything after a successful ``session/new``: queue, handle, mode, drain.
 
@@ -7184,6 +7275,7 @@ class AcpRuntime:
                 budget=budget,
                 payload_snapshot=payload_snapshot,
                 wire_registered=kas_agents is not None,
+                skip_projection_refresh=skip_projection_refresh,
             )
             handle.active_agent = mode_agent
             # Whether set_mode actually SWITCHED modes: the servers that
@@ -7411,6 +7503,7 @@ class AcpRuntime:
         member_session_key: str = "",
         session_key: str = "",
         channel_id: str = "",
+        skip_projection_refresh: bool = False,
     ) -> AcpSessionHandle:
         """Resume a prior session via session/load — mirrors AcpClient.
 
@@ -7741,6 +7834,7 @@ class AcpRuntime:
                 budget=budget,
                 payload_snapshot=payload_snapshot,
                 wire_registered=kas_agents is not None,
+                skip_projection_refresh=skip_projection_refresh,
             )
             handle.active_agent = mode_agent
             # See create_session: after a real mode switch, registration frames

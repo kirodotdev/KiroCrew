@@ -1094,6 +1094,75 @@ async def test_null_session_notification_broadcasts_to_all():
 
 
 @pytest.mark.asyncio
+async def test_the_chat_turn_gate_serializes_on_the_real_runtime():
+    """The gate is what keeps one ownerless control frame to one candidate owner.
+
+    Driven against ``AcpRuntime`` itself: the shared-runtime suite proves the
+    PROVIDER enters the gate, but does so against a fake whose gate is a
+    re-implementation, so nothing there would notice this lock being dropped.
+    """
+    rt, _reader, _ = _make_runtime()
+    order: list[str] = []
+    inside = 0
+    peak = 0
+    release_a = asyncio.Event()
+
+    async def hold_a():
+        nonlocal inside, peak
+        async with rt.chat_turn_gate():
+            inside += 1
+            peak = max(peak, inside)
+            order.append("a-in")
+            await release_a.wait()
+            inside -= 1
+            order.append("a-out")
+
+    async def hold_b():
+        nonlocal inside, peak
+        await asyncio.sleep(0)
+        async with rt.chat_turn_gate():
+            inside += 1
+            peak = max(peak, inside)
+            order.append("b-in")
+            inside -= 1
+
+    ta = asyncio.create_task(hold_a())
+    tb = asyncio.create_task(hold_b())
+    await asyncio.sleep(0.02)
+    assert order == ["a-in"], order
+    release_a.set()
+    await asyncio.gather(ta, tb)
+    assert order == ["a-in", "a-out", "b-in"], order
+    assert peak == 1, "two chat turns held the real runtime's gate at once"
+
+
+@pytest.mark.asyncio
+async def test_ownerless_control_notification_broadcasts_to_all_marked_ownerless():
+    """A compaction / clear / agent-switch frame that names no session is
+    delivered to EVERY co-tenant queue and marked ``fanout_no_owner`` when it
+    reaches more than one. It is NOT routed by active turn: an earlier revision
+    did that and mis-attributed a co-tenant's frame to a lone turn-active
+    sub-agent (whose own-progress clock reads an unmarked frame as its own).
+    Cross-chat-tenant corruption is prevented by turn serialization
+    (``AcpSessionProvider._chat_turn_gate``) and the consumer's ``owns_frame``
+    gating, not by a reader-side guess at the owner. The founder needs the
+    frame, so it is never dropped."""
+    rt, reader, _ = _make_runtime()
+    q = _register(rt, "sA", "sB")
+    task = await _start_reader(rt)
+    try:
+        _feed(reader, {"method": "_kiro.dev/agent/switched", "params": {"agentName": "x"}})
+        a = await asyncio.wait_for(q["sA"].get(), timeout=1.0)
+        b = await asyncio.wait_for(q["sB"].get(), timeout=1.0)
+        assert a.method == "_kiro.dev/agent/switched"
+        assert b.method == "_kiro.dev/agent/switched"
+        # Broadcast to >1 session, so marked ownerless for the consumer.
+        assert a.fanout_no_owner is True
+    finally:
+        await _stop_reader(task)
+
+
+@pytest.mark.asyncio
 async def test_ownerless_request_answered_once_not_broadcast():
     """A server→client REQUEST with no sessionId gets exactly ONE -32601 reply.
 

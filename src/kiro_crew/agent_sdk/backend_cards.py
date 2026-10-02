@@ -486,6 +486,18 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "still resets on a build below that floor, and two levels cannot say "
         "on a recent enough release"
     ),
+    "ACP_BACKENDS_CHAT_RUNTIME_SHARING": (
+        "whether a top-level dashboard chat slot may share one kiro-cli process with "
+        "other chat slots, behind the off-by-default chat_runtime_sharing switch. A "
+        "reader choosing a harness loses nothing when it is out: their chat gets its "
+        "own process, which is exactly what happens today, and its resume record is "
+        "kept either way -- the gate exists so a backend whose chat teardown has not "
+        "been proven to preserve that record does NOT share (harness-parity H6, "
+        "decided separately from the subagent ACP_BACKENDS_SESSION_SHARING). A wrong "
+        "membership is invisible when it withholds and a lost resume record when it "
+        "grants a backend it should not, which is a defect rather than an absent "
+        "feature a card could mark"
+    ),
 }
 
 #: The set that is the membership floor rather than a capability.

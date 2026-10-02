@@ -44,6 +44,7 @@ from kiro_crew.metrics.sessions import (
     record_sessions_ended,
 )
 from kiro_crew.process_identity import ProcessHandle, process_handle_of
+from kiro_crew.runtime_ownership import RUNTIME_OWNERSHIP, RUNTIME_TENANCY
 
 CancelOutcome = Literal["acked", "timeout", "no_turn", "error"]
 
@@ -904,6 +905,60 @@ def _turn_in_flight(session: Any, *, refuse_only_on_active_turn: bool = False) -
     return bool(has_active_turn()) if callable(has_active_turn) else True
 
 
+def _pid_is_still_held(
+    pid: int,
+    *,
+    holders: Callable[[int], int] | None = None,
+    log: logging.Logger | None = None,
+    log_label: str = "Reset",
+) -> bool:
+    """Whether anyone still holds the live process at *pid*.
+
+    A shared chat runtime outlives one session's shutdown by design -- its
+    co-tenants hold it and the last one to leave kills it -- so this decides both
+    whether to SIGKILL a pid that outlived shutdown and whether to sweep its
+    escaped children. One answer governs both, because a process worth keeping is
+    a process whose children are in use.
+
+    Asked of the ownership registry rather than of the session table, which is the
+    same registry the kill gate consults and the reason there is one: a session
+    table scan would have to read each session's own pid to compare, and a
+    per-session pid reading attributes one shared process to one of its tenants.
+    It is also the only source that sees a session which holds the process but is
+    not registered yet -- a joiner takes its lease during ``provider.start`` and
+    enters the table only once that RETURNS, so for the length of a cold start the
+    table shows no survivor at all.
+
+    Both kinds of holder count, because both are parties the gate refuses a kill
+    for: a LEASE is a chat session resident on the process, and a TENANCY is a
+    subagent mid-turn on it.
+
+    The session being reset is not excluded, and needs no excluding: its own
+    ``provider.shutdown()`` has already run and released whatever it held, so a
+    count above zero is somebody else by construction.
+
+    A dead runtime's holdings are not counted -- the registry excludes them -- and
+    that is what keeps this from having an inverse failure: a crashed runtime
+    leaves leases pointing at a pid that has gone, and counting one would
+    suppress the reap and the child sweep of a genuinely dead process, stranding
+    the children that escaped it.
+    """
+    log = log or logging.getLogger(__name__)
+    if holders is None:
+
+        def holders(p: int) -> int:
+            return RUNTIME_OWNERSHIP.leases_on_pid(p) + RUNTIME_TENANCY.claims_on_pid(p)
+
+    try:
+        return bool(holders(pid))
+    except Exception:
+        # A bookkeeping failure must not become a permanent leak: an unreadable
+        # registry leaves the pid reapable, which is what this path did before a
+        # cap existed.
+        log.debug("%s: holders of PID %s unreadable", log_label, pid, exc_info=True)
+        return False
+
+
 class SessionLifecycleService:
     """Coordinate provider retirement while preserving facade dispatch seams."""
 
@@ -1528,7 +1583,24 @@ class SessionLifecycleService:
                 shutdown_error = exc
             platform_compat = self._deps.get_platform_compat()
             if pid:
-                if platform_compat.pid_exists(pid):
+                # A process somebody else still holds is not a survivor to reap. A
+                # shared chat runtime outlives this session's shutdown by design --
+                # its co-tenants hold it, and whichever session leaves last kills
+                # it -- so SIGKILLing a pid merely because it outlived one shutdown
+                # would end every other session on it mid-turn, and the child sweep
+                # would take the MCP servers they are using with it.
+                #
+                # Who counts as a holder, and why a dead runtime's holdings do not,
+                # are in ``_pid_is_still_held``.
+                shared_with_others = _pid_is_still_held(pid, log=logger, log_label=f"Reset {key}")
+                if shared_with_others:
+                    logger.info(
+                        "Reset %s: PID %d still serves other live sessions; leaving it and "
+                        "its children alone",
+                        key,
+                        pid,
+                    )
+                elif platform_compat.pid_exists(pid):
                     logger.warning("Reset %s: PID %d survived shutdown, force-killing", key, pid)
                     try:
                         await platform_compat.kill_process_tree_async(
@@ -1540,7 +1612,7 @@ class SessionLifecycleService:
                             await platform_compat.kill_pid_async(pid, platform_compat.SIGKILL)
                         except (ProcessLookupError, OSError):
                             pass
-                if child_pids:
+                if child_pids and not shared_with_others:
                     try:
                         sweep_loop = asyncio.get_running_loop()
                         await sweep_loop.run_in_executor(

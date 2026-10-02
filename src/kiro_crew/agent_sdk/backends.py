@@ -84,6 +84,10 @@ with no row here.
        accept being refused when a frame classifies as nothing)
    * - ``ACP_BACKENDS_SESSION_SHARING``
      - pre-session registry query (subagent session allocation)
+   * - ``ACP_BACKENDS_CHAT_RUNTIME_SHARING``
+     - pre-session registry query (whether a top-level dashboard chat slot may
+       share a runtime -- distinct from subagent sharing because the chat
+       teardown must leave this session's own resume record intact)
    * - ``ACP_BACKENDS_MEMBER_CAPABILITIES``
      - pre-session registry query (whether enrolled members can load a full saved spec)
    * - ``ACP_BACKENDS_MEMBER_DISPATCH``
@@ -809,6 +813,47 @@ def resolve_selected_backend(value: object) -> str:
 # session and there is no shared session to persist. A harness capability Crew cannot
 # reach is recorded here rather than claimed.
 ACP_BACKENDS_SESSION_SHARING = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_CODEX})
+
+# Backends a top-level DASHBOARD CHAT slot may share a runtime on. Deliberately
+# SEPARATE from ``ACP_BACKENDS_SESSION_SHARING`` above, not an alias of it, for
+# the harness-parity reason (H6): serving several SUBAGENT sessions on one
+# process does not by itself establish that a top-level chat session may share
+# one, because the two teardowns are different and it is the CHAT teardown whose
+# safety this set asserts.
+#
+# A subagent that leaves a shared process is torn down by ``SubagentManager``
+# with ``keep_transcript=True``: the transcript is the ``spawn_continue`` resume
+# material, lifecycle-managed by the tombstone pruner. A CHAT session that leaves
+# a shared process runs ``AcpSessionProvider._shutdown_shared``, which destroys
+# the handle to leave the process while its co-tenants keep running -- so the
+# host's ``destroy`` must leave THIS session's own resume record intact, or every
+# ordinary chat close on a shared process would silently discard its transcript
+# while a sole-owner close (which keeps it) would not.
+#
+# kiro-cli answers YES and is the only member: ``destroy`` sends
+# ``_kiro.dev/session/terminate`` which frees the multiplexed session's RSS, and
+# the ``keep_transcript`` guard then SKIPS the transcript unlink, so
+# ``~/.kiro/sessions/cli/{sid}.json(l)`` survives for ``session/load`` resume --
+# the same records the sole-owner arm keeps. That is measured by the chat-sharing
+# suite, not argued.
+#
+# codex-acp is NOT a member, even though it IS in ``ACP_BACKENDS_SESSION_SHARING``
+# and its SUBAGENT restore (``session/close`` evicts, ``session/load`` restores
+# from the ``CODEX_HOME`` thread) is measured. That measurement covers the
+# subagent close verb, NOT the chat arm's ``destroy`` -> ``terminate_session``
+# path, and the chat arm's transcript-preservation on codex has no lane cover
+# here (the restore half needs a live codex credential the CI lane lacks). Until
+# that CHAT teardown is measured to leave a codex thread loadable, a shared chat
+# session on codex could lose its resume record on an ordinary close -- so codex
+# chat sessions keep their own dedicated process, which is working behaviour
+# rather than a degraded one. Adding codex here is a deliberate, measured
+# decision for whoever makes it, not an inheritance from the subagent set.
+#
+# Every other backend is out for the same reason it is out of the subagent set,
+# or because it is not served by ``AcpRuntime`` at all (no second chat session to
+# share): KAS deletes the record on teardown, opencode/pi/deepseek open one
+# process per session.
+ACP_BACKENDS_CHAT_RUNTIME_SHARING = frozenset({ACP_BACKEND_KIRO})
 
 # Backends that can load an enrolled member's full saved agent spec at spawn.
 # Separate from session sharing and per-session dispatch (harness-parity H6):
