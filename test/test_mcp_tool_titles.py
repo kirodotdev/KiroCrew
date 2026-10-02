@@ -15,7 +15,13 @@ _SERVERS = {
 
 
 @pytest.mark.parametrize("server", sorted(_SERVERS))
-def test_every_listed_tool_carries_its_declared_title(server: str) -> None:
+def test_every_listed_tool_carries_its_declared_title(server: str, monkeypatch) -> None:
+    # The title table covers every DECLARED tool. ``kirocrew-core`` lists an app's
+    # tools only while that app is enabled, and the isolated test home has
+    # none installed, so the gate is held open here to compare the whole table.
+    from kiro_crew.mcp_tools import apps as apps_tools
+
+    monkeypatch.setattr(apps_tools, "app_enabled_state", lambda _name: True)
     listed = _SERVERS[server]._list_tools()
     assert {t["name"]: t.get("title") for t in listed} == _table()[server]
 

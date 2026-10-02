@@ -203,6 +203,17 @@ class TestGatewayPathsAreReachableWithTheInternalSecret(unittest.TestCase):
 
 
 class TestToolRegistration(unittest.TestCase):
+    def setUp(self):
+        # The listing follows app enablement, and the isolated test home
+        # has no app installed, so Issue Radar is switched on at the one seam the
+        # listing reads. The descriptor CONTENT asserted below is the same either
+        # way; this only makes the tools visible to ``_list_tools``.
+        from kiro_crew.mcp_tools import apps as apps_tools
+
+        patcher = patch.object(apps_tools, "app_enabled_state", lambda name: name == "issue-radar")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_both_schemas_are_registered(self):
         # An unregistered tool's args pass through raw and its ValidationError
         # escapes the stdio loop, killing kirocrew-core for the whole session.
