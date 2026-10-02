@@ -435,6 +435,38 @@ def _redirect_bytecode_cache() -> None:
     os.environ["PYTHONPYCACHEPREFIX"] = candidate
 
 
+def _put_the_tree_under_test_first_on_child_paths() -> None:
+    """Make every interpreter a test spawns import the ``kiro_crew`` this run imports.
+
+    ``[tool:pytest] pythonpath = src`` (or a ``-o pythonpath=<tree>/src`` override)
+    puts the tree under test on THIS interpreter's ``sys.path`` only. A
+    ``sys.executable -c`` child resolves ``kiro_crew`` from the venv's install
+    instead. On CI the install is the checkout being tested, so nothing differs; in
+    a linked worktree that borrows another checkout's venv, every child imported
+    THAT checkout, and a child calling a symbol the worktree added failed with
+    ``AttributeError`` (or passed against code nobody changed). Prepending the
+    directory the package resolves from closes the class for every spawn at once,
+    the same way ``PYTHONPYCACHEPREFIX`` does above.
+
+    ``find_spec`` locates the package without executing it (the module-level
+    no-``kiro_crew`` rule in this file's docstring). An inherited ``PYTHONPATH`` is
+    kept after it, and no empty component is ever written: an empty entry is the
+    child's CWD on ``sys.path`` (``test_stdlib_shadow.py``). A test that builds a
+    child env from scratch, or strips ``PYTHONPATH`` on purpose, is unaffected.
+    """
+    import importlib.util
+
+    try:
+        spec = importlib.util.find_spec("kiro_crew")
+    except (ImportError, ValueError):
+        return
+    if spec is None or not spec.origin:
+        return
+    src = str(pathlib.Path(spec.origin).resolve().parent.parent)
+    inherited = [p for p in os.environ.get("PYTHONPATH", "").split(os.pathsep) if p and p != src]
+    os.environ["PYTHONPATH"] = os.pathsep.join([src, *inherited])
+
+
 class _AsyncFixtureScanGate:
     """Run pytest-asyncio's fixture scan only when a fixture was registered since.
 
@@ -1531,6 +1563,7 @@ def pytest_configure(config: pytest.Config) -> None:
     _install_short_tmp_root()
     _redirect_hypothesis_database()
     _redirect_bytecode_cache()
+    _put_the_tree_under_test_first_on_child_paths()
     _gate_pytest_asyncio_fixture_scan()
     global _SESSION_CWD
     try:

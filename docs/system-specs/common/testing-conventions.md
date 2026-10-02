@@ -2020,6 +2020,18 @@ about the code. Each is a hermeticity gap, and each has one fix:
   on the host that cannot hold it.
 - **`"python3"` is not on PATH on Windows.** Spawn the interpreter as `sys.executable`; a
   literal name fails with cmd's 9009 and every verdict downstream reads as a plain failure.
+- **A child interpreter must import the tree under test, not the installed one.**
+  `setup.cfg`'s `pythonpath = src` reaches only pytest's own interpreter; a
+  `sys.executable -c` child resolves `kiro_crew` from the venv's install. On CI that is
+  the checkout being tested, so CI stays green; in a linked worktree that borrows another
+  checkout's venv, every child imported THAT checkout, and a child calling a symbol the
+  worktree added failed with `AttributeError`. The rootdir conftest's
+  `_put_the_tree_under_test_first_on_child_paths` closes the class once: in
+  `pytest_configure` it prepends the directory `kiro_crew` resolves from to
+  `os.environ["PYTHONPATH"]`, keeps any inherited entries after it and never writes an
+  empty component (an empty entry is the child's CWD on `sys.path`). A child that
+  inherits the environment needs nothing of its own; a test that builds a child env from
+  scratch, or strips `PYTHONPATH` on purpose, still decides for itself.
 - **The interpreter decides where recursion gives way.** A test that pinned "decode
   succeeds but encode fails" for a 2,000-deep JSON body met an interpreter that did both;
   assert the invariant across all three outcomes, and walk a deep structure iteratively
