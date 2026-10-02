@@ -1,0 +1,8 @@
+# Build output and the packed plugin.
+bin/
+obj/
+*.lplug4
+
+# PluginApi.dll is Logitech's SDK library. Builds without Logi Plugin Service installed
+# stage a copy here from the LogiPluginTool package; it is never committed.
+lib/
