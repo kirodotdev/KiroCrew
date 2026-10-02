@@ -35,6 +35,8 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_MARKDOWN_AGENT_SPECS,
     ACP_BACKENDS_OPEN_EXTERNAL_URL,
     ACP_BACKENDS_POD_HOME_REMAP,
+    KIRO_CLI_CLIENT_APPLICATION,
+    KIRO_CLI_CLIENT_APPLICATION_ENV,
     METHOD_KIRO_SESSION_UPDATE,
     METHOD_MCP_OAUTH_REQUEST,
     METHOD_MCP_SERVER_INIT_FAILURE,
@@ -44,7 +46,26 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.agent_sdk.tool_search import MANDATORY_MCPS_ENV, mandatory_mcps_env_value
 
-__all__ = ["KIRO_FAMILY_ALIASES", "MembershipHarness", "apply_mandatory_mcps_env"]
+__all__ = [
+    "KIRO_FAMILY_ALIASES",
+    "MembershipHarness",
+    "apply_client_application_env",
+    "apply_mandatory_mcps_env",
+]
+
+
+def apply_client_application_env(env: dict[str, str]) -> None:
+    """Name Crew as the application driving this kiro-cli process.
+
+    Both kiro-family harnesses call it for the reason :func:`apply_mandatory_mcps_env`
+    gives: the KAS relay IS a kiro-cli process, and the variable is read by the
+    process itself, not by an engine behind it.
+
+    Overwritten rather than defaulted. Crew is the driving application of the child
+    it spawns whatever the gateway inherited, and a value carried in from an outer
+    host would file every Crew request under that host instead.
+    """
+    env[KIRO_CLI_CLIENT_APPLICATION_ENV] = KIRO_CLI_CLIENT_APPLICATION
 
 
 def apply_mandatory_mcps_env(env: dict[str, str]) -> None:

@@ -250,6 +250,15 @@ ACP_CLIENT_CAPABILITIES: dict = {
     "terminal": False,
 }
 
+# The variable kiro-cli reads to name the application driving it, and the name
+# Crew gives. kiro-cli puts it on the user-agent of EVERY request it sends to its
+# own model backend (``clientApp/<value>``), which is the only place a
+# backend-side record can tell a Crew-driven request apart. ``clientInfo.name``
+# in ``initialize`` does not reach there: kiro-cli keeps that in its telemetry and
+# on the ``AWS_EXECUTION_ENV`` of the tools it spawns, never on its own requests.
+KIRO_CLI_CLIENT_APPLICATION_ENV = "KIRO_CLI_CLIENT_APPLICATION"
+KIRO_CLI_CLIENT_APPLICATION = "KiroCrew"
+
 # ── ACP Backend Identifiers ──
 # DEFINED in :mod:`kiro_crew.acp_backends` and re-exported from the import block
 # at the top of this module, so ``from kiro_crew.acp.types import ACP_BACKEND_*``

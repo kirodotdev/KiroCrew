@@ -30,6 +30,7 @@ from kiro_crew.acp._dispatch import advertised_mode_origin
 from kiro_crew.acp.harness._common import (
     KIRO_FAMILY_ALIASES,
     MembershipHarness,
+    apply_client_application_env,
     apply_mandatory_mcps_env,
 )
 from kiro_crew.acp.harness.base import (
@@ -154,6 +155,7 @@ class KasHarness(MembershipHarness):
 
         strip_kiro_cli_api_key(env)
         apply_mandatory_mcps_env(env)
+        apply_client_application_env(env)
 
     @property
     def verifies_agent_activation(self) -> bool:

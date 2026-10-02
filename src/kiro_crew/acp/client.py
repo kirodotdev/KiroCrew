@@ -182,6 +182,8 @@ from kiro_crew.acp.types import (
     EVENT_TOOL_CALL_UPDATE,
     EVENT_TOOL_RESULT,
     JSONRPC_METHOD_NOT_FOUND,
+    KIRO_CLI_CLIENT_APPLICATION,
+    KIRO_CLI_CLIENT_APPLICATION_ENV,
     KNOWN_SESSION_UPDATES,
     MCP_ROSTER_COMPLETE_NOTE,
     METHOD_AGENT_SWITCHED,
@@ -8057,6 +8059,10 @@ class AcpClient:
         # ``extra_env`` so agent configuration cannot redirect the trusted read
         # gate to a foreign interpreter.
         env["KIROCREW_RUNTIME_PYTHON"] = sys.executable
+        # The auxiliary kiro-cli children never reach a harness's apply_spawn_env,
+        # so they are named here; see harness._common.apply_client_application_env.
+        if self._is_kiro:
+            env[KIRO_CLI_CLIENT_APPLICATION_ENV] = KIRO_CLI_CLIENT_APPLICATION
         # Pod-scoped kiro-cli children write their OWN MCP OAuth grants,
         # confined to the pod's tree instead of the real host's -- see
         # _apply_pod_home_remap's docstring. No-op outside a pod
