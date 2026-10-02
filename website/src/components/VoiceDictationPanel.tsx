@@ -191,11 +191,13 @@ export default function VoiceDictationPanel({ sampleRef, value, partial, deviceL
 
   // The transcript is height-capped (see max-h-20 below), so pin it to the
   // bottom as text grows — the newest words are what a dictating user is
-  // confirming, and they sit at the growing edge.
+  // confirming, and they sit at the growing edge. Scrolling up to reread
+  // pauses the pin; scrolling back to the bottom resumes it.
   const transcriptRef = useRef<HTMLDivElement>(null)
+  const followRef = useRef(true)
   useEffect(() => {
     const el = transcriptRef.current
-    if (el) el.scrollTop = el.scrollHeight
+    if (el && followRef.current) el.scrollTop = el.scrollHeight
   }, [committed, partial])
 
   return (
@@ -255,9 +257,15 @@ export default function VoiceDictationPanel({ sampleRef, value, partial, deviceL
         <div className="flex flex-col gap-1">
           {/* Text sits over a live shader, so it carries its own shadow floor
               rather than relying on the background staying dark. */}
+          {/* Scrollable, so it opts back into pointer events like the picker;
+              `overscroll-contain` keeps a wheel at either end out of the chat. */}
           <div
             ref={transcriptRef}
-            className="text-[17px] leading-[1.45] text-text-strong max-h-20 overflow-hidden [text-shadow:0_1px_12px_var(--bg),0_0_3px_var(--bg)]"
+            onScroll={e => {
+              const el = e.currentTarget
+              followRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 4
+            }}
+            className="pointer-events-auto text-[17px] leading-[1.45] text-text-strong max-h-20 overflow-y-auto overscroll-contain scrollbar-none [text-shadow:0_1px_12px_var(--bg),0_0_3px_var(--bg)]"
             data-testid="voice-dictation-transcript"
           >
             {committed}
