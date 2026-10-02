@@ -152,3 +152,111 @@ def test_a_view_of_an_uninstalled_agent_still_fails_closed(monkeypatch, installe
     bindings = _resume(monkeypatch, _cfg(), captured, VIEW)
 
     assert not bindings.requested_resolved
+
+
+# ── A view the REAL boot drain retired still resolves ──
+#
+# The fixtures above hand-place a sidecar. These publish a real view, leave the
+# tree as a pre-ledger build did (no ``view-sources.json``), and then run the
+# real ``drain_stale_aliases``: every path by which it deletes a sidecar must
+# keep the name resolvable, because the stored conversation is still on disk.
+
+
+@pytest.fixture
+def published_view(tmp_path, monkeypatch):
+    """``(agents, view)``: a released view of AGENT whose pre-ledger tree has no ledger."""
+    import gc
+    from types import SimpleNamespace
+
+    from kiro_crew.acp import skill_projection as projection
+
+    monkeypatch.delenv("KIROCREW_NATIVE_SKILL_PROJECTION", raising=False)
+    home = tmp_path / "kiro"
+    agents = home / "agents"
+    agents.mkdir(parents=True)
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setattr(projection, "_VIEW_SOURCES", {})
+    monkeypatch.setattr(projection, "kiro_home", lambda: home)
+    monkeypatch.setattr(projection, "data_home", lambda: tmp_path / "crew", raising=False)
+    monkeypatch.setattr(projection, "kiro_agents_dir", lambda: agents)
+    monkeypatch.setattr(projection.platform_compat, "path_volume_is_remote", lambda path: False)
+    monkeypatch.setattr(projection.platform_compat, "first_linked_ancestor", lambda path: None)
+    monkeypatch.setattr(projection, "_DRAIN_BATCH_PAUSE_SECS", 0)
+    monkeypatch.setattr(
+        "kiro_crew.agent.managed_mcp_spec_entry",
+        lambda name: {"command": "test-core", "args": []},
+    )
+    monkeypatch.setattr("kiro_crew.agent._KIRO_MCP_JSON", home / "settings" / "mcp.json")
+    monkeypatch.setattr(
+        projection,
+        "list_agents",
+        lambda **kw: [SimpleNamespace(name=AGENT, filename=f"{AGENT}.json", scope="global")],
+    )
+    # A skill resource makes it a search view, so the view carries kirocrew-core:
+    # the mark the drain's re-serialized-pair rule needs to treat it as projected.
+    (agents / f"{AGENT}.json").write_text(
+        json.dumps(
+            {
+                "name": AGENT,
+                "resources": ["skill://catalog/s/SKILL.md"],
+                "mcpServers": {"injected": {"command": "helper", "env": {"TOKEN": "v1"}}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    prepared = projection.prepare_native_skill_projection(project)
+    view = prepared.agent(AGENT)
+    del prepared
+    gc.collect()  # the lease goes and no projection in this process holds the view
+    metadata = agents / projection._PROJECTION_METADATA_DIR_NAME
+    # A build that predates the ledger never wrote it; the sidecar is the
+    # only record of which agent the view was built from.
+    (metadata / projection._VIEW_LEDGER_NAME).unlink()
+    assert (agents / f"{view}.json").is_file() and (metadata / f"{view}.json").is_file()
+    projection._VIEW_SOURCES.clear()  # a restart
+    return agents, view
+
+
+@pytest.mark.parametrize("before_drain", ["alias-removed", "pair-kept", "alias-rewritten"])
+def test_a_view_the_real_boot_drain_retired_still_resumes(
+    monkeypatch, installed, published_view, before_drain
+):
+    from kiro_crew.acp import skill_projection as projection
+
+    agents, view = published_view
+    alias = agents / f"{view}.json"
+    sidecar = agents / projection._PROJECTION_METADATA_DIR_NAME / f"{view}.json"
+    if before_drain == "alias-removed":
+        # A cleanup outside the core (a distribution's boot cleanup, an operator)
+        # took the alias and kept the sidecar: the drain's orphan sweep retires it.
+        alias.unlink()
+    elif before_drain == "alias-rewritten":
+        # A launcher re-stamped an env value: the sidecar does not bind the
+        # current bytes, and the drain retires the pair as a re-serialized alias.
+        spec = json.loads(alias.read_text(encoding="utf-8"))
+        spec["mcpServers"]["injected"]["env"]["TOKEN"] = "v2"
+        alias.write_text(json.dumps(spec), encoding="utf-8")
+    # "pair-kept": the drain reclaims alias and sidecar together.
+
+    projection.drain_stale_aliases()
+
+    # The drain really did delete the sidecar, the record the name resolves through.
+    assert not alias.exists() and not sidecar.exists()
+    projection._VIEW_SOURCES.clear()
+    captured = _stored(template=view, selection_name=view, kind="template")
+    bindings = _resume(monkeypatch, _cfg(), captured, view)
+
+    assert bindings.requested_resolved
+    assert bindings.kiro_agent == AGENT
+
+
+def test_an_unrecoverable_view_tells_the_user_to_pick_again_or_start_new():
+    from kiro_crew.session_agent_selection import unavailable_selection_message
+
+    message = unavailable_selection_message(VIEW)
+    assert "Pick the agent for this chat again, or start a new chat" in message
+    assert "Crew Member" not in message and "restore it" not in message
+    assert unavailable_selection_message(AGENT) == (
+        f"Crew Member '{AGENT}' is unavailable; restore it or choose a member"
+    )

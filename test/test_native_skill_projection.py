@@ -939,10 +939,10 @@ def _prune_walk(monkeypatch, classifications, blocked=frozenset()):
         # the budget by one float ulp, which is one candidate either way.
         return 0.0 if not classifications else budget * ticks[0] / classifications
 
-    def probe(directory, path, crew_home_id):
+    def probe(directory, path, crew_home_id, *ledger):
         seen.append(path.stem)
         ticks[0] += 1
-        return False if path.stem in blocked else real(directory, path, crew_home_id)
+        return False if path.stem in blocked else real(directory, path, crew_home_id, *ledger)
 
     monkeypatch.setattr(projection, "_reclaim_prune_candidate", probe)
     monkeypatch.setattr(projection.time, "monotonic", clock)
@@ -2848,7 +2848,12 @@ def test_prune_classification_seam_is_the_production_step(native_tree):
     """
     _home, agents, _project = native_tree
     backlog = _legacy_alias(agents, "c" * 24)
-    assert projection._reclaim_prune_candidate(agents, backlog, _crew_home_id()) is True
+    assert (
+        projection._reclaim_prune_candidate(
+            agents, backlog, _crew_home_id(), projection._ViewLedgerWrites(agents, _crew_home_id())
+        )
+        is True
+    )
     assert not backlog.exists()
 
 
@@ -3908,7 +3913,12 @@ def test_a_reserialized_byte_bound_pair_is_removed_together(native_tree):
         agents, projection.NATIVE_SKILL_ALIAS_PREFIX + "a" * 24
     )
     _backdate(control_alias)
-    assert projection._reclaim_prune_candidate(agents, control_alias, _crew_home_id())
+    assert projection._reclaim_prune_candidate(
+        agents,
+        control_alias,
+        _crew_home_id(),
+        projection._ViewLedgerWrites(agents, _crew_home_id()),
+    )
     assert not control_alias.exists() and not control_sidecar.exists()
 
     alias, sidecar = _publish_pre_view_digest(
@@ -3920,7 +3930,9 @@ def test_a_reserialized_byte_bound_pair_is_removed_together(native_tree):
     )
     _backdate(alias)
 
-    assert projection._reclaim_prune_candidate(agents, alias, _crew_home_id())
+    assert projection._reclaim_prune_candidate(
+        agents, alias, _crew_home_id(), projection._ViewLedgerWrites(agents, _crew_home_id())
+    )
     assert not alias.exists()
     assert not sidecar.exists(), "the ownership sidecar was stranded"
 
@@ -3938,7 +3950,9 @@ def test_a_reserialized_alias_whose_sidecar_names_another_home_is_kept(native_tr
     alias.write_text(json.dumps(json.loads(alias.read_text()), indent=2), encoding="utf-8")
     _backdate(alias)
 
-    assert not projection._reclaim_prune_candidate(agents, alias, _crew_home_id())
+    assert not projection._reclaim_prune_candidate(
+        agents, alias, _crew_home_id(), projection._ViewLedgerWrites(agents, _crew_home_id())
+    )
     assert alias.exists() and sidecar.exists()
 
 

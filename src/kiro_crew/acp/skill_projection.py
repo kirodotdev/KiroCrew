@@ -293,8 +293,12 @@ _VIEW_SOURCES_MAX = 2048
 # The same map on disk, so a view name stored before a restart still resolves
 # after the boot drain removed its alias AND its sidecar. It lives beside the
 # sidecars (the directory the prune never walks) under a name no alias can
-# take, is rewritten only under the publication lock, and keeps the newest
-# entries up to _VIEW_SOURCES_MAX. A missing or unreadable ledger resolves nothing.
+# take, is rewritten only under the publication lock, and holds at most
+# _VIEW_SOURCES_MAX entries (see _record_view_ledger_entries for which go first
+# past that). A missing or unreadable ledger resolves nothing.
+# Written at every publication AND before every sidecar deletion
+# (_ViewLedgerWrites), so a view published by a build that predates the ledger
+# keeps resolving once the prune or the orphan-sidecar sweep retires its record.
 _VIEW_LEDGER_NAME = "view-sources.json"
 
 
@@ -306,7 +310,7 @@ class RetiredSkillView(ValueError):
         super().__init__(
             f"'{view}' is a generated skill view from an earlier run, and the agent it "
             "was built from is not recorded anywhere. Pick the agent for this chat or "
-            "crewmate again; a gateway restart rebuilds every view."
+            "crewmate again, or start a new chat; a gateway restart rebuilds every view."
         )
 
 
@@ -377,22 +381,186 @@ def _read_view_ledger(metadata_dir: Path) -> dict[str, str]:
 
 
 def _record_view_ledger(metadata_dir: Path, aliases: dict[str, str]) -> None:
-    """Add *aliases* to the ledger. The caller holds the publication lock."""
+    """Add *aliases* (agent -> alias) to the ledger. The caller holds the publication lock."""
+    _record_view_ledger_entries(
+        metadata_dir, {alias: agent_name for agent_name, alias in aliases.items()}
+    )
+
+
+_LEDGER_EVICTION_WARNED = False
+
+
+def _sidecar_answers_for(metadata_dir: Path, alias: str, agent_name: str) -> bool:
+    """Whether *alias*'s sidecar still maps it to *agent_name* on its own.
+
+    The same reading :func:`_recorded_view_source` gives it: a regular file
+    carrying the managed marker and naming that agent. A sidecar that is
+    present but unreadable, foreign or naming another agent does not answer, so
+    its ledger entry is not redundant.
+    """
+    record = _read_json_regular_file(metadata_dir / f"{alias}.json")
+    return _managed_marker(record) and record.get(_MANAGED_AGENT) == agent_name
+
+
+def _record_view_ledger_entries(metadata_dir: Path, views: dict[str, str]) -> dict[str, str]:
+    """Add *views* (alias -> agent) to the ledger and return what it now holds.
+
+    The one ledger writer. A view of a run that is publishing names one alias per
+    agent; a retired backlog names many aliases of the same agent, which is why
+    this is keyed by alias. Inadmissible pairs are skipped and an unchanged
+    ledger is not rewritten. The caller holds the publication lock; the write is
+    atomic and a failure raises ``OSError`` with the old ledger intact.
+
+    Every pair this call adds becomes the newest entry. Past
+    :data:`_VIEW_SOURCES_MAX`, entries go in this order: first those whose
+    sidecar still answers for them on its own (:func:`_sidecar_answers_for`;
+    oldest first), then the oldest entries
+    whose sidecar is gone, whose view names stop resolving (counted and
+    logged), and only when this call alone adds more than the bound, its own
+    oldest additions, which the caller then sees as not held. The bound
+    therefore degrades the oldest retired names rather than refusing new ones,
+    so a full ledger never stops a sweep from retiring sidecars.
+    """
+    global _LEDGER_EVICTION_WARNED
     ledger = _read_view_ledger(metadata_dir)
     updated = dict(ledger)
-    for agent_name, alias in aliases.items():
+    adding: set[str] = set()
+    for alias, agent_name in views.items():
         if _admissible_source_agent(agent_name) and _LEGACY_ALIAS_NAME_RE.fullmatch(alias):
             updated.pop(alias, None)
-            updated[alias] = agent_name
-    while len(updated) > _VIEW_SOURCES_MAX:
-        updated.pop(next(iter(updated)))
+            updated[alias] = str(agent_name)
+            adding.add(alias)
+    if len(updated) > _VIEW_SOURCES_MAX:
+        for alias in list(updated):
+            if len(updated) <= _VIEW_SOURCES_MAX:
+                break
+            if alias not in adding and _sidecar_answers_for(metadata_dir, alias, updated[alias]):
+                del updated[alias]
+        dropped = 0
+        for alias in list(updated):
+            if len(updated) <= _VIEW_SOURCES_MAX:
+                break
+            if alias not in adding:
+                del updated[alias]
+                dropped += 1
+        while len(updated) > _VIEW_SOURCES_MAX:
+            updated.pop(next(iter(updated)))
+        if dropped:
+            log = logger.debug if _LEDGER_EVICTION_WARNED else logger.warning
+            _LEDGER_EVICTION_WARNED = True
+            log(
+                "skill projection: view ledger full (%d entries); dropped the %d oldest "
+                "retired view name(s), which no longer map back to their agent",
+                _VIEW_SOURCES_MAX,
+                dropped,
+            )
     if list(updated.items()) == list(ledger.items()):
-        return
+        return updated
     atomic_write(
         metadata_dir / _VIEW_LEDGER_NAME,
         json.dumps(updated, ensure_ascii=False, separators=(",", ":")),
         restrict_to_owner=True,
     )
+    return updated
+
+
+#: How many prune candidates one ledger write covers ahead of their reclaim.
+_LEDGER_PREFETCH_WINDOW = 64
+
+
+class _ViewLedgerWrites:
+    """Keep a view's source agent in the ledger before its sidecar is deleted.
+
+    A sidecar is the record :func:`source_agent_name` maps a stored view name
+    back through. Deleting it is harmless for a view this build published, whose
+    name the ledger already holds, and loses the mapping for one a pre-ledger
+    build published (a name an older conversation still stores). So every
+    deletion path asks :meth:`retain` first, and keeps the sidecar when the
+    ledger write fails. A prune walk names its remaining candidates through
+    :meth:`look_ahead`, and the first pair :meth:`retain` has to record brings
+    the next :data:`_LEDGER_PREFETCH_WINDOW` of them along in the same write, so
+    a drain of thousands of pairs pays one ledger write per window rather than
+    one per pair, and a walk that reclaims nothing reads nothing extra. Used only
+    under the publication lock, for the life of one prune or sweep.
+    """
+
+    def __init__(self, directory: Path, crew_home_id: str) -> None:
+        self._directory = directory
+        self._crew_home_id = crew_home_id
+        self._metadata_dir = directory / _PROJECTION_METADATA_DIR_NAME
+        self._entries: dict[str, str] | None = None
+        self._ahead: list[Path] = []
+        self._ahead_from = 0
+        # Set by a write the filesystem refused; the rest of this prune or
+        # sweep keeps every sidecar instead of retrying it per candidate.
+        self._failed = False
+
+    def _held(self) -> dict[str, str]:
+        if self._entries is None:
+            self._entries = _read_view_ledger(self._metadata_dir)
+        return self._entries
+
+    def look_ahead(self, candidates: list[Path], index: int) -> None:
+        """The walk is at ``candidates[index]``; a write may cover the ones after it."""
+        self._ahead, self._ahead_from = candidates, index
+
+    def retain_many(self, views: dict[str, str]) -> bool:
+        """Whether every admissible pair of *views* is in the ledger now."""
+        held = self._held()
+        wanted = {
+            alias: agent_name
+            for alias, agent_name in views.items()
+            if _admissible_source_agent(agent_name) and _LEGACY_ALIAS_NAME_RE.fullmatch(alias)
+        }
+        if all(held.get(alias) == agent for alias, agent in wanted.items()):
+            return True
+        if self._failed:
+            return False
+        try:
+            # The WHOLE batch is written, not only its missing pairs: a pair the
+            # ledger already holds becomes newest too, so the bound cannot evict
+            # it in this same write while its sidecar is about to go.
+            self._entries = _record_view_ledger_entries(self._metadata_dir, wanted)
+        except OSError:
+            logger.debug("skill projection: view ledger not written", exc_info=True)
+            self._failed = True
+            return False
+        return all(self._entries.get(alias) == agent for alias, agent in wanted.items())
+
+    def retain(self, alias: str, record: object) -> bool:
+        """Whether *record*'s source agent for *alias* is in the ledger (or it names none).
+
+        A record with no admissible agent is not one :func:`source_agent_name`
+        would answer from, so deleting it loses nothing.
+        """
+        agent_name = record.get(_MANAGED_AGENT) if isinstance(record, dict) else None
+        if not _admissible_source_agent(agent_name):
+            return True
+        if self._held().get(alias) == agent_name:
+            return True
+        if self._failed:
+            return False
+        views = self._upcoming_views()
+        views[alias] = str(agent_name)
+        return self.retain_many(views)
+
+    def _upcoming_views(self) -> dict[str, str]:
+        """Source agents of this home's sidecars for the next window of candidates.
+
+        Recording one is harmless whether or not its pair is reclaimed: the
+        record names this home and the agent the view was built from, which is
+        what the ledger states. A stem with no readable record is skipped.
+        """
+        window = self._ahead[self._ahead_from : self._ahead_from + _LEDGER_PREFETCH_WINDOW]
+        views: dict[str, str] = {}
+        for candidate in window:
+            record, _path, _identity = _sidecar_record(self._directory, candidate.stem)
+            if record is None or record.get(_MANAGED_CREW_HOME) != self._crew_home_id:
+                continue
+            agent_name = record.get(_MANAGED_AGENT)
+            if _admissible_source_agent(agent_name):
+                views[candidate.stem] = str(agent_name)
+        return views
 
 
 def _recorded_view_source(name: str) -> str | None:
@@ -1558,15 +1726,33 @@ def _sweep_orphan_sidecars(
         logger.debug("skill projection: cannot scan %s for sidecars", metadata_dir, exc_info=True)
         return 0
     offset = _prune_start_offset(len(stems))
-    removed = 0
+    doomed: list[tuple[str, dict[str, Any], Path, tuple[int, int]]] = []
     for stem in stems[offset:] + stems[:offset]:
-        if removed >= _SIDECAR_SWEEP_MAX_PER_RUN or time.monotonic() >= deadline:
+        if len(doomed) >= _SIDECAR_SWEEP_MAX_PER_RUN or time.monotonic() >= deadline:
             break
         if _path_exists(directory / f"{stem}.json"):
             continue
         record, path, identity = _sidecar_record(directory, stem)
         if record is None or identity is None or record.get(_MANAGED_CREW_HOME) != crew_home_id:
             continue
+        doomed.append((stem, record, path, identity))
+    # The sidecar is the last record of which agent a view with no alias was
+    # built from, and a conversation may still name that view. Its mapping goes
+    # into the ledger first, in one write for the whole batch; a batch the
+    # ledger cannot take is kept for a later run.
+    ledger = _ViewLedgerWrites(directory, crew_home_id)
+    views = {
+        stem: str(record.get(_MANAGED_AGENT))
+        for stem, record, _path, _identity in doomed
+        if _admissible_source_agent(record.get(_MANAGED_AGENT))
+    }
+    if views and not ledger.retain_many(views):
+        logger.debug("skill projection: view ledger unwritable; ownership sidecars kept")
+        return 0
+    removed = 0
+    for stem, _record, path, identity in doomed:
+        if time.monotonic() >= deadline:
+            break  # the rest is recorded already and goes on a later run
         if _path_exists(directory / f"{stem}.json"):
             continue
         if _unlink_projection_lease_if_unchanged(path, identity, what="ownership sidecar"):
@@ -1788,7 +1974,8 @@ def _prune_stale_managed_aliases(
     deadline = time.monotonic() + _PRUNE_MAX_SECONDS_PER_RUN
     reclaimed = 0
     examined = 0
-    for path in candidates:
+    ledger = _ViewLedgerWrites(directory, crew_home_id)
+    for index, path in enumerate(candidates):
         if reclaimed >= cap:
             logger.debug(
                 "skill projection: reclaim cap reached (%d); the rest drains on later spawns",
@@ -1805,7 +1992,8 @@ def _prune_stale_managed_aliases(
         # has to cover is the classification, which an unreclaimable entry pays in
         # full. The candidate scan already excluded kept, active and leased names.
         examined += 1
-        if _reclaim_prune_candidate(directory, path, crew_home_id):
+        ledger.look_ahead(candidates, index)
+        if _reclaim_prune_candidate(directory, path, crew_home_id, ledger):
             reclaimed += 1
     if reclaimed > 0:
         logger.info("skill projection: reclaimed %d unused alias(es)", reclaimed)
@@ -1881,11 +2069,17 @@ def drain_stale_aliases() -> int:
     return total
 
 
-def _reclaim_prune_candidate(directory: Path, path: Path, crew_home_id: str) -> bool:
+def _reclaim_prune_candidate(
+    directory: Path, path: Path, crew_home_id: str, ledger: _ViewLedgerWrites
+) -> bool:
     """Classify one stale candidate and remove it when ownership proves it is ours.
 
     The per-candidate step of :func:`_prune_stale_managed_aliases`, which charges
-    each call against its time budget. Returns whether the alias was removed.
+    each call against its time budget. The sidecar goes with its alias only once
+    *ledger* holds the view's source agent (see :class:`_ViewLedgerWrites`);
+    when the ledger cannot take it, the alias still goes and the sidecar, which
+    then answers for the view on its own, stays for a later sweep. Returns
+    whether the alias was removed.
     """
     candidate = pinned_fs.lstat_by_name(path)
     if candidate is None:
@@ -1928,10 +2122,12 @@ def _reclaim_prune_candidate(directory: Path, path: Path, crew_home_id: str) -> 
                 return False
             if _sidecar_record(directory, path.stem) != (record, sidecar_path, sidecar_identity):
                 return False
+            recorded = ledger.retain(path.stem, record)
             if _unlink_alias_if_unchanged(path, identity):
-                _unlink_projection_lease_if_unchanged(
-                    sidecar_path, sidecar_identity, what="ownership sidecar"
-                )
+                if recorded:
+                    _unlink_projection_lease_if_unchanged(
+                        sidecar_path, sidecar_identity, what="ownership sidecar"
+                    )
                 logger.debug("skill projection: pruned re-serialized alias %s", path.name)
                 return True
             return False
@@ -1994,8 +2190,9 @@ def _reclaim_prune_candidate(directory: Path, path: Path, crew_home_id: str) -> 
         or current_metadata.get(_MANAGED_CREW_HOME) != crew_home_id
     ):
         return False
+    recorded = ledger.retain(path.stem, current_metadata)
     if _unlink_alias_if_unchanged(path, identity):
-        if metadata_path is not None and metadata_identity is not None:
+        if recorded and metadata_path is not None and metadata_identity is not None:
             _unlink_projection_lease_if_unchanged(metadata_path, metadata_identity)
         logger.debug("skill projection: pruned unused managed alias %s", path.name)
         return True

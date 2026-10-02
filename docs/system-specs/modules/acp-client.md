@@ -403,7 +403,23 @@ alias; removing the alias alone would strand its sidecar. Two sweeps retire
 what outlived an alias, under the same lock, walk limit, random start and time
 budget as the alias walk, capped at
 `_SIDECAR_SWEEP_MAX_PER_RUN`: this home's sidecars whose alias is gone, and empty
-`<alias>.lock` files older than the legacy age with no alias beside them. This
+`<alias>.lock` files older than the legacy age with no alias beside them.
+
+A sidecar is also the record a stored view name maps back through
+(`source_agent_name`), so no path deletes one before the view ledger
+(`view-sources.json`, beside the sidecars) holds its alias -> agent pair. The
+orphan sweep records its whole batch in one ledger write, then unlinks, and
+the time budget covers both halves; a batch the ledger refuses is kept. The
+prune records a window of upcoming candidates the first time a pair needs it;
+when the ledger refuses, the alias still goes and the sidecar stays, answering
+on its own until a later sweep can record it. The ledger is bounded by
+`_VIEW_SOURCES_MAX`. Every write makes its own pairs the newest entries (a pair
+already held is rewritten too, so the same write cannot evict it); past the
+bound, entries a sidecar still answers for go first, then the oldest retired
+names, which stop resolving and are counted in a warning. A full ledger
+therefore never stops the sweeps from retiring sidecars. A write the
+filesystem refuses keeps every sidecar for the rest of that prune or sweep
+without retrying per candidate. This
 module never creates the latter; a launcher that rewrites every spec leaves one
 per spec it locked. The boot drain counts both sweeps as progress. `kirocrew
 doctor` reports the residue and the aliases whose bytes no longer match their
