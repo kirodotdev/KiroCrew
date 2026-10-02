@@ -9274,7 +9274,7 @@
       "group_panel_navigation": "面板导航",
       "group_remote_crews": "远程 Crew",
       "jump_to_chat": "跳转到聊天 {{n}}",
-      "jump_to_chat_letters": "跳转到聊天 10 及以后（字母对应每行显示的徽章）",
+      "jump_to_chat_letters": "跳转到聊天 10 及以后（按住修饰键可查看每个聊天的字母；在 macOS 上，文本框获得焦点时不可用）",
       "last_visited_chat_mru": "上次访问的聊天（MRU）",
       "next_chat": "下一个聊天",
       "notifications_panel": "通知面板",

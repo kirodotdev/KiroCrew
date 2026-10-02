@@ -9400,7 +9400,7 @@
       "group_panel_navigation": "पैनल नेविगेशन",
       "group_remote_crews": "रिमोट क्रू",
       "jump_to_chat": "चैट {{n}} पर जाएँ",
-      "jump_to_chat_letters": "चैट 10 और उसके आगे जाएँ (अक्षर हर पंक्ति पर दिखाए गए बैज के अनुसार होते हैं)",
+      "jump_to_chat_letters": "चैट 10 और उसके आगे जाओ (हर चैट का अक्षर देखने के लिए मॉडिफ़ायर कुंजी दबाए रखो; macOS पर, टेक्स्ट फ़ील्ड पर फ़ोकस होने पर नहीं)",
       "last_visited_chat_mru": "पिछली देखी गई चैट (MRU)",
       "next_chat": "अगली चैट",
       "notifications_panel": "सूचना पैनल",

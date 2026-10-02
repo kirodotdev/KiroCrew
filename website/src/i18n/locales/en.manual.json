@@ -3843,7 +3843,7 @@
       "walk_back_mru_history": "Walk back MRU history",
       "stop_speaking": "Stop speaking",
       "toggle_focus_mode": "Toggle focus mode",
-      "jump_to_chat_letters": "Jump to chat 10 and beyond (letters follow the badge shown on each row)",
+      "jump_to_chat_letters": "Jump to chat 10 and beyond (hold the modifier to see each chat’s letter; on macOS, not while a text field is focused)",
       "toggle_left_sidebar": "Toggle left sidebar",
       "toggle_session_panel": "Toggle session panel",
       "toggle_side_panel": "Toggle side panel",
