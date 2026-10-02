@@ -76,6 +76,7 @@ from kiro_crew.agent_sdk.spec_hooks import (
     session_agent,
 )
 from kiro_crew.agent_sdk.tool_search import resume_takes_tool_search_replay
+from kiro_crew.agent_spec_format import NATIVE_SKILL_ALIAS_PREFIX
 from kiro_crew.autonudge import get_instance
 from kiro_crew.autonudge_authz import normalize_banner
 from kiro_crew.config.loader import (  # noqa: F401
@@ -647,6 +648,24 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: E402, F401
     synthesis_fire_verdict,
     tool_calls_are_read_only_preparation,
 )
+
+
+def unavailable_agent_message(agent_name: str) -> str:
+    """What a resumed conversation whose agent does not resolve tells its user.
+
+    A recorded skill-view name the projection cannot map back is not a Crew
+    Member the user can restore: nothing records which agent it was built
+    from, and none can be recovered (the view name is a one-way digest). The
+    remedy that works is to pick the agent again or start a new chat, so that
+    is what it says, rather than naming a generated file as a missing member.
+    """
+    if agent_name.startswith(NATIVE_SKILL_ALIAS_PREFIX):
+        return (
+            "This chat was recorded under a generated skill view from an earlier "
+            f"version ('{agent_name}'), and the agent it was built from is not "
+            "recorded. Pick the agent for this chat again, or start a new chat."
+        )
+    return f"Crew Member '{agent_name}' is unavailable; restore it or choose a member"
 
 
 def _require_session_memory_assignment(session_key: str, memory_store: str | None) -> None:
@@ -8936,9 +8955,7 @@ async def _run_chat(
             if slot.agent and not slot._app and not bindings.requested_resolved:
                 from kiro_crew.memory_stores import UnknownMemoryStore
 
-                raise UnknownMemoryStore(
-                    f"Crew Member '{slot.agent}' is unavailable; restore it or choose a member"
-                )
+                raise UnknownMemoryStore(unavailable_agent_message(slot.agent))
         except Exception as exc:
             logger.warning("Failed to resolve agent bindings in _run_chat", exc_info=True)
             from kiro_crew.memory_stores import UnknownMemoryStore

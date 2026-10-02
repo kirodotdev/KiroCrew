@@ -269,11 +269,11 @@ def test_a_view_the_real_boot_drain_retired_still_resumes(
 
 
 def test_an_unrecoverable_view_tells_the_user_to_pick_again_or_start_new():
-    from kiro_crew.session_agent_selection import unavailable_selection_message
+    from kiro_crew.dashboard.chat_runner import unavailable_agent_message
 
-    message = unavailable_selection_message(VIEW)
+    message = unavailable_agent_message(VIEW)
     assert "Pick the agent for this chat again, or start a new chat" in message
     assert "Crew Member" not in message and "restore it" not in message
-    assert unavailable_selection_message(AGENT) == (
+    assert unavailable_agent_message(AGENT) == (
         f"Crew Member '{AGENT}' is unavailable; restore it or choose a member"
     )
