@@ -906,7 +906,8 @@ def _expected_node_base(version: str) -> str:
     """The artifact basename the installer will ask for ON THIS HOST.
 
     Hardcoding one platform would pass on the Linux shard and fail on the macOS
-    and arm64 runners, so the mapping mirrors the script's own uname cases.
+    and arm64 runners. Linux/x64 also needs the native libc version so the
+    fixture serves the older-glibc artifact when the installer requests it.
     """
     system = platform.system()
     node_os = {"Darwin": "darwin", "Linux": "linux"}[system]
@@ -917,6 +918,14 @@ def _expected_node_base(version: str) -> str:
         "aarch64": "arm64",
         "armv7l": "armv7l",
     }[platform.machine().lower()]
+    if node_os == "linux" and node_arch == "x64":
+        try:
+            libc = os.confstr("CS_GNU_LIBC_VERSION") or ""
+        except (OSError, ValueError):
+            libc = ""
+        match = re.fullmatch(r"glibc (\d+)\.(\d+)(?:\.\d+)*", libc)
+        if match and (int(match[1]), int(match[2])) < (2, 28):
+            return f"node-v{version}-linux-x64-glibc-217"
     return f"node-v{version}-{node_os}-{node_arch}"
 
 
