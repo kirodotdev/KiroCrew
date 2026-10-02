@@ -254,6 +254,22 @@ def _list_components() -> None:
     print("\nCombine with commas: --components memory,crons,skills")
 
 
+def _warn_if_transcripts_left_behind(mc: Path, components: list[str] | None) -> None:
+    """Say so when config is restored: no component carries the chats themselves.
+
+    The dashboard lists chats from the ``sessions/*.jsonl`` files, not from
+    ``session_map.json`` (that is the kiro-cli resume map), and no component
+    carries ``sessions/``.
+    """
+    if not _want(components, "config"):
+        return
+    print(
+        "⚠️  WARNING: chat history is not included in this restore. No component carries "
+        f"sessions/ (the dashboard's chats), so {mc / 'sessions'} is left as it is and chats "
+        "from the source machine will not appear."
+    )
+
+
 def _report_unredacted_upload() -> None:
     """Say plainly what an operator gets by turning redaction off."""
     print(
@@ -1846,6 +1862,7 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
                     return 1
         if components:
             print(f"🔧 Components: {','.join(components)}")
+        _warn_if_transcripts_left_behind(mc, components)
 
         if args.dry_run:
             print(f"\n🔍 Dry run — would restore to {mc} in {mode} mode")
