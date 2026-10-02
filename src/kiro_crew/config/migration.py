@@ -1,7 +1,8 @@
 """The write-back migrations a config load can apply to ``config.json``.
 
 Owns what a migration changes: the ids a load records as pending, the one-shot
-``connections_ui`` marker name, the transform that re-applies each pending
+``connections_ui`` marker name, the legacy ``skills.lazy_load`` cohort test, the
+transform that re-applies each pending
 migration to the document read inside the write lock, the once-per-process
 report of stored superseded defaults, and the in-memory half of an adoption.
 When and how the result is written -- the backup, the locked atomic write and
@@ -13,12 +14,16 @@ not on the loader. This module imports neither the loader nor schema/validation.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable
 from dataclasses import MISSING, asdict
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from kiro_crew.config.sections import KiroCrewAgentConfig, WorkspaceConfig
 from kiro_crew.config.superseded_defaults import (
+    LEGACY_LAZY_LOAD_ADOPTION,
+    adopted_superseded_if_readable,
     auto_adoptable,
     drift_summary,
     drop_drifted_keys,
@@ -55,6 +60,81 @@ MIGRATE_SUPERSEDED_DEFAULTS = "superseded_defaults"
 #: than inside it for the same reason as the superseded-defaults ack file — a
 #: full ``to_dict()`` rewrite carries only schema fields and would drop it.
 CONNECTIONS_UI_MIGRATION_MARKER = "connections_ui_migrated.json"
+
+#: Remove a ``skills.lazy_load: false`` that a 0.6.x-or-earlier build materialized.
+#: Those builds wrote every default into ``config.json``, and their default was
+#: ``false`` -- the full skills listing. Since 0.7.0 ``false`` selects the short skill
+#: entry and the default is ``true``, so on an upgraded install the bytes nobody chose
+#: select the narrowest mode. Nobody on 0.6.x could have chosen the short entry,
+#: because it did not exist yet; that is what makes a rewrite sound here where the
+#: generic one is not.
+MIGRATE_SKILLS_LAZY_LOAD = "skills_lazy_load"
+LAZY_LOAD_KEY = LEGACY_LAZY_LOAD_ADOPTION[0]
+
+#: The newest release line whose writes are rewritten. ``CONNECTIONS_UI_MIGRATION_MARKER``
+#: first shipped in 0.7.0 (0.7.0-insider.1) and every clean load of a later build
+#: writes it, so "stamped by this line or older AND no marker" proves that no 0.7+
+#: build has ever loaded the document -- and therefore that nobody chose ``false``
+#: under its current meaning.
+_LEGACY_LAZY_LOAD_LINE = (0, 6)
+
+# ``major.minor.patch`` plus at most a short suffix (``-insider.3``, ``.10``, ``rc1``).
+# Anything else is a stamp this cannot read, which is never proof.
+_VERSION_STAMP = re.compile(
+    r"(\d{1,4})\.(\d{1,4})\.(\d{1,4})(?:[A-Za-z.+\-][0-9A-Za-z.+\-]{0,48})?"
+)
+
+
+def _legacy_writer_stamp(data: dict) -> str | None:
+    """The ``meta.lastTouchedVersion`` of *data* when it names 0.6.x or older.
+
+    ``None`` for every other case -- a newer build, and also an absent, non-object or
+    unparsable ``meta``: an unknown writer is not a provable one. The stamp is
+    returned so the notice can name the build.
+    """
+    meta = data.get("meta")
+    stamp = meta.get("lastTouchedVersion") if isinstance(meta, dict) else None
+    if not isinstance(stamp, str):
+        return None
+    match = _VERSION_STAMP.fullmatch(stamp)
+    if match is None or (int(match[1]), int(match[2])) > _LEGACY_LAZY_LOAD_LINE:
+        return None
+    return stamp
+
+
+def _stores_lazy_load_false(data: dict) -> bool:
+    skills = data.get("skills")
+    return isinstance(skills, dict) and skills.get("lazy_load") is False
+
+
+def legacy_lazy_load_rewrite_due(base_data: dict, *, connections_marker: Path) -> str | None:
+    """Whether this load should remove a legacy ``skills.lazy_load: false``.
+
+    *base_data* is ``config.json`` alone, before the overlay merge: the overlay is
+    the operator's live choice and the stale materialization only ever landed in the
+    base. Returns the writer's version stamp when every condition holds, else
+    ``None``:
+
+    * the base stores exactly ``false`` (an explicit ``true`` is never touched);
+    * ``meta.lastTouchedVersion`` names 0.6.x or older -- read BEFORE a stamping write
+      by this build replaces it, which is why the decision is taken on the load and
+      why ``refresh_config_meta_stamp`` holds its refresh while this is due;
+    * *connections_marker* does not exist, so no 0.7+ build has loaded this home;
+    * the adoption ledger is readable and does not already name the key, which keeps
+      it one-shot even if the marker is later deleted. An unreadable ledger is
+      unknown, never "not yet", so it declines.
+
+    Every declining branch leaves the value exactly as stored.
+    """
+    if not _stores_lazy_load_false(base_data):
+        return None
+    stamp = _legacy_writer_stamp(base_data)
+    if stamp is None or connections_marker.exists():
+        return None
+    adopted = adopted_superseded_if_readable()
+    if adopted is None or LAZY_LOAD_KEY in adopted:
+        return None
+    return stamp
 
 
 def apply_document_migrations(
@@ -184,16 +264,30 @@ def apply_document_migrations(
     #
     # Lock order is config-then-ack, matching ``record_acks`` -- the only two sites
     # that nest these locks, and they nest them the same way.
+    #
+    # The legacy ``skills.lazy_load: false`` removal rides the same four rules. Its
+    # re-detection is "still an exact stored false, still stamped by 0.6.x or older":
+    # ``kirocrew config set`` and every settings save re-stamp the document, so a
+    # value set since this load's read is never undone. Both go to the ledger in ONE
+    # record, so a failed record cannot leave one half marked adopted with nothing
+    # removed.
+    to_record: dict[str, object] = {}
     if MIGRATE_SUPERSEDED_DEFAULTS in pending and adopt_keys:
-        fresh = [
-            entry.dotted_key for entry in auto_adoptable(data) if entry.dotted_key in adopt_keys
-        ]
-        if fresh:
-            record_adoptions({key: stored_value_or_none(data, key) for key in fresh})
-            if recorded_adoptions is not None:
-                recorded_adoptions.extend(fresh)
-            if drop_drifted_keys(data, fresh):
-                changed = True
+        for entry in auto_adoptable(data):
+            if entry.dotted_key in adopt_keys:
+                to_record[entry.dotted_key] = stored_value_or_none(data, entry.dotted_key)
+    if (
+        MIGRATE_SKILLS_LAZY_LOAD in pending
+        and _stores_lazy_load_false(data)
+        and _legacy_writer_stamp(data) is not None
+    ):
+        to_record[LAZY_LOAD_KEY] = False
+    if to_record:
+        record_adoptions(to_record)
+        if recorded_adoptions is not None:
+            recorded_adoptions.extend(to_record)
+        if drop_drifted_keys(data, list(to_record)):
+            changed = True
 
     return changed
 

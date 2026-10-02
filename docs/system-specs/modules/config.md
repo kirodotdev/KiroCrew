@@ -46,7 +46,7 @@ representative seams of each kind.
 | `config/integration_sections.py` | `mcp`, `mcp_gateway` (with the MCP stub roster readers the gateway seed shares), `instances`, `tunnel`, `publish`, `computer_use` and the external app `registries`. |
 | `config/service_sections.py` | `taskrunner`, `messaging`, `cron_history`, `monitoring`, `heartbeat` and `watchdog`. |
 | `config/section_builders.py` | The `_build_*` helper of 28 sections, grouped by the module that owns each section's DTO. Four `_build_*` helpers stay in the loader (agent, session, telemetry, dashboard). Sections with no helper are built inline in `KiroCrewConfig._load_resolved` (`heartbeat`, the external app `registries`, `memory_stores`, the `agents` crew roster, `workspaces`) or by their DTO (`DecisionsConfig.from_raw`, `ResourceLimitsConfig.from_raw`, `ChannelConfig.from_dict` for `slack_channels`). |
-| `config/migration.py` | The write-back migration ids, the document transform `apply_document_migrations`, the one-shot `connections_ui` marker name, superseded-default reporting, and the in-memory half of an adoption. |
+| `config/migration.py` | The write-back migration ids, the document transform `apply_document_migrations`, the one-shot `connections_ui` marker name, the legacy `skills.lazy_load` cohort test, superseded-default reporting, and the in-memory half of an adoption. |
 | `config/resolution.py` | Raw overlay merging, top-level section classification, and degraded-input tracking. |
 | `config/validation.py`, `config/schema.py` | Schema validation with the validated-data cache, and the JSON schema and restart registry built from the DTOs. |
 | `config/paths.py`, `config/live.py`, `config/superseded_defaults.py` | Pure path primitives, the one live-config watcher and applier registry, and the superseded-default registry with its acknowledgment ledger. |
@@ -690,7 +690,7 @@ window (an entry whose config write failed describes a value that is still store
 and still listed as drift). Both fields come from the sidecar, a file the agent
 sandbox can write, so they are untrusted output: every character is rendered
 terminal-safe (control characters escaped, never executed), and the pasteable
-restore command is built only from `SUPERSEDED_DEFAULTS` literals after matching the
+restore command is built only from `SUPERSEDED_DEFAULTS` (and `LEGACY_LAZY_LOAD_ADOPTION`) literals after matching the
 entry by key and exact value -- no quoting scheme is portable across every shell an
 operator might paste into, so an entry the registry does not vouch for is shown,
 escaped, with no command. An adopted key holds no stored value any more, so it is
@@ -738,6 +738,72 @@ than pointing the operator at a command for something already fixed:
 - `kirocrew doctor` prints a `Stored Defaults` section reading `config.json`
   directly. Drift is informational and does NOT become an issue; an unreadable or
   malformed config does.
+
+### The legacy `skills.lazy_load` rewrite
+
+0.6.x and earlier materialized `skills.lazy_load: false` into every `config.json`
+they saved, and `false` was then the default full skills listing. Since 0.7.0
+`false` selects the short skill entry and the default is `true`, so an upgraded
+install silently runs the narrowest mode. This is NOT an `auto_adopt` row: on a
+0.7+ install `false` is the supported switch to the short entry, so value equality
+cannot tell noise from a choice. What can is WHEN the value was written, the same
+boundary the `connections_ui` launch migration uses.
+
+`migration.legacy_lazy_load_rewrite_due` decides on the BASE document, on a load
+that read it (never on a cache hit). It returns the writer's stamp only when all of
+these hold; every other case leaves the value exactly as stored:
+
+- the base stores exactly the boolean `false` (an explicit `true`, `0` or a string
+  is never touched);
+- `meta.lastTouchedVersion` parses as `major.minor.patch` with at most a short
+  suffix and names 0.6.x or older. An absent, non-object or unparsable `meta` is an
+  unknown writer, not a provable one, and declines;
+- `connections_ui_migrated.json` does not exist. It first shipped in
+  0.7.0-insider.1 and every clean later load writes it, so its absence proves no
+  0.7 build has loaded this home;
+- the adoption ledger is readable and does not name the key. This keeps the rewrite
+  one-shot even if the marker is later deleted; an unreadable ledger declines.
+
+**What stays unmigrated.** Nothing reports a declined `false` until the registry
+carries a report-only row for the key; the loader already skips that key in the
+same load's superseded-default line when it is the one being removed. The marker
+predates the meaning change: 0.7.0-insider.1 to insider.5 wrote it while `false`
+still meant the full listing, so an install that ran one of those keeps its
+materialized `false`. That is the conservative side of the boundary: the proof
+cannot tell those installs from a 0.7 operator who chose the short entry.
+
+The stamp is the proof, so nothing may re-stamp the document before the rewrite
+uses it. The load decides before it writes, and `refresh_config_meta_stamp` (the
+gateway's post-bind refresh) holds its refresh while the rewrite is still due, so a
+degraded first load leaves the proof for the next clean one. A writer that runs
+before any load and re-stamps -- `kirocrew config set --file`, which replaces the
+whole document with the operator's own -- ends the cohort, which is correct for a
+document the operator just supplied. So does any other real write by this build
+during a degraded session (a settings save, `config set`): those writes are this
+build's bytes, and holding the stamp across them would let the rewrite undo a value
+set on this build, which the in-lock re-check exists to prevent.
+
+The rewrite then rides `MIGRATE_SKILLS_LAZY_LOAD` through the same write-back as an
+adoption: re-detected inside the config write lock (still an exact `false`, still
+stamped 0.6.x or older; `kirocrew config set` and every settings save re-stamp, so
+a value set since the load's read is never undone), recorded in the adoption
+ledger as `{"skills.lazy_load": false}` BEFORE the key is removed, in the SAME
+record as any superseded-default adoption of that pass (two records would let a
+failed second one strand the first as adopted with nothing removed), the key
+un-materialized rather than written as `true`, the in-memory value moved only once
+the write is confirmed and only where `config.local.json` does not supply the key,
+the validated-data cache dropped when the write did not land, and the
+`connections_ui` marker deferred with it. One WARNING per rewrite names the key, the
+writer's version, why, which value now applies (the default, or the overlay's when
+`config.local.json` sets the key), and the `kirocrew config set skills.lazy_load
+false` that chooses the short entry. `superseded_defaults.LEGACY_LAZY_LOAD_ADOPTION` lets
+`adoption_summary` vouch for the ledger entry, so `doctor` and `kirocrew config
+defaults` replay it with a restore command (a bool spelled as JSON). It is never
+drift, so the marker-first residual leaves the value stored with only that line
+saying so. A load that declines on an unreadable ledger or stamp still writes the
+marker, so that install keeps its value for good; a degraded or deferred load
+writes neither and the next clean load decides again.
+`test_config_lazy_load_legacy_migration.py` pins the truth table.
 
 ## Acknowledging a superseded default
 
@@ -3232,7 +3298,9 @@ corrupt existing document as described above.
 
 `skills.max_triggered=0` disables per-message trigger injection, not discovery.
 The default entry (`lazy_load=true`) is a bounded usage-ranked index carrying each
-skill's path, and one line naming the families it leaves out. `lazy_load=false`
+skill's path, and one line naming the families it leaves out. An install last
+written by 0.6.x or earlier has its materialized `false` removed once on upgrade
+(see "The legacy `skills.lazy_load` rewrite"). `lazy_load=false`
 selects the shorter entry: up to eight usage-ranked names with short purposes plus
 `skill_search` guidance for short keywords. An agent with its own `skill://`
 mapping gets neither -- those skills arrive as complete instructions. Both preserve pinned instructions, confined project-body

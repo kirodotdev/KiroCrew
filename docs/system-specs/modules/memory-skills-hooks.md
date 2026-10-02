@@ -3554,7 +3554,9 @@ Skills with auxiliary files (scripts, assets) include `dir` path so the LLM can 
 
 **Discovery (`skills.lazy_load`, default true):** startup and post-compaction use
 one bounded directory. The default is the usage-ranked index with a family hint
-for omitted rows; false selects a shorter search pointer. A `skill://` mapping
+for omitted rows; false selects a shorter search pointer. A `false` that 0.6.x
+materialized (when it meant the full listing) is removed once on upgrade; see the
+legacy `skills.lazy_load` rewrite in [config](config.md). A `skill://` mapping
 restricts availability, not eager body delivery. Directory, search, paginated
 list, exact reads and `$full/key` expansion resolve the same project-aware mapping.
 Unqualified `$leaf` fallback is permitted only when unique. External mapped files

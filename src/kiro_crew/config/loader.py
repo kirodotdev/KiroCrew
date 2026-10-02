@@ -1841,7 +1841,10 @@ def refresh_config_meta_stamp() -> bool:
     Deliberately a plain field refresh, not a migration hook: the stamp is
     replaced, every other key is preserved, and nothing else changes. When
     the stored version already matches, the file is not rewritten at all
-    (no mtime churn, no ``lastTouchedAt`` bump).
+    (no mtime churn, no ``lastTouchedAt`` bump). Nor is it rewritten while
+    the one-shot legacy ``skills.lazy_load`` rewrite is still due
+    (``migration.legacy_lazy_load_rewrite_due``): the old stamp is that
+    rewrite's proof, and a degraded first load leaves it pending.
 
     The read-modify-write goes through :func:`update_config_locked` — the
     required path for new ``config.json`` mutations — so the refresh holds
@@ -1874,6 +1877,16 @@ def refresh_config_meta_stamp() -> bool:
         stored = meta.get("lastTouchedVersion") if isinstance(meta, dict) else None
         if stored == __version__:
             return None  # current: skip the write entirely
+        if (
+            _migration.legacy_lazy_load_rewrite_due(
+                data, connections_marker=config_dir() / CONNECTIONS_UI_MIGRATION_MARKER
+            )
+            is not None
+        ):
+            # The old stamp is the proof the pending one-shot rewrite reads, and a
+            # load that could not write (a degraded section) has not used it yet.
+            # It is still the build that wrote these bytes, so keeping it is true.
+            return None
         wrote = True
         return data  # update_config_locked stamps the meta block itself
 
@@ -3678,6 +3691,9 @@ class KiroCrewConfig:
         # therefore the correct answer on the hot path, not a missing one -- the load
         # that populated the cache already adopted.
         adoptable: list[SupersededDefault] = []
+        # Same rule for the legacy ``skills.lazy_load`` rewrite: the writer stamp of
+        # 0.6.x or older that the base document carried, or None.
+        legacy_lazy_stamp: str | None = None
         content_digest: str | None = None
         if cached is not None:
             data, sidecar, content_digest = cached
@@ -3741,7 +3757,18 @@ class KiroCrewConfig:
             adoptable = []
             if loaded_base:
                 adoptable = auto_adoptable(data)
-                _report_superseded_defaults(data, skip={e.dotted_key for e in adoptable})
+                # Decided here, on the base as the previous build left it: once this
+                # load writes, or the gateway's meta refresh runs, the stamp names
+                # the running build and the proof is gone.
+                legacy_lazy_stamp = _migration.legacy_lazy_load_rewrite_due(
+                    data, connections_marker=config_dir() / CONNECTIONS_UI_MIGRATION_MARKER
+                )
+                report_skip = {e.dotted_key for e in adoptable}
+                if legacy_lazy_stamp is not None:
+                    # The line must not send the operator after a key this same
+                    # load removes (it applies once the registry has a row for it).
+                    report_skip.add(_migration.LAZY_LOAD_KEY)
+                _report_superseded_defaults(data, skip=report_skip)
 
             # Deep-merge config.local.json overlay (user-owned, never touched by setup)
             local_data: dict = {}
@@ -4360,6 +4387,10 @@ class KiroCrewConfig:
             adopt_keys = {e.dotted_key for e in adoptable}
             if adopt_keys:
                 pending.add(MIGRATE_SUPERSEDED_DEFAULTS)
+            # The legacy lazy_load rewrite rides the same write, ledger and
+            # confirmed-only in-memory half as an adoption (see its id's docstring).
+            if legacy_lazy_stamp is not None:
+                pending.add(_migration.MIGRATE_SKILLS_LAZY_LOAD)
 
             needs_migration = bool(pending)
 
@@ -4398,6 +4429,22 @@ class KiroCrewConfig:
                         )
                     if entry is not None and not _overlay_supplies(local_data, key):
                         _adopt_in_memory(cfg, key, entry.old_default)
+                if _migration.LAZY_LOAD_KEY in confirmed_adoptions:
+                    overlay_sets_it = _overlay_supplies(local_data, _migration.LAZY_LOAD_KEY)
+                    logger.warning(
+                        "config: removed skills.lazy_load=false from config.json: Kiro "
+                        "Crew %s stored it when false was the default full skills "
+                        "listing, and false now selects the short skill entry. %s To "
+                        "choose the short entry: kirocrew config set skills.lazy_load false",
+                        legacy_lazy_stamp,
+                        (
+                            "config.local.json still sets the key, and its value applies."
+                            if overlay_sets_it
+                            else "The current default (the ranked skill index) applies."
+                        ),
+                    )
+                    if not overlay_sets_it:
+                        _adopt_in_memory(cfg, _migration.LAZY_LOAD_KEY, False)
             elif needs_migration:
                 # This load DISCARDED something (a malformed section, an
                 # unreadable file). The write-back serializes only the parsed
@@ -4461,7 +4508,11 @@ class KiroCrewConfig:
             # EVERY load for as long as the two conditions coexist. After the
             # restart the fixed file's fingerprint misses the (empty) cache and the
             # adoption retries on that first load -- no invalidation needed.
-            if adopt_keys and not adoption_landed and not cfg._degraded_sections:
+            if (
+                (adopt_keys or legacy_lazy_stamp is not None)
+                and not adoption_landed
+                and not cfg._degraded_sections
+            ):
                 _invalidate_config_cache()
 
         return cfg, ticket, content_digest

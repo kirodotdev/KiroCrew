@@ -38,6 +38,14 @@ subagent timeout and the chat-turn ceiling) and the subagent memory floor
 an old shipped default is removed so the current default applies, in that same run. It happens once per key: set one back afterwards and it stays yours.
 Affirming a value with `--keep` before that first start also keeps it.
 
+One more key is fixed once, for installs upgrading straight from 0.6.x or earlier:
+those releases stored `skills.lazy_load: false`, which then meant the full skills
+listing. Today `false` selects the short entry that names only eight skills, so on
+the first start after such an upgrade the stored `false` is removed and the default
+skill index applies. An install that has already run any 0.7 build or later,
+insider builds included, keeps its value.
+To choose the short entry afterwards: `kirocrew config set skills.lazy_load false`.
+
 Everything else is reported, not changed, because a stored value can be a real
 choice: `stt.streaming: false` is how you turn live dictation text off, and on disk
 that is identical to the old default. On startup Kiro Crew prints one line naming any

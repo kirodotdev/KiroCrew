@@ -514,6 +514,28 @@ def adopted_superseded() -> dict[str, object]:
     return _map_from_document(_read_ack_document(), ADOPTED_SECTION)
 
 
+def adopted_superseded_if_readable() -> dict[str, object] | None:
+    """The ``adopted`` map, or ``None`` when the sidecar exists but cannot be read.
+
+    The fail-CLOSED read every one-shot adoption decides from: "no file" is a
+    complete answer (nothing was ever adopted), while "a file we could not read"
+    is unknown, and treating unknown as never re-arms the one-shot over a value
+    the operator restored.
+    """
+    document, readable = _read_ack_document_status()
+    return _map_from_document(document, ADOPTED_SECTION) if readable else None
+
+
+#: The one ledger entry written by a migration rather than by a registry row:
+#: ``config.migration``'s legacy ``skills.lazy_load`` rewrite records the stored
+#: ``False`` it removes here, so ``doctor`` and ``kirocrew config defaults`` replay it
+#: like any other adoption. Listed so :func:`adoption_summary` vouches for it and
+#: offers the restore command built from these literals. Unlike a registry row it is
+#: never drift, so the marker-first residual (record landed, config write failed)
+#: leaves the value stored with only that ``doctor`` line saying so.
+LEGACY_LAZY_LOAD_ADOPTION: tuple[str, object] = ("skills.lazy_load", False)
+
+
 def _sidecar_holds_unparsable_data() -> bool:
     """True when the sidecar leaf is a PLAIN FILE we could not turn into a document.
 
@@ -790,8 +812,8 @@ def auto_adoptable(
     deferral to the next one.
     """
     if adopted is None:
-        document, readable = _read_ack_document_status()
-        if not readable:
+        adopted = adopted_superseded_if_readable()
+        if adopted is None:
             logger.warning(
                 "Not adopting any superseded default this load: %s exists but could "
                 "not be read, so an already-adopted key cannot be told from a value "
@@ -799,7 +821,6 @@ def auto_adoptable(
                 ACK_FILE_NAME,
             )
             return []
-        adopted = _map_from_document(document, ADOPTED_SECTION)
     return [
         entry
         for entry in superseded_default_drift(base_data, acked=acked)
@@ -1026,22 +1047,27 @@ def adoption_summary(dotted_key: str, removed: object) -> str:
     Both fields come from the sidecar, a plain file the agent sandbox can write, so
     both are untrusted output. Two rules follow. Every character printed is passed
     through :func:`_terminal_safe`. And the pasteable restore command is built ONLY
-    from registry literals: the entry is matched against ``SUPERSEDED_DEFAULTS`` by
-    key and by exact value (type included), and the command names the registry's own
-    ``dotted_key`` and ``old_default`` rather than the sidecar's bytes. No quoting
-    scheme is portable across every shell the operator might paste into (POSIX
-    quoting leaves ``cmd.exe`` metacharacters live), so a value the registry does
-    not vouch for gets no command at all -- it is shown, escaped, as unrecognised.
+    from registry literals: the entry is matched against ``SUPERSEDED_DEFAULTS`` (and
+    :data:`LEGACY_LAZY_LOAD_ADOPTION`) by key and by exact value (type included), and
+    the command names the registry's own key and value rather than the sidecar's
+    bytes. No quoting scheme is portable across every shell the operator might paste
+    into (POSIX quoting leaves ``cmd.exe`` metacharacters live), so a value the
+    registry does not vouch for gets no command at all -- it is shown, escaped, as
+    unrecognised.
     """
     key = _terminal_safe(dotted_key)
     shown = _terminal_safe(repr(removed))
+    # ``(key, value, still listed as drift if the write failed)`` for every value the
+    # registry vouches for. The legacy entry has no registry row, so a failed write
+    # leaves it stored but unreported.
     vouched = next(
         (
-            entry
-            for entry in SUPERSEDED_DEFAULTS
-            if entry.dotted_key == dotted_key
-            and type(removed) is type(entry.old_default)
-            and removed == entry.old_default
+            known
+            for known in (
+                *((e.dotted_key, e.old_default, True) for e in SUPERSEDED_DEFAULTS),
+                (*LEGACY_LAZY_LOAD_ADOPTION, False),
+            )
+            if known[0] == dotted_key and type(removed) is type(known[1]) and removed == known[1]
         ),
         None,
     )
@@ -1050,10 +1076,14 @@ def adoption_summary(dotted_key: str, removed: object) -> str:
             f"{key}: auto-adoption recorded for stored value {shown}, which no registered "
             f"default explains; no restore command is offered for it"
         )
+    known_key, known_value, reported = vouched
+    failed = "still stored and still listed as drift" if reported else "still stored"
+    # A bool is spelled as JSON, the way config.json and every doc spell it.
+    typed = json.dumps(known_value) if isinstance(known_value, bool) else known_value
     return (
         f"{key}: stored value {shown} was removed from config.json on upgrade (if that "
-        f"write failed the value is still stored and still listed as drift). Restore it "
-        f"with: kirocrew config set {vouched.dotted_key} {vouched.old_default}"
+        f"write failed the value is {failed}). Restore it "
+        f"with: kirocrew config set {known_key} {typed}"
     )
 
 
