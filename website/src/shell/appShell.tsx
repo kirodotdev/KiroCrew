@@ -40,6 +40,7 @@ import { useFocusChrome } from './focus/focusChrome'
 import { useNativeNotification } from '../hooks/useNativeNotification'
 import { useAgentInstallLatch } from '../hooks/useAgentInstallLatch'
 import { useNotificationSound } from '../hooks/useNotificationSound'
+import { useMouseHaptics } from '../hooks/useMouseHaptics'
 import { recordSessionStart } from '../rum'
 import { api, isAuthBannerShown } from '../api/client'
 import { isPermissionRefusal } from '../api/apiError'
@@ -460,6 +461,7 @@ export function useAppShell() {
   // keyboard hides, so the header stays in view and no gap appears below.
   useKeyboardViewportReset()
   useNotificationSound()
+  useMouseHaptics()
   // The rail starts collapsed until the user expands it: only a stored '0'
   // (the user's own expand) opens it on load.
   const [navCollapsed, setNavCollapsed] = useState(() => localStorage.getItem('mc-nav') !== '0')

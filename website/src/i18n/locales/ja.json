@@ -19487,7 +19487,17 @@
         "channel_tip_taskrunner": "タスクの実行が進んだとき、または対応が必要なときに通知します。計画の準備完了、開始、再試行や再計画、完了、失敗、停滞やタイムアウト、再起動後の一時停止などです。",
         "channel_tip_terminal": "ターミナルタブのシェルがエラーで終了したとき、または強制終了されたときに通知します。タブは閉じるため、終了コードはここに残ります。",
         "channel_memory": "繰り返しの失敗",
-        "channel_tip_memory": "エージェントのツールの失敗が繰り返されたとき、週に1回。メモリーで週1回のお知らせをオンにした場合のみ。"
+        "channel_tip_memory": "エージェントのツールの失敗が繰り返されたとき、週に1回。メモリーで週1回のお知らせをオンにした場合のみ。",
+        "mouse_haptics": "Logitech マウスの触覚フィードバック",
+        "mouse_haptics_description": "通知音が鳴るたびに、Logi Options+ 用の {{productName}} プラグインを通じて触覚フィードバック対応の Logitech マウスを振動させます。振動は音量の影響を受けないため、音量 0% でも音なしで通知に気付けます。",
+        "mouse_haptics_needs_sound": "マウスの触覚フィードバックを使うには「新しい通知でサウンドを再生」をオンにしてください。",
+        "mouse_haptics_checking": "{{productName}} プラグインを探しています…",
+        "mouse_haptics_connected": "プラグインに接続しました。各通知の振動は Logi Options+ の「触覚フィードバック」で選べます。",
+        "mouse_haptics_not_found": "プラグインが見つかりません。Logi Options+ でお使いのマウス → 触覚フィードバック → プラグインのインストールとアンインストール を開き、そのページを表示したままプラグインファイルを開いてください。<guide>プラグインの入手方法</guide>",
+        "mouse_haptics_unreachable": "このコンピューター上のプラグインに接続できませんでした。Logi Options+ が終了しているか、プラグインがまだインストールされていない可能性があります。",
+        "mouse_haptics_save_failed": "この設定を保存できませんでした。このブラウザーのストレージがいっぱいか、ブロックされている可能性があります。",
+        "mouse_haptics_install_guidance": "Logi Options+ でお使いのマウス → 触覚フィードバック → プラグインのインストールとアンインストール を開き、そのページを表示したままプラグインファイルを開いてください。<guide>プラグインの入手方法</guide>",
+        "mouse_haptics_loopback_only": "{{productName}} デスクトップアプリ、またはマウスを接続しているコンピューターのブラウザーで localhost のアドレスからダッシュボードを開いている場合のみ動作します。"
       },
       "privacyPanel": {
         "recordMetricsDescription": "このマシンでパフォーマンスメトリクスを収集します。",
