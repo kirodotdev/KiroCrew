@@ -111,11 +111,11 @@ describe('the facade composition', () => {
   const CALL_ORDER = [
     'useSessionSources', 'useDebouncedSessionSearch', 'useSessionRename', 'useSidebarLane',
     'useSessionFilterState', 'useSessionStatusFilters', 'useHistoryPane', 'usePinnedSessionOrder',
-    'useStaleCollapse', 'useFolderSort', 'useFolderRename', 'useSidebarResize', 'useSidebarTags',
+    'useStaleCollapse', 'useFolderSort', 'useFolderRename', 'useSidebarResize', 'useFullTitlesOnScrollSetting', 'useSidebarTags',
     'useBoardColumns', 'usePinnedOrderAuthority', 'useColumnPopover', 'useBoardColumnMutations',
     'useColumnMatches', 'useFolderVisibility', 'useStaleMoveWatcher', 'useSearchMatches',
     'useHoverHold', 'useLineageSeed', 'useHoverPinLiveness', 'useStaleNarrowBridge',
-    'useFolderFilterReveal', 'useFlatLane', 'useConductorLane', 'useLaneCycle', 'useShortcutOrder',
+    'useFolderFilterReveal', 'useFlatLane', 'useConductorLane', 'useLaneCycle', 'useSidebarScrollPeek', 'useShortcutOrder',
     'useFolderFilterRows', 'useFolderMutations', 'useBoardFolderCollapse', 'useFolderDropOps',
     'useFolderTree', 'useSidebarReveal', 'useSidebarMoveUndo', 'useSidebarDragHandlers',
     'useFolderChatCreate', 'useSessionCreate', 'usePinnedKeyboardReorder', 'useRootFolderLanes',

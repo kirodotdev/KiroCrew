@@ -112,6 +112,8 @@ import { useStaleCollapse, useStaleMoveWatcher, useStaleNarrowBridge } from './c
 import { useFolderSort, useFolderVisibility, useFolderFilterReveal, useFolderFilterRows, useFolderMutations, useFolderTree, useRootFolderLanes } from './chat-sidebar/folders'
 import FolderCleanupPanel from './chat-sidebar/FolderCleanupPanel'
 import { useSidebarResize } from './chat-sidebar/resize'
+import { useSidebarScrollPeek, useFullTitlesOnScrollSetting } from './chat-sidebar/scrollPeek'
+import ScrollPeekLayer from './chat-sidebar/ScrollPeekLayer'
 import { useSidebarTags } from './chat-sidebar/tags'
 import { useBoardColumns, useColumnPopover, useBoardColumnMutations, useColumnMatches, useBoardFolderCollapse } from './chat-sidebar/board'
 import { useHoverHold, useHoverPinLiveness } from './chat-sidebar/hoverHold'
@@ -2319,6 +2321,13 @@ interface ChatSidebarProps {
    *  not a live slot, because the composer stages it until send. Never fired for
    *  incognito/temporary sessions or for the already-active session. */
   onDropSessionRef?: (ref: { key: string; title: string; messages?: number }) => void
+  /** Opts the list into the scroll peek: while the user scrolls the session
+   *  lane, titles the row clips are shown in full in a floating layer laid
+   *  over them. Rows keep the stored width. Omit (mobile drawer, embedded
+   *  view) to turn it off: a phone's near-full-width drawer leaves no room
+   *  beside the pane for an overflowing title, and the embedded view has no
+   *  chat beside it either. See chat-sidebar/scrollPeek. */
+  scrollPeek?: boolean
 }
 
 /** Sort options, in menu order. The label lives in `SORT_LABEL_KEY`. */
@@ -2416,7 +2425,7 @@ function ChatSidebar({
   // to say which collection it means.
   slots: localSlots, activeSlot, unreadSlots, history, historyHasMore,
   defaultAgent, installedAgents, mode, onWidthChange, onDragChange, onSelectSlot, onOpenSlotInNewTab, onOpenSource, collapsible,
-  chatDropTarget, onDropSessionRef, staticRows,
+  chatDropTarget, onDropSessionRef, staticRows, scrollPeek,
 }: ChatSidebarProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const dispatch = useAppDispatch()
@@ -2911,6 +2920,7 @@ function ChatSidebar({
   const {
     sidebarWidth, sidebarWidthRef, sidebarResize, nudgeSidebar, widenForBoard, restorePreBoardWidth,
   } = useSidebarResize({ onWidthChange, onDragChange })
+  const fullTitlesOnScroll = useFullTitlesOnScrollSetting()
 
   // Folders via React Query. `isSuccess` gates the stale-collapse move
   // watcher below: before folder data has actually ARRIVED `folders` is the
@@ -3244,6 +3254,18 @@ function ChatSidebar({
   } = useLaneCycle({ lineageAvailable, boardLaneActive, folders, lane, setLanePersisted })
 
   const sidebarRootRef = useRef<HTMLDivElement>(null)
+  // Scroll peek (desktop list lanes only); see chat-sidebar/scrollPeek.
+  // Desktop-only by design (the narrow-viewport-required exemption): the peek
+  // draws a clipped title in full past the sidebar's edge, over the chat
+  // beside it. The phone sessions pane is a near-full-width drawer that leaves
+  // no room right of the pane for an overflowing title, and nothing beside it
+  // to draw over; there the row's `title` attribute and the rename box stay
+  // the path to the full string. The board lane has no list rows to peek.
+  const peekTitles = useSidebarScrollPeek({
+    enabled: fullTitlesOnScroll && !!scrollPeek && !isMobile && !boardLaneActive,
+    rootRef: sidebarRootRef,
+    laneRef: laneScrollRef,
+  })
   const { digitModifierHeld, shortcutDigitByKey } = useShortcutOrder({ sidebarRootRef, dispatch, localSlots })
 
   const {
@@ -4407,6 +4429,9 @@ function ChatSidebar({
   return (
     // stable theming hook 'sidebar' — see website/docs/theming-contract.md
     <div ref={sidebarRootRef} onPointerOver={onRootPointerOver} onPointerLeave={releaseHoverPin} className={`${LIST_SHELL_CLS} flex flex-col shrink-0 relative h-full`} style={{ width: sidebarWidth }}>
+      {/* Scroll peek: full titles in a floating, click-through layer. The
+          card itself keeps `sidebarWidth`. */}
+      <ScrollPeekLayer titles={peekTitles} />
       {/* Drag handle — the shared column grip (components/ResizeHandle), so
           this edge looks and behaves exactly like the Crew Members roster's and
           the app workspaces'. Positioned absolutely on the card's right border
