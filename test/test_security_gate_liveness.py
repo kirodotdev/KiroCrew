@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import shlex
 import time
 from pathlib import Path
 
@@ -23,6 +24,7 @@ from kiro_crew import security
 from kiro_crew.security import (
     MAX_SCANNABLE_COMMAND_CHARS,
     MAX_SCANNABLE_SOURCE_BODY_CHARS,
+    is_denied,
     is_sensitive_bash_command,
 )
 
@@ -56,8 +58,8 @@ def _url_payload_command(n: int) -> str:
 #: budget is that size plus room for the machinery, plus the redaction record,
 #: credential-source and allowed-host modules, plus the resolver child script
 #: (``_child_realpath.py``, ~190 lines) that lives beside the resolver it serves
-#: rather than in the pool package. It is a bound on total volume:
-#: relocating a declaration between submodules moves nothing across it.
+#: rather than in the pool package. It is a bound on total volume: relocating a
+#: declaration between submodules moves nothing across it.
 #:
 #: Raised again, from 27,200, when the facade stopped binding re-exported names
 #: eagerly and began resolving each through its owner. That trades one import block
@@ -125,6 +127,49 @@ def _url_payload_command(n: int) -> str:
 #: partial table never opens the window. So does an NLMSG_DONE whose errno is not 0.
 #: Three incomplete dumps in a row log one warning, so a host whose table never
 #: reads can be told apart from a target that is really this machine.
+#: Re-pinned again, from 27,942, for the assignment resolver's whole-script walk in
+#: ``shell_normalizer.py``: command-boundary, quoted-separator, bounded ``eval``-join,
+#: per-choice guarded-reassignment readings enumerated exactly per co-referenced
+#: group (fail-closed past the group cap and the volume budget), one reading per
+#: token list, ``|&`` and glued-name binding rules, one reading budget per
+#: command, quotes read as syntax only in a quoted whole script, the append
+#: form co-referenced, a verb binding live inside a script, each reading charged
+#: at its own size, an append read as a leading assignment, compound-command
+#: keywords and ``case`` patterns as guards, a guarded append as a choice, one
+#: reading budget per payload WALK, an assignment-shaped argument as a choice, an
+#: append inside a script read onto the outer value, a pipe joining its sides in
+#: the grouping and in a further reading, the fail-closed reading a marker every
+#: consuming floor refuses on rather than the mint spelling, a glued pipe read as
+#: the operator it spells, every guard its own choice (two guards spelled alike
+#: are not one test in case-folded text), a compound body's guard sticky over every
+#: statement in it, ``$IFS`` a separator in an expanded use, and a word glued to a
+#: ``case`` pattern's ``)`` or a function's ``{`` its own word, and the
+#: glued first name's suffix reading serving a use only (a closer glued inside a
+#: quoted argument closing nothing), and the FIRST assignment's name glued via
+#: ``_SHELL_ASSIGN_RE`` before append handling so a long glued ``name+=<cli>``
+#: carrier records under the name its use reads (GPT F1), and an append
+#: continuing the assignment run so a command-word-less run's binding is not
+#: read as prefix-scoped, and an expansion's inner operator masked before the
+#: co-reference split (with the ``$`` test a fast path, not a boundary skip) so
+#: two names across it stay one group, and an over-cap guarded group folds to allowed
+#: unless a floor recogniser fires on a candidate token -- a protected, self,
+#: ssh-family or interpreter program, a nested shell, a protected flag, rsync paired
+#: with a remote operand, or a git publish operand -- fail-closed otherwise only on a
+#: cost overflow, with a subshell-scoped APPEND read at the command-run end rather than
+#: the next token (invert-default found in review, +62 lines: the fold's recogniser
+#: delegation and inert-command test), 1128 lines measured -- then the four bypasses the reviewer proved on that
+#: fold closed (the full co-referenced group at the call site, rsync gated on a
+#: remote host:path, a use inside an assignment value co-referenced, and the line
+#: pre-resolver deferring a reassigned name to the guarded resolver), +69 lines net
+#: after moving ``_next_stop_indexes`` to the leaf to hold the normalizer at its cap;
+#: then the line resolver's deferral regression fixed -- the ssh-family probe gate
+#: reads the FULL substitution while only the resolver text defers a reassigned name;
+#: then the fold's danger recognisers made the floors' OWN (one _ssh_family_verb_of
+#: shared by the ssh-self floor and the fold, glob + .exe by construction), with
+#: _strip_redirect and _substitution_program moved to the leaf to hold the cap
+#: (38 of them the header
+#: of ``shell_assignment_syntax.py``, split out of the normalizer at the per-module
+#: cap below) -- the same kind of raise the resolver child script made.
 #:
 #: Re-pinned from 27,942 for the NUL blanking in ``inline_payload._lex``: one line
 #: that swaps each NUL for a space before tokenizing, plus the docstring saying why.
@@ -142,12 +187,17 @@ def _url_payload_command(n: int) -> str:
 #: One route regex, one span helper, a four-line check in pass 3, and the comment
 #: naming the residual. No pass widened and no threshold moved.
 #:
+#: Re-pinned from 28,025 for the over-cap guarded-reading fold: an over-cap group
+#: folds to allowed unless a floor recogniser fires, which adds the
+#: ``shell_assignment_syntax`` helper module and widens the fold's own check. The
+#: number is the package's measured total after that work; no gate widened.
+#:
 #: The number IS the package's measured total, carrying no spare room: a ratchet with
 #: headroom admits exactly the unreviewed growth it exists to catch, so the next line
 #: added here fails this gate and has to be re-pinned deliberately, with its reason
 #: written above. The guards that detect a monolith growing back are the per-file cap
 #: and the facade's share below, and both must stay untouched.
-_PACKAGE_LINE_BUDGET = 28_025
+_PACKAGE_LINE_BUDGET = 29_501
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
@@ -294,3 +344,114 @@ def test_url_payload_12kb_is_fast() -> None:
     assert 10_000 < len(cmd) <= MAX_SCANNABLE_COMMAND_CHARS
     assert is_sensitive_bash_command(cmd) is None
     assert _gate_seconds(cmd) < 2.0
+
+
+def _nested_guarded_carriers(depth: int, guards: int = 6) -> str:
+    """``bash -c`` nested *depth* deep, *guards* guarded bindings per level, the
+    innermost script expanding every ancestor name."""
+    levels = [[f"n{d}{i}" for i in range(guards)] for d in range(depth)]
+    script = "echo " + " ".join(f"${n}" for level in levels for n in level)
+    for names in reversed(levels):
+        binds = "; ".join(f"{n}=1; false && {n}=2" for n in names)
+        script = f"{binds}; bash -c {shlex.quote(script)}"
+    return script
+
+
+def test_nested_guarded_carriers_share_one_reading_budget() -> None:
+    """Six guards per level yield 64 readings per frame and one nested payload per
+    reading: spent per frame, the budget let ~64 ** depth frames each pay 64
+    rescans (14 s at depth 2, the watchdog at depth 3).  One budget per walk
+    reads the tree fail-closed as soon as it is spent; a shallow tree that fits
+    is still read every way.  The bound is in the command's own units -- the
+    depth-4 tree costs no more than a few times the depth-1 one that reads every
+    reading (3x here, 62x at depth 2 before the fix) -- because a shared CI
+    worker runs this 10x slower than a quiet host and a wall-clock number alone
+    was a flake."""
+    shallow = _nested_guarded_carriers(1)
+    started = time.perf_counter()
+    assert is_denied(shallow) is None
+    every_reading = time.perf_counter() - started
+
+    deep = _nested_guarded_carriers(4)
+    assert len(deep) <= MAX_SCANNABLE_COMMAND_CHARS
+    started = time.perf_counter()
+    assert is_denied(deep) is not None
+    past_the_budget = time.perf_counter() - started
+    assert past_the_budget < 8 * every_reading + 1.0, (every_reading, past_the_budget)
+    assert is_denied(_nested_guarded_carriers(3, guards=1)) is None
+
+
+def _guarded_groups_command(groups: int) -> str:
+    return "; ".join(f"v{i}=a{'x' * 10}; false && v{i}=b; echo $v{i}" for i in range(groups))
+
+
+def test_a_long_contiguous_assignment_run_is_not_quadratic() -> None:
+    """A long ``x=1 x=2 ...; $x token`` run must scale LINEARLY, not O(n^2).
+
+    The resolver's command-position check re-walked the whole run per token
+    (~13M regex matches on a run at the scan ceiling), stalling the gate; a
+    precomputed run-start table makes it linear. Asserted as a sub-quadratic
+    RATIO rather than a wall-clock bound, so a contended CI runner does not
+    flake it (found in review).
+    """
+    import time
+
+    from kiro_crew.security import is_denied
+
+    def elapsed(n: int) -> float:
+        run = " ".join("x=%d" % (i % 2 + 1) for i in range(n)) + "; $x token"
+        start = time.perf_counter()
+        is_denied(run)
+        return time.perf_counter() - start
+
+    small = elapsed(1000)
+    big = elapsed(5000)
+    # 5x the tokens: linear ~5x, quadratic ~25x. Generous slack for constants and
+    # runner contention; a re-introduced O(n^2) walk blows straight past it.
+    assert big < 12 * small + 1.0, (small, big)
+
+
+def test_an_over_cap_group_with_many_uses_is_bounded() -> None:
+    """An over-cap group repeating a group-referencing word many times is bounded.
+
+    The fold re-enumerated its candidates per word with no memoization, stalling
+    the gate; memoization plus a per-fold work budget bounds it. Asserted as a
+    sub-quadratic RATIO so a contended CI runner does not flake it (found in review).
+    """
+    import time
+
+    from kiro_crew.security import is_denied
+
+    guards = "".join("%s=1; false && %s=2; " % (c, c) for c in "abcdefgh")
+
+    def elapsed(reps: int) -> float:
+        seg = " ".join("$a$b$c$d$e$f$g$h" for _ in range(reps))
+        start = time.perf_counter()
+        is_denied(guards + "echo " + seg)
+        return time.perf_counter() - start
+
+    small = elapsed(200)
+    big = elapsed(1200)
+    # 6x the uses: memoization keeps it near-flat, so a modest multiple catches a
+    # regression to per-word re-enumeration while tolerating runner contention.
+    assert big < 12 * small + 1.0, (small, big)
+
+
+def test_many_guarded_groups_12kb_is_fast() -> None:
+    """300 independent guarded reassignments on the deny floor: ~28 s of per-group
+    rescans before the reading budget became the command's (refused past 64
+    readings in all).  The bound is in the command's own units -- the 300-group
+    command costs no more than a few times the 63-group one that reads every
+    reading -- because a shared CI worker runs this 8x slower than a quiet host
+    and a wall-clock number alone was a flake; the per-group rescan was 20x."""
+    read_every = _guarded_groups_command(63)
+    started = time.perf_counter()
+    assert is_denied(read_every) is None
+    every_reading = time.perf_counter() - started
+
+    cmd = _guarded_groups_command(300)
+    assert 10_000 < len(cmd) <= MAX_SCANNABLE_COMMAND_CHARS
+    started = time.perf_counter()
+    assert is_denied(cmd) is not None
+    past_the_cap = time.perf_counter() - started
+    assert past_the_cap < 4 * every_reading + 1.0, (every_reading, past_the_cap)

@@ -28,8 +28,8 @@ import shlex
 from . import shell_normalizer as _shell_normalizer
 from .argv_floor import _shell_payload_sources
 from .denied_rules import _PERM_VERB_MENTION_VERBS
+from .shell_assignment_syntax import _CONTROL_OPERATOR_RE
 from .shell_normalizer import (
-    _CONTROL_OPERATOR_RE,
     _DATA_CONSUMER_PROGRAMS,
     _argv_programs,
     _data_consumer_command_disqualified,

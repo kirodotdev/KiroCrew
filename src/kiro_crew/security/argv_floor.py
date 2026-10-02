@@ -82,13 +82,14 @@ from .inline_payload import (
     _decoded_b64_literal_sources,
     _has_self_importing_inline_program,
 )
+from .shell_assignment_syntax import _REDIRECT_START_RE
 from .shell_normalizer import (
     _AMBIGUOUS_EXPANSION_RE,
+    _GLOB_CHARS,
     _PROCESS_SUBSTITUTION_OPENERS,
     _PYTHON_INLINE_PROGRAM_FLAGS,
     _PYTHON_OPERAND_FLAGS,
     _PYTHON_PROGRAM_RE,
-    _REDIRECT_START_RE,
     _SHELL_WRAPPER_CHARS,
     _argv_programs,
     _backtick_closer,
@@ -116,12 +117,18 @@ from .shell_normalizer import (
     _shell_quote_walk,
     _split_push_command_segments,
     _split_shell_words,
+    _ssh_family_verb_of,
     _strip_redirect,
     _substitution_bodies,
     _substitution_depth_delta,
     _xargs_here_string_rebuild,
 )
-from .vocabulary import _KILL_BY_NAME_PROGRAMS, _SELF_FILE_DELIVERY_VERBS, _SELF_NAME_RE
+from .vocabulary import (
+    _DEV_MODE_CONFIRM_FLAG,
+    _KILL_BY_NAME_PROGRAMS,
+    _SELF_FILE_DELIVERY_VERBS,
+    _SELF_NAME_RE,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -437,6 +444,12 @@ def _is_credential_mint(text_lower: str, *, raw_text: "str | None" = None) -> bo
     submitted = raw_text if raw_text is not None else text_lower
     decoded_literals = _decoded_b64_literal_sources(submitted)
     for tokens in _self_token_frames(text_lower):
+        # A frame the reader could not afford to enumerate carries the fail-closed
+        # reading: each consuming floor refuses on it for itself, so an operator who
+        # disabled one row is still covered by the rows that remain (found in review:
+        # the reading was the mint spelling, which only the mint floor read).
+        if _shell_normalizer._is_unreadable_reading(tokens):
+            return True
         programs = _argv_programs(tokens)
         # The command-level half of ``_data_consumer_exempt`` reads only *tokens*, so its
         # answer is the same for every token in this frame.  Held here and computed at
@@ -856,6 +869,8 @@ def _is_self_kill(text_lower: str) -> bool:
     if not _self_floor_can_fire(text_lower):
         return False
     for tokens in _self_token_frames(text_lower):
+        if _shell_normalizer._is_unreadable_reading(tokens):
+            return True
         programs = _argv_programs(tokens)
         # Once per FRAME, not once per trigger token: see ``_is_credential_mint``.
         disqualified: "bool | None" = None
@@ -1143,6 +1158,8 @@ def _matches_self_subcommand(text_lower: str, spec: "tuple[object, ...]") -> boo
     if not _self_floor_can_fire(text_lower):
         return False
     for tokens in _self_token_frames(_shell_join_continuations(text_lower)):
+        if _shell_normalizer._is_unreadable_reading(tokens):
+            return True
         programs = _argv_programs(tokens)
         # Once per FRAME, not once per token, to keep the floor linear in token count.
         scan = _self_module_flag_scan(tokens)
@@ -1194,9 +1211,6 @@ def _is_self_cloud_destructive(text_lower: str) -> bool:
     return _matches_self_subcommand(text_lower, ("cloud", _SELF_CLOUD_DESTRUCTIVE_VERBS))
 
 
-_DEV_MODE_CONFIRM_FLAG = "--confirm-out-of-install-root"
-
-
 def _is_dev_mode_out_of_root_confirm(text_lower: str) -> bool:
     """True if the operator's out-of-install confirm flag materializes after de-escaping.
 
@@ -1225,6 +1239,8 @@ def _is_dev_mode_out_of_root_confirm(text_lower: str) -> bool:
     if "confirm" not in stripped and "install" not in stripped and "\\" not in text_lower:
         return False
     for tokens in _self_token_frames(text_lower):
+        if _shell_normalizer._is_unreadable_reading(tokens):
+            return True
         for token in tokens:
             if _DEV_MODE_CONFIRM_FLAG in _SELF_FLOOR_QUOTE_JUNK_RE.sub(
                 "", _shell_normalizer._normalize_operand(token)
@@ -1309,7 +1325,6 @@ _FLAT_SUBSTITUTION_RE = re.compile(r"\$\(([^()`$]*)\)|`([^`()$]*)`")
 # installed client; ``localho?t`` matches a file the agent creates).  The
 # deny floor cannot consult the filesystem, so a pattern that CAN match is
 # treated as matching -- an over-approximation toward deny.
-_GLOB_CHARS: frozenset[str] = frozenset("*?[")
 
 
 def _glob_can_name_ssh_verb(probe: str) -> bool:
@@ -2362,20 +2377,11 @@ def _operand_targets_self(operand: str, *, host_position: bool = True) -> bool:
 def _ssh_family_verb(token: str) -> "str | None":
     """The ssh-family verb *token* invokes, or None.
 
-    Path-qualified (``/usr/bin/ssh``) and Windows (``ssh.exe``) spellings
-    resolve to the bare verb.  A glob basename that CAN expand to one
-    (``s?h``, see ``_GLOB_CHARS``) resolves to the verb it can name.
+    Delegates to :func:`_ssh_family_verb_of`, the ONE recogniser the over-cap fold
+    calls too (over its own verb set), so the fold's danger vocabulary is this floor's
+    by construction and cannot drift to a narrower spelling (found in review).
     """
-    base = _program_basename(_strip_redirect(token.strip("\"'")))
-    if base.endswith(".exe"):
-        base = base[: -len(".exe")]
-    if base in _SSH_FAMILY_VERBS:
-        return base
-    if _GLOB_CHARS.intersection(base):
-        for verb in _SSH_FAMILY_VERBS:
-            if fnmatch.fnmatchcase(verb, base) or fnmatch.fnmatchcase(verb + ".exe", base):
-                return verb
-    return None
+    return _ssh_family_verb_of(token, _SSH_FAMILY_VERBS)
 
 
 # ssh_config keywords that SET the destination.  ``-o hostname=…`` rewrites
@@ -2583,16 +2589,44 @@ _LINE_ASSIGNMENT_RE = re.compile(
 _VAR_REFERENCE_RE = re.compile(r"\$\{([a-z_][a-z0-9_]*)\}|\$([a-z_][a-z0-9_]*)")
 
 
-def _resolve_line_assignments(text: str) -> str:
-    """Substitute ``$var``/``${var}`` from literal same-line assignments."""
+# Assignment TARGETS on the line, value shape irrelevant: a name reassigned a
+# second time (even to a value the value-bearing pattern above cannot capture --
+# a space or quote) is deferred to the guarded-reading resolver (found in review).
+_ASSIGN_TARGET_RE = re.compile(r"(?:\A|[;&|`(\s])([a-z_][a-z0-9_]*)=")
+
+
+def _resolve_line_assignments(text: str, *, defer_reassigned: bool = False) -> str:
+    """Substitute ``$var``/``${var}`` from literal same-line assignments.
+
+    With ``defer_reassigned`` a name assigned MORE THAN ONCE on the line is left
+    untouched, so baking one literal value here does not hide the OTHER assignments
+    from the guarded-reading resolver that runs on this text next -- which is how a
+    multi-word guarded ``RSYNC_RSH`` value (``v=echo; false && v='ssh localhost';
+    rsync_rsh=$v``) read as the base ``echo`` (found in review). The reassignment
+    count is over assignment TARGETS (``name=``), so a value the pattern cannot
+    capture (a space, a quote) still counts. A caller with NO resolver behind it --
+    the ssh-family necessary-condition PROBE -- leaves it False and gets the full
+    substitution: deferring there let an UNCONDITIONAL reassignment (``a=x; a=s;
+    ${a}sh``) hide the verb from the gate so the walk never ran (found in review).
+    """
     assignments: "list[tuple[int, str, str]]" = []
     for m in _LINE_ASSIGNMENT_RE.finditer(text):
         assignments.append((m.end(), m.group(1), m.group(3)))
     if not assignments:
         return text
+    reassigned: "set[str]" = set()
+    if defer_reassigned:
+        seen: "set[str]" = set()
+        for m in _ASSIGN_TARGET_RE.finditer(text):
+            name = m.group(1)
+            if name in seen:
+                reassigned.add(name)
+            seen.add(name)
 
     def _substitute(match: "re.Match[str]") -> str:
         name = match.group(1) or match.group(2)
+        if name in reassigned:
+            return match.group(0)
         value: "str | None" = None
         for end, assigned, assigned_value in assignments:
             if end <= match.start() and assigned == name:
@@ -2766,7 +2800,14 @@ def _is_ssh_to_self(text_lower: str) -> bool:
     # the operand can be spliced from statically-known text.  Values are
     # separator-free by construction, so the substitution cannot fabricate a
     # command boundary the masking below would misread.
-    text_lower = _resolve_line_assignments(text_lower)
+    # The FULL substitution feeds every consumer with NO resolver behind it -- the
+    # necessary-condition probe, the function-call binder's recursion, and the substring
+    # gate -- so an UNCONDITIONAL reassignment cannot hide the verb from any of them.
+    # A SEPARATE deferred form goes ONLY to ``_self_token_frames``, whose resolver
+    # enumerates a GUARDED reassignment's values itself; deferring it for the others
+    # reopened the channel through a resolver-less path (found in review).
+    frames_src = _resolve_line_assignments(text_lower, defer_reassigned=True)
+    text_lower = _resolve_line_assignments(text_lower, defer_reassigned=False)
     # Mask every ``;``/``|`` that is QUOTED or backslash-escaped in the source to
     # a sentinel BEFORE tokenization, so a quoted separator surviving into a
     # shlex-dequoted token (``scp 'a;b' localhost:/x``) is not read as a
@@ -2775,6 +2816,7 @@ def _is_ssh_to_self(text_lower: str) -> bool:
     # faithful operand/routing checks below; recursion sites receive the masked
     # text unchanged (the mask is idempotent -- their quotes are already gone).
     text_lower = _mask_quoted_separators(text_lower)
+    frames_text = _mask_quoted_separators(frames_src)
     # Quote/backslash splices survive into the tokens (shlex rejoins them) but
     # defeat this raw-substring gate, so probe a copy with them stripped out.
     # round-20 (Opus): bash decodes ANSI-C quoting ($'\x73\x73\x68' -> ssh)
@@ -2812,7 +2854,9 @@ def _is_ssh_to_self(text_lower: str) -> bool:
     # frames (a copy staged in a wrapper payload reaches its siblings); a
     # copy staged in an EARLIER command line is the documented residual.
     bound_program_verbs: "dict[str, str]" = {}
-    for tokens in _self_token_frames(text_lower):
+    for tokens in _self_token_frames(frames_text):
+        if _shell_normalizer._is_unreadable_reading(tokens):
+            return True
         programs = _argv_programs(tokens)
         # A leading ``RSYNC_RSH=<cmd>`` environment assignment selects rsync's
         # remote shell exactly like ``-e``/``--rsh``, but rides BEFORE the verb

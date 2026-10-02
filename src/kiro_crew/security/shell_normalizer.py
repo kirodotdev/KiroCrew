@@ -19,22 +19,50 @@ tiers depend on the reader, never the reverse.
 from __future__ import annotations
 
 import bisect
+import fnmatch
 import os
 import re
 import shlex
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, NamedTuple, overload
 
 from kiro_crew.trust_patterns import ENV_ASSIGNMENT_RE
 
+from .shell_assignment_syntax import (
+    _CONDITIONAL_OPERATORS,
+    _CONTROL_OPERATOR_RE,
+    _CONTROL_OPERATOR_SPLIT_RE,
+    _IFS_USE_RE,
+    _LOCAL_ASSIGN_RE,
+    _SHELL_ASSIGN_RE,
+    _SHLEX_WHITESPACE_RE,
+    _SUBSHELL_OPERATORS,
+    _command_run_starts,
+    _compound_body_flags,
+    _guarded_body,
+    _is_argument_assignment,
+    _is_command_scoped_assignment,
+    _is_command_word,
+    _is_guard_token,
+    _leading_assignments,
+    _next_stop_indexes,
+    _over_cap_group_is_fail_closed,
+    _quote_state_after,
+    _split_glued_operators,
+    _strip_redirect,
+    _substitution_program,
+    _token_in_command_position,
+    _trailing_operator,
+)
 from .vocabulary import (
     _KILL_BY_NAME_PROGRAMS,
     _SELF_NAME_RE,
     _SELF_PROGRAM_RE,
     _SELF_PROGRAM_SPELLINGS,
+    _SSH_LIKE_PROGRAMS,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
+    from collections.abc import Iterator
 
 
 #: Any one of these in a view means it is not a single plain command: it can
@@ -91,35 +119,6 @@ _GLOB_CHARS_RE = re.compile(r"[\[\]?*{}]")
 # quote marks and the parentheses of a command substitution.  Peeled to a fixed
 # point in ``_program_basename`` so no interleaving with a redirect hides a name.
 _SHELL_WRAPPER_CHARS = "`\"'()"
-
-
-def _strip_redirect(token: str) -> str:
-    """The token with any ATTACHED redirection suffix removed.
-
-    ``shlex`` keeps a redirect glued to its neighbour as one token, so
-    ``kirocrew>/tmp/out`` arrives as a single word and a program comparison against
-    it fails.  bash splits the redirect off before exec, so the program is the part
-    before the first ``>``/``<``; the same applies to an operand
-    (``token>/tmp/out``).  A leading fd number (``2>``) leaves an empty program,
-    which no comparison matches -- correct, since that word is not a program.
-    """
-    for op in (">", "<"):
-        if op in token:
-            token = token.split(op, 1)[0]
-    return token
-
-
-def _substitution_program(token: str) -> str:
-    """The program a command-substitution body resolves to.
-
-    A substitution in program position is a RESOLVER -- ``$(which pkill)``,
-    ``$(command -v bash)``, ``$(type -p kirocrew)`` -- and the program it resolves to
-    is the resolver's final argument.  ``shlex`` splits an UNQUOTED body on its
-    own spaces, so ``$(which pkill)`` already arrives as two words; a QUOTED body
-    (``"$(command -v pkill)"``) arrives as one multi-word token instead.  Taking the
-    last word makes both spellings compare as the same program.
-    """
-    return token.rsplit(None, 1)[-1] if token.split() else token
 
 
 def _program_basename(token: str) -> str:
@@ -188,25 +187,48 @@ def _glob_could_expand_to(base: str, names: "tuple[str, ...] | frozenset[str]") 
     return any(expandable.fullmatch(name) for name in names)
 
 
-#: Interpreter names that accept ``-m <module>``. Versioned spellings (``python3``,
-#: ``python3.12``) and the Windows launcher included; ``.exe`` is stripped by
-#: ``_program_basename`` before this is applied.
+#: Glob metacharacters a program basename can carry (shared with the argv floor).
+_GLOB_CHARS: "frozenset[str]" = frozenset("*?[")
+
+
+def _ssh_family_verb_of(token: str, verbs: "frozenset[str]") -> "str | None":
+    """The member of *verbs* that *token* names, or None -- the ONE ssh-family
+    recogniser the ssh-self floor and the over-cap fold both call (over their own
+    verb sets), so the fold's danger vocabulary is the floor's by construction,
+    glob and ``.exe`` spellings included, not a list that can drift (review)."""
+    base = _program_basename(_strip_redirect(token.strip("\"'")))
+    if base.endswith(".exe"):
+        base = base[: -len(".exe")]
+    if base in verbs:
+        return base
+    if _GLOB_CHARS.intersection(base):
+        for verb in verbs:
+            if fnmatch.fnmatchcase(verb, base) or fnmatch.fnmatchcase(verb + ".exe", base):
+                return verb
+    return None
+
+
+def _is_ssh_like_program(token: str) -> bool:
+    """True if *token* names an ssh-like program by any spelling the floor matches."""
+    return _ssh_family_verb_of(token, _SSH_LIKE_PROGRAMS) is not None
+
+
+#: Interpreter names that accept ``-m <module>`` (versioned and ``.exe`` spellings; ``.exe``
+#: is stripped by ``_program_basename`` first).
 _PYTHON_PROGRAM_RE = re.compile(r"\Apy(?:thon)?[0-9.]*(?:\.exe)?\Z")
 
 
-#: Interpreter flags that consume the NEXT token as their operand. Their operand must be
-#: skipped when scanning for ``-m <module>``, or it terminates the scan and the mint slips
-#: through (``python -X dev -m kiro_crew token``). ``-c`` and ``-m`` are deliberately absent:
-#: both END the option list, and `-m` is what this scan is looking for.
-#:
-#: LOWERCASE, because the floor runs over an already-lowercased command (`_is_credential_mint`
-#: takes `text_lower`), so a `-X` in the operator's shell reaches this set as `-x`. Storing the
-#: uppercase spelling made every separate-operand form match nothing — the bypass stayed open
-#: while the ATTACHED spellings (`-Xdev`) passed, which is the shape of a fix that looks tested.
-#: Python's real flags are case-sensitive (`-x` skips the first line, `-X` sets an
-#: implementation option), so this over-matches `-x` slightly: `python -x -m kiro_crew token`
-#: would skip `-m` as an operand and MISS. Guarded by also treating a bare `-m` as the marker
-#: on the next iteration — see the loop.
+def _is_interpreter_program(token: str) -> bool:
+    """True if *token* names a python interpreter, by any spelling the mint floor matches."""
+    return bool(_PYTHON_PROGRAM_RE.match(_program_basename(token)))
+
+
+#: Interpreter flags that consume the NEXT token as their operand, which must be skipped
+#: when scanning for ``-m <module>`` or it ends the scan and the mint slips through
+#: (``python -X dev -m kiro_crew token``). ``-c``/``-m`` are absent: both END the options.
+#: LOWERCASE, because the floor runs over an already-lowercased command, so ``-X`` arrives
+#: as ``-x``; this over-matches ``-x`` slightly, guarded by also honouring a bare ``-m`` as
+#: the marker on the next iteration (see the loop).
 _PYTHON_OPERAND_FLAGS = frozenset({"-x", "-w", "-q", "--check-hash-based-pycs"})
 
 
@@ -491,8 +513,6 @@ _DATA_CONSUMER_PROGRAMS = frozenset(
 )
 
 
-# program in a run that ``shlex`` handed over as a single word.
-_CONTROL_OPERATOR_RE = re.compile(r"[;&|\n]+")
 # A word that OPENS with a command substitution, past any quote or paren the shell
 # strips first: its basename reading is the substitution body's program
 # (``$(kirocrew`` reads as ``kirocrew``), which is what runs.  A BRACE before it is
@@ -548,20 +568,6 @@ _EMPTY_SUBST_RE = re.compile(r"\$\(\s*\)|`\s*`|\$\{\s*\}")
 _OUTPUT_REDIRECT_RE = re.compile(r"(?:\d+|&|\*|\{[A-Za-z_][A-Za-z0-9_]*\})?>{1,2}[&|!]?")
 
 
-# substitution, for use where a redirect ENDS an argument list rather than hiding
-# a program. Testing only the first character missed every descriptor-prefixed
-# spelling (``2>``, ``&>``, ``{fd}>``, ``1>``), which is exactly where a
-# redirection is most often written -- so the descriptor read as an ordinary
-# refspec and the command after the redirect was absorbed as arguments.
-_REDIRECT_START_RE = re.compile(r"(?:\d+|&|\*|\{[A-Za-z_][A-Za-z0-9_]*\})?(?:>{1,2}[&|!]?|<{1,3})")
-
-
-# through the expansion, so neither the literal name nor the expansion alone looks
-# dangerous.  The assignment and the use are in the SAME command text, so the
-# literal can be substituted back before any comparison.
-_LOCAL_ASSIGN_RE = re.compile(r"\A([A-Za-z_][A-Za-z0-9_]*)=(.*)\Z", re.DOTALL)
-
-
 _VAR_USE_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
 
 
@@ -571,33 +577,6 @@ _COMPUTED_VALUE_RE = re.compile(r"\$\(|`|\$\{[^}]*\}")
 def _is_computed_value(value: str) -> bool:
     """True if an assignment's right-hand side is produced by a substitution."""
     return bool(_COMPUTED_VALUE_RE.search(value))
-
-
-def _split_glued_operators(tokens: "list[str]") -> "list[str]":
-    """Split tokens on control operators glued to their neighbours.
-
-    ``shlex`` splits on whitespace only, so ``X=<name>;$X`` arrives as one token and an
-    assignment glued to the command that uses it is invisible to both.  Splitting keeps
-    the operator itself as a token so argv-boundary logic still sees it.
-    """
-    out: list[str] = []
-    for token in tokens:
-        # ONLY split a token that begins with an assignment.  Splitting any token
-        # carrying a separator would destroy a QUOTED target -- ``shlex`` has already
-        # removed the quotes, so ``pkill -f '[;]*<name>'`` arrives as the single token
-        # ``[;]*<name>`` and is indistinguishable from a real separator at this point.
-        # The reported evasion is specifically an assignment glued to its use, so that
-        # is the only shape split here.
-        if not _LOCAL_ASSIGN_RE.match(token) or not _CONTROL_OPERATOR_RE.search(token):
-            out.append(token)
-            continue
-        for piece in _CONTROL_OPERATOR_RE.split(token):
-            if piece:
-                out.append(piece)
-            out.append(";")
-        if out and out[-1] == ";":
-            out.pop()
-    return out
 
 
 # ``${VAR:-kirocrew}`` / ``${VAR:+kirocrew}`` / ``${VAR-kirocrew}`` carry a LITERAL
@@ -624,8 +603,9 @@ def _resolve_param_defaults(token: str) -> str:
 # NO depth cap.  A cap is a bypass: whatever number is chosen, one more nesting
 # level defeats it.  Termination is guaranteed structurally instead -- a payload is
 # a proper substring of the token that carried it, so it is STRICTLY SHORTER than
-# its parent's source text, and a chain of strictly shorter strings is finite.  A
-# visited set stops sibling wrappers re-walking the same payload.
+# its parent's source text, and a chain of strictly shorter strings is finite (the
+# ``eval`` join is the bounded exception, never joined again).  A visited set
+# stops sibling wrappers re-walking the same payload.
 # ``-c`` may arrive inside a COMBINED short-flag cluster: ``bash -xc '<script>'``
 # and ``sh -ec '<script>'`` both run the next token as a script.  Matching only
 # the exact spellings ``-c``/``-lc`` leaves every other cluster as a bypass.
@@ -1181,7 +1161,10 @@ def _shell_c_carrier_glued(token: str) -> "str | None":
 # the payload's FIRST-WORD length -- a real program name -- so 64 covers any
 # rule-relevant program with room to spare, while keeping the per-token scan
 # O(window) and immune to cluster padding (padding only adds fake splits
-# farther from the end, whose program words are runs of flag letters).
+# farther from the end, whose program words are runs of flag letters).  A first
+# word LONGER than the window is a NAME with option letters glued to its front;
+# the resolver reads it under every suffix the payload refers back to
+# (``_GluedBindings``), so no further split is enumerated for it.
 _CARRIER_SPLIT_WINDOW = 64
 
 
@@ -1209,9 +1192,16 @@ def _shell_c_carrier_payloads(token: str) -> "list[str]":
     split's program word is a run of flag letters that matches no rule.
     Without the bound, a ~3 KB ``-acac…`` token made the candidate set
     quadratic and the synchronous deny scan outlived the loop watchdog.
-    The first-``c`` split is always yielded
-    regardless of the window: it is the LONGEST suffix, so the unanchored
-    regex tier sees every shorter reading as a substring of it.
+    A first word LONGER than the window is an assignment NAME (no rule-covered
+    program is that long) with the option letters glued to its front, and WHICH
+    letters is unrecoverable after the fold.  It is not enumerated here: yielding
+    one payload per suffix the script refers back to made the candidate set grow
+    with the square root of the token (k suffixes cost k*(k+1)/2 characters of
+    references) and the scan O(n^1.5).  Instead the resolver reads the first
+    word's binding under every referenced suffix (``_GluedBindings``) -- one
+    frame, linear.  The first-``c`` split is always yielded regardless of the
+    window: it is the LONGEST suffix, so the unanchored regex tier sees every
+    shorter reading as a substring of it and the resolver sees the whole name.
     """
     if not token.startswith("-") or token.startswith("--") or len(token) < 2:
         return []
@@ -1281,20 +1271,6 @@ def _is_not_double_dash(token: str) -> bool:
     index and the token the caller then reads must not drift apart.
     """
     return token != "--"
-
-
-def _next_stop_indexes(tokens: "list[str]", is_stop: "Callable[[str], bool]") -> "list[int]":
-    """For each index, the first index at or after it where *is_stop* holds.
-
-    One backward pass, so a forward scan per program token becomes a lookup and the
-    caller stays linear in token count.  Position ``len(tokens)`` means "no such
-    token", which reads the same as the original loops running off the end.
-    """
-    limit = len(tokens)
-    table = [limit] * (limit + 1)
-    for index in range(limit - 1, -1, -1):
-        table[index] = index if is_stop(tokens[index]) else table[index + 1]
-    return table
 
 
 def _sed_exec_replacement(token: str) -> str:
@@ -2934,8 +2910,32 @@ def _is_self_program(token: str) -> bool:
     return _glob_could_expand_to(base, _SELF_PROGRAM_SPELLINGS)
 
 
+def _is_protected_program(token: str) -> bool:
+    """True if *token*'s first word names the CLI or a kill program: a binding worth
+    keeping live against a later assignment (at worst a refusal)."""
+    program = (token.split() or [token])[0]
+    base = _program_basename(program)
+    return _is_self_program(program) or base in _KILL_BY_NAME_PROGRAMS or base == "kill"
+
+
 def _self_tokens(text_lower: str) -> "list[str]":
+    """The readings of :func:`_self_token_readings`, joined by ``;`` into one argv list."""
+    out: list[str] = []
+    for reading in _self_token_readings(text_lower):
+        out += [";"] + reading if out else reading
+    return out
+
+
+def _self_token_readings(
+    text_lower: str, budget: "_ReadingBudget | None" = None
+) -> "list[list[str]]":
     """Tokenize the WHOLE command, resolving quoting before any splitting.
+
+    One token list per reading of the command's guarded reassignments
+    (:func:`_resolve_local_assignment_readings`, spending *budget* when given);
+    the first is the command as written.  Handed out separately so a consumer
+    that spans tokens to the END of a list (the ``eval`` argument join) spans one
+    reading, not all of them.
 
     Splitting the raw text into segments first (as the pattern passes do) is
     unsafe for these rules: it cuts on a ``;`` or ``|`` that is INSIDE a quoted
@@ -2970,11 +2970,91 @@ def _self_tokens(text_lower: str) -> "list[str]":
                 " ; " if step.active and step.char == "\n" else step.text
                 for step in _iter_shell_chars(command)
             )
-        return _resolve_function_aliases(
-            _resolve_local_assignments(normalize_shell_command(command))
-        )
+        readings = [
+            _resolve_function_aliases(reading)
+            for reading in _resolve_local_assignment_readings(
+                normalize_shell_command(command), budget
+            )
+        ]
+        return readings[:1] + [_novel_segments(readings[0], alt) for alt in readings[1:]]
     except Exception:
         return []
+
+
+def _novel_segments(base: "list[str]", reading: "list[str]") -> "list[str]":
+    """*reading* without the simple commands it shares with *base*.
+
+    A further reading of a guarded reassignment differs from the first only in the
+    segments that expand a name the choice reached; every other segment is the same
+    argv, already read once, and carrying it again multiplies the walk of whatever it
+    holds by the number of readings (a 10 KB value expanded 3400 times, read 64 ways).
+    Function and alias definitions are resolved before this runs, so a dropped
+    definition has already been substituted at its call sites.
+    """
+    shared = {tuple(segment) for segment in _simple_commands(base)}
+    out: list[str] = []
+    # Kept by PIPELINE, operators included: a novel command's pipe into an
+    # evaluator (``echo "$v token" | sh``) is what the payload predicates read, and
+    # a further reading reduced to the command alone lost it (found in review).
+    pipeline: list[str] = []
+    segment: list[str] = []
+    # NOVEL latches once the reading diverges and is never reset: every later segment
+    # is then kept even if byte-identical, because a shared command can depend on an
+    # earlier novel one (``export RSYNC_RSH=$v; rsync host:/ .`` -- the rsync is
+    # identical but reads the reassigned remote shell), which dropping it hid (review).
+    novel = False
+    for token in reading + [";"]:
+        operator = _CONTROL_OPERATOR_RE.fullmatch(token) is not None
+        if not operator:
+            segment.append(token)
+        if not (operator or (token and token[-1] in ";&|\n")):
+            continue
+        if segment:
+            novel = novel or tuple(segment) not in shared
+            pipeline += segment
+            segment = []
+        # A glued pipe is the token's trailing operator run read as an operator
+        # (``"$v token"|& sh``): ``endswith("|")`` missed ``|&``, the pipeline was
+        # flushed and ``sh`` dropped with it (found in review).  Any ``|`` keeps the
+        # pipeline, ``||`` included: :func:`_pipes_into_evaluator` reads every ``|``
+        # as a pipe, and a reading cut at ``||`` hid ``|| sh`` from it.
+        if "|" in (token if operator else _trailing_operator(token)):
+            if operator:
+                pipeline.append(token)
+            continue
+        if pipeline and novel:
+            out += [";"] + pipeline if out else pipeline
+        pipeline = []
+    return out
+
+
+def _simple_commands(tokens: "list[str]") -> "list[list[str]]":
+    """*tokens* split at the control-operator tokens, operators dropped.
+
+    A token ENDING in an operator (``$b;`` -- ``shlex`` splits on whitespace only)
+    ends its segment too, kept whole inside it: the split is only where a shared
+    segment is looked up, so a quoted operator mis-read here costs one segment its
+    match, never a token its spelling.  An empty token (``""``, an empty argument
+    ``shlex`` keeps) ends nothing: indexing its last character raised, the raise
+    was swallowed by the frame walk's catch-all, and every self-protection frame
+    of a command with a guarded choice and a ``""`` argument was dropped (found
+    in review).
+    """
+    segments: list[list[str]] = []
+    segment: list[str] = []
+    for token in tokens:
+        if _CONTROL_OPERATOR_RE.fullmatch(token):
+            if segment:
+                segments.append(segment)
+            segment = []
+            continue
+        segment.append(token)
+        if token and token[-1] in ";&|\n":
+            segments.append(segment)
+            segment = []
+    if segment:
+        segments.append(segment)
+    return segments
 
 
 def _protected_name_in_substitution(tokens: "list[str]", start: int) -> str:
@@ -3082,6 +3162,34 @@ def _mint_verb_in_substitution(tokens: "list[str]", idx: int) -> bool:
 
 
 def _resolve_local_assignments(tokens: "list[str]") -> "list[str]":
+    """The readings of :func:`_resolve_local_assignment_readings`, joined by ``;``."""
+    out: list[str] = []
+    for reading in _resolve_local_assignment_readings(tokens):
+        out += [";"] + reading if out else reading
+    return out
+
+
+class _ReadingBudget:
+    """The rescans and text one WALK may spend on guarded readings, in all.
+
+    Spent per COMMAND, the budget was spent afresh by every frame of the payload
+    walk: a ``bash -c`` carrier nested four deep with six guards per level and an
+    innermost script that expands every ancestor name yields one distinct payload
+    per reading at each level, so ~64 ** 4 frames each paid their own 64 rescans
+    and the synchronous gate outlived the loop-stall watchdog (found in review).
+    One budget per walk, handed down through every frame, bounds the whole tree.
+    """
+
+    __slots__ = ("spent", "spent_volume")
+
+    def __init__(self) -> None:
+        self.spent = 0
+        self.spent_volume = 0
+
+
+def _resolve_local_assignment_readings(
+    tokens: "list[str]", budget: "_ReadingBudget | None" = None
+) -> "list[list[str]]":
     """Substitute ``$VAR`` uses with a literal assigned earlier in the same command.
 
     Only LITERAL right-hand sides are tracked, and only assignments that appear in
@@ -3092,15 +3200,430 @@ def _resolve_local_assignments(tokens: "list[str]") -> "list[str]":
     A value that REFERENCES an already-tracked variable is expanded before it is
     classified, so a name assembled across several assignments still resolves to the
     literal the shell will run.
+
+    A guarded reassignment of any tracked binding (``x=<cli> && x=bash; $x -c ...``,
+    ``v=<verb>; false && v=doctor; <cli> $v``) is read both ways: the guard may skip
+    the new value, so the prior still runs, and
+    the new value may be a shell whose payload the walk must still descend.  One
+    resolved frame carries one program per use, so each further reading is a further
+    token list (the first is the command as written).  Each guarded reassignment is
+    its own choice: two of them
+    read only all-prior and all-new missed ``x=<cli>; false && x=echo; v=doctor;
+    true && v=<verb>; $x $v``, which runs the mint (found in review).  Choices
+    under two guards SPELLED alike are not one choice either: the text is
+    case-folded before it is read, so ``$Path`` and ``$PATH`` are one name here
+    and two in bash, and a command between the two tests can rewrite what they
+    read; tying them folded away the mixed reading that pairs the prior program
+    with the new verb (found in review).  A choice on a
+    name that is never expanded again changes no reading and is not enumerated.
+    The rest are enumerated as the FULL product within each group of names that
+    are expanded in one simple command (:func:`_co_referenced_names`) -- a
+    frame's argv is one segment, so choices on names that never meet in a segment
+    cannot pair, and enumerating their product bought nothing.  Capping the
+    product and folding the choices past the cap onto one shared bit was a
+    bypass: three filler guards pushed the program and the verb choices onto the
+    shared bit, whose all-prior and all-new readings never pair the prior program
+    with the new verb (found in review).  So a group past
+    :data:`_GUARDED_READING_CAP` choices is not folded: its reading is the
+    fail-closed :data:`_UNREADABLE_GUARDED_READING`, exactly as a regex group
+    past its budget reads as ``.*``; so is a group whose readings would expand to
+    more than :data:`_GUARDED_READING_VOLUME` of text.  The budget is spent by
+    the COMMAND, not by each group: every further reading is one more full
+    rescan of the token list, and one group per simple command bounds the
+    group count only by the command's length, so 300 one-choice groups under
+    the scan ceiling each passed the per-group check and together held the
+    loop past its watchdog (found in review).  Past
+    ``2 ** _GUARDED_READING_CAP`` readings in all, or past the volume budget
+    in all, the command reads as the fail-closed reading and enumeration stops.
+    The budget is *budget* when given -- the payload walk's, shared by every frame
+    it descends into (:class:`_ReadingBudget`) -- else this command's own.
     """
-    values: dict[str, str] = {}
+    resolved, choices = _resolve_local_assignments_once(tokens, frozenset())
+    if not choices:
+        return [resolved]
+    if budget is None:
+        budget = _ReadingBudget()
+    out = [resolved]
+    seen = {tuple(resolved)}
+    groups = _co_referenced_names(tokens)
+    taken: set[frozenset[_GuardedChoice]] = {frozenset()}
+    known: dict[_GuardedChoice, str] = {}
+    pending = list(choices)
+    volume = sum(len(token) for token in resolved)  # base-reading size = rescan estimate
+    while pending:
+        # A reading can meet a choice the base reading did not; collect to a fixpoint.
+        by_group: dict[frozenset[str], list[_GuardedChoice]] = {}
+        for key, name in pending:
+            known[key] = name
+        pending = []
+        for key, name in known.items():
+            group = groups.get(name)
+            if group is not None:
+                by_group.setdefault(group, []).append(key)
+        for group, keys in by_group.items():
+            # Every choice is its own: guards spelled alike are NOT one test, since
+            # the reader case-folds (``$Path``/``$PATH`` read as one, two in bash) and
+            # a command between them rewrites what the test reads; tying them folded
+            # away the mixed reading that pairs the prior program with the new verb
+            # (found in review). Decided before the volume estimate.
+            if len(keys) > _GUARDED_READING_CAP:
+                # The fold re-walks the token list; charge it to the shared budget so
+                # many over-cap groups cannot run up an unbounded aggregate (found in review).
+                budget.spent_volume += volume
+                if budget.spent_volume > _GUARDED_READING_VOLUME:
+                    out.append(list(_UNREADABLE_GUARDED_READING))
+                    return out
+                if _over_cap_group_is_fail_closed(
+                    tokens,
+                    # the FULL co-referenced group: a use of an unguarded member
+                    # (``y=$x; $y token``) must match the segment filter (review).
+                    set(group),
+                    _is_protected_program,
+                    _is_self_program,
+                    _is_ssh_like_program,
+                    _is_interpreter_program,
+                    _program_basename,
+                    _NESTED_SHELL_PROGRAMS,
+                    _NESTED_SHELL_VERBS,
+                ):
+                    out.append(list(_UNREADABLE_GUARDED_READING))
+                    return out
+                continue
+            # A within-cap group past the volume budget is not walked (a DoS).
+            if volume << len(keys) > _GUARDED_READING_VOLUME:
+                out.append(list(_UNREADABLE_GUARDED_READING))
+                return out
+            for pick in range(1, 1 << len(keys)):
+                take = frozenset(key for i, key in enumerate(keys) if pick >> i & 1)
+                if take in taken:
+                    continue
+                # Spent per rescan, across every group: the aggregate the loop pays.
+                if (
+                    budget.spent >= (1 << _GUARDED_READING_CAP) - 1
+                    or budget.spent_volume + volume > _GUARDED_READING_VOLUME
+                ):
+                    out.append(list(_UNREADABLE_GUARDED_READING))
+                    return out
+                budget.spent += 1
+                taken.add(take)
+                alternate, met = _resolve_local_assignments_once(tokens, take)
+                # Charged at the reading's REAL size: the base keeps each short
+                # prior while an alternate takes the long guarded value, so a
+                # base-sized charge let a 140 MB expansion pass an 8 MB budget
+                # (found in review).
+                budget.spent_volume += sum(len(token) for token in alternate)
+                if budget.spent_volume > _GUARDED_READING_VOLUME:
+                    out.append(list(_UNREADABLE_GUARDED_READING))
+                    return out
+                pending += [choice for choice in met if choice[0] not in known]
+                if tuple(alternate) not in seen:
+                    seen.add(tuple(alternate))
+                    out.append(alternate)
+    return out
+
+
+#: A pipe: the one operator whose two sides are read as one command, in the
+#: co-reference grouping and in a further reading's novel segments alike.
+_PIPE_OPERATORS = frozenset({"|", "|&"})
+
+#: Guarded reassignments within one co-referenced group are enumerated exactly up to
+#: this many; ``2 ** _GUARDED_READING_CAP`` (64) readings is also the most one
+#: COMMAND is rescanned in all, a group past either reading as the fail-closed
+#: reading below.
+_GUARDED_READING_CAP = 6
+
+#: The most text a command's readings may expand to, in all, each reading charged
+#: at its own size: a 10 KB value expanded 3400 times (34 MB, far past the 2 MB the
+#: kernel lets a command line carry at all) read 64 ways is never walked.
+_GUARDED_READING_VOLUME = 1 << 23
+
+#: The one token of the reading a group the enumeration cannot afford: a NUL byte
+#: ends a C string, so no command line can carry this word and no shell text reads
+#: as it.  Every floor that consumes a frame (:func:`_is_unreadable_reading`) refuses
+#: on it OUTRIGHT instead of reading a fold of the choices that may hide a pairing
+#: -- fail closed, as a regex group past its budget reads as ``.*``.  It was the
+#: mint spelling, which only the mint floor reads: with that catalog row disabled a
+#: ``pkill`` reading past the cap was replaced by a reading the self-kill floor does
+#: not match, and the command ran (found in review).
+_UNREADABLE_READING_MARK = "\x00unreadable-guarded-reading"
+_UNREADABLE_GUARDED_READING = (_UNREADABLE_READING_MARK,)
+
+
+def _is_unreadable_reading(tokens: "list[str]") -> bool:
+    """True when *tokens* carries the fail-closed reading: the consumer must refuse."""
+    return _UNREADABLE_READING_MARK in tokens
+
+
+#: One guarded reassignment: the token that carries it, the segment inside a whole
+#: quoted script (``-1`` at top level, ``-2`` for a command-scoped prefix) and the
+#: name.  Keyed by POSITION rather than by firing order, so a reading that meets a
+#: choice the base reading did not shifts none of the others.
+_GuardedChoice = tuple[int, int, str]
+
+
+def _guarded_choice(take: "frozenset[_GuardedChoice]", key: "_GuardedChoice") -> bool:
+    """True when the guarded reassignment *key* keeps the prior under *take*."""
+    return key not in take
+
+
+def _mask_expansion_operators(token: str) -> str:
+    """Blank the control operators that sit INSIDE a ``$``-expansion.
+
+    ``${v#;}`` carries a ``;`` that is data, not a command separator.  Replacing
+    those chars in place (length preserved, so spans still map to the original)
+    before the co-reference split keeps the names around the expansion in one
+    simple command's group.
+    """
+    chars = list(token)
+    for regex in (_VAR_USE_RE, _PARAM_TRANSFORM_RE, _INDIRECT_VAR_USE_RE, _PARAM_DEFAULT_RE):
+        for match in regex.finditer(token):
+            for i in range(match.start(), match.end()):
+                if chars[i] in ";&|\n":
+                    chars[i] = "_"
+    return "".join(chars)
+
+
+def _co_referenced_names(tokens: "list[str]") -> "dict[str, frozenset[str]]":
+    """Each expanded name -> the names it can meet in one simple command's argv.
+
+    Names expanded in the same segment (between control operators) are one group,
+    and a pipe joins its two sides: what one side writes the other runs (``echo $v
+    | $x``), so a choice on either reaches the pair (found in review).  A name
+    whose assignment expands another (``y=$x``) joins that name's group,
+    since a choice on ``x`` reaches wherever ``y`` is expanded.  An INDIRECT use
+    (``${!n}``) names its target at run time, so a command carrying one is a single
+    group.  A name never expanded is absent: no reading depends on it.
+    """
+    parent: dict[str, str] = {}
+
+    def find(name: str) -> str:
+        while parent.setdefault(name, name) != name:
+            name = parent[name]
+        return name
+
+    def union(names: "list[str]") -> None:
+        roots = {find(name) for name in names}
+        root = roots.pop()
+        for other in roots:
+            parent[other] = root
+
+    def uses(text: str) -> "list[str]":
+        names = [m.group(1) or m.group(2) for m in _VAR_USE_RE.finditer(text)]
+        names += [m.group(1) for m in _PARAM_TRANSFORM_RE.finditer(text)]
+        return names + [m.group(1) for m in _INDIRECT_VAR_USE_RE.finditer(text)]
+
+    referenced: set[str] = set()
+    indirect = False
+    segment: list[str] = []
+    for token in _split_glued_operators(tokens) + [";"]:
+        if _CONTROL_OPERATOR_RE.fullmatch(token):
+            if token in _PIPE_OPERATORS:
+                continue
+            if segment:
+                union(segment)
+            segment = []
+            continue
+        # A token with no ``$`` still CLOSES a segment when it is a use glued to its
+        # separator (``q;echo``): the ``$`` test is only a fast path around ``uses()``,
+        # not a skip of the boundary, or seven independent guards union into one group
+        # and an ordinary command reads as unreadable (found in review).
+        glued_boundary = bool(_CONTROL_OPERATOR_RE.search(token)) and not (
+            _SHLEX_WHITESPACE_RE.search(token)
+        )
+        if "$" not in token and not glued_boundary:
+            continue
+        indirect = indirect or bool(_INDIRECT_VAR_USE_RE.search(token))
+        names = uses(token)
+        # ``NAME+=$p`` appends the tracked value, so the append form co-references
+        # too; matching ``=`` alone put ``q`` in its own group and the pairing of
+        # ``p``'s prior program with ``v``'s new verb was never read (found in review).
+        assign = _LOCAL_ASSIGN_RE.match(token) or _SHELL_ASSIGN_RE.match(token)
+        if assign and not _CONTROL_OPERATOR_RE.search(token):
+            union([assign.group(1)] + names)  # a value that expands a tracked name
+            # a name used only inside an assignment value (``RSYNC_RSH=$v``) must
+            # reach ``live`` AND this command's segment, or the pairing that makes
+            # the value a channel and the command word ``rsync`` is never read as
+            # one simple command (found in review).
+            referenced.update(names)
+            segment += names
+            continue
+        referenced.update(names)
+        if not glued_boundary:
+            segment += names
+            continue
+        # A use GLUED to its separator (``echo $a; echo $b``, ``$a;echo $b`` --
+        # ``shlex`` splits on whitespace only) ends its simple command there, as in
+        # :func:`_simple_commands`; read on, unrelated commands were one group and
+        # seven guards with no self reference read as unreadable (found in review).
+        # A whole quoted script is one whitespace-bearing token and stays one segment.
+        # An operator INSIDE an expansion (``${v#;}``) is no separator: mask the
+        # expansion spans before locating separators, so it closes no segment and the
+        # co-referenced names stay in one group (found in review: ``$x ${v#;}`` split
+        # ``x`` and ``v`` apart and the mint pairing ``kirocrew token`` was never read).
+        masked = _mask_expansion_operators(token)
+        in_pieces: list[str] = []
+        last = 0
+        for match in _CONTROL_OPERATOR_RE.finditer(masked):
+            in_pieces += uses(token[last : match.start()])
+            segment += uses(token[last : match.start()])
+            if token[match.start() : match.end()] not in _PIPE_OPERATORS:
+                if segment:
+                    union(segment)
+                segment = []
+            last = match.end()
+        in_pieces += uses(token[last:])
+        segment += uses(token[last:])
+        segment += [name for name in names if name not in in_pieces]
+    if indirect:
+        union(list(parent) + list(referenced))
+    groups: dict[str, list[str]] = {}
+    for name in parent:
+        groups.setdefault(find(name), []).append(name)
+    live = {find(name) for name in referenced}
+    return {
+        name: frozenset(members)
+        for root, members in groups.items()
+        if root in live
+        for name in members
+    }
+
+
+class _GluedBindings:
+    """The resolver's name -> literal table, reading a GLUED first name under its suffixes.
+
+    A ``-c`` carrier glued to its script (``-C<flags>c'<name>=<cli>; $<name> <verb>'``)
+    folds to one letter run in which the option letters and the assignment name are
+    indistinguishable (:func:`_shell_c_carrier_payloads`).  A name LONGER than the split
+    window is only ever such a run: no rule-covered program is that long, so its
+    leading letters are flags and the name is some suffix.  Which one is decided by
+    the script's own use of it, so a use of any suffix of the first name -- separated
+    from it by letters alone -- reads that name's binding.  A use is a lookup, so the
+    cost is one suffix comparison per use: linear, where enumerating one payload per
+    referenced suffix was not.  A plain command's first word is shorter than the
+    window, so the reading never fires for it.
+    """
+
+    __slots__ = ("_values", "_glued")
+
+    def __init__(self) -> None:
+        self._values: dict[str, str] = {}
+        self._glued = ""
+
+    def glue(self, name: str) -> None:
+        """Record the FIRST name of the frame when it is longer than the split window."""
+        if len(name) > _CARRIER_SPLIT_WINDOW:
+            self._glued = name
+
+    def _key(self, name: str) -> str:
+        if name in self._values or not name or not self._glued.endswith(name):
+            return name
+        letters = self._glued[: -len(name)]
+        return self._glued if letters and letters.isascii() and letters.isalpha() else name
+
+    @overload
+    def get(self, name: str) -> "str | None": ...
+
+    @overload
+    def get(self, name: str, default: str) -> str: ...
+
+    def get(self, name: str, default: "str | None" = None) -> "str | None":
+        return self._values.get(self._key(name), default)
+
+    def prior(self, name: str) -> "str | None":
+        """The binding recorded under *name* ITSELF, for an ASSIGNMENT to *name*.
+
+        The suffix reading serves a use (``$<name>``); an assignment names its own
+        variable.  Read through the fold, ``v=<verb>`` after a 65-letter first
+        assignment ending in ``v`` was "already bound", the prefix-scoped branch
+        recorded nothing, and ``$v`` then read the filler's value (found in review).
+        """
+        return self._values.get(name)
+
+    def __contains__(self, name: str) -> bool:
+        return name in self._values
+
+    def __setitem__(self, name: str, value: str) -> None:
+        self._values[name] = value
+
+    def set_folded(self, name: str, value: str) -> None:
+        """Record *value* under the glued key *name* folds to (a plain name folds to
+        itself), so an append to a suffix extends the glued binding, not a bare one."""
+        self._values[self._key(name)] = value
+
+    def __bool__(self) -> bool:
+        return bool(self._values)
+
+
+def _resolve_local_assignments_once(
+    tokens: "list[str]", take: "frozenset[_GuardedChoice]"
+) -> "tuple[list[str], list[tuple[_GuardedChoice, str]]]":
+    """One reading of :func:`_resolve_local_assignments`.
+
+    Each guarded or subshell-scoped reassignment met is a choice keyed by its
+    position; *take* names the ones read as taken (:func:`_guarded_choice`).  The
+    second result lists the choices this reading met, each with its name.
+    """
+    values = _GluedBindings()
     out: list[str] = []
-    # ``X=<name>;$X <verb>`` glues the assignment and the next command into ONE token,
-    # because ``shlex`` splits on whitespace only.  Split on top-level control operators
-    # first so the assignment is seen as an assignment and the use as a use.
+    met: list[tuple[_GuardedChoice, str]] = []
+    # ``X=<name>;$X <verb>`` glues the assignment and next command into ONE token
+    # (``shlex`` splits on whitespace); split on control operators first.
     tokens = _split_glued_operators(tokens)
+    # End of each token's assignment run, computed once (a per-token walk was quadratic).
+    # ``_SHELL_ASSIGN_RE`` matches an APPEND (``A+=b``) so the run does not end at one --
+    # ending it there read ``v=doctor; v=token A+=b`` as a prefix and left the mint
+    # binding unreplaced (found in review); it is the predicate the position checks use.
+    run_end = _next_stop_indexes(tokens, lambda tk: _SHELL_ASSIGN_RE.match(tk) is None)
+    cmd_start = _command_run_starts(tokens)  # run-start table: kills the O(n^2) re-walk
+    # Inside a compound body every statement is guarded, not only the first (found in
+    # review: ``if false; then y=1; x=echo; fi`` hid the reassignment after ``y=1``).
+    in_body = _compound_body_flags(
+        tokens, lambda at: _token_in_command_position(tokens, at, cmd_start), True
+    )
     for idx, token in enumerate(tokens):
         assign = _LOCAL_ASSIGN_RE.match(token)
+        subshell_scoped = False
+        if idx == 0:
+            # Both spellings: a glued carrier opening with an APPEND (``<flags>c'<name>+=<cli>;
+            # $<suffix> <verb>'``) took no glued name and the use never resolved (found in review).
+            first = _SHELL_ASSIGN_RE.match(token)
+            if first:
+                values.glue(first.group(1))
+        if assign:
+            # ``X=foo true`` is a prefix scoped to ONE command: it must not REPLACE the
+            # shell's binding (``x=<cli>; x=foo true; $x <verb>`` mints), but a FIRST
+            # binding is recorded (the command inherits it), as is a protected value.
+            # A value opening a substitution or quote spans the following tokens.
+            value_text = assign.group(2)
+            spans_tokens = (
+                "$(" in value_text
+                or "`" in value_text
+                or value_text.count('"') % 2 == 1
+                or value_text.count("'") % 2 == 1
+            )
+            look = run_end[idx]
+            prefix_value = _VAR_USE_RE.sub(
+                lambda m: values.get(m.group(1) or m.group(2), m.group(0)), value_text
+            )
+            scoped = (
+                not spans_tokens
+                and look < len(tokens)
+                and assign.group(1) in values
+                and not _is_protected_program(prefix_value.strip("\"'"))
+            )
+            if scoped and tokens[look].startswith("#"):
+                # ``shlex`` dropped the quotes, so a comment (``#x``, the rest of the
+                # line gone) and a quoted command (``'#x'``, the prefix scoped to it)
+                # arrive alike: one more choice, read both ways (found in review).
+                key = (idx, -2, assign.group(1))
+                scoped = _guarded_choice(take, key)
+                met.append((key, assign.group(1)))
+            elif scoped:
+                scoped = _is_command_word(tokens[look])
+            if scoped:
+                out.append(token)
+                continue
+            subshell_scoped = look < len(tokens) and tokens[look] in _SUBSHELL_OPERATORS
         # ``NAME+=tail`` APPENDS, and the pattern above cannot match it at all (``+`` is
         # not a name character), so an appended PROGRAM word was invisible here: `F=fi;
         # F+=nd; $F <fenced> -exec cat {} +` ran a `find` this resolver never saw, while
@@ -3119,7 +3642,14 @@ def _resolve_local_assignments(tokens: "list[str]") -> "list[str]":
         # additive -- renumbering the shared pattern's groups instead would have rewritten
         # every existing reader of them for no behavioural gain.
         append = None if assign else _SHELL_ASSIGN_RE.match(token)
-        if append and append.group(2):
+        # An append that OPENS a whole quoted script is that script's first command,
+        # not one append with the rest of the script as its tail: it is read below
+        # with the script (found in review: the tail reading was an accident).
+        if (
+            append
+            and append.group(2)
+            and not (_SHLEX_WHITESPACE_RE.search(token) and _CONTROL_OPERATOR_RE.search(token))
+        ):
             name, tail = append.group(1), append.group(3)
             if values and "$" in tail:
                 # Same reason the assignment path expands first: a tail built from an
@@ -3138,11 +3668,120 @@ def _resolve_local_assignments(tokens: "list[str]") -> "list[str]":
                 out.append(token)
                 continue
             piece = tail.strip("\"'").rstrip(";&|")
+            # A guarded or subshell-scoped APPEND may not run either, so it is one more
+            # choice read both ways: ``q=<cli>; false && q+=zzz; $q <verb>`` ran the
+            # mint while the ``=`` spelling was already refused (found in review).
+            prior = values.get(name)
+            if (
+                piece
+                and prior is not None
+                and (
+                    in_body[idx]
+                    or (idx > 0 and _is_guard_token(tokens[idx - 1]))
+                    or (run_end[idx] < len(tokens) and tokens[run_end[idx]] in _SUBSHELL_OPERATORS)
+                    or _is_argument_assignment(tokens, idx, cmd_start)
+                )
+            ):
+                key = (idx, -3, name)
+                met.append((key, name))
+                if _guarded_choice(take, key):
+                    out.append(token)
+                    continue
             # `F=` records nothing, so an append to an unset name starts from empty
             # rather than being discarded -- that was one of the seven spellings, and
             # bash builds the value the same way.
-            values[name] = values.get(name, "") + piece
+            values.set_folded(name, (prior or "") + piece)
             out.append(token)
+            continue
+        if (
+            values
+            and "$" in token
+            and _CONTROL_OPERATOR_RE.search(token)
+            and (assign or _SHLEX_WHITESPACE_RE.search(token))
+        ):
+            # A whole quoted SCRIPT (see :func:`_split_glued_operators`): this frame's
+            # binding is expanded into it only UNTIL the script assigns the name itself,
+            # segment by segment; a guarded or subshell-scoped assignment does not.
+            inner: set[str] = set()
+            appended: dict[str, str] = {}
+            quote = ""
+            # Quotes are syntax only in a quoted whole script; in a token ``shlex``
+            # split bare they are escaped literals (see :func:`_split_glued_operators`).
+            script = bool(_SHLEX_WHITESPACE_RE.search(token))
+            parts = _CONTROL_OPERATOR_SPLIT_RE.split(token)
+            # The body flag is sticky over a compound command here too (found in
+            # review); every segment is a command, so none is quoted data.
+            body_flags = _compound_body_flags([p.strip() for p in parts], lambda _at: True, False)
+            for pos, segment in enumerate(parts):
+                # A separator INSIDE a quote is data: the segment after it is the
+                # rest of a word, not a command, so it assigns nothing.
+                opens_quoted = bool(quote)
+                quote = _quote_state_after(segment, quote) if script else ""
+                if _CONTROL_OPERATOR_RE.fullmatch(segment):
+                    continue
+
+                def outer(name: str, whole: str) -> str:
+                    # A use reads through the glued first name's suffix fold
+                    # (:class:`_GluedBindings`); membership alone did not (found in review).
+                    value = values.get(name)
+                    if name in inner or value is None:
+                        return whole
+                    return value + appended.get(name, "")
+
+                segment = _PARAM_TRANSFORM_RE.sub(lambda m: outer(m.group(1), m.group(0)), segment)
+                segment = _INDIRECT_VAR_USE_RE.sub(
+                    lambda m: outer(values.get(m.group(1), ""), m.group(0)), segment
+                )
+                segment = _VAR_USE_RE.sub(
+                    lambda m: outer(m.group(1) or m.group(2), m.group(0)), segment
+                )
+                parts[pos] = segment
+                # A name is the script's own when ITS value is protected or the run
+                # persists; a protected sibling (``x=echo y=<cli> true``) is not enough.
+                # A PROTECTED outer binding is never shadowed: ``shlex`` dropped the
+                # quote kind, and in double quotes the outer shell expands the use
+                # before the script's own assignment runs (``eval "x=echo; $x token"``
+                # mints), so the outer value is the reading that refuses.
+                guard_word, body = _guarded_body(segment.lstrip())
+                guarded = (
+                    guard_word
+                    or body_flags[pos]
+                    or (pos > 0 and parts[pos - 1].strip() in _CONDITIONAL_OPERATORS)
+                )
+                subshell = pos + 1 < len(parts) and parts[pos + 1].strip() in _SUBSHELL_OPERATORS
+                persists = not guarded and not subshell and not _is_command_scoped_assignment(body)
+                for name, value, appends in _leading_assignments(body):
+                    # An append EXTENDS the outer value and never replaces it: the
+                    # outer binding stays live (``x=<cli>; eval 'x+=" -v"; $x <verb>'``
+                    # still runs ``<cli>``), so it takes no inner name -- and its tail
+                    # is read onto the outer value (``x=kiro; eval 'x+=crew; $x
+                    # <verb>'`` mints), both ways when guarded (found in review).
+                    if appends:
+                        if opens_quoted or name in inner or name not in values:
+                            continue
+                        if guarded or subshell:
+                            key = (idx, pos, name)
+                            met.append((key, name))
+                            if _guarded_choice(take, key):
+                                continue
+                        appended[name] = appended.get(name, "") + value
+                        continue
+                    # ... and a VERB binding is as live as a program one (as at top
+                    # level): ``v=<verb>; eval "v=doctor; <cli> $v"`` mints.
+                    if opens_quoted or _is_protected_program(values.get(name, "")):
+                        continue
+                    if _is_mint_verb(values.get(name, "")):
+                        continue
+                    if persists or _is_protected_program(value):
+                        inner.add(name)
+                    elif (guarded or subshell) and name in values:
+                        # The guard may or may not run: both the outer and the
+                        # script's own value are read (further readings), as at top level.
+                        key = (idx, pos, name)
+                        met.append((key, name))
+                        if not _guarded_choice(take, key):
+                            inner.add(name)
+            out.append("".join(parts))
             continue
         if assign and values and "$" in (assign.group(2) or ""):
             # A new value may be built FROM a variable already tracked
@@ -3176,10 +3815,39 @@ def _resolve_local_assignments(tokens: "list[str]") -> "list[str]":
             continue
         if assign and assign.group(2):
             # A trailing ``;``/``&&`` belongs to the command structure, not the
-            # value: ``shlex`` splits on whitespace only, so ``X=name;`` arrives
-            # with the operator attached.
+            # value: ``shlex`` splits on whitespace only, so ``X=name;`` arrives with it.
             value = assign.group(2).strip("\"'").rstrip(";&|")
+            # A guarded or subshell-scoped reassignment (``X=<cli> || X=echo``,
+            # ``v=<verb>; false && v=doctor``) may not run, so it does not hide ANY
+            # prior value, and the new value is read too (a further reading): only the
+            # ``bash`` reading of ``x=<cli> && x=bash`` descends into ``$x -c ...``. So
+            # is an assignment-shaped ARGUMENT: the command it follows may run it
+            # (``eval``) or print it, so ``echo 'x=echo; ...'`` must not overwrite
+            # ``x=<cli>`` (found in review).
+            prior = values.prior(assign.group(1))
+            if prior is None:
+                # A glued long-name carrier binds the first name under its glued key,
+                # so a bare-name assignment's own prior is unbound; read it through the
+                # fold so a guarded suffix reassignment is enumerated (found in review).
+                prior = values.get(assign.group(1))
+            if (
+                value
+                and prior is not None
+                and value != prior
+                and (
+                    in_body[idx]
+                    or (idx > 0 and _is_guard_token(tokens[idx - 1]))
+                    or subshell_scoped
+                    or _is_argument_assignment(tokens, idx, cmd_start)
+                )
+            ):
+                key = (idx, -1, assign.group(1))
+                met.append((key, assign.group(1)))
+                if _guarded_choice(take, key):
+                    value = prior
             if value:
+                # A plain ``=`` binds its OWN name, not set_folded (folding a short
+                # name onto a glued key overwrites the mint -- a bypass; review).
                 values[assign.group(1)] = value
             out.append(token)
             continue
@@ -3188,13 +3856,10 @@ def _resolve_local_assignments(tokens: "list[str]") -> "list[str]":
             # ``V``, so resolving it takes two hops through the same table.  Done before
             # the ordinary substitution so what remains afterwards is a plain literal.
             # A TRANSFORMATION on a tracked variable (``${K:0}``, ``${K^^}``, ``${K/x/y}``)
-            # still expands to something derived from the tracked value, but none of those
-            # spellings are a plain ``${K}``.  Resolved to the value itself: the
-            # transformation is not modelled, and over-approximating here is the safe
-            # direction for the same reason it is for a computed value -- the result only
-            # matters where it is used as a program or verb, and a wrong guess there is a
-            # refusal, not a bypass.  The ``:-``/``:+``/``:=``/``:?`` DEFAULT forms are
-            # excluded: they carry their own literal and are resolved separately.
+            # is not a plain ``${K}``; it is resolved to the value itself (over-approximating,
+            # the safe direction: a wrong guess where it is used as a program is a refusal,
+            # not a bypass).  The ``:-``/``:+``/``:=``/``:?`` DEFAULT forms are excluded:
+            # they carry their own literal and are resolved separately.
             token = _PARAM_TRANSFORM_RE.sub(lambda m: values.get(m.group(1), m.group(0)), token)
             token = _INDIRECT_VAR_USE_RE.sub(
                 lambda m: values.get(values.get(m.group(1), ""), m.group(0)), token
@@ -3202,8 +3867,27 @@ def _resolve_local_assignments(tokens: "list[str]") -> "list[str]":
             token = _VAR_USE_RE.sub(
                 lambda m: values.get(m.group(1) or m.group(2), m.group(0)), token
             )
+            # A use in COMMAND position of a value holding whitespace is word-split
+            # (``x="<cli> -v"; $x <verb>`` runs ``<cli>``); an argument stays one word.
+            # Command position is the first word after a boundary and that command's
+            # leading assignments -- not what follows an assignment-shaped ARGUMENT
+            # (``make CFLAGS=-O2 $x``).  ``shlex`` glues a trailing separator to its
+            # word (``true;``) and drops the quotes, so a quoted operand ending in one
+            # (``grep 'a;' $x``) reads as a boundary too: a refusal, not a bypass.
+            # ``$IFS`` in such a use is a separator too (``$x${IFS}<verb>``; found in
+            # review) -- quoted or not, since ``shlex`` dropped the quotes: a refusal.
+            if token != tokens[idx] and _token_in_command_position(tokens, idx):
+                token = _IFS_USE_RE.sub(" ", token)
+            if (
+                token != tokens[idx]
+                and _SHLEX_WHITESPACE_RE.search(token)
+                and not _SHLEX_WHITESPACE_RE.search(tokens[idx])
+                and _token_in_command_position(tokens, idx)
+            ):
+                out.extend(token.split())
+                continue
         out.append(token)
-    return out
+    return out, met
 
 
 def _nested_shell_payloads(
@@ -3512,7 +4196,8 @@ def _shell_payload_walk(text_lower: str) -> "list[tuple[str, list[str]]]":
     number, one more wrapper defeats it -- so the walk is bounded structurally: a
     payload lives inside one token of its parent and is therefore strictly shorter
     than the parent's source text, and a chain of strictly shorter strings is
-    finite.
+    finite.  The one exception, the ``eval`` join, is bounded (four times its
+    parent plus one per token) and is walked without joining again.
     """
     out: list[tuple[str, list[str]]] = []
     seen: set[str] = set()
@@ -3520,9 +4205,15 @@ def _shell_payload_walk(text_lower: str) -> "list[tuple[str, list[str]]]":
     # A frame PRODUCED by a join may not, which is what bounds the walk: see
     # ``_nested_shell_payloads``.
     pending: list[tuple[str, int, bool]] = [(text_lower, len(text_lower) + 1, True)]
+    # One reading budget for the WHOLE walk: nested carriers multiply frames by the
+    # readings of every level above, so a per-frame budget bounded nothing.
+    budget = _ReadingBudget()
     while pending:
         source, parent_len, allow_join = pending.pop()
-        tokens = _self_tokens(source)
+        readings = _self_token_readings(source, budget)
+        tokens: list[str] = []
+        for reading in readings:
+            tokens += [";"] + reading if tokens else reading
         if not tokens:
             continue
         out.append((source, tokens))
@@ -3542,14 +4233,28 @@ def _shell_payload_walk(text_lower: str) -> "list[tuple[str, list[str]]]":
         # walk's seed) reshapes nothing outside a substitution the tokenizer already
         # reads folded, and the fold preserves single-quoted and ANSI-C spans, so a
         # continuation that bash keeps literal stays literal in the body too.
+        # Nested payloads are read per READING: the ``eval`` join runs to the end of
+        # the list it is given, and the readings of a guarded reassignment are many
+        # (found in review: three fillers made the join span eight readings, past its
+        # bound, and the joined ``git`` publish was dropped).
         joined_here: set[str] = set()
-        nested = _nested_shell_payloads(tokens, allow_join=allow_join, joined_out=joined_here)
-        for payload in list(nested) + _substitution_bodies(_fold_line_continuations(source)):
+        nested: list[str] = []
+        for reading in readings:
+            nested += _nested_shell_payloads(reading, allow_join=allow_join, joined_out=joined_here)
+        for payload in nested + _substitution_bodies(_fold_line_continuations(source)):
             # Descend through EVERY literal payload, to any depth.  Termination is
             # structural, not a cap: a payload is carried inside one token of its
-            # parent, so it is strictly shorter than the parent's source text.
+            # parent, so it is strictly shorter than the parent's source text -- except
+            # the ``eval`` join below, which is bounded instead and is never joined
+            # again, so every chain shrinks past each join and is finite.
             payload = _decode_printf_escapes(payload)
-            if len(payload) >= parent_len or payload in seen:
+            # An ``eval`` join spans ONE reading: the whole token AND its pieces (twice
+            # the source), joined by spaces the source did not carry -- at most twice
+            # the parent plus one per token, with the same slack again.  Anything larger
+            # is variable EXPANSION repeated across the join, which walking again would
+            # make quadratic (a 10 KB value used 3400 times).
+            bound = 4 * parent_len + len(tokens) if payload in joined_here else parent_len
+            if len(payload) >= bound or payload in seen:
                 continue
             seen.add(payload)
             pending.append((payload, len(source), payload not in joined_here))
@@ -3559,15 +4264,6 @@ def _shell_payload_walk(text_lower: str) -> "list[tuple[str, list[str]]]":
 def _is_mint_verb(token: str) -> bool:
     """True if *token* is the credential-minting verb, however it is dressed."""
     return _normalize_operand(token) == "token"
-
-
-# `NAME=value` prefix. `normalize_shell_command` keeps it as a single token, and
-# the value is already $HOME-expanded by the time we see it.
-#: ``NAME=value`` and ``NAME+=value``. The append form is a separate group so a
-#: caller can add to what it already recorded instead of replacing it. Matching
-#: only ``=`` means the whole ``NAME+=`` token fails to match, so the segment
-#: reads as a command word rather than an assignment.
-_SHELL_ASSIGN_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)(\+?)=(.*)$", re.DOTALL)
 
 
 # Regex to strip empty-string concatenation: paired quotes ('' or "") that
