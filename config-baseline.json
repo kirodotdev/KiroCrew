@@ -8894,7 +8894,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Auto Update",
-      "help": "Enable automatic update checks.",
+      "help": "When true, the gateway applies an update it finds once no work is running, then restarts, on an install it can update itself; when false it only notifies. A policy minimum version applies an update there even when false. The desktop app's updater has its own switch.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true

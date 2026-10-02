@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -337,6 +338,121 @@ class TestSpawnQueueWaitHelpMatchesTheDaemon:
                 f"{name} names a threshold other than the shipped default "
                 f"{shipped}; a stale figure sends an operator to the wrong knob"
             )
+
+
+_AUTO_UPDATE_PATH = "auto_update"
+
+#: The user-facing page that documents the key: its top-level table row and its
+#: ``Updates`` section.
+_CONFIGURATION_DOC = os.path.join(_REPO_ROOT, "src", "kiro_crew", "docs", "configuration.md")
+
+#: Where the desktop app's switch gets the label the page quotes.
+_EN_LOCALE = os.path.join(_REPO_ROOT, "website", "src", "i18n", "locales", "en.json")
+
+
+def _doc_table_row(doc_path: str, key: str) -> str:
+    """The one ``| `key` | ... |`` table row of *doc_path*."""
+    rows = [
+        line
+        for line in Path(doc_path).read_text(encoding="utf-8").splitlines()
+        if line.startswith(f"| `{key}` |")
+    ]
+    assert len(rows) == 1, f"{doc_path} has {len(rows)} table rows for {key!r}, not one"
+    return rows[0]
+
+
+def _doc_section(doc_path: str, heading: str) -> str:
+    """The body of the *heading* section, up to the next heading at its level or above."""
+    level = len(heading) - len(heading.lstrip("#"))
+    lines = Path(doc_path).read_text(encoding="utf-8").splitlines()
+    assert lines.count(heading) == 1, f"{doc_path} has {lines.count(heading)} {heading!r} headings"
+    start = lines.index(heading) + 1
+    body = []
+    for line in lines[start:]:
+        hashes = len(line) - len(line.lstrip("#"))
+        if 0 < hashes <= level and line[hashes : hashes + 1] == " ":
+            break
+        body.append(line)
+    return "\n".join(body)
+
+
+def _flat(text: str) -> str:
+    """*text* on one line, lowercased, without the backticks only the page carries."""
+    return " ".join(text.replace("`", "").split()).lower()
+
+
+class TestAutoUpdateHelpSaysWhatItDoes:
+    """``auto_update`` applies updates and restarts the gateway; it does not choose
+    whether to check.
+
+    The key used to read "Enable automatic update checks". The gateway checks at
+    every start and every 12 hours whatever the key says, and with the key on it
+    replaces its own code and restarts. An operator who turned it off expecting
+    "no checks", or left it on expecting "only checks", was told the wrong thing.
+    The help ships three times (the schema, the committed snapshot and the
+    table row of ``configuration.md``), and ``test_committed_snapshot_matches_generator``
+    only holds the first two equal to each other, so the claim is pinned at all
+    three.
+    """
+
+    def test_every_site_says_it_applies_restarts_and_names_the_floor(self) -> None:
+        sites = {
+            "src/kiro_crew/config/loader.py": _schema_help(_AUTO_UPDATE_PATH),
+            "config-baseline.json": _baseline_help(_AUTO_UPDATE_PATH),
+            _CONFIGURATION_DOC: _doc_table_row(_CONFIGURATION_DOC, _AUTO_UPDATE_PATH),
+        }
+        for name, text in sites.items():
+            flat = _flat(text)
+            assert "update checks" not in flat, (
+                f"{name} still says auto_update enables update checks; the check "
+                "runs either way and the key decides whether an update is applied"
+            )
+            # Whole clauses, not keywords: a sentence that swaps true and false,
+            # or says the floor never applies, has to fail here too.
+            for clause, why in (
+                ("when true, the gateway applies an update", "that true applies an update"),
+                ("then restarts", "that applying restarts the gateway"),
+                ("when false it only notifies", "that false only notifies"),
+                (
+                    "a policy minimum version applies an update there even when false",
+                    "that a policy minimum version applies an update anyway",
+                ),
+            ):
+                assert clause in flat, f"{name} does not say {why}"
+
+    def test_the_cadence_the_page_names_is_the_shipped_one(self) -> None:
+        """The section names two intervals; both have to be the ones the gateway runs."""
+        from kiro_crew.dashboard.handlers.updates import _UPDATE_CHECK_INTERVAL
+        from kiro_crew.slack.gateway import GatewayOrchestrator
+
+        section = _flat(_doc_section(_CONFIGURATION_DOC, "### Updates"))
+        hours = f"{_UPDATE_CHECK_INTERVAL / 3600:g}"
+        minutes = f"{GatewayOrchestrator._UPDATE_BUSY_RETRY_SECS / 60:g}"
+        assert f"every {hours} hours" in section
+        assert f"every {minutes} minutes while" in section
+        # Every interval the section names, so a second mention cannot drift.
+        assert set(re.findall(r"(\d+) hours", section)) == {hours}
+        assert set(re.findall(r"(\d+) minutes", section)) == {minutes}
+
+    def test_the_desktop_switch_the_page_names_is_the_label_the_app_shows(self) -> None:
+        """The desktop app's own updater is the other updater, with its own switch.
+
+        Quoted from the locale the About page renders it from, so a renamed
+        switch fails here instead of leaving the page pointing at a control that
+        no longer exists.
+        """
+        with open(_EN_LOCALE, encoding="utf-8") as handle:
+            label = json.load(handle)["pages"]["settings"]["aboutPanel"]["auto_update_on_restart"]
+        section = _doc_section(_CONFIGURATION_DOC, "### Updates")
+        assert f"**{label}**" in section
+        flat = _flat(section)
+        assert "downloads updates automatically" in flat
+        assert (
+            "it is independent of auto_update" in flat
+        ), "the page does not say the app's switch and auto_update are separate"
+        # The About page draws the switch only off a managed install, so the page
+        # must not leave a managed-install reader looking for it.
+        assert "the about page does not show that switch on a managed install" in flat
 
 
 # ---------------------------------------------------------------------------

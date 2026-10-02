@@ -519,7 +519,7 @@ member-memory sandbox is required.
 
 | Key | Description | Default |
 |-----|-------------|---------|
-| `auto_update` | Enable automatic update checks | `true` |
+| `auto_update` | When `true`, the gateway applies an update it finds once no work is running, then restarts the gateway, on an install it can update itself; when `false` it only notifies. A policy minimum version applies an update there even when `false`. The desktop app's updater has its own switch. See [Updates](#updates) | `true` |
 | `timezone` | IANA timezone name, e.g. `"America/Los_Angeles"` | `""` (falls back to UTC) |
 | `snapshot_dir` | Where `kirocrew snapshot` writes tarballs | `""` (`~/.kiro/crew/snapshots`) |
 
@@ -551,6 +551,67 @@ The `timezone` key affects three things:
 - `skip_dates` evaluation for cron jobs
 
 A per-job `timezone` on a cron job wins over this global value.
+
+### Updates
+
+The gateway checks for a newer release when it starts, every 12 hours, and
+every 5 minutes while an update waits for running work to finish. The check
+runs whatever `auto_update` is set to. Unless a security policy names update
+commands, Docker and the gateway bundled in the desktop app skip it: a container
+needs a newer image, and the app's own updater owns the bundled gateway.
+
+`auto_update` decides what happens when the check finds an update:
+
+- **`true`** (the default): on an install the gateway can update itself, it
+  applies the update and restarts the gateway. Those installs are a git
+  checkout on its primary branch whose upstream carries a newer version, the
+  `cli.sh` managed venv, and any install whose security policy names update
+  commands. Every other install only notifies.
+- **`false`**: the gateway only notifies.
+
+On Windows a policy's update commands never run, so under such a policy the
+check does not complete and the gateway neither applies nor notifies.
+
+The gateway applies an update only when no turn or background job is running.
+While work is in flight it keeps serving and tries again 5 minutes later. While
+the update applies, it does not start new turns.
+
+In this release, `auto_update` does not first check that the install can apply.
+With it on, a checkout on any other branch, or a policy that names a check
+command but no apply command, still pauses new turns for each attempt, and the
+policy case then reports a failed apply. Set `auto_update` to `false` on those
+installs.
+
+Set it with `kirocrew config set auto_update false`, or with the gateway's
+switch in the Updates card on the About page when the dashboard is open in a
+browser. After `kirocrew update`, run `kirocrew restart`: that command does
+not restart a running gateway.
+
+**What can still update a host with `auto_update` off:**
+
+- **A policy minimum version.** An administrator can set `min_version` in the
+  `updates` block of `security_policy.json`. On an install the gateway can
+  update itself, a gateway below that version applies the update even with
+  `auto_update` off. It still waits for running work to finish. See the
+  [governance spec](../../../docs/system-specs/modules/governance.md#update-pins-updates--policy-only).
+- **The desktop app's own updater.** In the desktop app's window, the
+  **Auto-update on restart** switch in the Updates card on the About page
+  downloads updates automatically and installs them the next time you quit the
+  app. It updates the app and the gateway bundled in it. It is independent
+  of `auto_update`: the app keeps it in its own settings, not in the gateway's
+  `config.json`. Turn it off to be asked before each download. Details:
+  [release.md → Client auto-update](../../../docs/build/release.md#client-auto-update).
+
+An edition can hand updates to a package manager, through the policy's update
+commands or a packaged app's managed-install marker. A pause set in that
+package manager holds only if the edition's check command honors it: the
+gateway runs the policy's apply command whenever the check reports a version
+while `auto_update` is on or a minimum version requires the update, and the app
+runs the marker's update command on quit while its switch is on. The About
+page does not show that switch on a managed install, so it keeps whatever value
+it had, on by default, and the app then runs the marker's update command on
+quit whenever its check command reports a version. See
+[externally managed installs](../../../docs/build/desktop-app.md#externally-managed-installs-repackagers).
 
 ## Credentials
 

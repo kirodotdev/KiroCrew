@@ -4224,7 +4224,13 @@ class KiroCrewConfig:
     )
     auto_update: bool = field(
         default=True,
-        metadata=_meta("Auto Update", "Enable automatic update checks."),
+        metadata=_meta(
+            "Auto Update",
+            "When true, the gateway applies an update it finds once no work is running, "
+            "then restarts, on an install it can update itself; when false it only "
+            "notifies. A policy minimum version applies an update there even when false. "
+            "The desktop app's updater has its own switch.",
+        ),
     )
     #: Opt-in for the Connections gallery, which is merged but held for a later
     #: release. A real field rather than an unmodelled top-level key because the
