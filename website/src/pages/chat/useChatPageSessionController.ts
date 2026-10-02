@@ -19,6 +19,7 @@ import type { ChatSlot, SessionInfo } from '../../types'
 import { isChatPageSurface } from '../../utils/channelOrigin'
 import { writePrefill } from '../../utils/navIntent'
 import type { PasteBlock } from '../../utils/pasteTokens'
+import { isSafeReload } from '../../lib/safeReload'
 import { safeSetItem } from '../../utils/safeStorage'
 import { shouldReplaceSessionUrl, popMaySwitchSession } from '../../utils/sessionUrlHistory'
 import { toSlug } from '../../utils/shareUrl'
@@ -767,14 +768,24 @@ export function useChatPageSessionController({
   // Auto-select slot after refresh — restore from localStorage or pick first
   // If no slots exist at all, auto-create one so the user lands in a ready chat
   const autoCreatedRef = useRef(false)
+  const hadActiveSlotRef = useRef(false)
   useEffect(() => {
-    if (activeSlot) return
+    if (activeSlot) {
+      hadActiveSlotRef.current = true
+      return
+    }
     // Don't auto-select/auto-create while the challenge-redirect token effect
     // is still creating + slack-linking its session; otherwise we'd switch to
     // a different slot and orphan the linked one (breaking Slack mirroring).
     if (tokenConsumingRef.current) return
     if (newSessionRef.current || newSlotFailed) return
     if (searchParams.get('slot') || searchParams.get('sid') || initialSidRef.current) return
+    // A crash-recovery reload opens nothing. The remembered chat -- or the first
+    // one, which is often the same busy chat -- may be what froze the renderer,
+    // and reopening it would freeze and kill it again (#12907). The user picks.
+    // Only the first auto-open is skipped: once the user has opened a chat,
+    // closing it moves to a sibling as usual.
+    if (filteredSlots.length > 0 && isSafeReload() && !hadActiveSlotRef.current) return
     if (filteredSlots.length > 0) {
       const saved = localStorage.getItem(slotStorageKey)
       const target = saved && filteredSlots.find(s => s.key === saved) ? saved : filteredSlots[0].key

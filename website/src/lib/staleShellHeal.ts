@@ -18,6 +18,8 @@
 // automatic reload per window per interval, so a misbehaving server can never
 // put the page into a reload loop.
 
+import { reloadKeepingSafe } from './safeReload'
+
 /** Minimum spacing between automatic heal reloads for one tab. */
 export const HEAL_RELOAD_MIN_INTERVAL_MS = 10 * 60_000
 /** Boot delay before probing: keep the check off the critical startup path. */
@@ -91,7 +93,9 @@ export function installStaleShellHeal(): void {
           await Promise.all(keys.map((k) => window.caches.delete(k)))
         } catch { /* CacheStorage unavailable */ }
       },
-      reload: () => window.location.reload(),
+      // A crash-recovery (`?safe=1`) load that heals here must stay safe, or
+      // the healed load reopens the chat that crashed the renderer (#12907).
+      reload: () => reloadKeepingSafe(),
     })
   }, HEAL_PROBE_DELAY_MS)
 }

@@ -3,6 +3,8 @@ const assert = require("node:assert");
 const {
   createRendererRecovery,
   isRecoverableReason,
+  withSafeReload,
+  hasSafeReload,
   DEFAULT_MAX_ATTEMPTS,
 } = require("../renderer-recovery");
 
@@ -148,4 +150,49 @@ test("a throwing snapshot probe never blocks recovery", () => {
   assert.strictEqual(h.rec.handleGone({ reason: "crashed" }), "reloaded");
   assert.strictEqual(h.reloads.length, 1, "recovery must still happen");
   assert.match(h.logs.join("\n"), /snapshot failed/);
+});
+
+test("recovery reload asks the dashboard not to reopen the remembered chat", () => {
+  const u = new URL(withSafeReload("http://localhost:5476?token=abc"));
+  assert.strictEqual(u.origin, "http://localhost:5476");
+  assert.strictEqual(u.pathname, "/");
+  assert.strictEqual(u.searchParams.get("safe"), "1");
+  assert.strictEqual(u.searchParams.get("token"), "abc");
+});
+
+test("recovery reload without a credential still carries safe=1", () => {
+  const u = new URL(withSafeReload("http://localhost:5476"));
+  assert.strictEqual(u.searchParams.get("safe"), "1");
+  assert.strictEqual(u.searchParams.has("token"), false);
+});
+
+// A recovery reload that lands on a 403 is re-requested by the token retry. The
+// retry decides from the URL that failed whether to keep `safe=1`; losing the
+// flag there reopens the remembered chat and the crash loop resumes.
+test("a recovery reload URL is recognised as safe through the token retry", () => {
+  assert.strictEqual(hasSafeReload("http://localhost:5476/?token=stale&safe=1"), true);
+  assert.strictEqual(hasSafeReload(withSafeReload("http://localhost:5476?token=abc")), true);
+});
+
+test("an ordinary dashboard URL is not treated as a recovery reload", () => {
+  assert.strictEqual(hasSafeReload("http://localhost:5476/?token=abc"), false);
+  assert.strictEqual(hasSafeReload("http://localhost:5476/?safe=0"), false);
+  assert.strictEqual(hasSafeReload("http://localhost:5476/"), false);
+});
+
+test("a malformed navigated URL reads as not safe instead of throwing", () => {
+  assert.strictEqual(hasSafeReload("about:blank"), false);
+  assert.strictEqual(hasSafeReload("not a url"), false);
+  assert.strictEqual(hasSafeReload(""), false);
+  assert.strictEqual(hasSafeReload(undefined), false);
+});
+
+test("keeping safe through a retry yields one safe=1 and the fresh token", () => {
+  // The retry composes the fresh credential onto the base and re-applies the
+  // flag; the result must be the same shape as the first recovery reload.
+  const failed = withSafeReload("http://localhost:5476?token=stale");
+  const retry = `http://localhost:5476?token=fresh`;
+  const u = new URL(hasSafeReload(failed) ? withSafeReload(retry) : retry);
+  assert.deepStrictEqual(u.searchParams.getAll("safe"), ["1"]);
+  assert.strictEqual(u.searchParams.get("token"), "fresh");
 });
