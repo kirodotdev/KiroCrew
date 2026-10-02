@@ -678,6 +678,62 @@ class TranscriptReadProjection:
             rows.extend(self.read_rotated_messages(chained_key))
         return rows
 
+    def has_rotated_messages_chained(self, key: str) -> bool:
+        """Return whether any member of *key*'s tab chain has rotated rows."""
+        metadata = self._log.get_metadata(key)
+        tab_id = metadata.get("tab_id")
+        keys: list[str] = []
+        if tab_id:
+            with self._log._lock:
+                if self._log._tab_id_index is None:
+                    self._log._rebuild_tab_id_index()
+                index = self._log._tab_id_index or {}
+                keys = list(index.get(tab_id, []))
+        if not keys:
+            keys = [key]
+
+        facade = _history_facade()
+        adir = facade._archive_dir(self._log._dir)
+        for chained_key in keys:
+            stem = facade._safe_key(chained_key) + facade.ARCHIVE_SEGMENT_DELIMITER
+            try:
+                segments = list(adir.glob(f"{stem}*.jsonl"))
+            except OSError as exc:
+                raise OSError(f"rotated archive for {chained_key} could not be enumerated") from exc
+            for segment in segments:
+                try:
+                    with segment.open("rb") as archive:
+                        header_line = archive.readline(64 * 1024)
+                except OSError as exc:
+                    raise OSError(f"rotated segment {segment.name} could not be read") from exc
+                if not header_line:
+                    continue
+                # A damaged header is permanent, so raising here would turn one
+                # corrupt segment into a "please retry" that never succeeds. The
+                # question is only whether older rows may exist, and a segment
+                # nobody can classify may hold them: answer yes, which shows the
+                # "most recent part" notice and nothing worse.
+                try:
+                    header = json.loads(header_line.decode("utf-8"))
+                except (UnicodeDecodeError, ValueError):
+                    _HISTORY_LOGGER.warning("rotated segment header undecodable: %s", segment.name)
+                    return True
+                if not isinstance(header, dict):
+                    _HISTORY_LOGGER.warning(
+                        "rotated segment header is not an object: %s", segment.name
+                    )
+                    return True
+                if header.get("reason") != "rotate":
+                    continue
+                count = header.get("count")
+                if isinstance(count, int) and not isinstance(count, bool):
+                    if count > 0:
+                        return True
+                    if count == 0:
+                        continue
+                return True
+        return False
+
     def chain_mid_rotation(self, key: str) -> bool:
         """True when any chain member AFTER the first has archive segments.
 

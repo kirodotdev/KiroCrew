@@ -220,7 +220,7 @@ def test_chat_slot_lifecycle(gateway):
 
 
 def test_session_detail(gateway):
-    """Can fetch detail for the fixture-seeded session (returns message list).
+    """Can fetch detail for the fixture-seeded session (its newest message page).
 
     The minimal fixture ships ``dashboard_starter.jsonl`` -- assert against
     that known session rather than depending on ambient state.
@@ -231,7 +231,8 @@ def test_session_detail(gateway):
     first_key = sessions["sessions"][0]["key"]
 
     detail = _api_get(gateway, f"/api/sessions/{first_key}")
-    assert isinstance(detail, list)
+    assert detail["key"] == first_key
+    assert isinstance(detail["messages"], list)
 
 
 def test_session_search(gateway):

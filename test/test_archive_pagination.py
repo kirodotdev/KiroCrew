@@ -24,6 +24,7 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_app, _make_state
 
+from kiro_crew import history
 from kiro_crew.history import ConversationLog
 
 
@@ -103,6 +104,40 @@ class TestReadMessagesChainedFull:
         log.append("t3", "user", "only message")
         assert _contents(log.read_messages_chained_full("t3")) == ["only message"]
         assert log.read_rotated_messages_chained("t3") == []
+
+
+class TestHasRotatedMessagesChained:
+    def test_rotate_segment_is_true(self, tmp_path):
+        log = ConversationLog(base_dir=tmp_path)
+        history._archive_lines(
+            "t1",
+            [json.dumps({"role": "user", "content": "archived"}) + "\n"],
+            "rotate",
+            log._dir,
+        )
+        assert log.has_rotated_messages_chained("t1") is True
+
+    def test_compact_only_is_false(self, tmp_path):
+        log = ConversationLog(base_dir=tmp_path)
+        history._archive_lines(
+            "t1",
+            [json.dumps({"role": "user", "content": "discarded"}) + "\n"],
+            "compact",
+            log._dir,
+        )
+        assert log.has_rotated_messages_chained("t1") is False
+
+    def test_no_archive_is_false(self, tmp_path):
+        log = ConversationLog(base_dir=tmp_path)
+        assert log.has_rotated_messages_chained("t1") is False
+
+    def test_damaged_header_answers_yes(self, tmp_path):
+        log = ConversationLog(base_dir=tmp_path)
+        archive_dir = history._archive_dir(log._dir)
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        stem = history._safe_key("t1") + history.ARCHIVE_SEGMENT_DELIMITER
+        (archive_dir / f"{stem}20990101-000000.jsonl").write_text("not-json\n", encoding="utf-8")
+        assert log.has_rotated_messages_chained("t1") is True
 
 
 class TestChainMidRotation:

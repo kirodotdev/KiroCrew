@@ -95,9 +95,6 @@ PLUMBING: frozenset[tuple[str, str]] = frozenset(
         ("kiro_crew/dashboard/handlers/core.py", "recent"),
         ("kiro_crew/dashboard/handlers/cron.py", "read_messages"),
         ("kiro_crew/dashboard/handlers/session_control.py", "read_messages"),
-        # The History browser showing the user their own transcript. Its
-        # list_sessions(summarize=true) leg goes through the seam (derive_recent).
-        ("kiro_crew/dashboard/handlers/sessions.py", "read_messages"),
         ("kiro_crew/decisions/points/compaction_keep.py", "read_messages"),
         # Thread diagnostics probe `recent`, not a transcript.
         ("kiro_crew/diag/threads.py", "recent"),

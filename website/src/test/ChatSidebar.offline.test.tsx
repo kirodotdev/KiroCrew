@@ -188,13 +188,14 @@ describe('ChatSidebar – offline guards', () => {
     expect(resumeFromHistoryMock).not.toHaveBeenCalled()
   })
 
-  it('mousedown on a history row when connected DOES dispatch resumeFromHistory', () => {
+  it('mousedown on a history row when connected opens the preview, not a resume', () => {
     renderSidebar(true, { withHistory: true })
     fireEvent.click(screen.getByRole('button', { name: /^older sessions$/i }))
     const histRow = screen.getByText('History 1').closest('div') as HTMLElement | null
     expect(histRow).not.toBeNull()
     fireEvent.mouseDown(histRow!)
-    expect(resumeFromHistoryMock).toHaveBeenCalled()
+    expect(screen.getByRole('dialog')).toBeTruthy()
+    expect(resumeFromHistoryMock).not.toHaveBeenCalled()
   })
 
   it('offline session rows expose aria-disabled=true for screen readers', () => {
