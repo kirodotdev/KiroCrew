@@ -1991,6 +1991,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/chat_folders.py",
         "dashboard/chat_fork.py",
         "dashboard/chat_handlers.py",
+        # The owners composed into that facade: they redact the same transcript
+        # and persisted copies its handlers did, answered through the same
+        # responses, so the split adds no egress path of its own.
+        "dashboard/chat_api/resume.py",
+        "dashboard/chat_api/slot_detail.py",
         "dashboard/chat_nav.py",
         "dashboard/chat_persistence.py",
         # The row projection and the restore-time title check, composed into that

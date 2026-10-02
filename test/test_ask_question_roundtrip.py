@@ -638,6 +638,16 @@ def test_unblock_pending_waits_releases_both_waits() -> None:
     state.cancel_questions_for_slot.assert_called_once_with("chat-1")
 
 
+def _chat_handler_source() -> str:
+    """chat_handlers.py and the chat_api owners it composes, as one text."""
+    dashboard = Path(__file__).resolve().parents[1] / "src/kiro_crew/dashboard"
+    owners = sorted((dashboard / "chat_api").glob("[!_]*.py"))
+    assert owners, "no chat_api owner found beside chat_handlers.py"
+    return "\n".join(
+        path.read_text(encoding="utf-8") for path in [dashboard / "chat_handlers.py", *owners]
+    )
+
+
 def test_every_stop_path_uses_the_combined_chokepoint() -> None:
     """No stop path may call the approval half alone.
 
@@ -645,12 +655,7 @@ def test_every_stop_path_uses_the_combined_chokepoint() -> None:
     tests through the stop handlers — would still not catch a FOURTH path added
     later, which is precisely how this defect arose.
     """
-    from pathlib import Path
-
-    src = (
-        Path(__file__).resolve().parents[1]
-        / "src/kiro_crew/dashboard/chat_handlers.py"
-    ).read_text(encoding="utf-8")
+    src = _chat_handler_source()
 
     # The only permitted _reject_pending_approvals reference outside its own
     # definition is the one inside _unblock_pending_waits.
@@ -833,10 +838,7 @@ def test_every_session_reset_goes_through_the_chokepoint() -> None:
     would not catch a SIXTH handler added later, which is exactly how the stop
     paths drifted before.
     """
-    src = (
-        Path(__file__).resolve().parents[1]
-        / "src/kiro_crew/dashboard/chat_handlers.py"
-    ).read_text(encoding="utf-8")
+    src = _chat_handler_source()
 
     body = src.split("async def _reset_slot_session", 1)
     assert len(body) == 2, "the reset chokepoint is gone"

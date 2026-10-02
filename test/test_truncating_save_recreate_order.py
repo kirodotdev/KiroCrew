@@ -48,6 +48,30 @@ from kiro_crew.dashboard.dashboard_persistence import DashboardPersistenceCoordi
 NAME = "chat-1-9905"
 
 
+def _owner_paths() -> list[Path]:
+    """The chat_api owners composed into chat_handlers, which share its pins."""
+    owners = sorted((Path(handlers.__file__).resolve().parent / "chat_api").glob("[!_]*.py"))
+    assert owners, "no chat_api owner found beside chat_handlers.py"
+    return owners
+
+
+def _handler_source() -> str:
+    """chat_handlers.py and its chat_api owners, as one text."""
+    return "\n".join(
+        path.read_text(encoding="utf-8") for path in [Path(handlers.__file__), *_owner_paths()]
+    )
+
+
+def _handler_file_defining(prefix: str) -> str:
+    """The one file of chat_handlers.py and its owners holding a line starting *prefix*."""
+    texts = [
+        path.read_text(encoding="utf-8") for path in [Path(handlers.__file__), *_owner_paths()]
+    ]
+    holders = [text for text in texts if any(line.startswith(prefix) for line in text.splitlines())]
+    assert len(holders) == 1, f"{prefix!r} starts a line in {len(holders)} files"
+    return holders[0]
+
+
 def _state_with_slot(tmp_path, name: str = NAME):
     state = _make_state(tmp_path)
     slot = state.get_or_create_slot(name)
@@ -303,7 +327,7 @@ def test_only_the_shared_close_path_waits_for_the_guarded_write(tmp_path) -> Non
     a silent drift.
     """
     del tmp_path
-    source = Path(handlers.__file__).read_text(encoding="utf-8")
+    source = _handler_source()
     call = "await _await_guarded_history_write("
     assert source.count(call) == 1, "the wait's call sites changed"
 
@@ -540,13 +564,14 @@ def test_only_the_handover_drain_opts_out_of_the_fence() -> None:
     """
     flag = "issued_by_the_retraction=True"
     hits = []
-    for module in (handlers, chat_persistence, chat_regenerate, chat_rewind):
-        source = Path(module.__file__).read_text(encoding="utf-8")
-        hits.extend([Path(module.__file__).name] * source.count(flag))
+    modules = (handlers, chat_persistence, chat_regenerate, chat_rewind)
+    for path in [*(Path(module.__file__) for module in modules), *_owner_paths()]:
+        source = path.read_text(encoding="utf-8")
+        hits.extend([path.name] * source.count(flag))
 
     assert hits == ["chat_handlers.py"], f"the fence exemption gained a call site: {hits}"
 
-    source = Path(handlers.__file__).read_text(encoding="utf-8")
+    source = _handler_source()
     lines = source.splitlines()
     flag_at = next(i for i, line in enumerate(lines) if flag in line)
     enclosing = next(
@@ -600,16 +625,19 @@ def test_the_bulk_sweep_defers_a_slot_with_a_write_in_flight() -> None:
     become active, or a fresh write can be admitted, inside the gap the fence was
     raised to close.
     """
-    source = Path(handlers.__file__).read_text(encoding="utf-8")
+    source = _handler_file_defining("async def api_chat_slots_cleanup")
     lines = source.splitlines()
 
     start = next(
         i for i, line in enumerate(lines) if line.startswith("async def api_chat_slots_cleanup")
     )
     end = next(
-        i
-        for i in range(start + 1, len(lines))
-        if lines[i].startswith("async def ") or lines[i].startswith("def ")
+        (
+            i
+            for i in range(start + 1, len(lines))
+            if lines[i].startswith("async def ") or lines[i].startswith("def ")
+        ),
+        len(lines),
     )
     body = lines[start:end]
 
@@ -645,7 +673,7 @@ def test_a_restored_slot_gets_its_fence_back() -> None:
     name. ``close_slot`` releases the fence in its own ``finally`` for the
     single-tab path; the sweep has no such wrapper and must release it itself.
     """
-    source = Path(handlers.__file__).read_text(encoding="utf-8")
+    source = _handler_source()
     lines = source.splitlines()
 
     restore_at = next(
@@ -697,16 +725,19 @@ def test_the_sweep_leaves_a_slot_another_retraction_owns() -> None:
     to come BEFORE ``begin_close()``: after it, the sweep cannot tell its own
     acquisition from the other holder's.
     """
-    source = Path(handlers.__file__).read_text(encoding="utf-8")
+    source = _handler_file_defining("async def api_chat_slots_cleanup")
     lines = source.splitlines()
 
     start = next(
         i for i, line in enumerate(lines) if line.startswith("async def api_chat_slots_cleanup")
     )
     end = next(
-        i
-        for i in range(start + 1, len(lines))
-        if lines[i].startswith("async def ") or lines[i].startswith("def ")
+        (
+            i
+            for i in range(start + 1, len(lines))
+            if lines[i].startswith("async def ") or lines[i].startswith("def ")
+        ),
+        len(lines),
     )
     body = lines[start:end]
 
@@ -772,9 +803,10 @@ def test_every_truncating_save_is_a_guarded_write() -> None:
     covers.
     """
     sites = []
-    for module in (chat_regenerate, chat_fork, handlers):
-        name = Path(module.__file__).name
-        tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
+    modules = (chat_regenerate, chat_fork, handlers)
+    for path in [*(Path(module.__file__) for module in modules), *_owner_paths()]:
+        name = path.name
+        tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue

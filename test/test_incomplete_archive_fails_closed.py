@@ -83,6 +83,15 @@ def test_an_unreadable_segment_raises_instead_of_shortening_the_corpus(
         _read(proj)
 
 
+def _handler_source(root: Path) -> str:
+    """chat_handlers.py and the chat_api owners it composes, as one text."""
+    owners = sorted((root / "chat_api").glob("[!_]*.py"))
+    assert owners, "no chat_api owner found beside chat_handlers.py"
+    return "\n".join(
+        path.read_text(encoding="utf-8") for path in [root / "chat_handlers.py", *owners]
+    )
+
+
 def test_both_consumers_turn_the_failure_into_a_retryable_error() -> None:
     """The raise only helps if neither call site folds it back into "no archive".
 
@@ -91,7 +100,7 @@ def test_both_consumers_turn_the_failure_into_a_retryable_error() -> None:
     silent truncation by a different route.
     """
     root = Path(__file__).resolve().parents[1] / "src" / "kiro_crew" / "dashboard"
-    handlers = (root / "chat_handlers.py").read_text(encoding="utf-8")
+    handlers = _handler_source(root)
     fork = (root / "chat_fork.py").read_text(encoding="utf-8")
 
     for body, marker, code in (
@@ -169,7 +178,7 @@ def test_the_legacy_pagination_path_also_fails_closed() -> None:
     does not exist.
     """
     root = Path(__file__).resolve().parents[1] / "src" / "kiro_crew" / "dashboard"
-    handlers = (root / "chat_handlers.py").read_text(encoding="utf-8")
+    handlers = _handler_source(root)
     marker = "read_messages_chained_full failed for"
     after = handlers[handlers.index(marker) : handlers.index(marker) + 400]
     assert "history_corpus_unreadable()" in after
@@ -183,8 +192,10 @@ def test_every_corpus_recovery_goes_through_one_helper() -> None:
     own 503 body, or the next one can quietly pick a different answer again.
     """
     root = Path(__file__).resolve().parents[1] / "src" / "kiro_crew" / "dashboard"
-    for name in ("chat_handlers.py", "chat_fork.py"):
-        body = (root / name).read_text(encoding="utf-8")
+    for name, body in (
+        ("chat_handlers.py", _handler_source(root)),
+        ("chat_fork.py", (root / "chat_fork.py").read_text(encoding="utf-8")),
+    ):
         assert "corpus_unreadable" not in body.split("def ")[0] or True
         # No inline literal of either code outside the shared helper's module.
         assert '"code": "history_corpus_unreadable"' not in body, f"{name}: inline 503 body"
@@ -256,7 +267,11 @@ def test_a_failed_mid_rotation_probe_refuses_on_both_paths() -> None:
             'history_corpus_unreadable("fork',
         ),
     ):
-        body = (root / name).read_text(encoding="utf-8")
+        body = (
+            _handler_source(root)
+            if name == "chat_handlers.py"
+            else (root / name).read_text(encoding="utf-8")
+        )
         after = body[body.index(marker) : body.index(marker) + 300]
         assert call in after, f"{name}: a failed probe must refuse, not guess False"
 

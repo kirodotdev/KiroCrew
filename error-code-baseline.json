@@ -51,11 +51,17 @@
       "missing_code": 60,
       "opaque_body": 8
     },
+    "dashboard/chat_api/slot_detail.py": {
+      "missing_code": 1
+    },
+    "dashboard/chat_api/slot_lifecycle.py": {
+      "missing_code": 3
+    },
     "dashboard/chat_folders.py": {
       "missing_code": 19
     },
     "dashboard/chat_handlers.py": {
-      "missing_code": 45
+      "missing_code": 41
     },
     "dashboard/chat_mirror.py": {
       "missing_code": 7

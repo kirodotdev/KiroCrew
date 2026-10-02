@@ -1377,6 +1377,13 @@ class TestAnAcceptedButUnpersistedPromptIsReported:
 
         assert '"durable":' not in inspect.getsource(chat_delivery)
         assert '"durable":' not in inspect.getsource(chat_handlers)
+        # The chat_api owners composed into chat_handlers answer the same receipts.
+        from pathlib import Path
+
+        owners = sorted((Path(chat_handlers.__file__).parent / "chat_api").glob("[!_]*.py"))
+        assert owners, "no chat_api owner found beside chat_handlers.py"
+        for owner in owners:
+            assert '"durable":' not in owner.read_text(encoding="utf-8"), owner.name
 
     def test_an_ordinary_enqueue_emits_no_warning_and_reaches_disk(
         self, tmp_path, monkeypatch

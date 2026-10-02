@@ -7712,15 +7712,28 @@ class TestPinnedModelWithheld:
         So the invariant is pinned here instead of trusting each author to
         remember it.
         """
+        import importlib
         from pathlib import Path
 
         from kiro_crew.dashboard import chat_handlers, chat_runner
 
+        # The handler bodies are split between `chat_handlers` and its
+        # `chat_api` owners, so every owner is scanned beside the two facades.
+        owner_paths = sorted((Path(chat_handlers.__file__).parent / "chat_api").glob("[!_]*.py"))
+        owners = [
+            importlib.import_module(f"kiro_crew.dashboard.chat_api.{path.stem}")
+            for path in owner_paths
+        ]
+        assert owners, "no chat_api owner module found beside chat_handlers"
         teardowns = ("state.sessions.reset(", "state.sessions.discard_conversation(")
-        for module in (chat_runner, chat_handlers):
+        handler_sites = 0
+        for module in (chat_runner, chat_handlers, *owners):
             lines = Path(module.__file__).read_text(encoding="utf-8").splitlines()
             sites = [i for i, line in enumerate(lines) if any(t in line for t in teardowns)]
-            assert sites, f"no teardown call site found in {module.__name__}"
+            if module is chat_runner or module is chat_handlers:
+                assert sites, f"no teardown call site found in {module.__name__}"
+            if module is not chat_runner:
+                handler_sites += len(sites)
             for i in sites:
                 # Asymmetric window: a drop placed AFTER the call has to clear the
                 # multi-line call plus its refusal check (`discard_conversation`
@@ -7732,6 +7745,12 @@ class TestPinnedModelWithheld:
                     f"verdict and served model describe without dropping them -> "
                     f"{lines[i].strip()}"
                 )
+        # The reset funnel and the conversation discard: a scan that finds fewer
+        # has lost sight of a handler teardown site rather than proven it safe.
+        assert handler_sites >= 2, (
+            f"only {handler_sites} handler teardown call site(s) found across "
+            f"chat_handlers and its chat_api owners"
+        )
 
     @pytest.mark.asyncio
     async def test_reset_chokepoint_forgets_the_verdict(self):
