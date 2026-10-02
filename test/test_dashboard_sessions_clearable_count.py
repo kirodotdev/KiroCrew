@@ -110,6 +110,7 @@ def _fake_state(
 
 def _request(state: MagicMock) -> web.Request:
     request = MagicMock(spec=web.Request)
+    request.get = {}.get  # the dashboard user: no app claim
     request.app = {"state": state}
     request.query = {}
     return request

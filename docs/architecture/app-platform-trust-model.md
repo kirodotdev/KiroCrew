@@ -146,6 +146,42 @@ grants are also live-enforced and are not re-gated on update today
 across install, update and enable, and a structured enable-route refusal that
 drives the dialog, are tracked in issue #11212.
 
+A `permissions.api` entry is a prefix match, so declaring `/api/approvals` or
+`/api/sessions` would otherwise reach every session on the instance. The
+following routes therefore decide an app caller (an app token, or an
+internal-secret caller whose calling session belongs to an app) by ownership:
+
+- `POST /api/approvals/{id}/{action}` applies the slot approve route's rule. An
+  app without `sessionApproval` is refused with the same 403 as
+  `POST /api/chat/slots/{slot}/approve`, even for its own slots. An app holding
+  the grant may resolve a request on its own slot or on a local user session,
+  and the id must name exactly one such pending request: request ids can recur
+  across sessions, so an ambiguous id is refused and the slot route, which names
+  the session, decides it. Background (state-level) approvals raised by cron,
+  autonudge, subagents or the task runner are never resolvable by an app, and
+  `GET /api/approvals`, which lists only those, is empty for an app.
+- `GET /api/sessions`, `GET /api/sessions/search`, `GET /api/sessions/{key}`,
+  `DELETE /api/sessions/{key}` and `POST /api/sessions/summarize` reach only
+  transcripts whose metadata records the calling app as owner. A delete is also
+  refused when the live slot it would close is not the app's, because the slot
+  is the server-side record. The whole-history routes, `DELETE /api/sessions`
+  and `GET /api/sessions/clearable/count`, are refused to an app outright.
+- The metadata owner is recorded by the app's own slot, so an app cannot open a
+  new slot over a transcript it does not own: a named `POST /api/chat/slots`,
+  a `POST /api/chat` that would create its slot, and a resume answer the same
+  404 there. A new name or the app's own transcript is admitted.
+
+Apart from the missing-grant 403, every refusal is the same 404 a missing target
+returns, and the reason goes to the Security Event Log, as does every access
+the ownership rule allows. Ownership is judged again under the transcript lock
+at the read, summary or delete itself, so a transcript replaced after the first
+check is refused rather than served. Dashboard-user callers
+are unaffected. Other routes under the `/api/sessions` prefix are not
+ownership-judged yet: `/api/sessions/{id}/agents*` (subagent results),
+`POST /api/sessions/restart`, and the `usage`, `health` and `memory` reads. An
+app that declares `/api/sessions/*` still reaches them; narrowing them is a
+tracked follow-up.
+
 ### WebSocket event scope (CWE-269)
 
 `/api/ws` is a *third* surface reachable with the same app token, and it is scoped

@@ -930,6 +930,7 @@ class TestAJobBornDuringTheDeleteIsNotStranded:
 
     def _request(self, state) -> MagicMock:
         request = MagicMock(spec=web.Request)
+        request.get = {}.get  # the dashboard user: no app claim
         request.app = {"state": state}
         return request
 
@@ -961,6 +962,7 @@ class TestAJobBornDuringTheDeleteIsNotStranded:
             skip_pinned=False,
             exact_owner_keys=(),
             exclude=None,
+            owner_app="",
         ):
             # The seam itself: the add commits after the sweep has read the store
             # and before the unlink retires the key.
@@ -974,6 +976,7 @@ class TestAJobBornDuringTheDeleteIsNotStranded:
                 skip_pinned=skip_pinned,
                 exact_owner_keys=exact_owner_keys,
                 exclude=exclude,
+                owner_app=owner_app,
             )
 
         monkeypatch.setattr(sessions_module, "_delete_history_session", _add_then_delete)
@@ -1979,6 +1982,7 @@ class TestALinkedKeyMustNameItsOwnTranscript:
 
     def _request(self, state) -> MagicMock:
         request = MagicMock(spec=web.Request)
+        request.get = {}.get  # the dashboard user: no app claim
         request.app = {"state": state}
         return request
 
@@ -2220,6 +2224,7 @@ class TestAnUnrecordedChannelOwnerIsFoundFromTheStore:
 
     def _request(self, state) -> MagicMock:
         request = MagicMock(spec=web.Request)
+        request.get = {}.get  # the dashboard user: no app claim
         request.app = {"state": state}
         return request
 
@@ -2400,6 +2405,7 @@ class TestAStrippedNameCannotReleaseAnotherSessionsJobs:
 
     def _request(self, state) -> MagicMock:
         request = MagicMock(spec=web.Request)
+        request.get = {}.get  # the dashboard user: no app claim
         request.app = {"state": state}
         return request
 
@@ -2479,6 +2485,7 @@ class TestAStrippedNameCannotReleaseAnotherSessionsJobs:
         state.crons = crons
         state.conversation_log = log
         request = MagicMock(spec=web.Request)
+        request.get = {}.get  # the dashboard user: no app claim
         request.app = {"state": state}
 
         resp = await api_sessions_clear(request)
@@ -2610,6 +2617,7 @@ class TestTheOwnerSweepFailsByCause:
 
     def _request(self, state) -> MagicMock:
         request = MagicMock(spec=web.Request)
+        request.get = {}.get  # the dashboard user: no app claim
         request.app = {"state": state}
         return request
 
@@ -2710,6 +2718,7 @@ class TestTheOwnerSweepFailsByCause:
         state.crons = crons
         state.conversation_log = log
         request = MagicMock(spec=web.Request)
+        request.get = {}.get  # the dashboard user: no app claim
         request.app = {"state": state}
 
         resp = await api_sessions_clear(request)
@@ -2733,6 +2742,7 @@ class TestTheOwnerSweepFailsByCause:
         state.crons = crons
         state.conversation_log = log
         request = MagicMock(spec=web.Request)
+        request.get = {}.get  # the dashboard user: no app claim
         request.app = {"state": state}
 
         with caplog.at_level(logging.WARNING):
@@ -2771,6 +2781,7 @@ class TestTheOwnerSweepMustReadTheStoreStrictly:
 
     def _request(self, state) -> MagicMock:
         request = MagicMock(spec=web.Request)
+        request.get = {}.get  # the dashboard user: no app claim
         request.app = {"state": state}
         return request
 
@@ -2986,6 +2997,7 @@ class TestSlotlessChannelSessionReleasesItsExactOwnerKey:
         state.crons = crons
         state.conversation_log = log
         request = MagicMock(spec=web.Request)
+        request.get = {}.get  # the dashboard user: no app claim
         request.app = {"state": state}
         request.match_info = {"key": history_key}
 
@@ -3009,6 +3021,7 @@ class TestSlotlessChannelSessionReleasesItsExactOwnerKey:
         state.crons = crons
         state.conversation_log = log
         request = MagicMock(spec=web.Request)
+        request.get = {}.get  # the dashboard user: no app claim
         request.app = {"state": state}
 
         resp = await api_sessions_clear(request)
@@ -3038,6 +3051,7 @@ class TestUnreadableMetadataAbortsTheDelete:
 
     def _request(self, state) -> MagicMock:
         request = MagicMock(spec=web.Request)
+        request.get = {}.get  # the dashboard user: no app claim
         request.app = {"state": state}
         return request
 
