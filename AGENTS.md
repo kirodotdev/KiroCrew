@@ -70,6 +70,7 @@ in the **same commit** when you change what it documents.
 | browser E2E | [e2e-gate](docs/ci/e2e-gate.md) |
 | proving a worktree change against an isolated running gateway | [worktree-verification-recipes](docs/guides/worktree-verification-recipes.md) |
 | CI, PR flow, review gates, commit messages | [ci-and-reviews](docs/ci/ci-and-reviews.md) + [CONTRIBUTING.md](CONTRIBUTING.md) |
+| a PR that hides, deletes, tightens or migrates something (the `Reader:` list) | [take-away-changes](docs/system-specs/common/take-away-changes.md) |
 | constants, comments, lint, code style, the brand name | [code-style](docs/system-specs/common/code-style.md) |
 | connections, connectors, an external account link | [connections](docs/system-specs/modules/connections.md) |
 | the connector campaign's manifest schema or work-stream DAG | [connector-capability-manifest](docs/system-specs/modules/connector-capability-manifest.md) |

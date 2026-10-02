@@ -11,3 +11,4 @@ rather than restating them.
 | [error-handling.md](error-handling.md) | Exception boundaries, retries, and user-facing failure text. |
 | [testing-conventions.md](testing-conventions.md) | Test patterns, which conftest owns which isolation, the side-effect floor, the six flake classes and the one correct fix for each, and how to keep the suite fast. |
 | [injected-messages.md](injected-messages.md) | The envelopes automation injects into a session (cron, subagent, auto-nudge) and how to treat them. |
+| [take-away-changes.md](take-away-changes.md) | A PR that hides, deletes, tightens or migrates something lists every reader on main, with a test each. |
