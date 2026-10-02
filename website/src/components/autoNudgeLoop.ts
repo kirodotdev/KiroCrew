@@ -13,6 +13,16 @@ export interface AutoNudgeLoop {
   id: string
   slot_key: string
   message: string
+  /** True when the served `message` DIFFERS from the stored one because the projection
+   *  scrubbed credential-shaped text out of it. The textarea seeds from `message`, so
+   *  without this the user sees `[REDACTED: ...]` in their own words with no explanation
+   *  and an edit-plus-Save would store the mask over the real instruction. */
+  message_redacted?: boolean
+  /** Opaque per-write identity of the stored `message`, echoed back as a PATCH baseline so
+   *  a goal another window changed is refused (409) rather than silently overwritten. It is
+   *  RANDOM, never derived from the text: a digest served beside its own redaction would be
+   *  an offline oracle against the masked span. */
+  message_fingerprint?: string
   idle_secs: number
   max_cycles: number
   cycle_count: number

@@ -8,6 +8,10 @@ import {
 import { canonicalGitHubObservation, structuredMonitorLoop as structuredLoop } from './monitorFixtures'
 
 describe('automation transport normalizer', () => {
+  it('carries the served CAS token into messageFingerprint, else the overwrite guard sends no baseline', () => {
+    expect((normalizeAutomationRecord({ loop: { id: 'l1', slot_key: 'c-1', goal_token: 'tok-1' } }) as { messageFingerprint?: string }).messageFingerprint).toBe('tok-1')
+  })
+
   it.each([
     ['https://github.com/acme/widgets/pull/1', 'github_pull_request'],
     ['https://gitlab.com/acme/widgets/-/merge_requests/2', 'gitlab_merge_request'],
