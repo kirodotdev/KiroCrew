@@ -28,8 +28,12 @@ LOOP_ID = "loop-1"
 
 @pytest.fixture(autouse=True)
 def _isolated_home(tmp_path, monkeypatch):
-    """Own data home per test, so no binding file outlives its own test."""
+    """Own data home per test, so no binding file outlives its own test; and an empty
+    registry, so no board a previous test observed answers this one's lookup."""
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+    conductor_wake.reset_for_tests()
+    yield
+    conductor_wake.reset_for_tests()
 
 
 # ── stubs ────────────────────────────────────────────────────────────────────
@@ -85,8 +89,11 @@ class _Svc:
 def _bind(worker: str = WORKER, *, status: str | None = None, verdict: str = "") -> str:
     """A real conductor ledger with one item bound to *worker*. Returns the item id.
 
-    A real store rather than a fake one, because the binding file IS what the lookup
-    reads: a stubbed resolver here would pin this test against itself.
+    A real store rather than a fake one, because the probe tests below read the item
+    back through it. The LOOKUP, though, reads the registry the ``work`` fold's bus
+    event fills -- so this also hands the registry the board as that event would carry
+    it: one item, its worker, its last report stamp. ``_observe_board`` and the bus
+    callback are pinned on their own further down; this is the shortest honest seed.
     """
     work_ledger.ensure_conductor(CONDUCTOR, goal="drive the fleet")
     created = work_ledger.apply_conductor_action(
@@ -102,7 +109,26 @@ def _bind(worker: str = WORKER, *, status: str | None = None, verdict: str = "")
         work_ledger.apply_conductor_action(
             CONDUCTOR, "verdict", item_id=item_id, verdict=verdict, fails=1
         )
+    _observe_store_board()
     return item_id
+
+
+def _observe_store_board() -> None:
+    """Hand the registry the conductor's board as the ``work`` fold would render it now:
+    every item, its worker, its last report stamp. The event carries the WHOLE board, so
+    the seed does too -- a second item must not unlink the first."""
+    conductor_wake._registry.observe(
+        CONDUCTOR,
+        [
+            (
+                str(found.item_id),
+                found.last_report_at or "",
+                found.worker_session_key or "",
+                found.state == "open",
+            )
+            for found in work_ledger.list_work_items(CONDUCTOR)
+        ],
+    )
 
 
 def _item(item_id: str):
@@ -122,11 +148,11 @@ def test_a_bound_workers_slot_resolves_its_conductors_armed_work_ledger_loop():
 
 
 def test_an_unbound_slot_fires_nothing():
-    """The whole no-op case, and the reason the binding is the gate rather than the board.
+    """The whole no-op case: a slot no board names as a worker resolves nothing.
 
-    A conductor's OWN ``work/recorded`` entries take this path too; a conductor slot has
-    no binding as a worker, so it resolves nothing without this module knowing what a
-    conductor is.
+    A conductor's OWN slot takes this path too when its session closes or its turn
+    ends; no board lists a conductor as its worker, so it resolves nothing without this
+    module knowing what a conductor is.
     """
     _bind()
     svc = _Svc(_Loop())
@@ -219,82 +245,279 @@ async def _fire(svc, worker_slot: str) -> str:
         autonudge.get_instance = original  # type: ignore[assignment]
 
 
-# ── trigger one: the crew-log eager drain ────────────────────────────────────
+# ── trigger one: the ``work`` fold advancing on the crew-log bus ──────────────
 
 
-def test_a_work_recorded_entry_from_a_bound_worker_pushes_on_the_drain(monkeypatch):
-    """The second consumer on the drain, and it keys on the WRITER's slot.
+def _event(board: str, items: list, *, scope: str = "slot", fold: str = "work"):
+    """A ``FoldAdvanced`` as ``eager._publish_fold`` builds one for *board*'s work fold."""
+    from kiro_crew.crew_log import bus
 
-    Driven through ``_push_conductor_wakes`` with a stubbed slot resolver rather than
-    through a live crew log: what this pins is which wakes the consumer selects and whose
-    slot it resolves them to, and a real log would make a selection defect look like a
-    projection defect.
-    """
-    from kiro_crew.crew_log import eager
-
-    pushed: list[str] = []
-    monkeypatch.setattr(eager, "_slot_of", lambda unit_id: f"chat-{unit_id}")
-    monkeypatch.setattr(
-        conductor_wake,
-        "fire_for_worker_slot_from_thread",
-        lambda slot, *, expected_board="": pushed.append(slot) or True,
-    )
-    batch = {
-        ("u1", CONDUCTOR): eager._Wake("u1", "work/recorded", 4, CONDUCTOR),
-        ("u2", ""): eager._Wake("u2", "panel/published", 2, ""),
-        ("u3", ""): eager._Wake("u3", "session/closed", 7, ""),
+    value = {
+        "conductor": {"slot": board},
+        "items": [
+            {
+                "item_id": item_id,
+                "last_report_at": stamp,
+                "worker_session_key": worker,
+                "state": "open" if open_ else "accepted",
+            }
+            for item_id, stamp, worker, open_ in items
+        ],
+        "omitted": 0,
     }
-    eager._push_conductor_wakes(batch)
-    assert pushed == ["chat-u1"]
+    return bus.FoldAdvanced(scope=scope, key=board, fold=fold, revision=1, value=value, seq=1)
 
 
-def test_one_workers_several_entries_in_a_batch_push_once(monkeypatch):
-    """The push is a deadline move, so two of them for one batch arm one tick twice."""
-    from kiro_crew.crew_log import eager
+def _record_fires(monkeypatch) -> "list[tuple[str, str]]":
+    """Replace ``_fire`` with a recorder of ``(board, item_id)``."""
+    fired: list[tuple[str, str]] = []
 
-    pushed: list[str] = []
-    monkeypatch.setattr(eager, "_slot_of", lambda unit_id: WORKER)
-    monkeypatch.setattr(
-        conductor_wake,
-        "fire_for_worker_slot_from_thread",
-        lambda slot, *, expected_board="": pushed.append(slot) or True,
+    async def _fake_fire(_svc, board, item_id=""):
+        fired.append((board, item_id))
+        return LOOP_ID
+
+    monkeypatch.setattr(conductor_wake, "_fire", _fake_fire)
+    return fired
+
+
+def test_the_fold_name_this_module_spells_is_the_work_ledgers():
+    """``WORK_FOLD`` is a local spelling so the module imports nothing on the boot path;
+    this pins it to the one authority."""
+    from kiro_crew.work_vocab import WORK_FOLD_NAME
+
+    assert conductor_wake.WORK_FOLD == WORK_FOLD_NAME
+
+
+def test_a_workers_report_moves_its_stamp_and_fires_for_that_item(monkeypatch):
+    """The diff is the whole selection rule: the item whose ``last_report_at`` moved is
+    the worker that reported, and the fire names it so the pull-forward cap counts it."""
+    fired = _record_fires(monkeypatch)
+    svc = _Svc(_Loop())
+    first = [("it_a", "t1", WORKER, True), ("it_b", "t1", "chat-other", True)]
+    asyncio.run(conductor_wake._observe_board(svc, CONDUCTOR, first))
+    fired.clear()
+    moved = [("it_a", "t2", WORKER, True), ("it_b", "t1", "chat-other", True)]
+    asyncio.run(conductor_wake._observe_board(svc, CONDUCTOR, moved))
+    assert fired == [(CONDUCTOR, "it_a")]
+
+
+def test_a_conductors_own_write_moves_no_stamp_and_pushes_nothing(monkeypatch):
+    """``create``, ``bind``, ``decide`` and ``close`` advance the fold too, and none of
+    them is a worker's news. With every stamp unchanged the subscriber does nothing --
+    which is also what keeps a NESTED conductor's bookkeeping on its own board from
+    pulling its parent forward: the parent's board did not move."""
+    fired = _record_fires(monkeypatch)
+    svc = _Svc(_Loop())
+    items = [("it_a", "t1", WORKER, True)]
+    asyncio.run(conductor_wake._observe_board(svc, CONDUCTOR, items))
+    fired.clear()
+    asyncio.run(conductor_wake._observe_board(svc, CONDUCTOR, items + [("it_new", "", "", True)]))
+    assert fired == []
+
+
+def test_the_first_board_seen_fires_once_uncapped(monkeypatch):
+    """Nothing to diff against, so the one write that produced the event is pushed as an
+    unattributed pull-forward: a quiet gate costs no turn, and silence would hide the
+    first report after a restart."""
+    fired = _record_fires(monkeypatch)
+    svc = _Svc(_Loop())
+    asyncio.run(
+        conductor_wake._observe_board(
+            svc, CONDUCTOR, [("it_a", "t1", WORKER, True), ("it_b", "", "", True)]
+        )
     )
-    batch = {
-        ("u1", CONDUCTOR): eager._Wake("u1", "work/recorded", 4, CONDUCTOR),
-        ("u1", "chat-other"): eager._Wake("u1", "work/recorded", 5, "chat-other"),
-    }
-    eager._push_conductor_wakes(batch)
-    assert pushed == [WORKER]
+    assert fired == [(CONDUCTOR, "")]
 
 
-def test_a_raising_push_neither_blocks_the_drain_nor_skips_the_fold(monkeypatch):
-    """Driven through the REAL worker thread, because the guard is in the loop body.
+def test_a_board_with_no_active_work_ledger_loop_is_not_retained(monkeypatch):
+    """The registry's bound: a board nobody is watching is read and dropped, so the table
+    holds at most one entry per active work-ledger loop."""
+    fired = _record_fires(monkeypatch)
+    items = [("it_a", "t1", WORKER, True)]
+    asyncio.run(conductor_wake._observe_board(_Svc(_Loop()), CONDUCTOR, items))
+    assert CONDUCTOR in conductor_wake._registry.boards
+    asyncio.run(conductor_wake._observe_board(_Svc(_Loop(active=False)), CONDUCTOR, items))
+    assert CONDUCTOR not in conductor_wake._registry.boards
+    assert conductor_wake._registry.lookup(WORKER) is None
+    assert fired == [(CONDUCTOR, "")]
 
-    Two independent consumers share one batch and one ``finally`` that settles the
-    counters. So a raising wake must not take the fold with it, and must not strand a
-    waiter on ``drain`` -- which is what asserting ``drain`` returns ``True`` proves,
-    since it waits for settled to reach queued rather than for the queue to empty.
 
-    The control is the fold call: if it never ran, this test would pass for the wrong
-    reason (nothing was consumed at all).
+def test_the_registry_answers_the_loop_side_triggers_in_reverse():
+    """Worker slot -> (board, item), from the ``worker_session_key`` each item carries,
+    in both spellings a dashboard slot is registered under."""
+    conductor_wake._registry.observe(CONDUCTOR, [("it_a", "t1", WORKER, True)])
+    assert conductor_wake._registry.lookup(WORKER) == (CONDUCTOR, "it_a")
+    assert conductor_wake._registry.lookup("dashboard_" + WORKER) == (CONDUCTOR, "it_a")
+    # An item that leaves the board takes its worker with it.
+    conductor_wake._registry.observe(CONDUCTOR, [("it_z", "t1", "chat-z", True)])
+    assert conductor_wake._registry.lookup(WORKER) is None
+
+
+def test_a_closed_item_never_reclaims_a_worker_another_board_holds_open(monkeypatch):
+    """The store lets a worker session be rebound once its item is terminal, and the
+    closed item keeps its ``worker_session_key`` in the render. So a later write to the
+    OLD board must not re-point the worker at the closed item: only an open item claims
+    its worker, and a terminal item drops the claim it held."""
+    _record_fires(monkeypatch)
+    svc = _Svc(_Loop())
+    old, new = "chat-c1", "chat-c2"
+    monkeypatch.setattr(svc, "get_by_slot", lambda slot_key: _Loop())
+    asyncio.run(conductor_wake._observe_board(svc, old, [("it_a", "t1", WORKER, True)]))
+    assert conductor_wake._registry.lookup(WORKER) == (old, "it_a")
+    # C1 closes A; C2 binds the same worker to B.
+    asyncio.run(conductor_wake._observe_board(svc, old, [("it_a", "t1", WORKER, False)]))
+    assert conductor_wake._registry.lookup(WORKER) is None
+    asyncio.run(conductor_wake._observe_board(svc, new, [("it_b", "", WORKER, True)]))
+    assert conductor_wake._registry.lookup(WORKER) == (new, "it_b")
+    # A later write on C1's still-active board re-renders the closed A with its old key.
+    asyncio.run(
+        conductor_wake._observe_board(
+            svc, old, [("it_a", "t1", WORKER, False), ("it_c", "t3", "chat-other", True)]
+        )
+    )
+    assert conductor_wake._registry.lookup(WORKER) == (new, "it_b")
+
+
+def test_a_board_whose_loop_ended_is_swept_on_the_next_observation(monkeypatch):
+    """The bound the class promises: a board retained while its loop ran leaves on the
+    next observation of ANY board once that loop is gone, not only on a further write to
+    its own -- a conductor that closed its last item and whose loop then hit its cap
+    writes nothing more."""
+    _record_fires(monkeypatch)
+    live: dict[str, bool] = {"chat-c1": True, "chat-c2": True}
+    svc = _Svc(_Loop())
+    monkeypatch.setattr(
+        svc, "get_by_slot", lambda slot_key: _Loop(active=live.get(slot_key, False))
+    )
+    asyncio.run(conductor_wake._observe_board(svc, "chat-c1", [("it_a", "t1", "chat-w1", True)]))
+    asyncio.run(conductor_wake._observe_board(svc, "chat-c2", [("it_b", "t1", "chat-w2", True)]))
+    assert set(conductor_wake._registry.boards) == {"chat-c1", "chat-c2"}
+    live["chat-c1"] = False
+    asyncio.run(conductor_wake._observe_board(svc, "chat-c2", [("it_b", "t2", "chat-w2", True)]))
+    assert set(conductor_wake._registry.boards) == {"chat-c2"}
+    assert conductor_wake._registry.lookup("chat-w1") is None
+    # The loop-side lookup sweeps too, through the prime.
+    live["chat-c2"] = False
+    asyncio.run(conductor_wake._prime(svc))
+    assert conductor_wake._registry.boards == {}
+
+
+def test_the_service_stop_clears_the_registry():
+    conductor_wake._registry.observe(CONDUCTOR, [("it_a", "t1", WORKER, True)])
+    conductor_wake.forget_boards()
+    assert conductor_wake._registry.boards == {}
+    assert conductor_wake._registry.workers == {}
+
+
+def test_other_scopes_and_folds_are_not_this_subscribers(monkeypatch):
+    """A session-scoped event and another slot fold cost one comparison each."""
+    import kiro_crew.autonudge as autonudge
+
+    monkeypatch.setattr(autonudge, "get_instance", lambda: _Svc(_Loop()))
+    assert conductor_wake._observe_event(_event(CONDUCTOR, [], scope="session")) is False
+    assert conductor_wake._observe_event(_event(CONDUCTOR, [], fold="ledger")) is False
+    assert conductor_wake._observe_event(object()) is False
+
+
+def test_a_work_fold_event_is_handed_to_the_service_loop(monkeypatch):
+    """The bus fans out on the fold worker's thread; the callback copies the stamps and
+    schedules the observation on the service's loop, then returns without waiting.
+
+    A real event loop runs on a helper thread so ``run_coroutine_threadsafe`` has a
+    live target, mirroring the fold worker calling into a gateway loop.
     """
-    from kiro_crew.crew_log import eager
+    import threading
 
-    folded: list[int] = []
+    import kiro_crew.autonudge as autonudge
 
-    def _boom(_slot):
-        raise RuntimeError("binding store on fire")
+    fired = _record_fires(monkeypatch)
+    loop = asyncio.new_event_loop()
+    ready = threading.Event()
 
-    monkeypatch.setattr(eager, "_fold_batch", lambda batch, closers=None: folded.append(len(batch)))
-    monkeypatch.setattr(conductor_wake, "fire_for_worker_slot_from_thread", _boom)
-    monkeypatch.setattr(eager, "_slot_of", lambda unit_id: WORKER)
-    eager.resume_for_tests()
+    def _run():
+        asyncio.set_event_loop(loop)
+        loop.call_soon(ready.set)
+        loop.run_forever()
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    ready.wait(timeout=5)
+    svc = _Svc(_Loop())
+    monkeypatch.setattr(autonudge, "get_instance", lambda: svc)
+    monkeypatch.setattr(conductor_wake, "_service_loop", lambda _s: loop)
     try:
-        eager.note_commit("u1", "work/recorded", 4, CONDUCTOR)
-        assert eager.drain(timeout=10.0) is True
+        assert conductor_wake._observe_event(_event(CONDUCTOR, [("it_a", "t1", WORKER, True)]))
+        import time as _time
+
+        for _ in range(200):
+            if fired:
+                break
+            _time.sleep(0.01)
+        assert fired == [(CONDUCTOR, "")], "the first sight reached the loop and fired"
     finally:
-        eager.stop_for_tests()
-    assert folded == [1], "the fold consumer must still have run"
+        loop.call_soon_threadsafe(loop.stop)
+        t.join(timeout=5)
+        loop.close()
+
+
+def test_the_subscription_is_registered_once_per_process():
+    from kiro_crew.crew_log import bus
+
+    bus.reset_for_tests()
+    try:
+        assert conductor_wake.subscribe_to_crew_log() is True
+        assert conductor_wake.subscribe_to_crew_log() is False
+        assert bus.subscriber_count(bus.FOLD_ADVANCED) == 1
+    finally:
+        bus.reset_for_tests()
+
+
+def test_an_unknown_worker_primes_the_registry_from_the_work_fold(tmp_path, monkeypatch):
+    """The window after a restart: no event has reached this process for the board yet,
+    and a worker closes. The lookup reads each active work-ledger loop's board through
+    the fold's own read path -- the crew log, not the store -- and then finds the worker.
+
+    A real crew log, because the prime IS a fold read; a stubbed projection here would
+    pin the test against itself.
+    """
+    from kiro_crew import crew_log as lg
+    from kiro_crew.crew_log import CrewLog
+    from kiro_crew.crew_log import eager as crew_log_eager
+    from kiro_crew.crew_log import emit as crew_log_emit
+    from kiro_crew.crew_log import projection as crew_log
+
+    monkeypatch.setenv("KIROCREW_CREW_LOG", "1")
+    monkeypatch.setattr(crew_log_eager, "note_commit", lambda *a, **k: None)
+    crew_log_emit.reset_caches()
+    crew_log_eager.stop_for_tests()
+    crew_log.forget_slot_folds()
+    unit = "acp-conductor"
+    try:
+        CrewLog.create(lg.KIND_SESSION, unit, owner="owner", agent="lead", slot=CONDUCTOR)
+
+        def _work(**fields):
+            payload = {"slot": CONDUCTOR, "actor": "conductor", "by": CONDUCTOR}
+            payload.update(fields)
+            assert crew_log_emit.on_work_recorded(unit, payload, timeout=5.0) is True
+            crew_log_emit.flush(timeout=5.0)
+
+        _work(action="goal", goal="g", round=1)
+        _work(action="create", item_id="it_p", title="t", acceptance={"kind": "human_approval"})
+        _work(action="bind", item_id="it_p", worker_session_key=WORKER)
+
+        class _Listing(_Svc):
+            def list_all(self):
+                return [self._loop] if self._loop is not None else []
+
+        svc = _Listing(_Loop())
+        assert conductor_wake._registry.lookup(WORKER) is None
+        assert asyncio.run(_fire(svc, WORKER)) == LOOP_ID
+        assert svc.fired == [LOOP_ID]
+        assert conductor_wake._registry.lookup(WORKER) == (CONDUCTOR, "it_p")
+    finally:
+        crew_log_emit.reset_caches()
+        crew_log_eager.stop_for_tests()
+        crew_log.forget_slot_folds()
 
 
 # ── trigger two: a worker session closes ─────────────────────────────────────
@@ -1047,99 +1270,3 @@ def test_a_capped_items_pair_clears_once_its_window_empties():
     now = 5.0 + window + 1.0
     assert conductor_wake._admit(svc, "L", item, now) is True
     assert ("L", item) not in svc._pull_forward_capped
-
-
-def test_the_drain_skips_a_nested_conductors_own_write(monkeypatch):
-    """A nested conductor's own ``work/recorded`` write must not pull its PARENT forward.
-
-    A nested conductor is itself a bound worker of its parent, so the drain resolves its
-    slot and reads a binding to the parent. But the entry names the nested conductor's
-    OWN board, not the parent's -- firing on it would spend the parent item's
-    pull-forward budget on bookkeeping and delay a real report. The board gate inside
-    ``fire_for_worker_slot_from_thread`` refuses the mismatch; a genuine report, whose
-    board IS the bound conductor's slot, still fires.
-    """
-    from types import SimpleNamespace
-
-    import kiro_crew.autonudge as autonudge
-
-    PARENT, NESTED = "chat-parent", "chat-nested"
-    # NESTED is bound to PARENT (as a worker); its own board is NESTED.
-    monkeypatch.setattr(
-        conductor_wake, "_read_binding", lambda slot: (PARENT, "it_x") if slot == NESTED else None
-    )
-    reached_loop: list[str] = []
-    svc = SimpleNamespace()
-    monkeypatch.setattr(autonudge, "get_instance", lambda: svc)
-
-    def _spy_loop(_s):
-        reached_loop.append("x")
-        return None  # no running loop -> the push returns False AFTER the gate passed
-
-    monkeypatch.setattr(conductor_wake, "_service_loop", _spy_loop)
-
-    # Mismatch: the entry's board (NESTED) is not the bound conductor (PARENT). The gate
-    # refuses BEFORE the loop lookup, so ``_service_loop`` is never consulted.
-    assert conductor_wake.fire_for_worker_slot_from_thread(NESTED, expected_board=NESTED) is False
-    assert reached_loop == [], "the board mismatch short-circuits before the loop lookup"
-    # A genuine report whose board IS the bound conductor passes the gate and reaches the
-    # loop lookup (which returns None here, so the push is still False -- but the gate let
-    # it through, which is what this pins).
-    assert conductor_wake.fire_for_worker_slot_from_thread(NESTED, expected_board=PARENT) is False
-    assert reached_loop == ["x"], "a matching board reaches the loop lookup"
-
-
-def test_from_thread_schedules_the_fire_on_the_service_loop(monkeypatch):
-    """A matching board with a running loop hands the fire to that loop and returns True.
-
-    Covers the schedule tail: the coroutine is dispatched via ``run_coroutine_threadsafe``
-    and the done-callback drains without raising. A real event loop runs on a helper
-    thread so ``run_coroutine_threadsafe`` has a live target, mirroring the drain thread.
-    """
-    import threading
-    from types import SimpleNamespace
-
-    import kiro_crew.autonudge as autonudge
-
-    PARENT = "chat-parent"
-    monkeypatch.setattr(conductor_wake, "_read_binding", lambda slot: (PARENT, "it_x"))
-
-    fired: list[tuple[str, str]] = []
-
-    async def _fake_fire(_svc, conductor, item_id):
-        fired.append((conductor, item_id))
-        return "ok"
-
-    monkeypatch.setattr(conductor_wake, "_fire", _fake_fire)
-
-    loop = asyncio.new_event_loop()
-    ready = threading.Event()
-
-    def _run():
-        asyncio.set_event_loop(loop)
-        loop.call_soon(ready.set)
-        loop.run_forever()
-
-    t = threading.Thread(target=_run, daemon=True)
-    t.start()
-    ready.wait(timeout=5)
-    svc = SimpleNamespace()
-    monkeypatch.setattr(autonudge, "get_instance", lambda: svc)
-    monkeypatch.setattr(conductor_wake, "_service_loop", lambda _s: loop)
-    try:
-        scheduled = conductor_wake.fire_for_worker_slot_from_thread(
-            "chat-worker", expected_board=PARENT
-        )
-        assert scheduled is True, "a matching board with a running loop schedules the fire"
-        # Let the scheduled coroutine and its done-callback run.
-        import time as _time
-
-        for _ in range(100):
-            if fired:
-                break
-            _time.sleep(0.01)
-        assert fired == [(PARENT, "it_x")], "the fire reached the loop with the bound ids"
-    finally:
-        loop.call_soon_threadsafe(loop.stop)
-        t.join(timeout=5)
-        loop.close()

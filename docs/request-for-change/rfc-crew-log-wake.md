@@ -84,15 +84,17 @@ Non-goals:
                                   |  durable write + crew-log append
                                   v
                       crew_log eager queue (already on the append path)
-                                  |  worker thread, not the writer
-                                  |
+                                  |  worker thread folds the conductor's `work` board
+                                  v
+                      bus.publish(FoldAdvanced(slot, <conductor board>, "work", value))
+                                  |  conductor_wake is one subscriber; the WS exporter another
+                                  |  diff value.items[].last_report_at against the last board seen
+                                  |  -> the items whose worker reported; none -> a conductor's own
+                                  |     write, no push
 (2) worker session closed --> chat_handlers.close_slot, after the slot is gone
-                                  |
+                                  |  registry: worker slot -> (board, item), from the same events
 (3) worker turn ended (any outcome) --> timers.notify_turn_complete
                                   |
-                                  v
-            read_binding(worker slot) -> conductor slot -> its armed work-ledger loop
-                                  |      ONE lookup, shared by all three
                                   v
                       AutoNudgeService.fire_now(loop_id)      <-- the whole change
                                   |
@@ -102,19 +104,39 @@ Non-goals:
                      wake  (done / blocked / question / stale) -> one turn
 ```
 
-The three triggers differ only in what they observe; the lookup, the push and
-everything after it are one path. That is why the lookup is factored into its own
-module (`conductor_wake`) rather than written three times: a fourth trigger is
-plausible, and the thing to bound is the copy count.
+The three triggers differ only in what they observe; the push and everything after
+it are one path. The lookup is one module (`conductor_wake`) rather than three
+copies: trigger one is its bus callback, triggers two and three ask its registry, and
+a fourth trigger is plausible, so the copy count is the thing to bound.
 
 ### 3.1 Trigger one: a worker's write
 
 `apply_worker_report` already appends a `WORK_ENTRY_TYPE` entry to the worker's
 crew log through the emitter, and `eager.py` already receives every append on a
-queue it drains off the writer's thread. The hook is a second consumer on that
-drain: when the entry is a `work/*` entry written from a worker unit, resolve
-the binding (`read_binding(worker_slot_key)` gives the conductor slot and item),
-find the conductor slot's armed `work-ledger` loop, and call `fire_now`.
+queue it drains off the writer's thread, folds the board it belongs to, and publishes
+the folded board on `crew_log.bus` as a `FoldAdvanced(scope="slot", key, fold="work",
+revision, value, seq)`. `conductor_wake` subscribes to that event at
+`AutoNudgeService.start` and nothing else changes in `eager.py`: the folder names no
+conductor, exactly as it names no dashboard.
+
+The event's `key` is the conductor's own board slot, because a worker's
+`work/recorded` entry carries the conductor's board in its `slot` field and the
+fold binds on it. So the subscriber reads no binding file and is not an importer of
+the work-ledger store. What the event does not say is WHICH item moved, so the
+subscriber keeps the previous board's `last_report_at` per item and diffs: an item
+whose stamp changed is a worker that reported, and `fire_now` is called for its
+conductor's armed `work-ledger` loop, with that item id for the pull-forward cap
+(3.5). A board whose stamps are all unchanged moved on a conductor's own write
+(`create`, `bind`, `decide`, `verdict`, `close`) and pushes nothing -- which is also
+what keeps a nested conductor's bookkeeping on its own board from spending its
+parent's budget. The first board a process sees for a key has nothing to diff
+against and fires once, uncapped: a quiet answer costs no turn, and silence would hide
+the first write after a restart.
+
+The callback runs on the fold worker's thread and owes the bus its contract: it copies
+the stamps out of the event and schedules the diff, the registry write and the fire on
+the service's own event loop. The registry retains a board only while its conductor has
+an active `work-ledger` loop, so it is bounded by the loop table.
 
 `fire_now` is the right seam and the only one touched. Its own docstring states
 the contract this design relies on: "it does not deliver the nudge itself. It
@@ -148,8 +170,8 @@ and this design only subscribes to it.
 ### 3.2 Trigger two: a worker session closes
 
 `chat_handlers.close_slot` is the one path a dashboard session is closed
-through. Once the close is COMMITTED, the same lookup runs: binding, conductor
-slot, armed loop, `fire_now`. Committed means after the archival save succeeded,
+through. Once the close is COMMITTED, the same lookup runs: the registry's
+worker slot -> (board, item), armed loop, `fire_now`. Committed means after the archival save succeeded,
 or after the hand-over exit's tail drain landed -- never between the slot's pop
 and that save. A tick fired in that window would read the popped slot as closed
 and persist a `worker_closed` stall, and the save's failure arm puts the slot
@@ -202,7 +224,10 @@ reporting at all.
 
 `autonudge_service/timers.py:notify_turn_complete` is where a slot's turn end
 reaches the service, called by the gateway after `HOOK_EVENT_STOP`. The same
-lookup runs there: binding, conductor slot, armed loop, `fire_now`.
+lookup runs there: the registry's worker slot -> (board, item), armed loop,
+`fire_now`. A worker the registry has not seen -- the window after a restart,
+before its board's first write -- primes the registry once from the `work` fold's
+read path, one fold per active work-ledger loop, and then looks again.
 
 **The outcome kinds this keys on: all of them, by construction.** That is the
 point of choosing this seam rather than an error hook. `notify_turn_complete` is
@@ -284,7 +309,7 @@ back to the tick:
 
 | how the push misses | what catches it |
 |---|---|
-| dropped (eager queue under pressure, binding unreadable) | the slow tick, one cadence later |
+| dropped (eager queue under pressure, no subscriber yet, board over the fold's memory ceiling) | the slow tick, one cadence later |
 | refused mid-fire | not lost: `defer_if_firing` arms the tail of that cycle at delay zero (§3.2c) |
 | in flight across a restart | not lost: `start()` ticks every work-ledger loop once at delay zero (§3.2c) |
 
@@ -364,11 +389,12 @@ the loop and resets on restart.
   Every pull-forward runs the same `MAX_WAKES_PER_ITEM_PER_HOUR` cap, cycle cap
   and wall-clock budget, and an item's pull-forwards are capped on their own
   (3.5); a report storm collapses into one tick per cycle.
-- The hook runs on the eager drain thread, never on the writer's thread, so a
-  slow or failing lookup cannot delay a worker's append; the drop counter
-  `eager_dropped` already measures back-pressure.
-- `read_binding` is the Phase 2 resolver and is read with `strict=False`: an
-  unreadable binding means no push, and the tick covers it.
+- The subscriber runs on the eager fold thread, never on the writer's thread, and
+  hands its work to the service loop at once, so a slow or failing push cannot
+  delay a worker's append or the fold; the drop counter `eager_dropped` already
+  measures back-pressure.
+- The subscriber reads no store. It knows a board only as the `work` fold renders
+  it, which is what every reader of the board is already given.
 
 ## 6. Alternatives considered
 
@@ -381,8 +407,13 @@ the loop and resets on restart.
   second path would need its own caps, stop sentinel and approval-stall rule.
 - **Hook `session_ledger_record` instead of the crew log.** Rejected: that fold
   has no conductor binding, and it would miss `work_report`.
-- **Push from the eager fold to the UI as well.** Deferred; `eager.py` states the
-  revision contract it needs, and this RFC adds no reader.
+- **A hard-wired second consumer on the eager drain.** The first implementation:
+  `eager.py` imported `conductor_wake` and read the binding file for each
+  `work/recorded` wake. Rejected once `crew_log.bus` existed: it put a consumer's
+  name in the producer, needed a store import the work ledger's allowlist had to
+  argue for, and a second consumer (a dynamic dashboard, a card trigger) would
+  have meant a second hook. The bus event carries the conductor's board as its
+  key, so the subscriber needs neither.
 
 ## 7. Open questions
 

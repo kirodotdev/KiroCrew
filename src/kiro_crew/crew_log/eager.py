@@ -38,15 +38,11 @@ WHAT IT PUBLISHES, AND WHAT MADE THAT POSSIBLE. An advanced fold is published on
 :mod:`kiro_crew.crew_log.bus` as a ``FoldAdvanced(scope, key, fold, revision, value,
 seq)``, one per coalesced batch per fold it moved. Through a bus and not to a named consumer, because this value has
 several consumers coming and this module must know about none of them; the dashboard's WS
-exporter subscribes where the dashboard state exists.
-
-IT ALSO PUSHES A DEADLINE: a conductor's armed work-ledger loop is pulled forward when a
-worker bound to it commits a ``work/recorded`` entry (:func:`_push_conductor_wakes`). That
-carries no value and no frame, so the revision contract below does not apply to it -- the
-conductor's own gate then reads the ledger itself, under its own identity, exactly as on a
-scheduled tick. It rides this drain rather than the append because the lookup is a file
-read and the fire crosses onto the event loop, neither of which may sit on a worker's own
-``work_report``.
+exporter subscribes where the dashboard state exists, and the conductor pull-forward
+(:mod:`kiro_crew.conductor_wake`) subscribes where the loops it fires exist. The ``work``
+fold's event is how a conductor learns its worker wrote: the event's key is the
+conductor's own board, so that subscriber reads no binding and this module names no
+conductor.
 
 The first version of this module deliberately published NOTHING, and the obstacle was real:
 a slot fold's ``last_seq`` is the NEWEST unit's own seq by contract, and conductor units are
@@ -377,25 +373,16 @@ def _run() -> None:
             continue
         batch, closers, taken = _coalesce(first)
         try:
-            # Both consumers run under the gate: resolving a writer's slot reads its unit
-            # header, so a removal held by :func:`paused` must wait for the wake lookups as
-            # well as the fold. The fire itself never waits on the loop, so the gate is
-            # never held across a loop turn.
+            # Under the gate: resolving a writer's slot reads its unit header, so a
+            # removal held by :func:`paused` must wait for the wake lookups as well as the
+            # fold. Everything downstream of the fold -- the dashboard's frame, the
+            # conductor's pull-forward -- is a bus subscriber and runs inside
+            # :func:`_publish_fold`'s fan-out, so this loop names none of them.
             with _fold_gate:
                 try:
                     _fold_batch(batch, closers)
                 except Exception:  # pragma: no cover - the loop outlives one bad batch
                     _log_exc(logging.WARNING, "crew log eager fold batch failed")
-                # The second consumer: a conductor's armed gate wants to know its worker
-                # wrote. Its own ``try`` rather than a shared one, because the two
-                # consumers are independent -- a fold that raised must not cost the
-                # conductor its wake, and a wake that raised must not look like a fold
-                # failure. Both sit inside the ``finally`` that settles, so neither can
-                # strand :func:`drain`.
-                try:
-                    _push_conductor_wakes(batch)
-                except Exception:  # pragma: no cover - the loop outlives one bad batch
-                    _log_exc(logging.DEBUG, "crew log conductor wake batch failed")
         finally:
             _settle(taken)
 
@@ -628,56 +615,6 @@ def _outranked_by_a_closer(
     suppressing the report there loses a value the conductor's dashboard was handed.
     """
     return wake.seq <= closed.get(wake.unit_id, 0) and slot == own_slots.get(wake.unit_id)
-
-
-def _push_conductor_wakes(batch: "dict[tuple[str, str, str], _Wake]") -> None:
-    """Pull the conductor forward for every bound worker that reported in *batch*.
-
-    ON THE WORKER THREAD, never on the writer's. That is the whole reason this lives here
-    rather than beside the append in ``emit``: resolving a binding is a file read and the
-    push crosses onto the event loop, so doing it where the entry is committed would put
-    both on the latency of a worker's own ``work_report``.
-
-    The slot is the UNIT's, from its header -- not ``wake.board``. A ``work/recorded``
-    entry names the CONDUCTOR's board in its own field, which is the fold it belongs to
-    and the wrong end of this lookup: what decides whether to push is whether the WRITER
-    is a bound worker. Asking the binding is also what makes a conductor's own
-    ``work/recorded`` entry push nothing -- a conductor slot has no binding as a worker --
-    without this module having to know what a conductor is.
-
-    DEDUPED by worker slot, because a batch can hold several of one worker's entries and
-    the push is a deadline move: firing twice would arm the same timer twice at delay
-    zero for one tick's worth of news.
-
-    Refusals and absences are the callee's to log. Nothing here retries: the conductor's
-    scheduled tick reads the same ledger a cadence later.
-    """
-    # Function-local for the reason ``_projection`` is, and the reason the literal set
-    # above exists: neither the entry-type registry nor the wake path belongs on the
-    # gateway's boot path. ONE authority for the type, though -- a second literal here
-    # would be a thing to keep in step with the first for no gain, since this runs on the
-    # worker thread where an import is free.
-    from kiro_crew.conductor_wake import fire_for_worker_slot_from_thread
-    from kiro_crew.crew_log.entry_types import WORK_ENTRY_TYPE
-
-    seen: set[str] = set()
-    for wake in batch.values():
-        if wake.entry_type != WORK_ENTRY_TYPE:
-            continue
-        slot = _slot_of(wake.unit_id)
-        if not slot or slot in seen:
-            continue
-        seen.add(slot)
-        # Carry the entry's own board so the push fires only when THIS entry belongs to
-        # the board of the conductor the writer is bound to. A ``work/recorded`` entry
-        # names the conductor's board in ``board`` (see ``_Wake``); for a genuine worker
-        # report that equals the binding's conductor slot. A NESTED conductor is itself a
-        # bound worker of its parent, so ``_slot_of`` resolves to its slot and the
-        # binding to its parent -- but its OWN ``work/recorded`` writes name its own
-        # board, not the parent's, so firing on them would spend the parent item's
-        # pull-forward budget on the nested conductor's bookkeeping and delay a real
-        # report to the scheduled cadence.
-        fire_for_worker_slot_from_thread(slot, expected_board=wake.board)
 
 
 def _advance(slot: str, name: str) -> None:

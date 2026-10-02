@@ -1026,9 +1026,14 @@ per fold it moved. The bus fans out synchronously on the worker's own thread, in
 registration order, logs and skips a subscriber that raises, and retains nothing: an
 event with no subscriber is dropped, which is safe for the same reason a dropped wake is.
 The dashboard's `CrewLogPublisher` subscribes once per process, at the one place the
-dashboard state exists, so the crew log names no dashboard symbol. Further consumers --
-a summary fold over a session's events, the automatic-card sentence trigger, channel
-notifications -- are expected to subscribe the same way and are not built here.
+dashboard state exists, so the crew log names no dashboard symbol. The conductor
+pull-forward (`conductor_wake`, registered at `AutoNudgeService.start`) is the second
+subscriber: on a `work` fold's event it diffs each item's `last_report_at` against the
+board it last saw and pulls the conductor's armed work-ledger loop forward for the items
+that moved -- the event's `key` is the conductor's board, so it reads no binding.
+Further consumers -- a summary fold over a session's events, the automatic-card sentence
+trigger, channel notifications -- are expected to subscribe the same way and are not
+built here.
 
 **Subscribing: keys, disposers and a baseline.** `subscribe(kind, callback, *, scope=,
 key=, fold=, baseline=False)` returns a disposer. Calling it removes the subscription; a

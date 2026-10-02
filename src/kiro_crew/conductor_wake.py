@@ -1,12 +1,13 @@
-"""One lookup: a bound worker's slot -> its conductor's armed work-ledger loop -> fire.
+"""A subscriber on the crew-log bus: the ``work`` fold moved -> fire its conductor's loop.
 
 WHY A MODULE OF ITS OWN. Three places learn that a worker said or did something: the
-crew-log eager drain (a ``work/recorded`` entry landed), the dashboard's slot close (the
-worker's session is gone), and the turn-complete hook (a worker's turn ended, with any
-outcome). None of them knows anything about conductors, and each would otherwise carry
-its own copy of the same four steps -- resolve the binding, find the conductor's loop,
-check it is the right kind and still active, fire it. A fourth trigger is likely (an
-item's acceptance promoted by a human, say), so the copy count is the thing to bound.
+``work`` fold advancing on the crew-log bus (a ``work/recorded`` entry landed and was
+folded), the dashboard's slot close (the worker's session is gone), and the turn-complete
+hook (a worker's turn ended, with any outcome). None of them knows anything about
+conductors, and each would otherwise carry its own copy of the same steps -- find the
+conductor's loop, check it is the right kind and still active, fire it. A fourth trigger
+is likely (an item's acceptance promoted by a human, say), so the copy count is the thing
+to bound.
 
 WHAT THE PUSH IS. :meth:`AutoNudgeService.fire_now`, and nothing else. It re-arms the
 loop's own timer at delay zero, so the cycle runs inside the ordinary ``_timer`` body --
@@ -16,27 +17,44 @@ decides nothing: whether a turn is spent is still the gate's answer, read under 
 conductor's own identity. The worker gains no handle on its conductor and sends it no
 payload.
 
+WHAT IT KNOWS, AND WHERE FROM. Only what the ``work`` fold's rendered board says. A
+:class:`~kiro_crew.crew_log.bus.FoldAdvanced` for ``(slot, <board>, "work")`` carries the
+whole board: each item's ``worker_session_key`` and its ``last_report_at``. The event's
+``key`` IS the conductor's slot, because a worker's ``work/recorded`` entry names the
+conductor's board (:func:`~kiro_crew.crew_log.projection._work_bind_slot`), so no
+binding file is read here and this module is not an importer of the work-ledger store.
+What one event does not say is WHICH item moved, so the :class:`_Registry` keeps the
+previous board's ``last_report_at`` per item and diffs: an item whose stamp changed is a
+worker that reported; a board whose stamps are all unchanged moved on a conductor's own
+write (``create``, ``bind``, ``decide``, ``close``) and pushes nothing, which is also
+what keeps a nested conductor's own bookkeeping from spending its PARENT's budget. The
+same registry answers the two loop-side triggers in reverse -- worker slot ->
+``(board, item)`` -- from the ``worker_session_key`` each item carries.
+
 WHAT A FAILURE COSTS. Nothing that needs recovering. ``fire_now`` refuses with 404 (the
 loop is not registered), 409 (not active) or 409 (mid-fire); each is logged at DEBUG and
 dropped, because the conductor's scheduled tick runs the identical gate over the
-identical store a cadence later and sees the same ledger. That is also why the eager
-path may drop a wake under pressure and why this module never retries: the tick is the
-fallback, and a push is only ever an early one.
+identical store a cadence later and sees the same ledger. A bus event is not retained
+either (:mod:`kiro_crew.crew_log.bus` says why), so this module never retries: the tick
+is the fallback, and a push is only ever an early one. A board this process has not yet
+seen on the bus -- the window after a restart, before its first write -- is primed from
+the fold's read path when a close or a turn end asks about an unknown worker
+(:func:`_prime`), bounded by the number of active work-ledger loops.
 
-TWO ENTRY POINTS, because the callers sit on different sides of the event loop.
-:func:`fire_for_worker_slot` is for a caller already ON the gateway loop (the close
-path, the turn-complete hook); :func:`fire_for_worker_slot_from_thread` is for the eager
-drain, which is a plain worker thread. The split is not cosmetic: the binding is a FILE
-read and the loop table is the service's own dict, so each entry point puts the file read
-off the loop and every ``_loops`` read on it.
+TWO SIDES OF THE EVENT LOOP. The bus fans out on the eager fold worker's thread, so
+:func:`_on_fold_advanced` does nothing there but copy the board's stamps out of the event
+and hand them to the service's loop; the registry and the loop table are read and written
+ON that loop only. :func:`fire_for_worker_slot` is for a caller already on it (the close
+path, the turn-complete hook).
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
-from typing import Any
+from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -47,38 +65,314 @@ logger = logging.getLogger(__name__)
 #: ``ledger_wake.worker_running`` tries, walked in the other direction.
 _SLOT_PREFIX = "dashboard_"
 
+#: The fold this module subscribes to. Spelled here rather than imported from
+#: ``work_vocab`` so the module stays importable on the gateway's boot path with nothing
+#: but the standard library; ``test_conductor_wake`` pins the two spellings equal.
+WORK_FOLD = "work"
 
-def _binding_candidates(worker_slot_key: str) -> "tuple[str, ...]":
+
+def _slot_candidates(worker_slot_key: str) -> "tuple[str, ...]":
     """*worker_slot_key* and, when it is prefixed, its bare form."""
     if worker_slot_key.startswith(_SLOT_PREFIX):
         return (worker_slot_key, worker_slot_key[len(_SLOT_PREFIX) :])
     return (worker_slot_key,)
 
 
-def _read_binding(worker_slot_key: str) -> "tuple[str, str] | None":
-    """*worker_slot_key*'s ``(conductor_slot_key, item_id)``, or ``None``.
+# --------------------------------------------------------------------------- #
+# The registry: what the ``work`` fold last said about each board
+# --------------------------------------------------------------------------- #
 
-    BLOCKING: one small JSON read per spelling. Every caller arranges to run it off the
-    event loop.
 
-    Read with ``strict=False`` (the default), so a momentarily unreadable binding
-    answers "unbound" rather than raising: no push, and the conductor's scheduled tick
-    covers it. The import is function-local for the reason ``crew_log.eager`` gives
-    about the fold surface -- this module is reachable from the gateway's boot path and
-    the ledger store is not, so an install where no conductor ever opened a ledger never
-    pays for it.
+class _Registry:
+    """Per board, each item's ``last_report_at`` and worker; per worker, its board and item.
+
+    LOOP-CONFINED: every method is called on the service's event loop, from the coroutine
+    the bus subscriber schedules there or from the loop-side triggers. That is what lets
+    it consult the loop table without a lock of its own and keep its bound honest.
+
+    THE BOUND. A board is retained only while its conductor has an active work-ledger
+    loop (:func:`work_ledger_loop_id`). An event for a board nobody is watching is read
+    and dropped, and every observation and every prime ends with :meth:`sweep`, which
+    drops each retained board whose loop has since ended -- a conductor whose last
+    ``close`` was folded while its loop still ran, and whose loop then reached its cap,
+    leaves on the next observation of ANY board or the next loop-side lookup rather than
+    on a further write to its own. So the table holds at most the boards of the loops
+    active at the last sweep, which the service bounds, and the service's ``stop``
+    clears it outright. Items per board are bounded by the fold itself
+    (``WORK_ITEM_LIMIT``); the reverse map holds at most one key per OPEN item.
     """
-    from kiro_crew import work_ledger
 
-    for candidate in _binding_candidates(worker_slot_key):
+    def __init__(self) -> None:
+        self.boards: "dict[str, dict[str, str]]" = {}
+        self.workers: "dict[str, tuple[str, str]]" = {}
+
+    def forget(self, board: str) -> None:
+        for item_id in self.boards.pop(board, {}):
+            self._unlink(board, item_id)
+
+    def _unlink(self, board: str, item_id: str) -> None:
+        for worker, bound in list(self.workers.items()):
+            if bound == (board, item_id):
+                del self.workers[worker]
+
+    def observe(self, board: str, items: "list[_Item]") -> "tuple[bool, list[str]]":
+        """Record *items* for *board*.
+
+        Returns ``(first_sight, reported)``: whether this is the first board this process
+        has seen for *board*, and the ids of the items whose ``last_report_at`` moved since
+        the previous observation. On first sight ``reported`` is empty by construction --
+        there is nothing to diff against -- and the caller decides what that costs.
+
+        Only an OPEN item claims its worker in the reverse map. The store lets a worker
+        session be rebound once its item is terminal, and a closed item keeps its
+        ``worker_session_key`` in the render -- so a terminal item re-observed later must
+        not take the worker back from the board that holds it open now, and the mapping it
+        held is dropped the moment it is seen closed.
+        """
+        previous = self.boards.get(board)
+        first = previous is None
+        stamps: dict[str, str] = {}
+        reported: list[str] = []
+        seen_items: set[str] = set()
+        for item_id, stamp, worker, open_ in items:
+            if not item_id:
+                continue
+            seen_items.add(item_id)
+            stamps[item_id] = stamp
+            if previous is not None and stamp and previous.get(item_id) != stamp:
+                reported.append(item_id)
+            if not worker:
+                continue
+            if open_:
+                self.workers[worker] = (board, item_id)
+            elif self.workers.get(worker) == (board, item_id):
+                del self.workers[worker]
+        if previous is not None:
+            for gone in set(previous) - seen_items:
+                self._unlink(board, gone)
+        self.boards[board] = stamps
+        return first, reported
+
+    def sweep(self, watched: "Callable[[str], bool]") -> None:
+        """Forget every retained board for which *watched* answers ``False``."""
+        for board in [b for b in self.boards if not watched(b)]:
+            self.forget(board)
+
+    def lookup(self, worker_slot_key: str) -> "tuple[str, str] | None":
+        for candidate in _slot_candidates(worker_slot_key):
+            bound = self.workers.get(candidate)
+            if bound is not None:
+                return bound
+        return None
+
+
+_registry = _Registry()
+
+
+#: One rendered item as the registry reads it: ``(item_id, last_report_at,
+#: worker_session_key, open)``. ``open`` is ``state == "open"`` -- the one state of the
+#: four (``work_vocab.WORK_ITEM_STATES``) under which a worker still has the item.
+_Item = tuple[str, str, str, bool]
+
+
+def _board_items(value: Any) -> "list[_Item]":
+    """The registry's view of each item of a rendered board.
+
+    Tolerant of shape: a missing or oddly typed field reads as ``""`` (and an unreadable
+    state as not open), because a render the fold produced is the contract and a field
+    this module cannot read is a reason to push less, never to raise on the fold worker's
+    thread.
+    """
+    items = value.get("items") if isinstance(value, dict) else None
+    out: "list[_Item]" = []
+    if not isinstance(items, list):
+        return out
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        item_id = item.get("item_id")
+        stamp = item.get("last_report_at")
+        worker = item.get("worker_session_key")
+        out.append(
+            (
+                item_id if isinstance(item_id, str) else "",
+                stamp if isinstance(stamp, str) else "",
+                worker if isinstance(worker, str) else "",
+                item.get("state") == "open",
+            )
+        )
+    return out
+
+
+def _watched(svc: Any) -> "Callable[[str], bool]":
+    """The sweep predicate: whether *board*'s conductor has an active work-ledger loop."""
+    return lambda board: bool(work_ledger_loop_id(svc, board))
+
+
+async def _observe_board(svc: Any, board: str, items: "list[_Item]") -> None:
+    """Fold *board*'s latest stamps into the registry and fire for what moved.
+
+    ON THE EVENT LOOP. A board whose conductor has no active work-ledger loop is dropped
+    from the registry rather than recorded -- nothing can be fired for it -- and every
+    other retained board is swept against the loop table at the same time, which is what
+    keeps the registry at the size of the live loop table (:class:`_Registry`).
+
+    FIRST SIGHT fires once, uncapped (``item_id=""``). The event exists because an entry
+    was just written, and with no previous board to diff against this module cannot say
+    whether it was a worker's report or a conductor's own write; a tick the gate answers
+    quiet costs no turn, and the alternative -- staying silent on the first write after a
+    restart -- would hide exactly the report the boot-time replay exists to surface.
+    """
+    _registry.sweep(_watched(svc))
+    if not work_ledger_loop_id(svc, board):
+        _registry.forget(board)
+        return
+    first, reported = _registry.observe(board, items)
+    if first:
+        await _fire(svc, board, "")
+        return
+    for item_id in reported:
+        await _fire(svc, board, item_id)
+
+
+async def _prime(svc: Any) -> None:
+    """Register every active work-ledger loop's board this process has not seen yet.
+
+    The window this closes: after a restart the registry is empty until each board's
+    first write reaches the bus, and a worker that closes or whose turn ends in that
+    window would otherwise be heard only at the scheduled cadence. The fold is read
+    through the same read path the dashboard uses (:func:`read_slot_projection`), off the
+    loop, once per unseen board -- bounded by the loop table, not by the number of boards
+    on disk.
+
+    Through the FOLD, not the store: this module reads what the crew log says a board is,
+    exactly as a bus event would have told it.
+    """
+    _registry.sweep(_watched(svc))
+    lister = getattr(svc, "list_all", None)
+    if not callable(lister):
+        return
+    try:
+        loops = list(lister())
+    except Exception:  # pragma: no cover - a loop-table read must not fail a trigger
+        return
+    for loop in loops:
+        board = str(getattr(loop, "slot_key", "") or "")
+        if not board or board in _registry.boards or not work_ledger_loop_id(svc, board):
+            continue
+        items = await asyncio.to_thread(_read_board_items, board)
+        if items is None:
+            continue
+        _registry.observe(board, items)
+
+
+def _read_board_items(board: str) -> "list[_Item] | None":
+    """*board*'s items as the ``work`` fold renders them now, or ``None`` when unreadable.
+
+    BLOCKING: a fold read. Function-local import for the reason ``crew_log.eager`` gives
+    about the fold surface -- this module is on the gateway's boot path and the fold is
+    not.
+    """
+    try:
+        from kiro_crew.crew_log.projection import read_slot_projection
+
+        return _board_items(read_slot_projection(board, WORK_FOLD).value)
+    except Exception:
+        logger.debug("conductor wake: could not prime board %s from the work fold", board)
+        return None
+
+
+# --------------------------------------------------------------------------- #
+# The bus subscription
+# --------------------------------------------------------------------------- #
+
+_subscribed = False
+_subscribe_lock = threading.Lock()
+
+
+def subscribe_to_crew_log() -> bool:
+    """Register :func:`_on_fold_advanced` on the crew-log bus, once per process.
+
+    Called from :meth:`AutoNudgeService.start`, the owner of the loops this module fires
+    -- the bus's own rule is that a consumer subscribes where its state exists. Returns
+    whether THIS call registered; a second call is a no-op, because the bus has no
+    unsubscribe and a gateway restarted in one process would otherwise fire twice per
+    event.
+    """
+    global _subscribed
+    with _subscribe_lock:
+        if _subscribed:
+            return False
+        from kiro_crew.crew_log import bus
+
+        bus.subscribe(bus.FOLD_ADVANCED, _on_fold_advanced)
+        _subscribed = True
+        return True
+
+
+def _on_fold_advanced(event: Any) -> None:
+    """Bus callback: :func:`_observe_event`, with the answer the bus does not take."""
+    _observe_event(event)
+
+
+def _observe_event(event: Any) -> bool:
+    """``True`` when *event* is a ``work`` board and its observation reached the service loop.
+
+    ON THE FOLD WORKER'S THREAD, so it owes the bus contract: no real work here. It reads
+    three fields and the item stamps out of the event, then schedules
+    :func:`_observe_board` on the service's loop and returns without waiting. Every other
+    scope and fold is not this subscriber's and costs one comparison.
+
+    Never raises: the bus would log and carry on, but the fold worker's thread is not the
+    place to find out.
+    """
+    try:
+        if getattr(event, "scope", "") != "slot" or getattr(event, "fold", "") != WORK_FOLD:
+            return False
+        board = str(getattr(event, "key", "") or "")
+        if not board:
+            return False
+        items = _board_items(getattr(event, "value", None))
+        from kiro_crew import autonudge
+
+        svc = autonudge.get_instance()
+        if svc is None:
+            return False
+        running = _service_loop(svc)
+        if running is None:
+            return False
+        future = asyncio.run_coroutine_threadsafe(_observe_board(svc, board, items), running)
+    except Exception:  # pragma: no cover - the fold worker must not see this
+        logger.debug("conductor wake: could not schedule a board observation")
+        return False
+
+    def _note(done: "Any") -> None:
         try:
-            binding = work_ledger.read_binding(candidate)
-        except Exception:  # pragma: no cover - an unreadable binding is not ours to repair
-            logger.debug("conductor wake: binding read failed for %s", candidate)
-            return None
-        if binding is not None:
-            return binding
-    return None
+            done.result()
+        except Exception:  # pragma: no cover - already logged inside ``_fire``
+            logger.debug("conductor wake: scheduled board observation failed for %s", board)
+
+    future.add_done_callback(_note)
+    return True
+
+
+def forget_boards() -> None:
+    """Drop every retained board and worker. Called by the service's ``stop``: the loops
+    the registry is bounded by are gone with it, and a service restarted in the same
+    process re-learns its boards from the bus and the prime."""
+    _registry.boards.clear()
+    _registry.workers.clear()
+
+
+def reset_for_tests() -> None:
+    """Forget every board and worker, and the once-per-process subscription mark. A TEST
+    SEAM, named as one: the bus's own ``reset_for_tests`` drops the callback, so the mark
+    has to drop with it or the next test's ``subscribe_to_crew_log`` is a no-op."""
+    global _subscribed
+    _registry.boards.clear()
+    _registry.workers.clear()
+    with _subscribe_lock:
+        _subscribed = False
 
 
 #: Pull-forwards one work item may buy its conductor's loop in an hour.
@@ -287,9 +581,11 @@ async def _fire(svc: Any, conductor_slot_key: str, item_id: str = "") -> str:
 async def fire_for_worker_slot(worker_slot_key: str) -> str:
     """Pull the conductor bound to *worker_slot_key* forward. The loop id, or ``""``.
 
-    For a caller already on the gateway event loop. The binding read is offloaded, so a
-    slow disk cannot stall the loop (the no-blocking-call-on-event-loop rule), and the
-    loop-table read then happens back here where it is safe.
+    For a caller already on the gateway event loop: the close path and the turn-complete
+    hook. The worker's board and item come from the registry the bus fills; a worker the
+    registry does not know triggers one :func:`_prime` pass (fold reads, off the loop)
+    before the lookup is given up, so the window after a restart costs one fold per active
+    loop rather than a lost push.
 
     ``""`` for every ordinary absence -- an unbound slot, a conductor with no loop, a
     loop of another kind, a refusal -- so a caller has nothing to branch on and no
@@ -302,10 +598,13 @@ async def fire_for_worker_slot(worker_slot_key: str) -> str:
     svc = autonudge.get_instance()
     if svc is None:
         return ""
-    binding = await asyncio.to_thread(_read_binding, worker_slot_key)
-    if binding is None:
+    bound = _registry.lookup(worker_slot_key)
+    if bound is None:
+        await _prime(svc)
+        bound = _registry.lookup(worker_slot_key)
+    if bound is None:
         return ""
-    return await _fire(svc, binding[0], binding[1])
+    return await _fire(svc, bound[0], bound[1])
 
 
 def _service_loop(svc: Any) -> "asyncio.AbstractEventLoop | None":
@@ -313,10 +612,10 @@ def _service_loop(svc: Any) -> "asyncio.AbstractEventLoop | None":
 
     Taken from a task the service already owns rather than from a loop reference this
     module would have to be handed at construction: the service is built by the gateway
-    and the trigger threads are built by the crew log, so there is no one place that
-    holds both. The reconciler is the right task to ask -- ``start()`` guarantees it for
-    the life of a running service -- and a live timer is the fallback for the window
-    before the first reconcile pass.
+    and the bus fans out on the crew log's thread, so there is no one place that holds
+    both. The reconciler is the right task to ask -- ``start()`` guarantees it for the
+    life of a running service -- and a live timer is the fallback for the window before
+    the first reconcile pass.
 
     A CLOSED loop answers ``None``. A singleton can outlive its loop (the service's own
     ``stop`` documents this), and scheduling onto a closed loop raises.
@@ -331,57 +630,3 @@ def _service_loop(svc: Any) -> "asyncio.AbstractEventLoop | None":
         if running is not None and not running.is_closed():
             return running
     return None
-
-
-def fire_for_worker_slot_from_thread(worker_slot_key: str, *, expected_board: str = "") -> bool:
-    """Same push, from a thread. ``True`` when the fire was handed to the loop.
-
-    The crew-log eager drain is a plain daemon thread, so it cannot await. It CAN read
-    the binding, and that is the right division: the file read belongs on the thread, and
-    the loop table belongs on the event loop, so the coroutine handed over does the
-    lookup rather than carrying its answer across.
-
-    Never waits for the result. The drain's own contract is that a slow consumer costs
-    currency and never turn latency, and the answer this would wait for is one it would
-    only log -- so the future is left to a callback and the thread goes back for the next
-    batch. ``True`` therefore means "scheduled", not "fired".
-
-    Never raises: a trigger that has already observed the entry must not be broken by
-    the attempt to tell someone about it.
-    """
-    if not worker_slot_key:
-        return False
-    try:
-        from kiro_crew import autonudge
-
-        svc = autonudge.get_instance()
-        if svc is None:
-            return False
-        binding = _read_binding(worker_slot_key)
-        if binding is None:
-            return False
-        # ``expected_board`` is the board the drained entry belongs to. For a genuine
-        # worker report it is the bound conductor's slot (``binding[0]``). A NESTED
-        # conductor's OWN ``work/recorded`` write names its own board instead, so it
-        # resolves a binding to its PARENT and would spend the parent item's
-        # pull-forward budget here -- refuse it when the boards disagree. An empty
-        # ``expected_board`` means the entry carries none (a caller that is not the
-        # board-aware drain), so the match is skipped and the binding alone decides.
-        if expected_board and expected_board != binding[0]:
-            return False
-        running = _service_loop(svc)
-        if running is None:
-            return False
-        future = asyncio.run_coroutine_threadsafe(_fire(svc, binding[0], binding[1]), running)
-    except Exception:  # pragma: no cover - the trigger must not see this
-        logger.debug("conductor wake: could not schedule a push for %s", worker_slot_key)
-        return False
-
-    def _note(done: "Any") -> None:
-        try:
-            done.result()
-        except Exception:  # pragma: no cover - already logged inside ``_fire``
-            logger.debug("conductor wake: scheduled push failed for %s", worker_slot_key)
-
-    future.add_done_callback(_note)
-    return True
