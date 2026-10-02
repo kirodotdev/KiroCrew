@@ -228,8 +228,8 @@ def test_kirocrew_markers_load_bundled_profile(tmp_path):
     assert all("playwright install" not in gate for gate in prof["gates"])
     assert prof["readiness"]["status_context"] == "PR Readiness"
     models = {r["name"]: r["model"] for r in prof["reviewers"]}
-    assert models["gpt"] == "gpt-5.6-sol"
-    assert models["opus"] == "claude-opus-5"
+    assert models["gpt"] == "gpt-6.1-sol"
+    assert models["opus"] == "claude-opus-5.5"
 
 
 def test_opus_profile_model_matches_the_ci_workflow():

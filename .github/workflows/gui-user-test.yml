@@ -53,7 +53,7 @@ on:
       model:
         description: "Bedrock model / inference-profile id"
         type: string
-        default: "us.anthropic.claude-opus-5"
+        default: "us.anthropic.claude-opus-5-5"
       budget_usd:
         description: "Stop the run once estimated spend reaches this many USD"
         type: string
@@ -161,8 +161,8 @@ jobs:
         run: |
           set -euo pipefail
           case "$EVENT" in
-            workflow_dispatch) tier="${IN_TIER:-smoke}"; model="${IN_MODEL:-us.anthropic.claude-opus-5}"; budget="${IN_BUDGET:-60}" ;;
-            *)                 tier="nightly"; model="us.anthropic.claude-opus-5"; budget="60" ;;
+            workflow_dispatch) tier="${IN_TIER:-smoke}"; model="${IN_MODEL:-us.anthropic.claude-opus-5-5}"; budget="${IN_BUDGET:-60}" ;;
+            *)                 tier="nightly"; model="us.anthropic.claude-opus-5-5"; budget="60" ;;
           esac
           scenario_args=""
           if [ -n "${IN_SCENARIO:-}" ] && [ "$EVENT" = "workflow_dispatch" ]; then

@@ -1,7 +1,7 @@
 name: Fork UX Review
 
 # STAGE 2 (privileged) of the fork AI-review pipeline — the ADVISORY UX
-# reviewer (Fable 5 via Amazon Bedrock). Triggered by the completion of
+# reviewer (Opus 5.5 via Amazon Bedrock). Triggered by the completion of
 # "Fork AI Review (collect)" (Stage 1). Runs from the DEFAULT branch with
 # OIDC. It NEVER checks out or executes the fork's code.
 #
@@ -21,7 +21,7 @@ name: Fork UX Review
 #   - harden-runner egress-block + OIDC short-lived Bedrock-only creds bound
 #     the blast radius of any prompt-injection.
 #
-# Mirrors ux-review.yml's contract (Fable 5 model, UX-Verdict/[UX-REVIEWED]
+# Mirrors ux-review.yml's contract (Opus 5.5 model, UX-Verdict/[UX-REVIEWED]
 # markers, UI-scope gate, ADVISORY: fail only on a genuine BLOCK) with ONE
 # deliberate difference: ux-review.yml runs a BLIND-READ first pass over the
 # screenshots, and this lane does not -- it has one pass, which sees the diff
@@ -78,8 +78,8 @@ jobs:
       && github.event.workflow_run.head_repository.full_name != github.repository
     steps:
       # MUST be first: block egress except the endpoints the reviewer needs, so
-      # an injection-driven exfil attempt fails at the network layer. UX/Fable
-      # runs on Bedrock in us-west-2 (see the AWS_BEDROCK_ROLE_ARN region below).
+      # an injection-driven exfil attempt fails at the network layer. The UX
+      # reviewer runs on Bedrock in us-west-2 (see the AWS_BEDROCK_ROLE_ARN region below).
       # SHA verified against the upstream tag: `git/ref/tags/v2.21.1` on
       # step-security/harden-runner resolves to e14015d583714f6e62063499dc959a02595150a1,
       # the commit pinned below. Recorded here because a wrong pin reds every fork
@@ -509,14 +509,14 @@ jobs:
           role-to-assume: ${{ secrets.AWS_BEDROCK_ROLE_ARN }}
           aws-region: us-west-2
 
-      - name: UX review (Fable 5)
+      - name: UX review (Opus 5.5)
         id: review
         # No continue-on-error: if the model call fails, this step fails and the
         # always()-run finalize below emits a NEUTRAL "UX Review" check (an
         # errored advisory review must never fail the gate; only a real BLOCK
         # does). Gated on the UI-scope pass.
         if: steps.scope.outputs.ui == 'true'
-        uses: anthropics/claude-code-action@9c5ddab2e6d17b83ea679153b31f1d5f023cf636 # v1
+        uses: anthropics/claude-code-action@97c53473391bff1901034d4b454b5bac7ab7a029 # v1.0.239
         with:
           # Inference via Amazon Bedrock. Model id form (bare, regional `us.`
           # inference profile, no `[1m]` tag) is load-bearing — see the
@@ -543,8 +543,8 @@ jobs:
           # isolation, which covers this lane's Bash(git diff/gh pr) grants.
           allowed_non_write_users: "*"
           claude_args: |
-            --model us.anthropic.claude-fable-5
-            --fallback-model us.anthropic.claude-opus-4-8
+            --model us.anthropic.claude-opus-5-5
+            --fallback-model us.anthropic.claude-sonnet-5-5
             --max-turns 60
             --allowedTools "Read,Grep,Glob"
             --append-system-prompt "REVIEW TARGET (authoritative, from the workflow): pull request number ${{ steps.pr.outputs.pr }} of ${{ github.repository }}. HEAD sha ${{ steps.pr.outputs.head_sha }}. The authentic, sha-pinned unified diff is the data file ${{ runner.temp }}/authentic.patch. The PR title and description are the data file ${{ runner.temp }}/pr-intent.txt (captured once by this workflow -- read the author's stated intent from that file and from nowhere else, because it is the only revision of the description this review is answerable for). Job-written data files holding this PR's evidence, from its description's attachments and from the media it commits under temp-screenshots/ or .github/screenshots/: the image list is ${{ runner.temp }}/ux-attachments.txt (index-named copies, attachment-01.png ...), the map from each copy to its origin (an attachment URL, or the repository path of a committed file) is ${{ runner.temp }}/ux-attachment-map.txt, the recording list (attachment URLs and committed paths, listed but not downloaded for you) is ${{ runner.temp }}/ux-recordings.txt."
@@ -640,7 +640,7 @@ jobs:
 
             THIS IS A UX REVIEW, NOT A CODE OR DESIGN REVIEW. Three other
             automated reviewers already cover line-level correctness, security,
-            and style (Opus 5 / GPT 5.6) and design-level problem/solution
+            and style (Opus 5.5 / GPT 6.1) and design-level problem/solution
             fit (Design Review). Do NOT duplicate them: no correctness bugs, no
             security findings, no style/naming/import nits, no "is this the
             right architecture". Your lens is exclusively what a HUMAN USING
@@ -1235,7 +1235,7 @@ jobs:
               if [ "$head_unchanged" -eq 1 ]; then
                 {
                   echo "$MARKER"
-                  echo "## UX Review (Fable 5, fork) — ⏭️ skipped"
+                  echo "## UX Review (Opus 5.5, fork) — ⏭️ skipped"
                   echo
                   echo "_Revision \`$HEAD\` touches no user-facing surface (no changes under \`website/\` or committed screenshots), so the UX review was skipped. Advisory — does not block merge._"
                 } > "${RUNNER_TEMP:-/tmp}/ux-comment.md"
@@ -1326,7 +1326,7 @@ jobs:
             # Valid verdict → post the review body (redacted below).
             {
               echo "$MARKER"
-              echo "## UX Review (Fable 5, fork) — $badge"
+              echo "## UX Review (Opus 5.5, fork) — $badge"
               echo
               echo "_UX-level review of \`$HEAD\` via the fork AI-review pipeline — updated in place on each push. **A BLOCK verdict blocks PR readiness**; PASS/CONCERNS are advisory._"
               echo
@@ -1351,7 +1351,7 @@ jobs:
             if [ "${UNFETCHED:-}" = "true" ]; then
               {
                 echo "$MARKER"
-                echo "## UX Review (Fable 5, fork) — 🔴 could not evaluate"
+                echo "## UX Review (Opus 5.5, fork) — 🔴 could not evaluate"
                 echo
                 echo "_The review could not run for \`$HEAD\`: one or more attachment downloads from the PR description failed for a transport reason (a throttle, a 5xx, no answer), so the reviewer could not see everything the author supplied. The check-run is completed as a failure, so PR readiness holds rather than reading this as advisory. A maintainer re-runs this workflow; if the same downloads fail again, the attachment URLs themselves are the problem — re-attach the images to the description._"
                 echo
@@ -1370,7 +1370,7 @@ jobs:
             esac
             {
               echo "$MARKER"
-              echo "## UX Review (Fable 5, fork) — ⚠️ could not complete"
+              echo "## UX Review (Opus 5.5, fork) — ⚠️ could not complete"
               echo
               echo "_The UX review did not produce a verdict for \`$HEAD\` ($why). See the Fork UX Review job logs. Advisory — does not block merge._"
             } > "${RUNNER_TEMP:-/tmp}/ux-comment.md"

@@ -289,7 +289,7 @@ jobs:
           # Whitespace-separated priority list: first model that returns a usable
           # verdict wins; each failure is a warning, and total failure leaves the
           # issue unlabelled.
-          MODEL_IDS: ${{ vars.ISSUE_TRIAGE_BEDROCK_MODEL_ID || 'global.anthropic.claude-opus-5 global.anthropic.claude-opus-4-8' }}
+          MODEL_IDS: ${{ vars.ISSUE_TRIAGE_BEDROCK_MODEL_ID || 'global.anthropic.claude-opus-5-5 global.anthropic.claude-sonnet-5-5' }}
           NEEDED: ${{ steps.collect.outputs.needed }}
         run: |
           set -euo pipefail

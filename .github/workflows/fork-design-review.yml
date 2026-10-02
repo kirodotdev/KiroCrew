@@ -1,7 +1,7 @@
 name: Fork Design Review
 
 # STAGE 2 (privileged) of the fork AI-review pipeline — the ADVISORY DESIGN
-# reviewer (Fable 5 via Amazon Bedrock). Triggered by the completion of "Fork AI
+# reviewer (Opus 5.5 via Amazon Bedrock). Triggered by the completion of "Fork AI
 # Review (collect)" (Stage 1). Runs from the DEFAULT branch with secrets + OIDC.
 # It NEVER checks out or executes the fork's code.
 #
@@ -19,7 +19,7 @@ name: Fork Design Review
 #   - harden-runner egress-block + OIDC short-lived Bedrock-only creds bound the
 #     blast radius of any prompt-injection.
 #
-# Mirrors design-review.yml's contract (Fable 5 model, Design-Verdict header,
+# Mirrors design-review.yml's contract (Opus 5.5 model, Design-Verdict header,
 # [DESIGN-REVIEWED] marker, advisory/non-blocking gate). design-review.yml is
 # UNCHANGED and owns same-repo PRs. The fork check-run is named exactly
 # "Design Review" so the same status surfaces on either path. Being ADVISORY, an
@@ -415,13 +415,13 @@ jobs:
           role-to-assume: ${{ secrets.AWS_BEDROCK_ROLE_ARN }}
           aws-region: us-west-2
 
-      - name: Design review (Fable 5)
+      - name: Design review (Opus 5.5)
         id: review
         # We deliberately do NOT set continue-on-error, but this reviewer is
         # ADVISORY: the finalize step below resolves an errored/incomplete run to
         # NEUTRAL (never a hard failure) and fails the check ONLY on a real BLOCK
         # verdict. Mirrors design-review.yml's advisory contract.
-        uses: anthropics/claude-code-action@9c5ddab2e6d17b83ea679153b31f1d5f023cf636 # v1
+        uses: anthropics/claude-code-action@97c53473391bff1901034d4b454b5bac7ab7a029 # v1.0.239
         with:
           # Inference via Amazon Bedrock (region from the AWS creds step above).
           use_bedrock: "true"
@@ -431,11 +431,11 @@ jobs:
           # auto-enables the action's subprocess secret-scrub + bubblewrap
           # isolation, which covers this lane's Bash(git diff/gh pr) grants.
           allowed_non_write_users: "*"
-          # Fable 5's BARE, REGIONAL (`us.`) Bedrock inference-profile id, with an
-          # Opus 4.8 overload fallback — matches design-review.yml exactly.
+          # Opus 5.5's BARE, REGIONAL (`us.`) Bedrock inference-profile id, with an
+          # Sonnet 5.5 overload fallback — matches design-review.yml exactly.
           claude_args: |
-            --model us.anthropic.claude-fable-5
-            --fallback-model us.anthropic.claude-opus-4-8
+            --model us.anthropic.claude-opus-5-5
+            --fallback-model us.anthropic.claude-sonnet-5-5
             --max-turns 60
             --allowedTools "Read,Grep,Glob"
           prompt: |
@@ -907,7 +907,7 @@ jobs:
             # Valid verdict → post the (redacted) review body.
             {
               echo "$MARKER"
-              echo "## Design Review (Fable 5, fork) — $badge"
+              echo "## Design Review (Opus 5.5, fork) — $badge"
               echo
               echo "_Design-level review of \`$HEAD\` via the fork AI-review pipeline — updated in place on each push. **A BLOCK verdict blocks PR readiness**; PASS/CONCERNS are advisory._"
               echo
@@ -929,7 +929,7 @@ jobs:
             esac
             {
               echo "$MARKER"
-              echo "## Design Review (Fable 5, fork) — ⚠️ could not complete"
+              echo "## Design Review (Opus 5.5, fork) — ⚠️ could not complete"
               echo
               echo "_The design review did not produce a verdict for \`$HEAD\` ($why). See the Fork Design Review job logs. Advisory — does not block merge._"
             } > "$RUNNER_TEMP/design-comment.md"

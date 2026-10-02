@@ -1156,7 +1156,7 @@ class TestMissingEvidenceIsABlockNotAConcern:
             i for i, s in enumerate(steps) if "configure-aws-credentials" in s.get("uses", "")
         )
         review_at = next(
-            i for i, s in enumerate(steps) if s.get("name") == "Design review (Fable 5)"
+            i for i, s in enumerate(steps) if s.get("name") == "Design review (Opus 5.5)"
         )
         assert evidence_at < creds_at < review_at
         if name == "fork-design-review.yml":

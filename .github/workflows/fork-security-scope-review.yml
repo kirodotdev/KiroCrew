@@ -60,7 +60,7 @@ name: Fork Security Scope Review
 #   - harden-runner egress-block + OIDC short-lived Bedrock-only creds bound the
 #     blast radius of any prompt-injection.
 #
-# Mirrors the same-repo lane security-scope-review.yml's contract (Fable 5 model,
+# Mirrors the same-repo lane security-scope-review.yml's contract (Opus 5.5 model,
 # Scope-Verdict header, [SCOPE-REVIEWED] marker). The fork check-run is named
 # exactly "Security Scope Review" so ONE status surfaces on either PR type.
 #
@@ -478,14 +478,14 @@ jobs:
           done
           echo "truncated $n persisted set_env_* file(s)"
 
-      - name: Propose candidate legitimate operations (Fable 5)
+      - name: Propose candidate legitimate operations (Opus 5.5)
         id: review
         if: steps.scope.outputs.in_scope == 'true'
-        uses: anthropics/claude-code-action@24dcd50c0568f0fc9e9211213a4fd2d9eb15c4e0 # v1
+        uses: anthropics/claude-code-action@97c53473391bff1901034d4b454b5bac7ab7a029 # v1.0.239
         with:
           # Inference via Amazon Bedrock (region from the AWS creds step above).
-          # Fable 5's BARE, REGIONAL (`us.`) Bedrock inference-profile id, with an
-          # Opus 4.8 overload fallback — matches the same-repo lane and
+          # Opus 5.5's BARE, REGIONAL (`us.`) Bedrock inference-profile id, with an
+          # Sonnet 5.5 overload fallback — matches the same-repo lane and
           # design-review.yml exactly. The bare `us.` form is load-bearing: an
           # ARN-qualified or region-suffixed id is not resolvable as an inference
           # profile here.
@@ -576,8 +576,8 @@ jobs:
           # an allowlist entry is later widened. This matches the UX lane, which
           # denies the whole family.
           claude_args: |
-            --model us.anthropic.claude-fable-5
-            --fallback-model us.anthropic.claude-opus-4-8
+            --model us.anthropic.claude-opus-5-5
+            --fallback-model us.anthropic.claude-sonnet-5-5
             --max-turns 80
             --setting-sources user
             --allowedTools "Read,Grep,Glob,Write"

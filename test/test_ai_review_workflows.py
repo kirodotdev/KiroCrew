@@ -716,7 +716,7 @@ class TestForkStage2ExactHeadIdentity:
 
 # The three steps of the blocking-finding adjudication stage, in both GPT lanes.
 ADJ_EXTRACT = "Extract blocking findings for adjudication"
-ADJ_MODEL = "Opus 5 adjudication (blocking findings only)"
+ADJ_MODEL = "Opus 5.5 adjudication (blocking findings only)"
 ADJ_GATE = "Adjudicate the blocking verdict (script arithmetic, fail closed)"
 
 
@@ -995,7 +995,7 @@ class TestLineReviewHumanOverrides:
         assert '.user.login == "github-actions[bot]"' in workflow
         assert "steps.human_override.outputs.active != 'true'" in workflow
         assert "✅ human override accepted" in workflow
-        assert "Human judgment by $OVERRIDE_ACTOR overrides Opus 5" in workflow
+        assert "Human judgment by $OVERRIDE_ACTOR overrides Opus 5.5" in workflow
         assert "/ai-review override fable $HEAD:" in workflow
 
     @pytest.mark.parametrize(
@@ -1038,10 +1038,10 @@ class TestLineReviewHumanOverrides:
         assert "steps.human_override.outputs.active != 'true'" in workflow
         assert 'verdict="✅ no blocking findings"' in workflow
         assert (
-            "GPT 5.6 completed its review of \\`$HEAD\\` and found no blocking issues." in workflow
+            "GPT 6.1 completed its review of \\`$HEAD\\` and found no blocking issues." in workflow
         )
         assert "✅ human override accepted" in workflow
-        assert "Human judgment by $OVERRIDE_ACTOR overrides GPT 5.6" in workflow
+        assert "Human judgment by $OVERRIDE_ACTOR overrides GPT 6.1" in workflow
         assert "/ai-review override gpt $HEAD:" in workflow
 
 
@@ -1053,8 +1053,8 @@ class TestPrReadiness:
         # authoritative FALSIFICATION pass whose primary job is to KILL
         # candidates, not extend them. The two passes are separate STEPS so a
         # fresh Bedrock session can be minted between them.
-        assert "- name: GPT 5.6 review (discovery pass)" in workflow
-        assert "- name: GPT 5.6 review (falsification pass)" in workflow
+        assert "- name: GPT 6.1 review (discovery pass)" in workflow
+        assert "- name: GPT 6.1 review (falsification pass)" in workflow
         assert workflow.index("(discovery pass)") < workflow.index("(falsification pass)")
         assert "for pass in 1 2; do" not in workflow
         assert "for pass in 1 2 3; do" not in workflow
@@ -1154,12 +1154,12 @@ class TestPrReadiness:
     def test_gpt_review_uses_only_falsification_pass_for_comment_and_gate(self) -> None:
         workflow = _workflow("codex-review.yml")
         discovery_step = workflow[
-            workflow.index("- name: GPT 5.6 review (discovery pass)") : workflow.index(
-                "- name: GPT 5.6 review (falsification pass)"
+            workflow.index("- name: GPT 6.1 review (discovery pass)") : workflow.index(
+                "- name: GPT 6.1 review (falsification pass)"
             )
         ]
         review_step = workflow[
-            workflow.index("- name: GPT 5.6 review (falsification pass)") : workflow.index(
+            workflow.index("- name: GPT 6.1 review (falsification pass)") : workflow.index(
                 "- name: Redact credential shapes from review output"
             )
         ]
@@ -1302,7 +1302,7 @@ class TestPrReadiness:
         source = tmp_path / "source.md"
         source.write_bytes("AéB".encode())
 
-        for step_name in ("GPT 5.6 review (falsification pass)",):
+        for step_name in ("GPT 6.1 review (falsification pass)",):
             script = _step_script(workflow, step_name)
             function = _shell_function(script, "truncate_utf8")
             result = subprocess.run(
@@ -1395,8 +1395,8 @@ class TestPrReadiness:
             "build.yml|Build",
             "code-review.yml|Code Review",
             "dynamic/github-code-scanning/codeql|CodeQL",
-            "claude-review.yml|Opus 5 Review",
-            "codex-review.yml|GPT 5.6 Review",
+            "claude-review.yml|Opus 5.5 Review",
+            "codex-review.yml|GPT 6.1 Review",
             "design-review.yml|Design Review",
         ):
             assert workflow_name in workflow
@@ -1436,8 +1436,8 @@ class TestPrReadiness:
         # to THIS PR and attempt: the third field is the external_id prefix and
         # the fourth is the triggering workflow (Fast Gate) whose newest run +
         # attempt defines "current".
-        assert '"checkrun:Opus 5 Review|Opus 5 Review|opus-pr-|fast-gate.yml"' in workflow
-        assert '"checkrun:GPT 5.6 Review|GPT 5.6 Review|gpt-pr-|fast-gate.yml"' in workflow
+        assert '"checkrun:Opus 5.5 Review|Opus 5.5 Review|opus-pr-|fast-gate.yml"' in workflow
+        assert '"checkrun:GPT 6.1 Review|GPT 6.1 Review|gpt-pr-|fast-gate.yml"' in workflow
         assert '"checkrun:Design Review|Design Review|design-pr-|fast-gate.yml"' in workflow
         assert '"checkrun:UX Review|UX Review|ux-pr-|fast-gate.yml"' in workflow
         # One read of the head's check-runs serves all seven lanes; the
@@ -1445,7 +1445,7 @@ class TestPrReadiness:
         assert "commits/$SHA/check-runs?per_page=100" in workflow
         assert "check-runs?check_name=$enc" not in workflow
         # The blanket fork skip and the maintainer-review verdict are gone.
-        assert '"GPT 5.6 Review (fork PR)"' not in workflow
+        assert '"GPT 6.1 Review (fork PR)"' not in workflow
         assert 'state="maintainer_review"' not in workflow
         assert "AI reviews could not run" not in workflow
         # The Stage-2 fork reviewers must NOT be in the trigger allowlist.
@@ -1459,8 +1459,8 @@ class TestPrReadiness:
         # The green fork verdict lands through the lanes that DO run on the PR
         # head -- Fast Gate above -- plus the 15-minute sweep, which re-fires by
         # PR number.
-        assert "      - Fork Opus 5 Review" not in workflow
-        assert "      - Fork GPT 5.6 Review" not in workflow
+        assert "      - Fork Opus 5.5 Review" not in workflow
+        assert "      - Fork GPT 6.1 Review" not in workflow
         assert "      - Fork Internal Content Scan" not in workflow
         assert "github.event.workflow_run.event == 'workflow_run'\n" not in workflow
         # The check-run specs above are what read a fork lane's verdict, and
@@ -1556,10 +1556,10 @@ class TestFirstPrinciplesReview:
             # of a line, and a pin naming `grep` stops finding the capture the day
             # it becomes `awk` -- and then measures nothing while still passing.
             assert _reads_header_anchored(workflow, "First-Principles-Verdict:"), name
-            # Fable 5 with the same Opus overload fallback as the sibling
+            # Opus 5.5 with the same Opus overload fallback as the sibling
             # advisory lanes; a bare/`global.` profile id would be rejected.
-            assert "--model us.anthropic.claude-fable-5" in workflow
-            assert "--fallback-model us.anthropic.claude-opus-4-8" in workflow
+            assert "--model us.anthropic.claude-opus-5-5" in workflow
+            assert "--fallback-model us.anthropic.claude-sonnet-5-5" in workflow
 
     def test_intent_then_inventory_then_per_item_judgement(self) -> None:
         # The lane's structure IS its contribution: a change with one stated
@@ -2676,8 +2676,8 @@ class TestUxScopeGateSurvivesAWideDiff:
         assert "printf" not in gate, f"{lane}: writer is back in the pipeline"
 
 
-UX_BLIND_STEP = "Blind read of the screenshots (Fable 5)"
-UX_REVIEW_STEP = "UX review (Fable 5)"
+UX_BLIND_STEP = "Blind read of the screenshots (Opus 5.5)"
+UX_REVIEW_STEP = "UX review (Opus 5.5)"
 UX_EVIDENCE_STEP = "Collect blind-read evidence"
 FORK_ATTACHMENT_STEP = "Collect review evidence (description attachments and committed media)"
 UX_CAPTURE_STEP = "Capture the blind-read report"
@@ -4983,7 +4983,7 @@ class TestUxReviewReadsTheScreenshotsBlindFirst:
         untouched: the point is which evidence counts, not when the lane may
         refuse."""
         for lane in DESIGN_LANES:
-            design_prompt = _flat(_step(lane, "Design review (Fable 5)")["with"]["prompt"])
+            design_prompt = _flat(_step(lane, "Design review (Opus 5.5)")["with"]["prompt"])
             assert "THIS checkout can render" not in design_prompt, lane
             assert "a committed image is not evidence here" not in design_prompt, lane
             assert "in a same-repo checkout as the file at HEAD" not in design_prompt, lane
@@ -5100,8 +5100,8 @@ FORK_SWEEP_LANES = (
         "first-principles",
         "Finalize check-run (advisory)",
     ),
-    ("fork-gpt-review.yml", "GPT 5.6 Review", "gpt", "Finalize check-run (fail closed)"),
-    ("fork-opus-review.yml", "Opus 5 Review", "opus", "Finalize check-run (fail closed)"),
+    ("fork-gpt-review.yml", "GPT 6.1 Review", "gpt", "Finalize check-run (fail closed)"),
+    ("fork-opus-review.yml", "Opus 5.5 Review", "opus", "Finalize check-run (fail closed)"),
     ("fork-ux-review.yml", "UX Review", "ux", "Finalize check-run (advisory)"),
 )
 
@@ -5380,7 +5380,7 @@ class TestClaudeReviewCodeOnlyScope:
         assert "exit 1" in script  # an empty diff is a real signal, not a pass
         assert "${{ runner.temp }}/pr.diff" in same
         # The prefetch must precede the first agentic step.
-        assert same.index("Prefetch the reviewable diff") < same.index("- name: Opus 5 discovery")
+        assert same.index("Prefetch the reviewable diff") < same.index("- name: Opus 5.5 discovery")
         # The shared prompts must NOT hardcode a diff source: each lane names its
         # own, so the acquisition step belongs to the caller.
         for stage in ("opus-discovery", "opus-validate"):
@@ -5438,8 +5438,8 @@ class TestOpusTwoStageArchitecture:
     def test_both_lanes_run_discovery_then_validation(self) -> None:
         for lane in self.LANES:
             workflow = _workflow(lane)
-            discover_at = workflow.index("- name: Opus 5 discovery")
-            validate_at = workflow.index("- name: Opus 5 validation")
+            discover_at = workflow.index("- name: Opus 5.5 discovery")
+            validate_at = workflow.index("- name: Opus 5.5 validation")
             assert discover_at < validate_at, lane
             # The gate, the transcript capture and the posted comment all read
             # `steps.review`, so VALIDATION must own that id -- if discovery took
@@ -5468,7 +5468,7 @@ class TestOpusTwoStageArchitecture:
         for lane in self.LANES:
             workflow = _workflow(lane)
             assert ".review-candidates.md" in workflow, lane
-            validate_at = workflow.index("- name: Opus 5 validation")
+            validate_at = workflow.index("- name: Opus 5.5 validation")
             shim = workflow[validate_at:]
             assert "UNTRUSTED EVIDENCE" in shim, lane
             # No interpolation of the discovery transcript into the next prompt.
@@ -7143,8 +7143,8 @@ class TestProtectedCheckNameHasOnePublisherPerPrType:
 
     # (same-repo workflow, protected check name, Stage-2 fork workflow)
     PAIRS = (
-        ("codex-review.yml", "GPT 5.6 Review", "fork-gpt-review.yml"),
-        ("claude-review.yml", "Opus 5 Review", "fork-opus-review.yml"),
+        ("codex-review.yml", "GPT 6.1 Review", "fork-gpt-review.yml"),
+        ("claude-review.yml", "Opus 5.5 Review", "fork-opus-review.yml"),
         ("design-review.yml", "Design Review", "fork-design-review.yml"),
         (
             "first-principles-review.yml",
@@ -7439,7 +7439,7 @@ class TestBlockAdjudicationContract:
             assert 'sed -i "s/__HEAD_SHA__/$HEAD/g" .review-adjudication/prompt.md' in script, lane
         # The contract is staged alongside the review prompts but must NOT be
         # concatenated into the review prompt: GPT must not read its own judge.
-        for step in ("GPT 5.6 review (discovery pass)", "GPT 5.6 review (falsification pass)"):
+        for step in ("GPT 6.1 review (discovery pass)", "GPT 6.1 review (falsification pass)"):
             assert "gpt-block-adjudication" not in _step_script(
                 _workflow("codex-review.yml"), step
             ), step
@@ -7494,7 +7494,7 @@ class TestBlockAdjudicationContract:
             assert "steps.adj_input.outputs.fenced != '0'" in model_if, lane
             # Only the falsification pass's verdict can raise that flag, so a
             # discovery-pass candidate can never trigger a downgrade.
-            pass2 = _step_script(_workflow(lane), "GPT 5.6 review (falsification pass)")
+            pass2 = _step_script(_workflow(lane), "GPT 6.1 review (falsification pass)")
             assert 'if grep -Fq "[BLOCK-MERGE] $HEAD" codex-review-output.md; then' in pass2, lane
             assert 'echo "blocking=true"' in pass2, lane
 
@@ -7723,7 +7723,7 @@ class TestBlockAdjudicationContract:
             # Read-only tools, and no `gh`: this stage must not be able to post
             # its own verdict anywhere, only return text the script parses.
             assert '--allowedTools "Read,Grep,Glob"' in with_["claude_args"], lane
-            assert "--model us.anthropic.claude-opus-5" in with_["claude_args"], lane
+            assert "--model us.anthropic.claude-opus-5-5" in with_["claude_args"], lane
             assert "Bash" not in with_["claude_args"], lane
 
     def test_the_fork_lane_tells_the_adjudicator_the_head_is_not_on_disk(self) -> None:
@@ -7771,7 +7771,7 @@ class TestBlockAdjudicationContract:
             assert "all downgraded on adjudication" in comment, lane
             # Downgraded findings are still SHOWN. The signal was real; only its
             # authority to block the merge was removed.
-            assert "Adjudication (Opus 5)" in comment, lane
+            assert "Adjudication (Opus 5.5)" in comment, lane
             assert "codex-adjudication.md" in comment, lane
 
     def test_the_adjudication_step_never_fails_the_job_open(self) -> None:
@@ -8588,9 +8588,9 @@ class TestGptVerdictVisibility:
     def _verdict_body(self, sha: str) -> str:
         return (
             f"{self.MARKER}\n"
-            "## GPT 5.6 Review — 🔴 changes requested (blocking)\n"
+            "## GPT 6.1 Review — 🔴 changes requested (blocking)\n"
             "\n"
-            f"GPT 5.6 found at least one blocking issue that must be resolved before merging `{sha}`.\n"
+            f"GPT 6.1 found at least one blocking issue that must be resolved before merging `{sha}`.\n"
             "\n"
             f"[GPT-REVIEWED] {sha}\n"
             f"[BLOCK-MERGE] {sha}\n"
@@ -8740,7 +8740,7 @@ class TestGptVerdictVisibility:
         existing = (
             f"{self.MARKER}\n"
             "<!-- codex-stale-notice-begin -->\n"
-            "> ⚠️ **Stale verdict notice (2026-01-01 00:00 UTC):** a later GPT 5.6 run did not produce a completed verdict for `feedbead`; the verdict below is from an earlier completed run. Inspect the GPT 5.6 Review job logs and re-run the workflow.\n"
+            "> ⚠️ **Stale verdict notice (2026-01-01 00:00 UTC):** a later GPT 6.1 run did not produce a completed verdict for `feedbead`; the verdict below is from an earlier completed run. Inspect the GPT 6.1 Review job logs and re-run the workflow.\n"
             "<!-- codex-stale-notice-end -->\n"
             "\n" + self._verdict_body(self.OLD).removeprefix(f"{self.MARKER}\n")
         )
@@ -8760,7 +8760,7 @@ class TestGptVerdictVisibility:
         assert f"did not produce a completed verdict for `{self.HEAD}`" in patched
         assert "feedbead" not in patched
         # The incomplete body itself must not have replaced the verdict.
-        assert "## GPT 5.6 Review — ⚠️ review incomplete" not in patched
+        assert "## GPT 6.1 Review — ⚠️ review incomplete" not in patched
         assert not (calls / "created-body.md").exists()
         # The author guard ran inside the real filter: the PATCH must target
         # the bot's comment (123), not the marker-planting impostor's (999).
@@ -8779,9 +8779,9 @@ class TestGptVerdictVisibility:
         # stays visible.
         existing = (
             f"{self.MARKER}\n"
-            "## GPT 5.6 Review — 🔴 changes requested (blocking)\n"
+            "## GPT 6.1 Review — 🔴 changes requested (blocking)\n"
             "\n"
-            "GPT 5.6 found at least one blocking issue that must be resolved"
+            "GPT 6.1 found at least one blocking issue that must be resolved"
             f" before merging `{self.OLD}`.\n"
             "\n"
             "_This comment is updated in place on each push._\n"
@@ -9173,7 +9173,7 @@ _GUARDED_LANE_PARAMS = [pytest.param(lane, id=lane["id"]) for lane in _GUARDED_L
 # list, and a glob keyed on the primitive would silently stop measuring exactly
 # that lane.
 _VERDICT_PUBLISHING_LANES = (
-    ("claude-review.yml", "Post Opus 5 review summary"),
+    ("claude-review.yml", "Post Opus 5.5 review summary"),
     ("codex-review.yml", "Post/update review comment"),
     ("design-review.yml", "Post design review summary"),
     ("first-principles-review.yml", "Post first-principles review summary"),
@@ -9946,7 +9946,7 @@ class TestReviewLaneVerdictVisibility:
         # whatever it said -- so a stale blocking line goes on gating the PR
         # while the lane reports green, which is the silence this change removes.
         for workflow, step in (
-            ("claude-review.yml", "Post Opus 5 review summary"),
+            ("claude-review.yml", "Post Opus 5.5 review summary"),
             ("codex-review.yml", "Post/update review comment"),
         ):
             code = _step_script(_workflow(workflow), step).splitlines()
@@ -10726,12 +10726,12 @@ class TestGptRefusalTerminalState:
     def test_refusal_is_classified_where_rc_is_captured(self) -> None:
         workflow = _workflow("codex-review.yml")
         discovery_step = workflow[
-            workflow.index("- name: GPT 5.6 review (discovery pass)") : workflow.index(
-                "- name: GPT 5.6 review (falsification pass)"
+            workflow.index("- name: GPT 6.1 review (discovery pass)") : workflow.index(
+                "- name: GPT 6.1 review (falsification pass)"
             )
         ]
         review_step = workflow[
-            workflow.index("- name: GPT 5.6 review (falsification pass)") : workflow.index(
+            workflow.index("- name: GPT 6.1 review (falsification pass)") : workflow.index(
                 "- name: Redact credential shapes from review output"
             )
         ]
@@ -10759,7 +10759,7 @@ class TestGptRefusalTerminalState:
         # The signature is interpolated into an anchored grep pattern, so it
         # must carry the provider's line-leading prefix and stay free of
         # basic-regex metacharacters.
-        signature = self._pass_step("GPT 5.6 review (discovery pass)")["env"]["REFUSAL_SIGNATURE"]
+        signature = self._pass_step("GPT 6.1 review (discovery pass)")["env"]["REFUSAL_SIGNATURE"]
         assert signature.startswith("ERROR: ")
         assert re.search(r"[.*\[\]^$\\]", signature) is None
 
@@ -10769,7 +10769,7 @@ class TestGptRefusalTerminalState:
         bash = _bash()
         if bash is None:
             pytest.skip("classification requires Bash")
-        step = self._pass_step("GPT 5.6 review (discovery pass)")
+        step = self._pass_step("GPT 6.1 review (discovery pass)")
         script = step["run"]
         snippet = script[script.index('if [ "$rc" -ne 0 ]') :]
         runner_temp = tmp_path / "rt"
@@ -10792,7 +10792,7 @@ class TestGptRefusalTerminalState:
         return record.read_text(encoding="utf-8") if record.exists() else ""
 
     def test_provider_emitted_refusal_line_classifies_as_refused(self, tmp_path: Path) -> None:
-        signature = self._pass_step("GPT 5.6 review (discovery pass)")["env"]["REFUSAL_SIGNATURE"]
+        signature = self._pass_step("GPT 6.1 review (discovery pass)")["env"]["REFUSAL_SIGNATURE"]
         log = f"some progress output\n{signature}.\nLearn more here: https://example.invalid\n"
         assert self._classify(tmp_path, log) == " 1"
 
@@ -10802,7 +10802,7 @@ class TestGptRefusalTerminalState:
         # never line-leading — and a crash on such a PR must stay a crash:
         # mislabeling it as refused points the operator at /ai-review override
         # when the re-run it forecloses would have worked.
-        signature = self._pass_step("GPT 5.6 review (discovery pass)")["env"]["REFUSAL_SIGNATURE"]
+        signature = self._pass_step("GPT 6.1 review (discovery pass)")["env"]["REFUSAL_SIGNATURE"]
         log = f'+          REFUSAL_SIGNATURE: "{signature}"\n> quoted: {signature}\n'
         assert self._classify(tmp_path, log) == ""
 
@@ -10810,7 +10810,7 @@ class TestGptRefusalTerminalState:
         # The provider emits the refusal as the stream's final act. A copy of
         # the line early in a long stream (echoed content scrolled past) must
         # not classify a later, unrelated crash.
-        signature = self._pass_step("GPT 5.6 review (discovery pass)")["env"]["REFUSAL_SIGNATURE"]
+        signature = self._pass_step("GPT 6.1 review (discovery pass)")["env"]["REFUSAL_SIGNATURE"]
         log = f"{signature}.\n" + ("x" * 80 + "\n") * 100
         assert self._classify(tmp_path, log) == ""
 
@@ -10825,7 +10825,7 @@ class TestGptRefusalTerminalState:
         bash = _bash()
         if bash is None:
             pytest.skip("verdict assembly requires Bash")
-        script = _step_script(_workflow("codex-review.yml"), "GPT 5.6 review (falsification pass)")
+        script = _step_script(_workflow("codex-review.yml"), "GPT 6.1 review (falsification pass)")
         snippet = script[
             script.index("refused_passes=") : script.index("# Gate the adjudication pass below")
         ]
@@ -11388,7 +11388,7 @@ class TestConcernsIsVisibleInTheChecksUi:
         body = tmp_path / "comment.md"
         body.write_text(
             "<!-- design-review -->\n"
-            "## Design Review (Fable 5) — 🟡 CONCERNS\n"
+            "## Design Review (Opus 5.5) — 🟡 CONCERNS\n"
             "\n"
             "_Design-level review of `abc`._\n"
             "\n"
@@ -12566,7 +12566,7 @@ class TestForkGptLaneKeepsCredentialsOutOfTheModelShell:
         # does not touch.
         config = self._config(tmp_path)
         assert config["model_provider"] == "amazon-bedrock"
-        assert config["model"] == "openai.gpt-5.6-sol"
+        assert config["model"] == "openai.gpt-6.1-sol"
 
     def test_every_aws_credential_variable_is_excluded(self, tmp_path: Path) -> None:
         filters = self._config(tmp_path)["shell_environment_policy"]["filters"]
@@ -15156,7 +15156,7 @@ class TestUxLensZeroIsIdenticalInBothLanes:
 #: because a swallowed read on a patch-only branch silently leaves an earlier
 #: revision's outcome standing in the slot.
 _NOTICE_LANES = (
-    ("claude-review.yml", "Post Opus 5 review summary", False, False),
+    ("claude-review.yml", "Post Opus 5.5 review summary", False, False),
     ("codex-review.yml", "Post/update review comment", False, False),
     ("design-review.yml", "Post design review summary", True, True),
     ("first-principles-review.yml", "Post first-principles review summary", True, True),

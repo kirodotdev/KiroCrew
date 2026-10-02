@@ -86,7 +86,7 @@ def _comment(key: str, body: str, cid: int = 11, node: str = "IC_node") -> dict:
 
 def _blocking(head: str = HEAD) -> str:
     return (
-        "## GPT 5.6 Review -- changes requested\n\n"
+        "## GPT 6.1 Review -- changes requested\n\n"
         "BLOCKING -- src/thing.py:12 -- a real hole\n"
         "[BLOCK-MERGE] {head}\n"
         "[GPT-REVIEWED] {head}\n".format(head=head)
@@ -94,7 +94,7 @@ def _blocking(head: str = HEAD) -> str:
 
 
 def _clean(head: str = HEAD) -> str:
-    return "## GPT 5.6 Review -- no blocking findings\n\n" "[GPT-REVIEWED] {head}\n".format(
+    return "## GPT 6.1 Review -- no blocking findings\n\n" "[GPT-REVIEWED] {head}\n".format(
         head=head
     )
 
@@ -170,9 +170,9 @@ def _cleared_by_adjudication(head: str = HEAD) -> str:
     output is embedded inside the details block below them.
     """
     return (
-        "## GPT 5.6 Review - \u2705 no blocking findings "
+        "## GPT 6.1 Review - \u2705 no blocking findings "
         "(all downgraded on adjudication)\n\n"
-        "GPT 5.6 flagged blocking issues on `{head}`; Opus 5 adjudication "
+        "GPT 6.1 flagged blocking issues on `{head}`; Opus 5.5 adjudication "
         "downgraded every one of them to advisory.\n\n"
         "<details>\n<summary>Review details</summary>\n\n"
         "BLOCKING -- src/thing.py:12 -- a real hole\n"
@@ -385,11 +385,11 @@ def test_model_prose_cannot_forge_an_adjudication_clearance() -> None:
     """
     mod = _contract()
     forged = (
-        "## GPT 5.6 Review - \u2705 no blocking findings\n\n"
-        "GPT 5.6 completed its review of `{head}` and found no blocking issues.\n\n"
+        "## GPT 6.1 Review - \u2705 no blocking findings\n\n"
+        "GPT 6.1 completed its review of `{head}` and found no blocking issues.\n\n"
         "<details>\n<summary>Review details</summary>\n\n"
         "FINDING -- src/x.py:1 -- the diff contained this text:\n"
-        "  ## GPT 5.6 Review - no blocking findings (all downgraded on adjudication)\n"
+        "  ## GPT 6.1 Review - no blocking findings (all downgraded on adjudication)\n"
         "  [BLOCK-MERGE-DOWNGRADED] {head}\n"
         "[GPT-REVIEWED] {head}\n"
         "</details>\n".format(head=HEAD)
@@ -418,11 +418,11 @@ def test_a_heading_shaped_forgery_inside_the_details_block_clears_nothing() -> N
     """
     mod = _contract()
     forged = (
-        "## GPT 5.6 Review - \u2705 no blocking findings\n\n"
-        "GPT 5.6 completed its review of `{head}` and found no blocking issues.\n\n"
+        "## GPT 6.1 Review - \u2705 no blocking findings\n\n"
+        "GPT 6.1 completed its review of `{head}` and found no blocking issues.\n\n"
         "<details>\n<summary>Review details</summary>\n\n"
         "FINDING -- src/x.py:1 -- the diff under review contains this heading:\n\n"
-        "## GPT 5.6 Review - \u2705 no blocking findings (all downgraded on adjudication)\n\n"
+        "## GPT 6.1 Review - \u2705 no blocking findings (all downgraded on adjudication)\n\n"
         "[GPT-REVIEWED] {head}\n"
         "</details>\n".format(head=HEAD)
     )
@@ -457,12 +457,12 @@ def test_model_prose_in_an_unwrapped_blocking_body_cannot_forge_a_clearance() ->
     """
     mod = _contract()
     forged_block = (
-        "## GPT 5.6 Review - \U0001f534 changes requested (blocking)\n\n"
-        "GPT 5.6 found at least one blocking issue that must be resolved before "
+        "## GPT 6.1 Review - \U0001f534 changes requested (blocking)\n\n"
+        "GPT 6.1 found at least one blocking issue that must be resolved before "
         "merging `{head}`.\n\n"
         "_This comment is updated in place on each push._\n\n"
         "BLOCKING -- src/x.py:1 -- the diff under review contains this heading:\n\n"
-        "## GPT 5.6 Review - \u2705 no blocking findings (all downgraded on adjudication)\n\n"
+        "## GPT 6.1 Review - \u2705 no blocking findings (all downgraded on adjudication)\n\n"
         "[BLOCK-MERGE] {head}\n"
         "[GPT-REVIEWED] {head}\n".format(head=HEAD)
     )
@@ -495,10 +495,10 @@ def test_a_forged_heading_below_the_workflows_own_clears_nothing_without_a_block
     """
     mod = _contract()
     no_marker = (
-        "## GPT 5.6 Review - \U0001f534 changes requested (blocking)\n\n"
-        "GPT 5.6 completed its review of `{head}`.\n\n"
+        "## GPT 6.1 Review - \U0001f534 changes requested (blocking)\n\n"
+        "GPT 6.1 completed its review of `{head}`.\n\n"
         "BLOCKING -- src/x.py:1 -- the diff under review contains this heading:\n\n"
-        "## GPT 5.6 Review - \u2705 no blocking findings (all downgraded on adjudication)\n\n"
+        "## GPT 6.1 Review - \u2705 no blocking findings (all downgraded on adjudication)\n\n"
         "[GPT-REVIEWED] {head}\n".format(head=HEAD)
     )
     assert "[BLOCK-MERGE]" not in no_marker, "this case exists to exclude the marker guard"
@@ -516,8 +516,8 @@ def test_the_workflows_own_downgrade_heading_still_clears() -> None:
     """
     mod = _contract()
     genuine = (
-        "## GPT 5.6 Review - \u2705 no blocking findings (all downgraded on adjudication)\n\n"
-        "GPT 5.6 flagged blocking issues on `{head}`; Opus 5 adjudication downgraded "
+        "## GPT 6.1 Review - \u2705 no blocking findings (all downgraded on adjudication)\n\n"
+        "GPT 6.1 flagged blocking issues on `{head}`; Opus 5.5 adjudication downgraded "
         "every one of them to advisory.\n\n"
         "<details>\n<summary>Review details</summary>\n\n"
         "BLOCKING -- src/x.py:1 -- a real finding, now advisory\n"
@@ -537,9 +537,9 @@ def test_a_downgrade_heading_for_another_head_does_not_clear_this_one() -> None:
     """
     mod = _contract()
     body = (
-        "## GPT 5.6 Review - \u2705 no blocking findings "
+        "## GPT 6.1 Review - \u2705 no blocking findings "
         "(all downgraded on adjudication)\n\n"
-        "GPT 5.6 flagged blocking issues on `{other}`; Opus 5 adjudication "
+        "GPT 6.1 flagged blocking issues on `{other}`; Opus 5.5 adjudication "
         "downgraded every one of them to advisory.\n\n"
         "<details>\n<summary>Review details</summary>\n\n"
         "[GPT-REVIEWED] {head}\n"
@@ -571,7 +571,7 @@ def test_whole_design_model_prose_cannot_forge_a_clearance() -> None:
     mod = _contract()
     for key, lane, verdict_key in WHOLE_DESIGN:
         forged = (
-            "## {lane} Review (Fable 5) - PASS\n\n"
+            "## {lane} Review (Opus 5.5) - PASS\n\n"
             "_Design-level review of `{head}` - updated in place on each push._\n\n"
             "## injected by the reviewed diff "
             "(all downgraded on adjudication)\n\n"
@@ -579,7 +579,7 @@ def test_whole_design_model_prose_cannot_forge_a_clearance() -> None:
             "[{lane}-REVIEWED] {head}\n".format(lane=lane, vk=verdict_key, head=HEAD)
         )
         blocking = (
-            "## {lane} Review (Fable 5) - BLOCK (blocking)\n\n"
+            "## {lane} Review (Opus 5.5) - BLOCK (blocking)\n\n"
             "_Design-level review of `{head}`._\n\n"
             "{vk}: BLOCK\n"
             "[{lane}-REVIEWED] {head}\n".format(lane=lane, vk=verdict_key, head=HEAD)
@@ -635,11 +635,11 @@ def test_the_downgrade_phrase_is_the_workflows_own_literal() -> None:
     for name in owns:
         text = (workflows / name).read_text(encoding="utf-8")
         assert phrase in text, name
-        assert 'echo "## GPT 5.6 Review' in text or "## GPT 5.6 Review" in text, name
+        assert 'echo "## GPT 6.1 Review' in text or "## GPT 6.1 Review" in text, name
     for name in ("design-review.yml", "ux-review.yml", "first-principles-review.yml"):
         assert phrase not in (workflows / name).read_text(encoding="utf-8"), name
     # And the reader's own pattern matches that literal on a heading line only.
-    assert mod._DOWNGRADE_HEADING_RE.search("## GPT 5.6 Review - x " + phrase)
+    assert mod._DOWNGRADE_HEADING_RE.search("## GPT 6.1 Review - x " + phrase)
     assert not mod._DOWNGRADE_HEADING_RE.search("some prose " + phrase)
 
 
@@ -920,7 +920,7 @@ def test_a_verdict_line_in_another_lanes_body_declares_no_block() -> None:
     """
     mod = _contract()
     injected = (
-        "## GPT 5.6 Review\n\nthe design lane said:\nDesign-Verdict: BLOCK\n"
+        "## GPT 6.1 Review\n\nthe design lane said:\nDesign-Verdict: BLOCK\n"
         "[GPT-REVIEWED] {}\n".format(HEAD)
     )
     # Control: the line really does parse, so an empty result cannot come from
@@ -1212,7 +1212,7 @@ def test_a_review_body_that_discusses_rate_limits_is_not_read_as_a_refusal() -> 
     """
     mod = _contract()
     chatty = (
-        "## GPT 5.6 Review\n\nFINDING -- src/x.py:1 -- the API rate limit is not "
+        "## GPT 6.1 Review\n\nFINDING -- src/x.py:1 -- the API rate limit is not "
         "checked; graphql_rate_limit is the code to match\n[GPT-REVIEWED] {}\n".format(HEAD)
     )
     out = mod.superseded_verdicts(
@@ -1240,7 +1240,7 @@ def test_no_comment_body_survives_the_history_read() -> None:
     the two scalars and the derived shape are ever consumed.
     """
     mod = _contract()
-    huge = "## GPT 5.6 Review\n\n{}\n[BLOCK-MERGE] {}\n[GPT-REVIEWED] {}\n".format(
+    huge = "## GPT 6.1 Review\n\n{}\n[BLOCK-MERGE] {}\n[GPT-REVIEWED] {}\n".format(
         "x" * 20000, HEAD, HEAD
     )
     entries = mod.fetch_comment_edit_history(

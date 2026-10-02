@@ -1,6 +1,6 @@
-name: Fork Opus 5 Review
+name: Fork Opus 5.5 Review
 
-# STAGE 2 (privileged) of the fork AI-review pipeline — the Opus 5 reviewer.
+# STAGE 2 (privileged) of the fork AI-review pipeline — the Opus 5.5 reviewer.
 # Triggered by the completion of "Fork AI Review (collect)" (Stage 1). Runs from
 # the DEFAULT branch with secrets + OIDC. It NEVER checks out or executes the
 # fork's code.
@@ -21,7 +21,7 @@ name: Fork Opus 5 Review
 #
 # Mirrors claude-review.yml's contract (model, [OPUS-REVIEWED]/[BLOCK-MERGE]
 # markers, fail-closed gate). claude-review.yml is UNCHANGED and owns same-repo
-# PRs. The fork check-run is named exactly "Opus 5 Review" so branch protection
+# PRs. The fork check-run is named exactly "Opus 5.5 Review" so branch protection
 # is satisfied on either path. (Follow-up: extract a shared prompt file so the
 # fork and same-repo prompts cannot drift.)
 
@@ -56,7 +56,7 @@ concurrency:
 
 jobs:
   fork-opus-review:
-    name: Fork Opus 5 Review
+    name: Fork Opus 5.5 Review
     runs-on: ubuntu-latest
     # Runaway/hang backstop only, NOT a per-review budget: the review
     # self-terminates well before this. Set at 120 min (matches
@@ -261,7 +261,7 @@ jobs:
         run: |
           set -uo pipefail
           id="$(gh api --method POST "repos/$REPO/check-runs" \
-            -f name="Opus 5 Review" -f head_sha="$HEAD" -f status="in_progress" \
+            -f name="Opus 5.5 Review" -f head_sha="$HEAD" -f status="in_progress" \
             -f external_id="opus-pr-$PR-$WR_RUN_ID-$WR_RUN_ATTEMPT" \
             -f details_url="$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID" \
             --jq '.id')"
@@ -386,9 +386,9 @@ jobs:
           done
           echo "truncated $n persisted set_env_* file(s)"
 
-      - name: Opus 5 discovery
+      - name: Opus 5.5 discovery
         id: discover
-        uses: anthropics/claude-code-action@9c5ddab2e6d17b83ea679153b31f1d5f023cf636 # v1
+        uses: anthropics/claude-code-action@97c53473391bff1901034d4b454b5bac7ab7a029 # v1.0.239
         with:
           use_bedrock: "true"
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -415,8 +415,8 @@ jobs:
           # deny rule outranks every allow rule and CLI flag, and `Read` denials
           # apply to `Grep` and `Glob` too.
           claude_args: |
-            --model us.anthropic.claude-opus-5
-            --fallback-model us.anthropic.claude-opus-4-8
+            --model us.anthropic.claude-opus-5-5
+            --fallback-model us.anthropic.claude-sonnet-5-5
             --max-turns 180
             --allowedTools "Read,Grep,Glob"
             --disallowedTools "Read(//proc/**),Read(//sys/**)"
@@ -590,9 +590,9 @@ jobs:
           done
           echo "truncated $n persisted set_env_* file(s)"
 
-      - name: Opus 5 validation
+      - name: Opus 5.5 validation
         id: review
-        uses: anthropics/claude-code-action@9c5ddab2e6d17b83ea679153b31f1d5f023cf636 # v1
+        uses: anthropics/claude-code-action@97c53473391bff1901034d4b454b5bac7ab7a029 # v1.0.239
         with:
           use_bedrock: "true"
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -605,8 +605,8 @@ jobs:
           # so no-Bash does not keep this job's credentials out of the model's
           # reach. Keep the two steps in sync.
           claude_args: |
-            --model us.anthropic.claude-opus-5
-            --fallback-model us.anthropic.claude-opus-4-8
+            --model us.anthropic.claude-opus-5-5
+            --fallback-model us.anthropic.claude-sonnet-5-5
             --max-turns 180
             --allowedTools "Read,Grep,Glob"
             --disallowedTools "Read(//proc/**),Read(//sys/**)"
@@ -676,7 +676,7 @@ jobs:
           fi
           {
             echo "$MARKER"
-            echo "## Opus 5 Review (fork) — $verdict"
+            echo "## Opus 5.5 Review (fork) — $verdict"
             echo
             echo "_Reviewed \`$HEAD\` via the fork AI-review pipeline; updated in place on each push._"
             echo
@@ -690,7 +690,7 @@ jobs:
               echo
               echo "</details>"
             else
-              echo "_No completed Opus verdict for this commit; see the Fork Opus 5 Review job logs._"
+              echo "_No completed Opus verdict for this commit; see the Fork Opus 5.5 Review job logs._"
               # REPORTING ONLY -- see the twin block in fork-gpt-review.yml.
               # A completed review whose `[OPUS-REVIEWED] <sha>` stamp is absent
               # or SHA-corrupted used to have its whole body dropped to the job
@@ -722,7 +722,7 @@ jobs:
                 # NOTHING. Same pattern as the fork first-principles/UX lanes.
                 if grep -Eq '(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|(AKIA|ASIA)[A-Z2-7]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|[A-Za-z0-9/+=]{200,})' claude-review-output.md; then
                   echo
-                  echo "_The captured output matched a credential shape after redaction, so it is withheld; read it in the Fork Opus 5 Review job logs._"
+                  echo "_The captured output matched a credential shape after redaction, so it is withheld; read it in the Fork Opus 5.5 Review job logs._"
                 else
                   echo
                   echo "<details>"
@@ -1369,9 +1369,9 @@ jobs:
               fi
             fi
           }
-          guarded_comment_upsert "$MARKER" "[OPUS-REVIEWED]" "Fork Opus 5 Review" "${RUNNER_TEMP:-/tmp}/fork-opus-comment.md"
+          guarded_comment_upsert "$MARKER" "[OPUS-REVIEWED]" "Fork Opus 5.5 Review" "${RUNNER_TEMP:-/tmp}/fork-opus-comment.md"
 
-      # Fail-CLOSED finalize of the required "Opus 5 Review" check-run, keyed to
+      # Fail-CLOSED finalize of the required "Opus 5.5 Review" check-run, keyed to
       # head_sha; posts a failing check-run if the job died before opening one.
       # Opus is a REQUIRED gating check, so it never resolves neutral.
       # Where a withheld verdict goes, so that it outlives the job that computed
@@ -1444,7 +1444,7 @@ jobs:
             for attempt in 1 2; do
               if gh api --method PATCH "repos/$REPO/check-runs/$1" \
                 -f status="completed" -f conclusion="$2" \
-                -f "output[title]=Opus 5 Review — $3" \
+                -f "output[title]=Opus 5.5 Review — $3" \
                 -f "output[summary]=$summary" >/dev/null; then
                 return 0
               fi
@@ -1469,10 +1469,10 @@ jobs:
               ext_args=(-f external_id="opus-pr-$PR-$WR_RUN_ID-$WR_RUN_ATTEMPT")
             fi
             gh api --method POST "repos/$REPO/check-runs" \
-              -f name="Opus 5 Review" -f head_sha="$HEAD" \
+              -f name="Opus 5.5 Review" -f head_sha="$HEAD" \
               -f status="completed" -f conclusion="failure" ${ext_args[@]+"${ext_args[@]}"} \
               -f details_url="$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID" \
-              -f "output[title]=Opus 5 Review — could not run" \
+              -f "output[title]=Opus 5.5 Review — could not run" \
               -f "output[summary]=The fork Opus review job failed before producing a verdict; re-run it." >/dev/null || true
           fi
           # Sweep any still-incomplete run of this name that THIS pull request
@@ -1499,7 +1499,7 @@ jobs:
             # run finalizing later -- which may be the OLDER trigger -- would
             # overwrite the newer run's row with a stale verdict. A row whose
             # run-id dimension is NEWER than this run's is left alone.
-            enc="$(jq -rn '"Opus 5 Review" | @uri')"
+            enc="$(jq -rn '"Opus 5.5 Review" | @uri')"
             stranded="$(gh api --method GET \
               "repos/$REPO/commits/$HEAD/check-runs?check_name=$enc&per_page=100" \
               --jq ".check_runs[]
