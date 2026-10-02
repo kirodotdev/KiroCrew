@@ -71,7 +71,7 @@ import re
 import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import Any, Awaitable, BinaryIO
 
 from aiohttp import hdrs, web
 
@@ -176,9 +176,23 @@ def _stage_export(bundle: dict[str, Any]) -> Path:
     return write_bundle_file(bundle, compress=True)
 
 
-#: Releases still running for a send whose task was cancelled. A shielded task
-#: needs a strong reference or it can be collected before it finishes.
+#: Releases still running after their send, or the refused commit that never
+#: handed the file to one, was cancelled. A shielded task needs a strong
+#: reference or it can be collected before it finishes.
 _PENDING_RELEASES: set[asyncio.Task[None]] = set()
+
+
+async def _shielded_release(release: Awaitable[None]) -> None:
+    """Await a staged file's release so a cancellation cannot withdraw it.
+
+    Cancelling an ``asyncio.to_thread`` that no worker has started withdraws the
+    job, so an unshielded release is skipped whenever the cancellation wins the
+    race for a worker. The task is held in :data:`_PENDING_RELEASES` until done.
+    """
+    task = asyncio.ensure_future(release)
+    _PENDING_RELEASES.add(task)
+    task.add_done_callback(_PENDING_RELEASES.discard)
+    await asyncio.shield(task)
 
 
 def _open_staged(path: Path) -> tuple[BinaryIO, int]:
@@ -243,10 +257,7 @@ class _StagedExport(web.StreamResponse):
             await self.write_eof()
             return writer
         finally:
-            release = asyncio.ensure_future(_release_staged(opening, self._path))
-            _PENDING_RELEASES.add(release)
-            release.add_done_callback(_PENDING_RELEASES.discard)
-            await asyncio.shield(release)
+            await _shielded_release(_release_staged(opening, self._path))
 
 
 #: Whether the operator has granted STANDING PERMISSION for the file export to
@@ -518,7 +529,7 @@ async def api_chat_slot_export(request: web.Request) -> web.StreamResponse:
     # Response construction is synchronous, so the publication lock covers the
     # commit without crossing an await. The socket write happens after the handler
     # returns and is the unavoidable residual transmit window. Until the response
-    # owns the staged file, every exit here removes it.
+    # owns the staged file, every exit here removes it, shielded like the send's.
     handed_off = False
     try:
         response, size = await asyncio.to_thread(_commit_response)
@@ -536,7 +547,7 @@ async def api_chat_slot_export(request: web.Request) -> web.StreamResponse:
         return _refuse_restricted(f"on-disk line at response commit: {exc}")
     finally:
         if not handed_off:
-            await asyncio.to_thread(_rm_import_temps, staged)
+            await _shielded_release(asyncio.to_thread(_rm_import_temps, staged))
     # Recorded only once the commit has taken the response: an ``allowed`` written
     # before the revalidation above would name a byte count that was never
     # transmitted whenever the line tightened during the build, and sit right

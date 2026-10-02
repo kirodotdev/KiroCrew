@@ -458,6 +458,15 @@ async def test_export_revalidates_the_line_at_response_commit():
     assert json.loads(resp.body)["code"] == "export_slot_not_persistent"
 
 
+class _BusyAtCommit(_FakeLog):
+    """A log whose publication hold is busy, so the response commit is refused."""
+
+    @contextlib.contextmanager
+    def publication_hold(self, _key, *, expected_keys=None):
+        raise TranscriptBusy("fake: held at response commit")
+        yield
+
+
 def _capture_audit(monkeypatch) -> list[dict]:
     events: list[dict] = []
 
@@ -528,12 +537,6 @@ async def test_a_busy_commit_leaves_only_the_failure_audit(monkeypatch, tmp_path
     out.mkdir()
     monkeypatch.setattr(st, "_egress_tmp_dir", lambda: out)
     events = _capture_audit(monkeypatch)
-
-    class _BusyAtCommit(_FakeLog):
-        @contextlib.contextmanager
-        def publication_hold(self, _key, *, expected_keys=None):
-            raise TranscriptBusy("fake: held at response commit")
-            yield
 
     slot = _slot(MSGS)
     state = _state(MSGS, slots={"slot-1": slot})
@@ -1285,6 +1288,38 @@ async def test_a_send_cancelled_while_its_cleanup_waits_for_a_worker_still_remov
         pool.release()
         await asyncio.gather(*getattr(se, "_PENDING_RELEASES", ()))
         assert not staged.exists(), "a cancelled send withdrew its queued removal"
+    finally:
+        pool.shutdown(wait=True)
+
+
+@pytest.mark.asyncio
+async def test_a_refused_commit_cancelled_while_its_cleanup_waits_still_removes_it(
+    tmp_path, monkeypatch
+):
+    """A commit that never hands the staged file to a response removes it
+    itself. When the handler is cancelled while that removal is queued but not
+    yet started, the removal still runs."""
+    import kiro_crew.dashboard.session_transfer as st
+
+    out = tmp_path / "egress"
+    out.mkdir()
+    monkeypatch.setattr(st, "_egress_tmp_dir", lambda: out)
+    _capture_audit(monkeypatch)
+
+    state = _state(MSGS, slots={"slot-1": _slot(MSGS)})
+    state.conversation_log = _BusyAtCommit(MSGS)
+    pool = _HeldExecutor(lambda target: getattr(target, "__name__", "") == "_rm_import_temps")
+    asyncio.get_running_loop().set_default_executor(pool)
+    try:
+        handler = asyncio.ensure_future(se.api_chat_slot_export(_request(state)))
+        assert await asyncio.to_thread(pool.submitted.wait, 10), "the removal was never queued"
+        assert list(out.iterdir()), "the staged body was removed before the cancel"
+        handler.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await handler
+        pool.release()
+        await asyncio.gather(*se._PENDING_RELEASES)
+        assert list(out.iterdir()) == [], "a cancelled commit withdrew its queued removal"
     finally:
         pool.shutdown(wait=True)
 
