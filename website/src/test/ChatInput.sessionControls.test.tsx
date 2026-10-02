@@ -114,6 +114,19 @@ describe('ChatInput — session control chips', () => {
     )
   })
 
+  it("shows the app's detail after the label, on the chip and in its name", () => {
+    renderWithProviders(
+      <ChatInput {...props({ sessionControls: [chip({ state: 'ok', detail: 'prod-db' })] })} />,
+    )
+    const btn = screen.getByRole('button', { name: 'Scope — prod-db — Ready' })
+    expect(btn.textContent).toContain('Scope — prod-db')
+  })
+
+  it('shows the label alone when there is no detail', () => {
+    renderWithProviders(<ChatInput {...props({ sessionControls: [chip({ detail: '' })] })} />)
+    expect(screen.getByRole('button', { name: 'Scope' }).textContent).toBe('Scope')
+  })
+
   it('marks the chip so the host does not treat it as an outside click', () => {
     // Without the marker, mousedown-close races the chip's click-toggle and the
     // popover flickers instead of dismissing. Regression for AutoSDE f-fc907279.

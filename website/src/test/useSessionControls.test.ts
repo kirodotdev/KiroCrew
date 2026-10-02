@@ -175,6 +175,34 @@ describe('normalizeStatus', () => {
   it('ignores a non-string tooltip', () => {
     expect(normalizeStatus({ state: 'ok', tooltip: { a: 1 } }).tooltip).toBe('')
   })
+
+  it('carries a detail, empty when absent or not a string', () => {
+    expect(normalizeStatus({ state: 'ok', detail: 'prod-db' }).detail).toBe('prod-db')
+    expect(normalizeStatus({ state: 'ok' }).detail).toBe('')
+    expect(normalizeStatus({ state: 'ok', detail: 42 }).detail).toBe('')
+    expect(normalizeStatus({ state: 'ok', detail: { a: 1 } }).detail).toBe('')
+    expect(normalizeStatus(null).detail).toBe('')
+  })
+
+  it('bounds a detail to 40 characters', () => {
+    expect(normalizeStatus({ state: 'ok', detail: 'z'.repeat(500) }).detail).toBe('z'.repeat(40))
+  })
+
+  it('strips control, bidi and zero-width characters from a detail, then trims', () => {
+    expect(normalizeStatus({ detail: '  a\u0000b\nc\u007fd\u009be  ' }).detail).toBe('abcde')
+    // A right-to-left override would let the detail reorder text after it.
+    expect(normalizeStatus({ detail: '\u202eabc\u2066d\u200be\ufeff' }).detail).toBe('abcde')
+    // Format characters outside the bidi and zero-width blocks, and the
+    // line/paragraph separators, hide text just as well.
+    expect(normalizeStatus({ detail: 'a\u00adb\u2060c\u2028d\u2029e' }).detail).toBe('abcde')
+    expect(normalizeStatus({ detail: '\u0001\u202e ' }).detail).toBe('')
+  })
+
+  it('cuts a detail by code points, never splitting a surrogate pair', () => {
+    const detail = normalizeStatus({ detail: 'a'.repeat(39) + '\u{1F600}tail' }).detail
+    expect(detail).toBe('a'.repeat(39) + '\u{1F600}')
+    expect(Array.from(detail)).toHaveLength(40)
+  })
 })
 
 describe('resolveSessionControls — statusPath', () => {

@@ -393,11 +393,18 @@ own route base, with `session_key` always and `folder_id` / `folder_name`
 when the chat is in a folder, and reads:
 
 ```json
-{ "state": "ok", "tooltip": "Bound to production" }
+{ "state": "ok", "tooltip": "Bound to production", "detail": "production" }
 ```
 
 `state` is `ok`, `warn` or `none`; the chip tints for the first two and the
-tooltip is length-bounded. The path is charset-bounded at install and re-checked
+tooltip is length-bounded. The optional `detail` is shown on the chip after the
+manifest label, as `<label> — <detail>`, so the per-session value is visible
+without hovering while the label still identifies the control. Make `detail`
+the bare name the control is bound to (`production`, not `Bound to production`)
+and let `tooltip` state the relationship. It is cut to 40 characters after
+control, format, bidi, zero-width and line-separator characters are removed; a
+missing or non-string `detail` shows the label alone. A `detail` is shown even
+when `state` is `none`. The path is charset-bounded at install and re-checked
 in the dashboard, and one that would leave the app's own route prefix is refused
 before any request rather than sanitized -- so a control with an invalid
 `statusPath` is simply never polled. Polling fails closed: an app that is down is

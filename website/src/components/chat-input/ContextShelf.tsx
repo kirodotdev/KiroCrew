@@ -88,13 +88,21 @@ export function SessionControlChips({ sessionControls, shelfCompact, onSessionCo
         : sc.state === 'ok'
           ? i18nT('components.chatInput.session_control_ready')
           : ''
+    // The app's `detail` follows the manifest label on the chip itself, so
+    // the label still names the control whatever the app reports.
+    const shown = sc.detail
+      ? i18nT('components.chatInput.session_control_chip_label', {
+          label: sc.label,
+          detail: sc.detail,
+        })
+      : sc.label
     const detail = sc.statusTooltip || stateWord
     const chipName = detail
       ? i18nT('components.chatInput.session_control_chip_label', {
-          label: sc.label,
+          label: shown,
           detail,
         })
-      : sc.label
+      : shown
     return (
     <button
       key={sc.key}
@@ -122,7 +130,7 @@ export function SessionControlChips({ sessionControls, shelfCompact, onSessionCo
       aria-label={chipName}
     >
       <AppIcon icon={sc.icon} size={13} />
-      {!shelfCompact && <span className="truncate max-w-[140px]">{sc.label}</span>}
+      {!shelfCompact && <span className="truncate max-w-[140px]">{shown}</span>}
     </button>
     )
   })}

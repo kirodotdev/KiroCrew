@@ -115,5 +115,6 @@ export function useSessionControlChips({ sessionControls, openSessionControl, ac
     active: openSessionControl?.key === sc.key && openSessionControl.slot === activeSlot,
     state: sessionControlStatuses[sc.key]?.state,
     statusTooltip: sessionControlStatuses[sc.key]?.tooltip,
+    detail: sessionControlStatuses[sc.key]?.detail,
   })), [sessionControls, openSessionControl, activeSlot, sessionControlStatuses])
 }

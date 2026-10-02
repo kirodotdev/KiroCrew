@@ -192,6 +192,11 @@ export interface ChatInputProps {
     state?: 'ok' | 'warn' | 'none'
     /** Replaces the tooltip when the app explains its state. */
     statusTooltip?: string
+    /**
+     * App-reported per-session name, shown after `label` on the chip. `label`
+     * stays the manifest label, so a detail cannot relabel the control.
+     */
+    detail?: string
   }[]
   onSessionControlClick?: (key: string, rect: DOMRect, trigger?: HTMLElement) => void
   contextPct?: number

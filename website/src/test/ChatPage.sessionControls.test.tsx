@@ -18,6 +18,7 @@ import { renderHookWithProviders } from './helpers'
 import { useSessionControlStatuses, normalizeStatus, safeStatusPath } from '../hooks/useSessionControls'
 import type { ResolvedSessionControl } from '../hooks/useSessionControls'
 import { api } from '../api/client'
+import { useSessionControlChips } from '../pages/chat/page/sessionControls'
 
 vi.mock('../api/client', () => ({ api: { appSessionStatus: vi.fn() } }))
 
@@ -233,5 +234,48 @@ describe('useSessionControlStatuses — what ChatPage forwards', () => {
     )
     await new Promise(r => setTimeout(r, 20))
     expect(mockStatus).not.toHaveBeenCalled()
+  })
+})
+
+describe('useSessionControlChips — the chip detail', () => {
+  const chipsFor = (statuses: Parameters<typeof useSessionControlChips>[0]['sessionControlStatuses']) =>
+    renderHookWithProviders(() =>
+      useSessionControlChips({
+        sessionControls: [control()],
+        openSessionControl: null,
+        activeSlot: 'chat-1',
+        sessionControlStatuses: statuses,
+      }),
+    ).result.current
+
+  it('carries a reported detail beside the unchanged manifest label', () => {
+    const [chip] = chipsFor({ 'test-app:scope': normalizeStatus({ state: 'ok', detail: 'prod-db' }) })
+    expect(chip.label).toBe('Scope')
+    expect(chip.detail).toBe('prod-db')
+  })
+
+  it('carries no detail when the status has none', () => {
+    expect(chipsFor({ 'test-app:scope': normalizeStatus({ state: 'ok', tooltip: 'bound' }) })[0].detail).toBe('')
+    expect(chipsFor({})[0].detail).toBeUndefined()
+  })
+})
+
+describe('useSessionControlStatuses — a detail without a state', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  it('keeps a status that reports only a detail', async () => {
+    // `state` defaults to `none`; dropping the entry would hide the detail.
+    mockStatus.mockResolvedValue({ detail: 'prod-db' })
+    const { result } = renderHookWithProviders(() => useStatusesOf([control()], 'chat-1', '', ''))
+    await waitFor(() => expect(result.current['test-app:scope']?.detail).toBe('prod-db'))
+    expect(result.current['test-app:scope']?.state).toBe('none')
+  })
+
+  it('still drops a status with neither a state nor a detail', async () => {
+    mockStatus.mockResolvedValue({ tooltip: 'bound' })
+    const { result } = renderHookWithProviders(() => useStatusesOf([control()], 'chat-1', '', ''))
+    await waitFor(() => expect(mockStatus).toHaveBeenCalled())
+    await new Promise(r => setTimeout(r, 20))
+    expect(result.current['test-app:scope']).toBeUndefined()
   })
 })
