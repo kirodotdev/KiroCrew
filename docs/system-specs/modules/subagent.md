@@ -1768,9 +1768,18 @@ The dispatcher's order is not global FIFO. The store side is in
 - **Pick order (`pick_window_index`).** A queued resume (`_resume_id`, FIFO
   among resumes) first — its run is already resident — then `LaneScheduler`
   weighted round-robin over the lanes with eligible window entries, oldest
-  head winning a tie. `_drain_queue_impl` pops that index, not index 0. With
+  head winning a tie, restricted to the highest per-chat priority tier present
+  (`low` / `medium` / `high`, read from the lane priority source; the
+  `system` lane is always `medium`, so a `high` chat holds waiting cron and
+  hook spawns back too; see [taskq.md](taskq.md) § Fairness lanes). `_drain_queue_impl` pops that index, not index 0. With
   only the child reserve left, "eligible" means nested (`entry_is_child`:
-  `parent_session_key` starts with `subagent:`); when no window entry
+  `parent_session_key` starts with `subagent:`) **and the tier is not applied**
+  (`tiered=view.root_slot`; the `children_only` top-up likewise gets a refill
+  scheduler with the tiers cleared): every candidate there is a nested row of a
+  tree already in flight, and a tier would let one chat's queued child take the
+  reserve pass after pass while another chat's tree waits on its own child. A
+  tier reorders new work; it never withholds the reserve a running tree needs.
+  When no window entry
   qualifies the window is topped up with `children_only` rows and the pick
   runs once more.
 - **Refill (`taskq_refill_window`).** Every lane with a store row waiting gets

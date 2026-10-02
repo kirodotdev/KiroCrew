@@ -203,6 +203,7 @@ from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.messaging.link import canonical_key, is_channel_session_key
 from kiro_crew.providers.acp import AcpProvider
 from kiro_crew.providers.base import LLMProvider
+from kiro_crew.queue_priority import QUEUE_PRIORITIES, normalize_queue_priority
 from kiro_crew.safety_override import (
     approval_mode_permitted,
     safety_override,
@@ -12887,6 +12888,7 @@ def _hydrate_slot_from_history(
             slot.folder_id = ""
     if meta.get("pinned"):
         slot.pinned = True
+    slot.queue_priority = normalize_queue_priority(meta.get("queue_priority"))
     if meta.get("color_index") is not None:
         slot.color_index = meta["color_index"]
     _ch = meta.get("color_hex")
@@ -14793,6 +14795,121 @@ async def api_chat_slot_color(request: web.Request) -> web.Response:
     state.push_slots_update()
     return web.json_response(
         {"ok": True, "color_index": slot.color_index, "color_hex": slot.color_hex}
+    )
+
+
+async def api_chat_slot_queue_priority(request: web.Request) -> web.Response:
+    """PATCH /api/chat/slots/{slot}/queue-priority — set the agent-queue priority.
+
+    Body: ``{"priority": "low" | "medium" | "high"}``. The subagent dispatcher
+    serves waiting spawns of the highest tier first (see ``taskq.lanes``), so
+    this is a knob over OTHER sessions' waits too: only the dashboard owner may
+    turn it. App and crew-member callers are refused, so an agent cannot lift
+    its own chat above the person's.
+    """
+    from kiro_crew.dashboard.token_auth import MEMBER_CHAT_PRINCIPAL_KEY
+
+    state: DashboardState = request.app["state"]
+    name = request.match_info["slot"]
+    principal = str(request.get(MEMBER_CHAT_PRINCIPAL_KEY) or "")
+    if principal.startswith("member:") or not is_owner_dashboard_request(request):
+        sel().log_api_access(
+            caller=principal or str(request.get("app") or request.get("user") or "unknown"),
+            operation="chat.slot_queue_priority",
+            outcome="denied",
+            source="owner_only",
+            resources=f"slot={name}",
+            error="only the dashboard owner may set agent-queue priority",
+        )
+        return web.json_response(
+            {
+                "error": "only the dashboard owner may set agent-queue priority",
+                "code": "owner_only",
+            },
+            status=403,
+        )
+    slot = state._slots.get(name)
+    if not slot:
+        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+    authorized_history_key = slot_history_key(slot)
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
+    raw = body.get("priority")
+    if not isinstance(raw, str) or raw not in QUEUE_PRIORITIES:
+        return web.json_response(
+            {
+                "error": f"priority must be one of {', '.join(QUEUE_PRIORITIES)}",
+                "code": "invalid_queue_priority",
+            },
+            status=400,
+        )
+    from kiro_crew.dashboard.chat_folders import _slot_meta_txn_lock
+
+    async with _slot_meta_txn_lock(state):
+        if state._slots.get(name) is not slot or slot_history_key(slot) != authorized_history_key:
+            return web.json_response(
+                {"error": "session was deleted or rebound", "code": "session_gone"},
+                status=409,
+            )
+        prior_priority = slot.queue_priority
+        changed = prior_priority != raw
+        aliases: list[_ChatSlot] = []
+        if changed:
+            slot.queue_priority = raw
+            try:
+                saved = await save_slot_off_loop(
+                    state,
+                    slot,
+                    force=True,
+                    best_effort=False,
+                    expected_history_key=authorized_history_key,
+                )
+            except Exception:
+                if slot.queue_priority == raw:
+                    slot.queue_priority = prior_priority
+                slot._dirty = True
+                logger.warning(
+                    "Slot %s: failed to save agent-queue priority", slot.key, exc_info=True
+                )
+                return web.json_response(
+                    {"error": "failed to save agent-queue priority", "code": "save_failed"},
+                    status=503,
+                )
+            if not saved:
+                if slot.queue_priority == raw:
+                    slot.queue_priority = prior_priority
+                slot._dirty = True
+                return web.json_response(
+                    {"error": "session was deleted or rebound", "code": "session_gone"},
+                    status=409,
+                )
+            from kiro_crew.dashboard.chat_utils import effective_session_key
+
+            session_key = effective_session_key(slot)
+            for other in list(state._slots.values()):
+                if (
+                    other is not slot
+                    and effective_session_key(other) == session_key
+                    and other.queue_priority != raw
+                ):
+                    other.queue_priority = raw
+                    other._dirty = True
+                    aliases.append(other)
+    if changed:
+        state.push_slot_patch(slot.key, ("queue_priority",))
+        for alias in aliases:
+            state.push_slot_patch(alias.key, ("queue_priority",))
+    sel().log_api_access(
+        caller=str(request.get("user") or "owner"),
+        operation="chat.slot_queue_priority",
+        outcome="allowed",
+        source="dashboard",
+        resources=f"slot={slot.key} priority={raw}",
+    )
+    return web.json_response(
+        {"ok": True, "queue_priority": slot.queue_priority, "changed": changed}
     )
 
 

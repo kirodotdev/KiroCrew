@@ -37,12 +37,19 @@ vi.mock('./FolderMoveSubmenu', () => ({
   default: ({ label }: { label: string }) => <div>zzq-folders:{label}</div>,
 }))
 vi.mock('./SendToInstanceSubmenu', () => ({ default: () => <div>zzq-send</div> }))
+vi.mock('./QueuePrioritySubmenu', () => ({
+  default: ({ current, error, onPick }: { current?: string; error?: string | null; onPick: (p: string) => void }) => (
+    <button type="button" onClick={() => onPick('high')}>zzq-queue-priority:{current ?? 'none'}:{error ?? 'no-error'}</button>
+  ),
+}))
 vi.mock('./SessionColorSwatches', () => ({ default: () => <div>zzq-colors</div> }))
 vi.mock('./LinkedSurfacesSection', () => ({ default: () => <div>zzq-links</div> }))
 
 const actions = vi.hoisted(() => ({
   toggleRead: vi.fn(),
   togglePin: vi.fn(),
+  setQueuePriority: vi.fn(),
+  queuePriorityError: null as { key: string; message: string } | null,
   copyLink: vi.fn(),
   move: vi.fn(),
   reload: vi.fn(),
@@ -86,13 +93,21 @@ const btn = (label: string | RegExp) => screen.getByRole('button', { name: label
 
 describe('SessionActionsMenu', () => {
   beforeEach(() => {
-    Object.values(actions).forEach(fn => fn.mockReset())
+    Object.values(actions).forEach(value => { if (typeof value === 'function') value.mockReset() })
+    actions.queuePriorityError = null
     Object.values(popouts).forEach(fn => fn.mockReset())
     popouts.isPoppedOut.mockReturnValue(false)
     popouts.isSelfPopout.mockReturnValue(false)
     openTagPopover.mockReset()
     chatFolders.mockReset()
     chatFolders.mockResolvedValue([] as never)
+  })
+
+  it('shows the queue priority of this chat and sets it for the slot', () => {
+    actions.queuePriorityError = { key: 'zzq-slot', message: 'zzq failed' }
+    setup({}, { queue_priority: 'low' })
+    fireEvent.click(btn('zzq-queue-priority:low:zzq failed'))
+    expect(actions.setQueuePriority).toHaveBeenCalledWith('zzq-slot', 'high')
   })
 
   it('wires the tab-modifier actions to the slot', () => {

@@ -100,6 +100,7 @@ from kiro_crew.memory_stores import UnknownMemoryStore, named_store_or_empty
 from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.platform_compat import file_lock
+from kiro_crew.queue_priority import DEFAULT_QUEUE_PRIORITY, normalize_queue_priority
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.session_agent_selection import session_agent_selection_name
@@ -2206,6 +2207,7 @@ def _rehydrate_slot_from_history(
             slot._artifact = _artifact_meta
         if meta.get("pinned"):
             slot.pinned = True
+        slot.queue_priority = normalize_queue_priority(meta.get("queue_priority"))
         if meta.get("color_index") is not None:
             slot.color_index = meta["color_index"]
         _ch = meta.get("color_hex")
@@ -2851,6 +2853,7 @@ def _apply_recent_session(
         slot._artifact = _artifact_meta
     if meta.get("pinned"):
         slot.pinned = True
+    slot.queue_priority = normalize_queue_priority(meta.get("queue_priority"))
     if meta.get("color_index") is not None:
         slot.color_index = meta["color_index"]
     _ch = meta.get("color_hex")
@@ -4455,6 +4458,8 @@ def _save_slot_to_history(
                     "folder_id": slot.folder_id or "",
                     "tags": list(slot.tags),
                     "pinned": bool(slot.pinned),
+                    # CLEARABLE: "medium" is the default a restore falls back to.
+                    "queue_priority": slot.queue_priority,
                     "mode": slot.mode or "",
                     "artifact": slot._artifact or "",
                     "reasoning_effort": slot.reasoning_effort or "",
@@ -5118,6 +5123,8 @@ def _save_slot_to_history(
                 meta_line["artifact"] = slot._artifact
             if slot.pinned:
                 meta_line["pinned"] = True
+            if slot.queue_priority != DEFAULT_QUEUE_PRIORITY:
+                meta_line["queue_priority"] = slot.queue_priority
             if slot.color_index is not None:
                 meta_line["color_index"] = slot.color_index
             if slot.color_hex:

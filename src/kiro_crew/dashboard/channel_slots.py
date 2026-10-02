@@ -78,6 +78,7 @@ from kiro_crew.history import HUMAN_TURN_META_KEY, carry_provenance, is_incognit
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.messaging.link import channel_namespace_of, is_channel_session_key
 from kiro_crew.messaging.upload_gate import live_dashboard_slot
+from kiro_crew.queue_priority import normalize_queue_priority
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -677,6 +678,7 @@ def surface_channel_session(
             bump_revision()
     if meta.get("pinned"):
         slot.pinned = True
+    slot.queue_priority = normalize_queue_priority(meta.get("queue_priority"))
 
     # Same shape as restore_recent_sessions: window the tail, count the rest as
     # the frozen prefix a save never rewrites, and redact assistant content at

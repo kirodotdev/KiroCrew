@@ -7953,6 +7953,14 @@
       "question_x_of_y": "Pergunta {{current}} de {{total}}",
       "submit": "Enviar"
     },
+    "queuePrioritySubmenu": {
+      "agent_queue_priority": "Prioridade dos subagentes",
+      "caption": "Subagentes em espera de chats Alta começam primeiro, depois Média e depois Baixa.",
+      "change_failed": "Não foi possível alterar a prioridade dos subagentes",
+      "high": "Alta",
+      "low": "Baixa",
+      "medium_default": "Média (padrão)"
+    },
     "queueStack": {
       "cancel_and_move_back_to_input": "Cancelar e voltar para a entrada",
       "cancel_queued_message": "Cancelar mensagem na fila",

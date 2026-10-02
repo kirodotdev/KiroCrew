@@ -1,16 +1,16 @@
-import { useCallback } from 'react'
+import { useCallback, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api, ApiError } from '../api/client'
 import { store, useAppDispatch } from '../store'
 import { deleteSlot, switchSlot } from '../store/chatSlice'
-import { updateSlotPin, markSlotRead, markSlotUnread, slotWriteStampOf } from '../store/dashboardSlice'
+import { updateSlotPin, updateSlot, markSlotRead, markSlotUnread, slotWriteStampOf } from '../store/dashboardSlice'
 import { emitSlotRead } from '../lib/slotReadRelay'
 import { copySessionLink } from '../utils/shareUrl'
 import { useMoveSlotToFolder } from './useMoveSlotToFolder'
 import { loadChatConfig } from '../pages/chat/ChatSettings'
 import { commitPinnedSessionOperations, commitPinnedSessionSnapshot, readPinnedSessionOrder, reconcilePinnedSessionOrder } from '../utils/pinnedSessionOrder'
 import { i18nT } from '../i18n/t'
-import type { ChatSlot } from '../types'
+import type { ChatSlot, QueuePriority } from '../types'
 import { compareBySort, readSessionSortKey } from '../pages/chat/sessionOrder'
 
 interface PinMutationEntry {
@@ -42,6 +42,12 @@ export function pinMutationKeysInFlight(): string[] {
 }
 let pinReconcileRequestId = 0
 const pinMutationTails = new Map<string, Promise<unknown>>()
+const queuePriorityMutationTails = new Map<string, Promise<unknown>>()
+const queuePriorityMutations = new Map<string, {
+  baseline: QueuePriority
+  pending: number
+  generation: number
+}>()
 
 /** Preserve invocation order at the server for rapid toggles of one session. */
 function setSlotPinInOrder(key: string, pinned: boolean) {
@@ -51,6 +57,17 @@ function setSlotPinInOrder(key: string, pinned: boolean) {
   pinMutationTails.set(key, request)
   return request.finally(() => {
     if (pinMutationTails.get(key) === request) pinMutationTails.delete(key)
+  })
+}
+
+/** Preserve invocation order at the server for rapid priority picks of one session. */
+function setSlotQueuePriorityInOrder(key: string, priority: QueuePriority) {
+  const request = (queuePriorityMutationTails.get(key) ?? Promise.resolve())
+    .catch(() => undefined)
+    .then(() => api.setSlotQueuePriority(key, priority))
+  queuePriorityMutationTails.set(key, request)
+  return request.finally(() => {
+    if (queuePriorityMutationTails.get(key) === request) queuePriorityMutationTails.delete(key)
   })
 }
 
@@ -76,6 +93,10 @@ export interface SessionActions {
   toggleRead: (slotKey: string) => void
   /** Toggle pinned. */
   togglePin: (slotKey: string) => void
+  /** Set the chat's agent-queue priority tier (optimistic, rolled back on refusal). */
+  setQueuePriority: (slotKey: string, priority: QueuePriority) => void
+  /** Latest queue-priority failure, scoped to the slot whose write failed. */
+  queuePriorityError: { key: string; message: string } | null
   /** Copy the session's share link. */
   copyLink: (slotKey: string) => void
   /** Move to a folder (or root for null) — shared optimistic move + rollback. */
@@ -90,6 +111,7 @@ export function useSessionActions(mode?: string): SessionActions {
   const dispatch = useAppDispatch()
   const queryClient = useQueryClient()
   const moveSlotToFolder = useMoveSlotToFolder()
+  const [queuePriorityError, setQueuePriorityError] = useState<{ key: string; message: string } | null>(null)
 
   const finishPinMutation = useCallback(async (
     batch: PinMutationBatch, entry: PinMutationEntry, succeeded: boolean,
@@ -282,6 +304,71 @@ export function useSessionActions(mode?: string): SessionActions {
       : undefined,
   })
 
+  // Agent-queue priority (optimistic, server-persisted, owner-only). Overlapping
+  // picks share the value confirmed before the batch as their rollback baseline;
+  // each success advances it, and only the latest generation may roll back.
+  const queuePriorityMutation = useMutation({
+    mutationFn: ({ key, priority }: { key: string; priority: QueuePriority }) => setSlotQueuePriorityInOrder(key, priority),
+    onMutate: ({ key, priority }) => {
+      const current = store.getState().dashboard.slots.find(s => s.key === key)?.queue_priority ?? 'medium'
+      const mutation = queuePriorityMutations.get(key) ?? {
+        baseline: current,
+        pending: 0,
+        generation: 0,
+      }
+      if (mutation.pending === 0) mutation.baseline = current
+      mutation.pending += 1
+      mutation.generation += 1
+      queuePriorityMutations.set(key, mutation)
+      dispatch(updateSlot({ key, queue_priority: priority }))
+      return { key, priority, gen: mutation.generation }
+    },
+    onSuccess: (_result, _vars, ctx) => {
+      if (!ctx) return
+      const mutation = queuePriorityMutations.get(ctx.key)
+      if (mutation) mutation.baseline = ctx.priority
+      setQueuePriorityError(error => error?.key === ctx.key ? null : error)
+    },
+    onError: async (err, _vars, ctx) => {
+      if (!ctx) return
+      const mutation = queuePriorityMutations.get(ctx.key)
+      if (mutation?.generation === ctx.gen) {
+        if (err instanceof ApiError) {
+          dispatch(updateSlot({ key: ctx.key, queue_priority: mutation.baseline }))
+        } else {
+          try {
+            const slots = await api.chatSlots() as ChatSlot[]
+            const authoritative = slots.find(slot => slot.key === ctx.key)
+            const latest = queuePriorityMutations.get(ctx.key)
+            const current = store.getState().dashboard.slots
+              .find(slot => slot.key === ctx.key)?.queue_priority ?? 'medium'
+            if (authoritative && latest?.generation === ctx.gen && current === ctx.priority) {
+              const priority = authoritative.queue_priority ?? 'medium'
+              latest.baseline = priority
+              dispatch(updateSlot({ key: ctx.key, queue_priority: priority }))
+            }
+          } catch {
+            // The PATCH may have committed despite the lost acknowledgement.
+            // Keep the optimistic value until a later authoritative frame/list.
+          }
+        }
+      }
+      setQueuePriorityError({
+        key: ctx.key,
+        // The gateway's own words for a refusal; a transport failure ("Failed to
+        // fetch") says nothing a reader can act on, so it gets the localized line.
+        message: err instanceof ApiError ? err.message : i18nT('components.queuePrioritySubmenu.change_failed'),
+      })
+    },
+    onSettled: (_result, _err, _vars, ctx) => {
+      if (!ctx) return
+      const mutation = queuePriorityMutations.get(ctx.key)
+      if (!mutation) return
+      mutation.pending -= 1
+      if (mutation.pending === 0) queuePriorityMutations.delete(ctx.key)
+    },
+  })
+
   // Session reload (relaunch the agent process in place). No optimistic state:
   // the success confirmation is the feed notice the backend appends, arriving
   // over the websocket (and lighting the row's unread indicator for a
@@ -306,6 +393,11 @@ export function useSessionActions(mode?: string): SessionActions {
   const { mutate: forkMutate } = forkMutation
   const { mutate: pinMutate } = pinMutation
   const { mutate: reloadMutate } = reloadMutation
+  const { mutate: queuePriorityMutate } = queuePriorityMutation
+  const setQueuePriority = useCallback(
+    (slotKey: string, priority: QueuePriority) => { queuePriorityMutate({ key: slotKey, priority }) },
+    [queuePriorityMutate],
+  )
 
   const duplicate = useCallback((slotKey: string) => { forkMutate(slotKey) }, [forkMutate])
 
@@ -342,5 +434,5 @@ export function useSessionActions(mode?: string): SessionActions {
     if (!loadChatConfig().confirmCloseSession || confirm(i18nT('hooks.useSessionActions.close_this_session'))) dispatch(deleteSlot(slotKey))
   }, [dispatch])
 
-  return { duplicate, toggleRead, togglePin, copyLink, move, reload, close }
+  return { duplicate, toggleRead, togglePin, setQueuePriority, queuePriorityError, copyLink, move, reload, close }
 }

@@ -245,6 +245,7 @@ SLOT_OWNED_META_KEYS: frozenset[str] = frozenset(
         # would hand back a prompt whose turn already ran.
         "queued_prompts",
         "pinned",
+        "queue_priority",
         "color_index",
         "color_hex",
         "color_theme",

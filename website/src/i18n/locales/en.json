@@ -5016,6 +5016,14 @@
       "question_x_of_y": "Question {{current}} of {{total}}",
       "submit": "Submit"
     },
+    "queuePrioritySubmenu": {
+      "agent_queue_priority": "Sub-agent priority",
+      "caption": "Waiting sub-agents from High chats start first, then Medium, then Low.",
+      "change_failed": "Couldn't change the sub-agent priority",
+      "high": "High",
+      "low": "Low",
+      "medium_default": "Medium (default)"
+    },
     "queueStack": {
       "cancel_and_move_back_to_input": "Cancel and move back to input",
       "cancel_queued_message": "Cancel queued message",

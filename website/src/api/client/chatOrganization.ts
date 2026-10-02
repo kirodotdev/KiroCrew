@@ -5,7 +5,7 @@
  * drop-to-column, and the board columns.
  */
 
-import type { AgentTagPolicy, SessionLaneKey } from '../../types'
+import type { AgentTagPolicy, QueuePriority, SessionLaneKey } from '../../types'
 import type { ClientTransport } from './transport'
 
 /** One moved conversation, as `POST /api/channel-folders/backfill` reports it. */
@@ -97,6 +97,8 @@ export function createChatOrganizationEndpoints({ post, del, patch, j, sessionKe
      *  an index-only null would leave a custom hex behind. */
     clearSlotColor: (slot: string) => patch('/api/chat/slots/' + encodeURIComponent(slot) + '/color', { color_index: null, color_hex: null }).then(j),
     setSlotPin: (slot: string, pinned: boolean) => patch('/api/chat/slots/' + encodeURIComponent(slot) + '/pin', { pinned }).then(j),
+    /** Set the chat's agent-queue priority tier. Owner-only on the gateway. */
+    setSlotQueuePriority: (slot: string, priority: QueuePriority) => patch('/api/chat/slots/' + encodeURIComponent(slot) + '/queue-priority', { priority }).then(j),
     // Tags
     chatTags: () => fetch('/api/chat/tags', { headers: { ..._sk } }).then(j),
     createChatTag: (name: string, color?: string, status?: boolean) => post('/api/chat/tags', { name, color: color || '', status: !!status }).then(j),

@@ -7721,6 +7721,14 @@
       "question_x_of_y": "질문 {{current}} / {{total}}",
       "submit": "제출"
     },
+    "queuePrioritySubmenu": {
+      "agent_queue_priority": "서브에이전트 우선순위",
+      "caption": "대기 중인 서브에이전트는 높음 채팅부터 먼저 시작하고, 그다음 보통, 낮음 순서입니다.",
+      "change_failed": "서브에이전트 우선순위를 변경하지 못했습니다",
+      "high": "높음",
+      "low": "낮음",
+      "medium_default": "보통(기본값)"
+    },
     "queueStack": {
       "cancel_and_move_back_to_input": "취소하고 입력창으로 되돌리기",
       "cancel_queued_message": "대기 중인 메시지 취소",

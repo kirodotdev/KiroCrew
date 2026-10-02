@@ -7837,6 +7837,14 @@
       "question_x_of_y": "प्रश्न {{current}} / {{total}}",
       "submit": "सबमिट करें"
     },
+    "queuePrioritySubmenu": {
+      "agent_queue_priority": "सब-एजेंट प्राथमिकता",
+      "caption": "प्रतीक्षा में सब-एजेंट पहले उच्च चैट से शुरू होते हैं, फिर मध्यम, फिर निम्न।",
+      "change_failed": "सब-एजेंट की प्राथमिकता नहीं बदली जा सकी",
+      "high": "उच्च",
+      "low": "निम्न",
+      "medium_default": "मध्यम (डिफ़ॉल्ट)"
+    },
     "queueStack": {
       "cancel_and_move_back_to_input": "रद्द करें और इनपुट पर वापस जाएँ",
       "cancel_queued_message": "कतारबद्ध संदेश रद्द करें",

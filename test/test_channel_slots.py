@@ -318,6 +318,17 @@ class TestSurfaceChannelSession:
         assert slot.title == "Ship the thing"
         assert [m["content"] for m in slot.messages] == ["hi", "hello"]
 
+    def test_restores_persisted_queue_priority(self, dashboard_state: Any) -> None:
+        slot = channel_slots.surface_channel_session(
+            dashboard_state,
+            _session("slack:1785370133.085469"),
+            {"queue_priority": "high"},
+            [],
+        )
+
+        assert slot is not None
+        assert slot.queue_priority == "high"
+
     def test_binds_the_slot_to_the_real_channel_session_key(self, dashboard_state: Any) -> None:
         """The tab IS the conversation, not a picture of it: a reply typed in it
         runs on the channel's own session and lands in the channel transcript,

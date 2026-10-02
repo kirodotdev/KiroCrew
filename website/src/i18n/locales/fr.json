@@ -7953,6 +7953,14 @@
       "question_x_of_y": "Question {{current}} sur {{total}}",
       "submit": "Envoyer"
     },
+    "queuePrioritySubmenu": {
+      "agent_queue_priority": "Priorité des sous-agents",
+      "caption": "Les sous-agents en attente des discussions Haute démarrent en premier, puis Moyenne, puis Basse.",
+      "change_failed": "Impossible de modifier la priorité des sous-agents",
+      "high": "Haute",
+      "low": "Basse",
+      "medium_default": "Moyenne (par défaut)"
+    },
     "queueStack": {
       "cancel_and_move_back_to_input": "Annuler et revenir à la saisie",
       "cancel_queued_message": "Annuler le message en file d'attente",

@@ -76,6 +76,7 @@ _TO_DICT_KEYS = (
     "slack_thread_ts",
     "folder_id",
     "pinned",
+    "queue_priority",
     "tags",
     "tags_revision",
     "color_index",

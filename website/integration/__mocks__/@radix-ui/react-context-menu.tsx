@@ -119,4 +119,18 @@ export const SubContent = React.forwardRef<HTMLDivElement, any>(({ children, cla
   if (!open) return null
   return <div ref={ref} role="menu" className={className} {...props}>{children}</div>
 })
-export const RadioGroup: React.FC<any> = ({ children }) => <>{children}</>
+// Radio rows mirror Radix: the group owns the checked value and hears the
+// picked item's value through onValueChange; the row closes like an Item.
+const RadioCtx = createContext<{ value?: string; onValueChange?: (v: string) => void }>({})
+export const RadioGroup: React.FC<any> = ({ children, value, onValueChange }) => (
+  <RadioCtx.Provider value={{ value, onValueChange }}>{children}</RadioCtx.Provider>
+)
+export const RadioItem = React.forwardRef<HTMLDivElement, any>(({ children, value, onSelect, ...props }, ref) => {
+  const group = useContext(RadioCtx)
+  return (
+    <Item ref={ref} role="menuitemradio" aria-checked={group.value === value} {...props}
+      onSelect={(e: any) => { onSelect?.(e); group.onValueChange?.(value) }}>
+      {children}
+    </Item>
+  )
+})

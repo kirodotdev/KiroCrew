@@ -133,6 +133,7 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/worktree/create", api_worktree_create)
     app.router.add_get("/api/recent-projects", chat.api_recent_projects)
     app.router.add_patch("/api/chat/slots/{slot}/color", chat.api_chat_slot_color)
+    app.router.add_patch("/api/chat/slots/{slot}/queue-priority", chat.api_chat_slot_queue_priority)
     # Context injection (App Kit — silent background context)
     app.router.add_post("/api/chat/slots/{slot}/context", chat.api_chat_slot_context)
     # Note — visible transcript line + silent next-turn context, no LLM turn
