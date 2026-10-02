@@ -387,7 +387,7 @@ describe("shouldReresolveBackend", () => {
     }
   });
 
-  it("leaves Windows and Linux on their own recovery paths", () => {
+  it("leaves Linux on its service manager's recovery path", () => {
     for (const signal of [{ exitCode: STALE_ASSET_EXIT_CODE }, { spawnErrorCode: "ENOENT" }]) {
       assert.equal(shouldReresolveBackend({ isMac: false, bundled: true, ...signal }), "none");
       assert.equal(
@@ -397,6 +397,29 @@ describe("shouldReresolveBackend", () => {
         "none",
       );
     }
+  });
+
+  // An install manager can prune the running version's directory on Windows
+  // without stopping the app, so the same stale signal must arm the same
+  // recovery there.
+  it("re-resolves, then relaunches, on Windows exactly as on macOS", () => {
+    const win = { isMac: false, isWindows: true, bundled: true };
+    for (const signal of [{ exitCode: STALE_ASSET_EXIT_CODE }, { spawnErrorCode: "ENOENT" }]) {
+      assert.equal(shouldReresolveBackend({ ...win, ...signal, attempts: 0 }), "reresolve");
+      assert.equal(
+        shouldReresolveBackend({ ...win, ...signal, attempts: 1, relaunchTargetExists: true }),
+        "relaunch",
+      );
+      assert.equal(
+        shouldReresolveBackend({ ...win, ...signal, attempts: 1, relaunchTargetExists: false }),
+        "none",
+      );
+    }
+    assert.equal(shouldReresolveBackend({ ...win, exitCode: 0 }), "none");
+    assert.equal(
+      shouldReresolveBackend({ ...win, exitCode: STALE_ASSET_EXIT_CODE, installingUpdate: true }),
+      "none",
+    );
   });
 
   // A dev checkout with no kirocrew anywhere spawns the bare PATH name and gets

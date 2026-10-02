@@ -135,7 +135,22 @@ function findKirocrewBin(
       if (e.code !== "ENOENT") console.warn(`kirocrew candidate ${bin}: ${e.code}`);
     }
   }
-  return isWindows ? "kirocrew.exe" : "kirocrew"; // fall back to PATH
+  return isWindows ? PATH_FALLBACK_WINDOWS : PATH_FALLBACK; // fall back to PATH
 }
 
-module.exports = { findKirocrewBin };
+const PATH_FALLBACK = "kirocrew";
+const PATH_FALLBACK_WINDOWS = "kirocrew.exe";
+
+/**
+ * True when `bin` is findKirocrewBin's bare PATH fallback rather than a
+ * candidate it found on disk: nothing at any probed path was executable, and
+ * spawning `bin` runs whatever that name resolves to on PATH.
+ *
+ * @param {string} bin  a findKirocrewBin result
+ * @returns {boolean}
+ */
+function isPathFallback(bin) {
+  return bin === PATH_FALLBACK || bin === PATH_FALLBACK_WINDOWS;
+}
+
+module.exports = { findKirocrewBin, isPathFallback };
