@@ -92,11 +92,12 @@ export function useLineageSeed({ localSlots, dispatch, allRows }: {
 }
 
 /** The conductor lane population, lineage tree and open conductors. */
-export function useConductorLane({ conductorLaneActive, allRows, allLiveSlots, isRowFolderHidden, laneOrder, flatSlots }: {
+export function useConductorLane({ conductorLaneActive, allRows, allLiveSlots, isRowFolderHidden, isRowStatusHidden, laneOrder, flatSlots }: {
   conductorLaneActive: boolean
   allRows: Slot[]
   allLiveSlots: ChatSlot[]
   isRowFolderHidden: (s: Slot) => boolean
+  isRowStatusHidden: (s: Slot) => boolean
   laneOrder: (a: Slot, b: Slot) => number
   flatSlots: Slot[]
 }) {
@@ -215,11 +216,16 @@ export function useConductorLane({ conductorLaneActive, allRows, allLiveSlots, i
    * children resolve no parent and fall back to the orphan-root treatment this lane
    * already gives a child whose parent it cannot show. The reveal row at the bottom of
    * the lane stays the way to look inside a hide.
+   *
+   * A status HIDE (the eye on Unread, In progress or Pinned) is the same kind of
+   * statement, so `isRowStatusHidden` applies here too: "hide In progress" must not put
+   * a running conductor back on screen as a dimmed anchor just because a stopped child
+   * under it still matches. The "Hiding ..." chip is the way back for this one.
    */
   const conductorRows = useMemo(() => {
     if (!conductorLaneActive) return []
-    return [...lanePopulation].filter(s => !isRowFolderHidden(s)).sort(laneOrder)
-  }, [conductorLaneActive, lanePopulation, laneOrder, isRowFolderHidden])
+    return [...lanePopulation].filter(s => !isRowFolderHidden(s) && !isRowStatusHidden(s)).sort(laneOrder)
+  }, [conductorLaneActive, lanePopulation, laneOrder, isRowFolderHidden, isRowStatusHidden])
 
   /**
    * Row identities the active filter ADMITS, as the flat lane computed them.
