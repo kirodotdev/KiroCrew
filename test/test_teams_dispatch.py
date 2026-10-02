@@ -23,6 +23,7 @@ class FakeProvider:
     def __init__(self, events: list) -> None:
         self._events = events
         self.compacted = False
+        self.compact_result: dict = {"type": "completed", "summary": ""}
         self.steered: list = []
         self.active_turn = True
 
@@ -47,7 +48,7 @@ class FakeProvider:
         self.compacted = True
 
     async def wait_for_compaction(self, timeout: float = 0.0) -> dict:
-        return {"type": "completed", "summary": ""}
+        return self.compact_result
 
 
 class FakeSessions:
@@ -339,6 +340,24 @@ class TestTurn:
         assert any("compacted" in content for (_, content, _) in client.sent)
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", ["failed", "timeout"])
+    async def test_hard_threshold_unsuccessful_compaction_posts_no_notice(self, kind) -> None:
+        # wait_for_compaction() reports these as a returned type, not an
+        # exception: announcing "compacted automatically" would be false.
+        provider = FakeProvider(
+            [AcpEvent(kind=EVENT_TEXT_CHUNK, text="answer"), AcpEvent(kind=EVENT_COMPLETE)]
+        )
+        provider.compact_result = {"type": kind, "summary": ""}
+        sessions = FakeSessions(provider, ctx_pct=96.0)
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client)
+
+        await d.handle_message(_inbound("hello"))
+
+        assert provider.compacted is True
+        assert not any("compacted" in content for (_, content, _) in client.sent)
+
+    @pytest.mark.asyncio
     async def test_hard_threshold_declines_silently_on_auto_managed_backend(self) -> None:
         # No /compact to dispatch and no notice: the backend compacts on its
         # own as context fills.
@@ -451,6 +470,27 @@ class TestCommands:
         assert sessions.acquired == [key]
         assert sessions.released == [key]
         assert client.sent == [("CONV", "🗜️ Context compacted.", _SVC)]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("kind", "reply"),
+        [
+            ("failed", "⚠️ Compaction failed — please try again."),
+            ("timeout", "⚠️ Compaction timed out."),
+        ],
+    )
+    async def test_compact_command_reports_an_unsuccessful_result(self, kind, reply) -> None:
+        provider = FakeProvider([])
+        provider.compact_result = {"type": kind, "summary": ""}
+        sessions = FakeSessions(provider)
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client)
+
+        await d.handle_message(_inbound("/compact"))
+
+        key = d._session_key(_EMAIL)
+        assert sessions.released == [key]
+        assert client.sent == [("CONV", reply, _SVC)]
 
     @pytest.mark.asyncio
     async def test_compact_declined_on_auto_managed_backend(self) -> None:

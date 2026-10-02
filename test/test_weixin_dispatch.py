@@ -71,6 +71,7 @@ class FakeProvider:
         self.reply = reply
         self.prompts: list[str] = []
         self.compacted = False
+        self.compact_result = {"type": "completed", "summary": ""}
         self.cancelled: list = []
 
     async def stream(self, message):
@@ -94,7 +95,7 @@ class FakeProvider:
         self.compacted = True
 
     async def wait_for_compaction(self, timeout=0):
-        return True
+        return self.compact_result
 
 
 class FakeSessions:
@@ -452,6 +453,25 @@ def test_compact_command_compacts_without_a_turn(tmp_path):
     assert provider.compacted is True
     assert provider.prompts == []
     assert sessions.released == 1  # acquired for compaction, then released
+
+
+@pytest.mark.parametrize(
+    ("kind", "reply"),
+    [
+        ("completed", "🗜️ 已压缩上下文。"),
+        ("failed", "⚠️ 压缩失败，请重试。"),
+        ("timeout", "⚠️ 压缩超时。"),
+    ],
+)
+def test_compact_command_receipt_follows_the_compaction_result(tmp_path, kind, reply):
+    # wait_for_compaction() reports failure and timeout as a returned type, not
+    # an exception, so the receipt must read the result.
+    provider = FakeProvider()
+    provider.compact_result = {"type": kind, "summary": ""}
+    d, client, sessions = _make(tmp_path, provider=provider)
+    asyncio.run(d.handle_message(_msg("/compact")))
+    assert [s["text"] for s in client.sent] == [reply]
+    assert sessions.released == 1
 
 
 def test_compact_command_declined_on_auto_managed_backend(tmp_path):
@@ -868,6 +888,17 @@ def test_hard_threshold_forces_compaction(tmp_path):
     asyncio.run(d.handle_message(_msg("long convo")))
     assert provider.compacted is True
     assert any("已自动压缩" in s["text"] for s in client.sent)
+
+
+@pytest.mark.parametrize("kind", ["failed", "timeout"])
+def test_hard_threshold_unsuccessful_compaction_posts_no_notice(tmp_path, kind):
+    provider = FakeProvider()
+    provider.compact_result = {"type": kind, "summary": ""}
+    d, client, sessions = _make(tmp_path, provider=provider)
+    sessions.check_context_usage = lambda k, p: 99.0  # type: ignore[assignment]
+    asyncio.run(d.handle_message(_msg("long convo")))
+    assert provider.compacted is True
+    assert not any("已自动压缩" in s["text"] for s in client.sent)
 
 
 def test_tool_gate_denies_when_hooks_deny(tmp_path):

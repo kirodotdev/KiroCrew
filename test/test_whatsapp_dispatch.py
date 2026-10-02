@@ -12,6 +12,8 @@ import asyncio
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK
 from kiro_crew.messaging.commands import compact_refusal_plain_text
 from kiro_crew.messaging.driver import APPROVAL_AUTO
@@ -22,6 +24,7 @@ from kiro_crew.whatsapp.commands import (
     COMPACT_BUSY_TEXT,
     COMPACT_FAILED_TEXT,
     COMPACT_NOTHING_TEXT,
+    COMPACT_TIMED_OUT_TEXT,
     COMPACTED_TEXT,
     CONTEXT_LONG_TEXT,
 )
@@ -64,6 +67,7 @@ class FakeProvider:
         self.compacts = 0
         self.waits = 0
         self.compact_raises = False
+        self.compact_result: dict[str, str] = {"type": "completed", "summary": ""}
 
     async def stream(self, message: str):
         self.prompts.append(message)
@@ -80,7 +84,7 @@ class FakeProvider:
 
     async def wait_for_compaction(self, *a: Any, **kw: Any) -> dict:
         self.waits += 1
-        return {}
+        return self.compact_result
 
 
 class FakeSessions:
@@ -1016,6 +1020,21 @@ def test_compact_command_reports_a_failure_and_still_releases():
     assert sessions.released == 1, "a failed compaction must not strand the semaphore"
 
 
+@pytest.mark.parametrize(
+    ("kind", "reply"),
+    [("failed", COMPACT_FAILED_TEXT), ("timeout", COMPACT_TIMED_OUT_TEXT)],
+)
+def test_compact_command_reports_an_unsuccessful_result(kind: str, reply: str):
+    """``wait_for_compaction()`` reports these as a returned type, not an
+    exception, so the receipt must read the result instead of assuming it."""
+    provider = FakeProvider()
+    provider.compact_result = {"type": kind, "summary": ""}
+    d, _client, sessions, transport = _make(provider=provider)
+    asyncio.run(d.handle_message(_msg("/compact")))
+    assert [t for _, t in transport.sent] == [reply]
+    assert sessions.released == 1
+
+
 # ── post-turn context accounting (ChannelTurn.notice) ───────────────────────
 def test_every_turn_reaches_context_accounting():
     """``notice`` is the channel's ONLY reach into ``check_context_usage``.
@@ -1043,6 +1062,16 @@ def test_a_failed_hard_threshold_compaction_claims_nothing():
     provider.compact_raises = True
     d, _client, _sessions, transport = _make(provider=provider, context_pct=96.0)
     asyncio.run(d.handle_message(_msg("a long conversation")))
+    assert [t for _, t in transport.sent] == ["answered"]
+
+
+@pytest.mark.parametrize("kind", ["failed", "timeout"])
+def test_an_unsuccessful_hard_threshold_result_claims_nothing(kind: str):
+    provider = FakeProvider("answered")
+    provider.compact_result = {"type": kind, "summary": ""}
+    d, _client, _sessions, transport = _make(provider=provider, context_pct=96.0)
+    asyncio.run(d.handle_message(_msg("a long conversation")))
+    assert (provider.compacts, provider.waits) == (1, 1)
     assert [t for _, t in transport.sent] == ["answered"]
 
 

@@ -158,6 +158,7 @@ COMPACTED_TEXT = "Context compacted."
 COMPACT_BUSY_TEXT = "Still working on the last message; try /compact again shortly."
 COMPACT_NOTHING_TEXT = "There's no conversation to compact yet."
 COMPACT_FAILED_TEXT = "Couldn't compact the context; please try again."
+COMPACT_TIMED_OUT_TEXT = "Compaction timed out."
 #: The manual-``/compact`` refusals are NOT held here. This surface and iMessage
 #: said the same three sentences with only a leading glyph between them, so they
 #: come from ``messaging.commands.compact_refusal_plain_text``. A wording that

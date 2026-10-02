@@ -33,6 +33,7 @@ class FakeProvider:
         self.approved: list = []
         self.rejected: list = []
         self.compacted = False
+        self.compact_result: dict = {"type": "completed", "summary": ""}
         self.steered: list = []
         self.active_turn = True
 
@@ -57,7 +58,7 @@ class FakeProvider:
         self.compacted = True
 
     async def wait_for_compaction(self, timeout: float = 0.0) -> dict:
-        return {"type": "completed", "summary": ""}
+        return self.compact_result
 
 
 class FakeSessions:
@@ -645,6 +646,27 @@ class TestTurn:
         assert provider.compacted is True
         assert any("自动压缩" in content for _, content in client.replies)
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", ["failed", "timeout"])
+    async def test_hard_threshold_unsuccessful_compaction_posts_no_notice(self, kind) -> None:
+        # wait_for_compaction() reports these as a returned type, not an
+        # exception: announcing an automatic compaction would be false.
+        provider = FakeProvider(
+            [
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="answer"),
+                AcpEvent(kind=EVENT_COMPLETE),
+            ]
+        )
+        provider.compact_result = {"type": kind, "summary": ""}
+        sessions = FakeSessions(provider, ctx_pct=96.0)
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client)
+
+        await d.handle_message(_inbound("hello"))
+
+        assert provider.compacted is True
+        assert not any("自动压缩" in content for _, content in client.replies)
+
 
 # ------------------------------------------------------------------
 # Tests: commands (/new, /reset, /compact)
@@ -833,6 +855,24 @@ class TestCommands:
         assert sessions.acquired == [key]
         assert sessions.released == [key]
         assert client.replies == [("msg1", "🗜️ 已压缩上下文。")]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("kind", "reply"),
+        [("failed", "⚠️ 压缩失败，请重试。"), ("timeout", "⚠️ 压缩超时。")],
+    )
+    async def test_compact_command_reports_an_unsuccessful_result(self, kind, reply) -> None:
+        provider = FakeProvider([])
+        provider.compact_result = {"type": kind, "summary": ""}
+        sessions = FakeSessions(provider)
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client)
+
+        await d.handle_message(_inbound("/compact"))
+
+        key = d._session_key(d._route(_inbound("/compact")))
+        assert sessions.released == [key]
+        assert client.replies == [("msg1", reply)]
 
     @pytest.mark.asyncio
     async def test_compact_refused_while_turn_busy(self) -> None:

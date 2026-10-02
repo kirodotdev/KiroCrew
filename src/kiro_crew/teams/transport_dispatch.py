@@ -1520,11 +1520,16 @@ class TeamsDispatcher:
             self._conv.clear_awaiting(email)
             try:
                 await provider.compact()
-                await provider.wait_for_compaction()
-                await self._reply(
-                    inbound,
-                    "🗜️ Context was near its limit, so it was compacted automatically.",
-                )
+                # A failed or timed-out compaction is a RETURNED result, not an
+                # exception, so the notice is posted only for a completed one.
+                cr = await provider.wait_for_compaction()
+                if cr["type"] == "completed":
+                    await self._reply(
+                        inbound,
+                        "🗜️ Context was near its limit, so it was compacted automatically.",
+                    )
+                else:
+                    logger.warning("Teams hard-threshold compaction reported %s", cr["type"])
             except Exception:
                 logger.debug("Teams hard-threshold compaction failed", exc_info=True)
         elif pct >= soft and not self._conv.is_awaiting(email):
@@ -1569,8 +1574,15 @@ class TeamsDispatcher:
                 await self._reply(inbound, compact_unsupported_reply(unsupported))
                 return
             await provider.compact()
-            await provider.wait_for_compaction()
-            await self._reply(inbound, "🗜️ Context compacted.")
+            # Failure and timeout come back as the result's ``type``, not as an
+            # exception, so the receipt is read off it rather than assumed.
+            cr = await provider.wait_for_compaction()
+            if cr["type"] == "completed":
+                await self._reply(inbound, "🗜️ Context compacted.")
+            elif cr["type"] == "failed":
+                await self._reply(inbound, "⚠️ Compaction failed — please try again.")
+            else:
+                await self._reply(inbound, "⚠️ Compaction timed out.")
         except Exception:
             logger.exception("Teams /compact failed for %s", session_key)
             await self._reply(inbound, "⚠️ Compaction failed — please try again.")

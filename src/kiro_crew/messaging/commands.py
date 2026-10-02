@@ -599,6 +599,14 @@ def compact_unsupported_reply_zh(backend: str) -> str:
     )
 
 
+#: The manual ``/compact`` receipt for a compaction that timed out, on the three
+#: Chinese-language surfaces. ``wait_for_compaction()`` reports a timeout as a
+#: returned ``{"type": "timeout"}`` rather than an exception, so it is a receipt
+#: of its own; held here, once, for the same reason as
+#: :func:`compact_unsupported_reply_zh`.
+COMPACT_TIMED_OUT_REPLY_ZH = "⚠️ 压缩超时。"
+
+
 #: How much of a cron job's message body a list row shows.
 _CRON_MESSAGE_PREVIEW_CHARS = 50
 #: How much of a subagent's task a list row shows.

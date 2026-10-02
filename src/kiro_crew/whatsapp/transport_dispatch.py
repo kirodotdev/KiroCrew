@@ -54,6 +54,7 @@ from kiro_crew.whatsapp.commands import (
     COMPACT_BUSY_TEXT,
     COMPACT_FAILED_TEXT,
     COMPACT_NOTHING_TEXT,
+    COMPACT_TIMED_OUT_TEXT,
     COMPACTED_TEXT,
     CONTEXT_LONG_TEXT,
     NEW_SESSION_TEXT,
@@ -365,8 +366,15 @@ class WhatsAppDispatcher:
                 await self._say(scope, compact_refusal_plain_text(unsupported))
                 return
             await provider.compact()
-            await provider.wait_for_compaction()
-            await self._say(scope, COMPACTED_TEXT)
+            # Failure and timeout come back as the result's ``type``, not as an
+            # exception, so the receipt is read off it rather than assumed.
+            cr = await provider.wait_for_compaction()
+            if cr["type"] == "completed":
+                await self._say(scope, COMPACTED_TEXT)
+            elif cr["type"] == "failed":
+                await self._say(scope, COMPACT_FAILED_TEXT)
+            else:
+                await self._say(scope, COMPACT_TIMED_OUT_TEXT)
         except Exception:
             logger.exception("whatsapp: /compact failed for %s", session_key)
             await self._say(scope, COMPACT_FAILED_TEXT)
@@ -657,9 +665,14 @@ class WhatsAppDispatcher:
             self._conv.clear_awaiting(scope)
             try:
                 await provider.compact()
-                await provider.wait_for_compaction()
+                kind = (await provider.wait_for_compaction())["type"]
             except Exception:  # noqa: BLE001: the reply already landed
                 logger.debug("whatsapp: hard-threshold compaction failed", exc_info=True)
+                return
+            # A failed or timed-out compaction is a RETURNED result, not an
+            # exception, so the notice is posted only for a completed one.
+            if kind != "completed":
+                logger.warning("whatsapp: hard-threshold compaction reported %s", kind)
                 return
             if may_speak:
                 await self._say(scope, COMPACT_AUTO_TEXT)

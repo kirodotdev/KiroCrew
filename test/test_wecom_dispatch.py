@@ -26,6 +26,7 @@ class FakeProvider:
         self.approved: list = []
         self.rejected: list = []
         self.compacted = False
+        self.compact_result: dict = {"type": "completed", "summary": ""}
         self.steered: list = []
         self.active_turn = True
 
@@ -50,7 +51,7 @@ class FakeProvider:
         self.compacted = True
 
     async def wait_for_compaction(self, timeout: float = 0.0) -> dict:
-        return {"type": "completed", "summary": ""}
+        return self.compact_result
 
 
 class FakeSessions:
@@ -422,6 +423,23 @@ class TestCommands:
         assert client.said == ["🗜️ 已压缩上下文。"]
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("kind", "reply"),
+        [("failed", "⚠️ 压缩失败，请重试。"), ("timeout", "⚠️ 压缩超时。")],
+    )
+    async def test_compact_command_reports_an_unsuccessful_result(self, kind, reply) -> None:
+        provider = FakeProvider([])
+        provider.compact_result = {"type": kind, "summary": ""}
+        sessions = FakeSessions(provider)
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client)
+
+        await d.handle_message(_inbound("/compact"))
+
+        assert sessions.released == [d._session_key("Wei")]
+        assert client.said == [reply]
+
+    @pytest.mark.asyncio
     async def test_compact_declined_on_auto_managed_backend(self) -> None:
         # A backend that cannot serve /compact gets the informational reply and
         # compact() is NEVER dispatched.
@@ -467,6 +485,28 @@ class TestCommands:
 
         assert provider.compacted is False
         assert not any("已自动压缩" in c for _chat, c in client.pushed)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("kind", "announced"), [("completed", True), ("failed", False), ("timeout", False)]
+    )
+    async def test_hard_threshold_notice_follows_the_compaction_result(
+        self, kind, announced
+    ) -> None:
+        # wait_for_compaction() reports failure and timeout as a returned type,
+        # not an exception: only a completed compaction is announced.
+        provider = FakeProvider(
+            [AcpEvent(kind=EVENT_TEXT_CHUNK, text="answer"), AcpEvent(kind=EVENT_COMPLETE)]
+        )
+        provider.compact_result = {"type": kind, "summary": ""}
+        sessions = FakeSessions(provider, ctx_pct=96.0)  # >= hard (95)
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client)
+
+        await d.handle_message(_inbound("hello"))
+
+        assert provider.compacted is True
+        assert any("已自动压缩" in c for _chat, c in client.pushed) is announced
 
     @pytest.mark.asyncio
     async def test_soft_nudge_suppressed_on_auto_managed_backend(self) -> None:
