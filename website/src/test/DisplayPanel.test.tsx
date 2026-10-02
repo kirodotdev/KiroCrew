@@ -19,6 +19,7 @@ const zoomCtx = {
   zoomIn: vi.fn(),
   zoomOut: vi.fn(),
   reset: vi.fn(),
+  setZoom: vi.fn(),
   family: 'sans',
   setFontFamily: vi.fn(),
   cycleFamily: vi.fn(),
@@ -451,9 +452,10 @@ describe('DisplayPanel – zoom setting', () => {
 
   /** Scope queries to the zoom stepper's button row — the panel has other
    *  steppers (e.g. "Highlight recent sessions") with identical
-   *  Increase/Decrease labels. Only the zoom value renders with a % suffix,
-   *  and that text sits on the reset button whose parent is the row. */
-  const zoomRow = () => within(screen.getByText(/^\d+%$/).parentElement as HTMLElement)
+   *  Increase/Decrease labels. The zoom value is a number input named
+   *  "Zoom Level"; its readout box sits in the row. */
+  const zoomInput = () => screen.getByRole('spinbutton', { name: 'Zoom Level' }) as HTMLInputElement
+  const zoomRow = () => within(zoomInput().parentElement?.parentElement as HTMLElement)
 
   it('desktop: renders the native zoom stepper and drives the bridge callbacks', async () => {
     const user = userEvent.setup()
@@ -461,7 +463,7 @@ describe('DisplayPanel – zoom setting', () => {
     renderPanel()
 
     expect(screen.getByText('Zoom Level')).toBeInTheDocument()
-    expect(screen.getByText('125%')).toBeInTheDocument()
+    expect(zoomInput().value).toBe('125')
     // Single zoom control only — the legacy Font Size stepper must be gone.
     expect(screen.queryByText('Font Size')).not.toBeInTheDocument()
 
@@ -469,8 +471,9 @@ describe('DisplayPanel – zoom setting', () => {
     expect(zoomCtx.zoomIn).toHaveBeenCalledTimes(1)
     await user.click(zoomRow().getByLabelText('Decrease'))
     expect(zoomCtx.zoomOut).toHaveBeenCalledTimes(1)
-    await user.click(screen.getByText('125%'))
-    expect(zoomCtx.reset).toHaveBeenCalledTimes(1)
+    await user.clear(zoomInput())
+    await user.type(zoomInput(), '113{Enter}')
+    expect(zoomCtx.setZoom).toHaveBeenCalledWith(113)
   })
 
   it('browser: shows the shortcut hint instead of a stepper', () => {

@@ -550,6 +550,15 @@ interface SettingsStepperProps {
   onIncrement: () => void
   onDecrement: () => void
   onReset?: () => void
+  /**
+   * When given, the readout is a number input: the typed integer is passed
+   * here on Enter or blur, and the box then shows `value` again, so the
+   * caller's own clamp decides what is displayed. Empty or non-numeric input,
+   * and Escape, revert to `value`. `min` / `max` are the input's native range.
+   */
+  onSet?: (value: number) => void
+  min?: number
+  max?: number
   suffix?: string
   disabled?: boolean
   /** Backend config key this stepper writes. */
@@ -559,7 +568,45 @@ interface SettingsStepperProps {
 /** Shared box of the centre readout, whether it is a reset button or plain text. */
 const STEPPER_READOUT_CLASS = 'min-w-[56px] h-8 rounded-md border border-border bg-bg-elevated text-text-strong text-sm font-bold flex items-center justify-center px-2 transition-all'
 
-export function SettingsStepper({ label, description, hint, value, onIncrement, onDecrement, onReset, suffix = '', disabled, configKey }: SettingsStepperProps) {
+function StepperValueInput({ label, value, onSet, min, max, suffix, disabled }: { label: string; value: number | string; onSet: (value: number) => void; min?: number; max?: number; suffix: string; disabled?: boolean }) {
+  const [draft, setDraft] = React.useState(String(value))
+  // A new `value` from the caller (a step, or the result of a typed value)
+  // replaces whatever is in the box.
+  const [shown, setShown] = React.useState(value)
+  if (shown !== value) {
+    setShown(value)
+    setDraft(String(value))
+  }
+  const commit = () => {
+    const n = draft.trim() === '' ? NaN : Math.round(Number(draft))
+    setDraft(String(value))
+    if (Number.isFinite(n) && n !== value) onSet(n)
+  }
+  return (
+    <span className={`${STEPPER_READOUT_CLASS} gap-0.5 cursor-text hover:border-border-strong focus-within:border-accent${disabled ? ' opacity-40' : ''}`}>
+      <input
+        type="number"
+        inputMode="numeric"
+        min={min}
+        max={max}
+        step={1}
+        disabled={disabled}
+        aria-label={label}
+        value={draft}
+        onChange={e => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={e => {
+          if (e.key === 'Enter') commit()
+          else if (e.key === 'Escape') setDraft(String(value))
+        }}
+        className="w-[3.5ch] bg-transparent text-right text-text-strong text-sm font-bold [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none disabled:cursor-not-allowed"
+      />
+      {suffix && <span aria-hidden="true">{suffix}</span>}
+    </span>
+  )
+}
+
+export function SettingsStepper({ label, description, hint, value, onIncrement, onDecrement, onReset, onSet, min, max, suffix = '', disabled, configKey }: SettingsStepperProps) {
   return (
     <SettingsField label={label} description={description} hint={hint} configKey={configKey}>
       <div className="flex items-center gap-2">
@@ -570,7 +617,9 @@ export function SettingsStepper({ label, description, hint, value, onIncrement, 
           onClick={onDecrement}
           aria-label={i18nT('components.settings.decrease')}
         >−</button>
-        {onReset ? (
+        {onSet ? (
+          <StepperValueInput label={label} value={value} onSet={onSet} min={min} max={max} suffix={suffix} disabled={disabled} />
+        ) : onReset ? (
           <button
             type="button"
             disabled={disabled}

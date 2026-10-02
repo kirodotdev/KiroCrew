@@ -115,6 +115,12 @@ export function useZoom() {
     const api = zoomAPI()
     if (api) applyResult(api.set(1))
   }, [applyResult])
+  // Direct percent (e.g. 113). The main process clamps the factor, and the
+  // readout shows the factor it returns.
+  const setZoom = useCallback((pct: number) => {
+    const api = zoomAPI()
+    if (api) applyResult(api.set(pct / 100))
+  }, [applyResult])
 
   useEffect(() => {
     // Apply --font-body from the user's Font Family preference, with one
@@ -212,5 +218,5 @@ export function useZoom() {
     setFamily(next)
   }, [family])
 
-  return { zoom, zoomSupported, zoomIn, zoomOut, reset, family, setFontFamily, cycleFamily, customFontFamily, setCustomFontFamily, customFontLigatures, setCustomFontLigatures }
+  return { zoom, zoomSupported, zoomIn, zoomOut, reset, setZoom, family, setFontFamily, cycleFamily, customFontFamily, setCustomFontFamily, customFontLigatures, setCustomFontLigatures }
 }

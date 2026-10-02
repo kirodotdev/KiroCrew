@@ -70,6 +70,16 @@ test('desktop: reads the native factor on mount', async () => {
   expect(result.current.zoom).toBe(125)
 })
 
+test('desktop: setZoom sends the percent as a factor and shows the returned factor', async () => {
+  const api = installZoomAPI(1)
+  // Main clamps; the hook shows whatever factor main returns.
+  api.set.mockImplementationOnce(() => Promise.resolve(1.13))
+  const { result } = renderHook(() => useZoom())
+  await act(async () => { result.current.setZoom(115) })
+  expect(api.set).toHaveBeenCalledWith(1.15)
+  expect(result.current.zoom).toBe(113)
+})
+
 test('desktop: zoomIn/zoomOut step through the bridge and reflect the applied factor', async () => {
   const api = installZoomAPI(1)
   const { result } = renderHook(() => useZoom())
