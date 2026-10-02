@@ -4414,11 +4414,36 @@ class TestFixStaleManagedCommand:
         from kiro_crew.mcp_discovery import _fix_stale_managed_command
 
         with patch(
-            "kiro_crew.agent._kirocrew_mcp_invocation", return_value=("/bin/kirocrew", ["mcp-core"])
+            "kiro_crew.agent._kirocrew_mcp_invocation", return_value=(sys.executable, ["mcp-core"])
         ) as inv:
             _fix_stale_managed_command("kirocrew-core", {"command": "x", "args": []})
             _fix_stale_managed_command("kirocrew-core", {"command": "y", "args": []})
         inv.assert_called_once()  # cached after the first resolve
+
+    def test_a_cached_command_from_a_pruned_install_is_re_resolved(self, tmp_path):
+        """A cached launcher whose install an update removed is not served
+        again: it is evicted and the spec is re-resolved to the current one."""
+        import shutil as _shutil
+
+        from kiro_crew.mcp_discovery import _fix_stale_managed_command
+
+        old_install = tmp_path / "0.8.0.4"
+        old_bin = old_install / "bin" / "kirocrew"
+        old_bin.parent.mkdir(parents=True)
+        old_bin.write_text("#!/bin/sh\n")
+        new_bin = tmp_path / "0.8.0.6" / "bin" / "kirocrew"
+        with patch(
+            "kiro_crew.agent._kirocrew_mcp_invocation",
+            side_effect=[(str(old_bin), ["mcp-core"]), (str(new_bin), ["mcp-core"])],
+        ) as inv:
+            first = {"command": "x", "args": []}
+            _fix_stale_managed_command("kirocrew-core", first)
+            assert first["command"] == str(old_bin)
+            _shutil.rmtree(old_install)  # the update's prune
+            second = {"command": str(old_bin), "args": ["mcp-core"]}
+            _fix_stale_managed_command("kirocrew-core", second)
+        assert inv.call_count == 2
+        assert second["command"] == str(new_bin)
 
     def test_resolution_failure_leaves_spec_untouched(self):
         """If invocation resolution raises, the spec is left as-is (no crash)."""
@@ -5604,7 +5629,9 @@ class TestFirstPartyManagedArgv:
     scope could pair with user-config command text.
     """
 
-    _INVOCATION = ("/opt/kirocrew/bin/kirocrew", ["mcp-core"])
+    # An EXISTING file: the cache evicts an invocation whose command is gone
+    # (a pruned install), so a made-up path would never be served from it.
+    _INVOCATION = (sys.executable, ["mcp-core"])
 
     def _patch_invocation(self, monkeypatch) -> None:
         import kiro_crew.mcp_discovery as md

@@ -1698,3 +1698,184 @@ class TestPerSessionToolPolicy:
         n = len(calls)
         assert mcp_shared._resolve_tool_policy("dashboard:chat-1").excluded == {"tool_a"}
         assert len(calls) == n
+
+
+@pytest.mark.skipif(
+    not platform_compat.IS_POSIX,
+    reason="worker-thread + select() interleave is POSIX-only",
+)
+class TestStdioLoopExitsWhenItsInstallIsPruned:
+    """A backend whose install an update removed must be replaced, not limp on.
+
+    Lazy imports fail there with ``No module named 'kiro_crew.<x>'`` (seen live
+    on ``kirocrew-core``: every ``monitor_*`` and ``session_ledger_record`` call)
+    and keep failing until the process is gone. The loop answers the call with a
+    retryable refusal, answers anything queued behind it, never runs the tool,
+    and exits non-zero so the pool respawns it from the current install.
+    """
+
+    def setup_method(self):
+        mcp_shared._use_content_length = False
+
+    def test_a_call_after_the_prune_is_refused_and_the_process_exits(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        import shutil as _shutil
+
+        from kiro_crew import install_liveness
+
+        package = tmp_path / "0.8.0.4" / "kiro_crew"
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text("")
+        monkeypatch.setattr(install_liveness, "_PACKAGE_ROOT", package)
+        monkeypatch.setenv(install_liveness.POOLED_BACKEND_ENV, install_liveness.POOLED_BACKEND_VALUE)
+        exits: list = []
+        monkeypatch.setattr(mcp_shared.sys, "exit", exits.append)
+
+        calls: list[str] = []
+
+        def call_tool(name, args):
+            calls.append(name)
+            return f"done:{name}"
+
+        harness = _LoopHarness(monkeypatch, call_tool)
+        try:
+            harness.send(_tools_call(1, "before"))
+            assert harness.wait_for(lambda: len(harness.responses) == 1)
+            _shutil.rmtree(package.parent)  # the update's prune
+            harness.send(_tools_call(2, "monitor_start"))
+            assert harness.wait_for(lambda: len(harness.responses) == 2)
+            harness._thread.join(timeout=5.0)
+            assert not harness._thread.is_alive(), "the loop kept serving a pruned install"
+        finally:
+            harness.close()
+
+        assert calls == ["before"], "a tool ran from the pruned install"
+        req_id, result, error = harness.responses[1]
+        assert req_id == 2 and result is None
+        assert error["code"] == -32000 and "retry" in error["message"]
+        assert exits == [install_liveness.INSTALL_PRUNED_EXIT_CODE]
+
+    def test_calls_queued_behind_the_prune_are_answered_too(self, monkeypatch, tmp_path) -> None:
+        """The loop exits on the first refused call; anything already queued
+        behind it must get the same retryable answer, not silence."""
+        import shutil as _shutil
+        import time
+
+        from kiro_crew import install_liveness
+
+        package = tmp_path / "0.8.0.4" / "kiro_crew"
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text("")
+        monkeypatch.setattr(install_liveness, "_PACKAGE_ROOT", package)
+        monkeypatch.setenv(install_liveness.POOLED_BACKEND_ENV, install_liveness.POOLED_BACKEND_VALUE)
+        monkeypatch.setattr(mcp_shared.sys, "exit", lambda _code: None)
+        call_tool, started, release = _slow_then_echo()
+        harness = _LoopHarness(monkeypatch, call_tool)
+        try:
+            harness.send(_tools_call(1, "slow"))
+            assert started.wait(timeout=5.0)
+            # One frame per read so the busy loop's select() sees each and
+            # moves it into the pending queue (two frames in one write land in
+            # the text buffer together, where select() cannot see the second).
+            harness.send(_tools_call(2, "queued-a"))
+            time.sleep(0.3)
+            harness.send(_tools_call(3, "queued-b"))
+            time.sleep(0.3)
+            harness.send(_tools_call(4, "queued-c"))
+            time.sleep(0.3)
+            # Cancelled while it waited: must get no response, as on the
+            # ordinary dispatch path.
+            harness.send(
+                {"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 4}}
+            )
+            time.sleep(0.3)
+            _shutil.rmtree(package.parent)
+            release.set()
+            assert harness.wait_for(lambda: len(harness.responses) == 3), harness.responses
+            harness._thread.join(timeout=5.0)
+        finally:
+            harness.close()
+        by_id = {r[0]: r for r in harness.responses}
+        assert sorted(by_id) == [1, 2, 3], "a cancelled queued call was answered"
+        assert by_id[1][2] is None  # in flight before the prune: delivered
+        assert by_id[2][2]["code"] == -32000
+        assert by_id[3][2]["code"] == -32000
+
+        def _audited(outcome: str) -> list:
+            return sorted(
+                (c.kwargs["request_id"], c.kwargs["tool_name"])
+                for c in harness.sel_mock.log_tool_invocation.call_args_list
+                if c.kwargs.get("outcome") == outcome
+            )
+
+        # Every refusal is its own audited invocation decision, queued or not.
+        assert _audited("rejected_install_pruned") == [("2", "queued-a"), ("3", "queued-b")]
+        assert _audited("cancelled") == [("4", "queued-c")]
+
+    def test_an_intact_install_keeps_serving(self, monkeypatch, tmp_path) -> None:
+        from kiro_crew import install_liveness
+
+        package = tmp_path / "kiro_crew"
+        package.mkdir()
+        (package / "__init__.py").write_text("")
+        monkeypatch.setattr(install_liveness, "_PACKAGE_ROOT", package)
+        monkeypatch.setenv(install_liveness.POOLED_BACKEND_ENV, install_liveness.POOLED_BACKEND_VALUE)
+        exits: list = []
+        monkeypatch.setattr(mcp_shared.sys, "exit", exits.append)
+        harness = _LoopHarness(monkeypatch, lambda n, a: f"done:{n}")
+        try:
+            harness.send(_tools_call(1, "a"))
+            harness.send(_tools_call(2, "b"))
+            assert harness.wait_for(lambda: len(harness.responses) == 2)
+        finally:
+            harness.close()
+        assert [r[2] for r in harness.responses] == [None, None]
+        assert exits == []
+
+    def test_a_directly_launched_server_refuses_but_keeps_its_transport(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """Without the pool there is no respawner: exiting would leave the
+        session with no kirocrew-core/kirocrew-cron tools at all. The server
+        stays up and refuses every call with the restart that recovers it."""
+        import shutil as _shutil
+
+        from kiro_crew import install_liveness
+
+        package = tmp_path / "0.8.0.4" / "kiro_crew"
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text("")
+        monkeypatch.setattr(install_liveness, "_PACKAGE_ROOT", package)
+        monkeypatch.delenv(install_liveness.POOLED_BACKEND_ENV, raising=False)
+        exits: list = []
+        monkeypatch.setattr(mcp_shared.sys, "exit", exits.append)
+        calls: list[str] = []
+
+        def call_tool(name, args):
+            calls.append(name)
+            return f"done:{name}"
+
+        harness = _LoopHarness(monkeypatch, call_tool)
+        try:
+            harness.send(_tools_call(1, "before"))
+            assert harness.wait_for(lambda: len(harness.responses) == 1)
+            _shutil.rmtree(package.parent)
+            harness.send(_tools_call(2, "monitor_start"))
+            harness.send(_tools_call(3, "cron_list"))
+            assert harness.wait_for(lambda: len(harness.responses) == 3), harness.responses
+            assert harness._thread.is_alive(), "a directly launched server exited"
+        finally:
+            harness.close()
+
+        assert calls == ["before"], "a tool ran from the pruned install"
+        for req_id, result, error in harness.responses[1:]:
+            assert result is None
+            assert error["code"] == -32000 and "restart" in error["message"]
+        assert exits == []
+        audited = sorted(
+            c.kwargs["request_id"]
+            for c in harness.sel_mock.log_tool_invocation.call_args_list
+            if c.kwargs.get("outcome") == "rejected_install_pruned"
+        )
+        assert audited == ["2", "3"]

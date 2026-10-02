@@ -1660,16 +1660,62 @@ class TestResolveKirocrewBin:
         finally:
             agent_mod._KIROCREW_BIN = old_val
 
-    def test_caches_result(self):
-        """Result is cached in global _KIROCREW_BIN."""
+    def test_caches_result(self, tmp_path: Path):
+        """A cached launcher that still works is returned without re-resolving."""
         import kiro_crew.agent as agent_mod
         from kiro_crew.agent import _resolve_kirocrew_bin
 
+        cached = tmp_path / "cached" / "kirocrew"
+        cached.parent.mkdir()
+        cached.write_text("#!/bin/sh\n")
+        cached.chmod(0o755)
         old_val = agent_mod._KIROCREW_BIN
         try:
-            agent_mod._KIROCREW_BIN = "/cached/kirocrew"
-            result = _resolve_kirocrew_bin()
-            assert result == "/cached/kirocrew"
+            agent_mod._KIROCREW_BIN = str(cached)
+            with patch("shutil.which", side_effect=AssertionError("re-resolved")):
+                result = _resolve_kirocrew_bin()
+            assert result == str(cached)
+        finally:
+            agent_mod._KIROCREW_BIN = old_val
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX launcher layout")
+    def test_a_cached_launcher_from_a_pruned_install_is_re_resolved(self, tmp_path: Path):
+        """An update prunes the version directory the process started from.
+
+        The path cached before the prune must not keep being handed out as the
+        launch of kirocrew-core / kirocrew-cron: it is re-resolved, and with the
+        running package gone the walk reaches the current install via PATH.
+        """
+        import shutil as _shutil
+
+        import kiro_crew.agent as agent_mod
+        from kiro_crew.agent import _resolve_kirocrew_bin
+
+        def _launcher(root: Path) -> Path:
+            exe = root / "bin" / "kirocrew"
+            exe.parent.mkdir(parents=True)
+            exe.write_text("#!/bin/sh\n")
+            exe.chmod(0o755)
+            return exe
+
+        old_install = tmp_path / "tools" / "kirocrew" / "0.8.0.4"
+        new_install = tmp_path / "tools" / "kirocrew" / "0.8.0.6"
+        old_bin = _launcher(old_install)
+        new_bin = _launcher(new_install)
+        old_val = agent_mod._KIROCREW_BIN
+        try:
+            agent_mod._KIROCREW_BIN = str(old_bin)
+            assert _resolve_kirocrew_bin() == str(old_bin)
+            _shutil.rmtree(old_install)  # the update's prune
+            # The running package lived in the pruned tree too, so steps 1-3
+            # find nothing; only PATH names the current install.
+            with (
+                patch.object(sys, "exec_prefix", str(old_install)),
+                patch("kiro_crew.__file__", str(old_install / "lib" / "kiro_crew" / "__init__.py")),
+                patch("shutil.which", return_value=str(new_bin)),
+            ):
+                assert _resolve_kirocrew_bin() == str(new_bin)
+            assert agent_mod._KIROCREW_BIN == str(new_bin)
         finally:
             agent_mod._KIROCREW_BIN = old_val
 

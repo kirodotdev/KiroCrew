@@ -679,10 +679,26 @@ def _resolve_kirocrew_bin() -> str:
 
     Every candidate is validated with ``is_file()`` and ``os.access(X_OK)``
     before being returned, so stale paths from previous installs are skipped.
+
+    The cached answer is re-validated on every call, not trusted for the life
+    of the process. A gateway outlives the install it started from: a managed
+    update installs the next version beside it and later prunes the old
+    directory, and a path cached before the prune would keep being written into
+    ``kirocrew.json`` as the launch of ``kirocrew-core`` / ``kirocrew-cron`` --
+    which then fail on every spawn until a restart. A cached launcher that no
+    longer works is dropped and resolution runs again; steps 1-3 are anchored on
+    the (now missing) running package, so they fail and the walk reaches the
+    current install through PATH.
     """
     global _KIROCREW_BIN
     if _KIROCREW_BIN:
-        return _KIROCREW_BIN
+        if _launcher_works(Path(_KIROCREW_BIN)):
+            return _KIROCREW_BIN
+        logger.warning(
+            "cached kirocrew binary %s no longer works (install pruned?); re-resolving",
+            _KIROCREW_BIN,
+        )
+        _KIROCREW_BIN = None
 
     def _usable(p: str | Path) -> bool:
         sp = str(p)
