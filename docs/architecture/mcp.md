@@ -843,6 +843,19 @@ admission FIRST -- queued waiters fail with `SpawnGateClosed`, watchers are
 cancelled (releasing their permits neutral), charges are dropped -- then
 proceeds with the existing teardown.
 
+**Fallback identity.** `fallback_exec` keeps the stub's session token
+(`KIROCREW_STUB_SESSION_TOKEN`) only when the target passes the same
+`_spawns_own_control_plane` vetting gatewayd applies before it hands a pooled
+backend the token: control-plane name, managed binary by real path, exact args,
+no loader or `PYTHON*` overlay in the child env (Kiro Crew's own pinned UTF-8
+values excepted), and no import root shadowing `kiro_crew`. A kept token also
+gets `PYTHONSAFEPATH` (and `PYTHONNOUSERSITE` unless user-site holds this
+package). Every other target has the token removed, so a third-party binary
+never inherits it. Without the token a fallback control plane relies on the
+kernel peer check alone, which cannot name the session on a runtime hosting
+several sessions or over TCP, and every policy read is refused
+`identity_unattested`.
+
 **Wire.** `REGISTERED_CAPABILITIES` carries `spawn_queue`. A stub that saw it
 sends `{"type": "ensure_backend", "wait_budget_secs": N}` and the daemon queues
 the spawn for `min(N, spawn_queue_wait_secs)` LESS

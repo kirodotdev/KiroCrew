@@ -422,7 +422,7 @@ async def test_claim_zero_connections_warns_and_audits(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     """A claim naming a pid with no indexed connection must leave a loud
-    trail (WARN + SEL noop event + distinct ``claim-noop`` ack) instead of a
+    trail (an INFO line + SEL noop event + distinct ``claim-noop`` ack) instead of a
     silent {"updated": 0} — the silence is what hid the orphan-subagent bug
     for three days."""
     sel_calls: list[dict[str, Any]] = []
@@ -433,10 +433,14 @@ async def test_claim_zero_connections_warns_and_audits(
 
     monkeypatch.setattr(gw, "SecurityEventLog", _FakeSEL)
     gw._CONN_INDEX.clear()
-    with caplog.at_level("WARNING", logger="kiro_crew.mcp_gateway.gatewayd"):
+    with caplog.at_level("INFO", logger="kiro_crew.mcp_gateway.gatewayd"):
         ack = await gw._apply_claim(_claim(777777, "dashboard:chat-GHOST"))
     assert ack == {"type": "claim-noop", "updated": 0, "connections": 0}
-    assert any("ZERO connections" in r.message for r in caplog.records)
+    noop_lines = [r for r in caplog.records if "claim matched no connections" in r.message]
+    assert noop_lines
+    # The claim-before-register ordering is normal, so it must not read as a
+    # fault: a WARNING here was mistaken for the cause of identity refusals.
+    assert all(r.levelname == "INFO" for r in noop_lines)
     noop = [
         e for e in sel_calls
         if e.get("operation") == "mcp-gateway.caller-claim"
