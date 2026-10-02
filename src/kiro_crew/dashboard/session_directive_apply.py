@@ -56,6 +56,8 @@ from kiro_crew.autonudge import (
     AUTONUDGE_STOP_REASON,
     MONITOR_TERMINAL_REASON,
     is_channel_key,
+    is_scheduled_message,
+    is_structured_monitor_loop,
 )
 from kiro_crew.autonudge_judge import screen_phrase
 from kiro_crew.messaging.link import is_channel_session_key
@@ -1239,8 +1241,11 @@ async def _stop_resolved_loop(
     agent's own explanation rides along on the removal path only). Callers that
     need a retained terminal record must be watching a structured monitor.
     """
-    from kiro_crew.autonudge import is_structured_monitor_loop
-
+    if is_scheduled_message(loop):
+        raise _DirectiveDenied(
+            "A protected scheduled message can only be unscheduled by an "
+            "authenticated dashboard user."
+        )
     loop_id = loop.id
     reason = _structured_stop_reason(args)
     structured = is_structured_monitor_loop(loop)

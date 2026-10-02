@@ -2790,6 +2790,7 @@ class _ChatSlot:
         "_dirty_gen",
         "_metadata_persist_inflight",
         "_guarded_history_writes",
+        "_history_persist_lock",
         "_in_stage_execution",
         "stage_boundary",
         "_last_turn_auth_required",
@@ -3484,6 +3485,9 @@ class _ChatSlot:
         # retraction of this slot's name must order itself after the real write,
         # so it waits on these futures, which complete with the worker.
         self._guarded_history_writes: set[Any] = set()
+        # Serializes every history snapshot-to-commit span with corrective row
+        # deletion. Reentrant because locked persistence helpers can compose.
+        self._history_persist_lock = threading.RLock()
         # True only while _stage_loop is driving a stage-execution turn. Gates
         # the end-of-turn plan detector so a stage turn whose output happens to
         # contain plan-like text cannot re-arm / re-count the plan (which

@@ -51,6 +51,23 @@ const openGallery = async () => {
   fireEvent.click(await screen.findByText('Browse all templates'))
 }
 
+describe('SchedulePage scheduled chat message pointer', () => {
+  it('explains that chat-scheduled messages are managed in their original chat', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api).crons.mockResolvedValue({ jobs: [mkJob()] })
+
+    renderWithProviders(<SchedulePage />)
+
+    const note = await screen.findByRole('note')
+    expect(note).toHaveAttribute('data-testid', 'scheduled-chat-message-note')
+    expect(note).toHaveTextContent(
+      'Scheduled chat messages stay in their original chat and are managed there.',
+    )
+    expect(within(note).queryByRole('button')).not.toBeInTheDocument()
+    expect(within(note).queryByRole('link')).not.toBeInTheDocument()
+  })
+})
+
 describe('SchedulePage next-run ordering', () => {
   beforeEach(() => {
     vi.clearAllMocks()

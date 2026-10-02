@@ -27,6 +27,7 @@ from kiro_crew.autonudge_authz import (
     normalize_banner,
 )
 from kiro_crew.constants import MAX_BANNER_CHARS
+from kiro_crew.dashboard import session_control
 from kiro_crew.monitoring.models import MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS, MonitorState
 
 
@@ -51,7 +52,9 @@ class RecordingSvc:
 
     def get_by_id(self, loop_id: str) -> Any:
         """Present because the update chokepoint calls it DIRECTLY, not behind a probe."""
-        return self._loop
+        if self._loop is not None and getattr(self._loop, "id", None) == loop_id:
+            return self._loop
+        return None
 
     async def add(self, **kw: Any) -> Any:
         if self._add_error is not None:
@@ -68,6 +71,12 @@ class RecordingSvc:
         if self._update_error is not None:
             raise self._update_error
         self.updated.append({"loop_id": loop_id, **kw})
+        return self._loop
+
+    async def update_pending_scheduled_message(self, loop_id: str, **kw: Any) -> Any:
+        if self._update_error is not None:
+            raise self._update_error
+        self.updated.append({"loop_id": loop_id, **kw, "scheduled": True})
         return self._loop
 
 
@@ -184,6 +193,120 @@ async def test_update_audits_then_reraises_a_service_failure(audits: list[dict])
     assert errors and "svc.update failed: RuntimeError" in errors[0]["error"]
 
 
+@pytest.mark.asyncio
+async def test_update_preserves_only_trusted_scheduled_composer_text(
+    audits: list[dict],
+) -> None:
+    secret = "AKIAIOSFODNN7EXAMPLE"
+    scheduled = SimpleNamespace(
+        id="l1",
+        slot_key="chat-1-1",
+        scheduled_message=True,
+        scheduled_at=autonudge_authz.time.time() + 600,
+    )
+    trusted = RecordingSvc(loop=scheduled)
+
+    loop, error, status = await authorize_and_update_nudge(
+        svc=trusted,
+        loop_id="l1",
+        message=secret,
+        scheduled_user_origin=True,
+        source="dashboard",
+    )
+
+    assert loop is scheduled and error is None and status == 200
+    assert trusted.updated[0]["message"] == secret
+    assert trusted.updated[0]["scheduled"] is True
+
+    automated = RecordingSvc(loop=scheduled)
+    loop, error, status = await authorize_and_update_nudge(
+        svc=automated,
+        loop_id="l1",
+        message=secret,
+        source="workflow",
+    )
+    assert loop is None and status == 403
+    assert error is not None and "authenticated dashboard user" in error
+    assert automated.updated == []
+
+
+@pytest.mark.asyncio
+async def test_scheduled_update_returns_503_when_provenance_read_is_busy(
+    audits: list[dict],
+) -> None:
+    scheduled = SimpleNamespace(
+        id="l1",
+        slot_key="chat-1-1",
+        scheduled_message=True,
+        scheduled_at=autonudge_authz.time.time() + 600,
+    )
+    svc = RecordingSvc(loop=scheduled, update_error=OSError("store busy"))
+
+    loop, error, status = await authorize_and_update_nudge(
+        svc=svc,
+        loop_id=scheduled.id,
+        message="new text",
+        scheduled_user_origin=True,
+        source="dashboard",
+    )
+
+    assert loop is None and status == 503
+    assert error == "scheduled message provenance update unavailable"
+    assert svc.updated == []
+
+
+@pytest.mark.asyncio
+async def test_scheduled_update_failure_is_reported_from_concrete_transaction(
+    audits: list[dict],
+) -> None:
+    scheduled = SimpleNamespace(
+        id="l1",
+        slot_key="chat-1-1",
+        scheduled_message=True,
+        scheduled_at=2_000.0,
+    )
+    svc = RecordingSvc(loop=scheduled, update_error=RuntimeError("store wedged"))
+
+    with pytest.raises(RuntimeError, match="store wedged"):
+        await authorize_and_update_nudge(
+            svc=svc,
+            loop_id=scheduled.id,
+            message="new text",
+            scheduled_user_origin=True,
+            source="dashboard",
+        )
+
+    assert svc.updated == []
+
+
+@pytest.mark.asyncio
+async def test_scheduled_update_cas_conflict_is_a_controlled_denial(
+    audits: list[dict],
+) -> None:
+    scheduled = SimpleNamespace(
+        id="l1",
+        slot_key="chat-1-1",
+        scheduled_message=True,
+        scheduled_at=2_000.0,
+    )
+    svc = RecordingSvc(
+        loop=scheduled,
+        update_error=MonitorUpdateConflict("scheduled message provenance changed during update"),
+    )
+
+    loop, error, status = await authorize_and_update_nudge(
+        svc=svc,
+        loop_id=scheduled.id,
+        message="new text",
+        scheduled_user_origin=True,
+        source="dashboard",
+    )
+
+    assert loop is None and status == 409
+    assert error == "scheduled message provenance changed during update"
+    assert svc.updated == []
+
+
 # --------------------------------------------------------------------------- #
 # authorize_and_add_nudge — guard clauses
 # --------------------------------------------------------------------------- #
@@ -209,6 +332,84 @@ async def test_add_requires_both_slot_key_and_message(audits: list[dict]) -> Non
         source="dashboard",
     )
     assert loop is None and status == 400 and "required" in error
+    assert svc.added == []
+
+
+@pytest.mark.asyncio
+async def test_add_preserves_only_authenticated_composer_text(
+    audits: list[dict], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    secret = "AKIAIOSFODNN7EXAMPLE"
+    slot = SimpleNamespace(
+        key="chat-1-1",
+        linked_session_key="",
+        channel_origin=False,
+        mode="",
+        memory_mode="persistent",
+        workspace="default",
+        is_closing=False,
+    )
+    monkeypatch.setattr(
+        autonudge_authz,
+        "record_scheduled_message",
+        lambda _i, _s, _m, _a, **_kwargs: None,
+    )
+    monkeypatch.setattr(autonudge_authz, "forget_self_arm", lambda _i: None)
+    scheduled = RecordingSvc()
+
+    loop, error, status = await authorize_and_add_nudge(
+        svc=scheduled,
+        state=_state(slots={"chat-1-1": slot}),
+        slot_key="chat-1-1",
+        message=secret,
+        scheduled_at=autonudge_authz.time.time() + 600,
+        composer_user_origin=True,
+        source="dashboard",
+    )
+
+    assert loop is not None and error is None and status == 200
+    assert scheduled.added[0]["message"] == secret
+    assert "loop_id" in scheduled.added[0]
+
+    automated = RecordingSvc()
+    await authorize_and_add_nudge(
+        svc=automated,
+        state=_state(slots={"chat-1-1": slot}),
+        slot_key="chat-1-1",
+        message=secret,
+        source="workflow",
+    )
+    assert automated.added[0]["message"] != secret
+    assert "[REDACTED:" in automated.added[0]["message"]
+
+
+@pytest.mark.asyncio
+async def test_add_cannot_replace_a_protected_scheduled_message(audits: list[dict]) -> None:
+    scheduled = SimpleNamespace(
+        id="scheduled",
+        slot_key="chat-1-1",
+        scheduled_message=True,
+        scheduled_at=autonudge_authz.time.time() + 600,
+        active=True,
+    )
+    svc = RecordingSvc(loop=scheduled)
+
+    loop, error, status = await authorize_and_add_nudge(
+        svc=svc,
+        state=_state(
+            slots={
+                "chat-1-1": SimpleNamespace(
+                    workspace="default", mode="", memory_mode="persistent", is_closing=False
+                )
+            }
+        ),
+        slot_key="chat-1-1",
+        message="agent replacement",
+        source="workflow",
+    )
+
+    assert loop is None and status == 409
+    assert "authenticated dashboard user" in error
     assert svc.added == []
 
 
@@ -1091,3 +1292,228 @@ class TestNormalizeBannerTruncate:
         can shorten it, so silently truncating would hide their input."""
         value, error = normalize_banner("a" * (MAX_BANNER_CHARS + 1), absent_ok=True)
         assert value == "" and error and "too long" in error
+
+
+@pytest.mark.asyncio
+async def test_scheduled_exact_text_cannot_restore_past_the_message_bound(
+    audits: list[dict],
+) -> None:
+    slot_key = "chat-1-1"
+    slot = SimpleNamespace(mode="", memory_mode="persistent", is_closing=False)
+    svc = RecordingSvc()
+
+    loop, error, status = await authorize_and_add_nudge(
+        svc=svc,
+        state=_state(slots={slot_key: slot}),
+        slot_key=slot_key,
+        message=" " * 8000 + "x",
+        scheduled_at=autonudge_authz.time.time() + 600,
+        composer_user_origin=True,
+        source="dashboard",
+    )
+
+    assert loop is None and status == 400 and error == "message too long (max 8000 chars)"
+    assert svc.added == []
+
+
+@pytest.mark.asyncio
+async def test_scheduled_whitespace_only_text_is_denied_but_padding_keeps_exact_bytes(
+    audits: list[dict], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exact-byte preservation must not reopen the emptiness gate: a body of
+    nothing but whitespace is denied before any mutation or provenance record,
+    while a padded NON-EMPTY message is armed with its bytes untouched."""
+    slot_key = "chat-1-1"
+    slot = SimpleNamespace(
+        key=slot_key,
+        linked_session_key="",
+        channel_origin=False,
+        mode="",
+        memory_mode="persistent",
+        workspace="default",
+        is_closing=False,
+    )
+    recorded: list[str] = []
+    monkeypatch.setattr(
+        autonudge_authz,
+        "record_scheduled_message",
+        lambda _record_id, _slot, message, *_args, **_kwargs: recorded.append(message),
+    )
+    scheduled_at = autonudge_authz.time.time() + 600
+
+    for blank in ("   ", "\n\t \r\n", "\u3000"):
+        svc = RecordingSvc()
+        loop, error, status = await authorize_and_add_nudge(
+            svc=svc,
+            state=_state(slots={slot_key: slot}),
+            slot_key=slot_key,
+            message=blank,
+            scheduled_at=scheduled_at,
+            composer_user_origin=True,
+            source="dashboard",
+        )
+        assert loop is None and status == 400
+        assert error == "session_key (or slot_key) and message required"
+        assert svc.added == [] and recorded == []
+        assert audits[-1]["outcome"] == "denied"
+
+    padded = "  keep  my   spacing \t\n"
+    svc = RecordingSvc()
+    loop, error, status = await authorize_and_add_nudge(
+        svc=svc,
+        state=_state(slots={slot_key: slot}),
+        slot_key=slot_key,
+        message=padded,
+        scheduled_at=scheduled_at,
+        composer_user_origin=True,
+        source="dashboard",
+    )
+    assert loop is not None and error is None and status == 200
+    assert svc.added[0]["message"] == padded
+    assert recorded == [padded]
+
+
+@pytest.mark.asyncio
+async def test_scheduled_provenance_binds_content_refreshes_and_rolls_back(
+    audits: list[dict], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    slot_key = "chat-1-1"
+    slot = SimpleNamespace(
+        key=slot_key,
+        linked_session_key="",
+        channel_origin=False,
+        mode="",
+        memory_mode="persistent",
+        workspace="default",
+        is_closing=False,
+    )
+    state = _state(slots={slot_key: slot})
+    scheduled_at = autonudge_authz.time.time() + 600
+    recorded: list[tuple[str, str, str, float, dict[str, Any] | None]] = []
+    forgotten: list[str] = []
+
+    def _record(
+        record_id: str,
+        bound_slot: str,
+        message: str,
+        at: float,
+        *,
+        containment_meta: dict[str, Any] | None = None,
+    ) -> None:
+        recorded.append((record_id, bound_slot, message, at, containment_meta))
+
+    monkeypatch.setattr(autonudge_authz, "record_scheduled_message", _record)
+    monkeypatch.setattr(
+        autonudge_authz,
+        "forget_self_arm",
+        lambda record_id: forgotten.append(record_id),
+    )
+
+    created = RecordingSvc()
+    loop, error, status = await authorize_and_add_nudge(
+        svc=created,
+        state=state,
+        slot_key=slot_key,
+        message="exact composer text",
+        scheduled_at=scheduled_at,
+        composer_user_origin=True,
+        source="dashboard",
+    )
+
+    assert loop is not None and error is None and status == 200
+    created_id = created.added[0]["loop_id"]
+    assert recorded == [
+        (
+            autonudge_authz.scheduled_message_trust_id(created_id),
+            slot_key,
+            "exact composer text",
+            scheduled_at,
+            session_control.containment_meta(state, slot),
+        )
+    ]
+
+    scheduled = SimpleNamespace(
+        id="existing",
+        slot_key=slot_key,
+        scheduled_message=True,
+        scheduled_at=scheduled_at,
+    )
+    updating = RecordingSvc(loop=scheduled)
+    updated, update_error, update_status = await authorize_and_update_nudge(
+        svc=updating,
+        loop_id=scheduled.id,
+        message="updated composer text",
+        scheduled_at=scheduled_at + 300,
+        scheduled_user_origin=True,
+        source="dashboard",
+    )
+    assert updated is scheduled and update_error is None and update_status == 200
+    assert updating.updated == [
+        {
+            "loop_id": scheduled.id,
+            "message": "updated composer text",
+            "scheduled_at": scheduled_at + 300,
+            "scheduled": True,
+        }
+    ]
+
+    failing = RecordingSvc(add_error=RuntimeError("store wedged"))
+    with pytest.raises(RuntimeError, match="store wedged"):
+        await authorize_and_add_nudge(
+            svc=failing,
+            state=_state(slots={slot_key: slot}),
+            slot_key=slot_key,
+            message="never persisted",
+            scheduled_at=scheduled_at,
+            composer_user_origin=True,
+            source="dashboard",
+        )
+    assert forgotten[-1] == recorded[-1][0]
+    assert forgotten[-1].startswith("scheduled-message:")
+
+
+@pytest.mark.asyncio
+async def test_scheduled_id_does_not_alias_a_historical_eight_hex_prefix(
+    audits: list[dict], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    full_id = "deadbeef0123456789abcdef01234567"
+    historical = SimpleNamespace(id="deadbeef")
+    slot_key = "chat-1-1"
+    slot = SimpleNamespace(
+        key=slot_key,
+        linked_session_key="",
+        channel_origin=False,
+        mode="",
+        memory_mode="persistent",
+        workspace="default",
+        is_closing=False,
+    )
+    svc = RecordingSvc()
+    svc.get_by_id = (  # type: ignore[method-assign]
+        lambda loop_id: historical if loop_id == historical.id else None
+    )
+    recorded: list[str] = []
+    monkeypatch.setattr(
+        autonudge_authz.uuid,
+        "uuid4",
+        lambda: SimpleNamespace(hex=full_id),
+    )
+    monkeypatch.setattr(
+        autonudge_authz,
+        "record_scheduled_message",
+        lambda record_id, *_args, **_kwargs: recorded.append(record_id),
+    )
+
+    loop, error, status = await authorize_and_add_nudge(
+        svc=svc,
+        state=_state(slots={slot_key: slot}),
+        slot_key=slot_key,
+        message="full identity",
+        scheduled_at=autonudge_authz.time.time() + 600,
+        composer_user_origin=True,
+        source="dashboard",
+    )
+
+    assert loop is not None and error is None and status == 200
+    assert svc.added[0]["loop_id"] == full_id
+    assert recorded == [autonudge_authz.scheduled_message_trust_id(full_id)]

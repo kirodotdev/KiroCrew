@@ -3,7 +3,9 @@ import { useState } from 'react'
 import { flushSync } from 'react-dom'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import SessionAutomationPopover from '../components/SessionAutomationPopover'
+import SessionAutomationPopover, {
+  scheduledMessageRequestError,
+} from '../components/SessionAutomationPopover'
 import {
   normalizeAutomationRecord,
   type AutomationRecord,
@@ -11,6 +13,9 @@ import {
   type StructuredMonitor,
 } from '../monitoring/automation'
 import { api, ApiError } from '../api/client'
+import { fmtDateTime, fmtDateTimeNumeric } from '../i18n/format'
+import { fireTimeLocal } from '../components/ScheduleLaterPopover'
+import { sha256Hex } from '../utils/sha256Hex'
 import { structuredMonitorLoop } from './monitorFixtures'
 
 const framerMocks = vi.hoisted(() => ({ reducedMotion: false }))
@@ -49,6 +54,17 @@ const activeLegacyLoop: LegacyGoalLoop = {
   nextDueAt: 1_900_000_000, maxRuntimeSecs: 14_400, stoppedReason: '',
 }
 
+const scheduledLoop: LegacyGoalLoop = {
+  ...activeLegacyLoop,
+  id: 'scheduled-1',
+  message: 'Original scheduled message',
+  maxCycles: 1,
+  cycleCount: 0,
+  scheduledMessage: true,
+  scheduledAt: 1_900_000_000,
+  nextDueAt: 1_900_000_000,
+}
+
 /* The popover opens on the goal loop, so a test about the BOUNDED form has to
    walk to it exactly as a reader does. Pressed only when the offer is on
    screen: a slot that already holds a monitor opens on the bounded view, and a
@@ -65,7 +81,13 @@ function renderPopover(
   creationReady = true,
   onOpenChange = vi.fn(),
   sessionMode = '',
-  { enterBounded = true }: { enterBounded?: boolean } = {},
+  {
+    enterBounded = true,
+    onRestoreScheduledMessage,
+  }: {
+    enterBounded?: boolean
+    onRestoreScheduledMessage?: (message: string) => void
+  } = {},
 ) {
   const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } })
   const props = (next: AutomationRecord | null, slotKey = 'chat-1', open = true) => (
@@ -76,6 +98,7 @@ function renderPopover(
         open={open}
         onOpenChange={onOpenChange}
         onChange={onChange}
+        onRestoreScheduledMessage={onRestoreScheduledMessage}
         creationReady={creationReady}
         sessionMode={sessionMode}
       />
@@ -1752,4 +1775,496 @@ describe('SessionAutomationPopover', () => {
     expect(await screen.findByTestId('monitor-read-error')).toHaveAttribute('role', 'alert')
     expect(runtime).toHaveAttribute('max', '604800')
   })
+})
+
+
+describe('SessionAutomationPopover scheduled messages', () => {
+  beforeEach(() => vi.clearAllMocks())
+  afterEach(() => vi.unstubAllGlobals())
+
+it('states the send time once, in the Send at field', () => {
+  renderPopover(scheduledLoop, vi.fn(), true, vi.fn(), '', { enterBounded: false })
+  const at = scheduledLoop.scheduledAt as number
+
+  expect(screen.getByRole('heading', { name: 'Scheduled message' })).toBeInTheDocument()
+  expect(screen.getByLabelText('Send at')).toHaveValue(fireTimeLocal(at))
+  // The header shows no fire-time prose; only the editable Send at field carries it.
+  expect(screen.queryByText(fmtDateTimeNumeric(at))).not.toBeInTheDocument()
+  expect(screen.queryByText(fmtDateTime(at))).not.toBeInTheDocument()
+})
+
+it('names the trigger with the send time at minute precision', () => {
+  renderPopover(scheduledLoop, vi.fn(), true, vi.fn(), '', { enterBounded: false })
+  const at = scheduledLoop.scheduledAt as number
+
+  /* The picker offers minutes, so a `:00` second in the trigger's name would
+     be a value the reader never set -- and the same string the composer
+     banner renders, so the two never disagree about one instant. */
+  const trigger = screen.getByRole('button', { name: `Scheduled message · ${fmtDateTime(at)}` })
+  expect(trigger).toBeInTheDocument()
+  expect(trigger.getAttribute('aria-label')).not.toContain(fmtDateTimeNumeric(at))
+  expect(trigger.getAttribute('aria-label')).not.toMatch(/\d:\d\d:\d\d/)
+})
+
+it('preserves unsaved scheduled drafts when the same loop is replaced from the network', () => {
+  const { rerenderAutomation } = renderPopover(
+    scheduledLoop,
+    vi.fn(),
+    true,
+    vi.fn(),
+    '',
+    { enterBounded: false },
+  )
+  const message = screen.getByRole('textbox', { name: 'Message' })
+  const sendAt = screen.getByLabelText('Send at')
+
+  fireEvent.change(message, { target: { value: 'Unsaved exact draft' } })
+  fireEvent.change(sendAt, { target: { value: '2030-04-01T12:00' } })
+  rerenderAutomation({
+    ...scheduledLoop,
+    message: 'Replacement projection',
+    scheduledAt: scheduledLoop.scheduledAt! + 300,
+    nextDueAt: scheduledLoop.nextDueAt! + 300,
+  })
+
+  expect(message).toHaveValue('Unsaved exact draft')
+  expect(sendAt).toHaveValue('2030-04-01T12:00')
+})
+
+it('omits unchanged scheduled text from a time-only PATCH', async () => {
+  const updatedAt = 1_901_000_000
+  const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+    loop: {
+      id: scheduledLoop.id,
+      slot_key: scheduledLoop.slotKey,
+      message: scheduledLoop.message,
+      idle_secs: scheduledLoop.idleSecs,
+      max_cycles: 1,
+      cycle_count: 0,
+      active: true,
+      last_fire_ts: 0,
+      next_due_ts: updatedAt,
+      max_runtime_secs: scheduledLoop.maxRuntimeSecs,
+      stopped_reason: '',
+      scheduled_message: true,
+      scheduled_at: updatedAt,
+    },
+  }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+  vi.stubGlobal('fetch', fetchMock)
+  renderPopover(scheduledLoop, vi.fn(), true, vi.fn(), '', { enterBounded: false })
+
+  fireEvent.change(screen.getByLabelText('Send at'), {
+    target: { value: '2030-04-01T12:00' },
+  })
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledOnce())
+  const init = fetchMock.mock.calls[0][1] as RequestInit
+  const body = JSON.parse(String(init.body)) as Record<string, unknown>
+  expect(body).toEqual({
+    at: expect.any(Number),
+    expected_revision: sha256Hex(JSON.stringify([
+      scheduledLoop.id,
+      scheduledLoop.slotKey,
+      scheduledLoop.message,
+      Math.trunc((scheduledLoop.scheduledAt as number) * 1000),
+    ])),
+  })
+  expect(String(init.body)).not.toContain(scheduledLoop.message)
+})
+
+it('restores authoritative backend text when unscheduling an edited draft', async () => {
+  const restore = vi.fn()
+  const onChange = vi.fn()
+  const onOpenChange = vi.fn()
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+    ok: true,
+    message: 'Exact protected composer text',
+  }), { status: 200, headers: { 'Content-Type': 'application/json' } })))
+  const { client } = renderPopover(
+    scheduledLoop,
+    onChange,
+    true,
+    onOpenChange,
+    '',
+    { enterBounded: false, onRestoreScheduledMessage: restore },
+  )
+  const invalidate = vi.spyOn(client, 'invalidateQueries').mockResolvedValue(undefined)
+
+  fireEvent.change(screen.getByRole('textbox', { name: 'Message' }), {
+    target: { value: 'Unsaved local replacement' },
+  })
+  fireEvent.click(screen.getByRole('button', { name: 'Unschedule' }))
+
+  await waitFor(() => expect(restore).toHaveBeenCalledWith('Exact protected composer text'))
+  expect(fetch).toHaveBeenCalledWith('/api/autonudge/scheduled-1?intent=stop', {
+    method: 'DELETE',
+  })
+  expect(invalidate).toHaveBeenCalledWith({ queryKey: ['session-automation', 'chat-1'] })
+  expect(onChange).toHaveBeenCalledWith(null)
+  expect(onOpenChange).toHaveBeenCalledWith(false)
+})
+
+it('accepts websocket removal before delayed unschedule succeeds', async () => {
+  let resolveFetch!: (value: Response) => void
+  vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(resolve => {
+    resolveFetch = resolve
+  })))
+  const restore = vi.fn()
+  const onChange = vi.fn()
+  const onOpenChange = vi.fn()
+  const { rerenderAutomation } = renderPopover(
+    scheduledLoop,
+    onChange,
+    true,
+    onOpenChange,
+    '',
+    { enterBounded: false, onRestoreScheduledMessage: restore },
+  )
+
+  fireEvent.click(screen.getByRole('button', { name: 'Unschedule' }))
+  await waitFor(() => expect(fetch).toHaveBeenCalledOnce())
+  rerenderAutomation(null)
+  await act(async () => {
+    resolveFetch(new Response(JSON.stringify({
+      ok: true,
+      message: 'Exact protected composer text',
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    await Promise.resolve()
+  })
+
+  expect(restore).toHaveBeenCalledWith('Exact protected composer text')
+  expect(onChange).toHaveBeenCalledWith(null)
+  expect(onOpenChange).toHaveBeenCalledWith(false)
+})
+
+it('does not clear a replacement automation when delayed unschedule succeeds', async () => {
+  let resolveFetch!: (value: Response) => void
+  vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(resolve => {
+    resolveFetch = resolve
+  })))
+  const restore = vi.fn()
+  const onChange = vi.fn()
+  const onOpenChange = vi.fn()
+  const { client, rerenderAutomation } = renderPopover(
+    scheduledLoop,
+    onChange,
+    true,
+    onOpenChange,
+    '',
+    { enterBounded: false, onRestoreScheduledMessage: restore },
+  )
+  const invalidate = vi.spyOn(client, 'invalidateQueries').mockResolvedValue(undefined)
+
+  fireEvent.click(screen.getByRole('button', { name: 'Unschedule' }))
+  await waitFor(() => expect(fetch).toHaveBeenCalledOnce())
+  const replacement = {
+    ...scheduledLoop,
+    id: 'scheduled-2',
+    message: 'Replacement scheduled message',
+  }
+  rerenderAutomation(replacement)
+  await act(async () => {
+    resolveFetch(new Response(JSON.stringify({
+      ok: true,
+      message: 'Old protected composer text',
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    await Promise.resolve()
+  })
+
+  expect(invalidate).toHaveBeenCalledWith({ queryKey: ['session-automation', 'chat-1'] })
+  expect(screen.getByRole('textbox', { name: 'Message' }))
+    .toHaveValue('Replacement scheduled message')
+  expect(restore).not.toHaveBeenCalled()
+  expect(onChange).not.toHaveBeenCalled()
+  expect(onOpenChange).not.toHaveBeenCalledWith(false)
+})
+
+it('leaves another slot untouched when delayed unschedule succeeds', async () => {
+  let resolveFetch!: (value: Response) => void
+  vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(resolve => {
+    resolveFetch = resolve
+  })))
+  const restore = vi.fn()
+  const onChange = vi.fn()
+  const onOpenChange = vi.fn()
+  const { client, rerenderAutomation } = renderPopover(
+    scheduledLoop,
+    onChange,
+    true,
+    onOpenChange,
+    '',
+    { enterBounded: false, onRestoreScheduledMessage: restore },
+  )
+  const invalidate = vi.spyOn(client, 'invalidateQueries').mockResolvedValue(undefined)
+
+  fireEvent.click(screen.getByRole('button', { name: 'Unschedule' }))
+  await waitFor(() => expect(fetch).toHaveBeenCalledOnce())
+  // Preserve the record identity so this exercises the slot guard independently.
+  rerenderAutomation(scheduledLoop, 'chat-2')
+  await act(async () => {
+    resolveFetch(new Response(JSON.stringify({
+      ok: true,
+      message: 'Exact protected composer text',
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    await Promise.resolve()
+  })
+
+  expect(invalidate).toHaveBeenCalledWith({ queryKey: ['session-automation', 'chat-1'] })
+  expect(invalidate).not.toHaveBeenCalledWith({ queryKey: ['session-automation', 'chat-2'] })
+  expect(restore).not.toHaveBeenCalled()
+  expect(onChange).not.toHaveBeenCalled()
+  expect(onOpenChange).not.toHaveBeenCalledWith(false)
+})
+
+it('shows the conflict copy when Unschedule is refused with a 409 autonudge_not_armed', async () => {
+  /* The backend never emits `session_automation_exists`; a slot conflict is the
+     409 shape of `autonudge_not_armed`. The refusal must land in the popover's
+     own notice, and the unsaved draft stays put (no restore, no close). */
+  const restore = vi.fn()
+  const onOpenChange = vi.fn()
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+    error: 'session already has an automation',
+    code: 'autonudge_not_armed',
+  }), { status: 409, headers: { 'Content-Type': 'application/json' } })))
+  renderPopover(
+    scheduledLoop,
+    vi.fn(),
+    true,
+    onOpenChange,
+    '',
+    { enterBounded: false, onRestoreScheduledMessage: restore },
+  )
+
+  fireEvent.click(screen.getByRole('button', { name: 'Unschedule' }))
+
+  expect(await screen.findByText(
+    'A message is already scheduled. Unschedule it or edit it before scheduling another.',
+  )).toBeInTheDocument()
+  expect(restore).not.toHaveBeenCalled()
+  expect(onOpenChange).not.toHaveBeenCalledWith(false)
+})
+
+/* The PATCH echo is `_serialize`, NOT the provenance-joined projection the GET
+   route returns, and the durable row deliberately stores no scheduled text --
+   `update_pending_scheduled_message` writes `message=""` and routes the exact
+   text to the provenance record. So every one of these fixtures carries
+   `message: ''`, which is what the real backend answers a successful save with.
+   An earlier fixture echoing the text back masked the whole class of bug. */
+function savedScheduledRow(scheduledAt: number) {
+  return {
+    loop: {
+      id: scheduledLoop.id,
+      slot_key: scheduledLoop.slotKey,
+      message: '',
+      idle_secs: scheduledLoop.idleSecs,
+      max_cycles: 1,
+      cycle_count: 0,
+      active: true,
+      last_fire_ts: 0,
+      next_due_ts: scheduledAt,
+      max_runtime_secs: scheduledLoop.maxRuntimeSecs,
+      stopped_reason: '',
+      scheduled_message: true,
+      scheduled_at: scheduledAt,
+    },
+  }
+}
+
+it('keeps the edited scheduled text in the saved projection when no refetch repairs it', async () => {
+  const updatedAt = 1_901_000_000
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(
+    JSON.stringify(savedScheduledRow(updatedAt)),
+    { status: 200, headers: { 'Content-Type': 'application/json' } },
+  )))
+  const onChange = vi.fn()
+  const { client } = renderPopover(scheduledLoop, onChange, true, vi.fn(), '', {
+    enterBounded: false,
+  })
+  /* Stubbed to a resolved no-op: the refetch this save invalidates cannot
+     repair the projection, which is the failure the regression is about. The
+     text has to survive on the success path alone. */
+  const invalidate = vi.spyOn(client, 'invalidateQueries').mockResolvedValue(undefined)
+
+  fireEvent.change(screen.getByRole('textbox', { name: 'Message' }), {
+    target: { value: 'Edited exact scheduled text' },
+  })
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+  await waitFor(() => expect(onChange).toHaveBeenCalledOnce())
+  const saved = onChange.mock.calls[0][0] as LegacyGoalLoop
+  expect(saved.message).toBe('Edited exact scheduled text')
+  // Every other field still comes from the server, so the compensation is the
+  // one redacted field and not a draft echoed over the saved record.
+  expect(saved.scheduledAt).toBe(updatedAt)
+  expect(saved.nextDueAt).toBe(updatedAt)
+  expect(saved.id).toBe(scheduledLoop.id)
+  // Still requested for the originating slot; it is authoritative when it works.
+  expect(invalidate).toHaveBeenCalledWith({ queryKey: ['session-automation', 'chat-1'] })
+})
+
+it('keeps text typed after Save open and rebases it on the saved snapshot', async () => {
+  let resolveFetch!: (value: Response) => void
+  vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(resolve => {
+    resolveFetch = resolve
+  })))
+  const onChange = vi.fn()
+  const onOpenChange = vi.fn()
+  renderPopover(scheduledLoop, onChange, true, onOpenChange, '', { enterBounded: false })
+
+  fireEvent.change(screen.getByRole('textbox', { name: 'Message' }), {
+    target: { value: 'First saved text' },
+  })
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+  await waitFor(() => expect(fetch).toHaveBeenCalledOnce())
+  fireEvent.change(screen.getByRole('textbox', { name: 'Message' }), {
+    target: { value: 'Newer unsaved text' },
+  })
+
+  await act(async () => {
+    resolveFetch(new Response(
+      JSON.stringify(savedScheduledRow(scheduledLoop.scheduledAt as number)),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    ))
+    await Promise.resolve()
+  })
+
+  expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ message: 'First saved text' }))
+  expect(onOpenChange).not.toHaveBeenCalledWith(false)
+  expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Newer unsaved text')
+})
+
+it('keeps a time typed after Save open instead of dropping it', async () => {
+  let resolveFetch!: (value: Response) => void
+  vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(resolve => {
+    resolveFetch = resolve
+  })))
+  const onOpenChange = vi.fn()
+  renderPopover(scheduledLoop, vi.fn(), true, onOpenChange, '', { enterBounded: false })
+
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+  await waitFor(() => expect(fetch).toHaveBeenCalledOnce())
+  fireEvent.change(screen.getByLabelText('Send at'), {
+    target: { value: '2030-04-01T12:00' },
+  })
+
+  await act(async () => {
+    resolveFetch(new Response(
+      JSON.stringify(savedScheduledRow(scheduledLoop.scheduledAt as number)),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    ))
+    await Promise.resolve()
+  })
+
+  expect(onOpenChange).not.toHaveBeenCalledWith(false)
+  expect(screen.getByLabelText('Send at')).toHaveValue('2030-04-01T12:00')
+})
+
+it('closes after a delayed scheduled save when its draft stayed unchanged', async () => {
+  let resolveFetch!: (value: Response) => void
+  vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(resolve => {
+    resolveFetch = resolve
+  })))
+  const onOpenChange = vi.fn()
+  renderPopover(scheduledLoop, vi.fn(), true, onOpenChange, '', { enterBounded: false })
+
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+  await waitFor(() => expect(fetch).toHaveBeenCalledOnce())
+  await act(async () => {
+    resolveFetch(new Response(
+      JSON.stringify(savedScheduledRow(scheduledLoop.scheduledAt as number)),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    ))
+    await Promise.resolve()
+  })
+
+  expect(onOpenChange).toHaveBeenCalledWith(false)
+})
+
+it('does not write a delayed scheduled save over a newer automation', async () => {
+  let resolveFetch!: (value: Response) => void
+  vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(resolve => {
+    resolveFetch = resolve
+  })))
+  const onChange = vi.fn()
+  const { rerenderAutomation } = renderPopover(scheduledLoop, onChange, true, vi.fn(), '', {
+    enterBounded: false,
+  })
+
+  fireEvent.change(screen.getByRole('textbox', { name: 'Message' }), {
+    target: { value: 'Edited while a cancel was racing' },
+  })
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+  await waitFor(() => expect(fetch).toHaveBeenCalledOnce())
+
+  // Unscheduled from the composer banner while the PATCH was still in flight.
+  rerenderAutomation(null)
+  await act(async () => {
+    resolveFetch(new Response(
+      JSON.stringify(savedScheduledRow(1_901_000_000)),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    ))
+    await Promise.resolve()
+  })
+
+  expect(onChange).not.toHaveBeenCalled()
+})
+
+it('leaves another slot untouched when a scheduled save lands after the popover moved', async () => {
+  let resolveFetch!: (value: Response) => void
+  vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(resolve => {
+    resolveFetch = resolve
+  })))
+  const onChange = vi.fn()
+  const onOpenChange = vi.fn()
+  const { client, rerenderAutomation } = renderPopover(
+    scheduledLoop, onChange, true, onOpenChange, '', { enterBounded: false },
+  )
+
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+  await waitFor(() => expect(fetch).toHaveBeenCalledOnce())
+  const invalidate = vi.spyOn(client, 'invalidateQueries').mockResolvedValue(undefined)
+
+  // Same record object, different slot: isolates the stale-slot guard from the
+  // newer-record one, which would also fire if the record had been replaced.
+  rerenderAutomation(scheduledLoop, 'chat-2')
+  await act(async () => {
+    resolveFetch(new Response(
+      JSON.stringify(savedScheduledRow(1_901_000_000)),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    ))
+    await Promise.resolve()
+  })
+
+  expect(invalidate).toHaveBeenCalledWith({ queryKey: ['session-automation', 'chat-1'] })
+  expect(invalidate).not.toHaveBeenCalledWith({ queryKey: ['session-automation', 'chat-2'] })
+  expect(onChange).not.toHaveBeenCalled()
+  expect(onOpenChange).not.toHaveBeenCalledWith(false)
+})
+
+describe('scheduledMessageRequestError', () => {
+  const CONFLICT = 'A message is already scheduled. Unschedule it or edit it before scheduling another.'
+  const GENERIC = "Couldn't schedule the message. Your draft was kept — try again."
+  const SENDING = 'This message is already sending. Wait for delivery to finish.'
+
+  it('reads a 409 autonudge_not_armed as the slot conflict', () => {
+    expect(scheduledMessageRequestError(409, { code: 'autonudge_not_armed' })).toBe(CONFLICT)
+  })
+
+  it.each([400, 403, 404, 503])('keeps the generic copy for autonudge_not_armed at %i', status => {
+    expect(scheduledMessageRequestError(status, { code: 'autonudge_not_armed' })).toBe(GENERIC)
+  })
+
+  it('never matches the code the backend does not emit', () => {
+    expect(scheduledMessageRequestError(409, { code: 'session_automation_exists' })).toBe(GENERIC)
+  })
+
+  it('keeps the in-flight copy regardless of status', () => {
+    expect(scheduledMessageRequestError(409, { code: 'scheduled_message_in_flight' })).toBe(SENDING)
+  })
+
+  it('falls back to the generic copy for an empty body', () => {
+    expect(scheduledMessageRequestError(409, {})).toBe(GENERIC)
+  })
+})
 })

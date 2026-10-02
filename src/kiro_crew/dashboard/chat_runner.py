@@ -77,7 +77,7 @@ from kiro_crew.agent_sdk.spec_hooks import (
 )
 from kiro_crew.agent_sdk.tool_search import resume_takes_tool_search_replay
 from kiro_crew.agent_spec_format import NATIVE_SKILL_ALIAS_PREFIX
-from kiro_crew.autonudge import get_instance
+from kiro_crew.autonudge import MonitorUpdateConflict, get_instance, is_scheduled_message
 from kiro_crew.autonudge_authz import normalize_banner
 from kiro_crew.config.loader import (  # noqa: F401
     KiroCrewConfig,
@@ -207,6 +207,7 @@ from kiro_crew.dashboard.chat_turn.recipient import (  # noqa: F401
     _recipient_principal,
     _resolve_channel_target,
     _resolve_mirror_target,
+    _select_slack_mirror_target,
     _session_principal,
     cross_surface_withheld,
 )
@@ -411,6 +412,7 @@ from kiro_crew.execution_context import (  # noqa: F401
     tighten_live_session_execution,
 )
 from kiro_crew.executors import run_in_embed_pool, subprocess_executor
+from kiro_crew.goal_command import GoalCommandAction, parse_goal_command
 from kiro_crew.history import HUMAN_TURN_META_KEY
 from kiro_crew.hooks import (  # noqa: F401
     HOOK_EVENT_AGENT_SPAWN,
@@ -477,6 +479,7 @@ from kiro_crew.messaging.identity import publish_turn_identity
 from kiro_crew.messaging.link import (  # noqa: F401
     CHAT_TYPE_DIRECT,
     SLACK_NAMESPACE,
+    ChannelLink,
     parse_session_key,
     telemetry_channel_of,
 )
@@ -500,6 +503,7 @@ from kiro_crew.name_grant import (  # noqa: F401
 )
 from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
 from kiro_crew.platform import redact_log_via_context, redact_via_context
+from kiro_crew.platform.context import PlatformCompositionError
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
@@ -553,7 +557,12 @@ from kiro_crew.session_agent_selection import (  # noqa: F401
 )
 from kiro_crew.session_capabilities import CapabilityStartupError
 from kiro_crew.slack.handler import post_linked_approval, resolve_linked_approval
-from kiro_crew.slack.outbound import PostedOptions
+from kiro_crew.slack.outbound import (
+    PostedOptions,
+    expire_options,
+    mark_options_terminal,
+    options_edit_lock,
+)
 from kiro_crew.start_priority import StartPriority, person_priority
 from kiro_crew.trust_patterns import (  # noqa: F401 -- compatibility re-export
     _mask_quoted_separators,
@@ -3036,25 +3045,109 @@ async def _deliver_linked_slack_message(
     session_key: str,
     message: str,
 ) -> None:
-    """Mirror one system message to a linked Slack thread."""
+    """Mirror one system message to a linked Slack thread.
+
+    A deferred turn carries an audience fence. Such a turn must select and
+    authorize the exact live mirror twice before posting: once to bind the
+    coordinates, then again immediately before the awaited egress so a retarget
+    during selection cannot substitute a new audience. Ordinary auth errors keep
+    the established slot/session fallback behavior.
+    """
     slack_client = getattr(state, "slack_client", None)
     if slack_client is None:
         return
-    if slack_mirror_is_paused(state, session_key):
-        return
-    thread_ts = getattr(slot, "_slack_thread_ts", "")
-    channel_id = getattr(slot, "_slack_channel", "")
-    if (not thread_ts or not channel_id) and sessions is not None:
-        thread_ts, channel_id = sessions.get_slack_link(session_key)
-    if not (thread_ts and channel_id):
-        return
+    fences = getattr(slot, "_steer_audience_fences", None)
+    if fences:
+        selected = _select_slack_mirror_target(state, slot, session_key)
+        if selected is None:
+            return
+        thread_ts, channel_id = selected
+        if (
+            _select_slack_mirror_target(
+                state,
+                slot,
+                session_key,
+                expected=(thread_ts, channel_id),
+            )
+            is None
+        ):
+            return
+    else:
+        if slack_mirror_is_paused(state, session_key):
+            return
+        thread_ts = getattr(slot, "_slack_thread_ts", "")
+        channel_id = getattr(slot, "_slack_channel", "")
+        if (not thread_ts or not channel_id) and sessions is not None:
+            thread_ts, channel_id = sessions.get_slack_link(session_key)
+        if not (thread_ts and channel_id):
+            return
     try:
         await slack_client.post_message(channel_id, message, thread_ts)
     except Exception:
         logger.debug("Failed to deliver a message to the linked Slack thread", exc_info=True)
 
 
-async def _deliver_cross_surface_reply(state: Any, session_key: str, assistant_text: str) -> None:
+def _resolve_slack_thread_owner(state: Any, thread_ts: str) -> str | None:
+    """Return the sessions map's positive owner for *thread_ts*, else ``None``."""
+    sessions = getattr(state, "sessions", None)
+    if sessions is None:
+        return None
+    try:
+        owner = sessions.get_session_for_thread(thread_ts)
+    except Exception:
+        logger.debug("Failed to resolve Slack OPTIONS owner", exc_info=True)
+        return None
+    return owner if isinstance(owner, str) and owner else None
+
+
+async def _remember_current_slack_options(
+    state: Any,
+    slot: Any,
+    session_key: str,
+    *,
+    expected_target: tuple[str, str],
+    expected_owner: str,
+    posted: PostedOptions,
+) -> bool:
+    """Track a posted control only while its exact target and owner stay current.
+
+    ``post_blocks`` is an await boundary: unlink, retarget, pause, containment
+    refusal, or an unreadable session map can land after the pre-send check. A
+    stale control is expired directly by its exact channel and timestamp, never
+    inserted into an owner's record set. That exact identity also prevents this
+    cleanup from touching a newer control posted concurrently.
+    """
+    current_target = _select_slack_mirror_target(
+        state,
+        slot,
+        session_key,
+        expected=expected_target,
+    )
+    current_owner = (
+        _resolve_slack_thread_owner(state, expected_target[0])
+        if current_target == expected_target
+        else None
+    )
+
+    if current_target != expected_target or current_owner != expected_owner:
+        slack = getattr(state, "slack_client", None)
+        if slack is not None:
+            async with options_edit_lock(posted.channel, posted.ts):
+                if await expire_options(slack, posted):
+                    mark_options_terminal(posted.channel, posted.ts)
+        return False
+
+    remember_slack_options(state, current_owner, posted)
+    return True
+
+
+async def _deliver_cross_surface_reply(
+    state: Any,
+    session_key: str,
+    assistant_text: str,
+    *,
+    slot: Any | None = None,
+) -> None:
     """Deliver a completed dashboard reply to a linked NON-Slack channel.
 
     The channel-neutral leg of cross-surface sync: reads the session's outbound
@@ -3076,10 +3169,28 @@ async def _deliver_cross_surface_reply(state: Any, session_key: str, assistant_t
     # transport lookup.
     if mirror_is_paused(state, session_key):
         return
-    target = _resolve_mirror_target(state, session_key)
+    try:
+        target = _resolve_mirror_target(state, session_key)
+    except PlatformCompositionError:
+        raise
+    except Exception:
+        logger.debug("Failed to resolve cross-surface mirror target", exc_info=True)
+        return
     if target is None:
         return
     link, transport = target
+    if slot is not None and cross_surface_withheld(state, slot, selected_mirror=link):
+        # Operator-visible: the transcript keeps the reply, but the channel
+        # audience never sees it, and nothing else records why.
+        logger.info(
+            "withholding cross-surface reply for %s to %s:%s: %d unresolved steer "
+            "audience fence(s)",
+            session_key,
+            link.channel_type,
+            link.channel_id,
+            len(slot._steer_audience_fences),
+        )
+        return
     # Redact through the canonical egress shim so a loaded companion's extra
     # credential/token regexes apply (not just the OSS baseline) -- wrapped in the
     # DISPLAY-form floor for the reason spelled out at the Slack leg's own
@@ -3110,11 +3221,65 @@ async def _deliver_cross_surface_reply(state: Any, session_key: str, assistant_t
     # default -- a companion-contributed credential split across a transport seam
     # is invisible to the narrower default pair and would ship whole across two
     # adjacent messages.
+    selected_capabilities = transport.capabilities
+    selected_chunk_limits = (
+        getattr(selected_capabilities, "max_message_chars", None),
+        getattr(selected_capabilities, "max_message_bytes", None),
+    )
     parts = await asyncio.to_thread(
-        chunk_for_transport, text, transport.capabilities, redactor=redact_via_context
+        chunk_for_transport, text, selected_capabilities, redactor=redact_via_context
     )
     try:
-        for part in parts:
+        for sent_parts, part in enumerate(parts):
+            # Chunking and every preceding send yield to the event loop. Treat
+            # each part as a fresh egress operation so an unlink, retarget,
+            # pause, unreadable store, or newly-held turn fence cannot leak the
+            # remainder through the stale target selected above.
+            sessions = getattr(state, "sessions", None)
+            if sessions is None:
+                return
+            try:
+                # Call the store directly: ``mirror_is_paused`` is intentionally
+                # fail-open for general UI behavior, while this network egress
+                # boundary must distinguish an unreadable pause flag from False.
+                if sessions.is_mirror_paused(session_key, origin=False) is True:
+                    return
+                live_target = _resolve_mirror_target(state, session_key)
+                if live_target is None:
+                    return
+                live_link, live_transport = live_target
+                live_capabilities = getattr(live_transport, "capabilities", None)
+                live_chunk_limits = (
+                    getattr(live_capabilities, "max_message_chars", None),
+                    getattr(live_capabilities, "max_message_bytes", None),
+                )
+                if (
+                    not link.same_row(live_link)
+                    or live_transport is not transport
+                    or live_chunk_limits != selected_chunk_limits
+                ):
+                    return
+                if slot is not None and cross_surface_withheld(
+                    state, slot, selected_mirror=live_link
+                ):
+                    # Earlier parts may already be on the channel; say so, or a
+                    # truncated reply there has no explanation anywhere.
+                    logger.info(
+                        "withholding cross-surface reply for %s to %s:%s: %d unresolved "
+                        "steer audience fence(s) after %d of %d part(s) sent",
+                        session_key,
+                        link.channel_type,
+                        link.channel_id,
+                        len(slot._steer_audience_fences),
+                        sent_parts,
+                        len(parts),
+                    )
+                    return
+            except PlatformCompositionError:
+                raise
+            except Exception:
+                logger.debug("Failed to revalidate cross-surface mirror target", exc_info=True)
+                return
             await transport.send_message(link.channel_id, part, thread_id=link.thread_id)
         logger.info(
             "cross-surface: mirrored reply to %s:%s (%d chars, %d part(s))",
@@ -3123,12 +3288,18 @@ async def _deliver_cross_surface_reply(state: Any, session_key: str, assistant_t
             len(text),
             len(parts),
         )
+    except PlatformCompositionError:
+        raise
     except Exception:
         logger.debug("Failed to mirror reply to %s", link.channel_type, exc_info=True)
 
 
 async def _deliver_cross_surface_user_message(
-    state: Any, session_key: str, user_message: str
+    state: Any,
+    session_key: str,
+    user_message: str,
+    *,
+    slot: Any | None = None,
 ) -> None:
     """Mirror the user's dashboard message to a linked NON-Slack channel.
 
@@ -3146,10 +3317,18 @@ async def _deliver_cross_surface_user_message(
     # question with no answer.
     if mirror_is_paused(state, session_key):
         return
-    target = _resolve_mirror_target(state, session_key)
+    try:
+        target = _resolve_mirror_target(state, session_key)
+    except PlatformCompositionError:
+        raise
+    except Exception:
+        logger.debug("Failed to resolve cross-surface mirror target", exc_info=True)
+        return
     if target is None:
         return
     link, transport = target
+    if slot is not None and cross_surface_withheld(state, slot, selected_mirror=link):
+        return
     try:
         await transport.send_message(
             link.channel_id,
@@ -5959,6 +6138,19 @@ async def _prefetch_ttl(state: "DashboardState", slot: "_ChatSlot", session_key:
         logger.warning("Prefetch TTL failed for slot %s", slot.key, exc_info=True)
 
 
+def _append_landed_local_command_done(slot: "_ChatSlot") -> None:
+    """Finish a provider-free local command with an authoritative success verdict.
+
+    Keep the existing three-argument append so callbacks and broadcasts retain
+    their exact ordering. ``_ChatSlot.append`` returns the same mutable row it
+    stores in the pending SSE queue, so stamping it synchronously here reaches a
+    relay reader before that reader can drain the row.
+    """
+    row = slot.append("done", "", "done")
+    if isinstance(row, dict):
+        row["meta"] = {"turn_landed": True}
+
+
 async def _handle_workflow_command(
     state: "DashboardState", slot: "_ChatSlot", message: str, session_key: str
 ) -> None:
@@ -6016,7 +6208,75 @@ async def _handle_workflow_command(
         metadata={"slot": slot.key, "workflow": workflow_ref},
     )
     state.push_slots_update()
-    slot.append("done", "", "done")
+    _append_landed_local_command_done(slot)
+
+
+_SCHEDULED_MESSAGE_OWNS_SLOT_BODY = (
+    "🎯 This chat has a scheduled message, and a session can hold only one "
+    "automation at a time. A scheduled message is protected: `/goal` cannot "
+    "clear or replace it. Unschedule it from the banner above the composer "
+    "in the chat where it was scheduled, then set your goal."
+)
+
+
+def _goal_conflict_body(_goal_svc: Any, slot_key: str, exc: BaseException) -> str:
+    """The body for a ``/goal`` mutation the service refused with a conflict.
+
+    ``MonitorUpdateConflict`` is the service's refusal for SEVERAL distinct
+    conditions, not just a protected schedule. ``add`` alone raises it for a
+    stopped record written by a newer gateway, a stopped record retained as
+    evidence, a session that already holds an automation, and a structured
+    monitor whose wake is in flight -- and that last one is NOT gated on
+    ``replace_existing``, so it is reachable from this handler's own
+    ``replace_existing=True`` call. Answering every one of them with the
+    scheduled-message copy tells a user to go unschedule a message that does
+    not exist, while hiding the condition that actually blocked them.
+
+    So the live record decides the copy, not the exception's type: re-read the
+    slot and use the scheduled wording only when the record really is a
+    scheduled message. This re-read is itself racy -- a schedule can be
+    unscheduled between the raise and the read -- but the race now costs a
+    truthful generic body for a scheduled conflict, where before it produced a
+    confidently FALSE scheduled claim for every other conflict.
+
+    The real reason is surfaced rather than swallowed, because the actionable
+    conditions (a wake in flight, a retained stop) are ones the user can only
+    resolve if they are told. It is redacted first: the text can quote a
+    stored ``stopped_reason``, and the caller's own
+    :func:`_redact_for_display` pass runs over the whole body afterwards too,
+    so the scrub applies whichever path produced it.
+    """
+    # Runs INSIDE an ``except`` whose entire purpose is that this turn must
+    # still reach its ``done`` row. An exception escaping here would be the
+    # very failure the caller catches ``MonitorUpdateConflict`` to avoid -- a
+    # dead turn behind a spinner that never stops -- so the re-read is
+    # contained. It is NOT contained into the scheduled copy: a read that
+    # failed classified nothing, so claiming a schedule would be the same
+    # unsupported claim this function exists to stop, just reached by a
+    # different route. A failed read leaves the record unclassified and falls
+    # through to the generic body, which names the real refusal instead.
+    try:
+        live = _goal_svc.get_by_slot(slot_key)
+        live_is_scheduled = live is not None and is_scheduled_message(live)
+    except Exception:  # noqa: BLE001 - an escape here would kill the turn
+        logger.warning(
+            "could not re-read %s's automation to classify a /goal conflict",
+            slot_key,
+            exc_info=True,
+        )
+        live_is_scheduled = False
+    if live_is_scheduled:
+        return _SCHEDULED_MESSAGE_OWNS_SLOT_BODY
+    detail = _redact_for_display(str(exc).strip())
+    if not detail:
+        # Never leave the body empty: an exception with no message would
+        # otherwise render as a bare header with nothing after it.
+        detail = "the session's automation changed while the command was running"
+    return (
+        f"🎯 `/goal` could not change this chat's automation: {detail}\n\n"
+        "A session holds one automation at a time. Clear or stop the existing "
+        "one from the goal popover, then try again."
+    )
 
 
 async def _handle_goal_command(state: "DashboardState", slot: "_ChatSlot", message: str) -> None:
@@ -6027,60 +6287,90 @@ async def _handle_goal_command(state: "DashboardState", slot: "_ChatSlot", messa
     no autonudge-internals change. Subcommands: ``status`` (default/empty),
     ``clear``, else arm with an optional ``--max N`` budget (default 50, clamped
     1..50).
+
+    A scheduled composer message occupies the session's single automation slot
+    and is protected: the service refuses to let ``add``/``remove`` replace or
+    delete it and raises ``MonitorUpdateConflict``. That refusal is caught HERE,
+    at the live handler boundary, because nothing above ``_run_chat`` writes the
+    ``done`` row for an escaped exception -- the turn would otherwise die with a
+    logged error and a spinner that never stops. Mutations are short-circuited
+    before the service call when the slot's record is a scheduled message, and
+    the conflict is still caught around the call for the race where the record
+    lands between the read and the mutation. The caught conflict is NOT assumed
+    to be a schedule: ``_goal_conflict_body`` re-reads the live record and only
+    then chooses between the scheduled copy and the real reason, because the
+    same exception also carries the non-scheduled refusals ``add`` raises.
+    ``status`` stays read-only.
     """
     _goal_svc = get_instance()
-    _parts = message.split(None, 1)
-    _rest = _parts[1].strip() if len(_parts) > 1 else ""
+    _command = parse_goal_command(message)
+    if _command is None:
+        raise ValueError("goal handler received a non-goal command")
+    _outcome = "ok"
     if _goal_svc is None:
         body = (
             "🎯 Goal loops are unavailable (AutoNudge is disabled). "
             "Set `KIROCREW_AUTONUDGE=1` and restart the gateway."
         )
-    elif _rest in ("", "status"):
+    elif _command.action is GoalCommandAction.STATUS:
         _loop = _goal_svc.get_by_slot(slot.key)
-        if _loop is not None:
-            _cap = _loop.max_cycles or "∞"
-            body = f"🎯 Active goal (budget {_cap} turns). " "Use `/goal clear` to stop it."
-        else:
+        if _loop is None:
             body = (
                 "No active goal. Set one with `/goal <objective>` "
                 "(optionally `/goal --max N <objective>`)."
             )
-    elif _rest == "clear":
+        elif is_scheduled_message(_loop):
+            body = _SCHEDULED_MESSAGE_OWNS_SLOT_BODY
+        else:
+            _cap = _loop.max_cycles or "∞"
+            body = f"🎯 Active goal (budget {_cap} turns). " "Use `/goal clear` to stop it."
+    elif _command.action is GoalCommandAction.CLEAR:
         _loop = _goal_svc.get_by_slot(slot.key)
-        if _loop is not None:
-            await _goal_svc.remove(_loop.id, stop_reason="goal_cleared")
-            body = "🎯 Goal cleared."
-        else:
+        if _loop is None:
             body = "No active goal to clear."
-    else:
-        _max_cycles = 50
-        _objective = _rest
-        _m = re.match(r"--max\s+(\d+)\s+(.*)", _rest, re.DOTALL)
-        if _m:
-            _max_cycles = max(1, min(50, int(_m.group(1))))
-            _objective = _m.group(2).strip()
-        elif _rest.startswith("--max"):
-            _objective = ""
-        if not _objective:
-            body = "Usage: `/goal <objective>` or `/goal --max N <objective>`."
+        elif is_scheduled_message(_loop):
+            body = _SCHEDULED_MESSAGE_OWNS_SLOT_BODY
+            _outcome = "conflict"
         else:
-            _slug = re.sub(r"[^A-Za-z0-9._-]", "_", slot.key)
-            _sentinel = str(data_home() / "goal-stop" / f"{_slug}.stop")
-            Path(_sentinel).unlink(missing_ok=True)
-            _nudge = (
-                f"Goal: {_objective}\n"
-                "Each idle cycle, in order: "
-                f'(1) if the file {_sentinel} exists -> autonudge_stop(reason="sentinel") and stop; '
-                "(2) if the goal is fully met by concrete evidence (a passing test, a built file, "
-                'command output — not a guess) -> autonudge_stop(reason="goal met"), post a one-line '
-                "summary citing the evidence, and stop; "
-                "(3) else do ONE atomic step (<=5 tool calls) and make the deliverable durable "
-                "(write the file / run the check) before claiming progress.\n"
-                "Guardrails: never git push; never read credential files. Hard blocker -> state it once and "
-                f'autonudge_stop(reason="blocked"). Budget {_max_cycles} cycles (service stops at '
-                "the cap). One short progress line per cycle."
-            )
+            try:
+                await _goal_svc.remove(_loop.id, stop_reason="goal_cleared")
+            except MonitorUpdateConflict as _exc:
+                # The record changed under the read (a schedule landed on the
+                # slot between get_by_slot and remove), or the refusal was a
+                # different conflict entirely. The live record decides which
+                # answer the user gets; the service left the record intact
+                # either way.
+                body = _goal_conflict_body(_goal_svc, slot.key, _exc)
+                _outcome = "conflict"
+            else:
+                body = "🎯 Goal cleared."
+    elif _command.action is GoalCommandAction.USAGE:
+        body = "Usage: `/goal <objective>` or `/goal --max N <objective>`."
+    elif (_existing_loop := _goal_svc.get_by_slot(slot.key)) is not None and is_scheduled_message(
+        _existing_loop
+    ):
+        body = _SCHEDULED_MESSAGE_OWNS_SLOT_BODY
+        _outcome = "conflict"
+    else:
+        _max_cycles = _command.max_cycles
+        _objective = _command.objective
+        _slug = re.sub(r"[^A-Za-z0-9._-]", "_", slot.key)
+        _sentinel = str(data_home() / "goal-stop" / f"{_slug}.stop")
+        Path(_sentinel).unlink(missing_ok=True)
+        _nudge = (
+            f"Goal: {_objective}\n"
+            "Each idle cycle, in order: "
+            f'(1) if the file {_sentinel} exists -> autonudge_stop(reason="sentinel") and stop; '
+            "(2) if the goal is fully met by concrete evidence (a passing test, a built file, "
+            'command output — not a guess) -> autonudge_stop(reason="goal met"), post a one-line '
+            "summary citing the evidence, and stop; "
+            "(3) else do ONE atomic step (<=5 tool calls) and make the deliverable durable "
+            "(write the file / run the check) before claiming progress.\n"
+            "Guardrails: never git push; never read credential files. Hard blocker -> state it once and "
+            f'autonudge_stop(reason="blocked"). Budget {_max_cycles} cycles (service stops at '
+            "the cap). One short progress line per cycle."
+        )
+        try:
             await _goal_svc.add(
                 slot.key,
                 message=_nudge,
@@ -6098,6 +6388,16 @@ async def _handle_goal_command(state: "DashboardState", slot: "_ChatSlot", messa
                 banner=normalize_banner(_objective, absent_ok=True, truncate=True)[0],
                 admission_check=lambda: state.get_slot(slot.key) is slot,
             )
+        except MonitorUpdateConflict as _exc:
+            # Raced with a schedule landing on the slot after the read above,
+            # or refused for one of the OTHER conflicts ``add`` raises -- a
+            # structured monitor's wake in flight is reachable here even
+            # though this call replaces an existing record. The service
+            # refused before touching the protected record; the live record
+            # decides which answer the user gets.
+            body = _goal_conflict_body(_goal_svc, slot.key, _exc)
+            _outcome = "conflict"
+        else:
             body = (
                 f"⊙ Goal set ({_max_cycles}-turn budget): {_objective}\n\n"
                 "I'll work toward it across turns and stop when it's met "
@@ -6110,12 +6410,12 @@ async def _handle_goal_command(state: "DashboardState", slot: "_ChatSlot", messa
         source="dashboard",
         tool_name="/goal",
         tool_kind="slash_command",
-        outcome="ok",
+        outcome=_outcome,
         metadata={"slot": slot.key},
     )
     slot.append("assistant", body, "msg msg-a")
     state.push_slots_update()
-    slot.append("done", "", "done")
+    _append_landed_local_command_done(slot)
 
 
 def _arm_queued_delivery_settlement(
@@ -7105,7 +7405,11 @@ def _arm_synthesis_recheck(state: DashboardState, slot: _ChatSlot) -> None:
 
 
 async def _finish_queue_cycle(
-    state: DashboardState, slot: _ChatSlot, *, allow_automatic_successor: bool = True
+    state: DashboardState,
+    slot: _ChatSlot,
+    *,
+    turn_landed: bool = False,
+    allow_automatic_successor: bool = True,
 ) -> None:
     """Start synthesis when eligible, otherwise mark a queue cycle idle.
 
@@ -7170,7 +7474,7 @@ async def _finish_queue_cycle(
         _launch_synthesis(state, slot)
         return
 
-    slot.append("done", "", "done")
+    slot.append("done", "", "done", meta={"turn_landed": turn_landed})
     slot.task = None
     state.push_slots_update()
     state.broadcast_ws("chat_done", await chat_done_payload(state, slot))
@@ -7347,6 +7651,10 @@ async def _run_chat(
     # deactivate a loop whose config advanced since (the A->B->A race that a
     # message-value key could not tell apart). Captured by the fire path.
     _directive_loop_gen: int = 0,
+    # Trusted admission-time containment for deferred user speech. The runner
+    # installs it in the existing turn-scoped cross-surface fence immediately
+    # before user-message egress; ordinary turns leave it absent.
+    _audience_containment_admission: dict[str, Any] | None = None,
     _directive_channel_origin: bool = False,
     # Who caused this turn, from the dispatch that knows -- a consumed queue
     # entry's enqueue-time ``kind`` tag, or an injector calling this runner
@@ -8492,7 +8800,7 @@ async def _run_chat(
             "msg msg-a",
         )
         state.push_slots_update()
-        slot.append("done", "", "done")
+        _append_landed_local_command_done(slot)
         return
 
     # ── /goal: arm / clear a goal-driven self-verdict loop (v0) ──
@@ -8542,6 +8850,7 @@ async def _run_chat(
                     _directive_self_wake=_directive_self_wake,
                     _directive_channel_origin=_directive_channel_origin,
                     _turn_actor=_turn_actor,
+                    _audience_containment_admission=_audience_containment_admission,
                 )
             elif status == "blocked":
                 sel().log_tool_invocation(
@@ -8557,7 +8866,7 @@ async def _run_chat(
                     "assistant", f"🔒 Prompt `{name}` blocked — sensitive path.", "msg msg-a"
                 )
                 state.push_slots_update()
-                slot.append("done", "", "done")
+                _append_landed_local_command_done(slot)
             elif status == "too_large":
                 sel().log_tool_invocation(
                     session_key="",
@@ -8574,7 +8883,7 @@ async def _run_chat(
                     "msg msg-a",
                 )
                 state.push_slots_update()
-                slot.append("done", "", "done")
+                _append_landed_local_command_done(slot)
             else:
                 sel().log_tool_invocation(
                     session_key="",
@@ -8587,7 +8896,7 @@ async def _run_chat(
                 )
                 slot.append("assistant", f"❌ Prompt `{name}` not found.", "msg msg-a")
                 state.push_slots_update()
-                slot.append("done", "", "done")
+                _append_landed_local_command_done(slot)
             return
 
         # /prompts or /prompts list — show available prompts
@@ -8617,7 +8926,7 @@ async def _run_chat(
                 metadata={"count": 0, "slot": slot.key, "via": "/prompts"},
             )
             state.push_slots_update()
-            slot.append("done", "", "done")
+            _append_landed_local_command_done(slot)
             return
         lines = ["**Available Prompts** — type `@name` to invoke\n"]
         by_source: dict[str, list] = {}
@@ -8643,7 +8952,7 @@ async def _run_chat(
             metadata={"count": len(prompts), "slot": slot.key, "via": "/prompts"},
         )
         state.push_slots_update()
-        slot.append("done", "", "done")
+        _append_landed_local_command_done(slot)
         return
 
     # ── Manual /compact capability gate ──
@@ -8711,7 +9020,7 @@ async def _run_chat(
                 "msg msg-a",
             )
             state.push_slots_update()
-            slot.append("done", "", "done")
+            _append_landed_local_command_done(slot)
             return
 
     _is_monitor_wake = message.startswith(MONITOR_WAKE_PREFIX)
@@ -10235,6 +10544,9 @@ async def _run_chat(
                 state, slot, client, _jev_route_text, session_key, prompt=full_message
             )
 
+        if _audience_containment_admission is not None:
+            slot._steer_audience_fences["scheduled-message"] = _audience_containment_admission
+
         state.broadcast_ws("chat_status", {"slot": slot.key, "status": "Thinking…"})
         state.broadcast_ws(
             "activity_event", {"slot": slot.key, "kind": "status", "text": "Thinking…"}
@@ -10251,22 +10563,42 @@ async def _run_chat(
         # stream, the assistant reply and the stream teardown together. Disconnect
         # is the user saying "not into this conversation", which applies to the
         # answer as much as to the echo — so it is one gate, not four.
-        if state.slack_client and not is_slash and not slack_mirror_is_paused(state, session_key):
-            _mirror_thread, _mirror_chan = state.sessions.get_slack_link(session_key)
-            if _mirror_thread and _mirror_chan:
+        if state.slack_client and not is_slash:
+            _selected_slack_target = _select_slack_mirror_target(state, slot, session_key)
+            if _selected_slack_target is not None:
+                _mirror_thread, _mirror_chan = _selected_slack_target
                 try:
                     if not _is_synthetic:
                         _mirror_msg = _prepare_mirror_msg(_user_msg_for_mirror)
                         await state.slack_client.post_message(
                             _mirror_chan, f"💬 _{_mirror_msg}_", _mirror_thread
                         )
-                    # Start a stream for real-time tool animations
-                    _mirror_stream_ts = (
-                        await state.slack_client.start_stream(
-                            _mirror_chan, _mirror_thread, initial_text="Thinking…"
+                        # The user echo yields. Reauthorize its exact target before
+                        # opening the stream so an unlink or retarget during that
+                        # await cannot publish "Thinking…" to the stale audience.
+                        if (
+                            _select_slack_mirror_target(
+                                state,
+                                slot,
+                                session_key,
+                                expected=(_mirror_thread, _mirror_chan),
+                            )
+                            is None
+                        ):
+                            # Withhold the stale coordinates from every later Slack
+                            # leg (tool, reply, and teardown), not only this stream.
+                            _mirror_thread = None
+                            _mirror_chan = None
+                    # Synthetic recovery has no user-echo await and retains the
+                    # existing direct stream setup. Ordinary turns start only while
+                    # their exact post-echo target remains authorized.
+                    if _mirror_thread and _mirror_chan:
+                        _mirror_stream_ts = (
+                            await state.slack_client.start_stream(
+                                _mirror_chan, _mirror_thread, initial_text="Thinking…"
+                            )
+                            or ""
                         )
-                        or ""
-                    )
                 except Exception:
                     logger.debug("Failed to mirror user message to Slack", exc_info=True)
 
@@ -10274,7 +10606,12 @@ async def _run_chat(
         # proactive channel (e.g. Telegram) so the remote conversation reads
         # coherently (question then reply), matching the Slack echo above.
         if not is_slash and not _is_synthetic:
-            await _deliver_cross_surface_user_message(state, session_key, _user_msg_for_mirror)
+            await _deliver_cross_surface_user_message(
+                state,
+                session_key,
+                _user_msg_for_mirror,
+                slot=slot,
+            )
 
         _stop_reason = ""
         # Class of the turn's completion (acp.types.classify_stop_reason); the
@@ -11094,11 +11431,22 @@ async def _run_chat(
                 # overwhelming majority of turns -- `cross_surface_withheld` returns
                 # before probing anything when no peer steer is recorded -- so paying
                 # it per event costs nothing on a turn nobody interfered with.
-                if _mirror_stream_ts and not cross_surface_withheld(state, slot):
+                _tool_mirror_target = (
+                    _select_slack_mirror_target(
+                        state,
+                        slot,
+                        session_key,
+                        expected=(_mirror_thread, _mirror_chan),
+                    )
+                    if _mirror_stream_ts
+                    else None
+                )
+                if _mirror_stream_ts and _tool_mirror_target is not None:
+                    _, _tool_mirror_chan = _tool_mirror_target
                     try:
                         if _mirror_active_task:
                             await state.slack_client.append_task(
-                                _mirror_chan,
+                                _tool_mirror_chan,
                                 _mirror_stream_ts,
                                 _mirror_active_task,
                                 _mirror_active_task_title,
@@ -11112,7 +11460,7 @@ async def _run_chat(
                         _task_title = _task_title[:75]
                         _mirror_active_task_title = _task_title
                         await state.slack_client.append_task(
-                            _mirror_chan,
+                            _tool_mirror_chan,
                             _mirror_stream_ts,
                             _mirror_active_task,
                             _task_title,
@@ -16065,13 +16413,18 @@ async def _run_chat(
         # unlinked target can have its reply published here to a conversation the
         # authorization never saw. Fencing only the non-Slack leg would leave the
         # busier surface open.
-        if (
-            assistant_text
-            and state.slack_client
-            and _mirror_thread
-            and _mirror_chan
-            and not cross_surface_withheld(state, slot)
-        ):
+        _reply_mirror_target = (
+            _select_slack_mirror_target(
+                state,
+                slot,
+                session_key,
+                expected=(_mirror_thread, _mirror_chan),
+            )
+            if assistant_text and state.slack_client and _mirror_thread and _mirror_chan
+            else None
+        )
+        if _reply_mirror_target is not None:
+            _reply_mirror_thread, _reply_mirror_chan = _reply_mirror_target
             try:
                 from kiro_crew.slack.format import (  # circular: slack.format -> dashboard.state -> chat
                     build_options_blocks,
@@ -16086,9 +16439,36 @@ async def _run_chat(
                 # entirely to to_slack_mrkdwn's self-truncation.
                 _mirror_body, _mirror_options = extract_options(assistant_text)
 
+                _mirror_revoked = False
                 for _part in render_for_slack(_mirror_body):
-                    await state.slack_client.post_message(_mirror_chan, _part, _mirror_thread)
-                if _mirror_options:
+                    # Every awaited post is a revocation boundary. Re-read the
+                    # exact binding before the next part so unlink, pause, or
+                    # retarget cannot leak the remainder to a stale audience.
+                    _current_mirror_target = _select_slack_mirror_target(
+                        state,
+                        slot,
+                        session_key,
+                        expected=(_reply_mirror_thread, _reply_mirror_chan),
+                    )
+                    if _current_mirror_target is None:
+                        _mirror_revoked = True
+                        break
+                    await state.slack_client.post_message(
+                        _reply_mirror_chan,
+                        _part,
+                        _reply_mirror_thread,
+                    )
+                if (
+                    _mirror_options
+                    and not _mirror_revoked
+                    and _select_slack_mirror_target(
+                        state,
+                        slot,
+                        session_key,
+                        expected=(_reply_mirror_thread, _reply_mirror_chan),
+                    )
+                    is not None
+                ):
                     # Keep the ts this posts: the control has to be spendable
                     # later, and discarding the ts is what leaves a superseded
                     # question clickable forever. build_options_blocks already
@@ -16099,48 +16479,66 @@ async def _run_chat(
                     # time, so a relink landing mid-turn would stamp the control
                     # with a conversation that never asked the question.
                     _mirror_token = await asyncio.to_thread(mint_options_token, state, session_key)
-                    _mirror_blocks = build_options_blocks(
-                        _mirror_options, staleness_token=_mirror_token
+                    _options_mirror_target = _select_slack_mirror_target(
+                        state,
+                        slot,
+                        session_key,
+                        expected=(_reply_mirror_thread, _reply_mirror_chan),
                     )
-                    # The thread's owner BEFORE the post. A relink landing while
-                    # post_blocks is in flight moves the conversation to another
-                    # session, and a control recorded under the key this turn
-                    # started with would be filed where that session's expiry
-                    # never looks -- and clickable into a conversation it does not
-                    # belong to. Same treatment the other two posting paths get.
-                    _pre_owner = (
-                        state.sessions.get_session_for_thread(_mirror_thread) or session_key
-                        if getattr(state, "sessions", None)
-                        else session_key
-                    )
-                    _mirror_ts = await state.slack_client.post_blocks(
-                        _mirror_chan,
-                        _mirror_blocks,
-                        "Options",
-                        _mirror_thread,
-                    )
-                    if _mirror_ts:
-                        _owner = (
-                            state.sessions.get_session_for_thread(_mirror_thread) or session_key
-                            if getattr(state, "sessions", None)
-                            else session_key
+                    if _options_mirror_target is None:
+                        _mirror_revoked = True
+                    else:
+                        _options_mirror_thread, _options_mirror_chan = _options_mirror_target
+                        _mirror_blocks = build_options_blocks(
+                            _mirror_options, staleness_token=_mirror_token
                         )
-                        remember_slack_options(
+                        # The thread's owner BEFORE the post. A relink landing while
+                        # post_blocks is in flight moves the conversation to another
+                        # session, and a control recorded under the key this turn
+                        # started with would be filed where that session's expiry
+                        # never looks -- and clickable into a conversation it does not
+                        # belong to. Same treatment the other two posting paths get.
+                        _pre_owner = _resolve_slack_thread_owner(
                             state,
-                            _owner,
-                            PostedOptions(
-                                channel=_mirror_chan,
-                                ts=_mirror_ts,
-                                choices=tuple(_mirror_options),
-                                blocks=tuple(_mirror_blocks),
-                            ),
+                            _options_mirror_thread,
                         )
-                        if _owner != _pre_owner:
-                            # An owner change IS supersession: the question we just
-                            # posted would be answered into a conversation that has
-                            # moved on. Narrowed to OUR ts so a control the new
-                            # owner recorded meanwhile survives.
-                            await expire_slack_options(state, _owner, ts=_mirror_ts)
+                        if _pre_owner is None:
+                            _mirror_revoked = True
+                        else:
+                            _post_mirror_target = _select_slack_mirror_target(
+                                state,
+                                slot,
+                                session_key,
+                                expected=(_options_mirror_thread, _options_mirror_chan),
+                            )
+                            if _post_mirror_target is None:
+                                _mirror_revoked = True
+                            else:
+                                _post_mirror_thread, _post_mirror_chan = _post_mirror_target
+                                _mirror_ts = await state.slack_client.post_blocks(
+                                    _post_mirror_chan,
+                                    _mirror_blocks,
+                                    "Options",
+                                    _post_mirror_thread,
+                                )
+                                if _mirror_ts:
+                                    _posted_options = PostedOptions(
+                                        channel=_post_mirror_chan,
+                                        ts=_mirror_ts,
+                                        choices=tuple(_mirror_options),
+                                        blocks=tuple(_mirror_blocks),
+                                    )
+                                    await _remember_current_slack_options(
+                                        state,
+                                        slot,
+                                        session_key,
+                                        expected_target=(
+                                            _post_mirror_thread,
+                                            _post_mirror_chan,
+                                        ),
+                                        expected_owner=_pre_owner,
+                                        posted=_posted_options,
+                                    )
             except Exception:
                 logger.debug("Failed to mirror response to Slack", exc_info=True)
 
@@ -16152,15 +16550,12 @@ async def _run_chat(
         # a preceding question on the linked surface — withholding it would strand
         # that question unanswered.
         if not is_slash:
-            if cross_surface_withheld(state, slot):
-                logger.info(
-                    "withholding cross-surface reply for %s: %d unresolved steer "
-                    "audience fence(s)",
-                    session_key,
-                    len(slot._steer_audience_fences),
-                )
-            else:
-                await _deliver_cross_surface_reply(state, session_key, assistant_text)
+            await _deliver_cross_surface_reply(
+                state,
+                session_key,
+                assistant_text,
+                slot=slot,
+            )
     except asyncio.CancelledError:
         _crew_log_error = "CancelledError"
         _persist_partial_reply()
@@ -17709,6 +18104,7 @@ async def _run_chat(
                 # failed and cancelled turns keep the retry unlabelled.
                 _autonudge.notify_turn_complete(
                     slot.key,
+                    turn_completed=_turn_landed,
                     tool_calls=_turn_tool_calls,
                     tool_identities=tuple(_turn_tool_identities),
                     reply_text=assistant_text if isinstance(assistant_text, str) else "",
@@ -17737,9 +18133,20 @@ async def _run_chat(
                     # one was withheld, marking it complete here would publish the
                     # title for the first time. This runs BEFORE the fence is
                     # cleared below, so it still sees the turn's own records.
-                    if _mirror_active_task and not cross_surface_withheld(state, slot):
+                    _cleanup_mirror_target = (
+                        _select_slack_mirror_target(
+                            state,
+                            slot,
+                            session_key,
+                            expected=(_mirror_thread, _mirror_chan),
+                        )
+                        if _mirror_active_task
+                        else None
+                    )
+                    if _mirror_active_task and _cleanup_mirror_target is not None:
+                        _, _cleanup_mirror_chan = _cleanup_mirror_target
                         await state.slack_client.append_task(
-                            _mirror_chan,
+                            _cleanup_mirror_chan,
                             _mirror_stream_ts,
                             _mirror_active_task,
                             _mirror_active_task_title,
@@ -17864,11 +18271,11 @@ async def _run_chat(
         # individually cancellable — a user who meant "discard" clicks ✕;
         # nothing is ever silently lost.
         _requeue_unconsumed_steers(state, slot)
-        # Drop the peer-steer admissions with the turn they belonged to. They govern
-        # whether THIS turn may publish across surfaces, which is their whole job;
-        # carrying them further would judge a later turn by an authorization that was
-        # never about it. Cleared unconditionally, so a hard stop, a crash or a
-        # gateway abort cannot leave a record behind to silence the next turn.
+        # Drop every audience admission with the turn it belonged to. Peer-steer
+        # and scheduled-message fences govern whether THIS turn may publish
+        # across surfaces; carrying either forward would judge a later turn by
+        # an authorization that was never about it. Cleared unconditionally, so
+        # a hard stop, crash, or gateway abort cannot silence the next turn.
         slot._steer_audience_fences.clear()
         slot._steer_audience_fence_holders.clear()
         if _prompt_depth == 0:
@@ -17917,6 +18324,7 @@ async def _run_chat(
             await _finish_queue_cycle(
                 state,
                 slot,
+                turn_landed=_turn_landed,
                 allow_automatic_successor=_memory_preparation_admitted,
             )
 

@@ -13,6 +13,7 @@ The store transaction around them -- lock, reload, save -- is the service's.
 
 from __future__ import annotations
 
+import math
 import time
 import uuid
 from typing import Any
@@ -29,6 +30,8 @@ from kiro_crew.cron_service.store import _is_representable_number
 from kiro_crew.validation import CHANNEL_MAX_LEN, MAX_CRON_MESSAGE, MAX_SHORT_STRING
 
 _MIN_INTERVAL_SECS = 60
+# Upper bound shared with the public one-shot schema (2100-01-01 UTC).
+_MAX_AT_TS = 4_102_444_800
 
 # Shown verbatim under the Schedule form's Save button, so it names the rule
 # and the next step rather than only the refusal.
@@ -302,6 +305,16 @@ def apply_job_update(
         and kwargs["every_secs"]
     ):
         raise ValueError("Cannot specify both cron_expr and every_secs")
+    if "at_ts" in kwargs and kwargs["at_ts"] is not None:
+        if kwargs.get("cron_expr") or kwargs.get("every_secs"):
+            raise ValueError("Cannot specify at_ts with cron_expr or every_secs")
+        try:
+            at_ts = float(kwargs["at_ts"])
+        except (ValueError, TypeError, OverflowError) as exc:
+            raise ValueError(f"Invalid at_ts: {kwargs['at_ts']!r}") from exc
+        if not math.isfinite(at_ts) or not 0 < at_ts <= _MAX_AT_TS:
+            raise ValueError(f"at_ts out of range: {at_ts!r}")
+        kwargs["at_ts"] = at_ts
     if "cron_expr" in kwargs and kwargs["cron_expr"]:
         if not validate_cron_expr(kwargs["cron_expr"]):
             raise ValueError(f"Invalid cron expression: {kwargs['cron_expr']}")
@@ -512,8 +525,19 @@ def apply_job_update(
     if _tsub is not None:
         job.timeout = _tsub
 
-    # Schedule changes (already validated above)
+    # Converting a one-shot to recurring must disarm deletion. A same-kind
+    # retime preserves the existing retention contract; recurring-to-one-shot
+    # derives the create-style deletion default.
+    was_one_shot = job.schedule.kind == "at"
     if "cron_expr" in kwargs and kwargs["cron_expr"]:
         job.schedule = CronSchedule(kind="cron", cron_expr=kwargs["cron_expr"])
+        if was_one_shot:
+            job.delete_after_run = False
     elif "every_secs" in kwargs and kwargs["every_secs"]:
         job.schedule = CronSchedule(kind="every", every_secs=int(kwargs["every_secs"]))
+        if was_one_shot:
+            job.delete_after_run = False
+    elif "at_ts" in kwargs and kwargs["at_ts"] is not None:
+        job.schedule = CronSchedule(kind="at", at_ts=float(kwargs["at_ts"]))
+        if not was_one_shot:
+            job.delete_after_run = True

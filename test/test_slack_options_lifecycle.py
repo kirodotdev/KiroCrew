@@ -1998,31 +1998,142 @@ class TestControlPostedAfterTheWindowIsSpent:
             "the rollback must run on the abort path too, which returns early"
         )
 
-    def test_all_three_posting_paths_resolve_the_live_owner(self):
-        """The dashboard mirror path must do what the other two already do.
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "state_change",
+        (
+            "unlink",
+            "retarget",
+            "pause",
+            "unreadable",
+            "owner_absent",
+            "owner_unreadable",
+            "owner_change",
+        ),
+    )
+    async def test_posted_mirror_options_expire_when_the_target_turns_stale(
+        self, monkeypatch, state_change
+    ):
+        """Every post_blocks await outcome is revalidated before recording."""
+        from kiro_crew.dashboard import chat_runner
+        from kiro_crew.dashboard.chat_utils import options_records, remember_slack_options
 
-        Rounds 23 and 26 gave the native footer and the transport path an
-        owner-resolved record plus owner-change supersession. The dashboard mirror
-        in ``chat_runner`` recorded under the bare ``session_key`` -- so a thread
-        relinked while ``post_blocks`` was in flight got its control filed where
-        the new owner's expiry never looks, and clickable into a conversation it
-        does not belong to.
-        """
+        state = MagicMock()
+        state._slack_options_by_key = {}
+        state.slack_client = MagicMock()
+        state.slack_client.update_message = AsyncMock(return_value=True)
+        state.sessions = MagicMock()
+        state.sessions.is_slack_paused.return_value = state_change == "pause"
+        state.sessions.get_slack_link.return_value = ("thread-1", "C-1")
+        state.sessions.get_session_for_thread.return_value = "dashboard:owner"
+        if state_change == "unlink":
+            state.sessions.get_slack_link.return_value = (None, None)
+        elif state_change == "retarget":
+            state.sessions.get_slack_link.return_value = ("thread-2", "C-2")
+        elif state_change == "unreadable":
+            state.sessions.get_slack_link.side_effect = OSError("session map unreadable")
+        elif state_change == "owner_absent":
+            state.sessions.get_session_for_thread.return_value = None
+        elif state_change == "owner_unreadable":
+            state.sessions.get_session_for_thread.side_effect = OSError("owner map unreadable")
+        elif state_change == "owner_change":
+            state.sessions.get_session_for_thread.return_value = "dashboard:replacement"
+
+        slot = MagicMock()
+        slot._steer_audience_fences = {}
+        posted = PostedOptions(
+            channel="C-1",
+            ts=f"posted-{state_change}",
+            choices=("A", "B"),
+            blocks=tuple(build_options_blocks(["A", "B"])),
+        )
+        newer = PostedOptions(
+            channel="C-1",
+            ts=f"newer-{state_change}",
+            choices=("C",),
+            blocks=tuple(build_options_blocks(["C"])),
+        )
+        remember_slack_options(state, "dashboard:owner", newer)
+
+        remembered = await chat_runner._remember_current_slack_options(
+            state,
+            slot,
+            "dashboard:owner",
+            expected_target=("thread-1", "C-1"),
+            expected_owner="dashboard:owner",
+            posted=posted,
+        )
+
+        assert remembered is False
+        state.slack_client.update_message.assert_awaited_once()
+        assert state.slack_client.update_message.await_args.args[:2] == (
+            "C-1",
+            f"posted-{state_change}",
+        )
+        assert options_records(state, "dashboard:owner") == (newer,)
+        assert options_records(state, "dashboard:replacement") == ()
+
+    @pytest.mark.asyncio
+    async def test_posted_mirror_options_are_remembered_after_exact_revalidation(self):
+        from kiro_crew.dashboard import chat_runner
+        from kiro_crew.dashboard.chat_utils import options_records
+
+        state = MagicMock()
+        state._slack_options_by_key = {}
+        state.slack_client = MagicMock()
+        state.slack_client.update_message = AsyncMock(return_value=True)
+        state.sessions = MagicMock()
+        state.sessions.is_slack_paused.return_value = False
+        state.sessions.get_slack_link.return_value = ("thread-1", "C-1")
+        state.sessions.get_session_for_thread.return_value = "dashboard:owner"
+        slot = MagicMock()
+        slot._steer_audience_fences = {}
+        posted = PostedOptions(
+            channel="C-1",
+            ts="posted-current",
+            choices=("A", "B"),
+            blocks=tuple(build_options_blocks(["A", "B"])),
+        )
+
+        remembered = await chat_runner._remember_current_slack_options(
+            state,
+            slot,
+            "dashboard:owner",
+            expected_target=("thread-1", "C-1"),
+            expected_owner="dashboard:owner",
+            posted=posted,
+        )
+
+        assert remembered is True
+        state.slack_client.update_message.assert_not_awaited()
+        assert options_records(state, "dashboard:owner") == (posted,)
+
+    def test_all_three_posting_paths_resolve_the_live_owner(self):
+        """The dashboard mirror revalidates its exact post before recording it."""
         import inspect
 
         from kiro_crew.dashboard import chat_runner
 
         src = inspect.getsource(chat_runner)
-        mirror = src[src.find("_mirror_blocks = build_options_blocks(") :][:2600]
-        assert "_pre_owner" in mirror, "the mirror path must capture the owner before posting"
-        assert "remember_slack_options(\n                            state,\n                            _owner," in mirror, (
-            "the record must use the re-resolved owner, not the key the turn started with"
+        mirror = src[src.find("_mirror_token = await asyncio.to_thread(") :][:5000]
+        assert "_pre_owner = _resolve_slack_thread_owner(" in mirror
+        assert "if _pre_owner is None:" in mirror
+        assert "or session_key" not in mirror
+        assert "_remember_current_slack_options(" in mirror
+        assert "expected_owner=_pre_owner" in mirror
+        mint = mirror.find("await asyncio.to_thread(mint_options_token")
+        build = mirror.find("_mirror_blocks = build_options_blocks(")
+        post = mirror.find("await state.slack_client.post_blocks(")
+        validate = mirror.find("await _remember_current_slack_options(")
+        assert -1 not in (mint, build, post, validate) and mint < build < post < validate
+        assert "_select_slack_mirror_target(" in mirror[mint:build]
+        assert "_select_slack_mirror_target(" in mirror[build:post]
+        helper = inspect.getsource(chat_runner._remember_current_slack_options)
+        assert helper.find("_select_slack_mirror_target(") < helper.find(
+            "remember_slack_options("
         )
-        assert "_owner != _pre_owner" in mirror, "an owner change must supersede"
-        assert "ts=_mirror_ts" in mirror, (
-            "the supersession expiry must be narrowed to OUR ts, or it strikes "
-            "through a control the new owner recorded meanwhile"
-        )
+        assert "expire_options(slack, posted)" in helper
+        assert "options_edit_lock(posted.channel, posted.ts)" in helper
 
     def test_the_forget_uses_owner_keys_snapshotted_before_the_edit(self):
         """A relink during the submit's edit must not orphan the old owner's record.

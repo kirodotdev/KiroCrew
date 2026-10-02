@@ -2755,13 +2755,22 @@ async def test_the_reply_leg_consults_the_fence_before_publishing(tmp_path):
         "one channel-neutral call site only; a second would need its own fence "
         f"check: {deliver_calls}"
     )
-    # EVERY cross-surface publication asks, not just the channel-neutral leg: Slack
-    # is an audience too, and it resolves its thread owner live. Four sites -- the
-    # channel-neutral reply, the Slack reply, the mid-turn tool stream, and the
-    # teardown's final task append, which would otherwise publish a title whose
-    # in-progress append was withheld.
-    asks = src.count("cross_surface_withheld(state, slot)")
-    assert asks == 4, f"expected four fenced publication sites, found {asks}"
+    # EVERY cross-surface publication binds authorization to the target it sends:
+    # channel-neutral user delivery, initial reply delivery, and each reply chunk's
+    # post-await revalidation pass the selected link. Slack separately reselects for
+    # auth-error delivery's initial target and exact-target pre-post reauthorization,
+    # the initial user target, post-echo/pre-stream reauthorization, tool updates,
+    # initial reply, each reply chunk, options before and after token minting,
+    # immediately before posting, again after the post returns, and stream cleanup.
+    recipient_src = Path(cr.cross_surface_withheld.__code__.co_filename).read_text(encoding="utf-8")
+    selected_checks = src.count("selected_mirror=") + recipient_src.count("selected_mirror=")
+    slack_selectors = (
+        src.count("_select_slack_mirror_target(")
+        + recipient_src.count("_select_slack_mirror_target(")
+        - 1
+    )
+    assert selected_checks == 4, f"expected four selected-link checks, found {selected_checks}"
+    assert slack_selectors == 12, f"expected twelve Slack selectors, found {slack_selectors}"
 
 
 @pytest.mark.asyncio

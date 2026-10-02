@@ -39,8 +39,12 @@ function stubOptimizerCapturing(bodies: string[]) {
   })
 }
 
-const clickOptimize = () =>
-  fireEvent.click(screen.getByRole('button', { name: 'Optimize prompt' }))
+// Optimize is hosted by the "+" drop-up (not the action row), so reaching it
+// means mounting an attach handler and opening the menu first.
+const clickOptimize = () => {
+  fireEvent.click(screen.getByRole('button', { name: 'Add files & options' }))
+  fireEvent.click(screen.getByTestId('plus-menu-optimize'))
+}
 
 describe('ChatInput optimize: context is read from the pane\'s own slot', () => {
   beforeEach(() => {
@@ -73,7 +77,7 @@ describe('ChatInput optimize: context is read from the pane\'s own slot', () => 
 
     renderWithProviders(
       <SlotProvider slotId="pane-slot">
-        <ChatInput value="please optimize me" onChange={vi.fn()} onSend={vi.fn()} connected={true} />
+        <ChatInput value="please optimize me" onChange={vi.fn()} onSend={vi.fn()} onUploadFiles={vi.fn()} connected={true} />
       </SlotProvider>,
       { store },
     )
@@ -105,7 +109,7 @@ describe('ChatInput optimize: context is read from the pane\'s own slot', () => 
 
     renderWithProviders(
       <SlotProvider slotId="active-slot">
-        <ChatInput value="please optimize me" onChange={vi.fn()} onSend={vi.fn()} connected={true} />
+        <ChatInput value="please optimize me" onChange={vi.fn()} onSend={vi.fn()} onUploadFiles={vi.fn()} connected={true} />
       </SlotProvider>,
       { store },
     )

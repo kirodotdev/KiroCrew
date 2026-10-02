@@ -17,10 +17,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 import uuid
-from dataclasses import fields
-from typing import TYPE_CHECKING, Callable
+from copy import deepcopy
+from dataclasses import dataclass, fields
+from enum import Enum
+from typing import TYPE_CHECKING, Any, Callable
 
 from kiro_crew import autonudge_stop_log
 from kiro_crew.autonudge_service.maintenance import (
@@ -42,13 +45,19 @@ from kiro_crew.autonudge_service.model import (
     MonitorUpdateConflict,
     NudgeAdmissionRefused,
     NudgeLoop,
+    ScheduledMessageInFlight,
+    SlotNudgeRetirement,
     _stopped_row_is_replaceable,
     budget_elapsed,
     cap_reached,
+    is_channel_key,
+    is_scheduled_message,
     is_structured_monitor_loop,
     new_goal_token,
+    scheduled_message_trust_id,
 )
 from kiro_crew.autonudge_service.subject import infer_monitor, infer_subject
+from kiro_crew.goal_command import goal_command_mutates_automation
 from kiro_crew.monitoring.limits import validate_runtime_secs
 from kiro_crew.monitoring.models import MONITOR_STATE_VERSION, MonitorCreationSurface
 
@@ -57,6 +66,33 @@ if TYPE_CHECKING:
 
 # The service's own logger: callers and tests filter on it by name.
 logger = logging.getLogger("kiro_crew.autonudge")
+
+
+class _ScheduledTransition(Enum):
+    UPDATE = "update"
+    CANCEL = "cancel"
+    COMPLETE = "complete"
+    CLEANUP = "cleanup"
+    DISCARD = "discard"
+
+
+_SCHEDULED_RESTORE_RETRY_BASE_SECS = 0.25
+_SCHEDULED_RESTORE_RETRY_MAX_SECS = 30.0
+
+
+@dataclass
+class _ScheduledRestoreRetry:
+    """Exact close-retirement authority retained until restore or rejection."""
+
+    retirement: SlotNudgeRetirement
+    admission_check: Callable[[], bool] | None
+    task: asyncio.Task[NudgeLoop | None] | None = None
+    attempts: int = 0
+
+
+async def _sleep_before_scheduled_restore_retry(delay: float) -> None:
+    """Test seam for the bounded delay between metadata-write attempts."""
+    await asyncio.sleep(delay)
 
 
 async def add(
@@ -68,6 +104,7 @@ async def add(
     stop_sentinel_path: str = "",
     max_runtime_secs: int = 0,
     banner: str = "",
+    scheduled_at: float = 0.0,
     admission_check: Callable[[], bool] | None = None,
     # UNGATED by default, and the default lives at the ARMING SURFACES instead.
     # The evidence for gating is about monitor_start -- a babysit loop whose work
@@ -105,6 +142,7 @@ async def add(
             stop_sentinel_path=stop_sentinel_path,
             max_runtime_secs=max_runtime_secs,
             banner=banner,
+            scheduled_at=scheduled_at,
             admission_check=admission_check,
             gate=gate,
             judge=judge,
@@ -127,20 +165,29 @@ async def add(
     return await asyncio.shield(inner)
 
 
-def _mint_loop_id(self: AutoNudgeService, requested: str | None) -> str:
+def _mint_loop_id(
+    self: AutoNudgeService,
+    requested: str | None,
+    *,
+    scheduled: bool = False,
+) -> str:
     """The new loop's id: the caller's pre-minted one, else a fresh one.
+
+    Scheduled loops carry their id into durable transcript retry and drop-notice
+    identities, so they use the full UUID-sized value. Ordinary AutoNudge and
+    monitor ids keep their historical eight-hex format.
 
     A caller pre-mints an id when something must be recorded ABOUT the loop
     before it exists -- the authorizer writes the keystone-gated self-arm
     entry first, so a failed trust write denies before this store is
     touched and a loop this arm would displace is never removed for
     nothing. Called under ``_lock``, so the in-use check is not racy; an id
-    already in use is a caller bug (or a collision on 8 hex chars, which is
-    not worth silently re-minting over -- the caller's record would name
-    the wrong loop) and is refused as a conflict.
+    already in use is a caller bug and is refused as a conflict -- the
+    caller's record would otherwise name the wrong loop.
     """
     if requested is None:
-        return uuid.uuid4().hex[:8]
+        minted = uuid.uuid4().hex
+        return minted if scheduled else minted[:8]
     if requested in self._loops:
         raise MonitorUpdateConflict(f"loop id {requested!r} is already in use")
     return requested
@@ -156,6 +203,7 @@ async def _add_locked(
     stop_sentinel_path: str,
     max_runtime_secs: int = 0,
     banner: str = "",
+    scheduled_at: float = 0.0,
     admission_check: Callable[[], bool] | None = None,
     gate: bool = False,
     judge: dict | None = None,
@@ -175,6 +223,7 @@ async def _add_locked(
             stop_sentinel_path=stop_sentinel_path,
             max_runtime_secs=max_runtime_secs,
             banner=banner,
+            scheduled_at=scheduled_at,
             admission_check=admission_check,
             gate=gate,
             judge=judge,
@@ -197,6 +246,7 @@ async def _add_unserialized(
     stop_sentinel_path: str,
     max_runtime_secs: int = 0,
     banner: str = "",
+    scheduled_at: float = 0.0,
     admission_check: Callable[[], bool] | None = None,
     gate: bool = False,
     judge: dict | None = None,
@@ -211,6 +261,15 @@ async def _add_unserialized(
 
     validate_runtime_secs(max_runtime_secs, allow_unbounded=True)
     idle_secs = max(_MIN_IDLE_SECS, min(_MAX_IDLE_SECS, int(idle_secs)))
+    if isinstance(scheduled_at, bool):
+        raise ValueError("scheduled_at must be a finite epoch-seconds number")
+    scheduled_at = float(scheduled_at)
+    if not math.isfinite(scheduled_at) or scheduled_at < 0:
+        raise ValueError("scheduled_at must be a finite epoch-seconds number")
+    if scheduled_at > 0 and is_channel_key(slot_key):
+        raise ValueError("scheduled messages currently require a dashboard session")
+    if scheduled_at > 0 and goal_command_mutates_automation(message):
+        raise ValueError("scheduled messages cannot change session goals")
     async with self._lock:
         if admission_check is not None and not admission_check():
             raise NudgeAdmissionRefused("session changed before nudge arm committed")
@@ -236,6 +295,11 @@ async def _add_unserialized(
             # orphaned by a replacement.
             if not replace_existing and (existing.active or not replace_stopped):
                 raise MonitorUpdateConflict("session already has an automation")
+            if is_scheduled_message(existing):
+                raise MonitorUpdateConflict(
+                    "scheduled message must be unscheduled by an authenticated "
+                    "dashboard user before another automation can replace it"
+                )
             existing_monitor = existing.monitor
             if (
                 not replace_existing
@@ -285,14 +349,14 @@ async def _add_unserialized(
         # is a watch whose own reader drops its reading.
         stored_judge = seams.scrubbed_judge_spec(judge) if isinstance(judge, dict) else {}
         loop = NudgeLoop(
-            id=self._mint_loop_id(loop_id),
+            id=self._mint_loop_id(loop_id, scheduled=scheduled_at > 0),
             slot_key=slot_key,
-            message=message,
+            message="" if scheduled_at > 0 else message,
             idle_secs=idle_secs,
-            max_cycles=max(0, int(max_cycles)),
+            max_cycles=1 if scheduled_at > 0 else max(0, int(max_cycles)),
             created_ts=now,
             goal_token=new_goal_token(),
-            stop_sentinel_path=stop_sentinel_path,
+            stop_sentinel_path="" if scheduled_at > 0 else stop_sentinel_path,
             max_runtime_secs=max(0, int(max_runtime_secs)),
             # The judge brief the caller supplied, or nothing. Scrubbed and bounded
             # HERE as well as at the decode boundary, because the two entrances are
@@ -306,7 +370,9 @@ async def _add_unserialized(
             # snapshot below so it persists): the countdown starts the
             # moment the loop is armed, and user turns from here on only
             # defer delivery, never restart it.
-            next_due_ts=now + idle_secs,
+            next_due_ts=scheduled_at if scheduled_at > 0 else now + idle_secs,
+            scheduled_message=scheduled_at > 0,
+            scheduled_at=scheduled_at,
             # The SUBJECT is decided HERE, from the instruction the caller
             # already wrote -- no target, kind or enable flag is ever passed.
             # WHETHER to look for one is the ``gate`` argument above, which the
@@ -341,21 +407,12 @@ async def _add_unserialized(
                     watch=watch,
                     slot_key=slot_key,
                 )
-                # An explicit ``watch`` gates on its own, without ``gate``. This
-                # path defaults to UNGATED for the reason above, so requiring
-                # both would make the field work from monitor_start and do
-                # nothing here -- and no caller means "observe this subject, and
-                # ignore it". ``slot_key`` is what makes a work-ledger watch
-                # possible at all: its subject is the session being armed, which
-                # no amount of reading the message can recover.
-                if (gate or watch)
+                # An explicit ``watch`` gates on its own, without ``gate``. Scheduled
+                # messages are one-shot user text, never observed subjects.
+                if (gate or watch) and scheduled_at <= 0
                 else None
             ),
-            # ``watch`` is folded in here as well as above, because the tick path
-            # reads the STORED flag and refuses to poll a loop whose ``gate`` is
-            # False even when it carries a monitor. Leaving the two to disagree is
-            # what makes a watch that looks armed and never observes anything.
-            gate=bool(gate or watch),
+            gate=bool(gate or watch) if scheduled_at <= 0 else False,
             banner=banner,
             self_armed=self_armed,
         )
@@ -404,6 +461,7 @@ async def update(
     watch: str | None = None,
     expected_generation: int | None = None,
     expect_fingerprint: str | None = None,
+    scheduled_at: float | None = None,
     precondition: Callable[[NudgeLoop], bool] | None = None,
     on_absent: Callable[[], None] | None = None,
 ) -> NudgeLoop | None:
@@ -443,6 +501,7 @@ async def update(
             watch=watch,
             expected_generation=expected_generation,
             expect_fingerprint=expect_fingerprint,
+            scheduled_at=scheduled_at,
             precondition=precondition,
             on_absent=on_absent,
         )
@@ -464,6 +523,34 @@ async def update(
     return await asyncio.shield(inner)
 
 
+async def update_pending_scheduled_message(
+    self: AutoNudgeService,
+    loop_id: str,
+    *,
+    message: str | None = None,
+    scheduled_at: float | None = None,
+) -> NudgeLoop | None:
+    """Update one pending scheduled message under the service mutation lock."""
+    inner: "asyncio.Task[NudgeLoop | None]" = asyncio.ensure_future(
+        self._update_locked(
+            loop_id,
+            message="",
+            scheduled_at=scheduled_at,
+            _scheduled_message_update=True,
+            _scheduled_exact_message=message,
+        )
+    )
+    self._inflight_adds.add(inner)
+
+    def _finish(t: "asyncio.Task[NudgeLoop | None]") -> None:
+        self._inflight_adds.discard(t)
+        if not t.cancelled() and t.exception() is not None:
+            logger.warning("AutoNudge: detached scheduled update failed", exc_info=t.exception())
+
+    inner.add_done_callback(_finish)
+    return await asyncio.shield(inner)
+
+
 async def _update_locked(
     self: AutoNudgeService,
     loop_id: str,
@@ -480,6 +567,9 @@ async def _update_locked(
     watch: str | None = None,
     expected_generation: int | None = None,
     expect_fingerprint: str | None = None,
+    scheduled_at: float | None = None,
+    _scheduled_message_update: bool = False,
+    _scheduled_exact_message: str | None = None,
     precondition: Callable[[NudgeLoop], bool] | None = None,
     on_absent: Callable[[], None] | None = None,
 ) -> NudgeLoop | None:
@@ -501,6 +591,9 @@ async def _update_locked(
             watch=watch,
             expected_generation=expected_generation,
             expect_fingerprint=expect_fingerprint,
+            scheduled_at=scheduled_at,
+            _scheduled_message_update=_scheduled_message_update,
+            _scheduled_exact_message=_scheduled_exact_message,
             precondition=precondition,
             on_absent=on_absent,
         )
@@ -524,6 +617,9 @@ async def _update_unserialized(
     watch: str | None = None,
     expected_generation: int | None = None,
     expect_fingerprint: str | None = None,
+    scheduled_at: float | None = None,
+    _scheduled_message_update: bool = False,
+    _scheduled_exact_message: str | None = None,
     precondition: Callable[[NudgeLoop], bool] | None = None,
     on_absent: Callable[[], None] | None = None,
 ) -> NudgeLoop | None:
@@ -561,6 +657,35 @@ async def _update_unserialized(
                 loop.config_generation,
             )
             return loop
+        scheduled_provenance = None
+        if is_scheduled_message(loop):
+            if not _scheduled_message_update:
+                raise MonitorUpdateConflict(
+                    "protected scheduled messages require an authenticated dashboard user"
+                )
+            scheduled_provenance = await _scheduled_provenance_for_transition(
+                loop, _ScheduledTransition.UPDATE
+            )
+            if scheduled_provenance is None:
+                raise MonitorUpdateConflict("scheduled message provenance is not authorized")
+            candidate_message = (
+                _scheduled_exact_message
+                if _scheduled_exact_message is not None
+                else scheduled_provenance.message
+            )
+            if goal_command_mutates_automation(candidate_message):
+                raise ValueError("scheduled messages cannot change session goals")
+            if loop.cycle_count > 0 or loop.id in self._firing or not loop.active:
+                raise ValueError("scheduled message is already firing or completed")
+            message = ""
+        if scheduled_at is not None:
+            if isinstance(scheduled_at, bool):
+                raise ValueError("scheduled_at must be a future epoch-seconds number")
+            scheduled_at = float(scheduled_at)
+            if not math.isfinite(scheduled_at) or scheduled_at <= time.time():
+                raise ValueError("scheduled_at must be a future epoch-seconds number")
+            if not is_scheduled_message(loop):
+                raise ValueError("scheduled_at can only update a scheduled message")
         if is_structured_monitor_loop(loop):
             # Generic update owns only legacy prompt loops. Reject before
             # touching even one shared scheduling field so a non-HTTP
@@ -810,6 +935,9 @@ async def _update_unserialized(
             loop.max_cycles = max(0, int(max_cycles))
         if max_runtime_secs is not None:
             loop.max_runtime_secs = max(0, int(max_runtime_secs))
+        if scheduled_at is not None:
+            loop.scheduled_at = scheduled_at
+            loop.next_due_ts = scheduled_at
         if active is not None:
             if (
                 active
@@ -1006,6 +1134,45 @@ async def _update_unserialized(
                 # rather than a fifth.
                 self._pending_floor_tick.add(loop.id)
             raise
+        if scheduled_provenance is not None:
+            # circular import: autonudge imports this owner; self-arm state stays lazy.
+            from kiro_crew import autonudge_selfarm
+
+            trusted_at = (
+                scheduled_at if scheduled_at is not None else scheduled_provenance.scheduled_at
+            )
+            exact_message = (
+                _scheduled_exact_message
+                if _scheduled_exact_message is not None
+                else scheduled_provenance.message
+            )
+            try:
+                replaced = await asyncio.to_thread(
+                    autonudge_selfarm.replace_scheduled_message,
+                    scheduled_message_trust_id(loop.id),
+                    scheduled_provenance,
+                    exact_message,
+                    trusted_at,
+                )
+                if not replaced:
+                    raise MonitorUpdateConflict(
+                        "scheduled message provenance changed during update"
+                    )
+            except BaseException:
+                for field_name, value in previous.items():
+                    setattr(loop, field_name, value)
+                rollback_payload = self._serialize_state()
+                try:
+                    await asyncio.get_running_loop().run_in_executor(
+                        None, self._write_state, rollback_payload
+                    )
+                except BaseException:
+                    logger.error(
+                        "AutoNudge: failed to persist scheduled rollback for loop %s",
+                        loop.id,
+                        exc_info=True,
+                    )
+                raise
         # Re-arm the timer with the new settings — but NEVER while its
         # callback is mid-fire. Cancelling a firing timer cancels the
         # in-flight turn itself (channel loops run the turn inline in
@@ -1037,10 +1204,19 @@ async def _update_unserialized(
 
 
 def remove_sync(
-    self: AutoNudgeService, loop_id: str, *, persist: bool = True, emit: bool = True
+    self: AutoNudgeService,
+    loop_id: str,
+    *,
+    persist: bool = True,
+    emit: bool = True,
+    _scheduled_transition: _ScheduledTransition | None = None,
 ) -> NudgeLoop | None:
-    """Remove a loop. ``persist=False`` skips the blocking save — used by
-    async callers that snapshot+offload the write themselves right after."""
+    """Remove a loop, requiring an explicit transition for scheduled records."""
+    existing = self._loops.get(loop_id)
+    if existing is not None and is_scheduled_message(existing) and _scheduled_transition is None:
+        raise MonitorUpdateConflict(
+            "protected scheduled messages require an authenticated dashboard user"
+        )
     if persist and loop_id in self._loops:
         from kiro_crew import autonudge_provider_trust
 
@@ -1061,6 +1237,8 @@ def remove_sync(
     self._pull_forward_counts.pop(loop_id, None)
     self._pull_forward_capped = {pair for pair in self._pull_forward_capped if pair[0] != loop_id}
     self._accepted_monitor_turns.pop(loop_id, None)
+    self._scheduled_delivery_pending.pop(loop_id, None)
+    self._scheduled_turn_outcomes.pop(loop_id, None)
     if persist:
         self._save()
         # Revoke the keystone-gated self-arm entry only AFTER the store
@@ -1080,7 +1258,12 @@ def remove_sync(
     return loop
 
 
-def _revoke_self_arm_for(self: AutoNudgeService, loop: NudgeLoop) -> None:
+def _revoke_self_arm_for(
+    self: AutoNudgeService,
+    loop: NudgeLoop,
+    *,
+    scheduled_memory_already_revoked: bool = False,
+) -> None:
     """Revoke for EVERY loop leaving the store, not only ``self_armed`` ones.
 
     The ``self_armed`` bit lives in the agent-writable store, so keying the
@@ -1091,10 +1274,17 @@ def _revoke_self_arm_for(self: AutoNudgeService, loop: NudgeLoop) -> None:
     cannot forge: the loop is being removed. A loop with no entry costs one
     offloaded read (``forget_self_arm`` writes only when it deletes).
     """
-    self._revoke_self_arm(loop.id)
+    self._revoke_self_arm(
+        loop.id,
+        scheduled_memory_already_revoked=scheduled_memory_already_revoked,
+    )
 
 
-def _revoke_self_arm(loop_id: str) -> None:
+def _revoke_self_arm(
+    loop_id: str,
+    *,
+    scheduled_memory_already_revoked: bool = False,
+) -> None:
     """Finish best-effort trust cleanup after a loop leaves the store.
 
     Every removal path (explicit remove, session close, replacement by a
@@ -1109,10 +1299,13 @@ def _revoke_self_arm(loop_id: str) -> None:
     revocation failure is logged inside ``forget_self_arm`` and never
     breaks the removal.
     """
+    # circular import: autonudge imports this owner; trust state stays lazy.
     from kiro_crew import autonudge_provider_trust, autonudge_selfarm
 
     def _forget_all_trust() -> None:
         autonudge_selfarm.forget_self_arm(loop_id)
+        if not scheduled_memory_already_revoked:
+            autonudge_selfarm.delete_scheduled_message_record(scheduled_message_trust_id(loop_id))
         autonudge_provider_trust.forget_monitor_owner_credentials(loop_id)
 
     try:
@@ -1155,7 +1348,7 @@ async def remove(
         _release_mutation_lock(lock)
 
 
-async def remove_by_slot(self: AutoNudgeService, slot_key: str) -> NudgeLoop | None:
+async def remove_by_slot(self: AutoNudgeService, slot_key: str) -> SlotNudgeRetirement | None:
     """Retire the current slot generation inside one maintenance transaction."""
     lock = _maintenance_lock(self._base_dir)
     async with lock:
@@ -1164,17 +1357,391 @@ async def remove_by_slot(self: AutoNudgeService, slot_key: str) -> NudgeLoop | N
             loop = self._find_by_slot(slot_key)
             if loop is None:
                 return None
+            if is_scheduled_message(loop) and (
+                loop.cycle_count > 0
+                or loop.id in self._scheduled_delivery_pending
+                or loop.id in self._scheduled_turn_outcomes
+            ):
+                raise ScheduledMessageInFlight("scheduled message turn is still settling")
+            scheduled: list[Any | None] = []
             if is_structured_monitor_loop(loop):
                 await self.retire_monitor_for_session_close(loop.id)
             else:
-                await self._remove_unserialized(
+                removed = await self._remove_unserialized(
                     loop.id,
                     stop_reason="session_closed",
                     mutation_lock=lock,
+                    _scheduled_transition=(
+                        _ScheduledTransition.DISCARD if is_scheduled_message(loop) else None
+                    ),
+                    _scheduled_provenance_out=scheduled,
                 )
-            return loop
+                if not removed:
+                    return None
+            return SlotNudgeRetirement(
+                loop=loop,
+                scheduled_provenance=scheduled[0] if scheduled else None,
+            )
         finally:
             _unclaim_mutation_lock(lock)
+
+
+async def _scheduled_provenance_for_transition(
+    loop: NudgeLoop,
+    transition: _ScheduledTransition,
+) -> Any | None:
+    """Authorize a scheduled transition from process-memory provenance."""
+    # circular import: autonudge imports this owner; self-arm state stays lazy.
+    from kiro_crew import autonudge_selfarm
+
+    if transition is _ScheduledTransition.DISCARD:
+        return None
+    provenance = await asyncio.to_thread(
+        autonudge_selfarm.read_scheduled_message,
+        scheduled_message_trust_id(loop.id),
+        loop.slot_key,
+    )
+    if transition in {_ScheduledTransition.UPDATE, _ScheduledTransition.CANCEL}:
+        if provenance is None or provenance.completed:
+            raise MonitorUpdateConflict("scheduled message provenance is not authorized")
+        return provenance
+    if transition is _ScheduledTransition.COMPLETE:
+        if provenance is None:
+            raise MonitorUpdateConflict("scheduled message provenance is not authorized")
+        if not provenance.completed:
+            marked = await asyncio.to_thread(
+                autonudge_selfarm.mark_scheduled_message_completed,
+                scheduled_message_trust_id(loop.id),
+                provenance,
+            )
+            if not marked:
+                raise MonitorUpdateConflict(
+                    "scheduled message provenance changed before completion"
+                )
+            provenance = autonudge_selfarm.ScheduledMessageProvenance(
+                provenance.slot_key,
+                provenance.message,
+                provenance.scheduled_at,
+                completed=True,
+                containment_meta=provenance.containment_meta,
+            )
+        return provenance
+    if provenance is None or not provenance.completed:
+        raise MonitorUpdateConflict("scheduled message cleanup lacks trusted completion evidence")
+    return provenance
+
+
+async def _revoke_scheduled_provenance_before_removal(loop: NudgeLoop) -> Any | None:
+    """Capture and delete provenance before mutable removal can commit."""
+    # circular import: autonudge imports this owner; self-arm state stays lazy.
+    from kiro_crew import autonudge_selfarm
+
+    trust_id = scheduled_message_trust_id(loop.id)
+
+    def _capture_revoke_and_verify() -> Any | None:
+        provenance = autonudge_selfarm.read_scheduled_message(trust_id, loop.slot_key)
+        autonudge_selfarm.delete_scheduled_message_record(trust_id)
+        if autonudge_selfarm.read_scheduled_message(trust_id, loop.slot_key) is not None:
+            raise OSError("scheduled-message provenance survived revocation")
+        return provenance
+
+    return await asyncio.to_thread(_capture_revoke_and_verify)
+
+
+async def _restore_scheduled_provenance(loop: NudgeLoop, provenance: Any) -> None:
+    """Restore exact process-memory state after a mutable rollback."""
+    # circular import: autonudge imports this owner; self-arm state stays lazy.
+    from kiro_crew import autonudge_selfarm
+
+    trust_id = scheduled_message_trust_id(loop.id)
+
+    def _restore_and_verify() -> None:
+        autonudge_selfarm.record_scheduled_message(
+            trust_id,
+            provenance.slot_key,
+            provenance.message,
+            provenance.scheduled_at,
+            containment_meta=provenance.containment_meta,
+        )
+        if provenance.completed:
+            pending = autonudge_selfarm.read_scheduled_message(trust_id, loop.slot_key)
+            if pending is None or not autonudge_selfarm.mark_scheduled_message_completed(
+                trust_id, pending
+            ):
+                raise OSError("scheduled-message completion state could not be restored")
+        if autonudge_selfarm.read_scheduled_message(trust_id, loop.slot_key) != provenance:
+            raise OSError("scheduled-message provenance could not be restored")
+
+    await asyncio.to_thread(_restore_and_verify)
+
+
+async def remove_pending_scheduled_message(self: AutoNudgeService, loop_id: str) -> Any | None:
+    """Capture exact text and remove a still-pending authenticated schedule."""
+    if loop_id in self._firing:
+        return None
+    lock = await self._acquire_mutation_lock(loop_id)
+    if lock is None:
+        return None
+
+    def _still_pending(current: NudgeLoop) -> bool:
+        return (
+            is_scheduled_message(current)
+            and current.active
+            and current.cycle_count == 0
+            and current.id not in self._firing
+        )
+
+    captured: list[Any | None] = []
+    try:
+        removed = await self._remove_unserialized(
+            loop_id,
+            precondition=_still_pending,
+            mutation_lock=lock,
+            _scheduled_transition=_ScheduledTransition.CANCEL,
+            _scheduled_provenance_out=captured,
+        )
+    finally:
+        _release_mutation_lock(lock)
+    if not removed:
+        return None
+    provenance = captured[0] if captured else None
+    if provenance is None:
+        raise ValueError("scheduled message provenance is unavailable")
+    return provenance
+
+
+async def discard_scheduled_message(self: AutoNudgeService, loop_id: str) -> bool:
+    """Discard one unusable scheduled record at a gateway lifecycle boundary."""
+    lock = await self._acquire_mutation_lock(loop_id)
+    if lock is None:
+        return False
+    try:
+        return await self._remove_unserialized(
+            loop_id,
+            precondition=is_scheduled_message,
+            mutation_lock=lock,
+            _scheduled_transition=_ScheduledTransition.DISCARD,
+        )
+    finally:
+        _release_mutation_lock(lock)
+
+
+def _track_scheduled_restore_task(
+    service: AutoNudgeService,
+    retry: _ScheduledRestoreRetry,
+    task: "asyncio.Task[NudgeLoop | None]",
+) -> None:
+    """Keep one restore task supervised until it settles or service stop cancels it."""
+    retry.task = task
+    service._inflight_adds.add(task)
+
+    def _finish(done: "asyncio.Task[NudgeLoop | None]") -> None:
+        service._inflight_adds.discard(done)
+        if not done.cancelled() and done.exception() is not None:
+            logger.warning(
+                "AutoNudge: detached scheduled close rollback failed",
+                exc_info=done.exception(),
+            )
+
+    task.add_done_callback(_finish)
+
+
+def _scheduled_restore_is_admissible(retry: _ScheduledRestoreRetry) -> bool:
+    """Fail closed when the original dashboard generation cannot be proved."""
+    if retry.admission_check is None:
+        return True
+    try:
+        return retry.admission_check()
+    except Exception:
+        logger.warning("AutoNudge: scheduled close rollback admission check failed", exc_info=True)
+        return False
+
+
+async def _retry_scheduled_message_after_failed_session_close(
+    service: AutoNudgeService,
+    retry: _ScheduledRestoreRetry,
+) -> NudgeLoop | None:
+    """Retry one retained metadata restore without spinning on a wedged disk."""
+    loop_id = retry.retirement.loop.id
+    while service._scheduled_restore_retries.get(loop_id) is retry:
+        if not _scheduled_restore_is_admissible(retry):
+            service._scheduled_restore_retries.pop(loop_id, None)
+            return None
+        delay = min(
+            _SCHEDULED_RESTORE_RETRY_BASE_SECS * (2 ** min(retry.attempts, 16)),
+            _SCHEDULED_RESTORE_RETRY_MAX_SECS,
+        )
+        retry.attempts += 1
+        await _sleep_before_scheduled_restore_retry(delay)
+        if service._scheduled_restore_retries.get(loop_id) is not retry:
+            return None
+        if not _scheduled_restore_is_admissible(retry):
+            service._scheduled_restore_retries.pop(loop_id, None)
+            return None
+        try:
+            restored = await service._restore_scheduled_message_after_failed_session_close(
+                retry.retirement,
+                admission_check=retry.admission_check,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning(
+                "AutoNudge: scheduled close rollback retry failed",
+                exc_info=True,
+            )
+            continue
+        service._scheduled_restore_retries.pop(loop_id, None)
+        return restored
+    return None
+
+
+async def _attempt_scheduled_message_after_failed_session_close(
+    service: AutoNudgeService,
+    retry: _ScheduledRestoreRetry,
+) -> NudgeLoop | None:
+    """Run the caller-visible attempt and retain authority before propagating failure."""
+    loop_id = retry.retirement.loop.id
+    try:
+        restored = await service._restore_scheduled_message_after_failed_session_close(
+            retry.retirement,
+            admission_check=retry.admission_check,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        if service._scheduled_restore_retries.get(loop_id) is retry:
+            retry_task = asyncio.create_task(
+                _retry_scheduled_message_after_failed_session_close(service, retry)
+            )
+            _track_scheduled_restore_task(service, retry, retry_task)
+        raise
+    service._scheduled_restore_retries.pop(loop_id, None)
+    return restored
+
+
+async def restore_scheduled_message_after_failed_session_close(
+    self: AutoNudgeService,
+    retirement: SlotNudgeRetirement,
+    *,
+    admission_check: Callable[[], bool] | None = None,
+) -> NudgeLoop | None:
+    """Restore one close-retired schedule only for its original slot generation."""
+    loop_id = retirement.loop.id
+    existing = self._scheduled_restore_retries.get(loop_id)
+    if existing is not None:
+        task = existing.task
+        if task is None:
+            return None
+        return await asyncio.shield(task)
+
+    retry = _ScheduledRestoreRetry(
+        retirement=retirement,
+        admission_check=admission_check,
+    )
+    self._scheduled_restore_retries[loop_id] = retry
+    inner: "asyncio.Task[NudgeLoop | None]" = asyncio.create_task(
+        _attempt_scheduled_message_after_failed_session_close(self, retry)
+    )
+    _track_scheduled_restore_task(self, retry, inner)
+    return await asyncio.shield(inner)
+
+
+def cancel_scheduled_restore_retries(service: AutoNudgeService) -> None:
+    """Release retained rollback authority and cancel every retry on service stop."""
+    retries = tuple(service._scheduled_restore_retries.values())
+    service._scheduled_restore_retries.clear()
+    for retry in retries:
+        task = retry.task
+        if task is not None and not task.done() and not task.get_loop().is_closed():
+            task.cancel()
+
+
+async def _restore_scheduled_message_after_failed_session_close(
+    self: AutoNudgeService,
+    retirement: SlotNudgeRetirement,
+    *,
+    admission_check: Callable[[], bool] | None,
+) -> NudgeLoop | None:
+    loop = retirement.loop
+    provenance = retirement.scheduled_provenance
+    if provenance is None or not is_scheduled_message(loop):
+        return None
+    lock = _maintenance_lock(self._base_dir)
+    async with lock:
+        _claim_mutation_lock(lock)
+        try:
+            async with self._lock:
+                if admission_check is not None and not admission_check():
+                    return None
+                if self._find_by_slot(loop.slot_key) is not None or loop.id in self._loops:
+                    return None
+                await self._restore_scheduled_provenance(loop, provenance)
+                if admission_check is not None and not admission_check():
+                    await self._revoke_scheduled_provenance_before_removal(loop)
+                    return None
+                restored = deepcopy(loop)
+                restored.message = ""
+                restored.scheduled_message = True
+                restored.scheduled_at = provenance.scheduled_at
+                restored.scheduled_completed = provenance.completed
+                restored.next_due_ts = provenance.scheduled_at if restored.active else 0.0
+                payload = self._serialize_state()
+                payload["loops"] = self._serialized_loops(extra=[restored])
+
+                def _publish_restored() -> None:
+                    self._loops[restored.id] = restored
+                    if restored.active:
+                        self._arm_from_deadline(restored)
+                    self._emit("added", restored)
+
+                try:
+                    await self._write_monitor_snapshot_locked(payload)
+                except asyncio.CancelledError:
+                    # The snapshot writer reports cancellation only after its
+                    # executor write settles. Publish the state that is already
+                    # durable before preserving caller cancellation, matching
+                    # the staged-monitor transition contract.
+                    _publish_restored()
+                    raise
+                except BaseException:
+                    await self._revoke_scheduled_provenance_before_removal(restored)
+                    raise
+                if admission_check is not None and not admission_check():
+                    await self._revoke_scheduled_provenance_before_removal(restored)
+                    await self._write_monitor_snapshot_locked()
+                    return None
+                _publish_restored()
+                return restored
+        finally:
+            _unclaim_mutation_lock(lock)
+
+
+async def mark_scheduled_message_completed(self: AutoNudgeService, loop: NudgeLoop) -> Any:
+    """Mark the exact pending scheduled provenance inert before cleanup."""
+    return await _scheduled_provenance_for_transition(loop, _ScheduledTransition.COMPLETE)
+
+
+async def cleanup_completed_scheduled_message(self: AutoNudgeService, loop_id: str) -> bool:
+    """Remove a one-shot only when process-memory completion authorizes it."""
+    lock = await self._acquire_mutation_lock(loop_id)
+    if lock is None:
+        return False
+    try:
+        loop = self._loops.get(loop_id)
+        if loop is None or not is_scheduled_message(loop):
+            return False
+        await _scheduled_provenance_for_transition(loop, _ScheduledTransition.CLEANUP)
+        return await self._remove_unserialized(
+            loop_id,
+            precondition=lambda current: (
+                is_scheduled_message(current) and current.scheduled_completed
+            ),
+            mutation_lock=lock,
+            _scheduled_transition=_ScheduledTransition.CLEANUP,
+        )
+    finally:
+        _release_mutation_lock(lock)
 
 
 async def clear_terminal_monitor(self: AutoNudgeService, monitor_id: str) -> bool:
@@ -1223,6 +1790,8 @@ async def _remove_unserialized(
     stop_reason: str = "",
     stop_detail: str = "",
     mutation_lock: asyncio.Lock | None = None,
+    _scheduled_transition: _ScheduledTransition | None = None,
+    _scheduled_provenance_out: list[Any | None] | None = None,
 ) -> bool:
     """Remove one loop. Returns whether the removal happened.
 
@@ -1256,17 +1825,48 @@ async def _remove_unserialized(
             if not precondition(current):
                 return False
         restore_provider_credentials = False
+        scheduled_provenance: Any | None = None
+        delivery_pending_present = loop_id in self._scheduled_delivery_pending
+        delivery_pending = self._scheduled_delivery_pending.get(loop_id)
+        turn_outcome_present = loop_id in self._scheduled_turn_outcomes
+        turn_outcome = self._scheduled_turn_outcomes.get(loop_id)
         if existed:
             assert current is not None
+            if is_scheduled_message(current) and _scheduled_transition is None:
+                raise MonitorUpdateConflict(
+                    "protected scheduled messages require an authenticated dashboard user"
+                )
             was_active = current.active
             current.active = False
             self._cancel_timer(loop_id)
             try:
+                if is_scheduled_message(current):
+                    revoke_task = asyncio.create_task(
+                        self._revoke_scheduled_provenance_before_removal(current)
+                    )
+                    revoke_cancelled = False
+                    while not revoke_task.done():
+                        try:
+                            await asyncio.shield(revoke_task)
+                        except asyncio.CancelledError:
+                            revoke_cancelled = True
+                    scheduled_provenance = revoke_task.result()
+                    if revoke_cancelled:
+                        if scheduled_provenance is not None:
+                            await self._restore_scheduled_provenance(current, scheduled_provenance)
+                        current.active = was_active
+                        if current.active and scheduled_provenance is not None:
+                            self._arm_from_deadline(current)
+                        raise asyncio.CancelledError()
                 restore_provider_credentials = await self._provider_credentials_authorized(current)
                 await self._revoke_provider_credentials_before_removal(loop_id)
             except BaseException:
+                if scheduled_provenance is not None:
+                    await self._restore_scheduled_provenance(current, scheduled_provenance)
                 current.active = was_active
-                if current.active:
+                if current.active and (
+                    not is_scheduled_message(current) or scheduled_provenance is not None
+                ):
                     self._arm_from_deadline(current)
                 raise
             current.active = was_active
@@ -1277,8 +1877,14 @@ async def _remove_unserialized(
         # "never cancel the current task" self-guard still applies when
         # _timer removes its own loop.
         removed_loop: NudgeLoop | None = None
+        close_rollback_requested = _scheduled_provenance_out is not None
         if existed:
-            removed_loop = self.remove_sync(loop_id, persist=False, emit=False)
+            removed_loop = self.remove_sync(
+                loop_id,
+                persist=False,
+                emit=False,
+                _scheduled_transition=_scheduled_transition,
+            )
             self._store.pending_removals.add(loop_id)
             if stop_reason:
                 self._store.stop_notes[loop_id] = (
@@ -1287,15 +1893,29 @@ async def _remove_unserialized(
                 )
         payload = self._serialize_state()
         fut = asyncio.get_running_loop().run_in_executor(None, self._write_state, payload)
+        scheduled_memory_already_revoked = removed_loop is not None and is_scheduled_message(
+            removed_loop
+        )
 
-        async def _restore_failed_removal() -> None:
+        async def _restore_failed_removal(*, rearm: bool = True) -> None:
             self._store.pending_removals.discard(loop_id)
             if removed_loop is None:
                 return
             self._loops[loop_id] = removed_loop
+            if close_rollback_requested:
+                if delivery_pending_present:
+                    self._scheduled_delivery_pending[loop_id] = delivery_pending
+                if turn_outcome_present and turn_outcome is not None:
+                    self._scheduled_turn_outcomes[loop_id] = turn_outcome
+            if scheduled_provenance is not None:
+                await self._restore_scheduled_provenance(removed_loop, scheduled_provenance)
             if restore_provider_credentials:
                 await self._restore_provider_credentials(removed_loop)
-            if removed_loop.active:
+            if (
+                rearm
+                and removed_loop.active
+                and (not is_scheduled_message(removed_loop) or scheduled_provenance is not None)
+            ):
                 self._arm_from_deadline(removed_loop)
 
         try:
@@ -1319,9 +1939,31 @@ async def _remove_unserialized(
             except Exception:
                 await _restore_failed_removal()
                 raise
+            if close_rollback_requested and removed_loop is not None:
+
+                async def _rollback_cancelled_close() -> None:
+                    # The removal snapshot committed, but cancellation prevents
+                    # the caller from receiving its rollback token. Restore the
+                    # exact row and provenance before allowing the close to end.
+                    await _restore_failed_removal(rearm=False)
+                    await self._write_monitor_snapshot_locked()
+                    if removed_loop.active:
+                        self._arm_from_deadline(removed_loop)
+
+                rollback = asyncio.create_task(_rollback_cancelled_close())
+                while not rollback.done():
+                    try:
+                        await asyncio.shield(rollback)
+                    except asyncio.CancelledError:
+                        continue
+                rollback.result()
+                raise asyncio.CancelledError()
             self._store.pending_removals.discard(loop_id)
             if removed_loop is not None:
-                self._revoke_self_arm_for(removed_loop)
+                self._revoke_self_arm_for(
+                    removed_loop,
+                    scheduled_memory_already_revoked=scheduled_memory_already_revoked,
+                )
                 self._emit("removed", removed_loop)
             raise
         except Exception:
@@ -1335,8 +1977,13 @@ async def _remove_unserialized(
             if removed_loop is not None:
                 # The store committed: the row is gone, so its self-arm
                 # entry may go too (see remove_sync for why not earlier).
-                self._revoke_self_arm_for(removed_loop)
+                self._revoke_self_arm_for(
+                    removed_loop,
+                    scheduled_memory_already_revoked=scheduled_memory_already_revoked,
+                )
                 self._emit("removed", removed_loop)
+            if _scheduled_provenance_out is not None:
+                _scheduled_provenance_out.append(scheduled_provenance)
             return True
         finally:
             # The write settled (committed or rolled back): its note has done its

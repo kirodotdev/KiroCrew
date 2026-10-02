@@ -27,6 +27,7 @@ import kiro_crew
 from kiro_crew.dashboard import remote_mirror, remote_relay
 from kiro_crew.dashboard.remote_relay import (
     RemoteTurnError,
+    RemoteTurnOutcome,
     create_peer_slot,
     ensure_version_parity,
     forward_peer_selection,
@@ -88,6 +89,17 @@ async def _stream(*records: bytes) -> AsyncIterator[bytes]:
 
 def _sse(row: dict) -> bytes:
     return f"data: {json.dumps(row)}\n\n".encode()
+
+
+def _relay_done(landed: object) -> bytes:
+    return _sse(
+        {
+            "type": "done",
+            "content": "",
+            "cls": "done",
+            "meta": {"turn_landed": landed},
+        }
+    )
 
 
 # ── The binding ────────────────────────────────────────────────────────────────
@@ -333,6 +345,63 @@ class TestVersionParity:
             await ensure_version_parity(mgr, "nobita")
         assert "Reconnect the crew" in str(excinfo.value)
 
+    @pytest.mark.asyncio
+    async def test_the_exact_gate_refuses_a_patch_skew_the_series_gate_admits(self):
+        """``exact=True`` is the scheduled relay's fence: full-string equality.
+
+        The settlement rule for a scheduled send accepts only the peer's explicit
+        ``turn_landed`` verdict, which a same-series peer one patch behind cannot
+        emit. The series gate would admit that peer, the peer would run the
+        message in full, and this side would settle every such turn as unlanded
+        and replay it to the cap. The default (interactive) gate is unchanged.
+        """
+        from kiro_crew.apps.version import parse_version
+
+        major, minor, patch = parse_version(kiro_crew.__version__)
+        peer = f"{major}.{minor}.{patch + 1}"
+        mgr = MagicMock()
+        mgr.peer_version = AsyncMock(return_value=(True, peer))
+
+        await ensure_version_parity(mgr, "nobita")  # interactive: a patch skew passes
+
+        with pytest.raises(RemoteTurnError) as excinfo:
+            await ensure_version_parity(mgr, "nobita", exact=True)
+        message = str(excinfo.value)
+        assert peer in message and kiro_crew.__version__ in message
+        assert "scheduled message" in message
+        assert "exactly this version" in message
+
+    @pytest.mark.asyncio
+    async def test_the_exact_gate_passes_the_same_version(self):
+        mgr = MagicMock()
+        mgr.peer_version = AsyncMock(return_value=(True, kiro_crew.__version__))
+        await ensure_version_parity(mgr, "nobita", exact=True)  # does not raise
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "reply",
+        [
+            (False, "capability_peer_too_old"),
+            (False, "capability_no_credential"),
+            (True, "build-2026.09.03-def456"),
+        ],
+        ids=("too-old", "unreachable", "non-semver-build-id"),
+    )
+    async def test_the_exact_gate_keeps_the_unknown_and_malformed_refusals(self, reply):
+        """Tightening the fence changes no answer the series gate already refused.
+
+        Each of these is refused the same way with and without ``exact``: the
+        exact check only adds a refusal for the one shape the series gate admits
+        (a patch skew), so the remedies the existing messages carry are kept.
+        """
+        mgr = MagicMock()
+        mgr.peer_version = AsyncMock(return_value=reply)
+        with pytest.raises(RemoteTurnError) as series:
+            await ensure_version_parity(mgr, "nobita")
+        with pytest.raises(RemoteTurnError) as exact:
+            await ensure_version_parity(mgr, "nobita", exact=True)
+        assert str(exact.value) == str(series.value)
+
 
 # ── The relay ──────────────────────────────────────────────────────────────────
 
@@ -489,13 +558,133 @@ class TestRelayReplay:
         assert [r for r in slot._pending if r.get("role") == "chunk"] == []
 
     @pytest.mark.asyncio
-    async def test_a_turn_always_ends_with_chat_done(self, tmp_path):
-        """Without it the composer stays blocked and the session looks hung."""
+    async def test_a_landed_peer_done_plus_terminator_settles_the_turn(self, tmp_path):
+        """Both the peer verdict and transport terminator are required."""
         state = _make_state(tmp_path)
         state.broadcast_ws = MagicMock()
         slot = _remote_slot()
-        await relay_remote_turn(state, slot, "hi", chunks=_stream(b"data: [DONE]\n\n"))
+
+        completed = await relay_remote_turn(
+            state,
+            slot,
+            "hi",
+            chunks=_stream(_relay_done(True), b"data: [DONE]\n\n"),
+        )
+
+        assert completed is True
         assert [c.args[0] for c in state.broadcast_ws.call_args_list][-1] == "chat_done"
+
+    @pytest.mark.asyncio
+    async def test_a_failed_peer_row_and_done_do_not_settle_the_turn(self, tmp_path):
+        """The terminator closes transport; it cannot overwrite peer failure."""
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        slot = _remote_slot()
+
+        completed = await relay_remote_turn(
+            state,
+            slot,
+            "hi",
+            chunks=_stream(
+                _sse({"type": "error", "content": "peer failed", "cls": "msg msg-err"}),
+                _relay_done(False),
+                b"data: [DONE]\n\n",
+            ),
+        )
+
+        assert completed is False
+        assert [(row["role"], row["content"]) for row in slot.messages] == [
+            ("error", "peer failed")
+        ]
+
+    @pytest.mark.parametrize(
+        "records",
+        [
+            pytest.param((_relay_done("true"),), id="non-boolean"),
+            pytest.param(
+                (_relay_done(True), _relay_done(True)),
+                id="duplicate",
+            ),
+            pytest.param(
+                (_sse({"type": "done", "content": "", "cls": "done"}),),
+                id="missing-meta",
+            ),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_a_malformed_peer_done_fails_safe(self, tmp_path, records):
+        state = _make_state(tmp_path)
+        slot = _remote_slot()
+
+        completed = await relay_remote_turn(
+            state,
+            slot,
+            "hi",
+            chunks=_stream(*records, b"data: [DONE]\n\n"),
+        )
+
+        assert completed is False
+        assert slot.messages == []
+
+    @pytest.mark.asyncio
+    async def test_a_missing_peer_done_keeps_interactive_compatibility(self, tmp_path):
+        """Interactive callers preserve older peers' terminator-only success."""
+        state = _make_state(tmp_path)
+        slot = _remote_slot()
+
+        completed = await relay_remote_turn(
+            state,
+            slot,
+            "hi",
+            chunks=_stream(b"data: [DONE]\n\n"),
+        )
+
+        assert completed is True
+        assert slot.messages == []
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_legacy_scheduled_turn_is_accepted_but_unlanded(self, tmp_path):
+        """A peer may accept, cancel, and emit only the terminator with no error row."""
+        state = _make_state(tmp_path)
+        slot = _remote_slot()
+        outcome = RemoteTurnOutcome()
+
+        completed = await relay_remote_turn(
+            state,
+            slot,
+            "hi",
+            chunks=_stream(b"data: [DONE]\n\n"),
+            outcome=outcome,
+        )
+
+        assert completed is False
+        assert outcome == RemoteTurnOutcome(peer_accepted=True, landed=False)
+        assert slot.messages == []
+
+    @pytest.mark.asyncio
+    async def test_a_legacy_error_plus_terminator_does_not_land(self, tmp_path):
+        """A legacy peer's replayed error is a failed scheduled-send attempt."""
+        state = _make_state(tmp_path)
+        slot = _remote_slot()
+        outcome = RemoteTurnOutcome()
+
+        completed = await relay_remote_turn(
+            state,
+            slot,
+            "hi",
+            chunks=_stream(
+                _sse({"type": "error", "content": "legacy failure", "cls": "msg msg-err"}),
+                b"data: [DONE]\n\n",
+            ),
+            outcome=outcome,
+        )
+
+        assert completed is False
+        assert outcome == RemoteTurnOutcome(peer_accepted=True, landed=False)
+        # Interactive callers still receive the peer's ordinary replayed row.
+        assert [(row["role"], row["content"]) for row in slot.messages] == [
+            ("error", "legacy failure")
+        ]
 
     @pytest.mark.parametrize(
         "chunks_factory",
@@ -556,7 +745,8 @@ class TestRelayReplay:
             yield _sse({"type": "chunk", "content": "par", "cls": "chunk"})
             raise ConnectionResetError("tunnel died")
 
-        await relay_remote_turn(state, slot, "hi", chunks=_boom())
+        completed = await relay_remote_turn(state, slot, "hi", chunks=_boom())
+        assert completed is False
         assert slot.messages[-1]["role"] == "error"
         assert [c.args[0] for c in state.broadcast_ws.call_args_list][-1] == "chat_done"
 
@@ -574,13 +764,14 @@ class TestRelayReplay:
         state.broadcast_ws = MagicMock()
         slot = _remote_slot()
 
-        await relay_remote_turn(
+        completed = await relay_remote_turn(
             state,
             slot,
             "hi",
             chunks=_stream(_sse({"type": "chunk", "content": "half an ans", "cls": "chunk"})),
         )
 
+        assert completed is False
         assert slot.messages[-1]["role"] == "error"
         assert "incomplete" in slot.messages[-1]["content"]
         # Still unblocked: a truncation is reported, not left hanging.
@@ -1971,8 +2162,42 @@ class TestPeerTurnRequest:
         args, kwargs = mgr.proxy_request.call_args
         assert args[2] == "api/chat"
         assert kwargs["params"] == {"relay": "1"}
-        # The PEER's slot key, and only the message — see the known gap in the PR.
+        # An ordinary turn keeps its exact historical two-field body.
         assert json.loads(kwargs["data"]) == {"message": "hi", "slot": "peer-chat-9"}
+
+    @pytest.mark.asyncio
+    async def test_a_scheduled_turn_carries_containment_to_the_peer(self, tmp_path):
+        state = _make_state(tmp_path)
+        mgr = MagicMock()
+        mgr.peer_version = AsyncMock(return_value=(True, kiro_crew.__version__))
+
+        class _Streaming(_FakeUpstream):
+            def __init__(self):
+                super().__init__(200, b"")
+                self.content = SimpleNamespace(iter_any=self._iter)
+
+            async def _iter(self):
+                yield b"data: [DONE]\n\n"
+
+        mgr.proxy_request = MagicMock(return_value=_Streaming())
+        state.instances_manager = mgr
+        state.broadcast_ws = MagicMock()
+        admission = TestRelayedContainmentAdmission._admission()
+        exact = "  indented scheduled text\n\n"
+
+        await relay_remote_turn(
+            state,
+            _remote_slot(),
+            exact,
+            containment_admission=admission,
+        )
+
+        payload = json.loads(mgr.proxy_request.call_args.kwargs["data"])
+        assert payload == {
+            "message": exact,
+            "slot": "peer-chat-9",
+            "containment_admission": admission,
+        }
 
     @pytest.mark.asyncio
     async def test_a_peer_that_refuses_the_turn_becomes_an_error_row(self, tmp_path):
@@ -2479,6 +2704,29 @@ class TestPeerVersionIsNotAnEchoChannel:
             await ensure_version_parity(mgr, "nobita")
         assert "9" * 65 not in str(excinfo.value)
 
+    @pytest.mark.asyncio
+    async def test_the_exact_only_refusal_redacts_and_bounds_too(self):
+        """The scheduled fence's own message is a second echo path; scrub it the same.
+
+        A peer in the same series whose version string carries a credential and
+        a long tail passes the series gate, so only ``exact`` refuses it -- through
+        the new message, which must redact and bound exactly like the old one.
+        """
+        from kiro_crew.apps.version import parse_version
+
+        major, minor, patch = parse_version(kiro_crew.__version__)
+        peer = f"{major}.{minor}.{patch + 1} {_BAIT} " + "9" * 5000
+        mgr = MagicMock()
+        mgr.peer_version = AsyncMock(return_value=(True, peer))
+        with pytest.raises(RemoteTurnError) as excinfo:
+            await ensure_version_parity(mgr, "nobita", exact=True)
+        message = str(excinfo.value)
+        assert "exactly this version" in message
+        assert _BAIT not in message
+        assert "[REDACTED: credential]" in message
+        assert "9" * 65 not in message
+        assert kiro_crew.__version__ in message
+
 
 class TestMirroredClearCannotDestroyLocalRows:
     """A ``slot_clear`` arriving over the relay must not empty THIS transcript.
@@ -2661,6 +2909,107 @@ def _send_app(state, *, app_name: str = "", user: str = "local-app"):
     app["state"] = state
     app.router.add_post("/api/chat/send", handler)
     return app
+
+
+class TestRelayedContainmentAdmission:
+    @staticmethod
+    def _admission() -> dict:
+        return {
+            "queued_containment": {
+                "linked": False,
+                "mirrored": False,
+                "ephemeral": False,
+                "app": False,
+                "unattended": False,
+                "workspace": "default",
+                "mirror_identity": "",
+            }
+        }
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("with_admission", [False, True])
+    async def test_relay_passes_only_valid_present_admission_to_runner(
+        self, tmp_path, monkeypatch, with_admission
+    ):
+        from aiohttp.test_utils import TestClient, TestServer
+
+        state = _make_state(tmp_path)
+        slot = _ChatSlot("chat-peer-1")
+        state._slots[slot.key] = slot
+        captured: dict[str, object] = {}
+        exact = "  indented scheduled text\n\n"
+
+        async def run(_state, target, message, **kwargs):
+            captured["message"] = message
+            captured.update(kwargs)
+            target.append("done", "", "done")
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", run)
+        body: dict[str, object] = {"slot": slot.key, "message": exact}
+        if with_admission:
+            body["containment_admission"] = self._admission()
+        async with TestClient(TestServer(_send_app(state))) as client:
+            resp = await client.post("/api/chat/send?relay=1", json=body)
+            assert resp.status == 200
+            await resp.read()
+
+        if with_admission:
+            assert captured["_audience_containment_admission"] == self._admission()
+            assert captured["_directive_user_origin"] is False
+            assert captured["message"] == exact
+            assert slot._human_seen is False
+        else:
+            assert "_audience_containment_admission" not in captured
+            assert captured["_directive_user_origin"] is True
+            assert captured["message"] == exact.strip()
+            assert slot._human_seen is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "malformed",
+        [
+            None,
+            [],
+            {},
+            {"queued_containment": []},
+            {"queued_containment": {"linked": False}},
+            {
+                "queued_containment": {
+                    "linked": False,
+                    "mirrored": False,
+                    "ephemeral": False,
+                    "app": False,
+                    "unattended": False,
+                    "workspace": "default",
+                    "extra": True,
+                }
+            },
+        ],
+    )
+    async def test_relay_rejects_malformed_admission_before_dispatch(
+        self, tmp_path, monkeypatch, malformed
+    ):
+        from aiohttp.test_utils import TestClient, TestServer
+
+        state = _make_state(tmp_path)
+        slot = _ChatSlot("chat-peer-1")
+        state._slots[slot.key] = slot
+        run = AsyncMock()
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", run)
+        async with TestClient(TestServer(_send_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/send?relay=1",
+                json={
+                    "slot": slot.key,
+                    "message": "relayed",
+                    "containment_admission": malformed,
+                },
+            )
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "relay_containment_invalid"
+
+        run.assert_not_awaited()
+        assert slot.messages == []
 
 
 class TestBusyRemoteSlotRefusesInsteadOfQueueing:
@@ -3466,6 +3815,250 @@ class TestPreStreamRefusalRollsBackTheUserRow:
         assert slot.messages[-1]["role"] == "error"
 
 
+class TestRelayReportsWhetherThePeerAccepted:
+    """The bool says whether the turn landed; ``RemoteTurnOutcome`` says who refused.
+
+    A scheduled send must tell a peer that REFUSED the turn before accepting it
+    (``409 remote_turn_busy``, version skew, a dead tunnel -- the peer has
+    nothing, so no attempt was made) from a turn the peer accepted and then
+    failed or truncated (one spent attempt). Both return ``False``; only the
+    outcome record separates them. The record is written on every exit, the
+    cancel included. Supplying it also asks for an explicit peer settlement row;
+    interactive callers that omit it retain older peers' terminator-only success.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_busy_peer_409_is_reported_as_not_accepted(self, tmp_path):
+        """The real peer path: a pre-acceptance non-2xx never reaches the peer."""
+        state = _make_state(tmp_path)
+        state.instances_manager = _mgr_returning(409, b'{"code": "remote_turn_busy"}')
+        state.broadcast_ws = MagicMock()
+        slot = _remote_slot()
+        slot.append("user", "do it", "msg msg-u")
+        outcome = RemoteTurnOutcome()
+
+        landed = await relay_remote_turn(state, slot, "do it", outcome=outcome)
+
+        assert landed is False
+        assert outcome.peer_accepted is False
+        assert outcome.landed is False
+        # The interactive contract is untouched: the unsent row is dropped and
+        # the refusal reaches the user as the same error row as before.
+        assert [m["role"] for m in slot.messages] == ["error"]
+
+    @pytest.mark.asyncio
+    async def test_a_pre_stream_refusal_is_reported_as_not_accepted(self, tmp_path):
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        slot = _remote_slot()
+        outcome = RemoteTurnOutcome()
+
+        async def _raise_before_yield():
+            raise RemoteTurnError("crew is on an older version")
+            yield b""  # pragma: no cover - unreachable, makes this a generator
+
+        landed = await relay_remote_turn(
+            state, slot, "do it", chunks=_raise_before_yield(), outcome=outcome
+        )
+
+        assert landed is False
+        assert outcome.peer_accepted is False
+
+    @pytest.mark.asyncio
+    async def test_an_accepted_truncation_is_reported_as_accepted_but_unlanded(self, tmp_path):
+        """The empty acceptance sentinel alone is acceptance: a zero-byte 2xx counts."""
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        slot = _remote_slot()
+        outcome = RemoteTurnOutcome()
+
+        landed = await relay_remote_turn(state, slot, "do it", chunks=_stream(b""), outcome=outcome)
+
+        assert landed is False
+        assert outcome.peer_accepted is True
+        assert outcome.landed is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("tail", "expected"),
+        [
+            ((_relay_done(True), b"data: [DONE]\n\n"), True),
+            ((_relay_done(False), b"data: [DONE]\n\n"), False),
+            ((b"data: [DONE]\n\n",), False),
+        ],
+        ids=("landed", "terminal-row-unlanded", "older-patch-missing-outcome"),
+    )
+    async def test_the_landed_report_mirrors_the_returned_verdict(self, tmp_path, tail, expected):
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        slot = _remote_slot()
+        outcome = RemoteTurnOutcome()
+
+        landed = await relay_remote_turn(
+            state,
+            slot,
+            "hi",
+            chunks=_stream(_sse({"type": "chunk", "content": "x", "cls": "chunk"}), *tail),
+            outcome=outcome,
+        )
+
+        assert landed is expected
+        assert outcome.landed is expected
+        assert outcome.peer_accepted is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("accepted_first", [False, True])
+    async def test_cancellation_still_reports_acceptance_and_still_propagates(
+        self, tmp_path, accepted_first
+    ):
+        """A cancel is not a verdict: it propagates, keeps the marker, reports acceptance."""
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        slot = _remote_slot()
+        outcome = RemoteTurnOutcome()
+
+        async def _cancel():
+            if accepted_first:
+                yield b""
+            raise asyncio.CancelledError()
+
+        with pytest.raises(asyncio.CancelledError):
+            await relay_remote_turn(state, slot, "hi", chunks=_cancel(), outcome=outcome)
+
+        assert outcome.peer_accepted is accepted_first
+        assert outcome.landed is False
+        assert slot._relay_in_flight is True
+
+    @pytest.mark.asyncio
+    async def test_the_record_is_optional_and_the_bool_contract_holds_without_it(self, tmp_path):
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        slot = _remote_slot()
+
+        assert (
+            await relay_remote_turn(
+                state, slot, "hi", chunks=_stream(_relay_done(True), b"data: [DONE]\n\n")
+            )
+            is True
+        )
+
+
+class TestScheduledRelayRequiresTheExactPeerVersion:
+    """A scheduled relay (one supplying ``outcome``) is fenced to the exact version.
+
+    Branch table, each row a test below:
+
+    caller        | peer version          | proxy POST | peer_accepted | landed
+    --------------+-----------------------+------------+---------------+-------
+    scheduled     | same series, +1 patch | none       | False         | False
+    interactive   | same series, +1 patch | yes        | n/a           | legacy
+    scheduled     | exact                 | yes        | True          | True
+
+    The refusal is raised INSIDE the peer stream before the POST, which is the
+    pre-acceptance shape the gateway already settles uncharged: it reads
+    ``peer_accepted is False`` and releases the reservation with the attempt
+    budget untouched, so the one-shot stays pending and is re-armed. Repeating
+    the refused relay shows the fence holding on every retry with no POST ever
+    made.
+    """
+
+    @staticmethod
+    def _patch_skewed_peer() -> str:
+        from kiro_crew.apps.version import parse_version
+
+        major, minor, patch = parse_version(kiro_crew.__version__)
+        return f"{major}.{minor}.{patch + 1}"
+
+    @staticmethod
+    def _streaming_mgr(peer_version: str, *tail: bytes) -> MagicMock:
+        """A manager whose peer answers 2xx and streams *tail* records."""
+
+        class _Streaming(_FakeUpstream):
+            def __init__(self):
+                super().__init__(200, b"")
+                self.content = SimpleNamespace(iter_any=self._iter)
+
+            async def _iter(self):
+                for record in tail:
+                    yield record
+
+        mgr = MagicMock()
+        mgr.peer_version = AsyncMock(return_value=(True, peer_version))
+        mgr.proxy_request = MagicMock(side_effect=lambda *_a, **_k: _Streaming())
+        return mgr
+
+    @pytest.mark.asyncio
+    async def test_a_scheduled_relay_refuses_a_patch_skewed_peer_before_the_post(self, tmp_path):
+        state = _make_state(tmp_path)
+        peer = self._patch_skewed_peer()
+        mgr = self._streaming_mgr(peer, _relay_done(True), b"data: [DONE]\n\n")
+        state.instances_manager = mgr
+        state.broadcast_ws = MagicMock()
+        slot = _remote_slot()
+
+        for attempt in range(3):
+            slot.append("user", "do it", "msg msg-u")  # as the gateway stages pre-dispatch
+            outcome = RemoteTurnOutcome()
+
+            landed = await relay_remote_turn(state, slot, "do it", outcome=outcome)
+
+            assert landed is False, attempt
+            assert outcome.peer_accepted is False, "refused before the peer saw the message"
+            assert outcome.landed is False
+            # Zero proxy POSTs on every retry: the peer is never asked, so it
+            # cannot run a message this side would then settle as unlanded.
+            mgr.proxy_request.assert_not_called()
+            # The unsent user row is rolled back from the window and the refusal
+            # reaches the transcript naming both versions and the scheduled rule.
+            assert [m["role"] for m in slot.messages] == ["error"] * (attempt + 1)
+            assert peer in slot.messages[-1]["content"]
+            assert kiro_crew.__version__ in slot.messages[-1]["content"]
+            assert "scheduled message" in slot.messages[-1]["content"]
+            assert slot._relay_in_flight is False
+            assert [c.args[0] for c in state.broadcast_ws.call_args_list][-1] == "chat_done"
+
+    @pytest.mark.asyncio
+    async def test_an_interactive_relay_still_runs_on_a_patch_skewed_peer(self, tmp_path):
+        """Opposite-mode control: without ``outcome`` the series rule is unchanged."""
+        state = _make_state(tmp_path)
+        mgr = self._streaming_mgr(
+            self._patch_skewed_peer(),
+            _sse({"type": "chunk", "content": "x", "cls": "chunk"}),
+            b"data: [DONE]\n\n",  # an older patch's terminator-only success
+        )
+        state.instances_manager = mgr
+        state.broadcast_ws = MagicMock()
+        slot = _remote_slot()
+
+        landed = await relay_remote_turn(state, slot, "hi")
+
+        assert landed is True
+        mgr.proxy_request.assert_called_once()
+        assert mgr.proxy_request.call_args.args[2] == "api/chat"
+        assert not any(m["role"] == "error" for m in slot.messages)
+
+    @pytest.mark.asyncio
+    async def test_a_scheduled_relay_runs_on_an_exact_version_peer(self, tmp_path):
+        state = _make_state(tmp_path)
+        mgr = self._streaming_mgr(
+            kiro_crew.__version__,
+            _sse({"type": "chunk", "content": "x", "cls": "chunk"}),
+            _relay_done(True),
+            b"data: [DONE]\n\n",
+        )
+        state.instances_manager = mgr
+        state.broadcast_ws = MagicMock()
+        slot = _remote_slot()
+        outcome = RemoteTurnOutcome()
+
+        landed = await relay_remote_turn(state, slot, "do it", outcome=outcome)
+
+        assert landed is True
+        assert outcome == RemoteTurnOutcome(peer_accepted=True, landed=True)
+        mgr.proxy_request.assert_called_once()
+        assert json.loads(mgr.proxy_request.call_args.kwargs["data"])["message"] == "do it"
+
+
 class TestRelayCarriesToolRowMeta:
     """A tool row's durable ``meta`` must survive the relay, minus the peer's mid."""
 
@@ -3567,6 +4160,51 @@ class TestRelayedSendToBusyPeerSlotIsRefused:
             assert slot._queue == []
         finally:
             slot.task.cancel()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("scheduled", [False, True])
+    async def test_a_relayed_send_is_refused_before_the_background_subagent_hold(
+        self, tmp_path, scheduled
+    ):
+        """An idle peer with children cannot acknowledge a relay as queued."""
+        from aiohttp.test_utils import TestClient, TestServer
+
+        state = _make_state(tmp_path)
+        state.subagents = MagicMock()
+        state.subagents.running_agents_for.return_value = ["child-1"]
+        slot = _ChatSlot("chat-peer-1")
+        state._slots[slot.key] = slot
+        body = {"slot": slot.key, "message": "relayed"}
+        if scheduled:
+            body["containment_admission"] = TestRelayedContainmentAdmission._admission()
+
+        async with TestClient(TestServer(_send_app(state))) as client:
+            resp = await client.post("/api/chat/send?relay=1", json=body)
+            assert resp.status == 409
+            assert (await resp.json())["code"] == "remote_turn_busy"
+
+        assert slot._queue == []
+
+    @pytest.mark.asyncio
+    async def test_a_local_send_still_uses_the_background_subagent_hold(self, tmp_path):
+        """The relay refusal must not narrow ordinary local-user queueing."""
+        from aiohttp.test_utils import TestClient, TestServer
+
+        state = _make_state(tmp_path)
+        state.subagents = MagicMock()
+        state.subagents.running_agents_for.return_value = ["child-1"]
+        slot = _ChatSlot("chat-local-1")
+        state._slots[slot.key] = slot
+
+        async with TestClient(TestServer(_send_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/send", json={"slot": slot.key, "message": "hold locally"}
+            )
+            assert resp.status == 200
+            payload = await resp.json()
+            assert payload.get("queued") is True
+
+        assert [entry["content"] for entry in slot._queue] == ["hold locally"]
 
 
 class TestRemoteSessionIsPlainChatOnly:

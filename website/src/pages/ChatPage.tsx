@@ -101,6 +101,7 @@ import { useVirtualChat } from '../hooks/virtualizer/useVirtualChat'
 import { prepareSendPayload, serializeDirTokens } from '../utils/fileTokens'
 import { carryPastes, expandAll as expandPasteTokens, mergeCarriedDraft, pruneBlocks as pruneBlocksUtil, saveStoredPaste } from '../utils/pasteTokens'
 import { extractPromptFromToken, extractSlackContextFromToken } from '../utils/tokenPrompt'
+
 /** Map message index → displayItems index, for scroll-to-match and the turn minimap. */
 function buildMessageToDisplayIdx(items: DisplayItem[]): Map<number, number> {
   const map = new Map<number, number>()

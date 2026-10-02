@@ -1,6 +1,6 @@
 import { useRef, useEffect, useMemo, useCallback, useId, memo, lazy, Suspense } from 'react'
 import { markComposerResize } from '../utils/composerResize'
-import { ArrowUp, Loader2, RotateCw, Sparkles, Target, CheckCircle, Lock, FolderOpen, ClipboardList, PenLine, MoreHorizontal } from 'lucide-react'
+import { ArrowUp, Clock, Loader2, RotateCw, Sparkles, Target, CheckCircle, Lock, FolderOpen, ClipboardList, PenLine, MoreHorizontal } from 'lucide-react'
 import SketchDialog from './SketchDialog'
 import CopyBranchButton from './CopyBranchButton'
 import RejectDropdown from './RejectDropdown'
@@ -57,6 +57,7 @@ import { usePromptHistory, useUndoHistory } from './chat-input/draftHistory'
 import { usePromptOptimizer } from './chat-input/optimizer'
 import { usePasteTokens } from './chat-input/paste'
 import { FilePreviewStrip } from './chat-input/FilePreviewStrip'
+import { SendLaterMenuContent, useScheduledComposer } from './chat-input/scheduling'
 
 /* The chat composer. This module is its only import path: the default export
    is the memoized component every host renders, and the named exports below
@@ -388,7 +389,48 @@ function ChatInput({
     : 'components.chatInput.continue_thread')
   const autoCompactThreshold = useAutoCompactThreshold({ activeSlot, ctxPopoverOpen, queryClient, dispatch })
   const { composerCollapsed, collapsedBarRef, collapseComposer, expandComposer, collapsedDraftLine } = useComposerCollapse({ collapsible, composerControl, value })
+  const mobileMoreBtnRef = useRef<HTMLButtonElement>(null)
+  const scheduled = useScheduledComposer({
+    slotId,
+    value,
+    onChange,
+    pasteBlocks,
+    onPasteBlocksChange,
+    // Everything the ordinary send serializes beside the text and the one-shot
+    // POST does not: uploads, `@rel/` folder tokens, staged session refs.
+    hasAttachments: pendingFiles.length > 0 || pendingDirs.length > 0 || pendingSessions.length > 0,
+    automation,
+    onAutomationChange,
+    onAutomationClick,
+    creationReady: automationCreationReady,
+    connected,
+    disabled,
+    sessionMode,
+    memoryMode,
+    composerCollapsed,
+    expandComposer,
+    closeAttachMenu: () => setPlusOpen(false),
+  })
+  const sendLaterTitle = scheduled.schedulePending
+    ? i18nT('components.jobForm.saving')
+    : scheduled.sendLaterDisabledReason || i18nT('components.chatInput.send_later')
+  const desktopScheduleRow = (
+    <button
+      type="button"
+      onClick={() => scheduled.openScheduleLater(plus.plusBtnRef.current?.getBoundingClientRect() ?? null)}
+      disabled={!!scheduled.sendLaterDisabledReason || scheduled.schedulePending}
+      title={sendLaterTitle}
+      className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg bg-transparent hover:bg-bg-hover transition-colors cursor-pointer text-left disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+      data-testid="plus-menu-send-later"
+    >
+      <SendLaterMenuContent
+        pending={scheduled.schedulePending}
+        disabledReason={scheduled.sendLaterDisabledReason}
+      />
+    </button>
+  )
   const collapseMenuRow = collapsible ? collapseMenuRowElement(() => { setPlusOpen(false); collapseComposer() }) : null
+
   // Refs mirror frequently-changing props/state read from inside the keydown handler
   // so it doesn't re-create on every keystroke.
   const valueRef = useRef(value)
@@ -448,6 +490,70 @@ function ChatInput({
     slotId, chatStore, valueRef, pasteBlocks, onChange, onOptimizeResult, lexicalComposer, lexicalLoadFailed, composerControl, inputRef,
     valueFromUserRef, optimizingRef, appendUndoBoundary: appendBoundary,
   })
+  // Optimize lives in the overflow menus, not the action row. The row is
+  // grandfathered at three by `max-two-buttons-per-row` (Mic + Optimize + Send
+  // on the base branch) and that grandfather is growth-only: the visible
+  // Send-later clock beside Send is the maintainer-approved addition, so the
+  // slot Optimize held is the one that has to give. Same two hosts as
+  // Send later -- the desktop "+" drop-up and the touch "More" overflow -- so
+  // the action is reachable in both layouts, and the keyboard shortcut
+  // (`useComposerKeyDown`) is untouched.
+  //
+  // Every guard the inline button carried moves with it unchanged: disabled on
+  // an empty draft, offline (`offlineProps`), or on the RAW pending flag (not
+  // the slot-scoped `optimizing`) so it also reads as busy on a *different*
+  // session while the originating session's optimize is still in flight --
+  // matching the re-entrancy guard in optimizePrompt(). optimizing ⊂
+  // optimizePending, so it stays disabled on the originating session too.
+  const optimizeBusyElsewhere = optimizePending && !optimizing
+  const optimizeDisabled = !value.trim() || optimizePending || !connected
+  const optimizeAriaLabel = optimizeBusyElsewhere
+    ? i18nT('components.chatInput.optimize_prompt_busy_optimizing_another_chat')
+    : i18nT('components.chatInput.optimize_prompt')
+  const optimizeShortcut = platformShortcut('Cmd+Shift+Enter')
+  const optimizeTitle = optimizeBusyElsewhere
+    ? i18nT('components.chatInput.optimizing_another_chat_please_wait')
+    : i18nT('components.chatInput.optimize_prompt_2', { shortcut: optimizeShortcut })
+  // The subtitle is the keyboard shortcut (a glyph string, not prose, so no
+  // catalog key) -- the one piece of the old tooltip a touch user never saw.
+  // While another chat holds the optimizer the subtitle says so instead, the
+  // same sentence the tooltip carried.
+  const optimizeMenuContent = (
+    <>
+      {optimizing
+        ? <Loader2 size={14} className="w-4 shrink-0 text-accent animate-spin lucide-inline" aria-hidden />
+        : <Sparkles size={14} className="w-4 shrink-0 text-muted lucide-inline" aria-hidden />}
+      <div className="min-w-0">
+        <div className="text-[12px] font-medium text-text">{i18nT('components.chatInput.optimize_prompt')}</div>
+        <div className="text-[11px] text-muted leading-snug">
+          {optimizeBusyElsewhere ? i18nT('components.chatInput.optimizing_another_chat_please_wait') : optimizeShortcut}
+        </div>
+      </div>
+    </>
+  )
+  const desktopOptimizeRow = promptOptimizer ? (
+    <button
+      type="button"
+      onClick={(e) => { e.stopPropagation(); e.preventDefault(); setPlusOpen(false); optimizePrompt() }}
+      disabled={optimizeDisabled}
+      aria-label={optimizeAriaLabel}
+      title={optimizeTitle}
+      className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg bg-transparent hover:bg-bg-hover transition-colors cursor-pointer text-left disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+      data-testid="plus-menu-optimize"
+      {...offlineProps(connected, 'optimize', i18nT('components.chatInput.optimize'))}
+    >
+      {optimizeMenuContent}
+    </button>
+  ) : null
+  // `AttachMenu` exposes one composer-owned slot (`scheduleMenuRow`) for rows
+  // the composer supplies; both rows ride in it, Send later first, so the
+  // menu order matches the touch overflow below.
+  const desktopComposerRows = (
+    <>
+      {desktopScheduleRow}
+      {desktopOptimizeRow}
+    </>
+  )
   // A file-tree row dropped here goes to the host's "Add to chat" handler;
   // OS file and text drags fall through to the host's handlers.
   const treeDrop = useComposerTreeDrop({
@@ -717,6 +823,10 @@ function ChatInput({
         )}
       </AnimatePresence>
 
+      {scheduled.banner}
+      {scheduled.popover}
+      {scheduled.error}
+
       {optimizeError && (
         <div className="px-4 mb-1">
           {/* No hand-off: the composer draft below (the prompt that was restored) is unsaved. */}
@@ -952,7 +1062,7 @@ function ChatInput({
         {/* Bottom icon row */}
         <div className="flex items-center justify-between px-2.5 pb-2 pt-0.5">
           <div className="flex items-center gap-0.5 min-w-0">
-            <AttachMenu plus={plus} onUploadFiles={onUploadFiles} uploading={uploading} onCancelUpload={onCancelUpload} directFilePicker={directFilePicker} collapsible={collapsible} fileInputId={fileInputId} openPicker={openPicker} isMac={isMac} isMobile={isMobile} onScreenshot={onScreenshot} collapseMenuRow={collapseMenuRow} typedCommandMenus={typedCommandMenus} onFileSelect={onFileSelect} />
+            <AttachMenu plus={plus} onUploadFiles={onUploadFiles} uploading={uploading} onCancelUpload={onCancelUpload} directFilePicker={directFilePicker} collapsible={collapsible} fileInputId={fileInputId} openPicker={openPicker} isMac={isMac} isMobile={isMobile} onScreenshot={onScreenshot} collapseMenuRow={collapseMenuRow} scheduleMenuRow={desktopComposerRows} typedCommandMenus={typedCommandMenus} onFileSelect={onFileSelect} />
             {directFilePicker && collapsible && (
               /* The repo's own overflow mechanism, not a second spelling of it.
                  `max-two-buttons-per-row` names the two files to copy for exactly
@@ -974,6 +1084,7 @@ function ChatInput({
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <button
+                    ref={mobileMoreBtnRef}
                     type="button"
                     data-testid="composer-more-trigger"
                     className="w-8 h-8 rounded-lg flex items-center justify-center cursor-pointer transition-all bg-transparent border-none shrink-0 text-muted hover:text-text hover:bg-bg-hover data-[state=open]:text-text data-[state=open]:bg-bg-hover"
@@ -984,6 +1095,39 @@ function ChatInput({
                   </button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent side="top" align="start" className="w-[260px] p-2">
+                  <DropdownMenuItem
+                    disabled={!!scheduled.sendLaterDisabledReason || scheduled.schedulePending}
+                    onSelect={() => {
+                      const anchor = mobileMoreBtnRef.current?.getBoundingClientRect() ?? null
+                      setTimeout(() => scheduled.openScheduleLater(anchor), 0)
+                    }}
+                    title={sendLaterTitle}
+                    data-testid="mobile-menu-send-later"
+                    className="w-full text-left"
+                  >
+                    <SendLaterMenuContent
+                      pending={scheduled.schedulePending}
+                      disabledReason={scheduled.sendLaterDisabledReason}
+                    />
+                  </DropdownMenuItem>
+                  {promptOptimizer && (
+                    /* The touch host of Optimize -- see `desktopOptimizeRow` for
+                       why it is a menu item and not a fourth row button. Selecting
+                       it only starts a mutation (no dialog, no focus hand-off), so
+                       unlike Send later above it needs no deferral past the menu's
+                       close commit. */
+                    <DropdownMenuItem
+                      disabled={optimizeDisabled}
+                      onSelect={() => optimizePrompt()}
+                      aria-label={optimizeAriaLabel}
+                      title={optimizeTitle}
+                      data-testid="mobile-menu-optimize"
+                      className="w-full"
+                      {...offlineProps(connected, 'optimize', i18nT('components.chatInput.optimize'))}
+                    >
+                      {optimizeMenuContent}
+                    </DropdownMenuItem>
+                  )}
                   {onUploadFiles && (
                     /* `disabled={uploading}` restores a guard the pencil carried and
                        this row lost when Sketch moved in here. Sketch attaches
@@ -1041,6 +1185,7 @@ function ChatInput({
                     open={automationOpen || false}
                     onOpenChange={v => onAutomationClick(v)}
                     onChange={onAutomationChange || (() => {})}
+                    onRestoreScheduledMessage={scheduled.restoreScheduledDraft}
                     creationReady={automationCreationReady}
                     snapshotFailed={automationSnapshotFailed}
                     sessionMode={sessionMode}
@@ -1098,23 +1243,10 @@ function ChatInput({
             ) : (isRunning || stopState === 'soft_pending' || stopState === 'killing') && (onStop || (canSteer && onSteer)) ? (
               <BusySendControls stopState={stopState} killingEscaped={killingEscaped} stopWithTap={stopWithTap} isQueued={isQueued} composerHasDraft={composerHasDraft} canSteer={canSteer} onSteer={onSteer} steerOnly={steerOnly} fireComposer={fireComposer} disabled={disabled} connected={connected} effectiveBusyMode={effectiveBusyMode} setBusySendMode={setBusySendMode} sendOnEnter={sendOnEnter} jevAutoAvailable={jevAutoAvailable} onStop={onStop} stopDeclinedArmed={stopDeclinedArmed} />
             ) : (<>
-              {promptOptimizer && <button
-                className={`w-8 h-8 rounded-lg border-none flex items-center justify-center cursor-pointer transition-all disabled:cursor-not-allowed ${optimizing ? 'bg-accent/20 text-accent animate-pulse' : 'bg-transparent text-muted hover:text-accent hover:bg-accent/10 disabled:opacity-40 disabled:hover:text-muted disabled:hover:bg-transparent'}`}
-                onClick={(e) => { e.stopPropagation(); e.preventDefault(); optimizePrompt() }}
-                // A single mutation backs this instance, so only one optimize can
-                // run at a time. Disable on the RAW pending flag (not the
-                // slot-scoped `optimizing`) so the button also reads as busy on a
-                // *different* session while the originating session's optimize is
-                // still in flight — matching the re-entrancy guard in
-                // optimizePrompt(). optimizing ⊂ optimizePending, so this stays
-                // disabled on the originating session too.
-                disabled={!value.trim() || optimizePending || !connected}
-                aria-label={optimizePending && !optimizing ? i18nT('components.chatInput.optimize_prompt_busy_optimizing_another_chat') : i18nT('components.chatInput.optimize_prompt')}
-                title={optimizePending && !optimizing ? i18nT('components.chatInput.optimizing_another_chat_please_wait') : i18nT('components.chatInput.optimize_prompt_2', { shortcut: platformShortcut('Cmd+Shift+Enter') })}
-                {...offlineProps(connected, 'optimize', 'Optimize')}
-              >
-                {optimizing ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
-              </button>}
+              {/* No inline Optimize here: it moved into the "+" and "More" menus
+                  (`desktopOptimizeRow` / `mobile-menu-optimize`) so the clock
+                  below could take its slot without growing the row past the
+                  three `max-two-buttons-per-row` grandfathers. */}
               {/* 'primary' is a stable theming hook (button.primary) — see website/docs/theming-contract.md */}
               {/*
                 Sixth state of this button. The first five are send / stop /
@@ -1154,15 +1286,28 @@ function ChatInput({
                   {i18nT('components.chatInput.resume')}
                 </button>
               ) : (
-              <button
-                className="primary w-8 h-8 rounded-full bg-accent text-accent-fg border-none flex items-center justify-center cursor-pointer hover:bg-accent-hover disabled:opacity-30 disabled:cursor-not-allowed transition-all"
-                onClick={fireComposer}
-                disabled={(!value.trim() && !pendingFiles.length && !hasSessionRefs) || disabled || optimizing || !connected}
-                aria-label={i18nT('components.chatInput.send')}
-                {...offlineProps(connected, 'send', 'Send')}
-              >
-                <ArrowUp size={18} />
-              </button>
+                <>
+                  <button
+                    type="button"
+                    className="w-8 h-8 rounded-lg border-none flex items-center justify-center cursor-pointer transition-all bg-transparent text-muted hover:text-text hover:bg-bg-hover disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:text-muted disabled:hover:bg-transparent"
+                    onClick={(event) => scheduled.openScheduleLater(event.currentTarget.getBoundingClientRect())}
+                    disabled={!!scheduled.sendLaterDisabledReason || scheduled.schedulePending}
+                    aria-label={i18nT('components.chatInput.send_later')}
+                    title={sendLaterTitle}
+                    data-testid="composer-send-later"
+                  >
+                    <Clock size={17} />
+                  </button>
+                  <button
+                    className="primary w-8 h-8 rounded-full bg-accent text-accent-fg border-none flex items-center justify-center cursor-pointer hover:bg-accent-hover disabled:opacity-30 disabled:cursor-not-allowed transition-all"
+                    onClick={fireComposer}
+                    disabled={(!value.trim() && !pendingFiles.length && !hasSessionRefs) || disabled || optimizing || !connected}
+                    aria-label={i18nT('components.chatInput.send')}
+                    {...offlineProps(connected, 'send', i18nT('components.chatInput.send'))}
+                  >
+                    <ArrowUp size={18} />
+                  </button>
+                </>
               )}
             </>)}
           </div>

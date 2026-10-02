@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react'
-import { Activity, Goal, Radar, RotateCw, Square, Trash2, X } from 'lucide-react'
+import { Activity, Clock, Goal, Radar, RotateCw, Square, Trash2, X } from 'lucide-react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, ApiError, type MonitorWrite } from '../api/client'
 import {
@@ -13,7 +13,7 @@ import {
   type LegacyGoalLoop,
   type StructuredMonitor,
 } from '../monitoring/automation'
-import { fmtDateTimeNumeric, fmtNumber, fmtUnit, type FormatUnit } from '../i18n/format'
+import { fmtDateTime, fmtDateTimeNumeric, fmtNumber, fmtUnit, type FormatUnit } from '../i18n/format'
 import { Badge, Btn, IconButton, Input, SendBtn } from './ui'
 import { PopoverContent } from './ui/popover'
 import AutoNudgePopover, { type AutoNudgeLoop } from './AutoNudgePopover'
@@ -21,6 +21,8 @@ import { i18nT } from '../i18n/t'
 import MonitorRadar from './MonitorRadar'
 import ErrorNotice from './ErrorNotice'
 import { useQueryIsFetching } from '../hooks/useQueryIsFetching'
+import { fireTimeLocal, toFireTime } from './ScheduleLaterPopover'
+import { sha256Hex } from '../utils/sha256Hex'
 
 interface Props {
   slotKey: string
@@ -28,6 +30,7 @@ interface Props {
   open: boolean
   onOpenChange: (open: boolean) => void
   onChange: (automation: AutomationRecord | null) => void
+  onRestoreScheduledMessage?: (message: string) => void
   /** True only after both per-slot REST reads prove creation cannot replace an unseen record. */
   creationReady?: boolean
   /** The cold snapshot failed; create remains guarded while the server-backed legacy fallback stays reachable. */
@@ -53,6 +56,32 @@ type EditorState = {
   sourceId: string | null
 }
 
+type ScheduledUpdateRequest = {
+  captured: LegacyGoalLoop
+  requestSlotKey: string
+  message: string
+  local: string
+  fireTime: number | null
+  initialMessage: string
+  initialLocal: string
+  initialScheduledAt: number
+  draftRevision: number
+}
+
+function scheduledMessageRevision(
+  loopId: string,
+  slotKey: string,
+  message: string,
+  scheduledAt: number,
+): string {
+  return sha256Hex(JSON.stringify([
+    loopId,
+    slotKey,
+    message,
+    Math.trunc(scheduledAt * 1000),
+  ]))
+}
+
 type FormErrors = Partial<Record<keyof Draft | 'request', string>>
 
 type Mutation = ({ captured: AutomationRecord | null; slotKey: string; editorKey: string } & (
@@ -62,6 +91,30 @@ type Mutation = ({ captured: AutomationRecord | null; slotKey: string; editorKey
   | { action: 'clear'; id: string }
   | { action: 'restart'; id: string }
 ))
+
+/** Copy for a failed scheduled-message request, from its HTTP status and body.
+ *
+ * The backend answers every failed arm with `autonudge_not_armed`; a slot
+ * conflict (another automation already owns the session) is the 409 shape of
+ * that code, while a 503 is transient and a 4xx is a validation refusal. The
+ * status is therefore part of the key: the same code at 503 must keep the
+ * generic keep-your-draft-and-retry copy. Exported for direct unit coverage of
+ * the mapping, which the popover's own PATCH/DELETE flows do not reach. */
+export function scheduledMessageRequestError(
+  status: number,
+  payload: Record<string, unknown>,
+): string {
+  switch (payload.code) {
+    case 'scheduled_message_in_flight':
+      return i18nT('components.chatInput.schedule_message_sending')
+    case 'autonudge_not_armed':
+      return status === 409
+        ? i18nT('components.chatInput.schedule_message_conflict')
+        : i18nT('components.chatInput.schedule_message_failed')
+    default:
+      return i18nT('components.chatInput.schedule_message_failed')
+  }
+}
 
 function monitorRequestError(failure: unknown): string {
   if (!(failure instanceof ApiError) || failure.status !== 400) {
@@ -135,6 +188,8 @@ function legacyWire(loop: LegacyGoalLoop): AutoNudgeLoop {
     ...(loop.judge_last_verdict !== undefined
       ? { judge_last_verdict: loop.judge_last_verdict }
       : {}),
+    scheduled_message: loop.scheduledMessage === true,
+    scheduled_at: loop.scheduledAt,
   }
 }
 
@@ -199,6 +254,7 @@ export default function SessionAutomationPopover({
   open,
   onOpenChange,
   onChange,
+  onRestoreScheduledMessage,
   creationReady = true,
   snapshotFailed = false,
   interrupted = false,
@@ -232,6 +288,7 @@ export default function SessionAutomationPopover({
   /* Separate from confirmStop: the two act on different states and one erases.
      A shared flag would let a stop confirmation land on the clear. */
   const [confirmClear, setConfirmClear] = useState(false)
+  const [scheduledError, setScheduledError] = useState('')
   const id = useId()
   const queryClient = useQueryClient()
   const snapshotFetching = useQueryIsFetching(['session-automation', slotKey])
@@ -240,17 +297,49 @@ export default function SessionAutomationPopover({
   const slotKeyRef = useRef(slotKey)
   slotKeyRef.current = slotKey
   const sessionModeUnsupported = sessionMode === 'crew' || sessionMode === 'member'
-  const legacyView = automation?.kind === 'legacy_goal_loop'
-    || (!monitor && boundedModeSlot !== slotKey)
+  const legacyLoop = automation?.kind === 'legacy_goal_loop' ? automation : null
+  const scheduledLoop = legacyLoop && (legacyLoop.scheduledAt ?? 0) > 0 ? legacyLoop : null
+  const scheduledLoopRef = useRef(scheduledLoop)
+  scheduledLoopRef.current = scheduledLoop
+  const [scheduledMessage, setScheduledMessage] = useState('')
+  const [scheduledLocal, setScheduledLocal] = useState('')
+  const scheduledMessageRef = useRef(scheduledMessage)
+  scheduledMessageRef.current = scheduledMessage
+  const scheduledLocalRef = useRef(scheduledLocal)
+  scheduledLocalRef.current = scheduledLocal
+  const scheduledDraftRevision = useRef(0)
+  const scheduledDraftSource = useRef<string | null>(null)
+  const scheduledInitialMessage = useRef('')
+  const scheduledInitialLocal = useRef('')
+  const scheduledInitialAt = useRef(0)
+  const scheduledWasOpen = useRef(false)
+  const scheduledFireTime = toFireTime(scheduledLocal)
+  const scheduledTimeChanged = scheduledLocal !== scheduledInitialLocal.current
+  const scheduledTimeInvalid = scheduledTimeChanged && scheduledFireTime === null
+  useEffect(() => {
+    const opened = open && !scheduledWasOpen.current
+    scheduledWasOpen.current = open
+    const source = scheduledLoopRef.current
+    if (!open || !source) return
+    if (!opened && scheduledDraftSource.current === source.id) return
+    scheduledDraftSource.current = source.id
+    scheduledInitialMessage.current = source.message
+    scheduledInitialLocal.current = fireTimeLocal(source.scheduledAt as number)
+    scheduledInitialAt.current = source.scheduledAt as number
+    scheduledDraftRevision.current += 1
+    scheduledMessageRef.current = source.message
+    scheduledLocalRef.current = scheduledInitialLocal.current
+    setScheduledMessage(source.message)
+    setScheduledLocal(scheduledInitialLocal.current)
+  }, [open, scheduledLoop?.id])
+  const legacyView = (!!legacyLoop && !scheduledLoop)
+    || (!monitor && !scheduledLoop && boundedModeSlot !== slotKey)
   /* THE RUNTIME INPUT'S REAL CEILING. `contract.json` carries the ABSOLUTE
      maximum any install may configure (30 days), while the create/update
-     handlers enforce the LIVE operator ceiling. The form validates against
-     the smaller value after the per-slot read lands. Until then, or if the
-     read fails, it uses the shipped operator ceiling rather than accepting a
-     value a default server will reject after submit. */
+     handlers enforce the LIVE operator ceiling. */
   const liveCeiling = useQuery({
     queryKey: ['monitor-runtime-ceiling', slotKey],
-    enabled: open && !legacyView,
+    enabled: open && !legacyView && !scheduledLoop,
     queryFn: () => api.monitorForSlot(slotKey),
     select: response => response.max_runtime_ceiling_secs,
     staleTime: 60_000,
@@ -263,9 +352,6 @@ export default function SessionAutomationPopover({
       ? Math.min(STRUCTURED_MONITOR_LIMITS.maxRuntimeSecs.maximum, ceiling)
       : SHIPPED_RUNTIME_CEILING_SECS,
   }
-  /* Both read-failure notices sit behind the request error: a failed save is
-     what the reader must act on first, and stacking a read alert under it puts
-     two unrelated errors in front of them at once. */
   const ceilingFailed = !errors.request && liveCeiling.isError
   const snapshotNoticeDue = !errors.request && snapshotFailed
 
@@ -282,6 +368,7 @@ export default function SessionAutomationPopover({
     setBoundedModeSlot(automation?.kind === 'structured_monitor' ? slotKey : null)
     setConfirmStop(false)
     setConfirmClear(false)
+    setScheduledError('')
   }, [open, automation?.id, automation?.kind, slotKey])
 
   /* A primed confirmation belongs to the record the reader was LOOKING at. This
@@ -356,23 +443,151 @@ export default function SessionAutomationPopover({
     },
   })
 
+  const scheduledCancel = useMutation({
+    mutationFn: async (request: {
+      captured: LegacyGoalLoop
+      requestSlotKey: string
+      message: string
+    }) => {
+      const response = await fetch(
+        `/api/autonudge/${encodeURIComponent(request.captured.id)}?intent=stop`,
+        { method: 'DELETE' },
+      )
+      const payload = await response.json().catch(() => ({})) as Record<string, unknown>
+      if (!response.ok) {
+        throw new Error(scheduledMessageRequestError(response.status, payload))
+      }
+      /* A 2xx is the cancel, whatever the body carries. The delete route
+         answers `{ok: true}` with NO `message` when the row's provenance
+         record was missing or unreadable (it removes the row anyway), so
+         treating the absent field as a failure left a banner for a schedule
+         the server no longer had. The record's own text is the restore
+         fallback, the same one the composer banner's Unschedule uses. */
+      return {
+        message: typeof payload.message === 'string' ? payload.message : request.message,
+        request,
+      }
+    },
+    onSuccess: ({ message, request }) => {
+      queryClient.invalidateQueries({
+        queryKey: ['session-automation', request.requestSlotKey],
+      })
+      if (slotKeyRef.current !== request.requestSlotKey) return
+      const current = automationRef.current
+      const capturedStillCurrent = current !== null
+        && current.kind === request.captured.kind
+        && current.id === request.captured.id
+        && current.slotKey === request.captured.slotKey
+        && current.scheduledMessage === true
+      // The websocket may publish the committed removal before DELETE resolves.
+      // A live record is safe only while it is still the scheduled loop this
+      // request captured; a replacement must keep ownership of the slot.
+      if (current !== null && !capturedStillCurrent) return
+      setScheduledError('')
+      onRestoreScheduledMessage?.(message)
+      onChange(null)
+      onOpenChange(false)
+    },
+    onError: failure => {
+      setScheduledError(failure instanceof Error
+        ? failure.message
+        : i18nT('components.sessionAutomationPopover.request_failed'))
+    },
+  })
+
+  const scheduledUpdate = useMutation({
+    mutationFn: async (request: ScheduledUpdateRequest) => {
+      if (!request.message.trim() || (request.local !== request.initialLocal && request.fireTime === null)) {
+        throw new Error(i18nT('components.jobForm.pick_a_time_in_the_future'))
+      }
+      const body: Record<string, string | number> = {
+        expected_revision: scheduledMessageRevision(
+          request.captured.id,
+          request.captured.slotKey,
+          request.initialMessage,
+          request.initialScheduledAt,
+        ),
+      }
+      if (request.message !== request.initialMessage) {
+        body.message = request.message
+      }
+      if (request.local !== request.initialLocal && request.fireTime !== null) {
+        body.at = request.fireTime
+      }
+      const response = await fetch(`/api/autonudge/${encodeURIComponent(request.captured.id)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      const payload = await response.json().catch(() => ({})) as Record<string, unknown>
+      if (!response.ok) {
+        throw new Error(scheduledMessageRequestError(response.status, payload))
+      }
+      const next = normalizeAutomationRecord(payload.loop)
+      if (next?.kind !== 'legacy_goal_loop' || !(next.scheduledAt && next.scheduledAt > 0)) {
+        throw new Error(i18nT('components.sessionAutomationPopover.request_failed'))
+      }
+      /* The durable row deliberately holds NO scheduled text -- the exact
+         message lives in the provenance record, and this PATCH echoes
+         `_serialize`, not the provenance-joined projection the GET route
+         returns. Carry only the exact text this request committed; every other
+         field remains the server's. */
+      return {
+        next: { ...next, message: request.message } as LegacyGoalLoop,
+        request,
+      }
+    },
+    onSuccess: ({ next, request }) => {
+      queryClient.invalidateQueries({ queryKey: ['session-automation', request.requestSlotKey] })
+      if (slotKeyRef.current !== request.requestSlotKey) return
+      setScheduledError('')
+      /* The captured identity is the authority boundary. A cancel, fire, or
+         replacement while PATCH was in flight leaves only the refetch allowed
+         to reconcile the originating slot. */
+      if (automationRef.current !== request.captured) return
+
+      /* Rebase any edits typed after Save onto what this request actually
+         committed. The current draft stays untouched; only its comparison
+         baseline advances to the authoritative response. */
+      scheduledInitialMessage.current = request.message
+      scheduledInitialLocal.current = fireTimeLocal(next.scheduledAt as number)
+      scheduledInitialAt.current = next.scheduledAt as number
+      onChange(next)
+
+      const draftStillMatchesRequest = (
+        scheduledDraftRevision.current === request.draftRevision
+        && scheduledMessageRef.current === request.message
+        && scheduledLocalRef.current === request.local
+      )
+      if (draftStillMatchesRequest) onOpenChange(false)
+    },
+    onError: failure => {
+      setScheduledError(failure instanceof Error
+        ? failure.message
+        : i18nT('components.sessionAutomationPopover.request_failed'))
+    },
+  })
+
   const terminal = monitor?.terminal ?? null
   const status = monitor ? deriveAutomationStatus(monitor) : 'arm_pending'
   const statusLabel = i18nT(MONITOR_STATUS_KEYS[status])
-  const legacyLoop = automation?.kind === 'legacy_goal_loop' ? automation : null
   const legacyCycle = legacyLoop?.maxCycles
     ? `${legacyLoop.cycleCount}/${legacyLoop.maxCycles}`
     : String(legacyLoop?.cycleCount ?? 0)
-  const triggerLabel = legacyLoop?.active
-    ? i18nT(
-      interrupted
-        ? 'components.autoNudgePopover.goal_interrupted_cycle'
-        : 'components.autoNudgePopover.goal_active_cycle',
-      { cycle: legacyCycle },
-    )
-    : monitor
-      ? i18nT('components.sessionAutomationPopover.monitor_status', { status: statusLabel })
-      : i18nT('components.autoNudgePopover.set_a_goal')
+  /* Same minute-precision width the composer banner uses: the picker never
+     offers a second, so the numeric form's `:00` would be a value nobody set. */
+  const triggerLabel = scheduledLoop
+    ? `${i18nT('components.chatInput.scheduled_message')} · ${fmtDateTime(scheduledLoop.scheduledAt as number)}`
+    : legacyLoop?.active
+      ? i18nT(
+        interrupted
+          ? 'components.autoNudgePopover.goal_interrupted_cycle'
+          : 'components.autoNudgePopover.goal_active_cycle',
+        { cycle: legacyCycle },
+      )
+      : monitor
+        ? i18nT('components.sessionAutomationPopover.monitor_status', { status: statusLabel })
+        : i18nT('components.autoNudgePopover.set_a_goal')
   const busy = mutation.isPending && mutation.variables?.editorKey === editorKey
   const draft = editor.draft
   const hasDirtyFields = Object.keys(editor.dirty).length > 0
@@ -551,19 +766,139 @@ export default function SessionAutomationPopover({
               fixes in the label -- and there is no probing to depict. Once
               anything IS armed the radar is accurate and carries the
               action-running pulse. */}
-          {monitor || legacyLoop ? (
+          {scheduledLoop ? (
+            <Clock className="h-4 w-4 lucide-inline shrink-0" aria-hidden />
+          ) : monitor || legacyLoop ? (
             <MonitorRadar actionRunning={status === 'action_running'} />
           ) : (
             <Goal className="lucide-inline shrink-0" aria-hidden />
           )}
           {monitor ? (
             <span className="text-[11px] font-mono">{fmtNumber(monitor.usage.probes)}</span>
-          ) : legacyLoop?.cycleCount ? (
+          ) : legacyLoop?.cycleCount && !scheduledLoop ? (
             <span className="text-[11px] font-mono">{legacyCycle}</span>
           ) : null}
         </IconButton>
       )}
-      content={legacyView ? undefined : (
+      content={scheduledLoop ? (
+        <PopoverContent
+          side="top"
+          align="start"
+          className="w-[min(calc(100vw-1rem),26.25rem)]"
+        >
+          <div className="text-[12px]">
+          <div className="flex items-start justify-between gap-3 mb-3">
+            <h2 className="flex items-center gap-2 text-sm font-semibold text-text min-w-0">
+              <Clock className="h-4 w-4 lucide-inline text-accent shrink-0" aria-hidden />
+              {i18nT('components.chatInput.scheduled_message')}
+            </h2>
+            <IconButton
+              aria-label={i18nT('components.sessionAutomationPopover.close')}
+              onClick={() => requestOpenChange(false)}
+            >
+              <X className="lucide-inline" aria-hidden />
+            </IconButton>
+          </div>
+          <div className="space-y-3">
+            <div className="space-y-1">
+              <label className="block text-[11px] font-medium text-muted" htmlFor={`${id}-scheduled-message`}>
+                {i18nT('components.jobForm.message')}
+              </label>
+              <textarea
+                id={`${id}-scheduled-message`}
+                aria-label={i18nT('components.jobForm.message')}
+                className="w-full min-h-[84px] resize-y rounded-lg border border-border bg-bg px-3 py-2 text-[12px] text-text outline-none focus-ring"
+                value={scheduledMessage}
+                onChange={event => {
+                  scheduledDraftRevision.current += 1
+                  scheduledMessageRef.current = event.target.value
+                  setScheduledMessage(event.target.value)
+                }}
+              />
+            </div>
+            <div className="space-y-1 min-w-0 w-full">
+              <label className="block text-[11px] font-medium text-muted" htmlFor={`${id}-scheduled-at`}>
+                {i18nT('components.chatInput.send_at')}
+              </label>
+              <Input
+                id={`${id}-scheduled-at`}
+                type="datetime-local"
+                className="w-full min-w-0"
+                aria-label={i18nT('components.chatInput.send_at')}
+                aria-invalid={scheduledTimeInvalid}
+                aria-describedby={scheduledTimeInvalid ? `${id}-scheduled-at-error` : undefined}
+                value={scheduledLocal}
+                onChange={event => {
+                  scheduledDraftRevision.current += 1
+                  scheduledLocalRef.current = event.target.value
+                  setScheduledLocal(event.target.value)
+                }}
+              />
+              {scheduledTimeInvalid ? (
+                <p id={`${id}-scheduled-at-error`} role="status" className={errorClass}>
+                  {i18nT('components.jobForm.pick_a_time_in_the_future')}
+                </p>
+              ) : null}
+            </div>
+          </div>
+          {scheduledError ? (
+            <div className="mt-3">
+              {/* No hand-off: the scheduled-message edits are still unsaved. */}
+              <ErrorNotice
+                variant="inline"
+                message={scheduledError}
+                onDismiss={() => setScheduledError('')}
+              />
+            </div>
+          ) : null}
+          {scheduledLoop.cycleCount > 0 ? (
+            <p id={`${id}-scheduled-sending`} role="status" className="mt-3 text-[11px] text-muted">
+              {i18nT('components.chatInput.schedule_message_sending')}
+            </p>
+          ) : null}
+          <div className="mt-3 flex justify-end gap-2">
+            {/* Both writes stop at the same moment. Once dispatch has started
+                the server refuses a cancel AND an edit (`scheduled_message_in_flight`),
+                so an enabled Save here could only fail with the sentence the status
+                line above already shows. The status line is the buttons' description,
+                so the reason travels with the disabled control instead of sitting
+                near it. */}
+            <Btn
+              danger
+              onClick={() => scheduledCancel.mutate({
+                captured: scheduledLoop,
+                requestSlotKey: slotKey,
+                message: scheduledLoop.message,
+              })}
+              disabled={scheduledCancel.isPending || scheduledUpdate.isPending || scheduledLoop.cycleCount > 0}
+              aria-describedby={scheduledLoop.cycleCount > 0 ? `${id}-scheduled-sending` : undefined}
+            >
+              <X className="lucide-inline" aria-hidden /> {i18nT('components.chatInput.unschedule')}
+            </Btn>
+            <Btn
+              primary
+              onClick={() => scheduledUpdate.mutate({
+                captured: scheduledLoop,
+                requestSlotKey: slotKey,
+                message: scheduledMessage,
+                local: scheduledLocal,
+                fireTime: scheduledFireTime,
+                initialMessage: scheduledInitialMessage.current,
+                initialLocal: scheduledInitialLocal.current,
+                initialScheduledAt: scheduledInitialAt.current,
+                draftRevision: scheduledDraftRevision.current,
+              })}
+              disabled={scheduledCancel.isPending || scheduledUpdate.isPending || scheduledLoop.cycleCount > 0 || !scheduledMessage.trim() || scheduledTimeInvalid}
+              aria-describedby={scheduledLoop.cycleCount > 0 ? `${id}-scheduled-sending` : undefined}
+            >
+              {scheduledUpdate.isPending
+                ? i18nT('components.jobForm.saving')
+                : i18nT('components.jobForm.save')}
+            </Btn>
+          </div>
+          </div>
+        </PopoverContent>
+      ) : legacyView ? undefined : (
         <PopoverContent
           side="top"
           align="start"
