@@ -5,7 +5,7 @@ change its model, reload its agent process, and take another one under itself in
 the sidebar. The tools come from the
 `kirocrew-dashboard` MCP server, so an agent that does not mount that server
 never has them — exactly like any other MCP server. This page is the reference
-for all 28 of its tools, written for the agent that is about to use them.
+for all 29 of its tools, written for the agent that is about to use them.
 
 The server is defined in `src/kiro_crew/mcp_dashboard.py`. Two halves:
 
@@ -14,7 +14,7 @@ The server is defined in `src/kiro_crew/mcp_dashboard.py`. Two halves:
   `session_set_model`, `session_reload`, `session_close`, `session_revive`, `session_broadcast`,
   `session_status`, `session_adopt`, `session_release`. These reach another session.
 - **Sidebar shape** — `chat_folder_tree`, `chat_folder_create`,
-  `chat_folder_move`, `chat_folder_move_session`, `chat_folder_file_self`,
+  `chat_folder_move`, `chat_folder_update`, `chat_folder_move_session`, `chat_folder_file_self`,
   `chat_tag_list`, `chat_tag_create`, `chat_tag_update`, `chat_tag_assign`,
   `chat_tag_column_list`, `chat_tag_column_create`, `chat_tag_column_move`,
   `chat_session_pin`. These organize what the person sees in the sidebar.
@@ -520,6 +520,7 @@ The sidebar tree the person organizes their sessions in.
 | `chat_folder_tree` | none | Every folder (id, human path, project dir, default agent) with the live sessions nested under it, plus an `(unfiled)` group. Listed in **sidebar order**, not alphabetically |
 | `chat_folder_create` | `name` (required), `parent` | Create a folder. `parent` is an id or a `/`-separated path; missing segments are created (`mkdir -p`). Omit or pass `root` for top level. Creating never moves anything |
 | `chat_folder_move` | `folder` (required), `new_parent`, `before`, `after` | Reparent a folder and/or set its position among siblings. Moves everything inside it; cycle-guarded |
+| `chat_folder_update` | `folder` (required), `name`, `icon`, `color` | Rename a folder, set its emoji icon, or set its palette color. Refuses `project_dir`, `default_agent` and `steering_dirs` |
 | `chat_folder_move_session` | `session` (required), `folder` | File another live session into a folder, or omit `folder` to unfile it to the top level |
 | `chat_folder_file_self` | `folder` | File **this** session — the caller — into a folder. Writes only its own placement |
 
@@ -533,6 +534,20 @@ it.
 A folder `name` cannot contain `/`: a folder named `A/B` renders identically to
 `B` inside `A` and becomes unaddressable by path. Names are capped at 100
 characters, checked after credential redaction.
+
+`chat_folder_update` renames a folder and sets its `icon` (one emoji) and
+`color` (a folder palette value); an empty string clears either back to the
+default. It refuses a name a sibling folder already has, since the two
+would be indistinguishable by path. It is metadata only. It refuses
+`project_dir`, `default_agent` and `steering_dirs` by name: those settings reach
+every future session filed in the folder, changing its working directory, agent
+and memory boundary, or its standing instructions, so the person sets them in the
+folder settings. An app agent or crew member may update only a folder it created.
+Channel agents cannot call it, and neither can any agent in a session a channel
+can deliver turns into: a resumed `/sessions` pick, a linked Slack thread, or a
+channel-born tab. A resumed conversation keeps the dashboard session's key, so
+the folder endpoint checks those bindings rather than the key, and while one
+exists the person renames folders from the sidebar instead.
 
 `chat_folder_file_self` is the verb a conductor wants: file yourself in the
 goal's folder first, then create each worker with

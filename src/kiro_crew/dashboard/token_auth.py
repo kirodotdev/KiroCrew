@@ -2426,6 +2426,66 @@ def caller_names_a_missing_slot(slots: object, session_key: str) -> bool:
     return _slot_by_linked_key(slots, sk) is None
 
 
+def caller_reachable_from_channel(state: object, session_key: str) -> bool:
+    """True when a channel transport can deliver turns into *session_key*.
+
+    The key alone cannot say whether the CURRENT turn came from a channel: a
+    conversation resumed from Slack, Discord, Telegram or Teams into a dashboard
+    session keeps running under that session's ``dashboard:`` key, so a write
+    driven by thread text other people wrote arrives here looking like the
+    person's own. What the gateway does know is whether the session is
+    reachable from a channel at all, and no channel turn can run in a session
+    that is not. So a write that must never follow channel text refuses on
+    reachability:
+
+    * a channel-namespaced key (``channel:``, ``slack:<ts>``, ``discord_<id>``
+      and the other per-transport shapes), or a dashboard slot linked to one;
+    * a two-way resume binding (``mirror_accepts_inbound``), the marker every
+      non-Slack ``/sessions`` pick sets;
+    * a Slack thread link. Slack routes thread replies back through its own
+      reverse index and never sets the resume marker, and a paused link keeps
+      that index, so any linked thread counts.
+
+    This is stricter than per-turn provenance: while a session is linked, the
+    person's own turns in it are refused too. That is the price of deciding
+    from state the gateway holds rather than from a turn-origin signal no
+    transport carries yet.
+
+    A binding lookup that raises answers ``True``, refusing rather than
+    guessing. Two inputs have no binding to look up and answer ``False``: an
+    empty key (the caller names no session, so there is nothing a channel could
+    drive) and a state with no session store (no store means no binding can
+    exist). The channel-shaped key check above still applies in both.
+    """
+    sk = (session_key or "").strip()
+    if not sk:
+        return False
+    keys = [sk]
+    if sk.startswith("dashboard:") and sk != "dashboard:ui":
+        slots = getattr(state, "_slots", None)
+        lookup = getattr(slots, "get", None) if slots is not None else None
+        slot = lookup(sk.split(":", 1)[1]) if lookup is not None else None
+        linked = str(getattr(slot, "linked_session_key", "") or "") if slot else ""
+        if linked and linked != sk:
+            keys.append(linked)
+    if any(k.startswith("channel:") or is_channel_session_key(k) for k in keys):
+        return True
+    sessions = getattr(state, "sessions", None)
+    if sessions is None:
+        return False
+    try:
+        for k in keys:
+            if sessions.mirror_accepts_inbound(k):
+                return True
+            thread_ts, _channel = sessions.get_slack_link(k)
+            if thread_ts:
+                return True
+    except Exception:
+        logger.warning("channel reachability lookup failed for a folder write", exc_info=True)
+        return True
+    return False
+
+
 #: The internal callers the dashboard routes recognize on ``X-Internal-Caller``.
 #: Exact-listed and ratcheted in ``test_chat_folder_audit_origin.py``: adding a
 #: caller here must be a conscious edit paired with a test, never a silent

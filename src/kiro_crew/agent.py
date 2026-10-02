@@ -4133,6 +4133,8 @@ handle immediately.
 #:   same-workspace session, losing filing the user did by hand.
 #: * ``chat_folder_move`` — WITHHELD. Reparents an existing folder tree, and no
 #:   conductor step needs it.
+#: * ``chat_folder_update`` — WITHHELD. Renames or restyles an existing folder,
+#:   which may be the person's, and no conductor step needs it.
 #: * ``chat_tag_list`` / ``chat_tag_create`` / ``chat_tag_update`` — WITHHELD,
 #:   not because any fails the invariant (a read, a create that dedups on name,
 #:   and a metadata edit that loses no assignment) but because no conductor step

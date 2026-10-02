@@ -188,6 +188,8 @@ class TestConductorInstaller:
         for verb in (
             "chat_folder_move_session",
             "chat_folder_move",
+            # Renames or restyles an existing folder, which may be the person's.
+            "chat_folder_update",
             "session_send",
             # The fan-out write, withheld on `session_send`'s reason multiplied by
             # the fleet: one call runs ingested text as a user-role turn in every

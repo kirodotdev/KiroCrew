@@ -336,6 +336,9 @@ class TestWhatThisSetGrants:
         "chat_folder_tree",
         "chat_folder_create",
         "chat_folder_move",
+        # Rename / icon / color only; the fields that would reach every future
+        # session in the folder are refused by name (see test_mcp_dashboard_folder_update).
+        "chat_folder_update",
         "chat_folder_move_session",
         "chat_folder_file_self",
     }

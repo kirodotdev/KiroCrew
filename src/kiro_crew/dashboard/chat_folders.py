@@ -26,6 +26,7 @@ from kiro_crew.dashboard.token_auth import (
     KNOWN_INTERNAL_CALLERS,
     MEMBER_CHAT_PRINCIPAL_KEY,
     app_owns_transcript,
+    caller_reachable_from_channel,
     effective_request_app,
     folder_principal,
     refuse_unattributable_caller,
@@ -1738,6 +1739,38 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
     # persisted name — never from a pre-lock snapshot a concurrent write may
     # have superseded.
     committed_name: list[str] = []
+    origin_source, origin_caller = _audit_origin(request)
+    refuse_duplicate_name = origin_source != "dashboard"
+    # An agent rename or restyle from a session a channel can drive is refused
+    # here, not only in the MCP tool: a conversation resumed from a channel into
+    # a dashboard session keeps that session's ``dashboard:`` key, so no check on
+    # the key can tell the channel's turns from the person's. Reachability is
+    # state this endpoint holds (``caller_reachable_from_channel``). Moves and
+    # reorders go through chat_folder_move, whose channel rule is its own.
+    caller_key = request.headers.get("X-Session-Key", "").strip()
+    if (
+        origin_source != "dashboard"
+        and ({"name", "icon", "color"} & changes.keys() or regenerate_icon)
+        and caller_reachable_from_channel(state, caller_key)
+    ):
+        sel().log_api_access(
+            caller=request_app or origin_caller,
+            operation="chat.folder_update",
+            outcome="denied",
+            source="channel_containment",
+            resources=fid,
+            error="agent rename from a session a channel can drive",
+        )
+        return web.json_response(
+            {
+                "error": (
+                    "this session can receive turns from a channel conversation, so "
+                    "an agent cannot rename or restyle folders from it"
+                ),
+                "code": "channel_reachable_caller",
+            },
+            status=403,
+        )
 
     def _apply(folders: list[dict[str, Any]]) -> tuple[bool, str]:
         target = next((f for f in folders if f["id"] == fid), None)
@@ -1769,6 +1802,23 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
             # renders exactly as a reparent does. Checked for a move to the top
             # level too -- "" is still a move.
             return False, "foreign_descendant"
+        if refuse_duplicate_name and "name" in changes:
+            # Same rule and same place as create_folder_record's: an agent never
+            # makes a same-name sibling, because the two then share one path and
+            # neither can be addressed by it. Decided here, under the lock, over
+            # the whole tree -- a crew member's own GET is filtered, so a check
+            # against what the caller can read would miss a folder it cannot
+            # see. The folder's own row is excluded, so re-casing its own name
+            # is allowed. The browser keeps a person's freedom to name two alike.
+            final_parent = new_parent if reparenting else str(target.get("parent_id") or "")
+            folded = str(changes["name"]).strip().casefold()
+            if any(
+                str(f.get("id")) != fid
+                and str(f.get("parent_id") or "") == final_parent
+                and str(f.get("name") or "").strip().casefold() == folded
+                for f in folders
+            ):
+                return False, "name_exists"
         target.update(changes)
         if not target.get("color"):
             target.pop("color", None)
@@ -1843,6 +1893,22 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
                 "code": "folder_not_owned",
             },
             status=403,
+        )
+    if err == "name_exists":
+        sel().log_api_access(
+            caller=request_app or origin_caller,
+            operation="chat.folder_update",
+            outcome="denied",
+            source="duplicate_name",
+            resources=fid,
+            error="agent rename would duplicate a sibling folder name",
+        )
+        return web.json_response(
+            {
+                "error": "a sibling folder already has that name",
+                "code": "folder_name_exists",
+            },
+            status=409,
         )
     if err == "parent_not_found":
         # The parent was deleted while this request waited for the lock.

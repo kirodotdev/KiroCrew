@@ -192,6 +192,10 @@ CHANNEL_AGENT_BLOCKED_TOOLS: tuple[str, ...] = (
     "chat_tag_column_create",
     "chat_tag_column_move",
     "session_revive",
+    # Renaming a folder changes the person's sidebar the same way, and a channel
+    # caller reaches the endpoint with the person's folder authority. The
+    # chat_folder_update handler refuses a ``channel:`` caller at dispatch.
+    "chat_folder_update",
     # The four work-ledger tools, blocked for the same containment reason and not
     # for a new one: a channel agent has no dispatch relationship, so it is
     # neither a conductor nor a bound worker and has no business holding one.
