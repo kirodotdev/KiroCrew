@@ -3999,18 +3999,24 @@ timer: it races the waiter's own start (`test_posix_lock_ceiling` saw a 4e-05s
 and release it inside the coroutine, because `asyncio.run` joins its executor before
 an outer `finally` runs and a waiter cannot finish while the lock is held.
 
-A shared sync **seeding helper** is the quiet version of the same race, because it
-cannot see that its caller is async. `_item` in `test_issue_radar_crew_runtime.py`
-wrote a work item through the crew log -- whose writer is a background thread -- and
-read the entry back under the log's lock; called straight from an
-`IsolatedAsyncioTestCase` test it ran on the loop, so whenever the writer was still
-inside its critical section the read-back was refused and the seed raised
-`CrewLedgerNotRecorded` (Windows shard, unrelated PRs; 0 in 400 local runs, so only a
-held-lock probe reproduces it). A helper that writes through a store with a background
-writer runs the write on a worker thread itself, the way every product caller does,
-and carries a negative control proving the held lock is refused on the loop
-(`TestSeedingSurvivesABriefLogLock`). Do not fix it by patching `_on_event_loop`:
-that hides the on-loop hazard from the product code under test too.
+A **crew log** has two holders the test does not own: the writer thread that lands
+every append, and the eager folder that reads the unit on its own thread right after
+each entry. Any crew-log call made straight from an `async def` -- a write
+(`commit_work_progress`), an open or read (`open_session_log`, `iter_from`,
+`session_ledger.read_state`) -- is refused whenever one of them holds the unit lock.
+A refused write raises `CrewLedgerNotRecorded`, a refused read raises `OSError`, and a
+best-effort reader quietly answers the empty record (`assert '' == 'fold me'`). It
+reached unrelated PRs on Windows and Linux shards through sync helpers that cannot see
+their caller is async (`_item`, `_work`, `_seed_item` in the issue-radar tests) and
+through direct reads in `test_discord.py`, `test_session_ledger.py` and
+`test_work_ledger_projection.py`; 0 in 400 local runs, so only a held-lock probe
+reproduces it. Make the call the way product handlers do, off the loop:
+`off_loop(fn, ...)` from `test/off_loop_helpers.py` inside a helper both kinds of test
+call, or `await asyncio.to_thread(...)`. `test_crew_log_off_loop_pin.py` fails any
+`async def` that makes such a call directly or through a same-module sync helper, and
+`TestSeedingSurvivesABriefLogLock` proves the hop waits out a held lock while the
+on-loop call is refused. Do not fix it by patching `_on_event_loop`: that hides the
+on-loop hazard from the product code under test too.
 
 Two more shapes, both MEASURED in a 5x full-suite run on Windows:
 

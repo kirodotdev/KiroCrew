@@ -41,6 +41,7 @@ from unittest import mock
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
+from off_loop_helpers import off_loop
 
 from kiro_crew.apps.builtins.issue_radar.backend import (
     crew_routes,
@@ -102,8 +103,10 @@ def _tick() -> None:
 
 def _work(root: Path, crew_id: str, number: int, patch: dict) -> dict:
     """Drive one update through the real write path so the entry carries the phase
-    exactly as production writes it -- no hand-built event dicts."""
-    return crew_store.commit_work_progress(
+    exactly as production writes it -- no hand-built event dicts. Off the event loop,
+    as production makes it (``off_loop`` says why)."""
+    return off_loop(
+        crew_store.commit_work_progress,
         OWNER,
         REPO,
         crew_id,

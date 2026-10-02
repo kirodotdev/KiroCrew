@@ -37,6 +37,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
+from off_loop_helpers import off_loop
 
 from kiro_crew import crew_log as lg
 from kiro_crew import session_ledger as sl
@@ -635,13 +636,19 @@ async def test_route_write_lands_under_ledger_key(_open_route):
     """The route folds the header key exactly like the nudge composer does —
     losslessly, dashboard prefixes only — and the write lands in the crew log the
     calling session is serving on, read back through the fold under the folded
-    key."""
+    key.
+
+    The read-back runs OFF the loop, as ``api_session_ledger_get`` runs it. The eager
+    folder reads this unit on its own thread right after the append, under the unit's
+    append lock, and an acquire on the event-loop thread makes one attempt: a read
+    made there while that pass holds the lock is refused and answers the empty record.
+    """
     routes = _open_route
     sk = "dashboard_chat-77-999"
     _unit(slot=sl.ledger_key(sk))
     req = _mk_request("POST", "/api/session-ledger/record", body={"goal": "fold me"}, sk=sk)
     assert (await routes.api_session_ledger_record(req)).status == 200
-    assert sl.read_state(sl.ledger_key(sk))["goal"] == "fold me"
+    assert off_loop(sl.read_state, sl.ledger_key(sk))["goal"] == "fold me"
 
 
 def test_routes_are_on_the_strict_internal_allowlist():

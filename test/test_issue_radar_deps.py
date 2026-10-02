@@ -32,6 +32,7 @@ from unittest import mock
 
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
+from off_loop_helpers import off_loop
 
 from kiro_crew.apps.builtins.issue_radar.backend import crew_runtime as cr
 from kiro_crew.apps.builtins.issue_radar.backend import crew_store as cs
@@ -1369,7 +1370,9 @@ class SweepDepUnblockTest(unittest.IsolatedAsyncioTestCase):
         CrewLog.create(
             KIND_SESSION, sid, owner="owner", agent="kirocrew", slot=cs.slot_key_for(crew_id)
         )
-        cs.commit_work_progress(
+        # Off the event loop, as production makes it (``off_loop`` says why).
+        off_loop(
+            cs.commit_work_progress,
             OWNER,
             REPO,
             crew_id,
