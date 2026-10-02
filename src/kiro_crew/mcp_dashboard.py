@@ -119,12 +119,14 @@ from kiro_crew.validation import (
     SESSION_ADOPT_SCHEMA,
     SESSION_BROADCAST_SCHEMA,
     SESSION_CLOSE_SCHEMA,
+    SESSION_CONTINUE_SCHEMA,
     SESSION_CREATE_SCHEMA,
     SESSION_END_WAIT_SCHEMA,
     SESSION_FORK_SCHEMA,
     SESSION_READ_MESSAGE_SCHEMA,
     SESSION_RELEASE_SCHEMA,
     SESSION_RELOAD_SCHEMA,
+    SESSION_RETRY_SCHEMA,
     SESSION_REVIVE_SCHEMA,
     SESSION_SEND_SCHEMA,
     SESSION_SET_MODEL_SCHEMA,
@@ -150,6 +152,8 @@ SESSION_CONTROL_TOOLS: tuple[str, ...] = (
     "session_fork",
     "session_stop",
     "session_end_wait",
+    "session_retry",
+    "session_continue",
     "session_set_model",
     "session_reload",
     "session_close",
@@ -703,6 +707,56 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "informational reply, not an error, so there is nothing to retry. "
                 "The wake lands on the target's next keepalive ping, within about "
                 "five seconds."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": "Session key from list_sessions, or its exact title.",
+                    },
+                },
+                "required": ["target"],
+            },
+        },
+        {
+            "name": "session_retry",
+            "description": (
+                "Re-run another session's last turn when it FAILED: it ended in an "
+                "error (for example 'Request initialize timed out' at start) or with no "
+                "reply. Does the same thing as pressing Resume in that tab: the session "
+                "picks up its most recent request, and no second copy of the prompt is "
+                "added. Use this instead of re-sending the prompt with session_send. "
+                "Refused while the target is running, busy or has queued messages, and "
+                "refused when its last turn finished normally or was stopped, so it "
+                "cannot regenerate a good answer. After two failed starts in a row it is "
+                "refused with session_start_repeat: the host needs attention, not a "
+                "third retry."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": "Session key from list_sessions, or its exact title.",
+                    },
+                },
+                "required": ["target"],
+            },
+        },
+        {
+            "name": "session_continue",
+            "description": (
+                "Hand another session's thread back to its agent, the same as pressing "
+                "Continue in that tab. Use it when a turn was cut short by a gateway "
+                "restart or a killed process: such a turn leaves no error row and looks "
+                "finished, so session_retry refuses it. The session is sent one of two "
+                "fixed messages and the result says which: 'resumed' (its last turn was "
+                "interrupted, pick it up) or 'continued' (its last turn ended cleanly, "
+                "carry on). Takes no prompt text; to ask for something new use "
+                "session_send. Refused while the target is running, busy or has queued "
+                "messages, and after two failed session starts in a row "
+                "(session_start_repeat)."
             ),
             "inputSchema": {
                 "type": "object",
@@ -2502,6 +2556,40 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         return (
             f"\u23f0 End-wait sent to `{target}`. Its wait returns on the next "
             "keepalive ping (within about 5s) and the turn continues."
+        )
+
+    if name == "session_retry":
+        args = validate_tool_args(args, SESSION_RETRY_SCHEMA)
+        resp = _post(
+            "/api/session-control/retry",
+            {"target": args["target"]},
+            session_key=caller_key,
+        )
+        if resp.get("error"):
+            return f"Error: could not retry that session's turn: {resp['error']}"
+        target = resp.get("target", args["target"])
+        return redact(
+            f"\U0001f501 Retry started in `{target}`. Its transcript shows the resume row; "
+            "read it with session_read_message."
+        )
+
+    if name == "session_continue":
+        args = validate_tool_args(args, SESSION_CONTINUE_SCHEMA)
+        resp = _post(
+            "/api/session-control/continue",
+            {"target": args["target"]},
+            session_key=caller_key,
+        )
+        if resp.get("error"):
+            return f"Error: could not continue that session: {resp['error']}"
+        target = resp.get("target", args["target"])
+        if resp.get("body") == "resumed":
+            how = "its last turn was interrupted, so it was told to pick that turn up"
+        else:
+            how = "its last turn had ended, so it was told to carry on"
+        return redact(
+            f"\u25b6\ufe0f Continue sent to `{target}` ({resp.get('body', 'continued')}): "
+            f"{how}. Read the result with session_read_message."
         )
 
     if name == "session_set_model":
