@@ -95,6 +95,8 @@ _OWNER_GATED_WRITES = frozenset(
         "issue/state",
         "issue/assignees",
         "investigation",
+        "tagging",
+        "recommendations",
     }
 )
 

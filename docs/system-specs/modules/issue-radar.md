@@ -427,6 +427,27 @@ JSON/owner/connected/permission checks, so the gate is not re-implemented per ha
 `GET /pull/runs` is a READ and is gated on the connected-repo check only, like the
 other reads — it returns run metadata the PR's own `checks` already imply.
 
+A second layer sits in front of the first: the **owner gate**. Every write route
+calls `require_owner_dashboard_request` before it reads its body, and a caller that
+is not the dashboard owner gets 403 `owner_only`. That refuses a non-owner dashboard
+subject and every app token, this app's own included. The gate covers the forge
+writes above and the local-state writes too:
+
+| Route | Owner gate in |
+|---|---|
+| `POST /crews`, `PUT /crew`, `DELETE /crew`, `POST /crew/pause`, `PUT /crews/settings` | `crew_routes._body_preamble` |
+| `PUT /crew/work` (dashboard caller) | `crew_routes._body_preamble` |
+| `POST /connect` | `routes._handle_connect` |
+| `DELETE /repos`, `PUT /settings`, `POST /settings/role` | their handlers in `http_routes/repositories.py` |
+| `PUT /investigation` (dashboard caller) | `http_routes/investigation.py` |
+| `POST /tagging`, `POST /recommendations` | their handlers in `http_routes/tagging.py` and `http_routes/recommendations.py` |
+
+Two internal-secret callers pass without the owner gate, each by its exact path in
+the server's internal allowlist: the agent leg of `PUT /crew/work`
+(`issue_radar_crew_record`) and `PUT /investigation`
+(`issue_radar_record_investigation`). A crew route other than `GET /crew` and
+`PUT /crew/work` refuses an internal-secret caller outright (`_agent_gate`).
+
 ## Pull-Request Actions
 
 The write half of the PR pane — approve / request changes, comment, close / reopen,

@@ -316,3 +316,52 @@ async def test_investigation_agent_put_still_records():
         )
     assert resp.status == 200, f"status={resp.status} body={_text(resp)}"
     write.assert_called_once()
+
+
+#: The two generate routes spend a model call and write a per-repo cache. Neither
+#: has one store writer to watch, so the probe is the first thing each one loads
+#: past the gate: the repo's labels, read for the model prompt.
+_GENERATE_ROUTES = [
+    pytest.param(routes._handle_generate_tagging, "/tagging", id="tagging_generate"),
+    pytest.param(
+        routes._handle_generate_recommendations,
+        "/recommendations",
+        id="recommendations_generate",
+    ),
+]
+
+
+async def _drive_generate(handler, path, **who):
+    with (
+        mock.patch.object(
+            routes, "_load_labels_for_ai", new=mock.AsyncMock(return_value=[])
+        ) as labels,
+        mock.patch.object(
+            routes, "_load_open_issues_for_reco", new=mock.AsyncMock(return_value=[])
+        ),
+        mock.patch.object(
+            routes,
+            "_compute_label_recommendations",
+            new=mock.AsyncMock(return_value={"recommendations": []}),
+        ),
+        mock.patch.object(store, "write_recommendations_cache"),
+    ):
+        resp = await handler(_req("POST", f"{BASE}{path}", {"owner": "o", "repo": "r"}, **who))
+    return resp, labels
+
+
+@pytest.mark.parametrize("user,app", CALLERS)
+@pytest.mark.parametrize("handler,path", _GENERATE_ROUTES)
+@pytest.mark.asyncio
+async def test_generate_route_refuses_non_owner(handler, path, user, app):
+    resp, labels = await _drive_generate(handler, path, user=user, app=app)
+    assert _refused(resp), f"status={resp.status} body={_text(resp)}"
+    labels.assert_not_called()
+
+
+@pytest.mark.parametrize("handler,path", _GENERATE_ROUTES)
+@pytest.mark.asyncio
+async def test_owner_still_generates(handler, path):
+    resp, labels = await _drive_generate(handler, path, user=OWNER, app="")
+    assert resp.status != 403, f"status={resp.status} body={_text(resp)}"
+    labels.assert_awaited_once()

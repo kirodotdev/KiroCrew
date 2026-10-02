@@ -325,8 +325,18 @@ async def _handle_generate_recommendations(request: web.Request) -> web.Response
     """POST /recommendations {"owner","repo"} — generate (and cache) label
     recommendations via ONE model call over the repo's labels + a sample of its
     open issues. Read-only w.r.t. GitHub (proposes only; creating a label is
-    /labels/create), so no permission gate."""
+    /labels/create), so no forge permission gate; it is owner only, because it
+    spends a model call and writes the repo's recommendations cache."""
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
     from .. import routes  # circular import: backend.routes imports this module
+
+    # Spends a model call and writes the shared recommendations cache: owner only.
+    owner_denied = await require_owner_dashboard_request(
+        request, "issue_radar.recommendations_generate"
+    )
+    if owner_denied is not None:
+        return owner_denied
 
     try:
         body = await request.json()
