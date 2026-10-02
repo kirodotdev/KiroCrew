@@ -88,7 +88,7 @@ class TestAChangedSourceReachesTheGeneratedSpec:
             "test_a_non_resolving_scope_command_does_not_destroy_the_record (a scope "
             "command that does not resolve must leave the entry's own resolved "
             "command and its re-derivation record intact). Overwriting `command` "
-            "deletes the one value _resolve_command's fallback can return to, so "
+            "deletes the one value _resolve_mcp_command's fallback can return to, so "
             "closing this needs that fallback to consider the entry's previous "
             "value -- a separate change with its own failure modes."
         ),
