@@ -6315,6 +6315,7 @@
       "add_to_chat": "添加到聊天",
       "cancel": "取消",
       "collapse_comment": "折叠评论",
+      "comment_on_this_merge_request": "评论这个合并请求",
       "comment_on_this_pull_request": "评论这个 pull request",
       "could_not_change_the_thread_s_state": "无法更改该评论话题的状态。",
       "empty_comment": "_（空）_",

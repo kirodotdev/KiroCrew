@@ -58,6 +58,10 @@ def _validated_comment_body(body: str) -> str:
         raise ValueError("A comment body is required.")
     if len(text) > _MAX_COMMENT_CHARS:
         raise ValueError(f"A comment body must be at most {_MAX_COMMENT_CHARS} characters.")
+    # The body is passed to the provider CLI as an argument, which cannot carry
+    # a NUL byte; refuse it here so the request fails before anything runs.
+    if "\x00" in text:
+        raise ValueError("A comment body cannot contain a NUL character.")
     return text
 
 
@@ -161,16 +165,17 @@ async def _github_thread_ref(raw_url: str, thread_id: str) -> SourceRef:
 
     The ownership check is the security control: the thread id arrives from the
     browser, and without it an owner-authenticated mutation could be steered at a
-    thread on an unrelated pull request. Shared by reply/unresolve so no future
-    call site can skip it. Registered providers never reach it -- both callers
-    dispatch a plugin ref to its own hook first -- so the plugin branch below is
-    a fail-closed backstop for a future call site that forgets that dispatch,
-    not a live path.
+    thread on an unrelated pull request. Shared by the GitHub branch of
+    reply/unresolve so no future GitHub call site can skip it. GitLab does not
+    come through here: its writes go to the merge request's own scoped
+    `discussions/<id>` path, which refuses a foreign id. Registered providers
+    never reach it either -- both callers dispatch a plugin ref to its own hook
+    first -- so the plugin branch below is a fail-closed backstop for a future
+    call site that forgets that dispatch, not a live path.
     """
     await hosts.ensure_gitlab_hosts_loaded()
-    # The docstring above promises this is the one place reply/unresolve
-    # cannot skip, so the kind check belongs here too — not only in the callers
-    # that happen to repeat it.
+    # A future call site that forgets the per-provider dispatch must still fail
+    # closed, so the kind check belongs here too — not only in the callers.
     ref = links._require_change_ref(links.parse_source_url(raw_url))
     if plugins._plugin_for_change(ref) is not None:
         raise ValueError(
@@ -213,6 +218,27 @@ async def reply_to_review_thread(raw_url: str, thread_id: str, body: str) -> Non
         with plugins._plugin_errors(ref.provider):
             await hook(ref, thread_id, text)
         return
+    if ref.provider == "gitlab":
+        # Shape check only: the id reaches an argv. Ownership needs no read-back
+        # here, because the write itself is the merge request's own scoped
+        # `discussions/<id>/notes` path, which refuses a foreign id.
+        if not _GITLAB_THREAD_ID_RE.fullmatch(thread_id or ""):
+            raise ValueError("A valid thread id is required.")
+        project = quote(ref.project, safe="")
+        await cache._invalidate_pull_request_cache(ref.url)
+        # `-f` is glab's raw string field: a body starting with `@` is sent as
+        # text, never read as a file path the way `-F` would.
+        await runner._run_json(
+            "glab",
+            "api",
+            "-X",
+            "POST",
+            f"projects/{project}/merge_requests/{ref.number}/discussions/{thread_id}/notes",
+            "-f",
+            f"body={text}",
+            host=ref.host,
+        )
+        return
     ref = await _github_thread_ref(raw_url, thread_id)
     # Invalidate before dispatch, matching resolve: once the provider call
     # starts its remote result is uncertain under cancellation, so a stale
@@ -247,6 +273,25 @@ async def unresolve_pull_request_thread(raw_url: str, thread_id: str) -> None:
         with plugins._plugin_errors(ref.provider):
             await hook(ref, thread_id, resolved=False)
         return
+    if ref.provider == "gitlab":
+        # Mirrors resolve: shape check only, because the id reaches an argv. The
+        # merge request's own scoped path refuses a foreign or unresolvable id.
+        if not _GITLAB_THREAD_ID_RE.fullmatch(thread_id or ""):
+            raise ValueError("A valid thread id is required.")
+        project = quote(ref.project, safe="")
+        await cache._invalidate_pull_request_cache(ref.url)
+        # Same endpoint and field as resolve, with the opposite value.
+        await runner._run_json(
+            "glab",
+            "api",
+            "-X",
+            "PUT",
+            f"projects/{project}/merge_requests/{ref.number}/discussions/{thread_id}",
+            "-f",
+            "resolved=false",
+            host=ref.host,
+        )
+        return
     ref = await _github_thread_ref(raw_url, thread_id)
     await cache._invalidate_pull_request_cache(ref.url)
     payload = await runner._run_json(
@@ -276,8 +321,25 @@ async def comment_on_pull_request(raw_url: str, body: str) -> None:
         with plugins._plugin_errors(ref.provider):
             await hook(ref, text)
         return
+    if ref.provider == "gitlab":
+        # A merge request's own notes endpoint: the iid namespace is the merge
+        # request's, so unlike GitHub there is no issue with the same number to
+        # land on by mistake. The issue-ref refusal above still applies.
+        project = quote(ref.project, safe="")
+        await cache._invalidate_pull_request_cache(ref.url)
+        await runner._run_json(
+            "glab",
+            "api",
+            "-X",
+            "POST",
+            f"projects/{project}/merge_requests/{ref.number}/notes",
+            "-f",
+            f"body={text}",
+            host=ref.host,
+        )
+        return
     if ref.provider != "github":
-        raise ValueError("Commenting is only supported on GitHub so far.")
+        raise ValueError("Commenting is only supported on GitHub and GitLab.")
     await cache._invalidate_pull_request_cache(ref.url)
     # Issue comments, because a pull request's conversation timeline IS its issue
     # timeline; the review-comment endpoints require a diff position.

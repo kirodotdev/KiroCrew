@@ -6416,6 +6416,7 @@
       "add_to_chat": "Zum Chat hinzufügen",
       "cancel": "Abbrechen",
       "collapse_comment": "Kommentar einklappen",
+      "comment_on_this_merge_request": "Diesen Merge Request kommentieren",
       "comment_on_this_pull_request": "Diesen Pull-Request kommentieren",
       "could_not_change_the_thread_s_state": "Der Status des Threads konnte nicht geändert werden.",
       "empty_comment": "_(leer)_",

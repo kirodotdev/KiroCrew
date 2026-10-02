@@ -6517,6 +6517,7 @@
       "add_to_chat": "Aggiungi alla chat",
       "cancel": "Annulla",
       "collapse_comment": "Comprimi commento",
+      "comment_on_this_merge_request": "Commenta questa merge request",
       "comment_on_this_pull_request": "Commenta questa pull request",
       "could_not_change_the_thread_s_state": "Non è stato possibile modificare lo stato del thread.",
       "empty_comment": "_(vuoto)_",

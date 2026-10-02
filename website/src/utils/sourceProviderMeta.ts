@@ -76,11 +76,9 @@ const GITLAB_META: SourceProviderMeta = {
   numberLabel: n => `!${n}`,
   logo: 'gitlab',
   pullRequestWording: false,
-  // Checks and merge state are read for GitLab; the thread and comment WRITES
-  // are GitHub-only in the gateway, which is why `CommentThreads` renders its
-  // read-only notice for a merge request today. These flags encode that, so the
-  // panel keeps rendering exactly what it renders now.
-  capabilities: { checks: true, mergeState: true, resolveThreads: false, comment: false },
+  // Checks, merge state, and the thread and comment writes (resolve, reopen,
+  // reply, top-level comment) are all served for GitLab by the gateway.
+  capabilities: { checks: true, mergeState: true, resolveThreads: true, comment: true },
 }
 
 const BUILTIN_META: Readonly<Record<string, SourceProviderMeta>> = {

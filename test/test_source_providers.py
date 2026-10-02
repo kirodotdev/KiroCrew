@@ -4524,6 +4524,34 @@ async def test_provider_error_is_not_marked_retryable(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_provider_error_ships_its_login_command_as_a_field(monkeypatch) -> None:
+    """A self-managed GitLab remedy reaches the client structurally, not as prose to parse."""
+    _reset_direct_fetch_state()
+    command = "glab auth login --hostname git.example.com"
+    monkeypatch.setattr(
+        source,
+        "fetch_pull_request",
+        AsyncMock(side_effect=source.SourceProviderError("glab: 401", login_command=command)),
+    )
+    async with TestClient(TestServer(_app())) as client:
+        response = await client.post(
+            "/api/source/pull-request", json={"url": "https://github.com/acme/repo/pull/9"}
+        )
+        assert response.status == 503
+        assert (await response.json())["loginCommand"] == command
+
+    _reset_direct_fetch_state()
+    monkeypatch.setattr(
+        source, "fetch_pull_request", AsyncMock(side_effect=source.SourceProviderError("gh: 404"))
+    )
+    async with TestClient(TestServer(_app())) as client:
+        response = await client.post(
+            "/api/source/pull-request", json={"url": "https://github.com/acme/repo/pull/9"}
+        )
+        assert "loginCommand" not in await response.json()
+
+
+@pytest.mark.asyncio
 async def test_capacity_error_audits_its_own_reason(monkeypatch, _mock_source_sel) -> None:
     """The audit reason must match the code the caller receives.
 
@@ -7127,17 +7155,6 @@ async def test_reply_raises_on_a_graphql_refusal(monkeypatch) -> None:
     with pytest.raises(source.SourceProviderError, match="could not post the reply"):
         await source.reply_to_review_thread(
             "https://github.com/acme/repo/pull/12", "PRRT_1", "Agreed")
-
-
-@pytest.mark.asyncio
-async def test_reply_is_refused_on_gitlab(monkeypatch) -> None:
-    run = AsyncMock()
-    monkeypatch.setattr(source, "_run_json", run)
-    monkeypatch.setattr(source, "_allowed_gitlab_hosts", lambda: {"gitlab.com"})
-    with pytest.raises(ValueError, match="only supported on GitHub"):
-        await source.reply_to_review_thread(
-            "https://gitlab.com/acme/repo/-/merge_requests/12", "abc123", "hi")
-    run.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -21,7 +21,7 @@ import type { PullRequestComment, PullRequestSource } from '../types'
 import { platformShortcut } from '../utils/platform'
 import { pullRequestErrorDetails } from '../utils/pullRequestErrors'
 import ErrorNotice from './ErrorNotice'
-import { sourceProviderCapabilities } from '../utils/sourceProviderMeta'
+import { sourceProviderCapabilities, sourceProviderMeta } from '../utils/sourceProviderMeta'
 import { timeAgo } from '../utils/timeAgo'
 
 import { i18nT } from '../i18n/t'
@@ -282,8 +282,8 @@ export default function CommentThreads(
   // Which write affordances this provider's gateway plugin can actually serve.
   // Previously a single `src.provider === 'github'` boolean, which made every
   // non-GitHub provider read-only by construction — including one a downstream
-  // edition registers. The built-in flags reproduce that exactly (GitHub: both;
-  // GitLab: neither, hence the read-only notice below on a merge request).
+  // edition registers. Both built-in providers serve both; a registered provider
+  // that serves neither gets the read-only notice below.
   const capabilities = sourceProviderCapabilities(src.provider)
   const canResolve = capabilities.resolveThreads
   const canComment = capabilities.comment
@@ -346,8 +346,10 @@ export default function CommentThreads(
                 </span>
               )}
               {/* Resolve is only offered on real threads: standalone comments and
-                  review summaries have nothing to resolve. */}
-              {canResolve && t.threadId && (
+                  review summaries have nothing to resolve. A GitLab plain comment
+                  carries a discussion id (it can be replied to) but is published
+                  with `resolvable: false`, so that flag hides the control too. */}
+              {canResolve && t.threadId && t.root.resolvable !== false && (
                 <button
                   type="button"
                   onClick={() => setResolved.mutate({
@@ -411,7 +413,9 @@ export default function CommentThreads(
       {canComment && (
         <div className="border-t border-border pt-2.5">
           <ReplyBox
-            label={i18nT('components.commentThreads.comment_on_this_pull_request')}
+            label={sourceProviderMeta(src.provider).pullRequestWording
+              ? i18nT('components.commentThreads.comment_on_this_pull_request')
+              : i18nT('components.commentThreads.comment_on_this_merge_request')}
             onSubmit={(body) => comment.mutateAsync(body)}
             pending={comment.isPending}
             error={comment.isError ? pullRequestErrorDetails(comment.error).message || null : null}

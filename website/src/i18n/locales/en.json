@@ -4375,6 +4375,7 @@
       "add_to_chat": "Add to chat",
       "cancel": "Cancel",
       "collapse_comment": "Collapse comment",
+      "comment_on_this_merge_request": "Comment on this merge request",
       "comment_on_this_pull_request": "Comment on this pull request",
       "could_not_change_the_thread_s_state": "Could not change the thread's state.",
       "empty_comment": "_(empty)_",

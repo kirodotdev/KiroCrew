@@ -6416,6 +6416,7 @@
       "add_to_chat": "चैट में जोड़ें",
       "cancel": "रद्द करो",
       "collapse_comment": "टिप्पणी संक्षिप्त करें",
+      "comment_on_this_merge_request": "इस merge request पर टिप्पणी करो",
       "comment_on_this_pull_request": "इस pull request पर टिप्पणी करो",
       "could_not_change_the_thread_s_state": "थ्रेड की स्थिति नहीं बदली जा सकी।",
       "empty_comment": "_(खाली)_",

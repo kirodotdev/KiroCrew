@@ -282,21 +282,50 @@ async def _collect_process_output(
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
-def _provider_failure_message(executable: str, stderr: bytes) -> str:
-    """Redacted provider stderr, with the login hint appended for auth failures."""
+_AUTH_FAILURE_MARKERS = (
+    "unauthenticated",
+    "not logged in",
+    "authentication",
+)
+# GitLab's own wording for an expired sign-in. Scoped to glab so `gh` keeps the
+# exact markers it had.
+_GLAB_AUTH_FAILURE_MARKERS = _AUTH_FAILURE_MARKERS + ("401 unauthorized", "http 401")
+
+
+def _provider_failure(executable: str, stderr: bytes, host: str = "") -> SourceProviderError:
+    """The error for a failed provider call: redacted stderr plus a sign-in hint.
+
+    For a self-managed GitLab the hint names the host: a bare ``glab auth login``
+    signs in to gitlab.com by default, so it sends the user to the wrong server.
+    ``glab auth login --hostname <host>`` signs in to the right one. That command
+    also rides on the error as ``login_command``, built only from the allowlisted
+    host, so the dashboard shows it without parsing provider-controlled text.
+    """
     message = sanitize._safe_error(stderr)
     lowered = message.lower()
-    if "unauthenticated" in lowered or "not logged in" in lowered or "authentication" in lowered:
-        message = f"{message} Run `{executable} auth login`, then retry."
-    return message
+    markers = _GLAB_AUTH_FAILURE_MARKERS if executable == "glab" else _AUTH_FAILURE_MARKERS
+    if not any(marker in lowered for marker in markers):
+        return SourceProviderError(message)
+    if executable == "glab" and host and host.casefold() != "gitlab.com":
+        login_command = f"glab auth login --hostname {host}"
+        return SourceProviderError(
+            f"{message} Run `{login_command}`, then retry.",
+            login_command=login_command,
+        )
+    return SourceProviderError(f"{message} Run `{executable} auth login`, then retry.")
 
 
-def _parse_json_success(executable: str) -> Callable[[int, bytes, bytes], Any]:
+def _provider_failure_message(executable: str, stderr: bytes, host: str = "") -> str:
+    """The message of :func:`_provider_failure`, for callers that need only the text."""
+    return str(_provider_failure(executable, stderr, host))
+
+
+def _parse_json_success(executable: str, host: str = "") -> Callable[[int, bytes, bytes], Any]:
     """The ordinary provider contract: exit 0 and a JSON body, anything else fails."""
 
     def parse(returncode: int, stdout: bytes, stderr: bytes) -> Any:
         if returncode != 0:
-            raise SourceProviderError(_provider_failure_message(executable, stderr))
+            raise _provider_failure(executable, stderr, host)
         try:
             return json.loads(stdout.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -339,7 +368,7 @@ def _parse_conditional_get(executable: str) -> Callable[[int, bytes, bytes], _Co
         except (IndexError, ValueError):
             status = 0
         if status not in (200, 304):
-            raise SourceProviderError(_provider_failure_message(executable, stderr))
+            raise _provider_failure(executable, stderr)
         etag = ""
         for line in lines[1:]:
             name, colon, value = line.partition(":")
@@ -365,7 +394,7 @@ async def _run_json(
         *argv,
         max_output_bytes=max_output_bytes,
         host=host,
-        parse=_parse_json_success(argv[0] if argv else ""),
+        parse=_parse_json_success(argv[0] if argv else "", host),
     )
 
 

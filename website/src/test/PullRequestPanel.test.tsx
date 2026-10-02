@@ -454,6 +454,18 @@ describe('PullRequestPanel', () => {
     expect(alert).not.toHaveTextContent('{"error"')
   })
 
+  it('names the self-managed GitLab host in the login command, not a bare glab auth login', async () => {
+    mockApi.pullRequestSource.mockRejectedValueOnce(
+      new Error('{"error":"glab: 401 Unauthorized Run `glab auth login --hostname git.example.com`, then retry.","code":"provider_error","loginCommand":"glab auth login --hostname git.example.com"}'),
+    )
+
+    renderPanel()
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('GitLab CLI login required')
+    expect(alert.querySelector('code')?.textContent).toBe('glab auth login --hostname git.example.com')
+  })
+
   it('preserves trusted-install guidance when the local CLI is unavailable', async () => {
     mockApi.pullRequestSource.mockRejectedValueOnce(
       new Error('{"error":"The local GitHub CLI (gh) was not found in a trusted system location. Install a root-owned `gh` at `/usr/local/libexec/kirocrew/gh`, run `gh auth login`, then retry."}'),
