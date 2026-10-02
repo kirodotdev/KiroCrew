@@ -27,9 +27,9 @@ import stat
 import threading
 import time
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import TextIO
+from typing import Any, TextIO
 
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import fsync_dir
@@ -43,7 +43,9 @@ from kiro_crew.projection import EMPTY_WATERMARK, DirectoryCheckpointStore, Proj
 
 logger = logging.getLogger(__name__)
 
-Broadcast = Callable[[str, object], None]
+#: The dashboard's fan-out signature: its payload is ``websocket_hub.WsPayload``,
+#: spelled out here because this layer does not import the dashboard.
+Broadcast = Callable[[str, Mapping[str, Any]], None]
 
 #: Events a prime must have folded past its savepoint before a new one is written.
 #: A savepoint is allowed to LAG -- resuming from an older one replays more tail and

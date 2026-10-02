@@ -69,7 +69,7 @@ from kiro_crew.dashboard.slot_queue_repository import (
 )
 from kiro_crew.dashboard.slot_registry import SlotRegistry
 from kiro_crew.dashboard.system_notices import is_system_notice
-from kiro_crew.dashboard.websocket_hub import SLOT_PATCH_WS_FLAG, WebSocketHub
+from kiro_crew.dashboard.websocket_hub import SLOT_PATCH_WS_FLAG, WebSocketHub, WsPayload
 from kiro_crew.deny_guidance import remediation_for
 from kiro_crew.deny_notice import (  # noqa: F401 -- re-exported for dashboard importers
     _DENY_CAUSE_TEXT,
@@ -10316,7 +10316,7 @@ class DashboardState:
         else:
             _websocket_for(self)._send_ws_owners(msg)
 
-    def broadcast_ws(self, msg_type: str, data: object) -> None:
+    def broadcast_ws(self, msg_type: str, data: WsPayload) -> None:
         # Mirror first, broadcast second. A relay reader consumes the SSE stream,
         # so the mirrored copy must be queued before the frame fans out to local
         # WebSocket clients — otherwise a turn that ends inside the broadcast
@@ -10337,10 +10337,10 @@ class DashboardState:
     def _persist_context_snapshots(self) -> None:
         _persistence_for(self)._persist_context_snapshots(self)
 
-    async def deliver_ws_owners(self, msg_type: str, data: object) -> int:
+    async def deliver_ws_owners(self, msg_type: str, data: WsPayload) -> int:
         return await _websocket_for(self).deliver_ws_owners(msg_type, data)
 
-    def broadcast_ws_owners(self, msg_type: str, data: object) -> None:
+    def broadcast_ws_owners(self, msg_type: str, data: WsPayload) -> None:
         _websocket_for(self).broadcast_ws_owners(msg_type, data)
 
     def ws_client_count(self) -> int:
@@ -10376,7 +10376,7 @@ class DashboardState:
     def unsubscribe_subagents(self, ws: web.WebSocketResponse) -> None:
         _websocket_for(self).unsubscribe_subagents(ws)
 
-    def broadcast_ws_subagent_subscribers(self, msg_type: str, data: object) -> None:
+    def broadcast_ws_subagent_subscribers(self, msg_type: str, data: WsPayload) -> None:
         _websocket_for(self).broadcast_ws_subagent_subscribers(msg_type, data)
 
     async def close_all_ws(self) -> None:

@@ -6,7 +6,7 @@ import asyncio
 import json
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any, Protocol
 
 from aiohttp import web
@@ -38,6 +38,11 @@ class WebSocketHubOwner(Protocol):
 
 
 Redactor = Callable[[str], tuple[str, Any]]
+
+#: The ``data`` of a fan-out frame. A mapping, not ``object``: an unawaited async
+#: payload builder hands the fan-out a coroutine ``json.dumps`` cannot serialize,
+#: and with ``object`` that mistake type-checked at every call site.
+WsPayload = Mapping[str, Any]
 
 
 class WebSocketHub:
@@ -388,7 +393,7 @@ class WebSocketHub:
             remove(ws)
         return sent
 
-    def broadcast_ws(self, msg_type: str, data: object) -> None:
+    def broadcast_ws(self, msg_type: str, data: WsPayload) -> None:
         """Send a typed message to every authorized WS client."""
         if not self._owner._ws_clients:
             return
@@ -396,7 +401,7 @@ class WebSocketHub:
         send_all = self._owner_method("_send_ws_all", self._send_ws_all)
         send_all(msg_type, data, msg)
 
-    async def deliver_ws_owners(self, msg_type: str, data: object) -> int:
+    async def deliver_ws_owners(self, msg_type: str, data: WsPayload) -> int:
         """Await owner-only sends and return the number that completed."""
         targets = [ws for ws in list(self._owner._owner_ws_clients) if not ws.closed]
         if not targets:
@@ -419,7 +424,7 @@ class WebSocketHub:
                 remove(ws)
         return delivered
 
-    def broadcast_ws_owners(self, msg_type: str, data: object) -> None:
+    def broadcast_ws_owners(self, msg_type: str, data: WsPayload) -> None:
         """Send a typed message only to owner-authorized clients."""
         if not getattr(self._owner, "_owner_ws_clients", None):
             return
@@ -599,7 +604,7 @@ class WebSocketHub:
     def unsubscribe_subagents(self, ws: web.WebSocketResponse) -> None:
         self._owner._ws_subagent_subscribers.discard(ws)
 
-    def broadcast_ws_subagent_subscribers(self, msg_type: str, data: object) -> None:
+    def broadcast_ws_subagent_subscribers(self, msg_type: str, data: WsPayload) -> None:
         """Fan out heavy subagent data only to subscribed, authorized clients."""
         if not self._owner._ws_subagent_subscribers:
             return

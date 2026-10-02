@@ -1174,6 +1174,11 @@ Modular aiohttp package at `127.0.0.1:5476` (configurable). Split into:
   cancellation, and close ordering.
 - `websocket_hub.py` — WebSocket client/subscriber registries, scope checks,
   serialization, fan-out, browser-event redaction, and bounded close behavior.
+  Every fan-out entry (`broadcast_ws`, `broadcast_ws_owners`,
+  `deliver_ws_owners`, `broadcast_ws_subagent_subscribers`, on the hub and on
+  `DashboardState`) types its payload as `WsPayload` (`Mapping[str, Any]`), so
+  mypy rejects a coroutine handed over by an unawaited async payload builder,
+  which `json.dumps` cannot serialize.
 
 `_ChatSlot` and `DashboardState` are the stable compatibility facades and the
 canonical owners of their mutable containers. This is the intended end state,
