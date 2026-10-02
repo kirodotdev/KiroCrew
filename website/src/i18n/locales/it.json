@@ -13626,7 +13626,13 @@
         "upload_a_kirocrew_export_zip_to_restore_settings": "Carica uno zip di esportazione di {{productName}} per ripristinare le impostazioni su questa istanza.\n          I dati esistenti vengono uniti per impostazione predefinita (i duplicati vengono saltati).",
         "workspace_files": "File del workspace:",
         "export_templates_not_included": "Questa esportazione non include i modelli di agente usati dalle tue crew: {{names}}. Copiali da ~/.kiro/agents nella stessa cartella sull'altra macchina.",
-        "import_templates_missing": "Alcune crew usano un modello di agente che su questa macchina non c'è (crew → modello): {{crews}}. Copia i modelli mancanti in ~/.kiro/agents prima di usare queste crew."
+        "import_templates_missing": "Alcune crew usano un modello di agente che su questa macchina non c'è (crew → modello): {{crews}}. Copia i modelli mancanti in ~/.kiro/agents prima di usare queste crew.",
+        "import_items_refused": "Alcuni elementi non sono stati importati e sono rimasti invariati: {{names}}.",
+        "import_settings_kept": "Sono state mantenute le impostazioni di questa installazione: {{files}}. Per ripristinare le impostazioni dell'archivio, scegli Sostituisci nel menu della modalità e importa di nuovo.",
+        "import_reloading_display_settings": "Importazione completata: ricarico la pagina per applicare le impostazioni di visualizzazione…",
+        "import_complete_restart_gateway_one": "Importazione completata ({{count}} elemento). Riavvia il gateway per applicare tutte le modifiche.",
+        "import_complete_restart_gateway_many": "Importazione completata ({{count}} elementi). Riavvia il gateway per applicare tutte le modifiche.",
+        "import_complete_restart_gateway_other": "Importazione completata ({{count}} elementi). Riavvia il gateway per applicare tutte le modifiche."
       },
       "promptsTab": {
         "agent_sop_name": "@agent-sop:name",

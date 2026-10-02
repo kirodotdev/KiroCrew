@@ -1,7 +1,15 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 
-import PortabilityTab, { refusalText, unbundledTemplates } from './PortabilityTab'
+import PortabilityTab, { IMPORT_RESULT_KEY, importedItemCount, keptSettingsFiles, refusalText, refusedItems, unbundledTemplates } from './PortabilityTab'
+import { __resetUiPrefsSyncForTests, resumeUiPrefsSync } from '../../lib/uiPrefs'
+
+// Spied, not replaced: the tab must hand the sync back exactly when it does not
+// reload, and the real pause/adopt behaviour still runs underneath.
+vi.mock('../../lib/uiPrefs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../lib/uiPrefs')>()
+  return { ...actual, resumeUiPrefsSync: vi.fn(actual.resumeUiPrefsSync) }
+})
 
 describe('refusalText', () => {
   const fallback = 'Import failed.'
@@ -49,6 +57,31 @@ describe('unbundledTemplates', () => {
   })
 })
 
+describe('keptSettingsFiles', () => {
+  it('keeps distinct file names only, at most the four settings documents', () => {
+    expect(keptSettingsFiles(['config.json', 3, '', 'config.json', 'ui-prefs.json'])).toEqual(['config.json', 'ui-prefs.json'])
+    expect(keptSettingsFiles(['a', 'b', 'c', 'd', 'e'])).toEqual(['a', 'b', 'c', 'd'])
+    expect(keptSettingsFiles(undefined)).toEqual([])
+    expect(keptSettingsFiles({ a: 1 })).toEqual([])
+  })
+})
+
+describe('refusedItems', () => {
+  it('names distinct labels and counts the overflow', () => {
+    expect(refusedItems(['config', 'config', 7, 'crons'])).toEqual({ names: ['config', 'crons'], more: 0 })
+    const eight = Array.from({ length: 8 }, (_, i) => `item${i}`)
+    expect(refusedItems(eight)).toEqual({ names: eight.slice(0, 6), more: 2 })
+    expect(refusedItems(null)).toEqual({ names: [], more: 0 })
+  })
+})
+
+describe('importedItemCount', () => {
+  it('does not count an item the import refused', () => {
+    expect(importedItemCount(['config (restored)', 'ui-prefs (skipped: not JSON)', 'notifications (SKIPPED: x)', 'crons (merged)'])).toBe(2)
+    expect(importedItemCount(undefined)).toBe(0)
+  })
+})
+
 describe('PortabilityTab template warnings', () => {
   afterEach(() => vi.unstubAllGlobals())
 
@@ -84,5 +117,154 @@ describe('PortabilityTab template warnings', () => {
     const warning = await screen.findByTestId('portability-import-warning')
     expect(warning.textContent).toContain('triage \u2192 local-only')
     expect(screen.getByText(/Import complete/)).toBeTruthy()
+  })
+})
+
+describe('PortabilityTab restoring browser settings', () => {
+  const originalLocation = window.location
+  let reload: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    localStorage.clear()
+    sessionStorage.clear()
+    __resetUiPrefsSyncForTests()
+    vi.mocked(resumeUiPrefsSync).mockClear()
+    reload = vi.fn()
+    Object.defineProperty(window, 'location', { configurable: true, value: { ...originalLocation, reload } })
+  })
+
+  afterEach(() => {
+    Object.defineProperty(window, 'location', { configurable: true, value: originalLocation })
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+    sessionStorage.clear()
+    __resetUiPrefsSyncForTests()
+  })
+
+  async function importWith(summary: Record<string, unknown>) {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => new Response(JSON.stringify(
+      url.includes('preview')
+        ? { ok: true, manifest: { version: 1, created_at: 't', hostname: 'h', user: 'u', contents: {} } }
+        : { ok: true, summary },
+    ), { status: 200 })))
+    const view = render(<PortabilityTab />)
+    const input = screen.getByLabelText(/choose import file/i) as HTMLInputElement
+    fireEvent.change(input, { target: { files: [new File(['PK'], 'e.zip')] } })
+    const importButton = screen.getByRole('button', { name: /^import$/i })
+    await waitFor(() => expect((importButton as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.click(importButton)
+    await screen.findByText(/Import complete/)
+    return view
+  }
+
+  /** What the reloaded page shows: a fresh mount, with no import run on it. */
+  function remount(view: ReturnType<typeof render>) {
+    view.unmount()
+    vi.unstubAllGlobals()
+    render(<PortabilityTab />)
+  }
+
+  function carried(): { msg: string; warnings: string[] } | null {
+    return JSON.parse(sessionStorage.getItem(IMPORT_RESULT_KEY) ?? 'null')
+  }
+
+  it('re-arms the host hydrate and reloads when the import restored browser settings', async () => {
+    localStorage.setItem('mc-ui-prefs-synced', '{}')
+    await importWith({ items: ['ui-prefs (merged)'], ui_prefs_restored: true })
+
+    await waitFor(() => expect(reload).toHaveBeenCalledTimes(1))
+    expect(localStorage.getItem('mc-ui-prefs-synced')).toBeNull()
+    expect(JSON.parse(localStorage.getItem('mc-ui-prefs-hydrate-pending') ?? 'null')).toEqual([])
+    // Paused until the reload adopts the host copy: resuming would let this
+    // page's values overwrite the restored ones.
+    expect(resumeUiPrefsSync).not.toHaveBeenCalled()
+  })
+
+  it('reloads even with warnings to show, and shows them one per line after the reload', async () => {
+    localStorage.setItem('mc-ui-prefs-synced', '{}')
+    const view = await importWith({
+      items: ['ui-prefs (merged)'],
+      ui_prefs_restored: true,
+      missing_agent_templates: [{ crew: 'triage', kiro_agent: 'local-only' }],
+      settings_kept: ['config.json'],
+    })
+
+    await waitFor(() => expect(reload).toHaveBeenCalledTimes(1))
+    expect(resumeUiPrefsSync).not.toHaveBeenCalled()
+    const stored = carried()
+    expect(stored?.msg).toMatch(/Import complete \(1 item\)\. Restart gateway to apply all changes\./)
+    expect(stored?.warnings).toHaveLength(2)
+    expect(stored?.warnings[0]).toContain('triage → local-only')
+    expect(stored?.warnings[1]).toContain("This install's own settings were kept: config.json")
+
+    remount(view)
+    expect(screen.getByText(/Import complete \(1 item\)\. Restart gateway to apply all changes\./)).toBeTruthy()
+    const lines = screen.getAllByTestId('portability-import-warning')
+    expect(lines).toHaveLength(2)
+    expect(lines[0].textContent).toContain('triage → local-only')
+    expect(lines[1].textContent).toContain("This install's own settings were kept: config.json")
+    expect(screen.queryByText(/Reload the page/)).toBeNull()
+    expect(sessionStorage.getItem(IMPORT_RESULT_KEY)).toBeNull()
+  })
+
+  it('reloads after a clean restore and shows the success line after the reload', async () => {
+    const view = await importWith({ items: ['ui-prefs (merged)', 'config (merged)'], ui_prefs_restored: true })
+
+    await waitFor(() => expect(reload).toHaveBeenCalledTimes(1))
+    expect(carried()).toEqual({ msg: expect.stringMatching(/Import complete \(2 items\)/), warnings: [] })
+
+    remount(view)
+    expect(screen.getByText(/Import complete \(2 items\)\. Restart gateway to apply all changes\./)).toBeTruthy()
+    expect(screen.queryByTestId('portability-import-warning')).toBeNull()
+    expect(sessionStorage.getItem(IMPORT_RESULT_KEY)).toBeNull()
+  })
+
+  it('says it is reloading before the reload, not the result it carries', async () => {
+    await importWith({ items: ['ui-prefs (restored)'], ui_prefs_restored: true })
+
+    await waitFor(() => expect(reload).toHaveBeenCalledTimes(1))
+    expect(screen.getByText('Import complete — reloading to apply your display settings…')).toBeTruthy()
+    expect(carried()?.msg).toMatch(/Import complete \(1 item\)\. Restart gateway/)
+  })
+
+  it('shows a carried result once: a later mount starts empty', () => {
+    sessionStorage.setItem(IMPORT_RESULT_KEY, JSON.stringify({ msg: 'Import complete (1 item).', warnings: ['w'] }))
+    const first = render(<PortabilityTab />)
+    expect(screen.getByText('Import complete (1 item).')).toBeTruthy()
+    first.unmount()
+    render(<PortabilityTab />)
+    expect(screen.queryByText(/Import complete/)).toBeNull()
+    expect(screen.queryByTestId('portability-import-warning')).toBeNull()
+  })
+
+  it('leaves the profile synced, resumes the sync and does not reload when browser settings were untouched', async () => {
+    localStorage.setItem('mc-ui-prefs-synced', '{}')
+    await importWith({ items: ['config (merged)'] })
+
+    await waitFor(() => expect(resumeUiPrefsSync).toHaveBeenCalledTimes(1))
+    expect(localStorage.getItem('mc-ui-prefs-synced')).toBe('{}')
+    expect(localStorage.getItem('mc-ui-prefs-hydrate-pending')).toBeNull()
+    expect(sessionStorage.getItem(IMPORT_RESULT_KEY)).toBeNull()
+    expect(reload).not.toHaveBeenCalled()
+  })
+
+  it('shows each warning on its own line: missing templates, refused items, kept settings', async () => {
+    await importWith({
+      items: ['config (merged)', 'ui-prefs (skipped: the archive\'s ui-prefs.json is not valid JSON)', 'crons (merged)'],
+      missing_agent_templates: [{ crew: 'triage', kiro_agent: 'local-only' }],
+      refused_merges: ['ui-prefs'],
+      settings_kept: ['config.json', 'config.local.json', 'notification_settings.json'],
+    })
+    const [missing, refusedLine, keptLine, ...rest] = await screen.findAllByTestId('portability-import-warning')
+    expect(rest).toHaveLength(0)
+    expect(missing.textContent).toContain('triage → local-only')
+    expect(refusedLine.textContent).toBe('Some items could not be imported and were left unchanged: ui-prefs.')
+    expect(keptLine.textContent).toBe(
+      "This install's own settings were kept: config.json, config.local.json, notification_settings.json. "
+      + "To restore the archive's settings, choose Replace in the mode menu and import again.",
+    )
+    // The refused item is not counted as imported.
+    expect(screen.getByText(/Import complete \(2 items\)\. Restart gateway to apply all changes\./)).toBeTruthy()
+    expect(reload).not.toHaveBeenCalled()
   })
 })

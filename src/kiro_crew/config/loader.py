@@ -1337,10 +1337,11 @@ class ConfigWriteRefused(ValueError):
 class ConfigReadError(Exception):
     """``config.json`` exists but could not be read as a config object.
 
-    Raised only by :func:`read_config_for_update`, whose callers are about to
-    write the value back. It deliberately does NOT inherit from ``OSError`` or
-    ``ValueError`` so an existing broad ``except OSError`` around a write cannot
-    swallow it and resume the clobbering path.
+    Raised by :func:`read_config_for_update`, whose callers are about to write
+    the value back, and by :meth:`KiroCrewConfig.save` when the instance was
+    loaded while the base file could not be read. It deliberately does NOT
+    inherit from ``OSError`` or ``ValueError`` so an existing broad ``except
+    OSError`` around a write cannot swallow it and resume the clobbering path.
     """
 
 
@@ -1355,10 +1356,12 @@ def read_config_for_update(path: Path | None = None) -> dict:
     single-key one. Every setting the user ever chose is gone, silently, and
     the endpoint still reports success.
 
-    The read fails for mundane reasons — most commonly a *torn read*: several
-    config writers still truncate-then-write, so a concurrent reader can
-    observe a half-written file. That window is small, which is exactly what
-    makes the resulting loss so hard to reproduce and report.
+    The read fails for mundane reasons — most commonly a *torn read*: a
+    truncate-then-write writer (a hand edit, another tool, an older build; no
+    product writer, see ``TestNoRawOpenWriteOfConfig``) leaves a window in which
+    a concurrent reader observes a half-written file. That window is small,
+    which is exactly what makes the resulting loss so hard to reproduce and
+    report.
 
     So: an **absent** file returns ``{}`` (a genuine empty starting point), and
     an unreadable or non-object file raises :class:`ConfigReadError`. Callers
@@ -3607,8 +3610,9 @@ class KiroCrewConfig:
         """Load config from ~/.kiro/crew/config.json, falling back to defaults.
 
         If ``config.local.json`` exists alongside ``config.json``, it is
-        deep-merged on top. User overrides in the local file survive
-        upgrades that regenerate ``config.json``.
+        deep-merged on top. User overrides in the local file win over whatever
+        is written to ``config.json``, including a whole-document replace
+        (``kirocrew config set --file``, or a dashboard import in Replace mode).
 
         The overlay is applied at load time but NOT persisted back by
         ``save()`` — only the base config is written to ``config.json``.
@@ -3960,13 +3964,21 @@ class KiroCrewConfig:
             # has bytes to name, and that it is not faithful is what
             # ``degraded_sections`` reports instead.
             content_digest = _content_digest_of(read_parts) if digestible else None
-            _store_validated_data(
-                data,
-                pre_read_fp,
-                {_SIDECAR_BASE_SHADOW: base_shadow},
-                expected_generation=read_generation,
-                content_digest=content_digest,
-            )
+            # Cached only when every present file read WHOLE. A transient read
+            # failure (a sharing violation, an EIO) on config.json with an overlay
+            # present leaves an overlay-only document here, and caching it under
+            # the unchanged stat fingerprint served the base settings at their
+            # defaults on every later load until a file happened to change. A file
+            # whose bytes read fine but would not parse is a stable fact about
+            # those bytes and still caches.
+            if digestible:
+                _store_validated_data(
+                    data,
+                    pre_read_fp,
+                    {_SIDECAR_BASE_SHADOW: base_shadow},
+                    expected_generation=read_generation,
+                    content_digest=content_digest,
+                )
 
         # Collected during the parse that discards them — the only moment the
         # evidence exists, since the migration below rewrites config.json in
@@ -4695,14 +4707,30 @@ class KiroCrewConfig:
         write. Every read-modify-write flow, and every dashboard/coroutine
         caller, belongs on :func:`update_config_locked` (via
         ``dashboard/chat_utils.run_config_write``), which holds the flock
-        across the WHOLE read-mutate-write transaction; no coroutine in the tree
-        calls ``save()`` at all (``TestNoInlineSaveOnTheEventLoop`` pins that
-        structurally).
+        across the WHOLE read-mutate-write transaction. No coroutine calls
+        ``save()`` inline (``TestNoInlineSaveOnTheEventLoop``) and no dashboard
+        module reaches it at all, offloaded or not
+        (``TestNoDashboardModuleSavesTheWholeConfig``).
 
         **Async callers must offload.** A contended POSIX ``flock`` blocks
         the calling thread for as long as the holder keeps it, which on the
         event-loop thread stalls the whole gateway.
+
+        **A snapshot of an unreadable base file is never published.** When the
+        load that built this object could not read ``config.json`` (a torn read,
+        a sharing violation, a BOM, a typo), its fields are DEFAULTS, and saving
+        them over the file that still exists erases every setting in it with no
+        backup. That instance raises :class:`ConfigReadError` and nothing is
+        written. A fresh ``KiroCrewConfig()`` carries no degradation, so the two
+        create-when-absent callers (the gateway's boot default and ``kirocrew
+        config edit``) are unaffected.
         """
+        target = config_path()
+        if f"{DEGRADED_WHOLE_CONFIG}{target.name}" in self._degraded_sections and target.exists():
+            raise ConfigReadError(
+                f"refusing to save over {target}: this config was loaded while that "
+                "file could not be read, so it holds defaults, not the file's settings"
+            )
 
         d = self.to_dict()
 

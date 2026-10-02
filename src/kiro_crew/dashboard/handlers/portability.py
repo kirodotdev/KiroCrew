@@ -130,7 +130,8 @@ async def api_portability_import(request: web.Request) -> web.Response:
     """POST /api/portability/import — upload and apply a Kiro Crew export zip.
 
     Owner-only, like the export: an import rewrites the install's memory -- every named
-    store's included -- and its config.
+    store's included -- and its config. Merge (the default) never overwrites a settings
+    document this install has; see `portability._merge_settings`.
     """
     if "user" not in request or not request["user"]:
         return web.json_response(
@@ -165,7 +166,12 @@ async def api_portability_import(request: web.Request) -> web.Response:
                 {"ok": False, "error": error, "code": "import_archive_invalid"}, status=400
             )
 
-        summary = await asyncio.to_thread(apply_import_zip, zip_path, mode)
+        # The running gateway's notification-settings store, so restored mutes apply at
+        # once instead of being written back over by its in-memory copy.
+        channel_settings = getattr(request.app.get("state"), "notification_channel_settings", None)
+        summary = await asyncio.to_thread(
+            apply_import_zip, zip_path, mode, channel_settings=channel_settings
+        )
 
         # `staging` is recorded here, not only returned. Nothing renders it, and
         # whether an import was pinned, mixed or unpinned is a security property of the

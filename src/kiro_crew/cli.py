@@ -3123,7 +3123,7 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
     cfg_set.add_argument(
         "--local",
         action="store_true",
-        help="Save to config.local.json (persists across upgrades)",
+        help="Save to config.local.json, the overlay whose values win over config.json",
     )
     cfg_sub.add_parser("edit", help="Open config in $EDITOR")
     cfg_defaults = cfg_sub.add_parser(

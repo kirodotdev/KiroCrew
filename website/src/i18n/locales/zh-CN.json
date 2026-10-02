@@ -13222,7 +13222,11 @@
         "upload_a_kirocrew_export_zip_to_restore_settings": "上传 {{productName}} 导出的 zip 以在此实例恢复设置。\n          默认会与现有数据合并（跳过重复项）。",
         "workspace_files": "工作区文件：",
         "export_templates_not_included": "此导出不包含你的小队使用的 Agent 模板：{{names}}。请把它们从 ~/.kiro/agents 复制到另一台机器的同一文件夹。",
-        "import_templates_missing": "部分小队使用了这台机器上没有的 Agent 模板（小队 → 模板）：{{crews}}。使用这些小队前，请先把缺少的模板复制到 ~/.kiro/agents。"
+        "import_templates_missing": "部分小队使用了这台机器上没有的 Agent 模板（小队 → 模板）：{{crews}}。使用这些小队前，请先把缺少的模板复制到 ~/.kiro/agents。",
+        "import_items_refused": "部分项目无法导入，已保持不变：{{names}}。",
+        "import_settings_kept": "已保留此安装自己的设置：{{files}}。如需恢复归档中的设置，请在模式菜单中选择“替换”，然后重新导入。",
+        "import_reloading_display_settings": "导入完成——正在重新加载以应用你的显示设置…",
+        "import_complete_restart_gateway_other": "导入完成（{{count}} 项）。重启 gateway 以应用全部更改。"
       },
       "promptsTab": {
         "agent_sop_name": "@agent-sop:name",

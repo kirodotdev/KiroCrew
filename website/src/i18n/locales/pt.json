@@ -13626,7 +13626,13 @@
         "upload_a_kirocrew_export_zip_to_restore_settings": "Envie um zip de exportação do {{productName}} para restaurar as configurações nesta instância.\n          Os dados existentes serão mesclados por padrão (duplicatas são ignoradas).",
         "workspace_files": "Arquivos do workspace:",
         "export_templates_not_included": "Esta exportação não inclui os modelos de agente que suas crews usam: {{names}}. Copie-os de ~/.kiro/agents para a mesma pasta na outra máquina.",
-        "import_templates_missing": "Algumas crews usam um modelo de agente que esta máquina não tem (crew → modelo): {{crews}}. Copie os modelos que faltam para ~/.kiro/agents antes de usar essas crews."
+        "import_templates_missing": "Algumas crews usam um modelo de agente que esta máquina não tem (crew → modelo): {{crews}}. Copie os modelos que faltam para ~/.kiro/agents antes de usar essas crews.",
+        "import_items_refused": "Alguns itens não puderam ser importados e ficaram inalterados: {{names}}.",
+        "import_settings_kept": "As configurações desta instalação foram mantidas: {{files}}. Para restaurar as configurações do arquivo, escolha Substituir no menu de modo e importe novamente.",
+        "import_reloading_display_settings": "Importação concluída — recarregando para aplicar suas configurações de exibição…",
+        "import_complete_restart_gateway_one": "Importação concluída ({{count}} item). Reinicie o gateway para aplicar todas as alterações.",
+        "import_complete_restart_gateway_many": "Importação concluída ({{count}} itens). Reinicie o gateway para aplicar todas as alterações.",
+        "import_complete_restart_gateway_other": "Importação concluída ({{count}} itens). Reinicie o gateway para aplicar todas as alterações."
       },
       "promptsTab": {
         "agent_sop_name": "@agent-sop:name",
