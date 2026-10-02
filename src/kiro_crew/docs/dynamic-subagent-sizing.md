@@ -74,8 +74,9 @@ cap      = clamp( mem_term, 3, hard_cap )
   (`_LEGACY_DEFAULT_MAX`), so enabling auto can't regress a small host. This is
   a hard floor: `compute_max_subagents` clamps to `[3, hard_cap]`, and the
   config loader clamps `subagent_auto_max` itself UP to 3 (with a warning) if a
-  file sets it lower. The per-spawn memory gate (`agent.spawn_min_memory_gb`)
-  still refuses individual spawns under real memory pressure.
+  file sets it lower. The per-spawn memory gate (`agent.spawn_min_memory_gb`,
+  2.0 GB by default, which must remain free after the start) still holds
+  individual spawns in the queue under real memory pressure.
 - **`hard_cap`** — an absolute ceiling (see "Why a hard cap" below).
 
 ## Learned Per-Agent Cost
@@ -117,9 +118,10 @@ want now that shared sub-agents are cheap. So the sampler special-cases them:
   per-agent share falls, so the learned cost tracks reality.
 - **Dedicated** (per-process) spawns keep the per-PID subtree sampling above.
   A spawn takes that path when it sets `model`, `reasoning_effort`,
-  `allowed_tools`, `bare`, or `keep: true`; when `agent.session_sharing` is
-  off; when there is no parent session; or when the parent is not
-  ACP/kiro-backed (e.g. a Claude-Code parent).
+  `allowed_tools`, `bare`, or `keep: true`; when `agent.role_models["subagent"]`
+  or `agent.role_efforts["subagent"]` is pinned; when it runs as a crew member;
+  when `agent.session_sharing` is off; when there is no parent session; or when
+  the parent is not ACP/kiro-backed (e.g. a Claude-Code parent).
 
 The practical effect: for the common session-shared case the memory term no
 longer binds, so the cap rises to the **provider-concurrency ceiling**
@@ -145,16 +147,16 @@ deliberate v1 simplification we may revisit.
 |-----|---------|--------|
 | `agent.max_subagents` | `0` | `0` = auto-size (default); `>0` = explicit cap |
 | `agent.subagent_mem_buffer_pct` | `20` | % of memory reserved for the OS and other processes |
-| `agent.subagent_cost_gb` | `0.5` | Flat price of each warming start in the admission gate; also the cap-sizing fallback (GB/agent) until a learned cost exists |
+| `agent.subagent_cost_gb` | `0.5` | Minimum price of a warming dedicated start in the admission gate (the measured or learned projection applies when higher); also the cap-sizing fallback (GB/agent) until a learned cost exists |
 | `agent.subagent_cpu_cost_cores` | `1.0` | **Deprecated, inert.** CPU no longer sizes the cap; kept so an existing config is not rewritten |
 | `agent.subagent_auto_max` | `32` | Absolute ceiling on the computed cap (provider-concurrency stand-in) |
-| `agent.spawn_min_memory_gb` | `4.0` | Per-spawn admission gate (separate runtime guard, refuses a spawn when free memory is low) |
+| `agent.spawn_min_memory_gb` | `2.0` | Free memory (GB) that must remain after admitting a start; a spawn that does not fit waits in the durable queue (one with none is refused). `0` disables the gate |
 | `agent.subagent_spawn_stagger_secs` | `0.25` | Delay between successive spawns (initial fill and queued drain), so a high cap never bursts on cold start |
 | `session.pool_size` | `0` | Warm-pool size; reserved in the memory term when > 0 |
 
 The cap interacts with `spawn_min_memory_gb` but does not replace it: the cap is
 a bound on the RUNNING population, while `spawn_min_memory_gb` is a real-time
-per-spawn memory floor. They are independent guards.
+floor on what each admitted start must leave free. They are independent guards.
 
 Three things bound a fan-out, and they bound different quantities. The cap
 bounds how many agents RUN at once. `subagent_spawn_stagger_secs` bounds the
@@ -255,17 +257,25 @@ a term would have nothing to correct. And a term sampled at sweep time against
 monotonic: it would shrink as the crowd drained and could reap at one sweep an
 agent the sweep before had left inside its window.
 When the memory floor is enabled, admission also reserves memory for the next
-start, for claimed starts awaiting registration, and for dedicated workers the
-reaper has not measured twice yet. Each is priced at `subagent_cost_gb` (what a
-runtime needs to start) less the RSS it already holds; a settled worker owes
-nothing, because its memory is already in the free-memory reading. Parents
-waiting without a slot retain their reservation; confirmed shared sessions do
-not add a dedicated-process cost. So one spawn needs `spawn_min_memory_gb` plus
-about `subagent_cost_gb` free -- 4.5 GB by default.
+start, for claimed starts awaiting registration, and for workers the reaper has
+not measured twice yet, each in full at the price it was admitted at (a row no
+sweep can measure, on macOS or Windows, settles two sweep intervals after its
+session first answered); a settled worker owes nothing, because its memory is
+already in the free-memory reading. A dedicated start is priced at what such a runtime
+settles at: the learned settled RSS of its agent once three runs have measured
+it (capped at 2 GB), else the measured default of about 1 GB, and never less than
+`subagent_cost_gb`. A start that will share its parent's runtime skips the
+process but still starts the agent's MCP servers, so it is priced at that less
+about 0.35 GB. Parents waiting without a slot retain their reservation; a shared session
+owes its price until it settles too, because its MCP servers start after it
+binds. If the shared runtime turns out to be unavailable,
+the start is re-priced as dedicated and the floor re-checked before the fallback
+process starts. At defaults, a shared start needs about 2.65 GB free, the first
+dedicated start 3.0 GB, a second while the first still warms 4.0 GB.
 
-A start is never priced at a learned p90 or a live worker's peak: those measure
+A start is never priced at a whole-run peak or a whole-tree p90: those measure
 the whole process subtree, including the test suites and builds a run launched,
-not what a start needs.
+not what a runtime holds once it is up.
 
 ## Notes
 

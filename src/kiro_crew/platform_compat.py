@@ -9481,12 +9481,27 @@ class SubtreeSample(NamedTuple):
       many of their command lines contain one of the caller's ``needles``.
       ``None`` means UNMEASURABLE, never zero: rendering "0 processes" for a live
       tree would be a lie, so a surface renders ``None`` as an em dash instead.
+    * ``pss_kb`` — summed proportional set size (``smaps_rollup``), or ``-1``
+      when not requested or the root's is unreadable (non-Linux included).
     """
 
     rss_kb: int
     jiffies: int
     procs: Optional[int]
     matched: Optional[int]
+    pss_kb: int = -1
+
+
+def _proc_pss_kb(pid: int) -> int:
+    """Proportional set size (KiB) of one *pid* from ``smaps_rollup``, or -1."""
+    try:
+        with open(f"/proc/{pid}/smaps_rollup", encoding="ascii") as fh:
+            for line in fh:
+                if line.startswith("Pss:"):
+                    return int(line.split()[1])
+    except (OSError, ValueError, IndexError):
+        pass
+    return -1
 
 
 def proc_subtree_sample(
@@ -9496,6 +9511,7 @@ def proc_subtree_sample(
     jiffies: bool = True,
     counts: bool = False,
     needles: tuple[str, ...] = (),
+    pss: bool = False,
 ) -> SubtreeSample:
     """Walk *pid*'s process subtree ONCE and return every requested reading.
 
@@ -9517,7 +9533,13 @@ def proc_subtree_sample(
     countable — the descendants are not walked at all.
 
     ``counts`` is Linux-only (it matches command lines via
-    :func:`process_matches`) and yields ``(None, None)`` elsewhere.
+    :func:`process_matches`) and yields ``(None, None)`` elsewhere. ``pss`` is
+    Linux-only too (``smaps_rollup``, kernel 4.14+): summed PSS charges each
+    shared page to its sharers proportionally, so it is what the tree costs the
+    host once, where summed VmRSS counts the code pages a tree of node /
+    MCP-server processes shares once per process. ``smaps_rollup`` walks page
+    tables, so it costs far more than a ``status`` read: for an occasional
+    one-off reading, never a periodic sweep.
 
     Coverage caveat for a new caller: the walk reads
     ``/proc/<pid>/task/<tid>/children``, which needs ``CONFIG_PROC_CHILDREN`` and
@@ -9540,7 +9562,8 @@ def proc_subtree_sample(
     total_jiffies = _proc_cpu_jiffies(pid) if jiffies else 0
     procs = 1
     matched = 1 if countable and process_matches(pid, needles) else 0
-    if rss_total < 0 and not jiffies and not countable:
+    pss_total = _proc_pss_kb(pid) if (pss and IS_LINUX) else -1
+    if rss_total < 0 and not jiffies and not countable and pss_total < 0:
         # Nothing a descendant could add — do not pay for the walk.
         return SubtreeSample(-1, total_jiffies, None, None)
     seen = {pid}
@@ -9558,6 +9581,10 @@ def proc_subtree_sample(
                         rss_total += kb
                 if jiffies:
                     total_jiffies += _proc_cpu_jiffies(child)
+                if pss_total >= 0:
+                    kb = _proc_pss_kb(child)
+                    if kb > 0:
+                        pss_total += kb
                 if countable:
                     procs += 1
                     if process_matches(child, needles):
@@ -9565,8 +9592,8 @@ def proc_subtree_sample(
                 nxt.append(child)
         frontier = nxt
     if not countable:
-        return SubtreeSample(rss_total, total_jiffies, None, None)
-    return SubtreeSample(rss_total, total_jiffies, procs, matched)
+        return SubtreeSample(rss_total, total_jiffies, None, None, pss_total)
+    return SubtreeSample(rss_total, total_jiffies, procs, matched, pss_total)
 
 
 def proc_rss_tree_mb_for_pid(pid: int) -> float | None:

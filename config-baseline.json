@@ -49,7 +49,7 @@
         "session_sharing": true,
         "max_subagents": 0,
         "max_stop_hook_nudges": 100,
-        "spawn_min_memory_gb": 4.0,
+        "spawn_min_memory_gb": 2.0,
         "resource_pressure_gb": 4.0,
         "resource_critical_gb": 2.0,
         "admission_gate": true,
@@ -717,10 +717,10 @@
       "sensitive": false,
       "tags": [],
       "label": "Spawn Min Memory GB",
-      "help": "Minimum available memory (GB) required to spawn a subagent. 0 disables the check.",
+      "help": "Available memory (GB) that must remain after admitting a subagent start. A dedicated-process start is priced at what such a runtime settles at (about 1 GB until runs of that agent have been measured, then their learned size capped at 2 GB, never below subagent_cost_gb); one that shares its parent's runtime at about 0.35 GB less. A spawn that does not fit waits in the durable queue (one with no durable queue is refused). 0 disables the check.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": 4.0
+      "defaultValue": 2.0
     },
     {
       "path": "agent.resource_pressure_gb",
@@ -1206,7 +1206,7 @@
       "sensitive": false,
       "tags": [],
       "label": "SubAgent Memory Cost (GB)",
-      "help": "Free memory (GB) each sub-agent start must find on top of the admission floor; also the per-agent fallback used to auto-size the cap until a learned value accumulates. Raise it on hosts whose runtimes settle heavier.",
+      "help": "The least a dedicated sub-agent start is priced at when admission reserves its memory (the measured or learned settled size applies when higher); also the per-agent fallback used to auto-size the cap until a learned value accumulates.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 0.5
@@ -1248,7 +1248,7 @@
       "sensitive": false,
       "tags": [],
       "label": "SubAgent Spawn Stagger (seconds)",
-      "help": "Delay between successive subagent spawns (initial fill and queued drain) to bound cold-start CPU/memory spikes. Starts stay serialized; the interval only decides how fast a wide fan-out fills. Raise it if this host or the model provider is the bottleneck -- a spawn still has to clear spawn_min_memory_gb and the host budget, and the adaptive controller cuts the cap on real pressure, so this is a smoothing interval rather than the memory guard.",
+      "help": "Delay between successive subagent spawns (initial fill and queued drain) to bound cold-start CPU/memory spikes. Starts stay serialized; the interval only decides how fast a wide fan-out fills. Raise it if this host or the model provider is the bottleneck -- a spawn still has to leave spawn_min_memory_gb free after its start and clear the host budget, and the adaptive controller cuts the cap on real pressure, so this is a smoothing interval rather than the memory guard.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 0.25

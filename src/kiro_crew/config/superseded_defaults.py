@@ -23,14 +23,17 @@ them apart -- correcting one necessarily overrides the other.
 So the default stayed REPORT-ONLY, and it still is: an entry rewrites nothing
 unless it says ``auto_adopt``.
 
-Why TWO entries adopt themselves anyway
----------------------------------------
+Why THREE entries adopt themselves anyway
+-----------------------------------------
 Reporting is the right answer only while the two readings of the stored value are
 genuinely indistinguishable AND holding the old value is survivable. On the two
 agent timeout budgets neither holds: an install carrying
 ``agent.subagent_timeout_secs: 1800`` reaps every subagent at 30 minutes and the
 operator sees timeouts instead of results, having never chosen 1800 at all, and
-telling them to run a command they have no reason to know about is not a fix.
+telling them to run a command they have no reason to know about is not a fix. The
+spawn memory floor is the third: a materialized ``agent.spawn_min_memory_gb: 4.0``
+holds every subagent in the queue on a 16 GB laptop, where 4 GB plus a start
+rarely stays free.
 
 The set is deliberately SMALL, and what keeps it small is not a judgment about how
 wide the value's range is. That test was tried and is wrong: ``instances.warm_set_cap``
@@ -305,6 +308,19 @@ SUPERSEDED_DEFAULTS: tuple[SupersededDefault, ...] = (
         old_default=100,
         new_default=1000,
         changed_in="#12203",
+    ),
+    # A stored 4.0 means 4 GB must stay free AFTER every start, which a 16 GB
+    # laptop rarely has, so subagents wait in the queue and essentially never
+    # start -- not survivable, the same class as the timeout budgets. No suite
+    # pins a stored 4.0 as a supported configuration (the 4.0 inputs in the
+    # admission tests set a floor, they do not guarantee one is preserved), and
+    # the opt-out is 0, not the old default. One-shot: a 4.0 set back is kept.
+    SupersededDefault(
+        dotted_key="agent.spawn_min_memory_gb",
+        old_default=4.0,
+        new_default=2.0,
+        changed_in="#15890",
+        auto_adopt=True,
     ),
 )
 

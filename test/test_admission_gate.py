@@ -26,6 +26,7 @@ import pytest
 from kiro_crew import resource_status as rs
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.cron import CronService
+from kiro_crew.subagent import _UNLEARNED_DEDICATED_START_GB
 
 
 def _cfg(pressure: float = 4.0, critical: float = 2.0, gate: bool = True) -> SimpleNamespace:
@@ -377,26 +378,30 @@ class TestSpawnAdmissionGate:
             if c[1]["outcome"] == "memory_check_unavailable"
         )
         assert unavailable["tool_name"] == "spawn_run"
-        assert unavailable["metadata"]["min_gb"] == 4.5  # floor plus the pending process
+        assert unavailable["metadata"]["min_gb"] == 5.0  # floor plus the pending process
         assert unavailable["metadata"]["task"] == "test task"
 
     @pytest.mark.parametrize(
         ("configured", "expected_min_gb"),
         [
-            (0.5, 4.5),  # floor plus one start at the configured cost
+            # floor plus one start at the measured unlearned dedicated price,
+            # which the configured cost cannot lower
+            (0.5, 4.0 + _UNLEARNED_DEDICATED_START_GB),
             (2.0, 6.0),  # an operator's higher pin still prices the start
         ],
     )
-    def test_the_pending_start_is_priced_at_the_configured_cost(
+    def test_the_pending_start_is_priced_at_its_dedicated_projection(
         self, configured, expected_min_gb
     ) -> None:
-        """A start costs what a runtime needs to START, not what a run grew to.
+        """A start costs what a runtime settles at, not what a run grew to.
 
         A run's peak RSS is its whole subtree -- test suites and builds it
-        launched included -- so neither a learned p90 nor a live worker's peak
-        may price the next start: that held ordinary spawns at 10 GB+ on a
-        laptop. A settled worker already sits inside the free-memory reading
-        and owes nothing.
+        launched included -- so neither a learned whole-tree p90 nor a live
+        worker's peak may price the next start: that held ordinary spawns at
+        10 GB+ on a laptop. With no learned settled figure, the dedicated price
+        is the larger of the configured cost and the measured unlearned start.
+        A settled worker already sits inside the free-memory reading and owes
+        nothing.
         """
         from kiro_crew.subagent import SubagentInfo
 
@@ -444,11 +449,11 @@ class TestSpawnAdmissionGate:
         call_kwargs = mock_sel.return_value.log_tool_invocation.call_args[1]
         assert call_kwargs["outcome"] == "deferred_low_memory"
         assert call_kwargs["metadata"]["startup_cost_gb"] == pytest.approx(0.5)
-        assert call_kwargs["metadata"]["min_gb"] == pytest.approx(4.5)
+        assert call_kwargs["metadata"]["min_gb"] == pytest.approx(5.0)
         deferred = [e for e in mgr._taskq.events(info.id) if e.kind == "deferred"]
         reason = str(deferred[-1].data.get("reason")) if deferred else ""
         assert "3.0 GB available" in reason
-        assert "(0.5 GB per warming start)" in reason
+        assert "(1.00 GB for this start)" in reason
 
     # ── the deferral reason reaches the UI event and the caller ──────────────
     #
@@ -502,7 +507,7 @@ class TestSpawnAdmissionGate:
         assert last["reason"] == "low_memory"
         assert last["available_gb"] == pytest.approx(3.2)
         # spawn_min_memory_gb 4.0 + one warming start at the configured 0.5.
-        assert last["required_gb"] == pytest.approx(4.5)
+        assert last["required_gb"] == pytest.approx(5.0)
 
     def test_posture_critical_deferral_names_its_reason_on_the_queued_event(self) -> None:
         mgr = self._mgr()
@@ -973,3 +978,61 @@ class TestCronExprPassthrough:
         # The refresh lock was released, not leaked:
         assert rs._cache_refresh_inflight.acquire(blocking=False)
         rs._cache_refresh_inflight.release()
+
+
+class TestALearnedWholeTreePeakNeverPricesAStart:
+    """A cost log whose p90 is a whole-tree peak does not raise the start bar."""
+
+    def test_a_132_gb_learned_p90_leaves_the_bar_at_floor_plus_the_start_price(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        request: pytest.FixtureRequest,
+    ) -> None:
+        from kiro_crew.subagent import SubagentManager
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        log = tmp_path / "subagents" / "cost_samples.jsonl"
+        log.parent.mkdir(parents=True)
+        now = time.time()
+        log.write_text(
+            "".join(
+                json.dumps(
+                    {"agent": "kirocrew", "mem_gb": v, "cpu_cores": 1.0, "ts": now - i}
+                )
+                + "\n"
+                for i, v in enumerate([1.2] * 5 + [132.3] * 5)
+            )
+        )
+        sessions = MagicMock()
+        sessions.get_agent_selection.return_value = ("template", "")
+        mgr = SubagentManager(
+            sessions=sessions,
+            ctx_builder=MagicMock(),
+            on_done=MagicMock(),
+            max_concurrent=3,
+        )
+        # Construction opens the durable task store; release it at teardown.
+        request.addfinalizer(mgr.close)
+        # A learned p90 published on the manager, where a gate that priced
+        # starts from learned costs would read it. The start bar ignores it.
+        mgr._learned_costs_gb = {"kirocrew": 132.3}  # type: ignore[attr-defined]
+        asked: list[float] = []
+
+        def _check(min_gb: float) -> tuple[bool, float]:
+            asked.append(min_gb)
+            return (85.9 >= min_gb, 85.9)
+
+        with patch(
+            "kiro_crew.subagent.check_memory_available", side_effect=_check
+        ), patch("kiro_crew.subagent.KiroCrewConfig") as mock_cfg, patch(
+            "kiro_crew.subagent.cached_admission_check", return_value=_admitted()
+        ), patch(
+            "kiro_crew.subagent.sel"
+        ):
+            mock_cfg.load.return_value.agent.spawn_min_memory_gb = 4.0
+            mock_cfg.load.return_value.agent.subagent_cost_gb = 0.5
+            info = mgr.spawn(task="t", parent_session_key="s")
+
+        assert asked == [pytest.approx(4.0 + _UNLEARNED_DEDICATED_START_GB)]
+        assert info is not None and info.queued is False

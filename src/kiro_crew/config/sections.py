@@ -35,6 +35,8 @@ from kiro_crew.computer_use.types import (
 from kiro_crew.computer_use.types import DEFAULT_SCREENSHOT_MAX_PX as _CU_DEFAULT_SCREENSHOT_MAX_PX
 from kiro_crew.computer_use.types import DEFAULT_TEXT_LIMIT as _CU_DEFAULT_TEXT_LIMIT
 from kiro_crew.config.resolution import _OBSERVED_DEGRADED_SECTIONS, DEGRADED_TAILSCALE
+from kiro_crew.constants import DEFAULT_SPAWN_MIN_MEMORY_GB as _DEFAULT_SPAWN_MIN_MEMORY_GB
+from kiro_crew.constants import DEFAULT_SUBAGENT_COST_GB as _DEFAULT_SUBAGENT_COST_GB
 from kiro_crew.constants import DEFAULT_SUBAGENT_MAX_TURNS as _DEFAULT_SUBAGENT_MAX_TURNS
 from kiro_crew.constants import SUBAGENT_TIMEOUT_MAX as _SUBAGENT_TIMEOUT_MAX
 from kiro_crew.constants import SUBAGENT_TIMEOUT_MIN as _SUBAGENT_TIMEOUT_MIN
@@ -1331,10 +1333,16 @@ class AgentConfig:
         ),
     )
     spawn_min_memory_gb: float = field(
-        default=4.0,
+        default=_DEFAULT_SPAWN_MIN_MEMORY_GB,
         metadata=_meta(
             "Spawn Min Memory GB",
-            "Minimum available memory (GB) required to spawn a subagent. 0 disables the check.",
+            "Available memory (GB) that must remain after admitting a subagent start. A "
+            "dedicated-process start is priced at what such a runtime settles at (about 1 GB "
+            "until runs of that agent have been measured, then their learned size capped at "
+            "2 GB, never below subagent_cost_gb); one that shares its parent's runtime at "
+            "about 0.35 GB "
+            "less. A spawn that does not fit waits in the durable queue (one with no "
+            "durable queue is refused). 0 disables the check.",
         ),
     )
     resource_pressure_gb: float = field(
@@ -1725,13 +1733,13 @@ class AgentConfig:
         ),
     )
     subagent_cost_gb: float = field(
-        default=0.5,
+        default=_DEFAULT_SUBAGENT_COST_GB,
         metadata=_meta(
             "SubAgent Memory Cost (GB)",
-            "Free memory (GB) each sub-agent start must find on top of the "
-            "admission floor; also the per-agent fallback used to auto-size the "
-            "cap until a learned value accumulates. Raise it on hosts whose "
-            "runtimes settle heavier.",
+            "The least a dedicated sub-agent start is priced at when admission "
+            "reserves its memory (the measured or learned settled size applies "
+            "when higher); also the per-agent fallback used to auto-size the cap "
+            "until a learned value accumulates.",
         ),
     )
     subagent_cpu_cost_cores: float = field(
@@ -1765,7 +1773,8 @@ class AgentConfig:
             "serialized; the interval only decides how fast a wide fan-out "
             "fills. Raise it if this "
             "host or the model provider is the bottleneck -- a spawn still has "
-            "to clear spawn_min_memory_gb and the host budget, and the adaptive "
+            "to leave spawn_min_memory_gb free after its start and clear the host "
+            "budget, and the adaptive "
             "controller cuts the cap on real pressure, so this is a smoothing "
             "interval rather than the memory guard.",
         ),

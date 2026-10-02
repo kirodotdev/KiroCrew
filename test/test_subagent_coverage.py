@@ -967,7 +967,7 @@ class TestRecordCost:
         info.peak_cpu_cores = 0.75
         with patch.object(sa, "append_cost_sample") as append:
             mgr._record_cost(info)
-        append.assert_called_once_with("scout", 1.5, 0.75, shared=False)
+        append.assert_called_once_with("scout", 1.5, 0.75, shared=False, settled_gb=0.0)
 
     def test_store_failure_is_swallowed(self) -> None:
         mgr = _manager()

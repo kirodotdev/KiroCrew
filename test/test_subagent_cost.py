@@ -229,3 +229,44 @@ class TestOverCapRecordDoesNotLoseData:
         rows, complete = sc._read_samples_checked()
         assert len(rows) == 5, "records before the over-cap one must survive"
         assert complete is False, "the caller that writes must be able to see the truncation"
+
+
+# --- settled runtime readings (the dedicated start projection) --------------
+
+
+def test_append_writes_settled_only_when_measured(cost_log):
+    sc.append_cost_sample("kirocrew", 1.4, 0.5, settled_gb=0.62)
+    sc.append_cost_sample("kirocrew", 1.4, 0.5)
+    first, second = (json.loads(x) for x in cost_log.read_text(encoding="utf-8").splitlines())
+    assert first["settled_gb"] == 0.62
+    assert first["mem_gb"] == 1.4, "the whole-run peak the cap reads is unchanged"
+    assert "settled_gb" not in second
+
+
+def test_a_settled_reading_alone_is_still_recorded(cost_log):
+    sc.append_cost_sample("kirocrew", 0.0, 0.0, settled_gb=0.5)
+    assert json.loads(cost_log.read_text(encoding="utf-8"))["settled_gb"] == 0.5
+
+
+def test_settled_reader_is_dedicated_only_per_bucket_p90(cost_log):
+    _seed(
+        cost_log,
+        [{"agent": "kirocrew", "mem_gb": 9.0, "settled_gb": v} for v in (0.5, 0.6, 0.7)]
+        + [{"agent": "kirocrew", "mem_gb": 9.0, "settled_gb": 50.0, "shared": True}] * 5
+        + [{"agent": "heavy", "mem_gb": 9.0, "settled_gb": 1.5}] * 2
+        + [{"agent": "kirocrew", "mem_gb": 9.0}] * 5,
+    )
+    costs, complete = sc.read_learned_costs_checked("settled_gb", dedicated_only=True)
+    assert complete is True
+    # Shared shares and records without a settled reading teach nothing; a
+    # bucket with fewer than three readings is not trusted yet.
+    assert costs == {"kirocrew": pytest.approx(0.68)}
+
+
+def test_settled_lookup_reads_one_bucket_and_normalizes_the_default():
+    costs = {"kirocrew": 0.6, "heavy": 1.5}
+    assert sc.learned_settled_for(costs, "") == 0.6
+    assert sc.learned_settled_for(costs, "heavy") == 1.5
+    assert sc.learned_settled_for(costs, "other") is None
+    assert sc.learned_settled_for({}, "heavy") is None
+    assert sc.learned_settled_for(None, "heavy") is None
