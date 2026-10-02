@@ -122,6 +122,7 @@ from kiro_crew.validation import (
     SESSION_CREATE_SCHEMA,
     SESSION_END_WAIT_SCHEMA,
     SESSION_FORK_SCHEMA,
+    SESSION_HISTORY_LIST_SCHEMA,
     SESSION_READ_MESSAGE_SCHEMA,
     SESSION_RELEASE_SCHEMA,
     SESSION_RELOAD_SCHEMA,
@@ -154,6 +155,7 @@ SESSION_CONTROL_TOOLS: tuple[str, ...] = (
     "session_reload",
     "session_close",
     "session_revive",
+    "session_history_list",
     "session_send",
     "session_broadcast",
     "session_status",
@@ -838,6 +840,41 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     },
                 },
                 "required": ["target"],
+            },
+        },
+        {
+            "name": "session_history_list",
+            "description": (
+                "List ARCHIVED (history) sessions the caller could bring back with "
+                "session_revive, newest first: one row per session with the key "
+                "session_revive takes, its title, when it was last active, and the "
+                "folder it is filed in. Read-only. Use it to find the target before "
+                "reviving, e.g. when asked to reopen last week's investigation in a "
+                "folder. Only sessions session_revive would accept for this caller "
+                "are listed: same workspace, not incognito or temporary, not "
+                "app-scoped or channel-linked; a crew member or agent-created "
+                "session sees only sessions it created itself (the same crew-log "
+                "lineage check session_revive applies). Live sessions are not here; "
+                "chat_folder_tree lists those."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "folder": {
+                        "type": "string",
+                        "description": (
+                            "Only sessions filed in this sidebar folder: a folder id or "
+                            "a '/'-separated human path from chat_folder_tree. Omit for "
+                            "every folder and the unfiled ones."
+                        ),
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 100,
+                        "description": "Most rows to return (default 20). The reply says when more exist.",
+                    },
+                },
             },
         },
         {
@@ -2584,6 +2621,67 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             f"{resp.get('messages', 0)} messages{filed}.{unfiled_note}{made_note} It is open and idle "
             "in the user's sidebar; session_send starts its next turn."
         )
+
+    if name == "session_history_list":
+        args = validate_tool_args(args, SESSION_HISTORY_LIST_SCHEMA)
+        limit = int(args.get("limit") or 20)
+        query = f"limit={limit}"
+        folder_label = ""
+        folder_ref = str(args.get("folder") or "").strip()
+        if folder_ref:
+            # Read-only resolution: a filter must never create the folder it
+            # names, and an unknown one is refused rather than widened to "all".
+            chat_folders, folders_err = _get_rows("/api/chat/folders")
+            if folders_err:
+                return f"Error: {folders_err}"
+            fid, folder_err = _resolve_chat_folder_id(folder_ref, chat_folders)
+            if folder_err:
+                return redact(f"Error: {folder_err}")
+            if fid:  # "root" resolves to the top level, which filters nothing
+                query += f"&folder_id={quote(fid)}"
+                folder_label = _chat_folder_paths(chat_folders).get(fid, fid)
+        resp = _get(f"/api/session-control/history?{query}", caller_key)
+        if resp.get("error"):
+            return redact(f"Error: could not list archived sessions: {resp['error']}")
+        hist_rows = resp.get("sessions") or []
+        where = f" in `{folder_label}`" if folder_label else ""
+        notes: list[str] = []
+        if resp.get("lineage_unknown"):
+            notes.append(
+                "Some sessions you created may be missing: the crew log's session-tree "
+                "lineage could not vouch for them (log off, or not seeded yet), and "
+                "session_revive would refuse them for the same reason."
+            )
+        omitted = resp.get("omitted")
+        truncated = bool(resp.get("scan_truncated"))
+        if isinstance(omitted, int) and omitted > 0:
+            count = f"at least {omitted}" if truncated else str(omitted)
+            more = f" ({count} more not shown; raise `limit` or narrow by `folder`)"
+        elif resp.get("more"):
+            more = " (more exist; raise `limit` or narrow by `folder`)"
+        else:
+            more = ""
+        if not hist_rows:
+            # Rows kept by the scan can be revived before the answer is built
+            # while counted overflow rows remain, so an empty page is not an
+            # empty archive whenever ``more`` is set.
+            if more:
+                empty = f"\U0001f5c4\ufe0f No archived sessions on this page{where}{more}."
+            else:
+                empty = f"\U0001f5c4\ufe0f No archived sessions you can revive{where}."
+            return redact(" ".join([empty, *notes]))
+        hist_lines = [
+            f"\U0001f5c4\ufe0f {len(hist_rows)} archived session(s){where}, newest first{more}:"
+        ]
+        for row in hist_rows:
+            bits = [str(row.get("last_active") or "")]
+            if row.get("folder_id") and not folder_label:
+                bits.append(f"folder {row['folder_id']}")
+            meta = f" — {', '.join(b for b in bits if b)}" if any(bits) else ""
+            hist_lines.append(f"  `{row.get('target', '')}` ({row.get('title', '')}){meta}")
+        hist_lines.append("Pass a key to session_revive to reopen it.")
+        hist_lines.extend(notes)
+        return redact("\n".join(hist_lines))
 
     if name == "session_send":
         args = validate_tool_args(args, SESSION_SEND_SCHEMA)

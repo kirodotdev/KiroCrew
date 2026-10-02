@@ -192,6 +192,9 @@ CHANNEL_AGENT_BLOCKED_TOOLS: tuple[str, ...] = (
     "chat_tag_column_create",
     "chat_tag_column_move",
     "session_revive",
+    # Lists archived session titles and keys: a channel thread other people
+    # read is not where the person's closed-session history belongs.
+    "session_history_list",
     # The four work-ledger tools, blocked for the same containment reason and not
     # for a new one: a channel agent has no dispatch relationship, so it is
     # neither a conductor nor a bound worker and has no business holding one.

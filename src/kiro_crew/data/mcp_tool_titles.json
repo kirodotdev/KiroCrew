@@ -106,6 +106,7 @@
     "session_reload": "Reload session",
     "session_status": "Read session roster",
     "session_revive": "Reopen session",
+    "session_history_list": "List archived sessions",
     "session_close": "Close session",
     "session_send": "Send to session",
     "session_adopt": "Adopt session",

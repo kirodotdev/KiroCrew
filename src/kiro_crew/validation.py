@@ -3560,6 +3560,16 @@ SESSION_REVIVE_SCHEMA = ToolSchema(
     ],
 )
 
+SESSION_HISTORY_LIST_SCHEMA = ToolSchema(
+    tool_name="session_history_list",
+    fields=[
+        # A folder id or path, resolved read-only (never created): a filter
+        # naming a folder that does not exist is refused, not silently widened.
+        FieldSpec("folder", str, required=False, default="", max_len=_ARTIFACT_FOLDER_REF_MAX),
+        FieldSpec("limit", int, required=False, default=20, min_val=1, max_val=100),
+    ],
+)
+
 SESSION_SEND_SCHEMA = ToolSchema(
     tool_name="session_send",
     fields=[
@@ -3882,6 +3892,7 @@ MCP_DASHBOARD_SCHEMAS: dict[str, ToolSchema] = {
     "session_reload": SESSION_RELOAD_SCHEMA,
     "session_close": SESSION_CLOSE_SCHEMA,
     "session_revive": SESSION_REVIVE_SCHEMA,
+    "session_history_list": SESSION_HISTORY_LIST_SCHEMA,
     "session_send": SESSION_SEND_SCHEMA,
     "session_broadcast": SESSION_BROADCAST_SCHEMA,
     "session_status": SESSION_STATUS_SCHEMA,

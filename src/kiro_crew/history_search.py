@@ -9,6 +9,7 @@ lock, and path.
 
 from __future__ import annotations
 
+import heapq
 import itertools
 import json
 import logging
@@ -1075,6 +1076,38 @@ class SessionCatalogProjection:
         while stripped.startswith("dashboard_"):
             stripped = stripped[len("dashboard_") :]
         return f"dashboard_{stripped}" if stripped else key
+
+    def newest_session_stems(self, max_entries: int) -> tuple[list[tuple[str, float]], bool]:
+        """Return up to *max_entries* ``(stem, mtime)`` pairs, newest first.
+
+        A bounded catalog read for callers that walk the archive under a cap.
+        It stats each transcript and keeps only the newest *max_entries* in a
+        heap, so what it holds is bounded by *max_entries* however large the
+        directory is. It reads no file content: no title, no metadata line.
+        Symlinked handoff aliases are skipped, as in :meth:`list_sessions`.
+        Stacked ``dashboard_`` duplicates are NOT folded here; a caller that
+        folds keys and keeps the first one it sees gets the newest copy, which
+        is what :meth:`list_sessions` keeps. The second value is True when more
+        transcripts existed than were returned.
+        """
+        if max_entries < 1 or not self._log._dir.exists():
+            return [], False
+        counted = 0
+
+        def _stats() -> Iterator[tuple[float, str]]:
+            nonlocal counted
+            for path in self._log._dir.glob("*.jsonl"):
+                try:
+                    if path.is_symlink():
+                        continue
+                    mtime = path.stat().st_mtime
+                except OSError:
+                    continue
+                counted += 1
+                yield mtime, path.stem
+
+        newest = heapq.nlargest(max_entries, _stats())
+        return [(stem, mtime) for mtime, stem in newest], counted > max_entries
 
     def list_sessions(self) -> list[dict]:
         """Return metadata for all session files, newest first.
