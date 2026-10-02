@@ -254,6 +254,7 @@ class TestSkillLifecycleEndpointsAreGated:
     """
 
     _ENDPOINTS = (
+        ("skill_pending_restage", lambda r: prompts.api_skill_pending_restage(r)),
         ("skill_pending_approve", lambda r: prompts.api_skill_pending_approve(r)),
         ("skill_pending_dismiss", lambda r: prompts.api_skill_pending_dismiss(r)),
         ("skill_pending_dismiss_all", lambda r: prompts.api_skills_pending_dismiss_all(r)),

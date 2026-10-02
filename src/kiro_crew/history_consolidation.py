@@ -37,7 +37,12 @@ from kiro_crew.llm_helpers import (
 )
 from kiro_crew.project_scope import scope_is_admissible
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
-from kiro_crew.skills import AUTO_SKILL_MAX_PROCEDURE_CHARS, AutoSkillProvenance, ClaimRefusal
+from kiro_crew.skills import (
+    AUTO_SKILL_MAX_PROCEDURE_CHARS,
+    AutoSkillProvenance,
+    ClaimRefusal,
+    merge_skill_triggers,
+)
 from kiro_crew.skills_dedupe import (
     VERDICT_DUP,
     VERDICT_NEW,
@@ -428,29 +433,8 @@ def _frontmatter_value(text: str | None, key: str) -> str:
 
 
 def _merge_trigger_lists(live: str, candidate: str, *, cap: int = 12) -> str:
-    """Union two comma-separated trigger lists, live first, case-insensitively
-    deduped and capped.
-
-    Triggers are the skill's ACTIVATION surface. An update proposes triggers for
-    the new requirement only, so replacing the live list would stop the skill
-    firing on every phrasing it already answered — a silent regression the diff
-    shows but nobody reads as a behavior change. Union instead, and cap so
-    repeated updates cannot grow the list without bound.
-    """
-    merged: list[str] = []
-    seen: set[str] = set()
-    for raw in (live or "").split(",") + (candidate or "").split(","):
-        t = re.sub(r"\s+", " ", raw).strip()
-        if not t:
-            continue
-        k = t.lower()
-        if k in seen:
-            continue
-        seen.add(k)
-        merged.append(t)
-        if len(merged) >= cap:
-            break
-    return ", ".join(merged)
+    """Compatibility wrapper for the shared update-trigger union."""
+    return merge_skill_triggers(live, candidate, cap=cap)
 
 
 def _strip_skill_frontmatter(text: str | None) -> str:

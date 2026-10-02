@@ -95,6 +95,11 @@ export function createSkillsEndpoints({ get, post, put, del, j }: ClientTranspor
     approvePendingSkill: (slug: string) => post('/api/skills/-/pending/' + encodeURIComponent(slug) + '/approve', {}).then(j),
     dismissPendingSkill: (slug: string) => post('/api/skills/-/pending/' + encodeURIComponent(slug) + '/dismiss', {}).then(j),
     dismissAllPendingSkills: (slugs: string[]) => post('/api/skills/-/pending/-/dismiss-all', { slugs }).then(j),
+    /** Pending-vs-live overlap clusters for the Skills tab audit modal and the
+     *  per-row "Related skills" hint. */
+    skillsAudit: () => get('/api/skills/-/audit').then(j),
+    restagePendingSkill: (slug: string, target: string) =>
+      post('/api/skills/-/pending/' + encodeURIComponent(slug) + '/restage', { target }).then(j) as Promise<{ staged: string; slug: string; target: string }>,
     pinSkill: (name: string, pinned: boolean) => post('/api/skills/-/pin', { name, pinned }).then(j),
     /** Opt a skill in/out of full-body injection when its triggers match.
      *  `inject: false` reduces the skill to a one-line pointer on a match. */
