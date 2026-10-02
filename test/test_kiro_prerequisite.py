@@ -940,8 +940,8 @@ class TestKiroPrerequisiteHelpers:
         ) == str(planted)
 
     def test_process_group_membership_ignores_zombies(self) -> None:
-        assert supervisor._proc_stat_group_member("123 (child) S 1 42 0", 42)
-        assert not supervisor._proc_stat_group_member("123 (child) Z 1 42 0", 42)
+        assert supervisor._proc_stat_group_member(b"123 (child) S 1 42 0", 42)
+        assert not supervisor._proc_stat_group_member(b"123 (child) Z 1 42 0", 42)
         assert supervisor._parse_ps_group_members(
             "100 42 S\n101 42 Z\n102 7 R\n",
             42,

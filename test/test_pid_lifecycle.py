@@ -18,6 +18,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
+from non_utf8_comm import BAD_COMM, write_stat
 
 from kiro_crew import platform_compat
 
@@ -921,14 +922,16 @@ class TestMarkedGroupMembers:
     """The vouching read: which live members of a group are ours."""
 
     @staticmethod
-    def _fake_proc(tmp_path: Path, rows: dict[int, tuple[str, int, str]]) -> Path:
-        """rows: pid -> (state, pgrp, spawn instance). Minimal /proc/<pid>/{stat,environ}."""
+    def _fake_proc(
+        tmp_path: Path, rows: dict[int, tuple[str, int, str]], *, comm: bytes = b"x"
+    ) -> Path:
+        """rows: pid -> (state, pgrp, spawn instance). Minimal /proc/<pid>/{stat,environ}.
+
+        Each member's start ticks are ``pid * 10``, so its start id is ``f"{pid}0"``.
+        """
         for pid, (state, pgrp, inst) in rows.items():
-            d = tmp_path / str(pid)
-            d.mkdir()
-            # pid (comm) state ppid pgrp ...
-            (d / "stat").write_text(f"{pid} (x) {state} 1 {pgrp} 0 0 0 0 0", encoding="utf-8")
-            (d / "environ").write_bytes(
+            write_stat(tmp_path, pid, comm=comm, state=state, pgrp=pgrp, start_ticks=pid * 10)
+            (tmp_path / str(pid) / "environ").write_bytes(
                 b"KIROCREW_SPAWNED=1\x00KIROCREW_SPAWN_INSTANCE="
                 + inst.encode()
                 + b"\x00PATH=/bin\x00"
@@ -936,7 +939,10 @@ class TestMarkedGroupMembers:
         (tmp_path / "self").mkdir()  # a non-digit entry, skipped
         return tmp_path
 
-    def test_only_live_marked_members_of_the_group_count(self, tmp_path, monkeypatch) -> None:
+    @pytest.mark.parametrize("comm", [b"x", BAD_COMM], ids=["ascii", "not-utf8"])
+    def test_only_live_marked_members_of_the_group_count(
+        self, tmp_path, monkeypatch, comm: bytes
+    ) -> None:
         from kiro_crew import session_pid as sp
 
         # The reader is Linux-gated, and the fixture supplies the /proc shape it
@@ -952,18 +958,34 @@ class TestMarkedGroupMembers:
                 104: ("S", 200, "ours"),  # another group
                 105: ("S", 100, "theirs"),  # a fresh runtime that took the number
             },
+            comm=comm,
         )
-        monkeypatch.setattr(sp, "Path", lambda p="/proc": root if p == "/proc" else Path(p))
-        real_reader = sp._env_spawn_instance
-        monkeypatch.setattr(sp, "_env_spawn_instance", lambda pid: real_reader(pid, root))
-        monkeypatch.setattr(sp, "_env_has_kirocrew_marker", lambda pid: pid in (101, 102, 105))
+        monkeypatch.setattr(
+            sp, "_env_has_kirocrew_marker", lambda pid, proc_root=None: pid in (101, 102, 105)
+        )
         monkeypatch.setattr(sp, "_tracked_child_has_runtime_identity", lambda pid: True)
-        monkeypatch.setattr(sp, "_pid_start_token", lambda pid: f"s{pid}")
 
-        assert sp._marked_group_members(100, "ours") == {101: "s101"}
+        assert sp._marked_group_members(100, "ours", proc_root=root) == {101: "1010"}
         # The instance is the pin: the same group read as a different spawn is empty.
-        assert sp._marked_group_members(100, "theirs") == {105: "s105"}
-        assert sp._marked_group_members(100, "") == {}
+        assert sp._marked_group_members(100, "theirs", proc_root=root) == {105: "1050"}
+        assert sp._marked_group_members(100, "", proc_root=root) == {}
+
+    def test_the_start_id_comes_from_the_read_that_admitted_the_member(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """A second read may already name another process, so it is never taken."""
+        from kiro_crew import session_pid as sp
+
+        monkeypatch.setattr(sp.sys, "platform", "linux")
+        root = self._fake_proc(tmp_path, {101: ("S", 100, "ours"), 102: ("S", 100, "ours")})
+        stat = (root / "102" / "stat").read_bytes()
+        (root / "102" / "stat").write_bytes(stat.replace(b" 1020 ", b" notticks "))
+        monkeypatch.setattr(sp, "_env_has_kirocrew_marker", lambda pid, proc_root=None: True)
+        monkeypatch.setattr(sp, "_tracked_child_has_runtime_identity", lambda pid: True)
+        monkeypatch.setattr(sp, "_pid_start_token", lambda pid: "a stranger's start")
+
+        # 102's start cannot be read from that read, so it is not vouched for.
+        assert sp._marked_group_members(100, "ours", proc_root=root) == {101: "1010"}
 
     def test_a_marked_member_without_runtime_identity_does_not_vouch(
         self, tmp_path, monkeypatch
@@ -973,13 +995,10 @@ class TestMarkedGroupMembers:
 
         monkeypatch.setattr(sp.sys, "platform", "linux")
         root = self._fake_proc(tmp_path, {101: ("S", 100, "ours")})
-        monkeypatch.setattr(sp, "Path", lambda p="/proc": root if p == "/proc" else Path(p))
-        real_reader = sp._env_spawn_instance
-        monkeypatch.setattr(sp, "_env_spawn_instance", lambda pid: real_reader(pid, root))
-        monkeypatch.setattr(sp, "_env_has_kirocrew_marker", lambda pid: True)
+        monkeypatch.setattr(sp, "_env_has_kirocrew_marker", lambda pid, proc_root=None: True)
         monkeypatch.setattr(sp, "_tracked_child_has_runtime_identity", lambda pid: False)
 
-        assert sp._marked_group_members(100, "ours") == {}
+        assert sp._marked_group_members(100, "ours", proc_root=root) == {}
 
     def test_env_spawn_instance_reads_the_value_and_fails_closed(self, tmp_path) -> None:
         from kiro_crew import session_pid as sp
@@ -1002,21 +1021,20 @@ class TestMarkedGroupMembers:
 
         monkeypatch.setattr(sp.sys, "platform", "linux")
         root = self._fake_proc(tmp_path, {101: ("S", 100, "ours"), 104: ("S", 200, "ours")})
-        monkeypatch.setattr(sp, "Path", lambda p="/proc": root if p == "/proc" else Path(p))
-        real_reader = sp._env_spawn_instance
-        monkeypatch.setattr(sp, "_env_spawn_instance", lambda pid: real_reader(pid, root))
-        monkeypatch.setattr(sp, "_env_has_kirocrew_marker", lambda pid: True)
-        monkeypatch.setattr(sp, "_pid_start_token", lambda pid: f"s{pid}")
+        monkeypatch.setattr(sp, "_env_has_kirocrew_marker", lambda pid, proc_root=None: True)
         # The default gate is what an app backend's tree fails.
         monkeypatch.setattr(sp, "_tracked_child_has_runtime_identity", lambda pid: False)
 
-        assert sp._marked_group_members(100, "ours") == {}
-        assert sp._marked_group_members(100, "ours", require_runtime_identity=False) == {
-            101: "s101"
-        }
+        assert sp._marked_group_members(100, "ours", proc_root=root) == {}
+        assert sp._marked_group_members(
+            100, "ours", require_runtime_identity=False, proc_root=root
+        ) == {101: "1010"}
         # Turning the gate off relaxes ONLY that gate: a member of another group,
         # or one carrying a different instance, is still refused.
-        assert sp._marked_group_members(200, "theirs", require_runtime_identity=False) == {}
+        assert (
+            sp._marked_group_members(200, "theirs", require_runtime_identity=False, proc_root=root)
+            == {}
+        )
 
     def test_the_public_non_runtime_entry_point_turns_the_gate_off(self, monkeypatch) -> None:
         """signal_orphaned_spawn_group differs from the ACP path in exactly one way."""
@@ -2206,57 +2224,58 @@ class TestParseEtime:
 class TestOurOrphanPids:
     """Direct tests for _our_orphan_pids (Linux /proc and macOS ps branches)."""
 
-    def test_linux_proc_scan_finds_init_and_subreaper_children(self) -> None:
+    def test_linux_proc_scan_finds_init_and_subreaper_children(self, tmp_path: Path) -> None:
         """Linux /proc two-pass scan: includes ppid==1 and ppid==systemd subreaper.
 
         Exercises the real Linux branch (systemd --user subreaper detection in
-        pass 1 + PPid parsing in pass 2), not the macOS ps path.
+        pass 1 + the parent read in pass 2), not the macOS ps path, over a
+        fixture table whose stat and comm files are real. Pid 600's name is a
+        multibyte one cut at the kernel's 15 bytes, so it is not UTF-8; its
+        parent is read from stat bytes, so that orphan is listed like the rest.
         """
         from kiro_crew.session_pid import _our_orphan_pids
 
-        class _FakeProcEntry:
-            def __init__(self, name: str, uid: int, comm: str, ppid: str) -> None:
+        my_uid = 1000
+        rows = {  # pid -> (uid, comm, ppid)
+            100: (my_uid, b"python3", 1),  # init-reparented
+            200: (my_uid, b"bash", 50),  # live child, excluded
+            300: (my_uid, b"systemd", 1),  # --user subreaper
+            400: (my_uid, b"worker", 300),  # child of subreaper
+            500: (9999, b"python3", 1),  # other uid, excluded
+            600: (my_uid, "run_データ処理.py".encode()[:15], 1),  # name not UTF-8
+        }
+        for pid, (_uid, comm, ppid) in rows.items():
+            (tmp_path / str(pid)).mkdir()
+            (tmp_path / str(pid) / "comm").write_bytes(comm + b"\n")
+            (tmp_path / str(pid) / "stat").write_bytes(b"%d (%s) S %d 0 0" % (pid, comm, ppid))
+        (tmp_path / "self").mkdir()  # non-numeric, skipped
+
+        class _Entry:
+            def __init__(self, name: str) -> None:
                 self.name = name
-                self._uid = uid
-                self._comm = comm
-                self._ppid = ppid
 
             def stat(self) -> MagicMock:
-                return MagicMock(st_uid=self._uid)
+                return MagicMock(st_uid=rows[int(self.name)][0] if self.name.isdigit() else my_uid)
 
-            def __truediv__(self, child: str) -> MagicMock:
-                node = MagicMock()
-                if child == "comm":
-                    node.read_text.return_value = self._comm + "\n"
-                else:  # "status"
-                    node.read_text.return_value = f"Name:\t{self._comm}\nPPid:\t{self._ppid}\n"
-                return node
+            def __truediv__(self, child: str) -> Path:
+                return tmp_path / self.name / child
 
-        my_uid = 1000
-        entries = [
-            _FakeProcEntry("100", my_uid, "python3", "1"),  # init-reparented
-            _FakeProcEntry("200", my_uid, "bash", "50"),  # live child, excluded
-            _FakeProcEntry("300", my_uid, "systemd", "1"),  # --user subreaper
-            _FakeProcEntry("400", my_uid, "worker", "300"),  # child of subreaper
-            _FakeProcEntry("500", 9999, "python3", "1"),  # other uid, excluded
-            _FakeProcEntry("self", my_uid, "x", "1"),  # non-numeric, skipped
-        ]
-        proc_root = MagicMock()
-        proc_root.iterdir.return_value = entries
+        class _Proc:
+            def iterdir(self) -> list[_Entry]:
+                return [_Entry(p.name) for p in sorted(tmp_path.iterdir())]
+
+            def __truediv__(self, child: str) -> Path:
+                return tmp_path / child
 
         with (
             patch("kiro_crew.session_pid.sys") as mock_sys,
-            patch("kiro_crew.session_pid.Path", return_value=proc_root),
+            patch("kiro_crew.session_pid.Path", return_value=_Proc()),
             patch("os.getuid", return_value=my_uid),
         ):
             mock_sys.platform = "linux"
             result = _our_orphan_pids()
 
-        assert 100 in result  # ppid == init
-        assert 300 in result  # subreaper itself is ppid == init
-        assert 400 in result  # ppid == detected systemd subreaper
-        assert 200 not in result  # ppid is a live process, not orphaned
-        assert 500 not in result  # different uid
+        assert sorted(result) == [100, 300, 400, 600]
 
     def test_macos_excludes_launcher_children(self) -> None:
         """ppid==launcher must NOT be reaped (regression guard).
@@ -2302,43 +2321,34 @@ class TestLinuxPidAge:
     """Direct tests for _linux_pid_age /proc/<pid>/stat starttime parsing."""
 
     @staticmethod
-    def _patch_proc(stat_line: str, uptime: str = "10000.0 9000.0"):
-        def fake_path(p: object) -> MagicMock:
-            node = MagicMock()
-            if str(p).endswith("/stat"):
-                node.read_text.return_value = stat_line
-            elif str(p) == "/proc/uptime":
-                node.read_text.return_value = uptime
-            return node
+    def _proc(tmp_path: Path, pid: int, comm: bytes, start_ticks: int) -> Path:
+        write_stat(tmp_path, pid, comm=comm, start_ticks=start_ticks)
+        (tmp_path / "uptime").write_text("10000.0 9000.0")
+        return tmp_path
 
-        return patch("kiro_crew.session_pid.Path", side_effect=fake_path)
-
-    def test_age_with_spaces_and_parens_in_comm(self) -> None:
-        """starttime is read from field 22 even when comm contains spaces/parens.
-
-        rfind(')') must land on the comm's closing paren so field-index math
-        starts at the state field. starttime_ticks=500000, clk_tck=100 →
-        5000s offset; uptime=10000s → age=5000s.
+    @pytest.mark.parametrize("comm", [b"my (weird) proc", BAD_COMM], ids=["parens", "not-utf8"])
+    def test_age_past_any_comm(self, tmp_path: Path, monkeypatch, comm: bytes) -> None:
+        """starttime is field 22 whatever the comm holds: spaces, parens, or bytes
+        that are not UTF-8. starttime_ticks=500000, clk_tck=100 → 5000s offset;
+        uptime=10000s → age=5000s.
         """
-        from kiro_crew.session_pid import _linux_pid_age
+        from kiro_crew import session_pid as sp
 
-        # pid (comm) state ppid ... starttime(field 22 == index 19 after state)
-        post_comm = "S 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 0 20 0 1 500000 0 0"
-        stat_line = f"1234 (my (weird) proc) {post_comm}\n"
+        monkeypatch.setattr(sp.sys, "platform", "linux")
+        root = self._proc(tmp_path, 1234, comm, 500000)
+        with patch("os.sysconf", return_value=100):
+            assert sp._linux_pid_age(1234, root) == 5000.0
 
-        with self._patch_proc(stat_line), patch("os.sysconf", return_value=100):
-            age = _linux_pid_age(1234, now=123456.0)
+    def test_malformed_stat_returns_zero(self, tmp_path: Path, monkeypatch) -> None:
+        """Too-few fields → 0.0 fail-safe (min-age guard skips)."""
+        from kiro_crew import session_pid as sp
 
-        assert age == 5000.0
-
-    def test_malformed_stat_returns_zero(self) -> None:
-        """Too-few fields → IndexError → 0.0 fail-safe (min-age guard skips)."""
-        from kiro_crew.session_pid import _linux_pid_age
-
-        with self._patch_proc("999 (proc) S 1 1\n"), patch("os.sysconf", return_value=100):
-            age = _linux_pid_age(999, now=123456.0)
-
-        assert age == 0.0
+        monkeypatch.setattr(sp.sys, "platform", "linux")
+        (tmp_path / "999").mkdir()
+        (tmp_path / "999" / "stat").write_bytes(b"999 (proc) S 1 1\n")
+        (tmp_path / "uptime").write_text("10000.0 9000.0")
+        with patch("os.sysconf", return_value=100):
+            assert sp._linux_pid_age(999, tmp_path) == 0.0
 
 
 class TestIsManagedAgentProcess:
@@ -4360,15 +4370,22 @@ class TestIsSweepableOrphanWork:
         with patch("kiro_crew.session_pid._linux_pid_sid", return_value=1234):
             assert _work_orphan_session_leader_alive(1234) is True
 
-    def test_dead_leader_means_session_ended(self) -> None:
+    def test_dead_leader_means_session_ended(self, tmp_path: Path) -> None:
         """Leader gone (or PID recycled into a non-leader) -> session ended."""
         from kiro_crew.session_pid import _work_orphan_session_leader_alive
 
-        def fake_sid(pid: int) -> int:
-            return 500 if pid == 1234 else -1  # leader 500 unreadable = gone
+        write_stat(tmp_path, 1234, session=500)
+        assert _work_orphan_session_leader_alive(1234, tmp_path) is False  # 500 gone
+        write_stat(tmp_path, 500, session=7)
+        assert _work_orphan_session_leader_alive(1234, tmp_path) is False  # leads another
 
-        with patch("kiro_crew.session_pid._linux_pid_sid", side_effect=fake_sid):
-            assert _work_orphan_session_leader_alive(1234) is False
+    def test_a_present_leader_whose_stat_cannot_be_read_is_alive(self, tmp_path: Path) -> None:
+        """Only a pid whose /proc entry is absent counts as a gone leader."""
+        from kiro_crew.session_pid import _work_orphan_session_leader_alive
+
+        write_stat(tmp_path, 1234, session=500)
+        (tmp_path / "500").mkdir()
+        assert _work_orphan_session_leader_alive(1234, tmp_path) is True
 
     def test_marked_detached_daemon_is_not_sweepable(self) -> None:
         """A marked process WITHOUT a test-runner shape is never swept.

@@ -82,14 +82,25 @@ def _bias_oom_score() -> None:
         pass
 
 
-def _proc_stat_group_member(text: str, pgid: int) -> bool:
-    """Return whether one Linux stat record is a live member of *pgid*."""
+def _proc_stat_group_member(raw: bytes, pgid: int) -> bool:
+    """Return whether one raw Linux stat record is a live member of *pgid*.
 
-    fields = text.rpartition(")")[2].split()
+    BYTES, never decoded: the command name is whatever bytes the process gave
+    itself, and a text read raises ``UnicodeDecodeError`` on a name that is not
+    UTF-8 (a multibyte name cut at the kernel's 15 bytes is enough). Its own
+    copy of ``platform_compat.read_proc_stat``'s parse, because this file runs
+    as ``python -I -c`` and must stay stdlib-only. A record with no ``)`` is not
+    in kernel form and is no member.
+    """
+
+    _comm, rparen, after = raw.rpartition(b")")
+    if not rparen:
+        return False
+    fields = after.split()
     # After the command name: state, ppid, pgrp. Zombies can remain visible
     # indefinitely under a PID 1 that does not reap promptly, but they cannot
     # retain pipes or execute work and therefore must not hold this supervisor.
-    return len(fields) >= 3 and fields[0] != "Z" and int(fields[2]) == pgid
+    return len(fields) >= 3 and fields[0] != b"Z" and fields[2].isdigit() and int(fields[2]) == pgid
 
 
 def _parse_ps_group_members(output: str, pgid: int, ps_pid: int) -> set[int]:
@@ -116,11 +127,11 @@ def _linux_group_members(pgid: int) -> set[int]:
         if not entry.name.isdigit():
             continue
         try:
-            text = (entry / "stat").read_text(encoding="utf-8")
-            if _proc_stat_group_member(text, pgid):
-                members.add(int(entry.name))
-        except (OSError, ValueError):
+            raw = (entry / "stat").read_bytes()
+        except OSError:
             continue
+        if _proc_stat_group_member(raw, pgid):
+            members.add(int(entry.name))
     return members
 
 
@@ -223,10 +234,10 @@ def _signal_member(pid: int, pgid: int, sig: int) -> bool:
         return False
     try:
         try:
-            text = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+            raw = Path(f"/proc/{pid}/stat").read_bytes()
         except OSError:
             return False
-        if not _proc_stat_group_member(text, pgid):
+        if not _proc_stat_group_member(raw, pgid):
             return False
         try:
             _pidfd_send_signal(fd, sig)
