@@ -11906,7 +11906,8 @@
       "archived_sessions_kept_other": "{{count}} sesiones archivadas se quedan en Sesiones anteriores",
       "archived_count_many": "{{count}} archivadas",
       "archived_count_one": "{{count}} archivada",
-      "archived_count_other": "{{count}} archivadas"
+      "archived_count_other": "{{count}} archivadas",
+      "waiting_for_memory": "Esperando memoria"
     },
     "connectionsPage": {
       "action_failed": "La acción falló: {{error}}",

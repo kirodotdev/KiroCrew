@@ -5,6 +5,7 @@ from .admission import ClaimPoint, MemoryReadPoint, PreparedSpawn, SpawnAdmissio
 from .cancellation import CancellationCoordinator
 from .continuation import ContinuationCoordinator
 from .monitoring import OrphanStallMonitor
+from .published_depth import PublishedQueueDepths
 from .run import RunEventCoordinator
 from .terminal import TerminalCoordinator
 from .waves import WaveDigestCoordinator
@@ -17,6 +18,7 @@ __all__ = [
     "ClaimPoint",
     "MemoryReadPoint",
     "PreparedSpawn",
+    "PublishedQueueDepths",
     "SpawnAdmissionCoordinator",
     "ContinuationCoordinator",
     "WaveDigestCoordinator",

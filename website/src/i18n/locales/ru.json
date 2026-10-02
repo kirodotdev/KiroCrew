@@ -12087,7 +12087,8 @@
       "archived_count_few": "{{count}} в архиве",
       "archived_count_many": "{{count}} в архиве",
       "archived_count_one": "{{count}} в архиве",
-      "archived_count_other": "{{count}} в архиве"
+      "archived_count_other": "{{count}} в архиве",
+      "waiting_for_memory": "Ожидание памяти"
     },
     "connectionsPage": {
       "action_failed": "Не удалось выполнить действие: {{error}}",

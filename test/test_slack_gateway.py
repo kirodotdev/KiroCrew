@@ -2465,9 +2465,31 @@ class TestInitSubagents:
         assert orch.dashboard_state.push_slots_update.call_count == 2
 
     @pytest.mark.asyncio
+    async def test_subagent_queued_pushes_slots_debounced(self):
+        """A queued-depth frame changes slots[].subagents_queued, so it schedules
+        the same debounced push: the next slots frame reconciles a client that
+        missed the depth frame itself, including one not showing that session."""
+        from kiro_crew.subagent import SubagentInfo
+
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+        orch.ctx_builder = _mock_context_builder()
+        orch.ctx_builder.hooks = MagicMock()
+        orch.dashboard_state = _mock_dashboard_state()
+        on_event = self._capture_on_event(orch)
+
+        info = SubagentInfo(id="_queue", task="", parent_session_key="dashboard:s1")
+        await on_event("subagent_queued", info, {"queued": 1})
+        await on_event("subagent_queued", info, {"queued": 0})
+        assert orch.dashboard_state.push_slots_update.call_count == 0  # debounced
+        await asyncio.sleep(0.3)
+        assert orch.dashboard_state.push_slots_update.call_count == 1
+
+    @pytest.mark.asyncio
     async def test_subagent_tool_event_does_not_push_slots(self):
         """High-frequency subagent_tool events must NOT trigger slots pushes —
-        only spawn/done flip the subagents_running truth value."""
+        only spawn/done flip the subagents_running truth value (and a queued
+        frame moves subagents_queued)."""
         from kiro_crew.subagent import SubagentInfo
 
         orch = _make_orchestrator()

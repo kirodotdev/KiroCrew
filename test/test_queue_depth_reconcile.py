@@ -443,6 +443,63 @@ async def test_stopping_a_row_held_only_by_the_store_publishes_the_depth(
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(30)
+@PUMP_MODES
+async def test_a_lifecycle_edge_that_agrees_with_the_published_depth_sends_nothing(
+    monkeypatch: pytest.MonkeyPatch, pump_off_loop: bool
+) -> None:
+    """A child start re-derives its parent's held depth (the published-depth
+    heal), but a count that is already right is not published a second time."""
+    mgr = await _manager(monkeypatch, pump_off_loop=pump_off_loop)
+    try:
+        _defer(mgr, 2)
+        await _settle(mgr)
+        assert mgr.published_queued_depths() == {_PARENT: 2}
+        events = _record(mgr)
+
+        child = SubagentInfo(id="c1", task="t", parent_session_key=_PARENT)
+        await mgr._fire_event("subagent_spawn", child, {})
+        await _settle(mgr)
+
+        assert _depths(events) == []
+        assert mgr.published_queued_depths() == {_PARENT: 2}
+    finally:
+        _close(mgr)
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(30)
+@PUMP_MODES
+async def test_a_heal_that_answers_an_armed_retry_still_publishes_the_frame_it_owed(
+    monkeypatch: pytest.MonkeyPatch, pump_off_loop: bool
+) -> None:
+    """A heal read disarms the parent's pending re-read, so it must send the
+    frame that re-read owed even when the count is unchanged: here a new wait
+    label at the same depth, which would otherwise never reach the card."""
+    mgr = await _manager(monkeypatch, pump_off_loop=pump_off_loop)
+    monkeypatch.setattr(run_mod, "_QUEUE_DEPTH_RETRY_SECS", 60.0)  # the heal answers it
+    try:
+        _defer(mgr, 2)
+        await _settle(mgr)
+        assert mgr.published_queued_depths() == {_PARENT: 2}
+        events = _record(mgr)
+        _fail_chip_reads(monkeypatch, times=1)
+        mgr._queue_wait[_PARENT] = {"reason": "adaptive_cap_zero"}
+        mgr._emit_queue_depth(_PARENT)
+        await _settle(mgr)
+        assert _depths(events) == [] and _PARENT in mgr._queue_depth_retries
+
+        child = SubagentInfo(id="c1", task="t", parent_session_key=_PARENT)
+        await mgr._fire_event("subagent_spawn", child, {})
+        await _settle(mgr)
+
+        assert _depths(events) == [{"queued": 2, "reason": "adaptive_cap_zero"}]
+        assert _PARENT not in mgr._queue_depth_retries
+    finally:
+        _close(mgr)
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(30)
 async def test_a_failing_depth_emit_never_costs_the_parent_its_completion(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

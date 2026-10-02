@@ -11544,7 +11544,8 @@
       "delete_empty_folders_other": "빈 폴더 {{count}}개 삭제",
       "deleting_folders": "삭제 중…",
       "archived_sessions_kept_other": "보관된 세션 {{count}}개는 이전 세션에 남습니다",
-      "archived_count_other": "보관됨 {{count}}개"
+      "archived_count_other": "보관됨 {{count}}개",
+      "waiting_for_memory": "메모리 대기 중"
     },
     "connectionsPage": {
       "action_failed": "작업에 실패했습니다: {{error}}",

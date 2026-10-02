@@ -1642,6 +1642,21 @@ describe('useKeyboardShortcuts — registry chords (conventional defaults + alia
     confirmSpy.mockRestore()
   })
 
+  it('Ctrl+W asks first for a session whose children are only queued (closing retires them)', () => {
+    // Queued children are not Working, so the lane reads idle; the gate must
+    // still confirm, because deleteSlot cancels the accepted spawns.
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const store = createTestStore({
+      dashboard: { slots: [{ key: 'slot-1', title: 'Chat 1', messages: 1, running: false }] } as unknown as RootState['dashboard'],
+      chat: { activeSlot: 'slot-1', slotHistory: [], subagentQueued: { 'slot-1': 2 } } as unknown as RootState['chat'],
+    })
+    renderHookWithProviders(() => useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat }), { store })
+    press({ code: 'KeyW', ctrlKey: true })
+    expect(confirmSpy).toHaveBeenCalledTimes(1)
+    expect(store.getState().dashboard.slots.find(s => s.key === 'slot-1')).toBeDefined() // declined → kept
+    confirmSpy.mockRestore()
+  })
+
   it('Ctrl+W on an idle session honours confirmCloseSession=false (no prompt)', () => {
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
     setup({ activeSlot: 'slot-1' })

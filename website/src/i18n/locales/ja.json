@@ -11544,7 +11544,8 @@
       "delete_empty_folders_other": "空のフォルダー {{count}} 件を削除",
       "deleting_folders": "削除中…",
       "archived_sessions_kept_other": "アーカイブ済みのセッション {{count}} 件は「以前のセッション」に残ります",
-      "archived_count_other": "アーカイブ済み {{count}} 件"
+      "archived_count_other": "アーカイブ済み {{count}} 件",
+      "waiting_for_memory": "メモリ待ち"
     },
     "connectionsPage": {
       "action_failed": "操作に失敗しました: {{error}}",

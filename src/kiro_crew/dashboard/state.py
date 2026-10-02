@@ -462,6 +462,33 @@ def _new_card_store(state: Any) -> Any:
     return state._dynamic_cards
 
 
+def _published_queued_by_slot(subs: object) -> dict[str, int]:
+    """Each slot's ``subagents_queued``: the manager's last published depths, by tab.
+
+    Routed exactly as the ``subagent_queued`` frames are (``subagent_event_slot`` of
+    the frame's parent), so a row reports what the frame stream told that tab. The
+    two keys differ for a cron tab: a stateless or agent-sequence run publishes
+    under ``cron:<job>:<run>`` while the tab's own key is ``cron:<job>``, and
+    several runs of one job sum on the job's tab.
+
+    Anything but a positive int reads as 0, so a stub manager in the suite (or one
+    predating the reader) cannot put a non-JSON value on the row.
+    """
+    reader = getattr(subs, "published_queued_depths", None) if subs else None
+    table = reader() if callable(reader) else None
+    if not isinstance(table, dict):
+        return {}
+    # circular import: chat_utils imports this module at load time.
+    from kiro_crew.dashboard.chat_utils import subagent_event_slot
+
+    by_slot: dict[str, int] = {}
+    for parent, depth in table.items():
+        if isinstance(parent, str) and type(depth) is int and depth > 0:
+            slot = subagent_event_slot(parent)
+            by_slot[slot] = by_slot.get(slot, 0) + depth
+    return by_slot
+
+
 def _attach_slot_parents(
     rows: "list[dict]", resolve_aliases: "Callable[[], dict[str, str] | None] | None" = None
 ) -> None:
@@ -9305,7 +9332,8 @@ class DashboardState:
     ) -> list:
         """Serialize slots, optionally including owner-only provider status.
 
-        ``subagents_running`` remains available to every authenticated caller.
+        ``subagents_running`` and ``subagents_queued`` remain available to every
+        authenticated caller.
         Credential-backed ``ci`` and ``state`` fields are omitted unless an
         authenticated owner boundary explicitly opts in — EXCEPT a link whose
         repository is known public, which any authenticated dashboard user
@@ -9329,6 +9357,7 @@ class DashboardState:
         from kiro_crew.dashboard.chat_utils import effective_session_key
 
         under_construction = getattr(self, "_slots_under_construction", None) or ()
+        queued_by_slot = _published_queued_by_slot(subs)
         for s in self._slots.values():
             if s.key in under_construction:
                 continue
@@ -9341,6 +9370,7 @@ class DashboardState:
             d["subagents_running"] = bool(
                 subs and subs.running_agents_for(effective_session_key(s))
             )
+            d["subagents_queued"] = queued_by_slot.get(s.key, 0)
             out.append(d)
         # The slot-key/session-key correspondence the lineage join needs, read the same
         # way ``/api/sessions/memory`` reads it for the Sessions table. Handed over
