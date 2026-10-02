@@ -725,6 +725,17 @@ reading, and it comes back as `REVIEW` for you to confirm.
   your seeds send workers to `cd` there for forge calls. Do NOT clean it: a
   reset there is destructive and belongs to whoever left it. Take the
   non-destructive half — the brief's commit ban — and report what you found.
+  Staged state there is usually a whole-tree overlay that never moved HEAD
+  (`git checkout <ref> -- .`): `<ref>`'s tree plus the files `<ref>` deleted.
+  In the shared checkout, test `<remote>/<base>` first, then its reflog entries
+  newest first, stopping at the first match or the first one HEAD is not an
+  ancestor of. A `<commit>` matches when it is not HEAD, `git merge-base
+  --is-ancestor HEAD <commit>` exits 0 and `git diff-index --cached --quiet
+  --diff-filter=a <commit>` exits 0; an exit above 1 is unreadable, not a no.
+  On a match, report the owner's repair: `git merge --ff-only --no-autostash
+  --no-overwrite-ignore <commit>`, or `git reset --keep <commit>`, the same move
+  except that it also unstages anything else staged. Both refuse rather than
+  overwrite a local edit, and neither is yours to run.
   Re-read the base head rather than caching it, too: the default branch moves
   under a long run, and a worker preflighting against a remembered sha is
   preflighting against the past.
@@ -842,7 +853,11 @@ Fill `{...}` from the spec; keep every clause — each one closes a failure mode
 > NEVER COMMIT FROM THE SHARED CHECKOUT. You may `cd` there for `gh` calls, but
 > its index is not yours and may hold hundreds of staged files left by another
 > operation, so one `git commit -a` there sweeps unrelated work into your PR.
-> Each worktree has its own index; commit only from yours.
+> Each worktree has its own index; commit only from yours. Run nothing there
+> that moves its HEAD or writes its index or files (merge, pull, reset, clean,
+> checkout, restore, `gh pr checkout`, `gh repo sync`); report its state and
+> leave the repair to its owner. Never `git stash` in any worktree: every
+> worktree shares one stash list.
 > REMOTES: `export GIT_TERMINAL_PROMPT=0` and confirm `gh auth setup-git` has
 > run before any push — a bare https push does not use the CLI's token and hangs
 > on an interactive prompt indefinitely. If a push exceeds ~2 minutes, time the

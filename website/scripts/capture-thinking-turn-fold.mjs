@@ -2,10 +2,12 @@
  * Screenshots of a settled multi-burst turn as drawn by TurnBlock in the
  * default "show thinking inline" mode.
  *
- * Run the SAME page twice — once against the pre-change TurnBlock (git stash of
- * website/src/pages/chat/TurnBlock.tsx) and once against the patched one — into
- * two OUT dirs to get the before/after pair a UI PR needs. The harness never
- * changes between runs, so the only variable is the component.
+ * Run the SAME page twice into two OUT dirs to get the before/after pair a UI
+ * PR needs: once against the pre-change TurnBlock, once against the patched
+ * one. The harness never changes between runs, so the only variable is the
+ * component. With the change committed:
+ *   git checkout <base> -- src/pages/chat/TurnBlock.tsx   # before
+ *   git checkout HEAD -- src/pages/chat/TurnBlock.tsx     # after
  *
  * Usage:
  *   npx vite --host 127.0.0.1 --port 6813 --strictPort    # in another shell

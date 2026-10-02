@@ -4533,8 +4533,9 @@ pytest test/test_foo.py -n0 -q --no-cov --durations=10
 
 Note that `--store-durations` numbers taken under `-n auto` include worker contention
 and overstate individual tests. Compare candidates **back to back** on the same machine
-(`git stash` / run / `git stash pop` / run); a number from an idle machine measured an
-hour earlier is not a baseline.
+(run the change, then the base in `git worktree add --detach <dir> <base>`; never
+`git stash`: every worktree shares one stash list); a number from an idle machine
+measured an hour earlier is not a baseline.
 
 ### The three highest-leverage patterns
 

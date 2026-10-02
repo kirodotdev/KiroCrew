@@ -22,6 +22,9 @@
  * components out at a ref that predates this change
  * (`git checkout <ref> -- src/components/SessionAutomationPopover.tsx src/components/AutoNudgePopover.tsx`),
  * `npm run build`, and run this with a different outDir and --expect-bounded.
+ * With the fix committed, restore with `git checkout HEAD -- <the same files>`
+ * and rebuild. A bare `git restore <files>` restores nothing: it copies from the
+ * index, which still holds the old version.
  *
  * Usage: node scripts/capture-automation-popover-default.mjs [outDir] [--expect-bounded]
  */

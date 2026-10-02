@@ -20,8 +20,11 @@
  * so the pixels cannot silently photograph the wrong state.
  *
  * To photograph the pre-fix layout, check the component out at a ref that
- * predates the fix (`git checkout origin/main -- src/components/ChatInput.tsx`),
- * `npm run build`, and run with the `before` phase; then restore and rebuild.
+ * predates the fix (`git checkout <ref> -- src/components/ChatInput.tsx`),
+ * `npm run build`, and run with the `before` phase; then, with the fix committed,
+ * restore with `git checkout HEAD -- src/components/ChatInput.tsx` and rebuild.
+ * A bare `git restore <file>` restores nothing: it copies from the index, which
+ * still holds the old version.
  *
  * Usage: node scripts/capture-paste-quote-prefix.mjs <outDir> <before|after>
  */

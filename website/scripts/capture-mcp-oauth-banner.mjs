@@ -9,9 +9,10 @@
  * From website/, with the dev server already up:
  *   npx vite --host 127.0.0.1 --port 6815 --strictPort
  *
- *   git stash push ../website/src/pages/chat/McpOAuthBanner.tsx   # broken source
+ * With the fix committed:
+ *   git checkout <base> -- src/pages/chat/McpOAuthBanner.tsx   # broken source
  *   node scripts/capture-mcp-oauth-banner.mjs http://127.0.0.1:6815 OUT before
- *   git stash pop                                                 # fixed source
+ *   git checkout HEAD -- src/pages/chat/McpOAuthBanner.tsx     # fixed source
  *   node scripts/capture-mcp-oauth-banner.mjs http://127.0.0.1:6815 OUT after
  *
  * The assertion is what makes each frame trustworthy: `before` must show

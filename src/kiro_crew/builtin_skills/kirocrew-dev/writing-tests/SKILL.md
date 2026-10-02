@@ -385,8 +385,9 @@ spawned without `cwd=`.
 
 At ~56.5k tests, **per-test setup cost dominates any single slow test** — an autouse
 fixture is paid ~56,500 times. Profile, never guess; compare candidates back to back on
-the same host (`git stash`, run, pop, run), because a loaded host makes an absolute
-number meaningless.
+the same host (run the change, then the base in `git worktree add --detach <dir> <base>`;
+never `git stash`: every worktree shares one stash list), because a loaded host makes an
+absolute number meaningless.
 
 The recurring wins, in order of leverage:
 

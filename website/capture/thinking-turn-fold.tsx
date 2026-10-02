@@ -17,8 +17,10 @@
  * ThinkingBlock is mocked; only the row-renderer switch is local and renders
  * the same components ChatPage does.
  *
- * Run the SAME page against the pre-change TurnBlock (git stash) for the
- * "before" frame and the patched one for "after"; the harness itself never
+ * Run the SAME page against the pre-change TurnBlock (with the change
+ * committed, `git checkout <base> -- src/pages/chat/TurnBlock.tsx`) for the
+ * "before" frame and the patched one (`git checkout HEAD -- <that file>`) for
+ * "after"; the harness itself never
  * changes, so the delta it shows is only the code.
  *
  *   ?theme=dark|light &bursts=6

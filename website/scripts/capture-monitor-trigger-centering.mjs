@@ -22,6 +22,9 @@
  * (`git checkout <ref> -- src/components/SessionAutomationPopover.tsx`),
  * `npm run build`, and run this with a different outDir; the armed scenario then
  * reports `centred: false` with a ~4px offset and `gap: 0`.
+ * With the fix committed, restore with `git checkout HEAD -- <that file>`
+ * and rebuild. A bare `git restore <file>` restores nothing: it copies from the
+ * index, which still holds the old version.
  *
  * Usage: node scripts/capture-monitor-trigger-centering.mjs [outDir]
  */

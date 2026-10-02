@@ -218,6 +218,9 @@ gate locally with
   is NOT permission to push.
 - `main` is the default branch; changes land through a GitHub PR. The full flow:
   [CONTRIBUTING.md](CONTRIBUTING.md).
+- Never `git stash` (every worktree shares one stash list) and never overlay a
+  whole tree with `git checkout <ref> -- .`. To bring the main clone current,
+  follow the `kirocrew-worktree-dev` skill.
 
 ```
 <type>: <summary — max 72 chars, imperative, lowercase, no period>

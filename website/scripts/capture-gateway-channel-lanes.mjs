@@ -17,9 +17,10 @@
  *      the user can see the lane they are on and click out of it
  *
  * Usage: node scripts/capture-gateway-channel-lanes.mjs [outDir] [prefix]
- * For a before/after pair, run it once per source state (git stash the change,
- * rebuild, re-run with prefix `before`): the harness only ever mounts the real
- * component out of src/, so the difference comes from what is on disk.
+ * For a before/after pair, run it once per source state (with the change
+ * committed, `git checkout <base> -- <files>`, rebuild, re-run with prefix
+ * `before`, then `git checkout HEAD -- <files>`): the harness only ever mounts
+ * the real component out of src/, so the difference comes from what is on disk.
  */
 import { chromium } from 'playwright'
 import { mkdirSync } from 'node:fs'

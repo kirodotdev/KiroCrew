@@ -23,6 +23,9 @@
  * (`git checkout <ref> -- src/components/ChatInput.tsx src/pages/ChatPage.tsx`),
  * `npm run build`, and run this with a different outDir; every scenario then
  * reports `belowOptions: false` with a ~50px gap.
+ * With the fix committed, restore with `git checkout HEAD -- <the same files>`
+ * and rebuild. A bare `git restore <files>` restores nothing: it copies from the
+ * index, which still holds the old version.
  *
  * Usage: node scripts/capture-above-composer-order.mjs [outDir]
  */

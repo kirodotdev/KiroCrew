@@ -1,7 +1,7 @@
 ---
 name: kirocrew-worktree-dev
-description: "HARD RULE for developing the Kiro Crew source repo ITSELF (not users' projects): develop, build and verify in a git worktree, never against the live gateway. Covers env setup, build/dist ordering, feature flags, isolated previews, cleanup, publish authorization; prepare-pr owns the PR workflow."
-triggers: kirocrew worktree, kirocrew build gate, kirocrew dev, kirocrew source, contribute to kirocrew, kirocrew repo
+description: "HARD RULE for developing the Kiro Crew source repo ITSELF (not users' projects): develop, build and verify in a git worktree, never against the live gateway. Covers env setup, main-clone sync, build/dist ordering, flags, previews, cleanup, publish authorization; prepare-pr owns the PR workflow."
+triggers: kirocrew worktree, kirocrew main clone sync, kirocrew build gate, kirocrew dev, kirocrew source, contribute to kirocrew, kirocrew repo
 repo_scope: src/kiro_crew
 ---
 
@@ -24,6 +24,25 @@ python3 -m venv .venv
 cd website && npm ci && cd ..
 git worktree list
 ```
+
+To bring the main clone itself current (the first path `git worktree list`
+prints), fast-forward it and nothing else:
+
+```bash
+git -C <main clone> symbolic-ref --short HEAD   # must print main
+git -C <main clone> fetch origin main
+git -C <main clone> merge --ff-only --no-autostash --no-overwrite-ignore origin/main
+```
+It refuses, changing nothing, when local `main` has diverged or a local change
+would be overwritten; then stop and report, because that state belongs to whoever
+left it. When the live install runs from that clone, do not sync it yourself: it
+is a live code change, and the operator's dashboard Update does it with the
+rebuild and reinstall. Never overlay a whole tree with `git checkout <ref> -- .`
+or `git restore --source <ref> .`: neither moves HEAD, both overwrite local edits
+without asking, and the checkout form keeps every file upstream deleted. Never
+`git stash`: every worktree shares one stash list, so a pop can apply another
+session's work.
+
 Working from several worktrees? If `uv` resolves in your shell (`command -v uv`
 — it is a declared dependency of the package, so any activated Kiro Crew venv
 has it on `PATH`; a bare shell may not), build the venv with it instead: same

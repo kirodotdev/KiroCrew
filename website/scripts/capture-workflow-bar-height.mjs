@@ -15,9 +15,10 @@
  *
  * BEFORE / AFTER
  *   Each arm needs its own `npm run build`, because the fix is compiled into the
- *   bundle. Capture the pre-fix arm by checking the component out at a ref that
- *   predates the fix (or `git stash` the working change), rebuilding, and running
- *   this with a `before` label; then restore, rebuild, and run it with `after`.
+ *   bundle. With the fix committed, capture the pre-fix arm by checking the
+ *   component out at a ref that predates it (`git checkout <ref> -- <files>`),
+ *   rebuilding, and running this with a `before` label; then restore with
+ *   `git checkout HEAD -- <files>`, rebuild, and run it with `after`.
  *   The pre-fix arm reports `composerVisible: false` with the input box sitting
  *   several hundred px BELOW the viewport bottom.
  *
