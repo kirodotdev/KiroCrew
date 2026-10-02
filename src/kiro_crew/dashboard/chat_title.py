@@ -12,6 +12,7 @@ from aiohttp import web
 
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.context import ui_language_tag
+from kiro_crew.dashboard.chat_delivery import TURN_ACTOR_META_KEY
 from kiro_crew.dashboard.chat_folder_suggest import maybe_suggest_folder
 from kiro_crew.dashboard.chat_utils import (
     apply_pending_slot_memory_mode,
@@ -1022,6 +1023,48 @@ def _is_low_signal_title(title: str, messages: list[dict[str, Any]]) -> bool:
     return title == _fallback_title_from_messages(messages)
 
 
+# The drain records lost provenance, not a restored claim about who sent it.
+RESTORED_TURN_META_KEY = "turnProvenanceRestored"
+
+
+def _counts_as_user_turn(slot: _ChatSlot, message: dict[str, Any]) -> bool:
+    """Whether *message* is a turn of the session's own user, for titling.
+
+    A user row an app sent counts only on that app's own slot. On a user's
+    session an app reaches through ``permissions.sessionApproval`` it is the
+    app's turn, and titling from it would let the app name the user's session.
+    A restored queue row has lost that attribution, so it is excluded too,
+    rather than trusting a disk stamp as proof of a human turn.
+    """
+    if message.get("role") != "user":
+        return False
+    meta = message.get("meta")
+    not_user_owned = isinstance(meta, dict) and (
+        meta.get(TURN_ACTOR_META_KEY) == "app" or meta.get(RESTORED_TURN_META_KEY) is True
+    )
+    return not not_user_owned or bool(slot._app)
+
+
+def _titling_messages(slot: _ChatSlot) -> list[dict[str, Any]]:
+    """``slot.messages`` without the turns :func:`_counts_as_user_turn` skips.
+
+    A skipped turn is the user row and every row after it up to the next user
+    row that counts, so the reply to an app's turn goes with it. What the
+    auto-title and its refresh read: the prompt, the truncated fallback, the
+    low-signal check and whether the user's turn was answered, so an app's
+    text never becomes or seeds the automatic name of a session it does not
+    own. The user-initiated regenerate reads every row.
+    """
+    kept: list[dict[str, Any]] = []
+    in_skipped_turn = False
+    for m in slot.messages:
+        if m.get("role") == "user":
+            in_skipped_turn = not _counts_as_user_turn(slot, m)
+        if not in_skipped_turn:
+            kept.append(m)
+    return kept
+
+
 async def _maybe_auto_title(state: DashboardState, slot: _ChatSlot) -> None:
     """Background task: attempt to LLM-title a slot.
 
@@ -1050,17 +1093,18 @@ async def _maybe_auto_title(state: DashboardState, slot: _ChatSlot) -> None:
         if any(m.get("role") == "assistant" and m.get("content") for m in slot.messages):
             slot._title_retry_pending = True
         return
-    user_count = sum(1 for m in slot.messages if m.get("role") == "user")
+    user_count = sum(1 for m in slot.messages if _counts_as_user_turn(slot, m))
     if user_count < 1 or user_count > _TITLE_MAX_ATTEMPTS:
         if user_count > _TITLE_MAX_ATTEMPTS and not slot._titled:
             # Gave up after repeated attempts — fall back to the truncated
             # first message with an ellipsis.
-            slot.title = _fallback_title_from_messages(slot.messages)
+            messages = _titling_messages(slot)
+            slot.title = _fallback_title_from_messages(messages)
             slot._titled = True
             slot._title_origin = _TITLE_ORIGIN_AUTO
             # The fallback is an echo of the first message — flag it so the
             # refresh becomes due immediately rather than at the next milestone.
-            slot._title_low_signal = _is_low_signal_title(slot.title, slot.messages)
+            slot._title_low_signal = _is_low_signal_title(slot.title, messages)
             await _persist_title(state, slot)
             state.push_slot_title(slot.key, slot.title)
         return
@@ -1070,7 +1114,7 @@ async def _maybe_auto_title(state: DashboardState, slot: _ChatSlot) -> None:
     # synchronously, so a moved epoch (or a set ``_titled``) means a
     # higher-precedence title is already in place and this attempt stands down.
     epoch = slot._title_epoch
-    messages = list(slot.messages)
+    messages = _titling_messages(slot)
     attempt_has_assistant = any(m.get("role") == "assistant" and m.get("content") for m in messages)
     logger.info("Auto-title: attempting for slot %s (turn %d)", slot.key, user_count)
 
@@ -1118,7 +1162,8 @@ async def _maybe_auto_title(state: DashboardState, slot: _ChatSlot) -> None:
             # definitive failure); on the on-send attempt leave it unlocked so
             # the end-of-turn retry can still upgrade the truncation to a real
             # LLM title.
-            slot.title = _fallback_title_from_messages(slot.messages)
+            current = _titling_messages(slot)
+            slot.title = _fallback_title_from_messages(current)
             slot._titled = attempt_has_assistant
             if attempt_has_assistant:
                 slot._title_origin = _TITLE_ORIGIN_AUTO
@@ -1126,7 +1171,7 @@ async def _maybe_auto_title(state: DashboardState, slot: _ChatSlot) -> None:
                 # it so the refresh prompt (which reads the conversational tail
                 # and frames the task as keep-or-rename rather than
                 # title-or-SKIP) gets one immediate shot at a real name.
-                slot._title_low_signal = _is_low_signal_title(slot.title, slot.messages)
+                slot._title_low_signal = _is_low_signal_title(slot.title, current)
             await _persist_title(state, slot)
             state.push_slot_title(slot.key, slot.title)
             logger.info(
@@ -1241,7 +1286,7 @@ async def maybe_refresh_title(state: DashboardState, slot: _ChatSlot) -> None:
     # Count first: the config thread hop below yields to the event loop, and a
     # queued follow-up that lands during it opens the NEXT turn, which this
     # refresh must not count.
-    user_count = sum(1 for m in slot.messages if m.get("role") == "user")
+    user_count = sum(1 for m in slot.messages if _counts_as_user_turn(slot, m))
     every = await asyncio.to_thread(_title_refresh_every)
     # A manual rename or another turn's refresh may also have landed during the
     # hop, and either must stand this attempt down BEFORE it consumes the
@@ -1287,7 +1332,7 @@ async def maybe_refresh_title(state: DashboardState, slot: _ChatSlot) -> None:
             )
             return
         title = await _generate_refreshed_title(
-            state, list(slot.messages), slot.title, session_key=effective_session_key(slot)
+            state, _titling_messages(slot), slot.title, session_key=effective_session_key(slot)
         )
         if not title:
             # KEEP/SKIP/prose/error — the current title stands.

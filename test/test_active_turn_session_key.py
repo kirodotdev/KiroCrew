@@ -217,7 +217,7 @@ class TestOneTurnCannotRetireAnother:
         slot.queue_append("second message")
         observed: dict[str, str] = {}
 
-        async def _fake_start(st, sl) -> bool:
+        async def _fake_start(st, sl, **_kwargs) -> bool:
             observed["at_dispatch"] = sl._active_turn_session_key
             # Stand in for the successor publishing its own identity.
             sl._active_turn_session_key = "dashboard:successor"

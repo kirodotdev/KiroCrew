@@ -1492,11 +1492,40 @@ or deny tool requests, or change approval modes require an enabled app whose
 live manifest declares `permissions.sessionApproval: true`. The route must also
 be allowed by `permissions.api`. Cron, system, remote, member-mode, and other
 apps' sessions are denied. An app's existing access to its own slots is
-unchanged. Mode changes require an explicit live allowed slot and are limited
-to Normal, Reads and Trust; YOLO is global rather than slot-scoped, so app
-tokens are refused (``app_yolo_forbidden``) for both arming and revoking it.
-Consent is
-captured when the user enables the app, so `update_app` disables an enabled app
+unchanged. On a user-owned session a `POST /api/chat` from the app sends a
+turn: a send carrying a change to the session's agent binding, persona settings,
+or a harness slash command (the body's `agent` onto an agent-less slot, its
+`color_theme` with `theme_consent` and `theme_consent_sha`, or a first word
+`is_harness_slash_command` forwards) is refused with 403
+`app_session_settings_forbidden` and an SEL denial before anything is written or
+queued (`chat_handlers._deny_app_session_settings`), the same policy as the
+agent route. Naming the agent the slot already runs is a
+plain send. On that send the `steer` flag is ignored, so it waits behind running
+sub-agents like any queued message; the gateway mints the row id; the row is
+echoed to the user's open tabs; it starts no auto-title, does not count as a
+user turn for titling or the refresh cadence, and the app's turn, its row and
+the reply to it, is left out of the automatic title prompts and their truncated
+fallback (`chat_title._titling_messages`; the user's own Regenerate title reads
+every row); with `dashboard.merge_queued_messages` on, a queued app send never
+merges with the user's queued words (`chat_utils._dequeue_next_message` stops a
+run where the stamped actor changes); and an SSE send streams the app's own turn
+only, including a recovery that same turn queues to retry it (matched by a
+per-turn id the recovery carries, not by actor): the `turn_end` frame
+lands before the drain or the cycle's end writes a held note, a drop notice or
+the next turn's first row, the stream also stops at any user row that is not
+its own gateway-minted row, and it skips `queued` placeholder rows (a
+cron notification or MCP-App message queued meanwhile), while the user's tabs
+keep receiving the session's rows. A queued
+send that a gateway restart restores has lost its attribution, because the
+restore drops the actor stamp: it drains alone, never merged with fresh words,
+as a user row marked `turnProvenanceRestored`, which titling skips on a slot no
+app owns, and never as a cron or sub-agent event. `test_chat_mode_security`
+pins this, and `test_every_api_chat_body_key_is_classified` fails on a body
+field nobody has classified as turn-only or settings-bearing. Mode changes
+require an explicit live allowed slot and are limited to Normal, Reads and
+Trust; YOLO is global rather than slot-scoped, so app tokens are refused
+(``app_yolo_forbidden``) for both arming and revoking it. Consent is captured
+when the user enables the app, so `update_app` disables an enabled app
 whose new version adds the flag (SEL operation `session_approval_widened`) and
 returns `notice: "session_approval_reconsent"`; the detail page shows that notice
 and the user re-enables the app after seeing the grant. `register_external_app`

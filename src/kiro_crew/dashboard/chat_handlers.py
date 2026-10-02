@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import enum
 import json
 import logging
 import math
@@ -164,6 +165,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     SESSION_START_FAILED_KIND,
     SLOT_DETAIL_MAX_LIMIT,
     SYNTHETIC_RECOVERY_KIND,
+    TURN_END_WIRE_CLS,
     _broadcast_expired_oauth_banners,
     _build_stream_chunk,
     _collapse_wire_rows,
@@ -182,6 +184,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     drained_to_thread,
     effective_session_key,
     history_corpus_unreadable,
+    is_harness_slash_command,
 )
 from kiro_crew.dashboard.chat_utils import (
     replacement_shares_transcript as _replacement_shares_transcript,
@@ -386,23 +389,73 @@ def _app_slot_is_local_user_session(slot: Any) -> bool:
     return effective_session_key(slot).startswith("dashboard:")
 
 
-async def _app_may_send_to_slot(request_app: str, slot: Any) -> bool:
-    """Return whether an app may control this slot through session APIs."""
+class SlotAccess(enum.Enum):
+    """How a session-API caller reaches a slot.
+
+    ``DASHBOARD`` and ``OWNER`` may change the slot's settings; ``GRANT`` is an
+    app on a user-owned session through ``permissions.sessionApproval`` and may
+    send a turn and nothing else; ``NONE`` is refused.
+    """
+
+    NONE = "none"
+    DASHBOARD = "dashboard"
+    OWNER = "owner"
+    GRANT = "grant"
+
+
+async def _app_slot_access(request_app: str, slot: Any) -> SlotAccess:
+    """Return how *request_app* reaches *slot* through the session APIs."""
 
     if not request_app:
-        return True
+        return SlotAccess.DASHBOARD
     slot_app = str(getattr(slot, "_app", "") or "")
     if slot_app:
-        return slot_app == request_app
+        return SlotAccess.OWNER if slot_app == request_app else SlotAccess.NONE
     if not _app_slot_is_local_user_session(slot):
-        return False
+        return SlotAccess.NONE
     granted = await asyncio.to_thread(
         app_permissions.app_can_manage_session_approvals,
         request_app,
     )
     # Re-judge the slot AFTER the await: a cron/channel binder can re-link it
     # while the permission read runs off-loop.
-    return granted and _app_slot_is_local_user_session(slot)
+    if granted and _app_slot_is_local_user_session(slot):
+        return SlotAccess.GRANT
+    return SlotAccess.NONE
+
+
+async def _app_may_send_to_slot(request_app: str, slot: Any) -> bool:
+    """Return whether an app may control this slot through session APIs."""
+    return await _app_slot_access(request_app, slot) is not SlotAccess.NONE
+
+
+def _send_binds_agent(agent: str, slot: Any) -> bool:
+    """Whether a ``POST /api/chat`` naming *agent* writes it onto *slot*."""
+    return bool(agent) and slot.agent in (None, "")
+
+
+def _send_writes_persona(body: dict) -> bool:
+    """Whether a ``POST /api/chat`` body writes the slot's persona fields.
+
+    ``color_theme`` carries the write; ``theme_consent`` and
+    ``theme_consent_sha`` are applied with it and never alone.
+    """
+    return "color_theme" in body
+
+
+async def _send_harness_command(message: str) -> str:
+    """The harness slash command *message* opens with, or ``""`` for plain text.
+
+    The same predicate the runner forwards on (``is_harness_slash_command``), so
+    what this refuses is exactly what would reach the harness as a command. The
+    config is read only for a first word that starts with ``/``.
+    """
+    first_word = message.split()[0] if message.strip() else ""
+    if not first_word.startswith("/"):
+        return ""
+    cfg = await asyncio.to_thread(KiroCrewConfig.load)
+    cc_provider = is_claude_code(cfg.agent.provider)
+    return first_word if is_harness_slash_command(first_word, cc_provider=cc_provider) else ""
 
 
 def _deny_app_yolo(request_app: str, operation: str) -> web.Response:
@@ -420,6 +473,29 @@ def _deny_app_yolo(request_app: str, operation: str) -> web.Response:
     )
 
 
+def _deny_app_session_settings(request_app: str, slot_key: str, trigger: str) -> web.Response:
+    """App tokens send turns to a user's session but never change its settings.
+
+    *trigger* names what the send would have changed (``agent=<name>``,
+    ``field=color_theme`` or ``command=<word>``) and rides the SEL row.
+    """
+    reason = (
+        "app cannot change the agent binding or persona settings of a session it "
+        "does not own, or run a harness slash command there"
+    )
+    sel().log_api_access(
+        caller=request_app,
+        operation="chat_send",
+        outcome="denied",
+        source="app_isolation",
+        resources=f"slot={slot_key} {trigger}",
+        error=reason,
+    )
+    return web.json_response(
+        {"error": reason, "code": "app_session_settings_forbidden"}, status=403
+    )
+
+
 #: Row-meta keys a REQUEST may never supply, because the gateway mints them and a
 #: surface reads them as the gateway's own claim. ``decisions_strip`` is a Jev
 #: decision receipt with a verdict control attached (``decisions/points/
@@ -429,8 +505,9 @@ def _deny_app_yolo(request_app: str, operation: str) -> web.Response:
 #: forges human-turn provenance and advances the last-human-turn ranking stamp
 #: (``chat_persistence._newest_human_turn_ts``), so an app token owning its slot
 #: could displace human sessions. Stripped here so the gateway re-applies it below
-#: only for a genuine human send.
-RESERVED_ROW_META_KEYS = frozenset({"decisions_strip", HUMAN_TURN_META_KEY})
+#: only for a genuine human send. ``TURN_ACTOR_META_KEY`` is the gateway's record
+#: that an app sent the row, which the title counter reads (``chat_title``).
+RESERVED_ROW_META_KEYS = frozenset({"decisions_strip", HUMAN_TURN_META_KEY, TURN_ACTOR_META_KEY})
 
 #: The ``steer`` value that means "let Jev choose between the two paths" rather
 #: than naming one. A STRING beside the boolean the two manual modes send, so the
@@ -691,7 +768,8 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     # option click is one such turn. The grant never crosses into another
     # app's slot.
     request_app = request.get("app", "")
-    if request_app and not await _app_may_send_to_slot(request_app, slot):
+    access = await _app_slot_access(request_app, slot)
+    if access is SlotAccess.NONE:
         slot_app = str(getattr(slot, "_app", "") or "")
         sel().log_api_access(
             caller=request_app,
@@ -704,7 +782,47 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             ),
         )
         return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
-    if request_app and not slot._app:
+    # The dashboard user and the slot's owning app may change the slot's settings
+    # through this route; the sessionApproval grant reaches a user's session to
+    # send a turn and nothing else.
+    may_configure = access in (SlotAccess.DASHBOARD, SlotAccess.OWNER)
+    steer = body.get("steer") if may_configure else None
+    if not may_configure:
+        # The dedicated agent route refuses an app on a slot it does not own, and
+        # persona consent is the user's own grant from the consent modal. Refused
+        # rather than dropped, like the agent mismatch below: running the turn on
+        # an agent other than the one named would be a silent substitution. A
+        # harness slash command is refused here, above the busy branch, so a
+        # queued copy cannot run it later.
+        command = await _send_harness_command(message)
+        # The slot may have closed, or a cron or channel binder may have
+        # re-linked it, during the permission and config reads; the grant
+        # reaches only a local user session (`_app_slot_access` re-judges after
+        # its own await for the same reason).
+        if (
+            state._slots.get(slot.key) is not slot
+            or slot.is_closing
+            or not _app_slot_is_local_user_session(slot)
+        ):
+            sel().log_api_access(
+                caller=request_app,
+                operation="chat_send",
+                outcome="denied",
+                source="app_isolation",
+                resources=f"slot={slot.key}",
+                error="slot closed or re-linked during the permission read",
+            )
+            return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+        # No await sits between this check and the agent write below for a slot
+        # this grant reaches: the member awaits never run for one, and the
+        # mismatch branch's awaits run only on a slot that already has an agent.
+        # The persona condition reads only the request body.
+        if command:
+            return _deny_app_session_settings(request_app, slot.key, f"command={command[:64]}")
+        if _send_binds_agent(agent, slot):
+            return _deny_app_session_settings(request_app, slot.key, f"agent={agent}")
+        if _send_writes_persona(body):
+            return _deny_app_session_settings(request_app, slot.key, "field=color_theme")
         sel().log_api_access(
             caller=request_app,
             operation="chat_send",
@@ -712,6 +830,9 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             source="app_isolation",
             resources=f"permissions.sessionApproval|slot={slot.key}",
         )
+        # The gateway mints the row id for a turn sent onto another's session.
+        if user_meta is not None and "mid" in user_meta:
+            user_meta = {k: v for k, v in user_meta.items() if k != "mid"} or None
     # Identity gate for a peer-bound slot, on top of the app-scope 404s above:
     # those pass every empty-``app`` caller by contract, and a dashboard-link
     # token is exactly that shape. Sending here would spend the OWNER's tunnel to
@@ -881,7 +1002,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             )
         else:
             logger.debug("agent match for slot=%s agent=%s", slot.key, agent)
-    elif agent:
+    elif _send_binds_agent(agent, slot):
         # Slot has no agent — set it if not running
         if slot.running:
             _emit_agent_assignment(slot.key, agent, outcome="denied_running")
@@ -895,7 +1016,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         # No agent on slot, no agent in request — nothing to enforce.
         pass
 
-    if "color_theme" in body:
+    if _send_writes_persona(body):
         slot.color_theme = color_theme
         slot.theme_consent = theme_consent
         slot.theme_consent_sha = theme_consent_sha
@@ -946,7 +1067,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         # more conjunct on its condition and the receipt it stamps.
         _auto_strip: dict | None = None
         _auto_queues = False
-        if steer_is_auto(body.get("steer")) and not request_app:
+        if steer_is_auto(steer) and not request_app:
             # The turn the question is ABOUT, captured before the await. The
             # decision is a provider round-trip, so the turn it describes can end
             # while it is in flight -- and an answer about a turn that is gone is
@@ -962,7 +1083,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             if slot.task is not _turn_before:
                 _auto_queues = False
                 _auto_strip = None
-        if body.get("steer") and not request_app and not _auto_queues:
+        if steer and not request_app and not _auto_queues:
             # Client-minted send correlation id (the same `meta.sendId`
             # convention the plain send path persists): thread it through the
             # steer so the persisted row and the steer_push echo can be matched
@@ -1086,8 +1207,9 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     # releases it after the last sub-agent finishes (see chat_runner _hold_users).
     # Opt-out: if the user explicitly chose steer mode, honour it — start a new
     # turn immediately so the message is processed without waiting for children.
+    # An app on a session it does not own has no opt-out (`steer` is None there).
     if (
-        not body.get("steer")
+        not steer
         and state.subagents is not None
         and state.subagents.running_agents_for(effective_session_key(slot))
     ):
@@ -1150,7 +1272,13 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     # (a WebSocket client already receives them) and ignored there, so the flag
     # can never double-deliver to a local client.
     relay_mode = not ws_mode and request.query.get("relay") == "1"
-    slot._has_reader = not ws_mode  # Only block SSE broadcast if HTTP SSE reader
+    # Only block the global broadcast for an HTTP SSE reader that IS the slot's
+    # own client. An app streaming a turn on a user's session is not the user's
+    # dashboard, which keeps receiving its rows.
+    slot._has_reader = not ws_mode and may_configure
+    # That app's stream ends with its own turn (`TURN_END_WIRE_CLS`), so the
+    # user's queued follow-ups never reach it.
+    turn_scoped_stream = not may_configure
     slot._file_changes = []  # Reset file-change accumulator for the new turn
     # ── Sweep orphaned permissions from prior turns ──
     _sweep_stale_permissions(slot)
@@ -1284,12 +1412,18 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         # app-origin signal as `user_origin` and `turn_actor` above: an app's
         # send is not a human turn and must not advance the ranking stamp.
         _user_row_meta[HUMAN_TURN_META_KEY] = True
+    else:
+        # The queued path stamps the same actor on its entry, which the drain
+        # unions onto the row; the title counter reads it off either row.
+        _user_row_meta[TURN_ACTOR_META_KEY] = "app"
     _user_row = slot.append("user", message, "msg msg-u", meta=_user_row_meta)
     _user_mid = _user_row.get("meta", {}).get("mid")
-    if ws_mode and user_meta and user_meta.get("sendId"):
+    if not may_configure or (ws_mode and user_meta and user_meta.get("sendId")):
         # Raw user content belongs on the per-client slot-authorized WS path.
         # The global SSE queues have no slot gate. In-band/relay sends keep
         # their existing stream contract and must not gain an extra WS echo.
+        # An app's turn on a user's session always reaches the user's open tabs,
+        # whose composer never drew it.
         state.broadcast_ws(
             "chat_message",
             chat_message_frame({**_user_row, "slot": slot.key}, include_metadata=True),
@@ -1321,7 +1455,8 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     # finish (chat_done). Runs on an isolated background kiro-cli session
     # concurrent with the turn. No-ops once titled / in-flight; the instant
     # 60-char provisional stays as the fallback if the LLM SKIPs or errors.
-    if not slot._titled and not slot._title_in_flight:
+    # Not from an app's text on a user's session: the user's own turns name it.
+    if may_configure and not slot._titled and not slot._title_in_flight:
         _tt = asyncio.create_task(_maybe_auto_title(state, slot))
         # Expose the handle so chat_done's chained title→refresh pass can wait
         # for this attempt to settle (see _title_then_refresh in chat_runner).
@@ -1424,33 +1559,49 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     resp.content_type = "text/event-stream"
     resp.headers["Cache-Control"] = "no-cache"
     resp.headers["X-Accel-Buffering"] = "no"
-    try:
-        await resp.prepare(request)
-    except BaseException:
-        # `prepare` is the one awaitable between `remote_mirror.attach` above and
-        # the streaming loop's detach `finally` below. A peer that vanished
-        # between dispatch and prepare would raise here and skip that finally,
-        # stranding this slot in the process-global `_MIRRORED` set forever —
-        # every later frame then mirrors onto `slot._pending` with no reader
-        # draining it. Drop mirror ownership on the way out so the leak cannot
-        # happen; the dispatched turn keeps running, exactly as it does when the
-        # reader disconnects mid-stream.
-        remote_mirror.detach(slot.key, _relay_owned)
-        raise
-
     # Declare this reader as the owner of `slot._pending` for as long as it is
-    # draining. A turn-end chunk release must not run while an SSE reader still
-    # has undelivered tokens queued, and `_has_reader` alone cannot carry that:
-    # the `done` branch below clears it before this scope ends.
+    # draining, from before the first await after dispatch. A turn-end chunk
+    # release must not run while an SSE reader still has undelivered tokens
+    # queued, and `_has_reader` alone cannot carry that: the `done` branch below
+    # clears it before this scope ends, and a turn-scoped reader never sets it.
     with slot.pending_consumer():
+        try:
+            await resp.prepare(request)
+        except BaseException:
+            # `prepare` is the one awaitable between `remote_mirror.attach` above
+            # and the streaming loop's detach `finally` below. A peer that vanished
+            # between dispatch and prepare would raise here and skip that finally,
+            # stranding this slot in the process-global `_MIRRORED` set forever —
+            # every later frame then mirrors onto `slot._pending` with no reader
+            # draining it. Drop mirror ownership on the way out so the leak cannot
+            # happen, and release the broadcast this reader suppressed; the
+            # dispatched turn keeps running, exactly as it does when the reader
+            # disconnects mid-stream.
+            slot._has_reader = False
+            remote_mirror.detach(slot.key, _relay_owned)
+            raise
         try:
             while True:
                 pending = slot.drain()
                 for msg in pending:
-                    if msg["cls"] == "done":
+                    # Fail closed even if a dispatch path misses turn_end: only
+                    # this request's gateway-minted user row belongs to its SSE.
+                    foreign_user_row = msg.get("role") == "user" and (
+                        not _user_mid or row_mid(msg) != _user_mid
+                    )
+                    if msg["cls"] == "done" or (
+                        turn_scoped_stream and (msg["cls"] == TURN_END_WIRE_CLS or foreign_user_row)
+                    ):
                         await resp.write(b"data: [DONE]\n\n")
                         slot._has_reader = False
                         return resp
+                    if msg["cls"] == TURN_END_WIRE_CLS:
+                        # A boundary for turn-scoped readers, not a row.
+                        continue
+                    if turn_scoped_stream and msg.get("role") == "queued":
+                        # A placeholder for a later turn (a cron notification or
+                        # an MCP-App message queued meanwhile), never this one.
+                        continue
                     chunk = _build_stream_chunk(msg, include_row_meta=relay_mode)
                     await resp.write(f"data: {chunk}\n\n".encode())
                 try:

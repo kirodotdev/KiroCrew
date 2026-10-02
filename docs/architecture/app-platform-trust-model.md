@@ -118,10 +118,17 @@ an existing local user-owned session, choose a generated response option,
 approve or deny a pending tool request, or change that session's approval mode.
 The app still needs the matching route in `permissions.api`. Cron, system,
 remote, member-mode, and other apps' sessions are denied; an app's existing
-access to its own slots is unchanged. Mode changes must name a live allowed
-slot, which prevents one app call from silently widening every session, and are
-limited to Normal, Reads and Trust. YOLO is a process-global override: an app
-token can neither arm it nor revoke it, so it stays a dashboard-only decision.
+access to its own slots is unchanged. A message the app sends runs as a turn: a
+send carrying a change to the session's agent binding, persona settings, or a
+harness slash command is refused before anything is written or queued
+(`chat_handlers._deny_app_session_settings`, pinned by
+`test_chat_mode_security`). The send cannot steer, its row is echoed to the
+user's open tabs, it neither starts nor names the session's auto-title (a
+queued send restored after a gateway restart has lost that attribution), and
+its SSE stream ends with the app's own turn. Mode changes must name a live allowed slot, which
+prevents one app call from silently widening every session, and are limited to
+Normal, Reads and Trust. YOLO is a process-global override: an app token can
+neither arm it nor revoke it, so it stays a dashboard-only decision.
 
 The guard reads the live manifest so that removing the flag revokes the grant at
 once. Live-read is not a grant path for this flag: `update_app` compares the old

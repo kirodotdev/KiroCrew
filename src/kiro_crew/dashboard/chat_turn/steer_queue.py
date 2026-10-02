@@ -16,10 +16,10 @@ if TYPE_CHECKING:
         STEER_POSSIBLY_DELIVERED_META,
         STEER_STATE_CONSUMED,
         STEER_STATE_REQUEUED,
-        TURN_ACTOR_META_KEY,
         DashboardState,
         _ChatSlot,
         _remove_queued_by_id,
+        _stamped_turn_actor,
         attachment_meta,
         crew_log_emit,
         find_written_steer_row,
@@ -416,8 +416,7 @@ def _actor_for_queue_items(items: "list[dict]") -> str:
         if actor:
             return actor
     for item in items:
-        meta = item.get("meta")
-        stamped = meta.get(TURN_ACTOR_META_KEY, "") if isinstance(meta, dict) else ""
+        stamped = _stamped_turn_actor(item)
         if isinstance(stamped, str) and stamped in crew_log_emit.ACTORS:
             return stamped
     return ""

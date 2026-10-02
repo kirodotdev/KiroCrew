@@ -471,7 +471,7 @@ class TestProductionWiring:
         src = self._runner_source()
         requeue_at = src.index("_requeue_unconsumed_steers(state, slot)")
         drain_at = src.index(
-            "next_turn_started = await _start_next_queued_turn(state, slot)",
+            "next_turn_started = await _start_next_queued_turn(",
             requeue_at,
         )
         assert requeue_at < drain_at, (
