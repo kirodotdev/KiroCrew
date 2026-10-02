@@ -11033,6 +11033,79 @@ CONCERNS_SAME_LANES = (
 DESIGN_LANES = ("design-review.yml", "fork-design-review.yml")
 
 
+class TestDesignTakeAwayCheck:
+    """Design Review checks the readers of anything a PR takes away.
+
+    Hiding a path or pruning records can break a reader the author never
+    listed, on an entry point the PR never mentions; the lane checks those
+    readers against code instead of taking the compatibility claim on trust.
+    """
+
+    FIRST = "TAKE-AWAY CHECK (run it yourself"
+    LAST = "in the repo) is not a finding."
+
+    def _block(self, workflow: str) -> str:
+        lines = _workflow(workflow).splitlines()
+        start = next((i for i, line in enumerate(lines) if self.FIRST in line), None)
+        assert start is not None, f"{workflow} carries no TAKE-AWAY CHECK"
+        end = next(i for i, line in enumerate(lines[start:], start) if self.LAST in line)
+        block = lines[start : end + 1]
+        indent = len(block[0]) - len(block[0].lstrip())
+        return "\n".join(line[indent:] if line.strip() else "" for line in block)
+
+    def test_both_design_lanes_carry_an_identical_take_away_check(self) -> None:
+        reference = self._block(DESIGN_LANES[0])
+        for name in DESIGN_LANES:
+            assert self._block(name) == reference, f"{name} TAKE-AWAY CHECK drifted"
+
+    def test_an_unlisted_broken_reader_blocks_and_a_weak_reason_does_not(self) -> None:
+        for name in DESIGN_LANES:
+            flat = _flat(self._block(name))
+            reader_line = (
+                "Reader: <path>:<symbol> -- <entry: chat|cron|subagent|app|crew page|release>"
+            )
+            assert reader_line in flat, name
+            assert (
+                "an entry label outside that set (e.g. prompt builder) does not unlist it" in flat
+            ), name
+            assert "is not listed -> BLOCK (the take-away trigger under VERDICT)" in flat, name
+            assert "does not exercise that reader -> CONCERNS" in flat, name
+            # A capped description cannot prove the section absent.
+            assert (
+                "is the last section before that notice, its list may sit past the cut: cap this check at CONCERNS"
+                in flat
+            ), name
+            # The cap reaches only a section the reviewer could not see.
+            assert "the notice is judged on its text" in flat, name
+            assert (
+                "A reader a `Compatible:` line names by `<path>:<symbol>` counts as listed" in flat
+            ), name
+            assert "TAKE-AWAY WITH AN UNLISTED BROKEN READER" in _workflow(name), name
+
+    def test_every_entry_point_the_sweep_names_exists(self) -> None:
+        # A moved entry point would leave the sweep grepping a path that is gone.
+        root = Path(__file__).resolve().parent.parent
+        block = self._block(DESIGN_LANES[0])
+        named = (
+            "website/src/",
+            "src/kiro_crew/dashboard/chat_runner.py",
+            "src/kiro_crew/session_agent_selection.py",
+            "src/kiro_crew/subagent_manager/",
+            "src/kiro_crew/subagent_persistence.py",
+            "src/kiro_crew/cron_script.py",
+            "src/kiro_crew/cron_service/",
+            "src/kiro_crew/apps/",
+            "src/kiro_crew/context_assembly/",
+            "src/kiro_crew/execution_context.py",
+            ".github/workflows/release.yml",
+            "packaging/",
+        )
+        for path in named:
+            leaf = path.removeprefix("src/kiro_crew/")
+            assert leaf in block, f"the sweep no longer names {leaf}; update this list"
+            assert (root / path).exists(), f"the sweep names {path}, which does not exist"
+
+
 class TestDesignVerdictCalibration:
     """BLOCK must be REACHABLE for the class of change that takes a platform out.
 
