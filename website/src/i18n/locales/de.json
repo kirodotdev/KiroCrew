@@ -6158,6 +6158,7 @@
       "let_the_agent_read_one_of_your_files": "Dem Agenten erlauben, eine Ihrer Dateien zu lesen",
       "message_input": "Nachrichteneingabe",
       "message_placeholder": "Nachricht an {{bot}}… (/command · @file · $skill)",
+      "message_placeholder_terminal": "Nachricht an {{bot}}… (/command · @file · $skill · ! Shell-Befehl)",
       "model": "Modell",
       "model_2": "Modell: {{name}}",
       "open_preview_of": "Vorschau von {{name}} öffnen",
@@ -6247,7 +6248,23 @@
       "agent_inherited_default": "Diese Sitzung folgt dem Standard-Agenten ({{name}}). Sie hat keinen eigenen Agenten, ändert sich also mit dem Standard. Zum Anheften klicken.",
       "compacting_context_stop_unavailable": "Kontext wird komprimiert — Stoppen ist erst nach Abschluss möglich",
       "click_again_to_force_stop_resets_session": "Erneut klicken, um den Stopp zu erzwingen (startet die Sitzung neu; deine Nachrichten bleiben, der Agent behält einen aktuellen Auszug)",
-      "model_inherited_default": "Diese Sitzung läuft auf dem Standardmodell ({{name}}). Sie hat kein eigenes Modell, ändert sich also, wenn sich der Standard ändert. Klicken, um eines festzulegen."
+      "model_inherited_default": "Diese Sitzung läuft auf dem Standardmodell ({{name}}). Sie hat kein eigenes Modell, ändert sich also, wenn sich der Standard ändert. Klicken, um eines festzulegen.",
+      "terminal_attachments": "Entferne die Anhänge, bevor du einen Terminalbefehl ausführst.",
+      "terminal_folder_attachments": "Entferne Ordneranhänge vor dem Ausführen. Wenn du einen Ordneranhang entfernst, wird auch sein {{folderRef}}-Verweis aus dem Befehl entfernt.",
+      "terminal_default_directory": "Startverzeichnis des Terminals",
+      "terminal_empty": "Gib nach ! einen Befehl ein. Du prüfst ihn, bevor er ausgeführt wird.",
+      "terminal_failed": "Befehl nicht gesendet. Dein Entwurf bleibt erhalten; sieh im Terminalpanel nach.",
+      "terminal_hint": "Terminalpanel · {{workspace}}",
+      "terminal_panel": "Terminalbereich",
+      "terminal_review_at_capacity": "Prüfe den Befehl. Ausführen öffnet den Terminalbereich. Ist er noch voll, schließe einen ungenutzten Tab und versuche es erneut. Es wird nichts eingereiht.",
+      "terminal_limit": "Terminal-Limit erreicht. Schließe einen ungenutzten Terminal-Tab und versuche es erneut.",
+      "terminal_main_window": "Öffne diese Sitzung im Hauptfenster, um Terminalbefehle auszuführen.",
+      "terminal_remote": "Terminalbefehle sind für Sitzungen auf einem anderen Server nicht verfügbar. Entferne das führende !, um zum Chat zurückzukehren.",
+      "terminal_unavailable": "Das Terminal ist ausgeschaltet. Aktiviere dashboard.terminal.enabled in der Serverkonfiguration. Entferne das führende !, um zum Chat zurückzukehren.",
+      "terminal_review": "Prüfen und im Terminal ausführen",
+      "terminal_force_stop": "Agent stoppen",
+      "terminal_pending": "Warte, bis die Sitzungsdetails geladen sind, oder wähle eine andere Sitzung.",
+      "terminal_run_review": "Terminalbefehl prüfen"
     },
     "chatPane": {
       "agent_list": "Agenten-Liste",
@@ -6277,6 +6294,7 @@
       "disconnected_message": "Terminal getrennt",
       "displaced_message": "Ein anderes Fenster hat dieses Terminal übernommen",
       "failed_retry": "Fehlgeschlagen — wiederholen",
+      "invalid_cwd_message": "Das Terminal-Arbeitsverzeichnis „{{cwd}}“ ist nicht verfügbar. Stelle es wieder her und verbinde dich erneut, oder verwende das Startverzeichnis des Terminals.",
       "reconnect": "Erneut verbinden",
       "reconnecting": "Verbindung wird wiederhergestellt…",
       "redaction_failed_retry": "Redigieren fehlgeschlagen — wiederholen",
@@ -6285,7 +6303,9 @@
       "sending": "Wird gesendet…",
       "touch_select_anchor": "Erster Punkt gesetzt — tippe das andere Ende an",
       "touch_select_done": "Bereich ausgewählt — tippe auf Kopieren",
-      "use_here": "Terminal hier verwenden"
+      "use_here": "Terminal hier verwenden",
+      "use_starting_directory": "Startverzeichnis des Terminals verwenden",
+      "use_starting_directory_hint": "Öffnet eine neue Shell im konfigurierten Terminalverzeichnis des Servers (dashboard.terminal.cwd, sonst das Home-Verzeichnis des Servers). Der fehlgeschlagene Befehl wird nicht erneut gesendet."
     },
     "codeBlock": {
       "copied": "Kopiert!",
@@ -8022,6 +8042,8 @@
     },
     "runInTerminalConfirm": {
       "body_copy": "Der Befehl wird für dich kopiert, damit du ihn ins Terminal einfügen kannst.",
+      "body_default_multi": "Kein Arbeitsbereich ausgewählt. Die folgenden {{lines}} Zeilen werden in einem neuen Terminal-Tab im Startverzeichnis des Terminals ausgeführt.",
+      "body_default_single": "Kein Arbeitsbereich ausgewählt. Der folgende Befehl wird in einem neuen Terminal-Tab im Startverzeichnis des Terminals ausgeführt.",
       "body_multi": "{{lines}} Zeilen werden in einem neuen Terminal-Tab im Arbeitsverzeichnis dieses Chats ausgeführt.",
       "body_single": "Dies wird in einem neuen Terminal-Tab im Arbeitsverzeichnis dieses Chats ausgeführt.",
       "cancel": "Abbrechen",

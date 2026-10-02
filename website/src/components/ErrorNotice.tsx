@@ -100,6 +100,7 @@ export default function ErrorNotice({
   askAgentLabel,
   actionPlacement = 'beside',
   messagePlacement = 'beside',
+  scrollMessage = false,
   footer,
   onHandoff,
   className = '',
@@ -195,6 +196,13 @@ export default function ErrorNotice({
    * inline variant the row wraps to make the line. Ignored without a `title`.
    */
   messagePlacement?: 'beside' | 'below'
+  /**
+   * Let the message scroll inside a height-constrained block notice while its
+   * built-in hand-off stays visible. The host supplies the height constraint
+   * and uses `actionPlacement="below"` for a separate hand-off line.
+   * Off by default; ignored by the inline variant.
+   */
+  scrollMessage?: boolean
   /**
    * Rendered INSIDE the banner, under the message (block variant only) — for
    * a follow-on line that answers the message above it (a resolved outcome, a
@@ -319,16 +327,16 @@ export default function ErrorNotice({
       data-testid={testId}
     >
       <AlertTriangle size={14} className="mt-[2px] shrink-0" aria-hidden="true" />
-      <div className="min-w-0 flex-1 whitespace-pre-wrap" style={{ overflowWrap: 'anywhere' }}>
+      <div className={`min-w-0 flex-1 whitespace-pre-wrap${scrollMessage ? ' min-h-0 self-stretch flex flex-col' : ''}`} style={{ overflowWrap: 'anywhere' }}>
         {title && <strong className="font-semibold">{title} </strong>}
         {/* Wrapped only when asked: the bare text node is the shape every
             existing consumer's tests read. */}
-        {messageBelow || messageClassName || messageTooltip
-          ? <span className={`${messageBelow ? 'block text-[12px] font-normal text-danger/80' : ''} ${messageClassName}`} title={messageTooltip}>{withOriginLink(message)}</span>
+        {scrollMessage || messageBelow || messageClassName || messageTooltip
+          ? <span className={`${messageBelow ? 'block text-[12px] font-normal text-danger/80' : ''} ${messageClassName}${scrollMessage ? ' min-h-0 overflow-y-auto' : ''}`} title={messageTooltip}>{withOriginLink(message)}</span>
           : withOriginLink(message)}
         {footer && <div className="mt-1 font-normal">{footer}</div>}
         {askAgent && actionPlacement === 'below' && (
-          <div className="mt-1.5">
+          <div className={`mt-1.5${scrollMessage ? ' shrink-0' : ''}`}>
             <AskAgentButton
               report={report}
               message={message}

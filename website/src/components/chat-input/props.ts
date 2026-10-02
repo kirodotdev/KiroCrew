@@ -19,6 +19,8 @@ export interface ChatInputProps {
   value?: string
   onChange: (v: string) => void
   onSend: () => void
+  /** Keep identified sessions pending until their local/remote metadata is available. */
+  terminalCommands?: 'local' | 'remote' | 'pending'
   /** Rendered inside the composer's own width wrapper, directly above the
    * bordered input box. Children here share the EXACT box geometry of the
    * composer (same padding container, same resolved max-width), so band

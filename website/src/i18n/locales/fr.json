@@ -6255,6 +6255,7 @@
       "let_the_agent_read_one_of_your_files": "Autoriser l'agent à lire l'un de vos fichiers",
       "message_input": "Saisie du message",
       "message_placeholder": "Envoyer un message à {{bot}}… (/command · @file · $skill)",
+      "message_placeholder_terminal": "Envoyer un message à {{bot}}… (/command · @file · $skill · ! commande shell)",
       "model": "Modèle",
       "model_2": "Modèle : {{name}}",
       "open_preview_of": "Ouvrir l’aperçu de {{name}}",
@@ -6346,7 +6347,23 @@
       "agent_inherited_default": "Cette session suit l’agent par défaut ({{name}}). Elle n’a pas d’agent propre, elle change donc si le défaut change. Cliquez pour en épingler un.",
       "compacting_context_stop_unavailable": "Compactage du contexte — l'arrêt est indisponible jusqu'à la fin",
       "click_again_to_force_stop_resets_session": "Cliquer à nouveau pour forcer l’arrêt (redémarre la session ; tes messages restent, l’agent garde un extrait récent)",
-      "model_inherited_default": "Cette session utilise le modèle par défaut ({{name}}). Elle n’a pas de modèle propre, elle change donc si le défaut change. Cliquez pour en épingler un."
+      "model_inherited_default": "Cette session utilise le modèle par défaut ({{name}}). Elle n’a pas de modèle propre, elle change donc si le défaut change. Cliquez pour en épingler un.",
+      "terminal_attachments": "Retire les pièces jointes avant d’exécuter une commande de terminal.",
+      "terminal_folder_attachments": "Retire les dossiers joints avant d’exécuter la commande. Retirer un dossier supprime aussi sa référence {{folderRef}} de la commande.",
+      "terminal_default_directory": "Répertoire de démarrage du terminal",
+      "terminal_empty": "Saisis une commande après « ! ». Tu la vérifieras avant son exécution.",
+      "terminal_failed": "Commande non envoyée. Ton brouillon est conservé ; consulte le panneau du terminal.",
+      "terminal_hint": "Panneau du terminal · {{workspace}}",
+      "terminal_panel": "Panneau du terminal",
+      "terminal_review_at_capacity": "Vérifie la commande. Exécuter ouvre le panneau du terminal. S’il est encore plein, ferme un onglet inutilisé et réessaie. Rien n’est mis en file d’attente.",
+      "terminal_limit": "Limite de terminaux atteinte. Ferme un onglet de terminal inutilisé, puis réessaie.",
+      "terminal_main_window": "Ouvre cette session dans la fenêtre principale pour exécuter des commandes de terminal.",
+      "terminal_remote": "Les commandes de terminal ne sont pas disponibles pour les sessions sur un autre serveur. Supprime le ! initial pour revenir au chat.",
+      "terminal_unavailable": "Le terminal est désactivé. Active dashboard.terminal.enabled dans la configuration du serveur. Supprime le ! initial pour revenir au chat.",
+      "terminal_review": "Vérifier et exécuter dans le terminal",
+      "terminal_force_stop": "Arrêter l’agent",
+      "terminal_pending": "Attends le chargement des détails de la session ou sélectionne une autre session.",
+      "terminal_run_review": "Vérifier la commande du terminal"
     },
     "chatPane": {
       "agent_list": "Liste des agents",
@@ -6376,6 +6393,7 @@
       "disconnected_message": "Terminal déconnecté",
       "displaced_message": "Une autre fenêtre a pris le contrôle de ce terminal",
       "failed_retry": "Échec — réessayer",
+      "invalid_cwd_message": "Le répertoire de travail du terminal « {{cwd}} » est indisponible. Restaure-le et reconnecte-toi, ou utilise le répertoire de démarrage du terminal.",
       "reconnect": "Reconnecter",
       "reconnecting": "Reconnexion…",
       "redaction_failed_retry": "Échec du masquage — réessayer",
@@ -6384,7 +6402,9 @@
       "sending": "Envoi…",
       "touch_select_anchor": "Premier point défini — touchez l'autre extrémité",
       "touch_select_done": "Plage sélectionnée — touchez Copier",
-      "use_here": "Utiliser le terminal ici"
+      "use_here": "Utiliser le terminal ici",
+      "use_starting_directory": "Utiliser le répertoire de démarrage du terminal",
+      "use_starting_directory_hint": "Ouvre un nouveau shell dans le répertoire de terminal configuré sur le serveur (dashboard.terminal.cwd, sinon le répertoire personnel du serveur). La commande échouée n’est pas renvoyée."
     },
     "codeBlock": {
       "copied": "Copié !",
@@ -8141,6 +8161,8 @@
     },
     "runInTerminalConfirm": {
       "body_copy": "La commande est copiée pour que tu la colles dans le terminal.",
+      "body_default_multi": "Aucun espace de travail sélectionné. Les {{lines}} lignes ci-dessous seront exécutées dans un nouvel onglet de terminal, dans le répertoire de démarrage du terminal.",
+      "body_default_single": "Aucun espace de travail sélectionné. La commande ci-dessous sera exécutée dans un nouvel onglet de terminal, dans le répertoire de démarrage du terminal.",
       "body_multi": "{{lines}} lignes seront exécutées dans un nouvel onglet de terminal, dans le répertoire de travail de ce chat.",
       "body_single": "La commande sera exécutée dans un nouvel onglet de terminal, dans le répertoire de travail de ce chat.",
       "cancel": "Annuler",

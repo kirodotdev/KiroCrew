@@ -5,13 +5,15 @@ import { selectSlotMessages } from '../../store/chatSlice'
 import { pruneBlocks, type PasteBlock } from '../../utils/pasteTokens'
 import { i18nT } from '../../i18n/t'
 import type { ComposerControl } from '../composerControl'
+import { terminalCommand } from '../../hooks/useTerminalCommand'
+import type { ChatInputProps } from './props'
 
 /* "Optimize prompt": the request, its slot binding, and the undoable
    write-back. The result is never sent; it lands in the draft of the slot
    that asked, or goes to `onOptimizeResult` when that slot is no longer the
    one on screen. */
 
-export function usePromptOptimizer({ slotId, chatStore, valueRef, pasteBlocks, onChange, onOptimizeResult, lexicalComposer, lexicalLoadFailed, composerControl, inputRef, valueFromUserRef, optimizingRef, appendUndoBoundary }: {
+export function usePromptOptimizer({ slotId, chatStore, valueRef, pasteBlocks, onChange, onOptimizeResult, lexicalComposer, lexicalLoadFailed, composerControl, inputRef, valueFromUserRef, optimizingRef, appendUndoBoundary, terminalCommands }: {
   slotId: string | null
   chatStore: ReturnType<typeof useAppStore>
   valueRef: React.MutableRefObject<string>
@@ -26,6 +28,7 @@ export function usePromptOptimizer({ slotId, chatStore, valueRef, pasteBlocks, o
   /** Written here during render; the undo recorder and the keydown handler read it. */
   optimizingRef: React.MutableRefObject<boolean>
   appendUndoBoundary: (v: string) => void
+  terminalCommands?: ChatInputProps['terminalCommands']
 }) {
   // Tracks the prior render's raw pending state so the completion effect can
   // record a single undo boundary when an optimize actually finishes (as
@@ -193,7 +196,7 @@ export function usePromptOptimizer({ slotId, chatStore, valueRef, pasteBlocks, o
     // Guard on the RAW lifecycle so a second optimize can't start while one is
     // in flight — even from a different session where scoped `optimizing` reads
     // false (a single mutation backs this instance).
-    if (!txt || optimizePendingRef.current) return
+    if (!txt || optimizePendingRef.current || (terminalCommands && terminalCommand(txt) !== null)) return
     // Pin the slot that owns this optimize so the overlay and the completion
     // handler stay bound to it across session switches.
     optimizeSlotRef.current = slotId
@@ -220,7 +223,7 @@ export function usePromptOptimizer({ slotId, chatStore, valueRef, pasteBlocks, o
     const referenced = pruneBlocks(txt, pasteBlocks)
     const pastes = referenced.map(b => ({ seq: b.seq, content: b.content }))
     runOptimize({ prompt: txt, context, pastes, slotId })
-  }, [runOptimize, pasteBlocks, slotId, chatStore, valueRef])
+  }, [runOptimize, pasteBlocks, slotId, chatStore, valueRef, terminalCommands])
 
   return { optimizeError, setOptimizeError, optimizePending, optimizing, optimizePrompt }
 }

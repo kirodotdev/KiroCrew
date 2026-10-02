@@ -13,6 +13,7 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -68,6 +69,7 @@ def _make_request(
     request.match_info.get = lambda k, default="": session_id if k == "session_id" else default
     request.remote = remote
     request.headers = {} if origin is None else {"Origin": origin}
+    request.query = {}
     return request
 
 
@@ -420,6 +422,32 @@ class TestGetConfig:
 
 
 class TestResolveCwd:
+    @pytest.fixture
+    def invalid_workspace(self, tmp_path, monkeypatch):
+        registry = {}
+        request = _make_request(registry=registry)
+        request.query = {"cwd": str(tmp_path / "missing")}
+        ws = MagicMock(spec=web.WebSocketResponse)
+        ws.closed = False
+        ws.prepare = AsyncMock()
+        ws.send_str = AsyncMock()
+        ws.close = AsyncMock()
+        monkeypatch.setattr(terminal, "_get_config", lambda _: {"cwd": str(tmp_path)})
+        monkeypatch.setattr(
+            terminal, "_resolve_shell_with_fence_shells",
+            lambda _: ("/bin/sh", None, {}),
+        )
+        monkeypatch.setattr(terminal.web, "WebSocketResponse", lambda **_: ws)
+        # Fail before allocating a POSIX PTY or preparing either spawn's env.
+        pty = MagicMock()
+        pty.openpty.side_effect = AssertionError("unexpected PTY allocation")
+        monkeypatch.setattr(terminal, "_pty", pty)
+        monkeypatch.setattr(
+            terminal, "_pty_child_env",
+            MagicMock(side_effect=AssertionError("unexpected shell spawn")),
+        )
+        return request, registry, ws
+
     def test_valid_requested_dir_wins(self, tmp_path):
         assert terminal._resolve_cwd({"cwd": "/etc"}, str(tmp_path)) == str(tmp_path)
 
@@ -430,8 +458,161 @@ class TestResolveCwd:
         monkeypatch.setenv("USERPROFILE", str(tmp_path))
         assert terminal._resolve_cwd({}, "~") == str(tmp_path)
 
-    def test_invalid_requested_falls_back_to_config_cwd(self, tmp_path):
-        assert terminal._resolve_cwd({"cwd": str(tmp_path)}, "/no/such/dir/xyz") == str(tmp_path)
+    def test_invalid_requested_refuses_another_directory(self, tmp_path):
+        with pytest.raises(ValueError, match="working directory"):
+            terminal._resolve_cwd({"cwd": str(tmp_path)}, str(tmp_path / "missing"))
+
+    @pytest.mark.parametrize("windows", [False, True])
+    @pytest.mark.asyncio
+    async def test_invalid_workspace_reports_error_without_spawning(
+        self, invalid_workspace, monkeypatch, windows,
+    ):
+        request, registry, ws = invalid_workspace
+        monkeypatch.setattr(terminal.platform_compat, "IS_WINDOWS", windows)
+
+        async def check_released(*_args):
+            assert registry == {}
+
+        ws.prepare.side_effect = check_released
+        ws.close.side_effect = check_released
+        response = await terminal.api_terminal_ws(request)
+        assert response is ws
+        ws.prepare.assert_awaited_once_with(request)
+        ws.send_str.assert_awaited_once()
+        assert json.loads(ws.send_str.call_args.args[0]) == {
+            "type": "error",
+            "code": "terminal_invalid_cwd",
+            "message": "Terminal working directory is unavailable",
+        }
+        ws.close.assert_awaited_once()
+        assert registry == {}
+        terminal._pty.openpty.assert_not_called()
+        terminal._pty_child_env.assert_not_called()
+
+    @pytest.mark.parametrize("stage", ["prepare", "send_str", "close"])
+    @pytest.mark.asyncio
+    async def test_invalid_workspace_cancellation_releases_reservation(
+        self, invalid_workspace, stage,
+    ):
+        request, registry, ws = invalid_workspace
+        getattr(ws, stage).side_effect = asyncio.CancelledError
+        with pytest.raises(asyncio.CancelledError):
+            await terminal.api_terminal_ws(request)
+        assert registry == {}
+
+    @pytest.mark.asyncio
+    async def test_probe_capacity_refusal_is_audited_and_releases_slot(
+        self,
+        invalid_workspace,
+        monkeypatch,
+    ):
+        request, registry, ws = invalid_workspace
+        monkeypatch.setattr(
+            terminal,
+            "_run_path_probe",
+            AsyncMock(side_effect=terminal._PathProbeBusy),
+        )
+        audit = MagicMock()
+        monkeypatch.setattr(terminal, "_sel", lambda: audit)
+
+        assert await terminal.api_terminal_ws(request) is ws
+        assert registry == {}
+        assert json.loads(ws.send_str.call_args.args[0])["code"] == "terminal_invalid_cwd"
+        record = audit.log_api_access.call_args.kwargs
+        assert record["outcome"] == "denied"
+        assert repr(request.query["cwd"]) in record["resources"]
+        terminal._pty.openpty.assert_not_called()
+        terminal._pty_child_env.assert_not_called()
+
+    @pytest.mark.parametrize("stage", ["send_str", "close"])
+    @pytest.mark.asyncio
+    async def test_invalid_workspace_response_is_bounded(
+        self, invalid_workspace, monkeypatch, stage,
+    ):
+        request, registry, ws = invalid_workspace
+
+        async def blocked(*_args):
+            await asyncio.Event().wait()
+
+        getattr(ws, stage).side_effect = blocked
+        monkeypatch.setattr(terminal, "_TERMINAL_WS_CLEANUP_TIMEOUT_S", 0.01)
+        assert await asyncio.wait_for(terminal.api_terminal_ws(request), timeout=5) is ws
+        ws.close.assert_awaited_once()
+        assert registry == {}
+
+    @pytest.mark.asyncio
+    async def test_wedged_cwd_releases_slot_without_holding_discovery(
+        self,
+        invalid_workspace,
+        monkeypatch,
+        tmp_path,
+    ):
+        from kiro_crew import executors
+
+        request, registry, ws = invalid_workspace
+        entered = asyncio.Event()
+        expire = asyncio.Event()
+        finished = asyncio.Event()
+        release = threading.Event()
+        loop = asyncio.get_running_loop()
+        probe_threads = []
+        wait_for = asyncio.wait_for
+
+        async def expire_after_probe_starts(awaitable, timeout):
+            if timeout != terminal._TERMINAL_CWD_TIMEOUT_S:
+                return await wait_for(awaitable, timeout=timeout)
+            probe = asyncio.create_task(awaitable)
+            # Expire the real await only after a worker has claimed the probe.
+            # A short wall-clock budget would race thread startup on CI.
+            await wait_for(entered.wait(), timeout=2)
+            await wait_for(expire.wait(), timeout=2)
+            return await wait_for(probe, timeout=0)
+
+        def blocked_probe(*_args):
+            probe_threads.append(threading.current_thread().name)
+            loop.call_soon_threadsafe(entered.set)
+            try:
+                assert release.wait(timeout=5), "test did not release the path probe"
+                return str(tmp_path)
+            finally:
+                loop.call_soon_threadsafe(finished.set)
+
+        with ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="terminal-cwd-probe",
+        ) as pool:
+            monkeypatch.setattr(executors, "path_probe_executor", lambda: pool)
+            monkeypatch.setattr(terminal, "_resolve_cwd", blocked_probe)
+            monkeypatch.setattr(
+                terminal.asyncio,
+                "wait_for",
+                expire_after_probe_starts,
+            )
+            opening = asyncio.create_task(terminal.api_terminal_ws(request))
+            try:
+                await asyncio.wait_for(entered.wait(), timeout=2)
+                assert registry == {"abc123": None}
+                expire.set()
+                assert await asyncio.wait_for(opening, timeout=2) is ws
+                assert not release.is_set()
+                assert registry == {}
+                assert probe_threads[0].startswith("terminal-cwd-probe")
+                assert await asyncio.wait_for(
+                    loop.run_in_executor(terminal.discovery_executor(), lambda: True),
+                    timeout=2,
+                )
+                assert json.loads(ws.send_str.call_args.args[0])["code"] == ("terminal_invalid_cwd")
+                terminal._pty.openpty.assert_not_called()
+                terminal._pty_child_env.assert_not_called()
+            finally:
+                expire.set()
+                release.set()
+                await asyncio.wait_for(finished.wait(), timeout=2)
+                if not opening.done():
+                    opening.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await opening
+        assert registry == {}
 
     def test_no_request_uses_config_cwd(self, tmp_path):
         assert terminal._resolve_cwd({"cwd": str(tmp_path)}, None) == str(tmp_path)
@@ -736,22 +917,31 @@ class TestKillSession:
     async def test_master_fd_cleared_before_await_survives_cancellation(self):
         """If the coroutine is cancelled while suspended on the executor close,
         master_fd must already be -1 so the fd is not left referenced."""
+        loop = asyncio.get_running_loop()
+        closing = loop.create_future()
+        entered = asyncio.Event()
 
-        async def _hang(*_a, **_k):
-            await asyncio.sleep(3600)  # never completes; we cancel mid-await
+        def submit(*_args):
+            entered.set()
+            return closing
 
         sess = _make_session()
         sess.master_fd = 42
-        with patch.object(
-            asyncio.get_event_loop(), "run_in_executor", side_effect=_hang
-        ), patch("kiro_crew.dashboard.handlers.terminal.platform_compat.kill_process_tree"):
-            task = asyncio.ensure_future(terminal._kill_session(sess))
-            await asyncio.sleep(0)  # let it reach the await
-            task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await task
-        # Cleared BEFORE the await, so cancellation cannot leave a stale fd.
-        assert sess.master_fd == -1
+        with patch.object(loop, "run_in_executor", side_effect=submit):
+            task = asyncio.create_task(terminal._kill_session(sess))
+            try:
+                await asyncio.wait_for(entered.wait(), 5)
+                assert sess.master_fd == -1  # wokeignore:rule=master
+                task.cancel()
+                cancelled = asyncio.Event()
+                loop.call_soon(cancelled.set)
+                await asyncio.wait_for(cancelled.wait(), 5)
+                assert not closing.cancelled()
+            finally:
+                if not closing.done():
+                    closing.set_result(None)
+                (result,) = await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 5)
+            assert isinstance(result, asyncio.CancelledError)
 
     @pytest.mark.skipif(
         terminal.platform_compat.IS_WINDOWS,
@@ -2320,6 +2510,22 @@ class TestApiTerminalDelete:
         assert resp.status == 404
 
     @pytest.mark.asyncio
+    async def test_opening_reservation_refusal_is_audited_without_releasing_it(self):
+        registry = {"abc123": None}
+        request = _make_request(registry=registry)
+        with patch.object(terminal, "_sel") as audit:
+            response = await terminal.api_terminal_delete(request)
+        assert response.status == 409
+        assert registry == {"abc123": None}
+        audit.return_value.log_api_access.assert_called_once_with(
+            caller="testuser",
+            operation="terminal.session.delete",
+            outcome="denied",
+            source="dashboard",
+            resources="session=abc123,reservation_in_flight=1",
+        )
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("session_id", ["", "x" * 65], ids=["empty", "overlong"])
     async def test_rejects_an_id_the_create_route_could_never_have_minted(
         self, session_id
@@ -2375,6 +2581,641 @@ class TestApiTerminalDelete:
 
 
 # ── api_terminal_list ──
+
+
+class TestTerminalReservationOwnership:
+    @pytest.fixture
+    def opening(self, tmp_path, monkeypatch, event_loop):
+        registry = {}
+        request = _make_request(registry=registry)
+        request.query = {"cwd": str(tmp_path)}
+        tasks = []
+        sessions = []
+        fds = []
+        ws_type = web.WebSocketResponse
+
+        def make_ws():
+            ws = MagicMock(spec=ws_type)
+            ws.closed = False
+            ws.prepare = AsyncMock()
+            ws.send_str = AsyncMock()
+            ws.send_bytes = AsyncMock()
+            ws.close = AsyncMock()
+            ws.__aiter__.return_value = []
+            return ws
+
+        def allocate():
+            pair = os.pipe()
+            fds.extend(pair)
+            return pair
+
+        session_type = terminal._TerminalSession
+        real_kill = terminal._kill_session
+
+        def make_session(**kwargs):
+            sess = session_type(**kwargs)
+            sessions.append(sess)
+            return sess
+
+        def start(coro):
+            task = asyncio.create_task(coro)
+            tasks.append(task)
+            return task
+
+        async def kill(sess):
+            if sess.master_fd in fds:  # wokeignore:rule=master
+                with contextlib.suppress(OSError):
+                    os.close(sess.master_fd)  # wokeignore:rule=master
+
+        ws = make_ws()
+        constructor = MagicMock(return_value=ws)
+        pty = MagicMock()
+        pty.openpty.side_effect = allocate
+        spawn = AsyncMock(return_value=_make_session().proc)
+        monkeypatch.setattr(terminal.platform_compat, "IS_WINDOWS", False)
+        monkeypatch.setattr(terminal, "_get_config", lambda _: {"cwd": str(tmp_path)})
+        monkeypatch.setattr(
+            terminal, "_resolve_shell_with_fence_shells", lambda _: ("/bin/sh", None, {})
+        )
+        monkeypatch.setattr(terminal.web, "WebSocketResponse", constructor)
+        monkeypatch.setattr(terminal, "_TerminalSession", make_session)
+        monkeypatch.setattr(terminal, "_pty", pty)
+        monkeypatch.setattr(terminal, "fcntl", MagicMock())
+        monkeypatch.setattr(terminal, "termios", MagicMock())
+        monkeypatch.setattr(terminal, "_pty_child_env", lambda extra: dict(extra))
+        monkeypatch.setattr(terminal.asyncio, "create_subprocess_exec", spawn)
+        monkeypatch.setattr(terminal, "_kill_session", AsyncMock(side_effect=kill))
+        monkeypatch.setattr(terminal, "_sel", MagicMock())
+
+        async def drain():
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), 5)
+            readers = [sess.reader_task for sess in sessions if sess.reader_task is not None]
+            await asyncio.wait_for(asyncio.gather(*readers, return_exceptions=True), 5)
+
+        try:
+            yield SimpleNamespace(
+                request=request,
+                registry=registry,
+                ws=ws,
+                constructor=constructor,
+                make_ws=make_ws,
+                start=start,
+                spawn=spawn,
+                pty=pty,
+                fds=fds,
+                real_kill=real_kill,
+            )
+        finally:
+            try:
+                event_loop.run_until_complete(drain())
+            finally:
+                for fd in set(fds):
+                    with contextlib.suppress(OSError):
+                        os.close(fd)
+
+    @pytest.mark.parametrize("stage", ["prepare", "close"])
+    @pytest.mark.asyncio
+    async def test_invalid_cwd_response_cannot_retain_or_erase_a_successor(
+        self,
+        opening,
+        monkeypatch,
+        stage,
+    ):
+        o = opening
+        valid_cwd = o.request.query["cwd"]
+        o.request.query["cwd"] += "/missing"
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def pause(*_args, **_kwargs):
+            entered.set()
+            await release.wait()
+
+        if stage == "prepare":
+            o.ws.prepare.side_effect = pause
+        else:
+            monkeypatch.setattr(
+                terminal, "_close_terminal_ws_bounded", AsyncMock(side_effect=pause)
+            )
+        task = o.start(terminal.api_terminal_ws(o.request))
+        try:
+            await asyncio.wait_for(entered.wait(), 5)
+            assert o.registry == {}
+            assert (await terminal.api_terminal_delete(o.request)).status == 404
+            o.pty.openpty.assert_not_called()
+            o.spawn.assert_not_awaited()
+            o.request.query["cwd"] = valid_cwd
+            replacement_ws = o.make_ws()
+            o.constructor.return_value = replacement_ws
+            assert await terminal.api_terminal_ws(o.request) is replacement_ws
+            successor = o.registry["abc123"]
+            assert successor.proc is o.spawn.return_value
+        finally:
+            release.set()
+            await asyncio.wait_for(task, 5)
+        assert o.registry == {"abc123": successor}
+        o.spawn.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_unrequested_starting_directory_does_not_need_probe_capacity(
+        self, opening, monkeypatch
+    ):
+        probe = AsyncMock(side_effect=terminal._PathProbeBusy())
+        monkeypatch.setattr(terminal, "_run_path_probe", probe)
+        opening.request.query = {}
+        assert await terminal.api_terminal_ws(opening.request) is opening.ws
+        probe.assert_not_awaited()
+        opening.spawn.assert_awaited_once()
+
+    @pytest.mark.parametrize("stage", ["prepare", "spawn"])
+    @pytest.mark.asyncio
+    async def test_delete_during_successful_setup_refuses_until_publication(self, opening, stage):
+        o = opening
+        entered, release = asyncio.Event(), asyncio.Event()
+        proc = o.spawn.return_value
+
+        async def pause(*_args, **_kwargs):
+            entered.set()
+            await release.wait()
+            return proc
+
+        (o.ws.prepare if stage == "prepare" else o.spawn).side_effect = pause
+        task = o.start(terminal.api_terminal_ws(o.request))
+        try:
+            await asyncio.wait_for(entered.wait(), 5)
+            assert (await terminal.api_terminal_delete(o.request)).status == 409
+            assert (await terminal.api_terminal_ws(o.request)).status == 409
+            assert o.registry == {"abc123": None}
+        finally:
+            release.set()
+            await asyncio.wait_for(task, 5)
+        sess = o.registry["abc123"]
+        assert sess.proc is proc
+        o.spawn.assert_awaited_once()
+        assert (await terminal.api_terminal_delete(o.request)).status == 200
+        terminal._kill_session.assert_awaited_once_with(sess)
+        assert o.registry == {}
+
+    @pytest.mark.parametrize("successor", ["opening", "published", "absent"])
+    @pytest.mark.asyncio
+    async def test_stale_cleanup_cannot_remove_a_successor(self, opening, successor):
+        o = opening
+        dead = _make_session(alive=False)
+        o.registry["abc123"] = dead
+        entered, release = asyncio.Event(), asyncio.Event()
+        next_entered, next_release = asyncio.Event(), asyncio.Event()
+
+        async def kill(sess):
+            if sess is dead and not entered.is_set():
+                entered.set()
+                await release.wait()
+
+        async def prepare(_request):
+            next_entered.set()
+            await next_release.wait()
+
+        terminal._kill_session.side_effect = kill
+        stale = o.start(terminal.api_terminal_ws(o.request))
+        await asyncio.wait_for(entered.wait(), 5)
+        assert (await terminal.api_terminal_delete(o.request)).status == 200
+        if successor != "absent":
+            if successor == "opening":
+                o.ws.prepare.side_effect = prepare
+            replacement = o.start(terminal.api_terminal_ws(o.request))
+            if successor == "opening":
+                await asyncio.wait_for(next_entered.wait(), 5)
+            else:
+                await asyncio.wait_for(replacement, 5)
+        expected = dict(o.registry)
+        o.constructor.side_effect = AssertionError("stale opener attempted another handshake")
+        try:
+            release.set()
+            assert (await asyncio.wait_for(stale, 5)).status == 409
+            assert o.registry == expected
+            assert o.spawn.await_count == (1 if successor == "published" else 0)
+        finally:
+            next_release.set()
+
+    @pytest.mark.parametrize("successor", ["opening", "published", "reconnected"])
+    @pytest.mark.asyncio
+    async def test_reaper_rechecks_identity_and_current_eligibility(
+        self,
+        opening,
+        monkeypatch,
+        successor,
+    ):
+        o = opening
+        first = _make_session(session_id="first", alive=False)
+        stale = _make_session(disconnect=time.monotonic() - 2000)
+        o.registry.update(first=first, abc123=stale)
+        entered, release = asyncio.Event(), asyncio.Event()
+        next_entered, next_release = asyncio.Event(), asyncio.Event()
+
+        async def kill(sess):
+            if sess is first:
+                entered.set()
+                await release.wait()
+
+        async def prepare(_request):
+            next_entered.set()
+            await next_release.wait()
+
+        terminal._kill_session.side_effect = kill
+        monkeypatch.setattr(
+            terminal.asyncio,
+            "sleep",
+            AsyncMock(
+                side_effect=[
+                    None,
+                    asyncio.CancelledError,
+                ]
+            ),
+        )
+        reaper = o.start(terminal.reap_orphaned_terminals(o.request.app))
+        await asyncio.wait_for(entered.wait(), 5)
+        if successor == "reconnected":
+            assert await terminal._replace_terminal_ws(stale, o.ws)
+            assert stale.last_ws_disconnect is None
+        else:
+            assert (await terminal.api_terminal_delete(o.request)).status == 200
+            if successor == "opening":
+                o.ws.prepare.side_effect = prepare
+            replacement = o.start(terminal.api_terminal_ws(o.request))
+            if successor == "opening":
+                await asyncio.wait_for(next_entered.wait(), 5)
+            else:
+                await asyncio.wait_for(replacement, 5)
+        expected = dict(o.registry)
+        terminal._kill_session.reset_mock()
+        try:
+            release.set()
+            await asyncio.wait_for(reaper, 5)
+            assert o.registry == expected
+            terminal._kill_session.assert_not_awaited()
+        finally:
+            next_release.set()
+
+    @pytest.mark.parametrize("stage", ["websocket", "allocation", "windows_env"])
+    @pytest.mark.asyncio
+    async def test_early_setup_error_releases_reservation(self, opening, monkeypatch, stage):
+        o = opening
+        if stage == "websocket":
+            o.constructor.side_effect = RuntimeError("setup failed")
+        elif stage == "allocation":
+            o.pty.openpty.side_effect = RuntimeError("setup failed")
+        else:
+            monkeypatch.setattr(terminal.platform_compat, "IS_WINDOWS", True)
+            monkeypatch.setattr(
+                terminal, "_pty_child_env", MagicMock(side_effect=RuntimeError("setup failed"))
+            )
+        with pytest.raises(RuntimeError, match="setup failed"):
+            await terminal.api_terminal_ws(o.request)
+        assert o.registry == {}
+        o.spawn.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_cancelled_spawn_releases_reservation_and_allocated_descriptors(self, opening):
+        o = opening
+        entered = asyncio.Event()
+
+        async def spawn(*_args, **_kwargs):
+            entered.set()
+            await asyncio.Event().wait()
+
+        o.spawn.side_effect = spawn
+        task = o.start(terminal.api_terminal_ws(o.request))
+        await asyncio.wait_for(entered.wait(), 5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert o.registry == {}
+        assert len(o.fds) == 2
+        for fd in o.fds:
+            with pytest.raises(OSError):
+                os.fstat(fd)
+
+    @pytest.mark.parametrize(
+        "outcome",
+        [
+            "success",
+            "environment_error",
+            "spawn_error",
+            "spawn_close_error",
+            "cancel_spawn",
+            "cancel_close",
+            "close_error",
+            "cancel_spawn_close_error",
+            "cancel_close_cleanup_error",
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_setup_closes_off_loop_before_publication(self, opening, monkeypatch, outcome):
+        o = opening
+        loop = asyncio.get_running_loop()
+        loop_thread = threading.get_ident()
+        real_close = os.close
+        entered, spawning = asyncio.Event(), asyncio.Event()
+        release = threading.Event()
+        closed = []
+
+        def close(fd):
+            if fd not in o.fds:
+                return real_close(fd)
+            closed.append((fd, threading.get_ident()))
+            if fd == o.fds[1]:
+                loop.call_soon_threadsafe(entered.set)
+            # Fail before waiting if the caller would block the event loop.
+            assert threading.get_ident() != loop_thread, "setup close ran on the event loop"
+            if fd == o.fds[1]:
+                assert release.wait(10), "worker close was not released"
+            real_close(fd)
+            if fd == o.fds[1] and outcome in {
+                "close_error",
+                "spawn_close_error",
+                "cancel_spawn_close_error",
+            }:
+                raise OSError("worker close failed")
+
+        async def spawn(*_args, **_kwargs):
+            spawning.set()
+            await asyncio.Event().wait()
+
+        if outcome in {"spawn_error", "spawn_close_error"}:
+            o.spawn.side_effect = RuntimeError("spawn failed")
+        elif outcome in {"cancel_spawn", "cancel_spawn_close_error"}:
+            o.spawn.side_effect = spawn
+        kill_tree = AsyncMock()
+        kill = AsyncMock(wraps=o.real_kill)
+        if outcome == "cancel_close_cleanup_error":
+
+            async def cleanup_then_fail(sess):
+                await o.real_kill(sess)
+                raise RuntimeError("cleanup failed after disposal")
+
+            kill.side_effect = cleanup_then_fail
+        with ThreadPoolExecutor(max_workers=1) as pool, monkeypatch.context() as scoped:
+            scoped.setattr(terminal, "subprocess_executor", lambda: pool)
+            scoped.setattr(terminal, "_kill_session", kill)
+            scoped.setattr(terminal.platform_compat, "kill_process_tree_async", kill_tree)
+            scoped.setattr(terminal.os, "close", close)
+            if outcome == "environment_error":
+                scoped.setattr(
+                    terminal, "_pty_child_env", MagicMock(side_effect=RuntimeError("env failed"))
+                )
+            task = o.start(terminal.api_terminal_ws(o.request))
+            try:
+                if outcome in {"cancel_spawn", "cancel_spawn_close_error"}:
+                    await asyncio.wait_for(spawning.wait(), 5)
+                    task.cancel()
+                await asyncio.wait_for(entered.wait(), 5)
+                assert all(
+                    thread != loop_thread for _, thread in closed
+                ), "setup close ran on the event loop"
+                # Another request progresses while close is held off-loop, and
+                # the unpublished shell still belongs to its opening handler.
+                assert (await terminal.api_terminal_delete(o.request)).status == 409
+                assert o.registry == {"abc123": None}
+                o.ws.send_str.assert_not_awaited()
+                if outcome in {"cancel_close", "cancel_close_cleanup_error"}:
+                    task.cancel()
+            finally:
+                release.set()
+                (result,) = await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 5)
+
+            if outcome in {
+                "cancel_spawn",
+                "cancel_close",
+                "cancel_spawn_close_error",
+                "cancel_close_cleanup_error",
+            }:
+                assert isinstance(result, asyncio.CancelledError)
+                o.ws.send_str.assert_not_awaited()
+            else:
+                assert result is o.ws
+            worker_fd = o.fds[1]
+            assert [fd for fd, _ in closed].count(worker_fd) == 1
+            with pytest.raises(OSError):
+                os.fstat(worker_fd)
+            if outcome == "success":
+                sess = o.registry["abc123"]
+                assert sess.proc is o.spawn.return_value
+                os.fstat(o.fds[0])
+                assert [fd for fd, _ in closed] == [worker_fd]
+                kill.assert_not_awaited()
+                assert any(
+                    json.loads(call.args[0])["type"] == "ready"
+                    for call in o.ws.send_str.await_args_list
+                )
+            else:
+                assert o.registry == {}
+                assert [fd for fd, _ in closed].count(o.fds[0]) == 1
+                with pytest.raises(OSError):
+                    os.fstat(o.fds[0])
+                kill.assert_awaited_once()
+                owned_session = kill.await_args.args[0]
+                if outcome in {"cancel_close", "close_error", "cancel_close_cleanup_error"}:
+                    assert owned_session.proc is o.spawn.return_value
+                    assert [call.args for call in kill_tree.await_args_list] == [
+                        (o.spawn.return_value.pid, platform_compat.SIGHUP),
+                        (o.spawn.return_value.pid, platform_compat.SIGTERM),
+                    ]
+                    o.spawn.return_value.wait.assert_awaited_once()
+                else:
+                    assert owned_session.proc is None
+                    kill_tree.assert_not_awaited()
+                assert not any(
+                    json.loads(call.args[0])["type"] == "ready"
+                    for call in o.ws.send_str.await_args_list
+                )
+            if outcome in {"spawn_error", "spawn_close_error"}:
+                # The close that follows a failed spawn cannot replace its cause.
+                assert {"type": "error", "message": "spawn failed"} in [
+                    json.loads(call.args[0]) for call in o.ws.send_str.await_args_list
+                ]
+
+    @pytest.mark.parametrize("descriptor", ["worker", "controller"])
+    @pytest.mark.parametrize("close_state", ["queued", "running"])
+    @pytest.mark.parametrize("cancel", [False, True])
+    @pytest.mark.asyncio
+    async def test_setup_deadline_keeps_close_owned(
+        self,
+        opening,
+        monkeypatch,
+        descriptor,
+        close_state,
+        cancel,
+    ):
+        o = opening
+        loop = asyncio.get_running_loop()
+        loop_thread = threading.get_ident()
+        real_close = os.close
+        queued = asyncio.Event()
+        expire = asyncio.Event()
+        release = threading.Event()
+        submitted, closed = [], []
+        real_wait_for = asyncio.wait_for
+
+        async def close_deadline(awaitable, timeout):
+            if timeout < 900 or not submitted:
+                return await real_wait_for(awaitable, timeout)
+            # Expire the shield only after the close has entered its held state.
+            # Repeated cancellation cannot cancel the submitted executor work.
+            try:
+                await real_wait_for(expire.wait(), 5)
+            except asyncio.CancelledError:
+                awaitable.cancel()
+                raise
+            return await real_wait_for(awaitable, 0)
+
+        def close(fd):
+            if fd not in o.fds:
+                return real_close(fd)
+            if threading.get_ident() == loop_thread:
+                queued.set()
+            assert threading.get_ident() != loop_thread, "setup close ran on the event loop"
+            closed.append(fd)
+            target = o.fds[1 if descriptor == "worker" else 0]
+            if close_state == "running" and fd == target:
+                loop.call_soon_threadsafe(queued.set)
+                assert release.wait(10), "running close was not released"
+            real_close(fd)
+
+        def occupy():
+            assert release.wait(10), "queued close was not released"
+
+        if descriptor == "controller":
+            o.spawn.side_effect = RuntimeError("spawn failed")
+        kill = AsyncMock(wraps=o.real_kill)
+        with ThreadPoolExecutor(max_workers=1) as pool, monkeypatch.context() as scoped:
+            real_submit = pool.submit
+
+            def submit(fn, *args, **kwargs):
+                target = o.fds[1 if descriptor == "worker" else 0] if o.fds else None
+                if fn is close and args == (target,):
+                    if close_state == "queued":
+                        real_submit(occupy)
+                    future = real_submit(fn, *args, **kwargs)
+                    submitted.append(future)
+                    if close_state == "queued":
+                        queued.set()
+                    return future
+                return real_submit(fn, *args, **kwargs)
+
+            scoped.setattr(pool, "submit", submit)
+            scoped.setattr(terminal, "subprocess_executor", lambda: pool)
+            scoped.setattr(terminal, "_kill_session", kill)
+            scoped.setattr(terminal.platform_compat, "kill_process_tree_async", AsyncMock())
+            scoped.setattr(terminal.os, "close", close)
+            scoped.setattr(terminal, "_TERMINAL_FD_CLOSE_TIMEOUT_S", 997.0)
+            scoped.setattr(terminal.asyncio, "wait_for", close_deadline)
+            task = o.start(terminal.api_terminal_ws(o.request))
+            try:
+                await asyncio.wait_for(queued.wait(), 5)
+                assert len(submitted) == 1, "setup close was not submitted off-loop"
+                # Each cancellation callback runs before this loop-turn marker;
+                # the occupied worker cannot race ahead and mask a lost close.
+                for _ in range(2 if cancel else 0):
+                    task.cancel()
+                    cancelled = asyncio.Event()
+                    loop.call_soon(cancelled.set)
+                    await asyncio.wait_for(cancelled.wait(), 5)
+                    assert not submitted[0].cancelled()
+                    assert not task.done()
+                assert (await terminal.api_terminal_delete(o.request)).status == 409
+                expire.set()
+                # Observation must not cancel-and-wait for the old unbounded
+                # implementation: a regression should fail, not hang the worker.
+                done, _ = await asyncio.wait({task}, timeout=5)
+                assert task in done, "setup did not finish at the close deadline"
+                (result,) = await asyncio.gather(task, return_exceptions=True)
+                assert o.registry == {}
+                assert not submitted[0].done()
+                assert not release.is_set()
+                assert isinstance(result, asyncio.CancelledError) if cancel else result is o.ws
+                kill.assert_awaited_once()
+                if descriptor == "worker":
+                    assert kill.await_args.args[0].proc is o.spawn.return_value
+                    o.spawn.return_value.wait.assert_awaited_once()
+                frames = [json.loads(call.args[0]) for call in o.ws.send_str.await_args_list]
+                errors = [frame["message"] for frame in frames if frame["type"] == "error"]
+                if not cancel:
+                    # A timed-out close carries no text, yet the owner learns why.
+                    assert errors == [
+                        "Failed to start terminal: TimeoutError"
+                        if descriptor == "worker"
+                        else "spawn failed"
+                    ]
+            finally:
+                expire.set()
+                release.set()
+                await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 5)
+                await asyncio.wait_for(loop.run_in_executor(pool, lambda: None), 5)
+            assert o.registry == {}
+            assert sorted(closed) == sorted(o.fds)
+            for fd in o.fds:
+                with pytest.raises(OSError):
+                    os.fstat(fd)
+            kill.assert_awaited_once()
+            assert not any(
+                json.loads(call.args[0])["type"] == "ready"
+                for call in o.ws.send_str.await_args_list
+            )
+
+    @pytest.mark.parametrize("stage", ["error_response", "published"])
+    @pytest.mark.parametrize("windows", [False, True])
+    @pytest.mark.asyncio
+    async def test_retired_opener_cannot_release_a_later_reservation(
+        self,
+        opening,
+        monkeypatch,
+        stage,
+        windows,
+    ):
+        from kiro_crew import conpty
+
+        o = opening
+        entered, release = asyncio.Event(), asyncio.Event()
+        next_entered = asyncio.Event()
+        win_spawn = MagicMock()
+        win_spawn.return_value.read.return_value = b""
+        monkeypatch.setattr(terminal.platform_compat, "IS_WINDOWS", windows)
+        monkeypatch.setattr(conpty, "WindowsPty", win_spawn)
+
+        async def pause(*_args):
+            entered.set()
+            await release.wait()
+
+        async def receive():
+            await pause()
+            if False:
+                yield
+
+        async def prepare(_request):
+            next_entered.set()
+            await asyncio.Event().wait()
+
+        if stage == "error_response":
+            o.spawn.side_effect = RuntimeError("spawn failed")
+            win_spawn.side_effect = RuntimeError("spawn failed")
+            o.ws.send_str.side_effect = pause
+        else:
+            o.ws.__aiter__.side_effect = receive
+        first = o.start(terminal.api_terminal_ws(o.request))
+        await asyncio.wait_for(entered.wait(), 5)
+        if stage == "published":
+            assert (await terminal.api_terminal_delete(o.request)).status == 200
+        else:
+            assert o.registry == {}
+        next_ws = o.make_ws()
+        next_ws.prepare.side_effect = prepare
+        o.constructor.return_value = next_ws
+        o.start(terminal.api_terminal_ws(o.request))
+        await asyncio.wait_for(next_entered.wait(), 5)
+        release.set()
+        await asyncio.wait_for(first, 5)
+        assert o.registry == {"abc123": None}
 
 
 class TestApiTerminalList:
@@ -3590,7 +4431,8 @@ class TestTerminalWsIntegration:
 
         async with TestClient(TestServer(app)) as client:
             async with client.ws_connect("/api/ws/terminal/test-sess-1") as ws:
-                # Session should be registered
+                # The upgrade precedes setup; readiness proves publication.
+                await _recv_control(ws, "ready")
                 assert "test-sess-1" in registry
                 sess = registry["test-sess-1"]
                 assert terminal._sess_alive(sess)  # alive (pty or ConPTY backend)
@@ -3825,11 +4667,11 @@ class TestTerminalWsIntegration:
 
         async with TestClient(TestServer(app)) as client:
             async with client.ws_connect("/api/ws/terminal/cwd-memo-sess") as ws:
-                sess = registry["cwd-memo-sess"]
                 # Let the shell finish starting before the assertions begin, so
                 # its startup output is already drained and cannot interleave
                 # with the bookkeeping this test is about.
                 await _drain_to_pong(ws)
+                sess = registry["cwd-memo-sess"]
 
                 sess.cwd_probe = (time.monotonic(), "/tmp/old")
                 await ws.send_bytes(b"c")
@@ -3880,6 +4722,29 @@ class TestTerminalWsIntegration:
             await terminal._kill_session(registry["cwd-memo-sess"])
 
     @pytest.mark.asyncio
+    async def test_invalid_workspace_error_reaches_websocket_client(self, monkeypatch, tmp_path):
+        from aiohttp.test_utils import TestClient, TestServer
+
+        registry: dict = {}
+        spawn = MagicMock(side_effect=AssertionError("invalid cwd must not spawn"))
+        monkeypatch.setattr(terminal, "_pty", MagicMock(openpty=spawn))
+        monkeypatch.setattr(terminal, "_pty_child_env", spawn)
+        async with TestClient(TestServer(_make_app(registry=registry))) as client:
+            async with client.ws_connect(
+                "/api/ws/terminal/invalid-workspace",
+                params={"cwd": str(tmp_path / "missing")},
+            ) as ws:
+                frame = await ws.receive_json(timeout=3)
+                assert frame == {
+                    "type": "error",
+                    "code": "terminal_invalid_cwd",
+                    "message": "Terminal working directory is unavailable",
+                }
+                assert (await ws.receive(timeout=3)).type == web.WSMsgType.CLOSE
+        assert registry == {}
+        spawn.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_ws_reconnect_existing_session(self, monkeypatch, tmp_path):
         """Reconnect to an existing PTY session."""
         cfg_file = tmp_path / "config.json"
@@ -3904,8 +4769,12 @@ class TestTerminalWsIntegration:
             # browser must receive the same readiness state after replay.
             sess.shell_ready = True
 
-            # Reconnect
-            async with client.ws_connect("/api/ws/terminal/recon-sess") as ws:
+            # A live PTY keeps its cwd even if the browser's saved project path
+            # is missing. Validation applies only when spawning a shell.
+            async with client.ws_connect(
+                "/api/ws/terminal/recon-sess",
+                params={"cwd": str(tmp_path / "missing")},
+            ) as ws:
                 sess = registry["recon-sess"]
                 assert terminal._sess_pid(sess) == original_pid  # same PTY
                 assert sess.ws is not None  # reconnected
@@ -3972,6 +4841,7 @@ class TestTerminalWsIntegration:
 
         async with TestClient(TestServer(app)) as client:
             ws1 = await client.ws_connect("/api/ws/terminal/takeover-sess")
+            await _recv_control(ws1, "ready")
             sess = registry["takeover-sess"]
             original_pid = terminal._sess_pid(sess)
             first_ws = sess.ws
@@ -4836,6 +5706,8 @@ class TestTerminalWsIntegration:
                 type("R", (), {"app": client.app})()  # type: ignore[arg-type]
             )
             registry[sid] = _make_session(session_id=sid)
+            # No PTY was spawned; a fake descriptor could close the test server.
+            registry[sid].master_fd = -1  # wokeignore:rule=master
             resp = await client.delete(f"/api/terminal/sessions/{sid}")
             assert resp.status == 200
             body = await resp.json()

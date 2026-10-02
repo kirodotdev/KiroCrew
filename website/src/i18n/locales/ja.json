@@ -6061,6 +6061,7 @@
       "let_the_agent_read_one_of_your_files": "エージェントにファイルを読み込ませる",
       "message_input": "メッセージ入力",
       "message_placeholder": "{{bot}} にメッセージ… (/command · @file · $skill)",
+      "message_placeholder_terminal": "{{bot}} にメッセージ… (/command · @file · $skill · ! シェルコマンド)",
       "model": "モデル",
       "model_2": "モデル：{{name}}",
       "open_preview_of": "{{name}} のプレビューを開く",
@@ -6148,7 +6149,23 @@
       "agent_inherited_default": "このセッションはデフォルトエージェント（{{name}}）に従います。独自のエージェントを持たないため、デフォルトが変わると変わります。固定するにはクリックしてください。",
       "compacting_context_stop_unavailable": "コンテキストを圧縮中 — 完了するまで停止できません",
       "click_again_to_force_stop_resets_session": "もう一度クリックして強制停止（セッションを再起動します。メッセージは残り、エージェントは最近の抜粋を保持します）",
-      "model_inherited_default": "このセッションはデフォルトモデル（{{name}}）で動作します。独自のモデルを持たないため、デフォルトが変わると変わります。固定するにはクリックしてください。"
+      "model_inherited_default": "このセッションはデフォルトモデル（{{name}}）で動作します。独自のモデルを持たないため、デフォルトが変わると変わります。固定するにはクリックしてください。",
+      "terminal_attachments": "ターミナルコマンドを実行する前に添付ファイルを削除してください。",
+      "terminal_folder_attachments": "実行前に添付フォルダーを取り除く必要があります。フォルダーを取り除くと、コマンド内の {{folderRef}} 参照も消えます。",
+      "terminal_default_directory": "ターミナル起動時のディレクトリ",
+      "terminal_empty": "! の後にコマンドを入力してください。実行前に内容を確認できます。",
+      "terminal_failed": "コマンドは送信されませんでした。下書きは保持されています。ターミナルパネルの確認が必要です。",
+      "terminal_hint": "ターミナルパネル · {{workspace}}",
+      "terminal_panel": "ターミナルパネル",
+      "terminal_review_at_capacity": "コマンドを確認してください。「実行」でターミナルパネルが開きます。まだ上限に達している場合は、使っていないタブを閉じて再試行してください。コマンドはキューに追加されません。",
+      "terminal_limit": "ターミナル数の上限に達しました。使っていないターミナルタブを閉じて、もう一度お試しください。",
+      "terminal_main_window": "ターミナルコマンドを実行するには、このセッションをメインウィンドウで開いてください。",
+      "terminal_remote": "別のサーバー上のセッションではターミナルコマンドを利用できません。チャットに戻るには、先頭の ! を削除します。",
+      "terminal_unavailable": "ターミナルは無効です。サーバー設定で dashboard.terminal.enabled を有効にします。チャットに戻るには、先頭の ! を削除します。",
+      "terminal_review": "確認してターミナルで実行",
+      "terminal_force_stop": "エージェントを停止",
+      "terminal_pending": "セッション情報の読み込みを待つか、別のセッションを選択してください。",
+      "terminal_run_review": "ターミナルコマンドを確認"
     },
     "chatPane": {
       "agent_list": "エージェントリスト",
@@ -6178,6 +6195,7 @@
       "disconnected_message": "ターミナルが切断されました",
       "displaced_message": "別のウィンドウがこのターミナルを引き継ぎました",
       "failed_retry": "失敗 — 再試行",
+      "invalid_cwd_message": "ターミナルの作業ディレクトリ「{{cwd}}」を利用できません。復元して再接続するか、ターミナルの開始ディレクトリを使用してください。",
       "reconnect": "再接続",
       "reconnecting": "再接続しています…",
       "redaction_failed_retry": "編集に失敗しました — 再試行",
@@ -6186,7 +6204,9 @@
       "sending": "送信中…",
       "touch_select_anchor": "始点を設定 — もう一方の端をタップ",
       "touch_select_done": "範囲を選択 — コピーをタップ",
-      "use_here": "ここでターミナルを使う"
+      "use_here": "ここでターミナルを使う",
+      "use_starting_directory": "ターミナルの開始ディレクトリを使用",
+      "use_starting_directory_hint": "サーバーで設定されたターミナルのディレクトリ（dashboard.terminal.cwd、未設定ならサーバーのホームディレクトリ）で新しいシェルを開きます。失敗したコマンドは再送されません。"
     },
     "codeBlock": {
       "copied": "コピーしました！",
@@ -7903,6 +7923,8 @@
     },
     "runInTerminalConfirm": {
       "body_copy": "コマンドがコピーされるので、ターミナルに貼り付けてください。",
+      "body_default_multi": "ワークスペースが選択されていません。以下の {{lines}} 行を、ターミナル起動時のディレクトリを使って新しいターミナルタブで実行します。",
+      "body_default_single": "ワークスペースが選択されていません。以下のコマンドを、ターミナル起動時のディレクトリを使って新しいターミナルタブで実行します。",
       "body_multi": "{{lines}} 行が新しいターミナルタブで、このチャットの作業ディレクトリで実行されます。",
       "body_single": "これは新しいターミナルタブで、このチャットの作業ディレクトリで実行されます。",
       "cancel": "キャンセル",
