@@ -218,4 +218,34 @@ describe('textarea composer continues markdown lists on a new line', () => {
     expect(onSend).toHaveBeenCalledOnce()
     expect(value()).toBe('1. test')
   })
+
+  it('the default composer is the textarea, not the Lexical editor', () => {
+    mount('', 'enter')
+    expect(screen.getByLabelText('Message input').tagName).toBe('TEXTAREA')
+    expect(document.querySelector('[contenteditable="true"]')).toBeNull()
+  })
+
+  for (const mode of ['ctrl-enter', 'enter-ctrl-newline'] as SendMode[]) {
+    it(`Shift+Enter continues the list in ${mode} mode`, () => {
+      const { ta, onSend, value } = mount('1. test', mode)
+      expect(fireEvent.keyDown(ta, { key: 'Enter', shiftKey: true })).toBe(true)
+      expect(newLine(ta)).toBe(true)
+      expect(value()).toBe('1. test\n2. ')
+      expect(onSend).not.toHaveBeenCalled()
+    })
+  }
+
+  it('plain Enter in enter-ctrl-newline mode still sends a list draft', () => {
+    const { ta, onSend, value } = mount('1. test', 'enter-ctrl-newline')
+    expect(fireEvent.keyDown(ta, { key: 'Enter' })).toBe(false)
+    expect(onSend).toHaveBeenCalledOnce()
+    expect(value()).toBe('1. test')
+  })
+
+  it('a new line over a selection keeps the native line break and adds no marker', () => {
+    const { ta, value } = mount('1. test more')
+    ta.setSelectionRange('1. '.length, '1. test'.length)
+    expect(newLine(ta)).toBe(false)
+    expect(value()).toBe('1. test more')
+  })
 })
