@@ -133,6 +133,7 @@ from kiro_crew.dashboard.chat_utils import (
     _MAX_TOOL_PURPOSE,
     STEER_POSSIBLY_DELIVERED_META,
     STEER_POSSIBLY_DELIVERED_NOTE,
+    TURN_END_WIRE_CLS,
     ResetCause,
     _append_compaction_notice,
     _apply_incognito_prefix,
@@ -148,6 +149,7 @@ from kiro_crew.dashboard.chat_utils import (
     _redact_meta_for_role,
     _redact_tool_field,
     _remove_queued_by_id,
+    _stamped_turn_actor,
     _tool_identity_fields,
     _validate_tool_name,
     build_recovery_requeue,
@@ -8673,8 +8675,7 @@ def _actor_for_queue_items(items: "list[dict]") -> str:
         if actor:
             return actor
     for item in items:
-        meta = item.get("meta")
-        stamped = meta.get(TURN_ACTOR_META_KEY, "") if isinstance(meta, dict) else ""
+        stamped = _stamped_turn_actor(item)
         if isinstance(stamped, str) and stamped in crew_log_emit.ACTORS:
             return stamped
     return ""
@@ -8899,12 +8900,39 @@ def _retry_cancel_reason(rebound: bool, superseded: bool, stopped: bool) -> str:
     return "the turn was stopped."
 
 
+def _mark_turn_end(slot: _ChatSlot) -> None:
+    """Mark on ``slot._pending`` that the turn that just ended is over.
+
+    Pushed at a turn's end before the queue drain or the cycle's end writes
+    anything (a held note, a drop notice, a successor's first row), never before
+    a recovery the ending turn queued for itself. The end of the whole queue
+    cycle is ``done``; this boundary is where an app's stream on a user's
+    session stops (``chat_handlers.api_chat``), and every other reader skips it,
+    so a repeated boundary is harmless.
+    """
+    slot.push_wire_frame(TURN_END_WIRE_CLS, "")
+
+
+def _is_own_recovery(items: "list[dict]", predecessor_actor: str) -> bool:
+    """Whether *items* are a recovery the turn of *predecessor_actor* queued for itself.
+
+    ``_queue_recovery`` stamps the ending turn's actor on the entry, so such a
+    recovery is that turn retried and gets no :func:`_mark_turn_end` before it.
+    """
+    return (
+        bool(predecessor_actor)
+        and any(is_synthetic_recovery_item(item) for item in items)
+        and _actor_for_queue_items(items) == predecessor_actor
+    )
+
+
 async def _start_next_queued_turn(
     state: DashboardState,
     slot: _ChatSlot,
     *,
     allow_user_during_subagents: bool = False,
     required_queue_id: str | None = None,
+    predecessor_actor: str = "",
 ) -> bool:
     """Dequeue and start one ready Kiro turn, preserving queue semantics.
 
@@ -8912,7 +8940,19 @@ async def _start_next_queued_turn(
     bypasses only the child-work hold; an active stage still owns dispatch.
     ``required_queue_id`` binds the action to the selected card after admission
     revalidation, so a stale click never starts a different queued message.
+    ``predecessor_actor`` is the actor of the turn whose end runs this drain, so
+    a recovery that turn queued for itself is not marked as a new turn
+    (:func:`_mark_turn_end`).
     """
+
+    # A drain that follows a turn's end marks that end before it writes anything:
+    # the drop notices, the held-note flush and the cancellation notices below
+    # belong to what comes next, not to the turn that ended. Held back only while
+    # the queue head is that turn's own recovery; the dequeue re-decides then.
+    turn_ended = False
+    if predecessor_actor and not _is_own_recovery(slot._queue[:1], predecessor_actor):
+        _mark_turn_end(slot)
+        turn_ended = True
 
     # FIRST, before anything reads the queue: re-assert each entry's
     # admission-time containment and drop every entry that has stopped
@@ -8920,6 +8960,14 @@ async def _start_next_queued_turn(
     # Everything below — the note flush peeking at queue[0], the user-intervention
     # purge, the dequeue itself — must see only entries that may still deliver.
     _drop_stale_admissions(state, slot)
+    # The sweep may have dropped that recovery, leaving a new turn at the head.
+    if (
+        predecessor_actor
+        and not turn_ended
+        and not _is_own_recovery(slot._queue[:1], predecessor_actor)
+    ):
+        _mark_turn_end(slot)
+        turn_ended = True
 
     # The admission sweep above (and any other queue removal) can drop the
     # model-access recovery replay's entry WITHOUT touching slot state: a
@@ -9384,6 +9432,11 @@ async def _start_next_queued_turn(
     # They diverge on a recovery that replays the user's own message.
     synthetic_payload = any(is_synthetic_payload_item(item) for item in consumed)
     is_system_injection = any(is_system_injection_item(item) for item in consumed)
+    # Before the successor writes its first row, unless the drain's top already
+    # marked it. A recovery the ending turn queued for itself is the same turn
+    # retried, so its reply belongs before the boundary.
+    if not turn_ended and not _is_own_recovery(consumed, predecessor_actor):
+        _mark_turn_end(slot)
     directive_user_origin = bool(consumed) and all(
         item.get("_directive_user_origin") is True for item in consumed
     )
@@ -9416,8 +9469,17 @@ async def _start_next_queued_turn(
     if not deliver_as_typed:
         next_msg, _ = redact_exfiltration_urls(next_msg)
         next_msg, _ = redact_credentials(next_msg)
-    is_cron = next_msg.startswith(CRON_NOTIFY_PREFIX)
-    is_subagent = next_msg.startswith(SUBAGENT_COMPLETION_PREFIXES)
+    # An entry an app sent is never a cron or sub-agent event, whatever its text
+    # opens with: the actor comes from the enqueue-time kind or stamp, the same
+    # structural source the MCP-App case below reads. Nor is a restored entry:
+    # only plain prompts persist (`slot_queue_repository._is_durable_queue_entry`),
+    # and the restore drops the actor stamp, so the text is all that is left and
+    # it cannot name an event.
+    _not_an_event = _actor_for_queue_items(consumed) == "app" or any(
+        item.get(RESTORED_QUEUE_KEY) for item in consumed
+    )
+    is_cron = not _not_an_event and next_msg.startswith(CRON_NOTIFY_PREFIX)
+    is_subagent = not _not_an_event and next_msg.startswith(SUBAGENT_COMPLETION_PREFIXES)
     # STRUCTURAL, not prefix: an MCP-App message's text is app-authored, so
     # deriving its row from the text would let (and did let) it fall through to
     # role "user" — persisted and broadcast as human speech — while the
@@ -9994,6 +10056,10 @@ async def _finish_queue_cycle(
             state.push_slots_update()
             if await _start_next_queued_turn(state, slot):
                 return
+
+    # The cycle's end is also the end of the turn that ran it, and it is marked
+    # before the held-note flush below: that note is owed to the next turn.
+    _mark_turn_end(slot)
 
     # Before any successor is dispatched. A held note's CONTEXT half drains into
     # the next turn, so flushing after that turn started would let the note shape
@@ -21461,7 +21527,9 @@ async def _run_chat(
             # cancellable) and resumes on the user's next send after they log in
             # — the no-loss rule, without a readiness waiter to strand it.
             state.push_slots_update()
-            next_turn_started = await _start_next_queued_turn(state, slot)
+            next_turn_started = await _start_next_queued_turn(
+                state, slot, predecessor_actor=_crew_log_actor
+            )
 
         if not next_turn_started:
             await _finish_queue_cycle(

@@ -12229,7 +12229,7 @@ class TestRunChatRefusalFallback:
 
         # Keep the requeued entry IN the queue: the post-turn drain would
         # otherwise dequeue and spawn it immediately, racing the assertions.
-        async def _no_drain(_state, _slot) -> bool:
+        async def _no_drain(_state, _slot, **_kwargs) -> bool:
             return False
 
         monkeypatch.setattr("kiro_crew.dashboard.chat_runner._start_next_queued_turn", _no_drain)
