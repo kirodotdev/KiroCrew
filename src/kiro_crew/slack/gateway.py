@@ -3049,6 +3049,12 @@ class GatewayOrchestrator:
                         job.name,
                     )
 
+        # (job id, refusal) pairs of pre-identity member schedules already
+        # alerted: a refusal recurs on every fire until the operator repairs it,
+        # and a repair can surface the next one, which is alerted in turn (see
+        # _cron_callback).
+        legacy_refusals_alerted: set[tuple[str, str]] = set()
+
         async def _alert_cron_failure(job: CronJob, detail: str, *, denied: bool = False) -> None:
             """Tell the user WHY a script/command cron run failed or was denied.
 
@@ -3201,6 +3207,7 @@ class GatewayOrchestrator:
             session_key, msg = build_cron_session_context(job)
 
             from kiro_crew.cron import resolve_cron_memory
+            from kiro_crew.cron_service.identity import LegacyScheduleRefused
             from kiro_crew.execution_context import (
                 ExecutionContext,
                 execution_for_store,
@@ -3303,7 +3310,33 @@ class GatewayOrchestrator:
                         template_id=legacy_selection.agent_id or "kirocrew",
                     )
 
-                cron_execution = await asyncio.to_thread(resolve_legacy_execution)
+                try:
+                    cron_execution = await asyncio.to_thread(resolve_legacy_execution)
+                except LegacyScheduleRefused as exc:
+                    # A run this state PREVENTED, not a failed one: it waits on an
+                    # operator repair, so it must neither walk the job toward
+                    # auto-pause (a pause would outlive the repair and the
+                    # restart its remedy names) nor consume a one-shot, and a
+                    # past-due one-shot is parked disabled as a fire-time denial
+                    # is, instead of coming due on every tick. A message job keeps
+                    # its carried result, since nothing ran to replace it; a
+                    # command or script job's is cleared when the run closes, as
+                    # for every result-less run of those kinds. Alerted once per
+                    # job and refusal per process, since it recurs on every fire
+                    # until repaired.
+                    one_shot = job.schedule.kind == "at"
+                    reason = (
+                        f"{exc}; this one-shot stays paused until resumed" if one_shot else str(exc)
+                    )
+                    job.last_status = "error"
+                    job.last_error = reason[:_CRON_FAILURE_DETAIL_CAP]
+                    job.run_never_started = True
+                    job.fire_time_denied = one_shot
+                    if (job.id, reason) not in legacy_refusals_alerted:
+                        legacy_refusals_alerted.add((job.id, reason))
+                        logger.warning("Cron '%s': %s", job.name, reason)
+                        await _alert_cron_failure(job, reason)
+                    return None
             cron_memory_store, cron_agent = (
                 cron_execution.store.legacy_name,
                 cron_execution.template_id,

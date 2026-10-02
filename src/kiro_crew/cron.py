@@ -4090,14 +4090,15 @@ class CronService:
         job.last_retry_run_ts = job.last_run_ts
 
         # One-shot "at" jobs: disable after the run. A fire-time-DENIED at-job
+        # (a refusal only an operator can clear; see CronJob.fire_time_denied)
         # is disabled too — its due time has passed, so leaving it enabled
         # would make it due on EVERY timer tick (a zero-delay refire loop that
         # floods audit/history until resource exhaustion). Parking it disabled
         # (instead of deleting — including the delete_after_run shape, which
         # the merge below retains) keeps it discoverable so an operator can
-        # re-enable it after a policy loosening. Recurring jobs are untouched:
-        # they simply wait for their next scheduled slot and resume on their
-        # own when policy loosens.
+        # re-enable it after a policy loosening or repair. Recurring jobs are
+        # untouched: they simply wait for their next scheduled slot and resume
+        # on their own when policy loosens.
         if job.schedule.kind == "at" and (not job.delete_after_run or job.fire_time_denied):
             job.enabled = False
 
@@ -4138,9 +4139,10 @@ class CronService:
                 )
             elif job.id in by_id:
                 apply_run_record(by_id[job.id], job)
-            # A fire-time-DENIED run is a policy refusal, not a completed run:
-            # deleting the one-shot here would make the documented
-            # resume-on-policy-loosening semantic impossible for at-jobs.
+            # A fire-time-DENIED run is a refusal needing operator action (a
+            # policy denial, or a pre-identity member schedule awaiting repair),
+            # not a completed run: deleting the one-shot here would make the
+            # documented resume-after-repair semantic impossible for at-jobs.
             # A run that never STARTED is the same story for a different reason --
             # every pool worker was busy for the whole queue budget -- so consuming
             # the one-shot would destroy scheduled work that never got a chance to

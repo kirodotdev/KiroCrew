@@ -836,3 +836,176 @@ def test_a_conditional_forget_racing_a_newer_vouch_keeps_the_newer_record(member
     writer.join(timeout=5.0)
     assert not writer.is_alive()
     assert real_read(key) == new_record
+
+
+def _legacy_member_schedule(member_id, store="member-alice"):
+    """The shape 0.7.0-insider.1 to .5 stored: alias selector, store, no capture."""
+    from kiro_crew.cron import CronJob, CronSchedule
+
+    return CronJob(
+        id="legacy-job",
+        name="synthetic",
+        message="test",
+        schedule=CronSchedule(kind="every", every_secs=60),
+        member_id=member_id,
+        memory_store=store,
+    )
+
+
+@pytest.mark.parametrize("selector", ["alice", "id-alice"])
+def test_legacy_member_schedule_is_attributed_to_its_stores_owner(members, selector):
+    from kiro_crew.cron_service.identity import legacy_member_cron_execution
+
+    job = _legacy_member_schedule(selector)
+    attributed = legacy_member_cron_execution(job)
+    assert attributed == execution.resolve_member_execution(members, "alice")
+    assert attributed.member_id == "id-alice"
+    assert attributed.template_id == "shared-template"
+    assert job.execution_context is None
+
+
+@pytest.mark.parametrize("selector", ["alice", "id-alice"])
+def test_an_uncaptured_legacy_member_schedule_never_dispatches(members, selector):
+    """Only the start-of-process capture binds it; dispatch never re-derives one."""
+    from kiro_crew.cron import resolve_cron_memory
+    from kiro_crew.cron_service.identity import LegacyScheduleRefused
+
+    with pytest.raises(LegacyScheduleRefused, match="restart the gateway"):
+        resolve_cron_memory(_legacy_member_schedule(selector))
+
+
+def test_legacy_member_schedule_naming_another_member_is_refused(members):
+    from kiro_crew.cron_service.identity import LegacyScheduleRefused, legacy_member_cron_execution
+
+    with pytest.raises(LegacyScheduleRefused, match="recreate it from the member's chat"):
+        legacy_member_cron_execution(_legacy_member_schedule("bob"))
+
+
+def test_legacy_member_schedule_on_an_unattributed_store_names_the_repair(members):
+    from kiro_crew.cron_service.identity import LegacyScheduleRefused, legacy_member_cron_execution
+    from kiro_crew.memory_stores import LEGACY_MEMBER_STORE_REMEDY
+
+    members.memory_stores["member-alice"].owner_member_id = ""
+    with pytest.raises(LegacyScheduleRefused) as refused:
+        legacy_member_cron_execution(_legacy_member_schedule("alice"))
+    assert refused.value.args[0].startswith("memory_unavailable: ")
+    assert LEGACY_MEMBER_STORE_REMEDY in refused.value.args[0]
+
+
+def test_legacy_member_schedule_of_a_deleted_member_says_to_delete_it(members):
+    """The store and its reserved id outlive the member, so recreating is impossible."""
+    from kiro_crew.cron_service.identity import LegacyScheduleRefused, legacy_member_cron_execution
+
+    del members.agents["alice"]
+    with pytest.raises(LegacyScheduleRefused) as refused:
+        legacy_member_cron_execution(_legacy_member_schedule("alice"))
+    assert "member was deleted" in refused.value.args[0]
+    assert "delete this schedule" in refused.value.args[0]
+    assert "recreate" not in refused.value.args[0]
+
+
+def test_a_lost_store_declaration_names_the_restart_its_repair_needs(members):
+    """Restoring the entry reloads live, but only a restart captures the schedule."""
+    from kiro_crew.cron_service.identity import LegacyScheduleRefused, legacy_member_cron_execution
+
+    del members.memory_stores["member-alice"]
+    with pytest.raises(LegacyScheduleRefused) as refused:
+        legacy_member_cron_execution(_legacy_member_schedule("alice"))
+    assert "declaration is unavailable" in refused.value.args[0]
+    assert "then restart the gateway" in refused.value.args[0]
+
+
+@pytest.mark.parametrize("damage", ["missing-store", "string-version", "bad-slug"])
+def test_every_legacy_attribution_failure_is_the_typed_refusal(members, damage):
+    from kiro_crew.cron_service.identity import LegacyScheduleRefused, legacy_member_cron_execution
+
+    selector = "alice"
+    if damage == "missing-store":
+        del members.memory_stores["member-alice"]
+    elif damage == "string-version":
+        members.memory_stores["member-alice"].memory_version = "2"
+    else:
+        members.agents["alice"].member_id = "ID_Alice"
+        members.memory_stores["member-alice"].owner_member_id = "ID_Alice"
+    with pytest.raises(LegacyScheduleRefused):
+        legacy_member_cron_execution(_legacy_member_schedule(selector))
+
+
+@pytest.mark.parametrize("store", ["legacy-v1", "default"])
+def test_a_member_schedule_on_a_v1_store_is_not_a_legacy_member_schedule(members, store):
+    from kiro_crew.cron_service.identity import legacy_member_cron_execution
+
+    members.memory_stores["legacy-v1"] = MemoryStoreConfig(memory_version=1)
+    assert legacy_member_cron_execution(_legacy_member_schedule("alice", store)) is None
+
+
+def _write_crons(path, records):
+    import json
+
+    path.write_text(json.dumps({"version": 2, "jobs": records}, indent=2), encoding="utf-8")
+
+
+def _insider_record(job_id, member_id, store="member-alice", **extra):
+    """A crons.json record exactly as 0.7.0-insider.1 to .5 wrote it: no execution_context key."""
+    record = {
+        "id": job_id,
+        "name": job_id,
+        "message": "digest",
+        "schedule": {"kind": "every", "every_secs": 3600},
+        "agent_id": "",
+        "member_id": member_id,
+        "memory_store": store,
+    }
+    record.update(extra)
+    return record
+
+
+def test_pre_identity_member_schedules_are_captured_once(members, tmp_path, caplog):
+    import json
+    from types import SimpleNamespace
+
+    from kiro_crew.cron import resolve_cron_memory
+    from kiro_crew.cron_service.identity import migrate_legacy_member_schedules
+    from kiro_crew.cron_service.store import _job_from_record
+    from kiro_crew.dashboard.handlers._shared import _cron_execution_from_registry
+
+    store_dir = tmp_path / "cron-store"
+    store_dir.mkdir()
+    captured = _insider_record("captured", "id-alice")
+    captured["execution_context"] = execution.resolve_member_execution(members, "alice").to_record()
+    untouched = [
+        captured,
+        _insider_record("other-member", "bob"),
+        _insider_record("ordinary", "", store=""),
+    ]
+    records = [_insider_record("legacy", "alice", agent_id="named-template"), *untouched]
+    _write_crons(store_dir / "crons.json", json.loads(json.dumps(records)))
+
+    assert migrate_legacy_member_schedules(store_dir) == ["legacy"]
+
+    saved = json.loads((store_dir / "crons.json").read_text(encoding="utf-8"))["jobs"]
+    alice = execution.resolve_member_execution(members, "alice")
+    assert saved[0]["execution_context"] == alice.to_record()
+    assert saved[0]["member_id"] == "id-alice"
+    assert saved[0]["agent_id"] == alice.template_id == "shared-template"
+    assert saved[1:] == json.loads(json.dumps(untouched))
+    assert "'named-template'" in caplog.text and "'shared-template'" in caplog.text
+    assert "other-member" in caplog.text and "recreate it from the member's chat" in caplog.text
+
+    job = _job_from_record(saved[0])
+    assert resolve_cron_memory(job) == ("member-alice", "shared-template")
+    state = SimpleNamespace(crons=SimpleNamespace(_jobs=[job]))
+    assert _cron_execution_from_registry(state, "cron:legacy") == (True, alice)
+
+    before = (store_dir / "crons.json").read_bytes()
+    assert migrate_legacy_member_schedules(store_dir) == []
+    assert (store_dir / "crons.json").read_bytes() == before
+
+
+def test_the_schedule_capture_never_raises(members, tmp_path):
+    from kiro_crew.cron_service.identity import migrate_legacy_member_schedules
+
+    assert migrate_legacy_member_schedules(tmp_path / "absent") == []
+    (tmp_path / "crons.json").write_text("{", encoding="utf-8")
+    assert migrate_legacy_member_schedules(tmp_path) == []
+    assert (tmp_path / "crons.json").read_text(encoding="utf-8") == "{"
