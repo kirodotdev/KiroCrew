@@ -924,6 +924,62 @@ class TestStartKiroRuntimeResume:
         mock_runtime.kill.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_a_slow_cleanup_drain_neither_masks_nor_replaces_the_setup_failure(self, caplog):
+        # The field log for a Windows host that kept failing session setup
+        # carried only the cleanup kill's drain traceback, never the failure
+        # that asked for the kill. The original failure is what the caller
+        # gets, and it is in the log at WARNING; a cleanup drain that is still
+        # running is neither raised nor allowed to bury it.
+        import logging
+
+        from test_update_provider import _UNALLOCATABLE_PID
+
+        from kiro_crew import platform_compat
+
+        provider = self._kiro_provider(model="auto")
+        provider._client._resume_session_id = ""
+
+        mock_runtime = MagicMock()
+        mock_runtime.pid = _UNALLOCATABLE_PID
+        mock_runtime.spawn = AsyncMock()
+        mock_runtime.kill = AsyncMock(
+            side_effect=platform_compat.WindowsTreeDrainPending(
+                root_pid=_UNALLOCATABLE_PID, pending=2
+            )
+        )
+        mock_runtime.saw_not_logged_in = MagicMock(return_value=False)
+        mock_runtime.saw_sandbox_init_failure = MagicMock(return_value=False)
+        mock_runtime.settle_stderr = AsyncMock()
+        # Backend-authored text can carry a line break and a terminal escape;
+        # neither may reach the log line, which must stay one line.
+        mock_runtime.create_session = AsyncMock(
+            side_effect=RuntimeError(
+                "session limit reached\n21:00:00 ERROR forged line \x1b[31mred"
+            )
+        )
+
+        with (
+            patch("kiro_crew.providers.acp.AcpRuntime", return_value=mock_runtime),
+            patch("kiro_crew.providers.acp.AcpSessionProvider"),
+            caplog.at_level(logging.WARNING, logger="kiro_crew.providers.acp"),
+        ):
+            with pytest.raises(RuntimeError, match="session limit reached"):
+                await provider._start_kiro_runtime()
+
+        mock_runtime.kill.assert_awaited_once()
+        setup = [
+            r
+            for r in caplog.records
+            if r.name == "kiro_crew.providers.acp" and "session limit reached" in r.getMessage()
+        ]
+        assert len(setup) == 1, [r.getMessage() for r in caplog.records]
+        assert setup[0].levelname == "WARNING"
+        assert str(_UNALLOCATABLE_PID) in setup[0].getMessage()
+        assert "RuntimeError" in setup[0].getMessage()
+        assert "\n" not in setup[0].getMessage()
+        assert "\x1b" not in setup[0].getMessage()
+
+    @pytest.mark.asyncio
     async def test_successful_start_does_not_kill_runtime(self):
         # Guard against over-eager cleanup: a normal successful start must NOT
         # kill the runtime (the AcpSessionProvider now owns it).

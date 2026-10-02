@@ -2707,6 +2707,50 @@ async def test_the_windows_branch_amends_the_summary_too(caplog, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_a_slow_windows_drain_is_one_warning_and_keeps_the_process(caplog, monkeypatch):
+    """A tree that outlives one bounded drain pass is pending cleanup, not lost.
+
+    The kill still raises -- its callers retain the runtime on a raise, and the
+    drain kept every pin for the cleanup sweep -- but the log says exactly that
+    in one line, without a traceback. A traceback here reads in the field as the
+    crash, and hides the failure that asked for the kill.
+    """
+    import logging
+
+    import kiro_crew.acp.runtime as rt_mod
+
+    rt, _, proc = _make_runtime()
+    _neuter_kill_side_effects(monkeypatch, proc)
+    monkeypatch.setattr(rt_mod.platform_compat, "IS_WINDOWS", True)
+    pending = rt_mod.platform_compat.WindowsTreeDrainPending(root_pid=4242, pending=3)
+
+    async def _drain_is_slow(process):
+        raise pending
+
+    monkeypatch.setattr(rt_mod.platform_compat, "terminate_windows_asyncio_tree", _drain_is_slow)
+
+    with caplog.at_level(logging.INFO, logger="kiro_crew.acp.runtime"):
+        with pytest.raises(rt_mod.platform_compat.WindowsTreeDrainPending):
+            await rt.kill(reason="failed session setup cleanup")
+
+    assert rt._process is proc, "a tree still draining dropped its process"
+    assert rt._process_tree_confirmed_dead is False
+    records = [
+        r
+        for r in caplog.records
+        if r.name == "kiro_crew.acp.runtime" and "cleanup sweep" in r.getMessage()
+    ]
+    assert len(records) == 1, [r.getMessage() for r in caplog.records]
+    assert records[0].levelname == "WARNING"
+    assert records[0].exc_info is None
+    assert "4242" in records[0].getMessage()
+    assert "3 member" in records[0].getMessage()
+    assert not [
+        r for r in caplog.records if r.name == "kiro_crew.acp.runtime" and r.exc_info
+    ], "a slow drain still logged a traceback"
+
+
+@pytest.mark.asyncio
 async def test_an_unconfirmed_windows_drain_leaves_the_placeholder(caplog, monkeypatch):
     """A drain that cannot confirm every member's exit RAISES and keeps the
     process pinned for maintenance to retry. The status is then genuinely
