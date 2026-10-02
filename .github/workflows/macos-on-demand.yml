@@ -131,6 +131,9 @@ jobs:
               - "src/kiro_crew/dashboard/file_api/**"
               - "test/test_safe_read_file_bytes_descriptor.py"
               - "test/test_theme_install.py"
+              # Credential redaction withholds the id macOS's confstr reports for
+              # the per-user temp dir; its one real-platform test skips elsewhere.
+              - "src/kiro_crew/security/redaction.py"
               # The singleton home lock: its durable anchor is POSIX-only, and
               # its guard tests skip themselves where a directory cannot be
               # locked, so a darwin regression would read as green without this

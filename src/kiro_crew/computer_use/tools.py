@@ -750,11 +750,11 @@ def _run(
     #
     # Redacting the two parts separately rather than the joined string is deliberate:
     # ``render_tree`` deliberately appends the screenshot note AFTER its own
-    # redaction, because the per-user temp path contains a long random segment that
-    # the bare-secret-key heuristic masks — re-running redaction over the joined text
-    # would destroy every screenshot path (verified live, documented in
-    # ``render._render_image_note``). So the header is redacted on its own and the
-    # already-redacted body is left untouched.
+    # redaction, because its spool path must reach the model byte-exact and the
+    # bare-secret-key heuristic reads a path as one base64-alphabet run —
+    # re-running redaction over the joined text would expose every screenshot path
+    # to it (documented in ``render._render_image_note``). So the header is
+    # redacted on its own and the already-redacted body is left untouched.
     return f"{ACTION_RESULT_HEADER.format(detail=policy.redact_result(detail))}\n{body}"
 
 

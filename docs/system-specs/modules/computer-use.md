@@ -436,12 +436,14 @@ which is attacker-controlled). A process named `Notes key=AKIA…` therefore put
 credential directly in front of a fully redacted tree. Fixed by redacting `detail` at
 the interpolation.
 
-Redacting the *joined* string instead would break screenshots: `render_tree` appends
-its image note after its own redaction because the per-user temp dir contains a long
-random segment that `redact_credentials`' bare-secret-key heuristic masks, so a second
-pass would replace every screenshot path with a placeholder and the channel would
-silently never work (verified live; see `render._render_image_note`). Hence: header
-redacted on its own, already-redacted body passed through untouched. Both halves of
+Redacting the *joined* string instead would put the image note through the redactor,
+and `render_tree` appends that note after its own redaction on purpose: it is
+machine-generated, and the model must receive the spool path byte-exact to open it or
+hand it to the user. A path is one base64-alphabet run to the bare-secret-key
+heuristic, which withholds only this host's macOS per-user directory id
+(`redaction._host_darwin_user_dir_id`), not every temp root a spool can land under; see
+`render._render_image_note`. Hence: header redacted on its own, already-redacted body
+passed through untouched. Both halves of
 that rule are pinned by tests, the second one structurally — a mutating tool's refresh
 walk is `want_image=False`, so no behavioural test in that file would notice a
 "just redact the whole response" simplification breaking the read path.

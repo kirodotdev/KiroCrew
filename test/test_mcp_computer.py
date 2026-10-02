@@ -1890,11 +1890,10 @@ class TestTheActionHeaderIsRedacted:
         """Why the two halves are redacted SEPARATELY rather than as one joined string.
 
         ``render_tree`` appends its screenshot note AFTER its own redaction pass, on
-        purpose: the per-user temp dir macOS hands a process contains a long random
-        segment that ``redact_credentials``' bare-secret-key heuristic matches, so a
-        pass over the joined text would replace every screenshot path with a
-        placeholder and the channel would silently never work (verified live; see
-        ``render._render_image_note``).
+        purpose: the spool path must reach the model byte-exact, and
+        ``redact_credentials``' bare-secret-key heuristic reads a path as one
+        base64-alphabet run, so a pass over the joined text would expose every
+        screenshot path to it (see ``render._render_image_note``).
 
         So the fix redacts the HEADER only and leaves the already-redacted body
         untouched. Asserted structurally, because the behavioural shape is not
