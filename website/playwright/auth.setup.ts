@@ -24,6 +24,12 @@ setup('authenticate', async ({ page }) => {
   }
   await page.goto(`/?token=${encodeURIComponent(token)}`, { waitUntil: 'domcontentloaded', timeout: 30000 })
   await page.waitForLoadState('load', { timeout: 30000 })
+  // On a gateway no browser has opened yet, the app navigates once more after
+  // sign-in (to its starter session, dropping `?token=`). An evaluate issued
+  // before that navigation lands dies with "Execution context was destroyed",
+  // so wait until the token has left the URL and that page has loaded too.
+  await page.waitForURL((url) => !url.searchParams.has('token'), { timeout: 30000 })
+  await page.waitForLoadState('load', { timeout: 30000 })
   if (process.env.KIROCREW_E2E_EPHEMERAL === '1') {
     const configResponse = await page.request.get('/api/config/kirocrew')
     expect(configResponse.ok(), await configResponse.text()).toBeTruthy()
