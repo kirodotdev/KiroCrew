@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ChatMessage } from '../types'
 import type { DisplayItem } from '../pages/chat/types'
 import { usePinnedPrompt } from '../pages/chat/usePinnedPrompt'
+import { DEFAULT_PINNED_CARD_H } from '../utils/pinnedPrompt'
 
 /**
  * chat-core P5-d: the pinned-prompt geometry extracted from the main chat's
@@ -420,6 +421,33 @@ describe('usePinnedPrompt leaves a tall bubble in place, then pins it at rest', 
     wire(h, g)
     expect(h.result.current.pinned?.liveH, 'the fold is over').toBeUndefined()
     expect(h.result.current.pinned).toMatchObject({ idx: 2, stripUncovered: true })
+  })
+
+  it('gates a new prompt on the seed height, not the previous card\'s measured height', () => {
+    const h = renderPin()
+    const g = mountGeometry(6)
+    const items: DisplayItem[] = [...ITEMS, single(5, 'assistant', 'next reply')]
+    // Prompt 2 is pinned first, and its card reports a two-line height — the
+    // image-only card shape.
+    wire(h, g, items)
+    expect(h.result.current.pinned).toMatchObject({ idx: 2 })
+    act(() => { h.result.current.onPinCollapsedHeight(90) })
+    // Scroll on: prompt 4 is now the candidate. Its bubble's bottom sits at
+    // 174, so 70px of it is left above the reply (174 - fold 100 - ROW_PAD_Y 4):
+    // more than a fresh one-line card, less than the previous card's 90.
+    setRect(g.rows[2], -400, 40)
+    setRect(g.rows[3], -300, 40)
+    setRect(g.rows[4], 60, 140)
+    const { bubble } = mountUserRow(g.rows[4])
+    setRect(bubble, 64, 110)
+    setRect(g.rows[5], 800, 40)
+    act(() => { h.result.current.updatePinnedPrompt() })
+    expect(h.result.current.pinned).toBeNull()
+    // Once only one line of it is left, its card takes over at the seed height.
+    setRect(g.rows[4], 20, 140)
+    setRect(bubble, 24, 110)
+    act(() => { h.result.current.updatePinnedPrompt() })
+    expect(h.result.current.pinned).toMatchObject({ idx: 4, bannerH: DEFAULT_PINNED_CARD_H })
   })
 
   it('drops the mark on a later frame of the same pin, once the strip has slid under the card', () => {

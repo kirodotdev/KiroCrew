@@ -62,6 +62,9 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
   // only place the SETTLED height is knowable: measuring the card from here would
   // sample the expand/collapse morph mid-flight and drag the line with it.
   const pinCollapsedHRef = useRef(DEFAULT_PINNED_CARD_H)
+  // The prompt the hook last resolved as the pin candidate. `pinCollapsedHRef`
+  // is reset when it changes; see updatePinnedPrompt.
+  const pinCandidateKeyRef = useRef<string | null>(null)
   const onPinCollapsedHeight = useCallback((h: number) => {
     if (h > 0) pinCollapsedHRef.current = h
   }, [])
@@ -124,6 +127,17 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
     const pinIdx = findPinnedPromptIdx(list, handoffIdx)
     const pinItem = pinIdx >= 0 ? list[pinIdx] : undefined
     if (!pinItem || pinItem.kind !== 'single') { setPinned(null); return }
+    // The measured collapsed height belongs to the card it was measured on, and
+    // collapsed heights differ between prompts (an image-only card is two lines
+    // tall, a text card one). So when the candidate changes, the seed comes back
+    // until this prompt's own card reports. A previous card's height read by the
+    // gate below would let a card mount that then measures shorter, fails the
+    // gate and unmounts with no scroll in between.
+    const candidateKey = pinItem.msg.ts ?? `idx:${pinIdx}`
+    if (pinCandidateKeyRef.current !== null && pinCandidateKeyRef.current !== candidateKey) {
+      pinCollapsedHRef.current = DEFAULT_PINNED_CARD_H
+    }
+    pinCandidateKeyRef.current = candidateKey
     // The incoming prompt pushes the banner out; when its row is not mounted it
     // is still far below the fold, so there is nothing to push against yet. Its
     // TOP edge against the fold drives the push (see computePinPush) — an earlier
@@ -298,8 +312,9 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
     // one place that was not true.
     //
     // No fallback is needed for an unmounted card: `pinCollapsedHRef` is seeded
-    // with DEFAULT_PINNED_CARD_H and only ever written from PinnedPrompt's
-    // `!expanded && !peek` report, so it is always known and always settled.
+    // with DEFAULT_PINNED_CARD_H, reset to it when the candidate changes, and
+    // otherwise only written from PinnedPrompt's `!expanded && !peek` report, so
+    // it is always known and always settled.
     const bannerH = pinCollapsedHRef.current
     const push = computePinPush(bannerH, foldY, nextTop)
     // Fully pushed out: DROP the banner instead of rendering it clipped to
