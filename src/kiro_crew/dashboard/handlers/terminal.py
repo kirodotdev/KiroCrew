@@ -212,6 +212,10 @@ class _TerminalSession:
     # and on (re)connect, where the dedup markers are cleared and both frames
     # must be pushed again.
     frames_dirty: bool = True
+    # Whether the title poller has already WARNED about this session's probe
+    # failing. A probe that fails every time would otherwise log a traceback per
+    # tick for as long as the terminal writes; one clean poll re-arms it.
+    poll_warned: bool = False
     # A WebSocket upgrade completes before startup has yielded the terminal back
     # to a freshly spawned login shell. Run-in-terminal callers must not release
     # queued commands until this barrier has been crossed.
@@ -737,10 +741,15 @@ def _resolve_shell(cfg: dict) -> tuple[str, str | None]:
 
 
 def _proc_comm(pid: int) -> str | None:
-    """Command name of a process (Linux /proc). None if unavailable."""
+    """Command name of a process (Linux /proc). None if unavailable.
+
+    Read as bytes and decoded with ``replace``: a comm is whatever bytes the
+    process named itself, and a multibyte name cut at the kernel's 15 bytes is
+    not UTF-8. It is only ever shown as a title.
+    """
     try:
-        with open(f"/proc/{pid}/comm", encoding="utf-8") as fh:
-            return fh.read().strip() or None
+        with open(f"/proc/{pid}/comm", "rb") as fh:
+            return fh.read().decode("utf-8", "replace").strip() or None
     except OSError:
         return None
 
@@ -2642,6 +2651,63 @@ async def reap_orphaned_terminals(app: web.Application) -> None:
         pass
 
 
+async def _push_session_frames(
+    sess: _TerminalSession | None, loop: asyncio.AbstractEventLoop
+) -> bool:
+    """One poll of one session: push its title and cwd frames if they changed.
+
+    True once it has probed, whatever it then sent; False when there was
+    nothing to probe (no live socket, or no output since the last poll).
+    """
+    if sess is None or sess.ws is None or sess.ws.closed:
+        return False
+    if not sess.frames_dirty:
+        return False
+    # Cleared BEFORE probing, never after: output landing while a
+    # probe is in flight must re-dirty the session so the next tick
+    # picks up the change instead of the flag swallowing it.
+    sess.frames_dirty = False
+    # _session_title / _session_cwd do blocking syscalls (tcgetpgrp
+    # ioctl, /proc reads, lsof where nothing cheaper answers) that
+    # can wedge on a D-state process or a stuck fs; run them off the
+    # loop on the subprocess pool (same rationale as the os.close
+    # offload in _kill_session) so one stuck read can never freeze
+    # the gateway event loop. Both probes share one cwd lookup via
+    # the session's memo.
+    # The WS can detach (sess.ws = None) or be displaced by a
+    # reconnect while an executor probe is in flight — capture +
+    # revalidate the socket after EACH hop, and let the bounded
+    # owner-checked sender re-confirm identity under the transport
+    # lock so a displaced socket never receives a frame and a
+    # blocked transport can never park the singleton poller.
+    title = await loop.run_in_executor(subprocess_executor(), _session_title, sess)
+    ws = sess.ws
+    if ws is None or ws.closed:
+        return True
+    if title and title != sess.last_title:
+        # Advance the dedup marker only after the frame was handed
+        # to the owner's transport: a timed-out or failed send must
+        # not suppress the retry, or chat handoff would label output
+        # with a stale title/cwd until the value changes again.
+        if await _send_owner_control_frame(
+            sess, ws, {"type": "title", "text": title}
+        ):
+            sess.last_title = title
+    # Live cwd (full path) rides the same poll: the frontend uses it
+    # to attribute terminal output handed off to chat. Pushed only
+    # on change, like the title.
+    cwd = await loop.run_in_executor(subprocess_executor(), _session_cwd, sess)
+    ws = sess.ws
+    if ws is None or ws.closed:
+        return True
+    if cwd and cwd != sess.last_cwd:
+        if await _send_owner_control_frame(
+            sess, ws, {"type": "cwd", "path": cwd}
+        ):
+            sess.last_cwd = cwd
+    return True
+
+
 async def poll_terminal_titles(app: web.Application) -> None:
     """Background task: push a per-session title (foreground command name while
     one runs, else the shell's cwd basename) and the shell's full cwd to each
@@ -2660,51 +2726,23 @@ async def poll_terminal_titles(app: web.Application) -> None:
             registry: dict[str, _TerminalSession] = state._terminal_sessions
             loop = asyncio.get_running_loop()
             for sess in list(registry.values()):
-                if sess is None or sess.ws is None or sess.ws.closed:
-                    continue
-                if not sess.frames_dirty:
-                    continue
-                # Cleared BEFORE probing, never after: output landing while a
-                # probe is in flight must re-dirty the session so the next tick
-                # picks up the change instead of the flag swallowing it.
-                sess.frames_dirty = False
-                # _session_title / _session_cwd do blocking syscalls (tcgetpgrp
-                # ioctl, /proc reads, lsof where nothing cheaper answers) that
-                # can wedge on a D-state process or a stuck fs; run them off the
-                # loop on the subprocess pool (same rationale as the os.close
-                # offload in _kill_session) so one stuck read can never freeze
-                # the gateway event loop. Both probes share one cwd lookup via
-                # the session's memo.
-                # The WS can detach (sess.ws = None) or be displaced by a
-                # reconnect while an executor probe is in flight — capture +
-                # revalidate the socket after EACH hop, and let the bounded
-                # owner-checked sender re-confirm identity under the transport
-                # lock so a displaced socket never receives a frame and a
-                # blocked transport can never park the singleton poller.
-                title = await loop.run_in_executor(subprocess_executor(), _session_title, sess)
-                ws = sess.ws
-                if ws is None or ws.closed:
-                    continue
-                if title and title != sess.last_title:
-                    # Advance the dedup marker only after the frame was handed
-                    # to the owner's transport: a timed-out or failed send must
-                    # not suppress the retry, or chat handoff would label output
-                    # with a stale title/cwd until the value changes again.
-                    if await _send_owner_control_frame(
-                        sess, ws, {"type": "title", "text": title}
-                    ):
-                        sess.last_title = title
-                # Live cwd (full path) rides the same poll: the frontend uses it
-                # to attribute terminal output handed off to chat. Pushed only
-                # on change, like the title.
-                cwd = await loop.run_in_executor(subprocess_executor(), _session_cwd, sess)
-                ws = sess.ws
-                if ws is None or ws.closed:
-                    continue
-                if cwd and cwd != sess.last_cwd:
-                    if await _send_owner_control_frame(
-                        sess, ws, {"type": "cwd", "path": cwd}
-                    ):
-                        sess.last_cwd = cwd
+                # One session's failure must not end the poller every terminal
+                # shares: it is logged and retried when that session next writes.
+                # WARNING once per failing streak, DEBUG while it keeps failing.
+                try:
+                    probed = await _push_session_frames(sess, loop)
+                except Exception:
+                    # Nothing raises before _push_session_frames has passed
+                    # its live-session guard, so sess is a real session here.
+                    logger.log(
+                        logging.DEBUG if sess.poll_warned else logging.WARNING,
+                        "terminal: title/cwd poll failed for session %s",
+                        sess.session_id,
+                        exc_info=True,
+                    )
+                    sess.poll_warned = True
+                else:
+                    if probed:
+                        sess.poll_warned = False
     except asyncio.CancelledError:
         pass

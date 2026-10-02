@@ -222,6 +222,20 @@ def test_a_proc_self_file_is_read_as_ascii(monkeypatch) -> None:
     assert cli_doctor._read_linux_proc_self("status") == "Seccomp:\t2\n"
 
 
+def test_a_proc_self_status_whose_name_is_not_ascii_is_read(monkeypatch, tmp_path) -> None:
+    """The ``Name:`` line is this process's raw comm; the ``Seccomp:`` line survives it."""
+    status = tmp_path / "status"
+    status.write_bytes(b"Name:\tkc-\xc3\xa9t\xff\nSeccomp:\t2\n")
+    real = Path.read_text
+
+    def read_text(self: Path, *args, **kwargs) -> str:
+        target = status if self.as_posix() == "/proc/self/status" else self
+        return real(target, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    assert cli_doctor._read_linux_proc_self("status").endswith("Seccomp:\t2\n")
+
+
 @pytest.mark.parametrize(
     ("uid_map", "status", "expected"),
     [
