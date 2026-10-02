@@ -1609,7 +1609,11 @@ decided by their own specs: the entry in `mcpServers` plus the matching
 refresh keeps an existing grant's command current without ever introducing one,
 so a hand-granted set survives upgrades and an ungranted one does not come back
 behind the user's back. Adding a second boolean in `config.json` on top of that
-gates nothing an unreferenced server was not already denying.
+gates nothing an unreferenced server was not already denying. Settings > Developer >
+Agent MCP servers follows the same rule for the default agent: its Add and Remove
+buttons edit the entries and `@<server>` refs in `kirocrew.json` itself and keep no
+record elsewhere (`dashboard/handlers/default_mcp_grants.py`); Add writes no
+`autoApprove` or `allowedTools`, and the worker spec still subtracts both sets.
 
 **Granularity: the set, not the tool.** A spec that references a server gets
 every tool in it. So a capability that must be grantable *separately* belongs in

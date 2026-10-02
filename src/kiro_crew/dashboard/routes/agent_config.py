@@ -16,6 +16,10 @@ from kiro_crew.dashboard.handlers.acp_backend_status import (
     api_acp_backend_recheck,
     api_acp_backend_status,
 )
+from kiro_crew.dashboard.handlers.default_mcp_grants import (
+    api_default_mcp_grants_get,
+    api_default_mcp_grants_set,
+)
 from kiro_crew.dashboard.handlers.mcp_custom import (
     api_mcp_custom_add,
     api_mcp_custom_get,
@@ -35,6 +39,10 @@ def register(app: web.Application) -> None:
     app.router.add_put("/api/agent/config", handlers.api_agent_config)
     app.router.add_get("/api/config/default-agent", handlers.api_default_agent)
     app.router.add_put("/api/config/default-agent", handlers.api_default_agent)
+    # Settings > Developer: grant the opt-in dashboard/debug MCP sets to the
+    # default agent (closed allowlist; owner-only write).
+    app.router.add_get("/api/agent/default-mcp-grants", api_default_mcp_grants_get)
+    app.router.add_post("/api/agent/default-mcp-grants", api_default_mcp_grants_set)
     app.router.add_get("/api/config/schema", handlers.api_config_schema)
     # Per-backend selectability + whether THIS machine has the harness installed.
     # Beside the schema route because the dashboard's backend switch reads both:
