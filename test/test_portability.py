@@ -2232,7 +2232,7 @@ async def test_import_handler_outcome_reflects_a_refused_merge(
     req["app"] = ""
     with patch.object(ph, "_read_upload_file", _fake_read_upload):
         with patch.object(ph, "validate_import_zip", lambda p: (True, "", {"version": 2})):
-            with patch.object(ph, "apply_import_zip", lambda p, m: summary):
+            with patch.object(ph, "apply_import_zip", lambda p, m, **_kw: summary):
                 with patch.object(ph, "_sel", lambda: _FakeSel()):
                     resp = await ph.api_portability_import(req)
 
@@ -2273,7 +2273,7 @@ async def test_a_refused_import_names_a_machine_readable_code(tmp_path, error, e
     async def _fake_read_upload(request):
         return upload, None
 
-    def _refuse(path, mode):
+    def _refuse(path, mode, **_kw):
         raise error
 
     class _FakeSel:

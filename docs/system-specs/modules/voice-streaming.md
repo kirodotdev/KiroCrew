@@ -364,9 +364,15 @@ synthesis so simultaneous local requests cannot load unbounded models.
 ## Configuration and API
 
 Configuration is stored under `voice_reply` in the Crew configuration file.
-`slack.handler.load_voice_reply_config()` loads the live `_VoiceConfig`, and
-`api_voice_config()` merges a partial update back into that section rather than
-replacing it. The merge preserves voice settings owned by other channels.
+`slack.handler.load_voice_reply_config()` loads the live `_VoiceConfig`. A
+`PUT /api/voice/config` validates the whole patch first, then persists it as a
+locked delta read-modify-write (`run_config_write` → `update_config_locked`)
+that sets only the named keys inside `voice_reply`, so voice settings owned by
+other channels and every other section are kept. Only after the write lands is
+the patch applied to the live `_vc`, so a failed write never leaves the gateway
+running a value the file does not hold. A failed write answers non-2xx with a
+`code`: 500 `config_corrupt` (config.json unreadable), 400
+`config_write_refused`, or 500 `config_write_failed`; success is `{"ok": true}`.
 
 | Setting | Meaning |
 |---|---|

@@ -24,14 +24,21 @@ from collections.abc import Callable, Iterator
 from datetime import datetime, timezone
 from pathlib import Path, PurePath, PurePosixPath
 
-from kiro_crew import crew_teams, pinned_fs, platform_compat
+from kiro_crew import crew_teams, pinned_fs, platform_compat, ui_prefs
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.agent_discovery import parsed_agent_specs
 from kiro_crew.agent_files import OWNED_KIRO_AGENT_FILES
+from kiro_crew.atomic_write import atomic_write
+from kiro_crew.config.loader import (
+    ConfigReadError,
+    ConfigWriteRefused,
+    update_config_locked,
+)
 from kiro_crew.config.paths import config_dir, kiro_agents_dir
 from kiro_crew.mcp_cron import _log_cron_denial, _vet_shell_command
 from kiro_crew.member_memory_backup import hold_stores_for_read
 from kiro_crew.memory_stores import MEMORY_STORES_DIR_NAME, is_host_local_store_state
+from kiro_crew.notifications.settings import ChannelSettings, parse_imported_settings
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.snapshot import (
     _DB_SIDECAR_GLOBS,
@@ -63,13 +70,27 @@ EXPORT_EXCLUDE = frozenset(
         # BASENAME and `_is_excluded` runs over the workspace/, plan_memory/ and
         # skills/ trees, so an entry here would silently drop any USER file that
         # happens to share the name. They need no entry: root-level export is a
-        # hard-coded allowlist (config.json, hooks.json, crons.json,
-        # notifications.jsonl, project_dir, workspace_dir, crew-teams/teams.json), so a
-        # root beacon file is never selected in the first place.
+        # hard-coded allowlist (config.json, the settings documents in
+        # `_SETTINGS_DOCUMENTS`, hooks.json, crons.json, notifications.jsonl,
+        # project_dir, workspace_dir, crew-teams/teams.json), so a root beacon file is
+        # never selected in the first place.
         "session_map.json",
         "kiro_session_pids.txt",
         "kiro_pids.txt",
     }
+)
+
+#: The settings documents beside ``config.json`` -- everything else a dashboard Settings
+#: choice is persisted in. ``config.local.json`` is the overlay that ``config set --local``
+#: and ``save()`` keep overlay-owned values in, so those values exist ONLY there;
+#: ``ui-prefs.json`` is the host backup of the browser-held Settings (`ui_prefs.py`);
+#: ``notification_settings.json`` holds the Settings > Notifications mutes and priorities
+#: (`notifications/settings.py`). The snapshot ``config`` component carries the same
+#: three, so the two whole-install backups agree on what a setting is.
+_SETTINGS_DOCUMENTS: tuple[str, ...] = (
+    "config.local.json",
+    "ui-prefs.json",
+    "notification_settings.json",
 )
 
 EXCLUDE_DIRS = frozenset(
@@ -521,6 +542,7 @@ def create_export_zip() -> tuple[bytes, dict]:
         # Core JSON/text files
         for fname in (
             "config.json",
+            *_SETTINGS_DOCUMENTS,
             "hooks.json",
             "crons.json",
             "notifications.jsonl",
@@ -928,14 +950,231 @@ def _strip_host_local_store_state(snap: Path) -> None:
                 _strip(stores_pin, ())
 
 
-def apply_import_zip(zip_path: Path, mode: str = "merge") -> dict:
+class _SettingsRefused(Exception):
+    """An archive settings document is not the shape its reader needs; the message says why."""
+
+
+def _read_archive_object(path: Path) -> dict:
+    """Parse the archive's *path* as a JSON object, or raise :class:`_SettingsRefused`.
+
+    Only the top-level shape is checked, as the snapshot restore checks it
+    (`_refuse_unless_json_object`): every consumer of these files reads an object and
+    treats anything else as empty, which is exactly the silent reset an import must not
+    install. The archive's ``meta`` block is dropped -- it records the SOURCE install's
+    writer and load state, and the destination's own writer stamps a fresh one.
+    """
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, RecursionError) as exc:
+        raise _SettingsRefused(f"the archive's {path.name} is not readable JSON ({exc})") from None
+    if not isinstance(doc, dict):
+        raise _SettingsRefused(
+            f"the archive's {path.name} is a JSON {type(doc).__name__}, not an object"
+        )
+    doc.pop("meta", None)
+    return doc
+
+
+def _skip_setting(summary: dict, label: str, why: str) -> None:
+    summary["items"].append(f"{label} (skipped: {why})")
+    summary.setdefault("refused_merges", []).append(label)
+
+
+def _vet_archive_settings(snap: Path, summary: dict) -> dict[str, object]:
+    """Validate every settings document the archive carries, BEFORE either branch applies one.
+
+    Returns the parsed form of each document that passed, keyed by file name. A document
+    that failed is reported as skipped and REMOVED from the extracted archive, so neither
+    branch can install it: merge never reads it, and replace (`_do_replace`) leaves the
+    live copy in place for a file the bundle does not carry.
+
+    The two documents whose readers filter on the way in are also rewritten in the
+    extracted archive to their filtered form, so a replace installs what a merge into an
+    install without the file would: ``ui-prefs.json`` without its credential-shaped keys
+    and unstorable values, ``notification_settings.json`` without a mute on a protected
+    channel.
+    """
+    vetted: dict[str, object] = {}
+    for name, label in (
+        ("config.json", "config"),
+        ("config.local.json", "config.local"),
+        ("ui-prefs.json", "ui-prefs"),
+        ("notification_settings.json", "notification-settings"),
+    ):
+        src = snap / name
+        if not src.is_file():
+            continue
+        try:
+            if name == "ui-prefs.json":
+                try:
+                    patch, dropped = ui_prefs.parse_imported_ui_prefs(src)
+                except ui_prefs.UiPrefsError as exc:
+                    raise _SettingsRefused(f"the archive's {name} is {exc}") from None
+                except OSError as exc:
+                    raise _SettingsRefused(f"the archive's {name} is unreadable ({exc})") from None
+                atomic_write(src, json.dumps({"prefs": patch}, indent=2), restrict_to_owner=True)
+                vetted[name] = (patch, dropped)
+            elif name == "notification_settings.json":
+                try:
+                    text = src.read_text(encoding="utf-8")
+                    channels, dropped = parse_imported_settings(text)
+                except (OSError, ValueError) as exc:
+                    raise _SettingsRefused(f"the archive's {name} is unusable ({exc})") from None
+                src.write_text(
+                    json.dumps({"channel_settings": channels}, indent=2), encoding="utf-8"
+                )
+                vetted[name] = (channels, dropped)
+            else:
+                vetted[name] = _read_archive_object(src)
+            # Replace installs the STAGED file's mode (`_backup_and_copy` copies it
+            # from the source fstat), and the extractor creates every staged file at
+            # the umask default -- typically group/world-readable. The config writer
+            # creates at 0o600, so a replace must not install those documents wider
+            # than their own writer ever would (the ui-prefs rewrite above already
+            # wrote 0o600). notification_settings.json is left alone: its live
+            # writer (`atomic_write` with no mode) uses the umask too.
+            if name in ("config.json", "config.local.json"):
+                # An extracted copy inside the import's private (0o700) temp dir.
+                platform_compat.restrict_to_owner(src)  # lockdown-ok: private staged copy
+        except _SettingsRefused as exc:
+            _skip_setting(summary, label, str(exc))
+            src.unlink()
+    return vetted
+
+
+#: What a Merge says about a settings document it left alone. Replace is the path
+#: that restores one over this install's own.
+_KEPT_NOTE = "kept this install's; import with Replace to restore the archive's"
+
+
+def _merge_settings(
+    mc: Path,
+    vetted: dict[str, object],
+    summary: dict,
+    channel_settings: ChannelSettings | None,
+) -> None:
+    """Apply the archive's settings documents the way Merge applies everything: never overwrite.
+
+    Per document, not per setting. A document this install LACKS is installed from the
+    vetted archive copy and reported ``"<label> (restored)"``; a document this install
+    HAS is left untouched, byte for byte, and reported as kept. Replace is the path that
+    restores the archive's settings over this install's (backing the old ones up first).
+
+    * ``config.json`` -- installed through `update_config_locked`, which re-checks the
+      absence under the config lock, writes owner-only, stamps this install's ``meta``
+      and wakes the live watcher.
+    * ``config.local.json`` -- NEVER installed by a Merge, even where this install has
+      none: the overlay outranks ``config.json`` at load, so an installed copy would set
+      every key it names over this install's own config -- the rule ``snapshot._do_merge``
+      follows for the same file.
+    * ``ui-prefs.json`` -- through the store's validated writer
+      (`ui_prefs.install_imported_ui_prefs`), which re-checks the absence under its lock.
+    * ``notification_settings.json`` -- through the running gateway's store when there
+      is one (`ChannelSettings.install_imported`), so a restored mute applies at once and
+      the in-memory copy does not write the old settings back over it.
+
+    Every document the archive carried that this Merge did not apply is named in
+    ``summary["settings_kept"]``. The entries are the four file names above, never
+    archive-authored text, so the list is bounded by construction (at most four).
+    """
+    kept: list[str] = []
+
+    def _keep(name: str, label: str, note: str = _KEPT_NOTE) -> None:
+        kept.append(name)
+        summary["items"].append(f"{label} ({note})")
+
+    incoming = vetted.get("config.json")
+    if isinstance(incoming, dict):
+        target = mc / "config.json"
+        installed: list[bool] = []
+
+        def _install_if_absent(_current: dict) -> dict | None:
+            # Inside the config lock: a writer that created the file first wins.
+            if os.path.lexists(target):
+                return None
+            installed.append(True)
+            return dict(incoming)
+
+        if os.path.lexists(target):
+            _keep("config.json", "config")
+        else:
+            try:
+                update_config_locked(target, mutate=_install_if_absent)
+            except (ConfigReadError, ConfigWriteRefused, OSError) as exc:
+                _skip_setting(summary, "config", str(exc))
+            else:
+                if installed:
+                    summary["items"].append("config (restored)")
+                else:
+                    _keep("config.json", "config")
+
+    if "config.local.json" in vetted:
+        if os.path.lexists(mc / "config.local.json"):
+            _keep("config.local.json", "config.local")
+        else:
+            _keep(
+                "config.local.json",
+                "config.local",
+                "not installed: a Merge never installs the overlay, which would outrank "
+                "this install's config.json; import with Replace to restore the archive's",
+            )
+
+    prefs = vetted.get("ui-prefs.json")
+    if isinstance(prefs, tuple):
+        patch, dropped = prefs
+        note = f"; {dropped} unstorable entr{'y' if dropped == 1 else 'ies'} dropped"
+        try:
+            installed_prefs = bool(patch) and ui_prefs.install_imported_ui_prefs(patch)
+        except (ui_prefs.UiPrefsError, OSError) as exc:
+            _skip_setting(summary, "ui-prefs", str(exc))
+        else:
+            if installed_prefs:
+                summary["items"].append(f"ui-prefs (restored{note if dropped else ''})")
+                summary["ui_prefs_restored"] = True
+            elif not patch:
+                summary["items"].append(f"ui-prefs (nothing to restore{note if dropped else ''})")
+            else:
+                _keep("ui-prefs.json", "ui-prefs")
+
+    notes = vetted.get("notification_settings.json")
+    if isinstance(notes, tuple):
+        channels, dropped = notes
+        note = f"; {dropped} invalid value{'' if dropped == 1 else 's'} dropped"
+        try:
+            live = channel_settings if channel_settings is not None else ChannelSettings()
+            installed_notes = live.install_imported(channels)
+        except OSError as exc:
+            _skip_setting(summary, "notification-settings", str(exc))
+        else:
+            if installed_notes:
+                summary["items"].append(
+                    f"notification-settings (restored{note if dropped else ''})"
+                )
+            else:
+                _keep("notification_settings.json", "notification-settings")
+
+    if kept:
+        summary["settings_kept"] = kept
+
+
+def apply_import_zip(
+    zip_path: Path, mode: str = "merge", *, channel_settings: ChannelSettings | None = None
+) -> dict:
     """Extract and apply an import zip.
 
     Args:
         zip_path: Path to validated zip file.
-        mode: "merge" (default, non-destructive) or "replace" (overwrites).
+        mode: "merge" (default, non-destructive) or "replace" (overwrites). Merge
+            never overwrites memory, crons, workspace files or skills, and installs
+            an archive settings document only where this install has none -- never
+            the ``config.local.json`` overlay -- naming each it kept in
+            ``settings_kept`` (see `_merge_settings`). Replace restores all four.
+        channel_settings: the running gateway's notification-settings store, so a
+            restored mute applies at once and is not written back over by the
+            in-memory copy. ``None`` (no gateway in this process) loads one from disk.
 
-    Returns summary dict of what was imported.
+    Returns summary dict of what was imported. ``ui_prefs_restored`` is True when the
+    browser-preference backup was installed, which tells the dashboard to re-read it.
     """
     try:
         vet_zip_inventory(zip_path, max_members=_MAX_IMPORT_MEMBERS)
@@ -1070,6 +1309,10 @@ def apply_import_zip(zip_path: Path, mode: str = "merge") -> dict:
             snap, ["memory", "crew-teams"], mc_for_merge=None if mode == "replace" else mc
         )
 
+        # Before either branch too: a settings document neither branch may install is
+        # removed from the extraction here, and reported.
+        vetted_settings = _vet_archive_settings(snap, summary)
+
         if mode == "replace":
             # Strip sensitive files and skills/auto/ from snapshot before replace
             for excluded_name in EXPORT_EXCLUDE:
@@ -1101,6 +1344,12 @@ def apply_import_zip(zip_path: Path, mode: str = "merge") -> dict:
             # path, which is the one that tells the user the import did not happen.
             _do_replace(snap, mc, None, allow_unpinned=not staging_pinned)
             summary["items"].append("full replace")
+            if "ui-prefs.json" in vetted_settings:
+                summary["ui_prefs_restored"] = True
+            if channel_settings is not None and "notification_settings.json" in vetted_settings:
+                # The file was swapped under the running store; re-read it, or the
+                # in-memory copy keeps the old mutes and its next update restores them.
+                channel_settings.reload()
         else:
             # Merge mode
             if (snap / "memory.db").is_file():
@@ -1147,9 +1396,7 @@ def apply_import_zip(zip_path: Path, mode: str = "merge") -> dict:
                 else:
                     summary["items"].append("hooks (skipped, already exists)")
 
-            if (snap / "config.json").is_file() and not (mc / "config.json").is_file():
-                shutil.copy2(str(snap / "config.json"), str(mc / "config.json"))
-                summary["items"].append("config (restored)")
+            _merge_settings(mc, vetted_settings, summary, channel_settings)
 
             if (snap / "notifications.jsonl").is_file():
                 if (mc / "notifications.jsonl").is_file():

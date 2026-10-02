@@ -55,8 +55,12 @@ from kiro_crew.config.loader import (
     SUBAGENT_AUTO_MAX_CEILING,
     SUBAGENT_MAX_TURNS_CEILING,
     SWEEP_CHUNK_BUDGET_MAX,
+    ConfigReadError,
+    ConfigWriteRefused,
     KiroCrewConfig,
+    coerce_dict_section,
     config_path,
+    update_config_locked,
 )
 from kiro_crew.config.sections import (
     DECISION_BUCKET_MAX,
@@ -67,7 +71,7 @@ from kiro_crew.config.sections import (
     STT_LANGUAGE_AUTO,
 )
 from kiro_crew.context_management import RESULT_FILE_MAX_BYTES
-from kiro_crew.dashboard.chat_utils import drained_to_thread
+from kiro_crew.dashboard.chat_utils import drained_to_thread, run_config_write
 from kiro_crew.dashboard.handlers._shared import (
     _pip_install_channel_available,
     guard_owner_surface_routes,
@@ -641,7 +645,18 @@ async def api_theme_config(request: web.Request) -> web.Response:
 
     GET returns the current config. PUT accepts
     {mode?, color?, language?, onboarded?, import_onboarded?, privacy_acked?,
-    crewmates_onboarded?} and persists to the workspace config file.
+    crewmates_onboarded?} and persists ONLY those ``dashboard.*`` keys.
+
+    The PUT is a locked delta read-modify-write, never a whole-document
+    ``KiroCrewConfig.save()``. A momentarily unreadable ``config.json`` (a torn
+    read, a sharing violation, a BOM, an empty file) makes ``load()`` answer
+    pure defaults, and the SPA fires this PUT on its own at boot (the legacy
+    theme migration, triggered by the ``onboarded=false`` such a load reports),
+    so publishing the loaded snapshot erased every setting in the file. Even a
+    healthy snapshot carried load-time coercions back to disk and lost a
+    concurrent CLI write. Writing only the requested keys under both config
+    locks leaves the rest of the file as it was, and an unreadable file is
+    refused (500 ``config_corrupt``) with its bytes untouched.
     """
     if request.method == "GET":
         cfg = KiroCrewConfig.load()
@@ -654,69 +669,73 @@ async def api_theme_config(request: web.Request) -> web.Response:
     body = await request.json()
     if not isinstance(body, dict):
         raise web.HTTPBadRequest(text="request body must be an object")
-    from kiro_crew.dashboard.handlers.agents import _get_config_lock
 
-    async with _get_config_lock():
-        cfg = await asyncio.to_thread(KiroCrewConfig.load)
-        changed = False
-        if "mode" in body:
-            mode = body["mode"]
-            if mode not in ("", "dark", "light", "system"):
-                raise web.HTTPBadRequest(text="mode must be '', 'dark', 'light', or 'system'")
-            if cfg.dashboard.theme_mode != mode:
-                cfg.dashboard.theme_mode = mode
-                changed = True
-        if "color" in body:
-            color = body["color"]
-            if not isinstance(color, str) or len(color) > 64:
-                raise web.HTTPBadRequest(text="color must be a string (max 64 chars)")
-            if cfg.dashboard.theme_color != color:
-                cfg.dashboard.theme_color = color
-                changed = True
-        if "language" in body:
-            language = body["language"]
-            # "" is the explicit "follow the browser" sentinel, so it must stay
-            # writable — a user returning to Auto has to be able to clear the
-            # stored choice.
-            if not isinstance(language, str):
-                raise web.HTTPBadRequest(text="language must be a string")
-            if language and not _LANGUAGE_TAG_RE.match(language):
-                raise web.HTTPBadRequest(
-                    text="language must be '' or a BCP-47 tag (e.g. 'en', 'zh-CN')"
-                )
-            if cfg.dashboard.language != language:
-                cfg.dashboard.language = language
-                changed = True
-        if "onboarded" in body:
-            onboarded = bool(body["onboarded"])
-            if cfg.dashboard.onboarded != onboarded:
-                cfg.dashboard.onboarded = onboarded
-                changed = True
-        if "import_onboarded" in body:
-            import_onboarded = body["import_onboarded"]
-            if not isinstance(import_onboarded, bool):
-                raise web.HTTPBadRequest(text="import_onboarded must be a boolean")
-            if cfg.dashboard.import_onboarded != import_onboarded:
-                cfg.dashboard.import_onboarded = import_onboarded
-                changed = True
-        if "privacy_acked" in body:
-            privacy_acked = body["privacy_acked"]
-            if not isinstance(privacy_acked, bool):
-                raise web.HTTPBadRequest(text="privacy_acked must be a boolean")
-            if cfg.dashboard.privacy_acked != privacy_acked:
-                cfg.dashboard.privacy_acked = privacy_acked
-                changed = True
-        if "crewmates_onboarded" in body:
-            crewmates_onboarded = body["crewmates_onboarded"]
-            if not isinstance(crewmates_onboarded, bool):
-                raise web.HTTPBadRequest(text="crewmates_onboarded must be a boolean")
-            if cfg.dashboard.crewmates_onboarded != crewmates_onboarded:
-                cfg.dashboard.crewmates_onboarded = crewmates_onboarded
-                changed = True
+    # Validate the WHOLE body before anything is written, so a 400 is a no-op.
+    updates: dict[str, object] = {}
+    if "mode" in body:
+        mode = body["mode"]
+        if mode not in ("", "dark", "light", "system"):
+            raise web.HTTPBadRequest(text="mode must be '', 'dark', 'light', or 'system'")
+        updates["theme_mode"] = mode
+    if "color" in body:
+        color = body["color"]
+        if not isinstance(color, str) or len(color) > 64:
+            raise web.HTTPBadRequest(text="color must be a string (max 64 chars)")
+        updates["theme_color"] = color
+    if "language" in body:
+        language = body["language"]
+        # "" is the explicit "follow the browser" sentinel, so it must stay
+        # writable — a user returning to Auto has to be able to clear the
+        # stored choice.
+        if not isinstance(language, str):
+            raise web.HTTPBadRequest(text="language must be a string")
+        if language and not _LANGUAGE_TAG_RE.match(language):
+            raise web.HTTPBadRequest(
+                text="language must be '' or a BCP-47 tag (e.g. 'en', 'zh-CN')"
+            )
+        updates["language"] = language
+    # A real bool only: ``bool("false")`` is True, so a string here is a client bug
+    # this endpoint must answer 400, not persist inverted.
+    for flag in ("onboarded", "import_onboarded", "privacy_acked", "crewmates_onboarded"):
+        if flag in body:
+            if not isinstance(body[flag], bool):
+                raise web.HTTPBadRequest(text=f"{flag} must be a boolean")
+            updates[flag] = body[flag]
 
-        if changed:
-            await asyncio.to_thread(cfg.save)
+    if updates:
 
+        def _apply_theme(doc: dict) -> dict | None:
+            dashboard = coerce_dict_section(doc, "dashboard")
+            changed = False
+            for key, value in updates.items():
+                current = dashboard.get(key)
+                # ``type`` too: ``1 == True``, and a hand-written 1 is not the
+                # bool the loader reads back.
+                if key in dashboard and current == value and type(current) is type(value):
+                    continue
+                dashboard[key] = value
+                changed = True
+            return doc if changed else None
+
+        try:
+            await run_config_write(update_config_locked, config_path(), mutate=_apply_theme)
+        except ConfigReadError:
+            logger.warning("theme config PUT: config.json is unreadable", exc_info=True)
+            return web.json_response(
+                {"error": "config.json is corrupt", "code": "config_corrupt"}, status=500
+            )
+        except ConfigWriteRefused as exc:
+            return web.json_response(
+                {"error": str(exc), "code": "config_write_refused"}, status=400
+            )
+        except OSError:
+            logger.warning("theme config PUT: config.json write failed", exc_info=True)
+            return web.json_response(
+                {"error": "failed to write config file", "code": "config_write_failed"},
+                status=500,
+            )
+
+    cfg = await asyncio.to_thread(KiroCrewConfig.load)
     return web.json_response(_theme_payload(cfg))
 
 

@@ -6139,7 +6139,12 @@
         "network_error_during_preview": "Network error during preview",
         "mode": "Mode",
         "export_templates_not_included": "This export doesn't include the agent templates your crews use: {{names}}. Copy them from ~/.kiro/agents to the same folder on the other machine.",
-        "import_templates_missing": "Some crews use an agent template this machine doesn't have (crew → template): {{crews}}. Copy the missing templates into ~/.kiro/agents before you use these crews."
+        "import_templates_missing": "Some crews use an agent template this machine doesn't have (crew → template): {{crews}}. Copy the missing templates into ~/.kiro/agents before you use these crews.",
+        "import_items_refused": "Some items could not be imported and were left unchanged: {{names}}.",
+        "import_settings_kept": "This install's own settings were kept: {{files}}. To restore the archive's settings, choose Replace in the mode menu and import again.",
+        "import_reloading_display_settings": "Import complete — reloading to apply your display settings…",
+        "import_complete_restart_gateway_one": "Import complete ({{count}} item). Restart gateway to apply all changes.",
+        "import_complete_restart_gateway_other": "Import complete ({{count}} items). Restart gateway to apply all changes."
       },
       "usageTab": {
         "credits": "Credits",

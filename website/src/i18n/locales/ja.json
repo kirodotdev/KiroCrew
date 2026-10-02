@@ -13222,7 +13222,11 @@
         "upload_a_kirocrew_export_zip_to_restore_settings": "{{productName}} エクスポート zip をアップロードして、このインスタンスの設定を復元します。\n          既存のデータはデフォルトでマージされます (重複はスキップされます)。",
         "workspace_files": "ワークスペースファイル:",
         "export_templates_not_included": "このエクスポートには、クルーが使うエージェントテンプレートが含まれていません: {{names}}。~/.kiro/agents から、もう一方のマシンの同じフォルダーにコピーしてください。",
-        "import_templates_missing": "このマシンにないエージェントテンプレートを使うクルーがあります (クルー → テンプレート): {{crews}}。これらのクルーを使う前に、足りないテンプレートを ~/.kiro/agents にコピーしてください。"
+        "import_templates_missing": "このマシンにないエージェントテンプレートを使うクルーがあります (クルー → テンプレート): {{crews}}。これらのクルーを使う前に、足りないテンプレートを ~/.kiro/agents にコピーしてください。",
+        "import_items_refused": "一部の項目はインポートできず、変更されていません: {{names}}。",
+        "import_settings_kept": "このインストールの設定はそのまま保持されました: {{files}}。アーカイブの設定を復元するには、モードメニューで「置換」を選んでもう一度インポートしてください。",
+        "import_reloading_display_settings": "インポートが完了しました — 表示設定を適用するために再読み込みしています…",
+        "import_complete_restart_gateway_other": "インポートが完了しました（{{count}} 件）。すべての変更を適用するには、ゲートウェイを再起動してください。"
       },
       "promptsTab": {
         "agent_sop_name": "@agent-sop:name",

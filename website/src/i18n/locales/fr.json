@@ -13626,7 +13626,13 @@
         "upload_a_kirocrew_export_zip_to_restore_settings": "Importez un zip d'export {{productName}} pour restaurer les paramètres sur cette instance.\n          Les données existantes seront fusionnées par défaut (les doublons sont ignorés).",
         "workspace_files": "Fichiers de l'espace de travail :",
         "export_templates_not_included": "Cet export n'inclut pas les modèles d'agent utilisés par tes équipes : {{names}}. Copie-les depuis ~/.kiro/agents vers le même dossier sur l'autre machine.",
-        "import_templates_missing": "Certaines équipes utilisent un modèle d'agent absent de cette machine (équipe → modèle) : {{crews}}. Copie les modèles manquants dans ~/.kiro/agents avant d'utiliser ces équipes."
+        "import_templates_missing": "Certaines équipes utilisent un modèle d'agent absent de cette machine (équipe → modèle) : {{crews}}. Copie les modèles manquants dans ~/.kiro/agents avant d'utiliser ces équipes.",
+        "import_items_refused": "Certains éléments n'ont pas pu être importés et sont restés inchangés : {{names}}.",
+        "import_settings_kept": "Les paramètres propres à cette installation ont été conservés : {{files}}. Pour restaurer les paramètres de l'archive, choisissez Remplacer dans le menu du mode et importez à nouveau.",
+        "import_reloading_display_settings": "Importation terminée — rechargement pour appliquer vos paramètres d'affichage…",
+        "import_complete_restart_gateway_one": "Import terminé ({{count}} élément). Redémarre le gateway pour appliquer toutes les modifications.",
+        "import_complete_restart_gateway_many": "Import terminé ({{count}} éléments). Redémarre le gateway pour appliquer toutes les modifications.",
+        "import_complete_restart_gateway_other": "Import terminé ({{count}} éléments). Redémarre le gateway pour appliquer toutes les modifications."
       },
       "promptsTab": {
         "agent_sop_name": "@agent-sop:name",

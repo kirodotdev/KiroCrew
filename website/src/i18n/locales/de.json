@@ -13424,7 +13424,12 @@
         "upload_a_kirocrew_export_zip_to_restore_settings": "Laden Sie eine {{productName}}-Export-ZIP hoch, um Einstellungen auf dieser Instanz wiederherzustellen.\n          Bestehende Daten werden standardmäßig zusammengeführt (Duplikate werden übersprungen).",
         "workspace_files": "Workspace-Dateien:",
         "export_templates_not_included": "Dieser Export enthält die Agent-Vorlagen deiner Crews nicht: {{names}}. Kopiere sie aus ~/.kiro/agents in denselben Ordner auf dem anderen Rechner.",
-        "import_templates_missing": "Einige Crews nutzen eine Agent-Vorlage, die es auf diesem Rechner nicht gibt (Crew → Vorlage): {{crews}}. Kopiere die fehlenden Vorlagen nach ~/.kiro/agents, bevor du diese Crews nutzt."
+        "import_templates_missing": "Einige Crews nutzen eine Agent-Vorlage, die es auf diesem Rechner nicht gibt (Crew → Vorlage): {{crews}}. Kopiere die fehlenden Vorlagen nach ~/.kiro/agents, bevor du diese Crews nutzt.",
+        "import_items_refused": "Einige Elemente konnten nicht importiert werden und blieben unverändert: {{names}}.",
+        "import_settings_kept": "Die eigenen Einstellungen dieser Installation wurden beibehalten: {{files}}. Um die Einstellungen aus dem Archiv wiederherzustellen, wähle im Modus-Menü „Ersetzen“ und importiere erneut.",
+        "import_reloading_display_settings": "Import abgeschlossen – die Seite wird neu geladen, um deine Anzeigeeinstellungen zu übernehmen…",
+        "import_complete_restart_gateway_one": "Import abgeschlossen ({{count}} Element). Starte das Gateway neu, um alle Änderungen zu übernehmen.",
+        "import_complete_restart_gateway_other": "Import abgeschlossen ({{count}} Elemente). Starte das Gateway neu, um alle Änderungen zu übernehmen."
       },
       "promptsTab": {
         "agent_sop_name": "@agent-sop:name",

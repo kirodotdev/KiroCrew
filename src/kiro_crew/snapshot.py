@@ -21,6 +21,7 @@ imports it, and a patch of it belongs on that owner.
 from __future__ import annotations
 
 import argparse
+import filecmp
 import importlib
 import json
 import os
@@ -1389,12 +1390,42 @@ def _do_merge(
             print("  ⚠️  crons: merge skipped (see warning above) — no jobs imported")
 
     if _want(components, "config"):
+        # Merge never overwrites, and for this component that usually means NOTHING is
+        # restored: every running install already has a config.json. So each bundle file
+        # kept that way is named, the way a kept named store is, and the tick is printed
+        # only when no bundle file was left behind -- a bare "✅ config" over a restore
+        # that took none of the bundle's settings read as "my settings came back".
+        kept_config: list[str] = []
         for f in CORE_FILES["config"]:
             s, d = snap / f, mc / f
-            if s.is_file() and not d.is_file():
+            if not s.is_file():
+                continue
+            if d.is_file() and filecmp.cmp(s, d, shallow=False):
+                continue  # the same bytes: nothing of the bundle's was left behind
+            if f == "config.local.json" and not d.is_file():
+                # Never installed by a merge: the overlay outranks config.json at load, so
+                # a bundle's copy dropped in raw would set every key it names -- sandbox,
+                # approval, channel tokens -- past the receiving install's own config.json
+                # with none of the dashboard Merge's filtering. Replace takes it.
+                kept_config.append(f)
+                print(
+                    f"  ↩️  {f}: not applied; a merge never installs the bundle's config "
+                    "overlay, which would outrank this install's config.json. To take it, "
+                    "re-run with --mode replace --components config."
+                )
+                continue
+            if not d.is_file():
                 shutil.copy2(str(s), str(d))
                 print(f"  {f}: restored (was missing)")
-        print("  ✅ config")
+                continue
+            kept_config.append(f)
+            print(
+                f"  ↩️  {f}: kept the existing file; the bundle's copy was NOT merged "
+                "into it. To take the bundle's settings instead, re-run with "
+                "--mode replace --components config."
+            )
+        if not kept_config:
+            print("  ✅ config")
 
     if _want(components, "notifications"):
         sn, dn = snap / "notifications.jsonl", mc / "notifications.jsonl"

@@ -920,20 +920,36 @@ does not have.
 
 User overrides can be placed in `~/.kiro/crew/config.local.json`. This file is
 deep-merged on top of `config.json` at load time and is never touched by
-`kirocrew setup` or package upgrades.
+`kirocrew setup` or package upgrades. Because `save()` keeps an overlay-owned
+leaf OUT of `config.json`, such a value exists only here, so the overlay rides
+the dashboard export and the snapshot `config` component next to `config.json`
+(see [Settings import](#settings-import-dashboard-merge)).
+
+`config.json` is the persistent settings file, not a generated one: no upgrade
+or restart regenerates or resets it. The routine writers (dashboard PUTs, keyed
+`kirocrew config set`, setup, boot migrations) are locked delta
+read-modify-writes of the keys they own (`update_config_locked`), and the
+whole-document `KiroCrewConfig.save()` refuses to publish a snapshot of a file
+it could not read (see its API entry). Two explicit, user-invoked paths replace
+the document instead: `kirocrew config set --file` installs the given file
+whole (under the same lock, with `on_corrupt="reset"`, so it also overwrites an
+unreadable file), and the dashboard import's **Replace** installs the archive's
+`config.json`. Its **Merge** never overwrites a settings document this install
+has (see [Settings import](#settings-import-dashboard-merge)). The overlay is for a
+value you want PINNED above whatever those writers later put in the base.
 
 Resolution order:
-1. Load `config.json` (managed by Kiro Crew, may be regenerated on upgrade)
+1. Load `config.json` (the persistent settings file every writer updates)
 2. Deep-merge `config.local.json` on top (user-owned, never touched by setup/migration)
 3. Return merged result
 
 ### CLI Usage
 
 ```bash
-# Save a setting to config.local.json (persists across upgrades):
+# Pin a setting in config.local.json (wins over config.json):
 kirocrew config set --local agent.yolo true
 
-# Save to config.json (may be overwritten on upgrade):
+# Save to config.json (the persistent settings file):
 kirocrew config set agent.yolo true
 ```
 
@@ -1031,6 +1047,31 @@ Contract:
   resurrects a key a migration removed. The per-surface prefs that used to
   silently reset across origins -- notification sound (`mc-notification-sound`),
   interface mode (`mc-ui`), reading width (`mc-reading-width`) -- are durable.
+  So are the Settings-page choices that used to be localStorage-only: the
+  terminal font, Translucent panels, the four session-colour keys, the
+  shortcut switch, macOS digit modifier and every recorded rebinding, the
+  cloud provisioner and the remote-crew auto-connect switch. Left out because
+  their owners keep them per-device on purpose: the Settings > Notifications
+  native-toast, banner and quieter-unread opt-ins, the push-to-talk binding
+  and the `mc-preview-*` flags. The session-colour keys are read at module
+  scope by the store; the reload-after-restore rule above is what makes a
+  restored value take effect.
+- A SETTINGS IMPORT rewrites this file under a profile that has already synced,
+  which the cold-profile rule above would never re-read. The client therefore
+  pauses the sync before sending the import (`pauseUiPrefsSync`: no flush,
+  including the `pagehide` one, may land after the import and put this page's
+  values back), and when the response says `ui_prefs_restored` it calls
+  `adoptHostUiPrefsOnNextLoad` and reloads: that removes `mc-ui-prefs-synced`
+  and writes an EMPTY `mc-ui-prefs-hydrate-pending`, so the next load
+  cold-hydrates and the HOST wins for every key it holds (by the failed-restore
+  rule, a key not in the list is the host's). A key the host does not hold
+  keeps its local value. Server side a Merge installs the archive's copy only
+  where the host has no `ui-prefs.json` (`ui_prefs.install_imported_ui_prefs`,
+  which decides under the module lock that serializes it against the PUT
+  handler); a host that keeps one keeps it whole, since the browser adopts the
+  host copy on its next load. Either mode holds each entry to the same
+  deny-list and bounds as a PUT (an unstorable entry is dropped and counted,
+  not fatal).
 - GROWING the durable set is guarded by a reconcile pass (growth-gap issue
   9491). A warm profile never runs the cold restore, so a key added to the
   allowlist by an upgrade would otherwise be flushed at its local DEFAULT --
@@ -1058,6 +1099,58 @@ Contract:
   and enable full auto-approval — and the reason is that this file sits in the
   agent-writable data home, so a restorable ack is an ack an agent can forge for
   the user's next fresh origin. Convenience does not outrank a human gate.
+
+## Settings import (dashboard Merge)
+
+The dashboard export (`portability.create_export_zip`) carries every document a
+Settings choice is persisted in: `config.json`, `config.local.json`,
+`ui-prefs.json` and `notification_settings.json`. The snapshot `config`
+component carries the same set.
+
+Every archive settings document is vetted before either mode applies one
+(`portability._vet_archive_settings`): a document that is not its reader's shape
+(a config that is not a JSON object, a `ui-prefs.json` that is not
+`{"prefs": {...}}`, a `channel_settings` that is not an object) is refused,
+removed from the extraction so neither mode can install it, reported
+`<label> (skipped: <why>)` and listed in `refused_merges`, which the handler
+audits as a `partial` import. `ui-prefs.json` and `notification_settings.json`
+are rewritten to their filtered form (`ui_prefs.parse_imported_ui_prefs`,
+`notifications.settings.parse_imported_settings`: a credential-shaped key, an
+unstorable value, a mute or lowered priority on `system.approval`, an unknown
+field is dropped and counted).
+
+The import's **Merge** (the dashboard default) never overwrites, like every
+other merge in the product, and it is honest about it
+(`portability._merge_settings`):
+
+- A document this install LACKS is installed from the vetted archive copy and
+  reported `<label> (restored)`: `config.json` through `update_config_locked`
+  (absence re-checked under the lock; owner-only; this install's `meta`
+  stamped; the live watcher woken), `ui-prefs.json` through
+  `ui_prefs.install_imported_ui_prefs` (see
+  [Browser UI preferences](#browser-ui-preferences-ui-prefsjson)),
+  `notification_settings.json` through the running gateway's
+  `ChannelSettings.install_imported`, so a restored mute applies at once.
+- A document this install HAS is left untouched, byte for byte, and reported
+  `<label> (kept this install's; import with Replace to restore the archive's)`.
+- `config.local.json` is NEVER installed by a Merge, even where this install has
+  none: the overlay outranks `config.json` at load, so an installed copy would
+  set every key it names over this install's own config. `kirocrew restore
+  --mode merge` follows the same rule.
+- Every document the archive carried that the Merge did not apply is named in
+  `settings_kept` -- the plain file names, so the list is bounded by construction
+  (at most four) -- and the dashboard shows them in one notice that points at
+  Replace. `ui_prefs_restored: true` is set only when `ui-prefs.json` was
+  installed; it tells the dashboard to reload and re-read the browser
+  preferences.
+
+**Replace** is the path that restores the archive's settings over this install's.
+It installs all four documents through `_do_replace`, which first backs up what
+it replaces into a `pre-restore-<ts>/` directory. The staged documents are
+owner-only (except `notification_settings.json`, whose live writer uses the
+umask), so a replace never installs a config or ui-prefs document wider than its
+own writer writes; it then calls `ChannelSettings.reload()` on the running store
+and sets `ui_prefs_restored`.
 
 ## Unknown keys are preserved on round-trip
 
@@ -1158,7 +1251,15 @@ returned config in place (settings handlers, the write-back migration) never
 corrupt the shared cache. The cache is mtime-keyed (not a blind TTL), so a
 runtime edit is reflected on the next `load()`; `save()` also invalidates it
 eagerly via `_invalidate_config_cache()`. The defaults-only path (neither file
-present) is not cached.
+present) is not cached, and neither is a load in which a present file could not
+be READ whole (the `digestible` flag below is false). That second rule is what
+keeps one transient read failure transient: with `config.local.json` present, a
+base read that raised (a Windows sharing violation, an EIO) still yields an
+overlay-only document, and caching it under the unchanged stat fingerprint made
+every later load in the process serve the base settings at their defaults until
+a file happened to change. A file whose bytes read fine but would not parse is a
+stable fact about those bytes and is still cached. Pinned by
+`test_config_overlay.py::TestConfigOverlayLoad::test_a_transient_base_read_failure_is_not_cached`.
 
 **Content provenance on the cache entry.** Beside the `data` dict and its sidecar, each
 cache entry carries a third fact: the digest of the bytes that data was parsed from.
@@ -1519,6 +1620,33 @@ Writes current config to `~/.kiro/crew/config.json` via `to_dict()`, through
 `write_config_atomically()` (see below). Invalidates the `load()` validated-data
 cache so the next load reflects the write immediately.
 
+**It refuses a snapshot of an unreadable base file.** When the instance carries
+the `*config.json` degradation marker (the load could not read or parse
+`config.json`, so its fields are defaults) and that file exists, `save()` raises
+`ConfigReadError` and writes nothing: publishing the instance would replace every
+setting in the file with defaults, with no backup. The marker is sticky for the
+process like every degradation answer, so an instance loaded later in a process
+that once saw the file unreadable is refused too; that costs nothing, because the
+only remaining callers save a FRESH `KiroCrewConfig()` (no markers) to create an
+absent file -- the gateway's boot default and `kirocrew config edit`. A degraded
+instance may still create a file that has since gone. Pinned by
+`test_config_save_locking.py::TestSaveRefusesASnapshotOfAnUnreadableFile`.
+
+**No dashboard module calls it.** A dashboard writer publishes the keys it owns
+through `run_config_write(update_config_locked, config_path(), mutate=...)`.
+`test_config_save_locking.py::TestNoDashboardModuleSavesTheWholeConfig` pins
+that over `src/kiro_crew/dashboard`, matching a `.save` REFERENCE handed to an
+offloader as well as a call, with an empty baseline. The workspace display PUT
+(`PUT /api/config/theme`) was the last such writer: it loaded the whole config
+and saved it back, so on a momentarily unreadable file (a torn read, a sharing
+violation, a BOM, an empty file) it published pure defaults over every setting
+-- from a request the SPA sends on its own at boot, because a defaults load
+reports `onboarded=false` and that triggers its legacy theme migration. It now
+validates the whole body first (a 400 writes nothing), writes only the named
+`dashboard.*` keys (skipping the write when they already hold those values),
+answers an unreadable file with `500 {"code": "config_corrupt"}` and the bytes
+untouched, and builds its response from a fresh load.
+
 ### Partial config updates: `read_config_for_update()` / `write_config_atomically()`
 
 Many callers do not hold a whole `KiroCrewConfig` — they flip one toggle
@@ -1544,6 +1672,20 @@ truncate-then-write config writer leaves a window in which a concurrent reader
 observes a half-written file. The window is small, which is exactly what made the
 resulting loss so hard to reproduce — it presented as "all my settings reset
 themselves".
+
+The last product writer of that shape was the voice settings PUT
+(`PUT /api/voice/config`), which read with `json.load` and wrote back with
+`open(path, "w")` + `json.dump` -- no lock, no meta stamp, no live-watcher wake,
+and every failure swallowed behind `{"ok": true}`. It now persists through
+`run_config_write(update_config_locked, ...)`, merging only the keys the request
+named into the existing `voice_reply` block, BEFORE it applies them to the live
+voice config, so a refused write (`500 config_corrupt` on an unreadable file,
+`500 config_write_failed` on an `OSError`) leaves both the file and the running
+setting as they were and the panel rolls its optimistic update back.
+`test_config_rmw_preserves_settings.py::TestNoRawOpenWriteOfConfig` keeps the
+shape out: it fails on `open(p, <writing mode>)` or `p.open(<writing mode>)`
+where `p` is `config_path()` / `config_local_path()` or a name bound to one,
+with an empty baseline.
 
 **`write_config_atomically(path, data, *, fsync=False)` is atomic AND
 mode-preserving.** Atomic (tmp+rename) so no reader ever sees a partial file —

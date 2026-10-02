@@ -164,7 +164,7 @@ async def test_language_preference_survives_theme_save_and_provider_roundtrip(
         await core.api_stt_config(_put({"language_code": language}))
     assert _stored_stt()["language_code"] == language
 
-    # This unrelated handler loads and saves the whole dataclass, not an STT delta.
+    # An unrelated handler's write (a dashboard-only delta) must leave STT alone.
     before = json.loads(config_path().read_text(encoding="utf-8"))
     mode = "light" if before.get("dashboard", {}).get("theme_mode") == "dark" else "dark"
     response = await asyncio.wait_for(core.api_theme_config(_put({"mode": mode})), timeout=5)

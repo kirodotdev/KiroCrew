@@ -312,3 +312,44 @@ def test_a_plain_read_still_degrades_to_empty(monkeypatch):
 def test_merge_over_a_corrupt_file_recovers():
     ui_prefs_path().write_text("{ truncated", encoding="utf-8")
     assert merge_ui_prefs({"mc-zoom": "1"}) == {"mc-zoom": "1"}
+
+
+class TestImportingAnArchiveCopy:
+    """`parse_imported_ui_prefs` / `install_imported_ui_prefs`: the settings import's path in."""
+
+    def _archive(self, tmp_path, body):
+        src = tmp_path / "archive-ui-prefs.json"
+        src.write_text(body if isinstance(body, str) else json.dumps(body), encoding="utf-8")
+        return src
+
+    def test_each_entry_is_held_to_what_a_put_is_held_to(self, tmp_path):
+        src = self._archive(
+            tmp_path,
+            {
+                "prefs": {
+                    "mc-nav": "kept",
+                    "kiro_crew_token": "bearer",
+                    "my_api_key": "x",
+                    "mc-null": None,
+                    "mc-number": 3,
+                    "mc-huge": "x" * (MAX_VALUE_BYTES + 1),
+                }
+            },
+        )
+        patch, dropped = ui_prefs.parse_imported_ui_prefs(src)
+        assert patch == {"mc-nav": "kept"}
+        assert dropped == 5
+
+    @pytest.mark.parametrize("body", ["{not json", "[]", '{"prefs": []}', '{"other": {}}'])
+    def test_a_document_of_the_wrong_shape_is_refused_whole(self, tmp_path, body):
+        with pytest.raises(UiPrefsError):
+            ui_prefs.parse_imported_ui_prefs(self._archive(tmp_path, body))
+
+    def test_an_archive_copy_is_installed_only_where_the_host_has_none(self):
+        assert ui_prefs.install_imported_ui_prefs({"mc-nav": "archive"}) is True
+        assert load_ui_prefs() == {"mc-nav": "archive"}
+        # The host now keeps a file: a second install leaves it whole.
+        merge_ui_prefs({"mc-ui": "cli"})
+        before = ui_prefs_path().read_bytes()
+        assert ui_prefs.install_imported_ui_prefs({"mc-nav": "other", "mc-x": "y"}) is False
+        assert ui_prefs_path().read_bytes() == before

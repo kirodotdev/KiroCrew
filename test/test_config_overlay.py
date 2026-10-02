@@ -164,6 +164,45 @@ class TestConfigOverlayLoad:
 
         assert cfg.agent.dangerously_skip_permissions is True
 
+    def test_a_transient_base_read_failure_is_not_cached(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """One failed read of config.json must not pin its settings at defaults.
+
+        With an overlay present, a load whose base read raised (a Windows sharing
+        violation, an EIO) still builds a document from the overlay alone. It used
+        to be cached under the unchanged stat fingerprint, so every later load in
+        the process served the base settings at their defaults until a file
+        happened to change. The next load must read the base again.
+        """
+        config_dir = tmp_path / ".kirocrew"
+        config_dir.mkdir()
+        base_file = config_dir / "config.json"
+        base_file.write_text(json.dumps({"timezone": "Asia/Shanghai"}))
+        (config_dir / "config.local.json").write_text(
+            json.dumps({"dashboard": {"auto_open_browser": False}})
+        )
+
+        real_read_text = Path.read_text
+        failures = {"left": 1}
+
+        def _flaky_read_text(self: Path, *args, **kwargs):
+            if self == base_file and failures["left"]:
+                failures["left"] -= 1
+                raise PermissionError(13, "sharing violation", str(self))
+            return real_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", _flaky_read_text)
+        with patch("kiro_crew.config.loader.config_dir", return_value=config_dir):
+            first = KiroCrewConfig.load()
+            second = KiroCrewConfig.load()
+
+        assert failures["left"] == 0, "the injected failure never fired"
+        assert first.timezone == "", "the failed read did not degrade (test is vacuous)"
+        assert first.dashboard.auto_open_browser is False
+        assert second.timezone == "Asia/Shanghai"
+        assert second.dashboard.auto_open_browser is False
+
     def test_save_does_not_leak_overlay_into_config_json(self, tmp_path: Path) -> None:
         config_dir = tmp_path / ".kirocrew"
         config_dir.mkdir()

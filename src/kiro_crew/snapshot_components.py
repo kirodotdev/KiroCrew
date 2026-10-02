@@ -179,10 +179,30 @@ COMPONENTS: dict[str, ComponentSpec] = {
         help="crons.json (scheduled jobs)",
         files=("crons.json",),
     ),
+    # Every file a dashboard Settings choice is persisted in rides here, not only
+    # config.json: `config.local.json` is the overlay `config set --local` and
+    # `save()` keep overlay-owned values in (so they exist NOWHERE else),
+    # `ui-prefs.json` is the host backup of the browser-held Settings
+    # (`ui_prefs.py`), and `notification_settings.json` holds the Settings >
+    # Notifications mutes and priorities (`notifications/settings.py`). A bundle
+    # without them restores an install whose settings read as reset.
     "config": ComponentSpec(
         policy=SecretPolicy.UNRESOLVED,
-        help="config.json, session_map.json, hooks.json, project_dir, workspace_dir",
-        files=("config.json", "session_map.json", "hooks.json", "project_dir", "workspace_dir"),
+        help=(
+            "config.json, config.local.json, session_map.json, hooks.json, "
+            "ui-prefs.json (dashboard browser settings), notification_settings.json "
+            "(notification mutes and priorities), project_dir, workspace_dir"
+        ),
+        files=(
+            "config.json",
+            "config.local.json",
+            "session_map.json",
+            "hooks.json",
+            "ui-prefs.json",
+            "notification_settings.json",
+            "project_dir",
+            "workspace_dir",
+        ),
     ),
     "skills": ComponentSpec(
         policy=SecretPolicy.UNRESOLVED,
@@ -317,8 +337,11 @@ COMPONENT_JSON_OBJECTS: frozenset[str] = frozenset(
     {
         "crons.json",
         "config.json",
+        "config.local.json",
         "session_map.json",
         "hooks.json",
+        "ui-prefs.json",
+        "notification_settings.json",
     }
 )
 
