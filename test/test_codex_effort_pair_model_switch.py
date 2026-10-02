@@ -33,11 +33,17 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from kiro_crew import model_registry
-from kiro_crew.acp.client import AcpClient, AcpError, AcpModelUnavailable
+from kiro_crew.acp.client import (
+    AcpClient,
+    AcpError,
+    AcpModelUnavailable,
+    resolve_usable_model,
+)
 from kiro_crew.acp.session_handle import AcpSessionHandle
 from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_ACP_RUNTIME,
     ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
@@ -534,6 +540,32 @@ class TestTheSessionHandleTakesTheSameSplit:
         assert applied_id == "openai.gpt-6-astra[max]"
 
     @pytest.mark.asyncio
+    async def test_a_bare_model_refusal_respects_explicit_pick_strictness(self) -> None:
+        handle = MagicMock()
+        handle._runtime = MagicMock()
+        handle._runtime.acp_backend = ACP_BACKEND_CODEX
+        handle._advertised_model_ids = MagicMock(return_value=["gpt-6.1-sol[high]"])
+        handle._resolved_model_id = "gpt-6-luna[high]"
+        handle.set_config_option = AsyncMock(
+            side_effect=AcpError("JSON-RPC error: Invalid params", code=-32602)
+        )
+        handle._push_model_config_option = lambda model_id, *, strict: (
+            AcpSessionHandle._push_model_config_option(handle, model_id, strict=strict)
+        )
+
+        await AcpSessionHandle.set_model(handle, "gpt-6.1-sol", strict=False)
+
+        with pytest.raises(AcpModelUnavailable) as exc_info:
+            await AcpSessionHandle.set_model(handle, "gpt-6.1-sol", strict=True)
+
+        message = str(exc_info.value)
+        # The bare id is served by the advertised pairs, so a refusal is the
+        # adapter contradicting its own list, never an account verdict.
+        assert "not an account restriction" in message
+        assert "not among the models" not in message
+        assert "whoami" not in message
+
+    @pytest.mark.asyncio
     async def test_a_non_member_handle_never_takes_the_split(self) -> None:
         handle = MagicMock()
         handle._runtime = MagicMock()
@@ -682,6 +714,30 @@ async def test_a_codex_refusal_of_an_advertised_pair_reports_the_mismatch(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_a_codex_refusal_of_a_bare_id_served_by_the_pairs_reports_the_mismatch(
+    tmp_path,
+) -> None:
+    """A live pick arrives BARE (``openai.gpt-6-astra``) against a pair-only list,
+    so exact membership alone would deny it the mismatch wording and fall through
+    to the entitlement reading. The ladder's verdict folds the pair test in."""
+    client = _codex_client(tmp_path)
+
+    async def _refuse_all(config_id: str, value: str) -> None:
+        raise AcpError("JSON-RPC error: Invalid params", code=-32602)
+
+    client.set_config_option = _refuse_all  # type: ignore[method-assign]
+
+    with pytest.raises(AcpModelUnavailable) as caught:
+        await client.set_model("openai.gpt-6-astra")
+
+    message = str(caught.value)
+    assert "openai.gpt-6-astra" not in client._advertised_model_ids()
+    assert "not an account restriction" in message
+    assert "not among the models" not in message
+    assert "whoami" not in message
+
+
+@pytest.mark.asyncio
 async def test_a_non_member_refusal_of_an_advertised_id_keeps_the_entitlement_wording(
     tmp_path,
 ) -> None:
@@ -701,6 +757,170 @@ async def test_a_non_member_refusal_of_an_advertised_id_keeps_the_entitlement_wo
         await client.set_model("claude-opus-5-premium")
 
     assert "claude-opus-5-premium" in client._advertised_model_ids()
-    assert "not available on your account" in str(caught.value)
+    # Still an entitlement reading, not the pair-harness mismatch one ...
+    assert "may not be available to the account" in str(caught.value)
     assert "not an account restriction" not in str(caught.value)
-    assert "whoami" in str(caught.value)
+    # ... but without the kiro-cli sign-in advice, which a claude user cannot act on.
+    assert "whoami" not in str(caught.value)
+
+
+# ── live selection on the shared-session path ──
+#
+# Dashboard codex chats run on ``AcpSessionProvider`` (codex shares runtimes), and
+# its ``set_model`` pre-flights an explicit pick against the advertised list. codex
+# advertises ONLY ``<model>[<effort>]`` pairs, so the bare id the picker sends once
+# a session is live (``gpt-6.1-sol``) matched nothing and was refused as "not
+# available on your account", with the `kiro-cli whoami` hint, before the switch
+# ever reached the adapter. A pick made before the session existed never took that
+# path, which is why only the second and later picks failed.
+
+#: The catalog from the reported gateway log, trimmed to two models. gpt-6-luna has
+#: no ``[ultra]`` entry, which makes it the "effort this model does not serve" case.
+CODEX_PAIR_CATALOG = [
+    *(f"gpt-6.1-sol[{e}]" for e in ("low", "medium", "high", "xhigh", "max", "ultra")),
+    *(f"gpt-6-luna[{e}]" for e in ("low", "medium", "high", "xhigh", "max")),
+]
+
+
+def _shared_codex_provider(
+    advertised: list[str] = CODEX_PAIR_CATALOG, *, backend: str = ACP_BACKEND_CODEX
+):
+    from kiro_crew.acp.session_provider import AcpSessionProvider
+
+    handle = MagicMock()
+    handle.session_id = "codex-shared-1"
+    handle.available_models = [{"modelId": m, "name": m} for m in advertised]
+    handle.set_model = AsyncMock()
+    handle.cancel = AsyncMock()
+    handle.refresh_available_models = AsyncMock(return_value=[])
+    runtime = MagicMock()
+    runtime.acp_backend = backend
+    runtime.is_alive.return_value = True
+    return AcpSessionProvider(handle, runtime), handle
+
+
+class TestSharedSessionLiveSelection:
+    @pytest.mark.asyncio
+    async def test_a_bare_model_served_only_as_pairs_is_switched_to(self) -> None:
+        provider, handle = _shared_codex_provider()
+
+        await provider.set_model("gpt-6.1-sol")
+
+        # Sent as picked: the effort stays the slot's, re-applied by the caller,
+        # rather than one this check chose from the catalog.
+        handle.set_model.assert_awaited_once_with("gpt-6.1-sol", strict=True)
+        handle.refresh_available_models.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_an_explicit_pair_pick_is_sent_with_its_effort(self) -> None:
+        provider, handle = _shared_codex_provider()
+
+        await provider.set_model("gpt-6.1-sol[xhigh]")
+
+        handle.set_model.assert_awaited_once_with("gpt-6.1-sol[xhigh]", strict=True)
+
+    @pytest.mark.asyncio
+    async def test_a_pair_with_an_effort_the_model_lacks_is_still_refused(self) -> None:
+        """Explicit effort is part of the pick: no substitution of another level."""
+        provider, handle = _shared_codex_provider()
+
+        with pytest.raises(AcpModelUnavailable):
+            await provider.set_model("gpt-6-luna[ultra]")
+
+        handle.set_model.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_model_codex_does_not_serve_is_refused_without_kiro_advice(self) -> None:
+        provider, handle = _shared_codex_provider()
+
+        with pytest.raises(AcpModelUnavailable) as caught:
+            await provider.set_model("gpt-7-nova")
+
+        handle.set_model.assert_not_awaited()
+        msg = str(caught.value)
+        assert "gpt-6.1-sol[low]" in msg
+        assert "whoami" not in msg
+        assert "Builder ID" not in msg
+
+    @pytest.mark.asyncio
+    async def test_a_bare_pick_after_stop_still_switches(self) -> None:
+        provider, handle = _shared_codex_provider()
+
+        await provider.cancel_session()
+        await provider.set_model("gpt-6.1-sol")
+
+        handle.set_model.assert_awaited_once_with("gpt-6.1-sol", strict=True)
+
+    @pytest.mark.asyncio
+    async def test_the_pair_fold_is_codex_only(self) -> None:
+        """A harness that does not advertise pairs keeps exact membership."""
+        provider, handle = _shared_codex_provider(backend=ACP_BACKEND_KIRO)
+
+        with pytest.raises(AcpModelUnavailable) as caught:
+            await provider.set_model("gpt-6.1-sol")
+
+        handle.set_model.assert_not_awaited()
+        assert "whoami" in str(caught.value)
+
+
+@pytest.mark.asyncio
+async def test_the_handle_sends_a_bare_pick_without_choosing_an_effort() -> None:
+    """The handle applies what the provider accepted.
+
+    Folding the bare id onto the catalog's preferred spelling would put
+    ``gpt-6.1-sol[low]`` on the wire and write ``reasoning_effort=low`` that
+    nobody picked.
+    """
+    handle = MagicMock()
+    handle._runtime = MagicMock()
+    handle._runtime.acp_backend = ACP_BACKEND_CODEX
+    handle._advertised_model_ids = MagicMock(return_value=list(CODEX_PAIR_CATALOG))
+    applied: list[tuple[str, str]] = []
+
+    async def _push(model_id: str, *, strict: bool) -> str:
+        applied.append(("model", model_id))
+        return model_id
+
+    handle._push_model_config_option = _push
+
+    await AcpSessionHandle.set_model(handle, "gpt-6.1-sol", strict=True)
+
+    assert applied == [("model", "gpt-6.1-sol")]
+    assert handle._model == "gpt-6.1-sol"
+
+
+@pytest.mark.asyncio
+async def test_the_handle_resolves_a_non_strict_bare_pair_model() -> None:
+    """Startup and restore retain the resolver behavior used on main."""
+    handle = MagicMock()
+    handle._runtime = MagicMock()
+    handle._runtime.acp_backend = ACP_BACKEND_CODEX
+    handle._advertised_model_ids = MagicMock(return_value=list(CODEX_PAIR_CATALOG))
+    applied: list[tuple[str, str]] = []
+
+    async def _push(model_id: str, *, strict: bool) -> str:
+        applied.append(("model", model_id))
+        return model_id
+
+    handle._push_model_config_option = _push
+    expected = resolve_usable_model("gpt-6.1-sol", CODEX_PAIR_CATALOG)
+
+    await AcpSessionHandle.set_model(handle, "gpt-6.1-sol")
+
+    assert applied == [("model", expected)]
+    assert handle._model == expected
+
+
+def test_unavailable_wording_keeps_the_kiro_sign_in_hint_for_host_sign_in_backends() -> None:
+    # The hint follows host_auth: a harness on the host kiro-cli identity store
+    # (kiro, KAS) keeps it, one that signs in separately (codex) does not.
+    kiro = AcpModelUnavailable("gpt-7-nova", CODEX_PAIR_CATALOG, backend=ACP_BACKEND_KIRO)
+    kas = AcpModelUnavailable("gpt-7-nova", CODEX_PAIR_CATALOG, backend=ACP_BACKEND_KAS)
+    codex = AcpModelUnavailable("gpt-7-nova", CODEX_PAIR_CATALOG, backend=ACP_BACKEND_CODEX)
+
+    assert "whoami" in str(kiro)
+    assert "whoami" in str(kas)
+    assert str(kas) == str(kiro)
+    assert "whoami" not in str(codex)
+    assert "Builder ID" not in str(codex)
+    assert "gpt-6.1-sol[low]" in str(codex)

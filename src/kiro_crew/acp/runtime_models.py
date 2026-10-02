@@ -81,6 +81,34 @@ def model_is_unusable(model_id: str, advertised: Sequence[str] | None) -> bool:
     return wanted not in {m.strip().lower() for m in advertised if m and m.strip()}
 
 
+def served_as_effort_pairs(model_id: str, advertised: Sequence[str] | None) -> bool:
+    """True when *advertised* lists *model_id* as ``<model_id>[<effort>]`` entries.
+
+    codex-acp advertises one entry per model and reasoning effort
+    (``gpt-6.1-sol[high]``) and never the bare id, while its ``model`` option, the
+    channel a switch goes down, takes only the bare id. So on a harness in
+    ``ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS`` a bare pick is served exactly when some
+    effort of it is advertised, and :func:`model_is_unusable`'s exact membership
+    calls it unusable. Callers gate on that membership: elsewhere a bracketed
+    entry is its own model and this fold would be wrong.
+
+    Answers about the bare model only. A pick that already names an effort keeps
+    exact membership, so an effort the catalog does not list for that model
+    (``gpt-6-luna[ultra]`` beside ``gpt-6-luna[max]``) is still refused rather
+    than swapped for a level the user did not choose.
+    """
+    wanted = (model_id or "").strip().lower()
+    if not wanted:
+        return False
+    for entry in advertised or ():
+        if not entry:
+            continue
+        base, effort = model_registry.split_effort_suffix(entry)
+        if effort and base.strip().lower() == wanted:
+            return True
+    return False
+
+
 def resolve_pin_spelling(model_id: str, advertised: Sequence[str] | None) -> str:
     """The advertised spelling *model_id* resolves to, or ``""`` when none.
 

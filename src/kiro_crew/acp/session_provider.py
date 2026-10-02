@@ -32,6 +32,7 @@ from kiro_crew.acp.client import (
     model_is_unusable,
     registration_rate_limited_error,
     registration_throttle_line,
+    served_as_effort_pairs,
 )
 from kiro_crew.acp.mcp_session_report import McpSessionReport
 from kiro_crew.acp.runtime import AcpRuntime, AcpRuntimeDead, AcpRuntimeError, AcpSessionHandle
@@ -45,6 +46,7 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.acp.types import (
     ACP_BACKENDS_MEMBER_CAPABILITIES,
+    ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
     ACP_BACKENDS_SESSION_EVICTION,
     STOP_REASON_END_TURN,
 )
@@ -1136,16 +1138,33 @@ class AcpSessionProvider(LLMProvider):
         verdict (fail-safe: no evidence, no entitlement granted).
         """
         advertised = advertised_model_ids(self._handle.available_models)
-        if model_is_unusable(model_id, advertised):
+        if self._pick_is_unusable(model_id, advertised):
             # A user's explicit pick must earn a FRESH probe, not be refused on a
             # recent no-evidence failure the picker read path may have cached
             # (force=True skips the failure/empty attempt-clock replay).
             fresh = advertised_model_ids(
                 await self._guarded(self._handle.refresh_available_models(force=True))
             )
-            if model_is_unusable(model_id, fresh or advertised):
-                raise AcpModelUnavailable(model_id, fresh or advertised)
-        await self._guarded(self._handle.set_model(model_id))
+            if self._pick_is_unusable(model_id, fresh or advertised):
+                raise AcpModelUnavailable(
+                    model_id, fresh or advertised, backend=self._runtime.acp_backend
+                )
+        await self._guarded(self._handle.set_model(model_id, strict=True))
+
+    def _pick_is_unusable(self, model_id: str, advertised: list[str]) -> bool:
+        """Whether an explicit pick is outside what this session advertises.
+
+        Exact membership, except on a harness that advertises
+        ``<model>[<effort>]`` pairs (codex): there the bare model the picker sends
+        is served when any effort of it is listed, and the handle sends it bare
+        on the same test (:func:`served_as_effort_pairs`), so what passes here is
+        what goes on the wire.
+        """
+        if not model_is_unusable(model_id, advertised):
+            return False
+        if self._runtime.acp_backend in ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS:
+            return not served_as_effort_pairs(model_id, advertised)
+        return True
 
     async def set_mode(self, agent_name: str) -> None:
         """Switch the active agent via session/set_mode."""

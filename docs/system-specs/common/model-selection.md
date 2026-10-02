@@ -347,6 +347,15 @@ its own once the cache refreshes with a list that carries it.
   this account use it" eventually disagree. An empty or unknown advertised set means
   **allow** — reading it as "nothing is allowed" would withhold every model on a
   backend that simply does not advertise. Never hand-roll a membership test.
+- One second verdict sits beside the predicate: on a backend in
+  `ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS` (codex) a bare id counts as served when some
+  `<id>[<effort>]` entry is advertised, because the harness lists only pairs while its
+  model option takes the bare id. That fold is the shared
+  `acp.runtime_models.served_as_effort_pairs(id, advertised)`, used together with
+  `model_is_unusable` by `AcpSessionProvider._pick_is_unusable` and by
+  `AcpSessionHandle.set_model` for explicit picks only. Non-strict startup and
+  restore calls keep `resolve_usable_model`. A pick that already
+  names an effort keeps exact membership.
 - The predicate is only meaningful where the advertised ids share a namespace with the
   id being tested, and callers gate on that. Comparing ids across two harnesses'
   namespaces calls every legitimate model unusable (harness-parity invariant `H12`).

@@ -113,6 +113,7 @@ from kiro_crew.acp.runtime_models import (
     _substitute_model_from_advisory,
     model_is_unusable,
     pick_served_default,
+    served_as_effort_pairs,
 )
 from kiro_crew.acp.runtime_process_tree import ChildRecord
 from kiro_crew.acp.session_mcp import agent_spec_snapshot, session_mcp_deny_rules
@@ -6618,14 +6619,23 @@ class AcpClient:
             raise AcpModelUnavailable(
                 _rejected_log,
                 advertised_ids,
+                backend=self.backend,
                 # Only a pair-id harness earns the adapter-mismatch wording: on
                 # those the advertised list IS the entitlement, so refusing
                 # something on it is the adapter contradicting itself. Elsewhere an
                 # advertised id may simply be out of the account's reach, and the
-                # entitlement wording plus the `whoami` hint is the true answer.
+                # entitlement wording is the true answer (the `whoami` hint belongs to
+                # harnesses on the host kiro-cli identity store;
+                # `host_auth.signs_in_separately` decides).
+                # On such a harness a BARE id served by the advertised pairs was
+                # admitted upstream (``served_as_effort_pairs``), so the same
+                # verdict decides here: a pair-only list never contains the bare id.
                 advertised_but_refused=(
-                    model_id in advertised_ids
-                    and self.backend in ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS
+                    self.backend in ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS
+                    and (
+                        model_id in advertised_ids
+                        or served_as_effort_pairs(model_id, advertised_ids)
+                    )
                 ),
             ) from last_exc
         logger.warning(

@@ -77,6 +77,7 @@ from kiro_crew.acp.client import (
     registration_rate_limited_error,
     registration_throttle_line,
     resolve_usable_model,
+    served_as_effort_pairs,
 )
 from kiro_crew.acp.liveness import (
     EVIDENCE_ESTABLISHED_FLAT,
@@ -2423,7 +2424,7 @@ class AcpSessionHandle:
             set_mode_params(self._session_id, agent_name),
         )
 
-    async def set_model(self, model_id: str) -> None:
+    async def set_model(self, model_id: str, *, strict: bool = False) -> None:
         """Switch model via session/set_model.
 
         This is the shared-runtime SUBSTITUTE path (background one-liners, tips,
@@ -2435,22 +2436,48 @@ class AcpSessionHandle:
         meaning **inherit the session's backend default** (the served model
         ``session/new`` assigned). So this path never puts an unserved model on
         the wire, exactly like the interactive ``_wire_model_id``
-        reset-to-default. Explicit user picks raise instead, upstream in
-        ``AcpSessionProvider.set_model`` / ``AcpClient.set_model``.
+        reset-to-default. Explicit user picks come from
+        ``AcpSessionProvider.set_model`` with ``strict=True`` and raise
+        :class:`AcpModelUnavailable` when the adapter refuses every spelling, the
+        same answer ``AcpClient.set_model`` gives on a dedicated runtime.
+
+        One exception to the exact-membership mapping applies to explicit picks
+        (``strict=True``): on a backend in ``ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS``
+        (codex) a bare id counts as served when some ``<id>[<effort>]`` entry is
+        advertised, and it is sent bare, as picked. The non-strict startup and
+        restore calls keep ``resolve_usable_model``. The
+        shared fold for the explicit-pick verdict is :func:`served_as_effort_pairs`,
+        used together with ``model_is_unusable`` by
+        ``AcpSessionProvider._pick_is_unusable`` and here, so what the provider
+        accepts is what goes on the wire. A pick that already names an effort
+        keeps exact membership.
         """
-        resolved = resolve_usable_model(model_id, self._advertised_model_ids())
+        backend = self._runtime.acp_backend
+        advertised = self._advertised_model_ids()
+        if (
+            strict
+            and backend in ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS
+            and served_as_effort_pairs(model_id, advertised)
+        ):
+            # The bare id goes out as picked, the same verdict
+            # ``AcpSessionProvider.set_model`` accepted it on. Folding it onto the
+            # catalog's preferred pair instead would also write that pair's effort,
+            # a level nobody chose; the caller re-applies the slot's own.
+            resolved = model_id.strip()
+        else:
+            resolved = resolve_usable_model(model_id, advertised)
         if not resolved:
             # Inherit the backend default — nothing to send. For the ephemeral
             # _bg session the current model IS session/new's served default.
             return
-        backend = self._runtime.acp_backend
         if backend in ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION:
             # A harness whose adapter judges the model VALUE rather than only the
             # option: the spelling Crew stored may not be the spelling this build
-            # serves, so the candidate ladder decides. Non-strict, because this
-            # is the substitute path — an exhausted ladder means "stay on the
-            # backend default", the same answer an unresolvable id gets above.
-            applied = await self._push_model_config_option(resolved, strict=False)
+            # serves, so the candidate ladder decides. Explicit picks are strict;
+            # substitute and restore paths stay non-strict, where an exhausted
+            # ladder means "stay on the backend default", the same answer an
+            # unresolvable id gets above.
+            applied = await self._push_model_config_option(resolved, strict=strict)
             if not applied:
                 self.model_pin_refused = resolved
                 return
@@ -2571,14 +2598,23 @@ class AcpSessionHandle:
             raise AcpModelUnavailable(
                 _rejected_log,
                 advertised_ids,
+                backend=self._runtime.acp_backend,
                 # Only a pair-id harness earns the adapter-mismatch wording: on
                 # those the advertised list IS the entitlement, so refusing
                 # something on it is the adapter contradicting itself. Elsewhere an
                 # advertised id may simply be out of the account's reach, and the
-                # entitlement wording plus the `whoami` hint is the true answer.
+                # entitlement wording is the true answer (the `whoami` hint belongs to
+                # harnesses on the host kiro-cli identity store;
+                # `host_auth.signs_in_separately` decides).
+                # On such a harness a BARE id served by the advertised pairs was
+                # admitted upstream (``served_as_effort_pairs``), so the same
+                # verdict decides here: a pair-only list never contains the bare id.
                 advertised_but_refused=(
-                    model_id in advertised_ids
-                    and self._runtime.acp_backend in ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS
+                    self._runtime.acp_backend in ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS
+                    and (
+                        model_id in advertised_ids
+                        or served_as_effort_pairs(model_id, advertised_ids)
+                    )
                 ),
             ) from last_exc
         logger.warning(

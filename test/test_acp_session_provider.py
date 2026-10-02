@@ -1243,7 +1243,8 @@ class TestLivePathModelEntitlement:
         # so a stale-snapshot refusal stands. Tests exercising the heal path
         # override this with a side_effect that also updates available_models.
         handle.refresh_available_models = AsyncMock(return_value=[])
-        return AcpSessionProvider(handle, MagicMock()), handle
+        # A kiro runtime: the refusal wording, sign-in hint included, is kiro's.
+        return AcpSessionProvider(handle, _make_runtime()), handle
 
     @pytest.mark.asyncio
     async def test_explicit_switch_refused_on_live_path(self):
@@ -1267,7 +1268,7 @@ class TestLivePathModelEntitlement:
 
         await provider.set_model("claude-opus-4.8")
 
-        handle.set_model.assert_awaited_once_with("claude-opus-4.8")
+        handle.set_model.assert_awaited_once_with("claude-opus-4.8", strict=True)
 
     @pytest.mark.asyncio
     async def test_unknown_advertised_set_still_applied(self):
@@ -1276,7 +1277,7 @@ class TestLivePathModelEntitlement:
 
         await provider.set_model("claude-opus-4.8")
 
-        handle.set_model.assert_awaited_once_with("claude-opus-4.8")
+        handle.set_model.assert_awaited_once_with("claude-opus-4.8", strict=True)
 
     @pytest.mark.asyncio
     async def test_malformed_advertised_payload_does_not_raise(self):
@@ -1286,7 +1287,7 @@ class TestLivePathModelEntitlement:
 
         await provider.set_model("claude-opus-4.8")
 
-        handle.set_model.assert_awaited_once_with("claude-opus-4.8")
+        handle.set_model.assert_awaited_once_with("claude-opus-4.8", strict=True)
 
     @pytest.mark.asyncio
     async def test_stale_refusal_revalidates_and_allows(self):
@@ -1308,7 +1309,7 @@ class TestLivePathModelEntitlement:
         await provider.set_model("claude-opus-5")
 
         handle.refresh_available_models.assert_awaited_once()
-        handle.set_model.assert_awaited_once_with("claude-opus-5")
+        handle.set_model.assert_awaited_once_with("claude-opus-5", strict=True)
 
     @pytest.mark.asyncio
     async def test_refusal_stands_when_fresh_probe_still_lacks_model(self):
@@ -1353,7 +1354,7 @@ class TestLivePathModelEntitlement:
         await provider.set_model("claude-opus-4.8")
 
         handle.refresh_available_models.assert_not_awaited()
-        handle.set_model.assert_awaited_once_with("claude-opus-4.8")
+        handle.set_model.assert_awaited_once_with("claude-opus-4.8", strict=True)
 
     @pytest.mark.asyncio
     async def test_refusal_heal_forces_a_fresh_probe(self):
