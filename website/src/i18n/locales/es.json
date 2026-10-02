@@ -16254,7 +16254,17 @@
         "sound_save_failed": "No se pudo guardar el ajuste de sonido. Libera espacio para este sitio en los ajustes del navegador y vuelve a intentarlo.",
         "custom_sound_deleted": "Se eliminó {{name}}.",
         "custom_sound_undo": "Deshacer",
-        "custom_sound_option": "{{name}} (tuyo)"
+        "custom_sound_option": "{{name}} (tuyo)",
+        "mouse_haptics": "Háptica del ratón Logitech",
+        "mouse_haptics_description": "Hace vibrar un ratón Logitech con respuesta háptica cada vez que suena una notificación, mediante el complemento de {{productName}} para Logi Options+. La vibración no depende del volumen: al 0 % notas los avisos sin oírlos.",
+        "mouse_haptics_needs_sound": "Activa «Reproducir un sonido con las notificaciones nuevas» para usar la háptica del ratón.",
+        "mouse_haptics_checking": "Buscando el complemento de {{productName}}…",
+        "mouse_haptics_connected": "Complemento conectado. Elige la vibración de cada aviso en Logi Options+, en Respuesta háptica.",
+        "mouse_haptics_not_found": "No se encontró el complemento. En Logi Options+, abre tu ratón → Respuesta háptica → Instalar y desinstalar complementos y, con esa página abierta, abre el archivo del complemento. <guide>Cómo obtener el complemento</guide>",
+        "mouse_haptics_unreachable": "No se pudo acceder al complemento en este equipo. Es posible que Logi Options+ esté cerrado o que el complemento aún no esté instalado.",
+        "mouse_haptics_save_failed": "No se pudo guardar este ajuste. Es posible que el almacenamiento de este navegador esté lleno o bloqueado.",
+        "mouse_haptics_install_guidance": "En Logi Options+, abre tu ratón → Respuesta háptica → Instalar y desinstalar complementos y, con esa página abierta, abre el archivo del complemento. <guide>Cómo obtener el complemento</guide>",
+        "mouse_haptics_loopback_only": "Solo funciona en la aplicación de escritorio de {{productName}} o en un navegador que abra el panel en una dirección localhost, en el equipo al que está conectado el ratón."
       },
       "privacyPanel": {
         "recordMetricsLabel": "Registrar métricas",

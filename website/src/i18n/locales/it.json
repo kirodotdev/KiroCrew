@@ -16254,7 +16254,17 @@
         "sound_save_failed": "Impossibile salvare l'impostazione del suono. Libera spazio per questo sito nelle impostazioni del browser, poi riprova.",
         "custom_sound_deleted": "{{name}} eliminato.",
         "custom_sound_undo": "Annulla",
-        "custom_sound_option": "{{name}} (tuo)"
+        "custom_sound_option": "{{name}} (tuo)",
+        "mouse_haptics": "Feedback aptico del mouse Logitech",
+        "mouse_haptics_description": "Fa vibrare un mouse Logitech con feedback aptico a ogni suono di notifica, tramite il plug-in {{productName}} per Logi Options+. La vibrazione non dipende dal volume: allo 0% percepisci gli avvisi senza udirli.",
+        "mouse_haptics_needs_sound": "Attiva «Riproduci un suono per le nuove notifiche» per usare il feedback aptico del mouse.",
+        "mouse_haptics_checking": "Ricerca del plug-in {{productName}}…",
+        "mouse_haptics_connected": "Plug-in connesso. Scegli la vibrazione di ogni avviso in Logi Options+, in Feedback aptico.",
+        "mouse_haptics_not_found": "Plug-in non trovato. In Logi Options+ apri il tuo mouse → Feedback aptico → Installa e disinstalla plug-in, poi apri il file del plug-in mentre quella pagina è visualizzata. <guide>Come ottenere il plug-in</guide>",
+        "mouse_haptics_unreachable": "Non è stato possibile raggiungere il plug-in su questo computer. Logi Options+ potrebbe essere chiuso oppure il plug-in potrebbe non essere ancora installato.",
+        "mouse_haptics_save_failed": "Impossibile salvare questa impostazione. Lo spazio di archiviazione di questo browser potrebbe essere pieno o bloccato.",
+        "mouse_haptics_install_guidance": "In Logi Options+ apri il tuo mouse → Feedback aptico → Installa e disinstalla plug-in, poi apri il file del plug-in mentre quella pagina è visualizzata. <guide>Come ottenere il plug-in</guide>",
+        "mouse_haptics_loopback_only": "Funziona solo nell’app desktop di {{productName}} o in un browser che apre la dashboard a un indirizzo localhost, sul computer a cui è collegato il mouse."
       },
       "privacyPanel": {
         "recordMetricsLabel": "Registra le metriche",

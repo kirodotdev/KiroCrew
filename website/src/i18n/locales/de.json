@@ -16014,7 +16014,17 @@
         "sound_save_failed": "Die Sound-Einstellung konnte nicht gespeichert werden. Gib in den Browsereinstellungen Speicher für diese Website frei und versuche es dann erneut.",
         "custom_sound_deleted": "{{name}} gelöscht.",
         "custom_sound_undo": "Rückgängig",
-        "custom_sound_option": "{{name}} (eigener)"
+        "custom_sound_option": "{{name}} (eigener)",
+        "mouse_haptics": "Logitech-Maus-Haptik",
+        "mouse_haptics_description": "Lässt eine Logitech-Maus mit haptischem Feedback bei jedem Benachrichtigungston vibrieren, über das {{productName}}-Plug-in für Logi Options+. Die Vibration hängt nicht von der Lautstärke ab: Bei 0 % spürst du Hinweise, ohne sie zu hören.",
+        "mouse_haptics_needs_sound": "Schalte „Ton bei neuen Benachrichtigungen abspielen“ ein, um die Maus-Haptik zu nutzen.",
+        "mouse_haptics_checking": "Suche nach dem {{productName}}-Plug-in…",
+        "mouse_haptics_connected": "Plug-in verbunden. Die Vibration für jeden Hinweis wählst du in Logi Options+ unter „Haptisches Feedback“.",
+        "mouse_haptics_not_found": "Plug-in nicht gefunden. Öffne in Logi Options+ deine Maus → Haptisches Feedback → Plug-ins installieren und deinstallieren und öffne die Plug-in-Datei, während diese Seite angezeigt wird. <guide>So bekommst du das Plug-in</guide>",
+        "mouse_haptics_unreachable": "Das Plug-in konnte auf diesem Computer nicht erreicht werden. Logi Options+ ist möglicherweise geschlossen oder das Plug-in ist noch nicht installiert.",
+        "mouse_haptics_save_failed": "Diese Einstellung konnte nicht gespeichert werden. Der Speicher dieses Browsers ist möglicherweise voll oder blockiert.",
+        "mouse_haptics_install_guidance": "Öffne in Logi Options+ deine Maus → Haptisches Feedback → Plug-ins installieren und deinstallieren und öffne die Plug-in-Datei, während diese Seite angezeigt wird. <guide>So bekommst du das Plug-in</guide>",
+        "mouse_haptics_loopback_only": "Funktioniert nur in der {{productName}}-Desktop-App oder in einem Browser, der das Dashboard unter einer localhost-Adresse auf dem Computer öffnet, mit dem die Maus verbunden ist."
       },
       "privacyPanel": {
         "recordMetricsDescription": "Leistungsmetriken auf diesem Rechner erfassen.",

@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Trans } from 'react-i18next'
 import { Lock, MonitorCog, Blocks, Check, RadioTower, Bell, Volume2, ListMusic, Music } from 'lucide-react'
 import { SettingsSection, SettingsCard, SettingsToggle, SettingsSelect } from '../../components/settings'
 import { SettingsSubNav, type SubNavItem } from '../../components/SettingsSubNav'
@@ -17,7 +18,14 @@ import { CustomSoundsSection, type UndoResult } from './CustomSoundsSection'
 import { loadChatCompleteNotify, saveChatCompleteNotify } from '../../hooks/chatCompleteNotify'
 import { loadBannerEnabled, saveBannerEnabled } from '../../hooks/notificationBanner'
 import { loadUnreadOnAttention, saveUnreadOnAttention } from '../../hooks/unreadOnAttention'
+import {
+  HAPTICS_PLUGIN_ORIGIN, identifyHapticsPlugin, isLoopbackHostname, loadMouseHapticsEnabled,
+  MOUSE_HAPTICS_ENABLED_KEY, requestHapticsRecheck, saveMouseHapticsEnabled,
+} from '../../hooks/useMouseHaptics'
 import { useNotificationPermission } from '../../hooks/useNotificationPermission'
+import {
+  attachReport, recordError, recordTransportRejection, reportForError, type ErrorReport,
+} from '../../utils/errorReport'
 
 import { i18nT } from '../../i18n/t'
 const PRESET_OPTIONS: SoundPreset[] = ['none', ...SOUND_PRESETS]
@@ -298,11 +306,142 @@ function SystemNotificationsRow() {
   )
 }
 
+const MOUSE_HAPTICS_PLUGIN_KEY = ['mouse-haptics-plugin'] as const
+const MOUSE_HAPTICS_STATUS_URL = `${HAPTICS_PLUGIN_ORIGIN}/v1/status`
+const MOUSE_HAPTICS_SETUP_GUIDE = 'https://github.com/kirodotdev/KiroCrew/blob/main/src/kiro_crew/docs/dashboard.md#mouse-haptics'
+const MOUSE_HAPTICS_PROBE_HTTP_ERROR = 'haptics_plugin_probe_http_error'
+const MOUSE_HAPTICS_PROBE_NETWORK_ERROR = 'network'
+const MOUSE_HAPTICS_NEEDS_SOUND_ID = 'mouse-haptics-needs-sound'
+const MOUSE_HAPTICS_SAVE_REFUSED = 'storage_write_refused'
+
+type HapticsPluginProbeError = Error & { status?: number }
+
+function hapticsPluginProbeReport(error: HapticsPluginProbeError, message: string): ErrorReport | undefined {
+  if (error.status !== undefined) {
+    return recordError({
+      source: 'api',
+      message,
+      method: 'GET',
+      endpoint: MOUSE_HAPTICS_STATUS_URL,
+      status: error.status,
+      code: MOUSE_HAPTICS_PROBE_HTTP_ERROR,
+      detail: String(error),
+    })
+  }
+
+  return recordTransportRejection({
+    message,
+    method: 'GET',
+    endpoint: MOUSE_HAPTICS_STATUS_URL,
+    code: MOUSE_HAPTICS_PROBE_NETWORK_ERROR,
+  })
+}
+
+/**
+ * What the dashboard can see of the Options+ plugin, shown under the Mouse
+ * haptics switch. The plugin answers loopback pages only, so nothing is probed
+ * from any other origin. The probe runs again when the window regains focus, so
+ * a plugin installed in Options+ meanwhile shows up without a reload.
+ */
+function MouseHapticsPluginStatus() {
+  const onLoopback = isLoopbackHostname(window.location.hostname)
+  const pluginQuery = useQuery({
+    queryKey: MOUSE_HAPTICS_PLUGIN_KEY,
+    queryFn: async () => {
+      try {
+        return await identifyHapticsPlugin(window.fetch.bind(window))
+      } catch (error) {
+        const probeError = error instanceof Error ? error as HapticsPluginProbeError : new Error(String(error))
+        const message = i18nT('pages.settings.notificationsPanel.mouse_haptics_unreachable')
+        const report = hapticsPluginProbeReport(probeError, message)
+        throw report ? attachReport(probeError, report) : probeError
+      }
+    },
+    enabled: onLoopback,
+    // A non-plugin answer is final, and a failed request is reported instead of retried.
+    retry: false,
+    staleTime: 0,
+  })
+  const pluginFound = pluginQuery.data === true
+  // The app-wide bridge may have probed before the install and still be waiting out its retry window.
+  useEffect(() => {
+    if (pluginFound) requestHapticsRecheck()
+  }, [pluginFound])
+
+  if (pluginQuery.isError) {
+    return (
+      <div data-testid="mouse-haptics-status" className="flex flex-col items-start gap-1 text-[12px] pb-1.5">
+        <ErrorNotice
+          message={i18nT('pages.settings.notificationsPanel.mouse_haptics_unreachable')}
+          report={reportForError(pluginQuery.error)}
+          variant="inline"
+          askAgent
+        />
+        <span className="text-muted">
+          <Trans
+            i18nKey="pages.settings.notificationsPanel.mouse_haptics_install_guidance"
+            components={{
+              guide: (
+                // eslint-disable-next-line jsx-a11y/anchor-has-content, jsx-a11y/control-has-associated-label -- <Trans> supplies this anchor's localized children from the <guide> run in the catalog value
+                <a href={MOUSE_HAPTICS_SETUP_GUIDE} target="_blank" rel="noopener noreferrer" className="text-accent hover:underline" />
+              ),
+            }}
+          />
+        </span>
+      </div>
+    )
+  }
+
+  let status: ReactNode
+  if (!onLoopback) {
+    status = i18nT('pages.settings.notificationsPanel.mouse_haptics_loopback_only')
+  } else if (pluginQuery.isPending) {
+    status = i18nT('pages.settings.notificationsPanel.mouse_haptics_checking')
+  } else if (pluginFound) {
+    status = <><Check className="lucide-inline text-ok shrink-0" /> {i18nT('pages.settings.notificationsPanel.mouse_haptics_connected')}</>
+  } else {
+    // ONE key with the link interpolated as <guide>: two joined keys would pin every locale to English word order.
+    status = (
+      <Trans
+        i18nKey="pages.settings.notificationsPanel.mouse_haptics_not_found"
+        components={{
+          guide: (
+            // eslint-disable-next-line jsx-a11y/anchor-has-content, jsx-a11y/control-has-associated-label -- <Trans> substitutes this element for the <guide> run inside the `mouse_haptics_not_found` catalog value and supplies its children from that run, so the rendered anchor always carries the localized link text
+            <a href={MOUSE_HAPTICS_SETUP_GUIDE} target="_blank" rel="noopener noreferrer" className="text-accent hover:underline" />
+          ),
+        }}
+      />
+    )
+  }
+  return (
+    <div role="status" data-testid="mouse-haptics-status" className="flex items-center gap-1 text-[12px] text-muted pb-1.5">
+      <span>{status}</span>
+    </div>
+  )
+}
+
 export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
   const [settings, setSettings] = useState(() => loadSoundSettings())
   const [notifyChatComplete, setNotifyChatComplete] = useState(() => loadChatCompleteNotify())
   const [bannerEnabled, setBannerEnabled] = useState(() => loadBannerEnabled())
   const [unreadOnAttention, setUnreadOnAttention] = useState(() => loadUnreadOnAttention())
+  const [mouseHapticsEnabled, setMouseHapticsEnabled] = useState(() => loadMouseHapticsEnabled())
+  // A refused write (quota exhausted after reclaim, or storage blocked by policy) leaves the
+  // switch where it was; this report says so under it and carries the key that was not written.
+  const [mouseHapticsSaveFailed, setMouseHapticsSaveFailed] = useState<ErrorReport | null>(null)
+  const changeMouseHaptics = (on: boolean) => {
+    if (saveMouseHapticsEnabled(on)) {
+      setMouseHapticsEnabled(on)
+      setMouseHapticsSaveFailed(null)
+      return
+    }
+    setMouseHapticsSaveFailed(recordError({
+      source: 'system',
+      message: i18nT('pages.settings.notificationsPanel.mouse_haptics_save_failed'),
+      code: MOUSE_HAPTICS_SAVE_REFUSED,
+      detail: MOUSE_HAPTICS_ENABLED_KEY,
+    }))
+  }
 
   // Cross-window sync: a settings write in ANOTHER tab (or the running session's
   // own useNotificationSound reacting to one) fires a DOM `storage` event here.
@@ -620,6 +759,34 @@ export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
               {i18nT('pages.settings.notificationsPanel.test_sound')}
             </button>
           </div>
+        </SettingsCard>
+        <SettingsCard index={1}>
+          {/* A buzz goes out only with an audible chime, so the switch does nothing while sound is off.
+              The row says so while it is disabled: a greyed switch alone gives no reason. */}
+          <SettingsToggle
+            label={i18nT('pages.settings.notificationsPanel.mouse_haptics')}
+            hint={i18nT('pages.settings.notificationsPanel.mouse_haptics_description')}
+            description={settings.enabled ? undefined : (
+              <span id={MOUSE_HAPTICS_NEEDS_SOUND_ID}>{i18nT('pages.settings.notificationsPanel.mouse_haptics_needs_sound')}</span>
+            )}
+            describedBy={settings.enabled ? undefined : MOUSE_HAPTICS_NEEDS_SOUND_ID}
+            checked={mouseHapticsEnabled}
+            onChange={changeMouseHaptics}
+            disabled={!settings.enabled}
+          />
+          {/* askAgent on: every control on this sub-page persists as it changes, so the hand-off loses nothing. */}
+          {mouseHapticsSaveFailed && (
+            <ErrorNotice
+              variant="inline"
+              className="pb-1.5"
+              message={mouseHapticsSaveFailed.message}
+              report={mouseHapticsSaveFailed}
+              askAgent
+              onDismiss={() => setMouseHapticsSaveFailed(null)}
+              testId="mouse-haptics-save-failed"
+            />
+          )}
+          {mouseHapticsEnabled && settings.enabled && <MouseHapticsPluginStatus />}
         </SettingsCard>
       </SettingsSection>
           )

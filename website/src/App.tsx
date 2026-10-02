@@ -31,6 +31,7 @@ import { useFocusChrome } from './shell/focus/focusChrome'
 import { OVERLAY_Z_MAX, THEME_DECOR_SLOT_ID, TOPBAR_FOCUS_Z, TOPBAR_Z, registerThemeDecorSlot } from './lib/themeDecorLayer'
 import { useNativeNotification } from './hooks/useNativeNotification'
 import { useNotificationSound } from './hooks/useNotificationSound'
+import { useMouseHaptics } from './hooks/useMouseHaptics'
 import { recordSessionStart } from './rum'
 import { ZoomProvider } from './hooks/ZoomProvider'
 import { api, isAuthBannerShown } from './api/client'
@@ -956,6 +957,7 @@ export default function App() {
   const { branding, botName, avatar } = useShellBranding({ colorTheme, brandName, brandLogo, brandFavicon })
   useRumPageView()
   useNotificationSound()
+  useMouseHaptics()
   const [navCollapsed, setNavCollapsed] = useState(() => localStorage.getItem('mc-nav') === '1')
   const navCollapsedRef = useRef(navCollapsed)
   navCollapsedRef.current = navCollapsed

@@ -16014,7 +16014,17 @@
         "sound_save_failed": "সাউন্ড সেটিং সেভ করা যায়নি। ব্রাউজারের সেটিংসে এই সাইটের জন্য জায়গা খালি করো, তারপর আবার চেষ্টা করো।",
         "custom_sound_deleted": "{{name}} মুছে ফেলা হয়েছে।",
         "custom_sound_undo": "পূর্বাবস্থায় ফেরাও",
-        "custom_sound_option": "{{name}} (তোমার)"
+        "custom_sound_option": "{{name}} (তোমার)",
+        "mouse_haptics": "Logitech মাউস হ্যাপটিক্স",
+        "mouse_haptics_description": "বিজ্ঞপ্তির শব্দ বাজলেই Logi Options+-এর {{productName}} প্লাগইনের মাধ্যমে হ্যাপটিক ফিডব্যাকযুক্ত Logitech মাউস কেঁপে ওঠে। কম্পন ভলিউমের উপর নির্ভর করে না, তাই ভলিউম 0% রাখলেও শব্দ ছাড়াই সতর্কতা টের পাবে।",
+        "mouse_haptics_needs_sound": "মাউস হ্যাপটিক্স ব্যবহার করতে “নতুন বিজ্ঞপ্তিতে শব্দ বাজান” চালু করো।",
+        "mouse_haptics_checking": "{{productName}} প্লাগইন খোঁজা হচ্ছে…",
+        "mouse_haptics_connected": "প্লাগইন সংযুক্ত হয়েছে। Logi Options+-এর Haptic feedback অংশে প্রতিটি সতর্কতার কম্পন বেছে নাও।",
+        "mouse_haptics_not_found": "প্লাগইন পাওয়া যায়নি। Logi Options+-এ তোমার মাউস → Haptic feedback → Install and uninstall plugins খোলো, তারপর সেই পেজটি খোলা থাকা অবস্থায় প্লাগইন ফাইলটি খোলো। <guide>প্লাগইন কীভাবে পাবে</guide>",
+        "mouse_haptics_unreachable": "এই কম্পিউটারে প্লাগইনটির সঙ্গে যোগাযোগ করা যায়নি। Logi Options+ বন্ধ থাকতে পারে, অথবা প্লাগইনটি এখনও ইনস্টল করা হয়নি।",
+        "mouse_haptics_save_failed": "এই সেটিং সেভ করা যায়নি। এই ব্রাউজারের স্টোরেজ পূর্ণ বা ব্লক করা থাকতে পারে।",
+        "mouse_haptics_install_guidance": "Logi Options+-এ তোমার মাউস → Haptic feedback → Install and uninstall plugins খোলো, তারপর সেই পেজটি খোলা থাকা অবস্থায় প্লাগইন ফাইলটি খোলো। <guide>প্লাগইন কীভাবে পাবে</guide>",
+        "mouse_haptics_loopback_only": "শুধু {{productName}} ডেস্কটপ অ্যাপে কাজ করে, অথবা মাউস যে কম্পিউটারে যুক্ত সেখানে ব্রাউজারে localhost ঠিকানায় ড্যাশবোর্ড খুললে।"
       },
       "privacyPanel": {
         "recordMetricsLabel": "মেট্রিক রেকর্ড করো",

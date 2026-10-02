@@ -318,6 +318,97 @@ key (a `null` key, i.e. `clear()`, is also honored) then reloads through
 `loadSoundSettings` so validation and clamping are reused. Notification playback
 is debounced to one tone per 300 ms.
 
+## Mouse haptics (client)
+
+`website/src/hooks/useMouseHaptics.ts` sends each notification chime to the Kiro
+Crew plugin for Logi Options+, which buzzes an MX Master 4. `App.tsx` mounts it <!-- wokeignore:rule=master -->
+next to `useNotificationSound()`, and it listens for the same
+`MC_NOTIFICATION_EVENT`. Options+ is the only program that talks to the mouse,
+so the dashboard needs no device access and no macOS Input Monitoring
+permission. Driving the mouse directly over WebHID would need that permission,
+and on macOS it would also cover every process the desktop app starts.
+
+- **What buzzes.** An event buzzes exactly when the Logitech mouse haptics switch
+  is on and `presetForKind(kind, loadSoundSettings())` is not `'none'`, so the sound
+  switch and the per-category Silent choices apply to the mouse too. The volume
+  is not consulted, so volume 0 gives buzz-only alerts. Buzzes are debounced to
+  one per 300 ms. Every open dashboard window hears each alert and stamps it
+  with the wall-clock time it arrived. A window that can reach the plugin then
+  takes a Web Locks lock just long enough to compare that stamp with the last
+  buzz any window recorded under the `mc-mouse-haptics-last-buzz-at`
+  localStorage key. Within 300 ms either way, it is the same alert and the
+  window skips it; otherwise the window records its stamp and sends. No timer
+  ever holds the lock, so a background window whose timers the browser
+  throttles cannot delay another window's alert. A window still waiting out a
+  failed probe never asks for the lock, so it cannot take an alert from a
+  window that can send it.
+- **Plugin contract.** The plugin listens on `http://127.0.0.1:41870`.
+  `GET /v1/status` returns `{"plugin": "KiroCrew", "api": 1, "events": [...]}`.
+  `POST /v1/events/{event}` raises `turn_done` (a `turn` chime), `needs_input`
+  (`approval`) or `notification` (every other kind). It answers requests whose
+  `Host` is the endpoint itself and whose `Origin`, when present, is an
+  `http(s)` page on `localhost`, `127.0.0.1` or `[::1]`. A request from any
+  other host or origin gets a 403.
+  Each user picks the waveform for each event in Options+, under Haptic
+  feedback. The defaults are completed, ringing and knock.
+- **Opt-in and detection.** The switch is the opt-in and starts off, so a
+  dashboard that never turned it on sends nothing to the plugin's port and
+  shows no plugin status. Once it is on, the bridge sends an alert only after a
+  status probe has identified the plugin. A failed probe or a failed alert parks
+  it for five minutes, so without the plugin each dashboard window makes at most
+  one request per five minutes, and only when alerts fire. Requests carry no
+  credentials, no referrer and no body.
+- **Settings.** Settings > Notifications > Sound has a Logitech mouse haptics
+  switch, stored per device under the `mc-mouse-haptics` localStorage key
+  (`'1'` is on; any other value, or none, is off). The switch is disabled while
+  notification sound is off, and the row then shows why: "Turn on “Play sound on
+  new notifications” to use mouse haptics." Under it, a status line probes the
+  plugin with the same check the bridge uses and reports one of: connected, not
+  found, unreachable (through `ErrorNotice`, with the Options+ install steps),
+  or available only on a loopback page. A reply whose body fails to arrive
+  counts as unreachable. An unreachable Settings probe journals
+  its full loopback address and method, plus either the HTTP status and response
+  error or the network failure class, then attaches that report to the agent
+  hand-off. It probes only while the switch and the sound are on, and again when
+  the window regains focus. A refused save of the switch (quota exhausted after
+  reclaim, or storage blocked) leaves the switch unchanged and shows an
+  `ErrorNotice` under it, journaled with `code` `storage_write_refused` and the
+  key as `detail`, with the agent hand-off; a later save that lands, or Dismiss,
+  clears it. Turning the switch on,
+  or the status line finding the plugin, fires `MC_MOUSE_HAPTICS_RECHECK_EVENT`,
+  which ends the bridge's five-minute wait. So a plugin installed meanwhile
+  buzzes on the next alert.
+- **Loopback pages only.** The hook does nothing unless the page's hostname is
+  `localhost`, `127.0.0.1` or `[::1]`. That covers the desktop app and a
+  browser on an SSH-forwarded port. A Tailscale or LAN address would make the
+  browser ask for local-network permission for a request the plugin refuses.
+- **The plugin.** `packages/kirocrew-logi-plugin/` is a Logi Actions SDK
+  plugin (C#, .NET 8) with its own xunit suite. No CI workflow runs that suite
+  yet, so after a change run
+  `dotnet test packages/kirocrew-logi-plugin/tests/KiroCrewPlugin.Tests.csproj`.
+  The suite compiles the endpoint sources without `PluginApi.dll`. Building the
+  plugin itself on a machine without Logi Plugin Service needs that file copied
+  from the LogiPluginTool package into the plugin's `lib/` first. A Debug build
+  also links its output into Logi Plugin Service for development; a Release
+  build does not. `logiplugintool pack` turns a Release build into
+  `KiroCrew.lplug4`. To install it, open Options+ at MX Master 4 → Haptic <!-- wokeignore:rule=master -->
+  feedback → Install and uninstall plugins, then open the `.lplug4`.
+  Opening the file installs it only while that page is open. The user-facing
+  steps are in `src/kiro_crew/docs/dashboard.md`, "Mouse haptics".
+
+`useMouseHaptics.test.ts` pins the switch, the sound-settings gating, the event
+mapping, how the status probe classes each answer, detection with its retry
+window and the recheck, the request options,
+the debounce, one buzz across windows, and the loopback-only mount.
+`NotificationsPanel.mouseHaptics.test.tsx` pins the label, the switch's
+off-by-default start and persistence, the notice and journal entry a refused
+save produces and their clearing, the reason the row shows and associates
+with the disabled switch while sound is off, the connected,
+negative-identification, unreachable (also when a reply's body fails to
+arrive) and loopback-only status outcomes, the
+unreachable hand-off context and install guidance, and that no probe goes out
+while the switch or the sound is off or from a non-loopback page.
+
 ## OS toast (client)
 
 `website/src/hooks/useNativeNotification.ts` is the **single poster** of an OS

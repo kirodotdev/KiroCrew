@@ -15774,7 +15774,17 @@
         "sound_save_failed": "サウンド設定を保存できませんでした。ブラウザーの設定でこのサイトの保存領域を空けてから、もう一度お試しください。",
         "custom_sound_deleted": "{{name}} を削除しました。",
         "custom_sound_undo": "元に戻す",
-        "custom_sound_option": "{{name}}（自作）"
+        "custom_sound_option": "{{name}}（自作）",
+        "mouse_haptics": "Logitech マウスの触覚フィードバック",
+        "mouse_haptics_description": "通知音が鳴るたびに、Logi Options+ 用の {{productName}} プラグインを通じて触覚フィードバック対応の Logitech マウスを振動させます。振動は音量の影響を受けないため、音量 0% でも音なしで通知に気付けます。",
+        "mouse_haptics_needs_sound": "マウスの触覚フィードバックを使うには「新しい通知でサウンドを再生」をオンにしてください。",
+        "mouse_haptics_checking": "{{productName}} プラグインを探しています…",
+        "mouse_haptics_connected": "プラグインに接続しました。各通知の振動は Logi Options+ の「触覚フィードバック」で選べます。",
+        "mouse_haptics_not_found": "プラグインが見つかりません。Logi Options+ でお使いのマウス → 触覚フィードバック → プラグインのインストールとアンインストール を開き、そのページを表示したままプラグインファイルを開いてください。<guide>プラグインの入手方法</guide>",
+        "mouse_haptics_unreachable": "このコンピューター上のプラグインに接続できませんでした。Logi Options+ が終了しているか、プラグインがまだインストールされていない可能性があります。",
+        "mouse_haptics_save_failed": "この設定を保存できませんでした。このブラウザーのストレージがいっぱいか、ブロックされている可能性があります。",
+        "mouse_haptics_install_guidance": "Logi Options+ でお使いのマウス → 触覚フィードバック → プラグインのインストールとアンインストール を開き、そのページを表示したままプラグインファイルを開いてください。<guide>プラグインの入手方法</guide>",
+        "mouse_haptics_loopback_only": "{{productName}} デスクトップアプリ、またはマウスを接続しているコンピューターのブラウザーで localhost のアドレスからダッシュボードを開いている場合のみ動作します。"
       },
       "privacyPanel": {
         "recordMetricsDescription": "このマシンでパフォーマンスメトリクスを収集します。",

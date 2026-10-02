@@ -16014,7 +16014,17 @@
         "sound_save_failed": "साउंड सेटिंग सहेजी नहीं जा सकी। ब्राउज़र सेटिंग्स में इस साइट के लिए जगह खाली करो, फिर दोबारा कोशिश करो।",
         "custom_sound_deleted": "{{name}} हटाया गया।",
         "custom_sound_undo": "पूर्ववत करो",
-        "custom_sound_option": "{{name}} (तुम्हारी)"
+        "custom_sound_option": "{{name}} (तुम्हारी)",
+        "mouse_haptics": "Logitech माउस हैप्टिक्स",
+        "mouse_haptics_description": "जब भी नोटिफिकेशन की ध्वनि बजती है, Logi Options+ के {{productName}} प्लगइन के ज़रिए हैप्टिक फ़ीडबैक वाले Logitech माउस में कंपन होता है। कंपन पर वॉल्यूम का असर नहीं पड़ता, इसलिए वॉल्यूम 0% पर भी तुम्हें बिना आवाज़ के अलर्ट महसूस होंगे।",
+        "mouse_haptics_needs_sound": "माउस हैप्टिक्स इस्तेमाल करने के लिए “नए नोटिफिकेशन पर ध्वनि बजाएँ” चालू करो।",
+        "mouse_haptics_checking": "{{productName}} प्लगइन खोजा जा रहा है…",
+        "mouse_haptics_connected": "प्लगइन कनेक्ट हो गया। हर अलर्ट का कंपन Logi Options+ में Haptic feedback के अंदर चुनो।",
+        "mouse_haptics_not_found": "प्लगइन नहीं मिला। Logi Options+ में अपना माउस → Haptic feedback → Install and uninstall plugins खोलो, फिर वह पेज खुला रहते हुए प्लगइन फ़ाइल खोलो। <guide>प्लगइन कैसे पाएँ</guide>",
+        "mouse_haptics_unreachable": "इस कंप्यूटर पर प्लगइन से संपर्क नहीं हो सका। हो सकता है Logi Options+ बंद हो या प्लगइन अभी इंस्टॉल न किया गया हो।",
+        "mouse_haptics_save_failed": "यह सेटिंग सेव नहीं हो सकी। हो सकता है इस ब्राउज़र का स्टोरेज भर गया हो या ब्लॉक हो।",
+        "mouse_haptics_install_guidance": "Logi Options+ में अपना माउस → Haptic feedback → Install and uninstall plugins खोलो, फिर वह पेज खुला रहते हुए प्लगइन फ़ाइल खोलो। <guide>प्लगइन कैसे पाएँ</guide>",
+        "mouse_haptics_loopback_only": "यह सिर्फ़ {{productName}} डेस्कटॉप ऐप में काम करता है, या तब जब माउस से जुड़े कंप्यूटर पर ब्राउज़र में डैशबोर्ड localhost पते पर खुला हो।"
       },
       "privacyPanel": {
         "recordMetricsDescription": "इस मशीन पर परफ़ॉर्मेंस मेट्रिक इकट्ठा करो।",
