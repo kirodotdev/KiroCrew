@@ -926,6 +926,52 @@ def test_audit_actor_leaves_a_direct_request_under_its_own_label() -> None:
     assert server_mod.audit_actor(request, "mcp_tool") == "mcp_tool"
 
 
+def test_audit_actor_files_an_app_token_request_under_the_app() -> None:
+    """An app call is recorded as the app, not as the person whose server it is.
+
+    ``token_auth_middleware`` publishes the ``app`` claim, and the record names the
+    app that acted. ``""`` is the dashboard user's own claim and keeps the label.
+    """
+    from aiohttp.test_utils import make_mocked_request
+
+    from kiro_crew.dashboard import server as server_mod
+
+    app_request = make_mocked_request("POST", "/api/chat/slots/s1/regenerate")
+    app_request["app"] = "crew-keyboard"
+    assert server_mod.audit_actor(app_request, "dashboard_user") == "crew-keyboard"
+
+    forwarded = make_mocked_request(
+        "POST", "/api/chat/slots/s1/regenerate", headers={"X-Forwarded-For": "203.0.113.7"}
+    )
+    forwarded["app"] = "crew-keyboard"
+    assert server_mod.audit_actor(forwarded, "dashboard_user") == "crew-keyboard_via_proxy"
+
+    person = make_mocked_request("POST", "/api/chat/slots/s1/regenerate")
+    person["app"] = ""
+    assert server_mod.audit_actor(person, "dashboard_user") == "dashboard_user"
+
+
+def test_audit_actor_keeps_the_transport_of_an_internal_call_made_for_an_app() -> None:
+    """A managed tool call by an app's agent is not filed as the app's own client.
+
+    On the internal-secret transport ``token_auth_middleware`` derives the ``app``
+    claim from the calling session. The record keeps the transport label beside
+    the app, so it stays distinct from a direct call with the app's token.
+    """
+    from aiohttp.test_utils import make_mocked_request
+
+    from kiro_crew.dashboard import server as server_mod
+
+    internal = make_mocked_request("POST", "/api/chat/slots/s1/note")
+    internal["app"] = "crew-keyboard"
+    internal["internal_auth"] = True
+    assert server_mod.audit_actor(internal, "mcp_tool") == "mcp_tool:crew-keyboard"
+
+    direct = make_mocked_request("POST", "/api/chat/slots/s1/note")
+    direct["app"] = "crew-keyboard"
+    assert server_mod.audit_actor(direct, "mcp_tool") == "crew-keyboard"
+
+
 @pytest.mark.asyncio
 async def test_a_forwarded_refusal_is_not_recorded_as_the_person(
     monkeypatch: pytest.MonkeyPatch,

@@ -50,6 +50,7 @@ from kiro_crew.dashboard.handlers._shared import (
     require_owner_dashboard_request,
 )
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+from kiro_crew.dashboard.slot_ownership import app_holds_gateway_key
 from kiro_crew.dashboard.state import DashboardState, SlotOrigin, note_crew_log_class
 from kiro_crew.executors import discovery_executor
 from kiro_crew.history import is_incognito_transcript
@@ -2039,6 +2040,15 @@ async def api_cron_to_chat(request: web.Request) -> web.Response:
     if (_e := _invalid_path_id_response(job_id, "job_id")) is not None:
         return _e
     slot_name = f"cron-{job_id}"
+    # The job's tab key is held by an app's slot: it is not adopted (see
+    # slot_ownership.app_holds_gateway_key), so there is no tab to open.
+    if app_holds_gateway_key(
+        state, slot_name, "cron.to_chat", actor=str(request.get("app") or "dashboard")
+    ):
+        return web.json_response(
+            {"error": "this job's chat tab is unavailable", "code": "cron_slot_unavailable"},
+            status=409,
+        )
     jobs = state.crons.list_jobs(include_disabled=True)
     job = next((j for j in jobs if j.id == job_id), None)
     if job:

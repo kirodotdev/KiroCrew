@@ -1825,7 +1825,7 @@ the four where `rewind` does not yet, so nobody reads them as already shared:
   here. **`rewind` still awaits its orphan-session cleanup in that gap**, so it
   remains exposed.
 - **App ownership is authorized through the shared gate**
-  (`_check_slot_app_ownership`, plus `_reauthorize_after_await` across the
+  (`slot_ownership.deny_app_slot_session_access`, plus `_reauthorize_after_await` across the
   body-read await), because discarding a native conversation is a destructive
   capability. It authorizes the `_app` binding, the effective SESSION key, and
   the TRANSCRIPT key, so a channel-linked slot and an unbound channel-origin slot
@@ -2167,13 +2167,16 @@ Three properties the route holds, each of which fails silently if broken:
   refusal that occurs after the route has committed to the teardown; the
   fast-path 409s are pre-checks and stay unlogged, as they are on the sibling.
 
-Authorization is `_app_cancel_denied`, not a slot-ownership check, and that
-distinction is load-bearing: `get_or_create_slot` resolves `linked_session_key`
-from the session map for a name shaped like a channel stem, so an app that names a
-live channel thread ends up OWNING a slot bound to a conversation it has no claim
-on. Ownership alone would let it wipe that channel conversation's resume pointer.
-The helper tests the key the caller will actually act on, and runs BEFORE the 409s
-so a refusal cannot confirm the slot exists. Reaching the route needs
+Authorization is two layers. The per-slot checkpoint
+(`slot_ownership_middleware`, [App Kit platform §13](app-kit-platform.md)) admits
+an app only as the slot's owner on its own session and transcript, before the
+handler runs. `_app_cancel_denied` then tests the resolved target key the caller
+will actually act on. Ownership alone is not enough, and that is load-bearing:
+`get_or_create_slot` resolves `linked_session_key` from the session map for a name
+shaped like a channel stem, so an app that names a live channel thread ends up
+OWNING a slot bound to a conversation it has no claim on, and slot ownership by
+itself would let it wipe that channel conversation's resume pointer. The helper
+runs BEFORE the 409s so a refusal cannot confirm the slot exists. Reaching the route needs
 `/api/chat/slots` in the app's manifest `permissions.api`, and the capability it
 grants is strictly smaller than the delete it already implies.
 

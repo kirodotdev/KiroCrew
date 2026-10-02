@@ -2854,7 +2854,7 @@ def _called_names(node) -> set[str]:
 class TestEveryPeerDirectedOperationIsOwnerGated:
     """The gap this closes, and the reason it is closed structurally.
 
-    ``_deny_cross_app_slot_access`` returns ``None`` for every caller with an
+    ``slot_ownership.deny_app_slot_access`` returns ``None`` for every caller with an
     empty ``request["app"]`` — that is its contract, "dashboard users pass". But
     ``send_dashboard_link`` mints a dashboard token with ``app=""`` for an
     allow-listed messaging identity, so a NON-owner holds exactly that shape.

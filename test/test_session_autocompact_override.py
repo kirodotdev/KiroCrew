@@ -295,7 +295,7 @@ class TestAutocompactEndpoint:
         # effective_session_key(slot) -- for a channel-linked slot that is the
         # channel's own session, which the app does NOT own. An app naming an
         # existing channel stem could modify a foreign session's threshold.
-        # The session-aware gate (_check_slot_app_ownership) must deny this.
+        # The session-aware gate (slot_ownership.deny_app_slot_session_access) must deny this.
         slot = _ChatSlot("someapp-slot")
         slot._app = "someapp"
         slot.linked_session_key = "slack:1234567890.123456"

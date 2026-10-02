@@ -24,6 +24,7 @@ from kiro_crew.dashboard.chat_utils import (
 )
 from kiro_crew.dashboard.handlers.memory import _store_unavailable_response
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+from kiro_crew.dashboard.slot_ownership import deny_app_slot_access
 from kiro_crew.dashboard.state import (
     MAX_LIVE_SLOTS,
     VALID_MEMORY_MODES,
@@ -230,32 +231,12 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
             status=429,
         )
 
-    # App ownership check (App Kit §5.2)
-    if request_app:
-        if not slot._app:
-            sel().log_api_access(
-                caller=request_app,
-                operation="chat.slot_fork",
-                outcome="denied",
-                source="app_isolation",
-                resources=f"slot={name}",
-                error="app cannot fork unscoped slots",
-            )
-            return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
-        if slot._app != request_app:
-            sel().log_api_access(
-                caller=request_app,
-                operation="chat.slot_fork",
-                outcome="denied",
-                source="app_isolation",
-                resources=f"slot={name}",
-                error="app does not own this slot",
-            )
-            # Return 404 (not 403) so a slot owned by another app / an unscoped
-            # slot is indistinguishable from a non-existent one — prevents an
-            # app-scoped caller enumerating slots across the isolation boundary
-            # (CWE-204). The true reason is recorded server-side via SEL above.
-            return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+    # App ownership check (App Kit §5.2): the shared decision, so a slot owned by
+    # another app or an unscoped slot answers the same 404 as a missing one
+    # (CWE-204); the true reason is recorded server-side.
+    denied = deny_app_slot_access(request_app, slot, name, "chat.slot_fork")
+    if denied is not None:
+        return denied
 
     source = await resolve_fork_source(slot, audit_caller=request_app or "dashboard")
     if isinstance(source, web.Response):

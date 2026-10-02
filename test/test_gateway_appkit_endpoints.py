@@ -2333,7 +2333,7 @@ class TestNoteEndpoint:
         app.router.add_post("/api/chat/slots/{slot}/context", api_chat_slot_context)
         events: list[dict] = []
         with patch(
-            "kiro_crew.dashboard.chat_handlers.sel",
+            "kiro_crew.dashboard.slot_ownership.sel",
             lambda: SimpleNamespace(log_api_access=lambda **kw: events.append(kw)),
         ):
             async with TestClient(TestServer(app)) as client:

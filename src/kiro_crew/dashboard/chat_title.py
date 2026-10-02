@@ -1410,7 +1410,12 @@ async def api_chat_slot_rename(request: web.Request) -> web.Response:
         return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     if not isinstance(body, dict):
         return web.json_response({"error": "invalid JSON", "code": "body_not_object"}, status=400)
-    title = body.get("title", "").strip()[:200]
+    title = body.get("title", "")
+    if not isinstance(title, str):
+        return web.json_response(
+            {"error": "title must be a string", "code": "invalid_title"}, status=400
+        )
+    title = title.strip()[:200]
     if not title:
         return web.json_response({"error": "title required", "code": "title_required"}, status=400)
     slot.title = title
@@ -1425,8 +1430,9 @@ async def api_chat_slot_rename(request: web.Request) -> web.Response:
     # projected (redacted) title to patch-capable tabs in place of a full list.
     state.push_slot_title(slot.key, title, full=False)
     state.push_slot_patch(slot.key, ("title",))
+    request_app = request.get("app", "")
     sel().log_api_access(
-        caller="dashboard",
+        caller=request_app or "dashboard",
         operation="chat.slot_rename",
         outcome="allowed",
         source="dashboard",

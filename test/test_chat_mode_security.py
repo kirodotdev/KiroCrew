@@ -32,11 +32,11 @@ from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_state
 
 from kiro_crew.dashboard.chat_handlers import (
-    _app_may_send_to_slot,
     api_chat_mode,
     api_chat_slot_approve,
 )
 from kiro_crew.dashboard.handlers.sessions import api_approval_resolve
+from kiro_crew.dashboard.slot_ownership import app_may_control_session
 from kiro_crew.dashboard.state import SlotOrigin, row_mid
 from kiro_crew.safety_override import (
     reset_singleton,
@@ -186,48 +186,25 @@ def _make_app_control_target(state, target: str):
 
 
 @pytest.mark.parametrize(("target", "allowed"), _APP_CONTROL_TARGETS)
-@pytest.mark.asyncio
-async def test_app_send_target_boundary(state, target: str, allowed: bool) -> None:
+def test_app_send_target_boundary(state, target: str, allowed: bool) -> None:
     slot = _make_app_control_target(state, target)
-    with patch(
-        "kiro_crew.apps.permissions.app_can_manage_session_approvals",
-        return_value=True,
-    ):
-        assert await _app_may_send_to_slot("crew-keyboard", slot) is allowed
+    assert app_may_control_session("crew-keyboard", slot, True) is allowed
 
 
-@pytest.mark.asyncio
-async def test_app_without_grant_cannot_send_to_user_slot(state) -> None:
+def test_app_without_grant_cannot_send_to_user_slot(state) -> None:
     slot = state.get_or_create_slot("s1", origin=SlotOrigin.USER)
-    with patch(
-        "kiro_crew.apps.permissions.app_can_manage_session_approvals",
-        return_value=False,
-    ):
-        assert await _app_may_send_to_slot("crew-keyboard", slot) is False
+    assert app_may_control_session("crew-keyboard", slot, False) is False
 
 
-@pytest.mark.asyncio
-async def test_app_cannot_send_to_another_apps_slot(state) -> None:
+def test_app_cannot_send_to_another_apps_slot(state) -> None:
+    """The grant never crosses into another app's session."""
     slot = state.get_or_create_slot("s1", app="other-app")
-    check_grant = MagicMock(return_value=True)
-    with patch(
-        "kiro_crew.apps.permissions.app_can_manage_session_approvals",
-        check_grant,
-    ):
-        assert await _app_may_send_to_slot("crew-keyboard", slot) is False
-    check_grant.assert_not_called()
+    assert app_may_control_session("crew-keyboard", slot, True) is False
 
 
-@pytest.mark.asyncio
-async def test_app_keeps_own_slot_send_without_session_grant(state) -> None:
+def test_app_keeps_own_slot_send_without_session_grant(state) -> None:
     slot = state.get_or_create_slot("s1", app="crew-keyboard")
-    check_grant = MagicMock(return_value=False)
-    with patch(
-        "kiro_crew.apps.permissions.app_can_manage_session_approvals",
-        check_grant,
-    ):
-        assert await _app_may_send_to_slot("crew-keyboard", slot) is True
-    check_grant.assert_not_called()
+    assert app_may_control_session("crew-keyboard", slot, False) is True
 
 
 @pytest.mark.asyncio

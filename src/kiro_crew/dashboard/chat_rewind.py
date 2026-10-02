@@ -39,6 +39,12 @@ from kiro_crew.dashboard.chat_utils import (
 )
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.remote_relay import remote_bound_refusal
+from kiro_crew.dashboard.slot_ownership import (
+    audit_app_slot_denial,
+    checkpoint_slot_replaced,
+    deny_app_slot_access,
+    slot_not_found,
+)
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.sel import sel
 from kiro_crew.session_map import _kiro_sessions_dir
@@ -101,27 +107,20 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
     name = request.match_info["slot"]
     slot = state._slots.get(name)
     request_app = request.get("app", "")
-    if not slot:
-        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+    # The readiness await above can outlast a close and a same-name create; the
+    # slot the per-slot checkpoint judged is the only one this may act on.
+    if not slot or checkpoint_slot_replaced(request, slot):
+        return slot_not_found()
     under_construction = reject_if_slot_under_construction(state, slot)
     if under_construction is not None:
         return under_construction
 
-    # App ownership check — mirror fork's contract so apps can't rewind
-    # slots they don't own.
-    if request_app:
-        if not slot._app or slot._app != request_app:
-            sel().log_api_access(
-                caller=request_app,
-                operation="chat.slot_rewind",
-                outcome="denied",
-                source="app_isolation",
-                resources=f"slot={name}",
-                error="app cannot rewind unscoped or unowned slot",
-            )
-            # 404 (not 403): indistinguishable from a missing slot —
-            # anti-enumeration (CWE-204); true reason logged via SEL above.
-            return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+    # App ownership check -- the shared decision fork uses too, so apps can't
+    # rewind slots they don't own. 404 (not 403): indistinguishable from a
+    # missing slot (CWE-204); the true reason is logged via SEL.
+    denied = deny_app_slot_access(request_app, slot, name, "chat.slot_rewind")
+    if denied is not None:
+        return denied
 
     # A crew-bound slot has no local rewind: it would rebuild the LOCAL ACP
     # session and re-run the edited turn on this machine, diverging from the peer.
@@ -249,15 +248,10 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
         # session the app does not own. Same 404-not-403 shape as the
         # ownership check above (anti-enumeration); SEL records the truth.
         if request_app and getattr(slot, "linked_session_key", ""):
-            sel().log_api_access(
-                caller=request_app,
-                operation="chat.slot_rewind",
-                outcome="denied",
-                source="app_isolation",
-                resources=f"slot={name}",
-                error="app cannot rewind a channel-linked slot",
+            audit_app_slot_denial(
+                request_app, "chat.slot_rewind", name, "app cannot rewind a channel-linked slot"
             )
-            return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+            return slot_not_found()
 
         # The transcript this rewind was authorized against. A concurrent
         # rebinding (a cron injection re-linking the slot) moves the slot to
