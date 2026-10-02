@@ -1505,6 +1505,81 @@ This re-gate covers
 `sessionApproval` only; `permissions.api` and `permissions.events` are likewise
 read live and still widen on update without a consent moment (issue #11212).
 
+**Prefix grants are narrowed to owned resources on the cross-session routes.**
+`permissions.api` is a prefix match, so the routes below are judged per resource
+for an app caller (`handlers/sessions.py`). The rule keys on the request's `app`
+claim, so it covers an app token and also an internal-secret caller whose calling
+session `token_auth` derives to an app (`_derive_internal_caller_app`: an app's
+slot, cron job or subagent).
+
+- `api_approval_resolve` applies `api_chat_slot_approve`'s rule in the same
+  order. `deny_session_approval_caller` runs first, so an app without the
+  `sessionApproval` grant gets the same 403 `session_approval_not_granted` on
+  both routes, its own slots included. Then the live slots holding an undone
+  future under the id are snapshotted, and `chat_handlers._app_may_send_to_slot`
+  judges each one. ACP request ids are connection-scoped and recur, so the id must
+  name exactly one pending request the app may control: with two or more (two of
+  its own slots, or its own plus a granted user session) the route refuses rather
+  than guess, and the slot route, which names the slot, decides one. The one slot
+  is resolved through `state.resolve_slot_approval` with the future snapshotted
+  for it as `expected_future`. That call never touches the state-level registry,
+  and it fails unless the slot still holds that exact undone future, so a request
+  raised under the same id during the awaited permission read, on another slot or
+  on the same one, is never resolved in its place. A resolution is recorded in
+  the SEL as the slot route records it (`caller="app:<name>"`,
+  `tool_approval:<action>`, the id). The coordinator target
+  (`?origin=coordinator`) and every state-level id answer the 404.
+  `api_approvals` lists state-level approvals only, so it returns `[]` to an app.
+- `api_sessions`, `api_sessions_search`, `api_session_detail`,
+  `api_session_delete` and `api_sessions_summarize` admit an app only to
+  transcripts for which `_app_owns_transcript` holds: the metadata line's `app`
+  equals the caller, and a missing transcript or one with no recorded app
+  belongs to no app. The list filters before counting. Search passes the owned
+  keys into `search_sessions(keys=...)`, which drops every other session before
+  ranking and the limit cap, so other sessions' hits cannot crowd the app's off
+  the page; it scores within the same newest-`_SEARCH_SCAN_WINDOW` window as
+  every search. `api_session_delete` also refuses when the slot its delete claim
+  would pop is not the app's, so a metadata line naming the app never closes
+  someone else's live tab. Summarize skips a key the app does not own exactly as
+  it skips a missing one. Its only production caller is the `list_sessions` MCP
+  tool with `summarize=true`, which lists every workspace session itself, so from
+  an app's slot the rows the app does not own come back with their titles and no
+  summary.
+- `api_sessions_clear` and `api_sessions_clearable_count` act on the whole
+  closed history, which no app owns, so `_app_bulk_history_refusal` refuses an
+  app before either reads anything.
+- The `app` marker is written by the slot save, so it holds only because an app
+  cannot open a NEW slot over a transcript it does not own. `api_chat_slot_create`
+  (a named create), `api_chat` (send auto-create) and the resume core
+  (`resume_slot_from_history`, once no live slot answers) call
+  `chat_handlers._app_claim_refused` before creating anything: a transcript the
+  new slot would read or save to that exists and does not record the app
+  (`_app_may_claim_transcript`) gets the same 404. A missing transcript or the
+  app's own is admitted, so an app still reopens its closed sessions.
+
+The handler's first check is unlocked, so the protected step judges ownership
+again under the transcript's own lock hold (`transcript_lock_stems`), and a
+same-key delete and recreate between the two cannot hand the app somebody
+else's transcript. `api_session_detail` reads through `_app_owned_messages` (a lock
+timeout answers 503 `session_busy`), `_delete_history_session(owner_app=...)`
+re-judges before any ledger exclusion or unlink (`_AppOwnershipLost` is the same
+404), and `_summarize_one(owner_app=...)` re-judges inside both the cached-summary
+hold and the row read. The first check stays because it keeps a key the app has
+no claim on from creating a lock sidecar.
+
+Refusals share `_app_not_found`: one SEL `app_isolation` record and the
+`slot_not_found` body a missing id or key also returns. Grants are recorded too
+(`_audit_app_allow`, outcome `allowed`, same `app_isolation` source): one per key
+for detail, a completed delete, summarize and an admitted slot claim, and one per
+request for list and search, carrying the count of owned rows rather than one
+record per row.
+
+Not ownership-judged yet: `/api/sessions/{id}/agents` and its `/{agent_id}` and
+`/stream` children (subagent results), `POST /api/sessions/restart`, and
+`/api/sessions/usage` (with `usage/refresh`), `/health` and `/memory`. An app
+that declares `/api/sessions/*` still reaches them as before; narrowing them is
+a follow-up. The `/api/sessions/{id}/crew-log*` reads are owner-only already.
+
 **Filtering the frame is not always enough.** Two event shapes carry other
 tenants' data inside a payload the gate admits wholesale, so they are narrowed on
 the send path in `_serialize_for_client`: the `slots` re-push (a full slot list)

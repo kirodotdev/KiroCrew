@@ -581,7 +581,12 @@ class KiroCrewClient:
     # ── Approvals ──
 
     async def list_approvals(self) -> list[dict[str, Any]]:
-        """List pending tool approvals across all slots."""
+        """List pending background approvals (cron, autonudge, subagent, task runner).
+
+        A slot's own tool prompts are not in this list; they are rows in that
+        slot's history. An app token never resolves a background approval, so
+        for an app caller the Gateway returns an empty list.
+        """
         result = await self._get("/api/approvals")
         return result if isinstance(result, list) else []
 
@@ -606,7 +611,16 @@ class KiroCrewClient:
         (``trust``, ``trust_reads``, ``trust_command``, ``trust_base``,
         ``yolo``). ``trust_command`` and
         ``trust_base`` require the pending card's server-derived *pattern*.
-        The Gateway enforces which actions an app token may use.
+
+        With an app token, both routes require the app's manifest to declare
+        ``permissions.sessionApproval``, even for the app's own slots, and
+        answer 403 ``session_approval_not_granted`` without it. With the grant,
+        either route resolves a request only on a slot the app owns or on a
+        local user session, and never a background approval. Request ids can
+        recur across sessions, so without *slot_id* an id pending on more than
+        one session the app may control is refused; pass *slot_id* to name it.
+        Any refusal other than the missing grant is the 404 an unknown id also
+        gets, raised as ``ErrorCode.NOT_FOUND``.
         """
         if not request_id:
             raise KiroCrewError(ErrorCode.VALIDATION_ERROR, "request_id is required")

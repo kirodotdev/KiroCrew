@@ -7320,6 +7320,30 @@ class DashboardState:
             permission_marker=_permission_marker(),
         )
 
+    def resolve_slot_approval(
+        self,
+        slot: Any,
+        approval_id: str,
+        approved: bool,
+        *,
+        rejected_once: bool = False,
+        expected_future: asyncio.Future[str] | None = None,
+    ) -> bool:
+        """Resolve one approval on *slot*'s own future, skipping state-level approvals.
+
+        *expected_future* pins the one request the caller judged: the call fails
+        when the slot now holds a different future under the same id.
+        """
+        return _approvals_for(self).resolve_on_slot(
+            self,
+            slot,
+            approval_id,
+            approved,
+            rejected_once=rejected_once,
+            permission_marker=_permission_marker(),
+            expected_future=expected_future,
+        )
+
     def _redact_questions(self, questions: list[dict]) -> list[dict]:
         """Redact questions and reject text collisions introduced by redaction."""
         return _questions_for(self).redact_questions(

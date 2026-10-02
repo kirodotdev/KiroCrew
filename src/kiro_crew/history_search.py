@@ -16,7 +16,7 @@ import math
 import os
 import re
 import time as _time
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Container, Iterable, Iterator, Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING, NamedTuple
 
@@ -1216,7 +1216,9 @@ class SessionCatalogProjection:
             usage[agent] = (count + 1, max(last_used, meta.get("modified", 0.0)))
         return usage
 
-    def search_sessions(self, query: str, limit: int = 50) -> list[dict]:
+    def search_sessions(
+        self, query: str, limit: int = 50, *, keys: Container[str] | None = None
+    ) -> list[dict]:
         """Return session metadata for files whose message content matches *query*.
 
         This is the ONE ranking every transcript-search consumer shares — the
@@ -1299,6 +1301,12 @@ class SessionCatalogProjection:
         ``list_sessions`` order - newest first).  Caps results at *limit*.
         Only the ``_SEARCH_SCAN_WINDOW`` most recent files are scored, so
         I/O stays bounded even with hundreds of sessions.
+
+        *keys*, when given, restricts scoring to those session keys (as
+        ``list_sessions`` spells them) inside that same window. It is applied
+        BEFORE ranking and the *limit* cap, so sessions outside it can never
+        crowd an allowed one off the page; an app-token caller passes the keys
+        it owns.
         """
         if not query or limit <= 0 or not self._log._dir.exists():
             return []
@@ -1320,6 +1328,10 @@ class SessionCatalogProjection:
         scored: list[tuple[float, int, dict, bool]] = []
         window = self._log.list_sessions()[: _facade_search_scan_window()]
         self._log._prune_search_memos({m["key"] for m in window})
+        if keys is not None:
+            # After the prune, which must see the whole window: the memos are
+            # shared with every unrestricted search.
+            window = [m for m in window if m["key"] in keys]
         allowed, rowids = self._index_shortlist(window, needles)
         for rank, meta in enumerate(window):
             key = meta["key"]

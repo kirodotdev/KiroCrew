@@ -65,6 +65,7 @@ def _make_request(
     state._slots = slots or {}
 
     request = MagicMock(spec=web.Request)
+    request.get = {}.get  # the dashboard user: no app claim
     request.app = {"state": state}
     request.query = query or {}
     return request
