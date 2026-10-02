@@ -16,42 +16,49 @@ import ErrorNotice from '../components/ErrorNotice'
 
 import { i18nT } from '../i18n/t'
 import { appDisplayName } from '../components/appstore/appManifest'
-type AppInfo = {
-  name: string
-  displayName: string
-  version: string
-  enabled: boolean
-  origin?: string
-  migratedTo?: string
-  orphaned?: boolean
-}
-
 type RegistryApp = {
   name: string
   displayName: string
   installed: boolean
 }
 
-type MigrationState = 'loading' | 'available' | 'not-in-registry' | 'already-installed' | 'error'
+type MigrationState =
+  | 'loading'
+  | 'available'
+  // The successor is in the registry under this same name; the stale entry
+  // must be cleaned up before it can be installed.
+  | 'replace'
+  | 'not-in-registry'
+  | 'already-installed'
+  | 'error'
 
 export default function MigrationPage() {
   const { name } = useParams<{ name: string }>()
   const navigate = useNavigate()
   const [error, setError] = useState('')
   const [cleanedUp, setCleanedUp] = useState(false)
+  const [installPending, setInstallPending] = useState(false)
 
   // React Query: fetch migration state
   const { data: migrationData, isLoading, error: queryError, refetch } = useQuery({
     queryKey: ['apps', 'migration', name],
     queryFn: async () => {
-      const info: AppInfo = await api.getApp(name!)
+      const [info, registryData, apps] = await Promise.all([
+        api.getApp(name!), api.listRegistry(), api.listApps(),
+      ])
       const migTarget = info.migratedTo || ''
       const parsed = migTarget.includes(':') ? migTarget.split(':').slice(1).join(':') : name!
-      const registryData = await api.listRegistry()
+      const orphaned = apps.find(a => a.name === name)?.orphaned
       const registryApps: RegistryApp[] = registryData.apps || []
       const standaloneInRegistry = registryApps.find(a => a.name === parsed)
+      // A successor that ships under the orphan's OWN name cannot be installed
+      // yet: the registry marks it installed only because this stale builtin
+      // record sits in its slot, and the install refuses it as "already
+      // installed" until the record is cleaned up.
+      const slotHeldByOrphan = parsed === name && info.origin === 'builtin' && orphaned
       let state: MigrationState = 'not-in-registry'
-      if (standaloneInRegistry?.installed) state = 'already-installed'
+      if (standaloneInRegistry && slotHeldByOrphan) state = 'replace'
+      else if (standaloneInRegistry?.installed) state = 'already-installed'
       else if (standaloneInRegistry) state = 'available'
       return { appInfo: info, targetName: parsed, state }
     },
@@ -67,15 +74,27 @@ export default function MigrationPage() {
 
   // Cleanup mutation
   const cleanupMutation = useMutation({
-    mutationFn: () => api.migrateCleanup(name!),
-    onSuccess: () => {
-      setCleanedUp(true)
+    mutationFn: (_vars: { thenInstall: boolean }) => api.migrateCleanup(name!),
+    onSuccess: (data: { notice?: string }, { thenInstall }) => {
       // Cache invalidation (['apps'] + ['registry']) is owned by the
       // mc:apps-changed listener in App.tsx, for every dispatch site at once.
       window.dispatchEvent(new Event('mc:apps-changed'))
+      if (typeof data?.notice === 'string' && data.notice) {
+        setInstallPending(thenInstall)
+        setError(data.notice)
+        setCleanedUp(true)
+        return
+      }
+      // The slot is free, so hand straight over to the successor's install
+      // page rather than a completion card for an app that is not installed.
+      if (thenInstall) {
+        navigate(`/apps/detail/${encodeURIComponent(targetName)}`, { replace: true })
+        return
+      }
+      setCleanedUp(true)
     },
-    onError: (e: unknown) => {
-      setError((e instanceof Error && e.message) || i18nT('pages.migrationPage.cleanup_failed'))
+    onError: (e: unknown, { thenInstall }) => {
+      setError((!thenInstall && e instanceof Error && e.message) || i18nT('pages.migrationPage.cleanup_failed'))
     },
   })
 
@@ -117,7 +136,12 @@ export default function MigrationPage() {
               <div className="text-[13px] text-muted text-center max-w-md">
                 {i18nT('pages.migrationPage.the_old_builtin_entry_has_been_removed_your_data')}
               </div>
-              <Btn primary onClick={() => navigate('/apps')}>
+              {installPending && (
+                <Btn primary onClick={() => navigate(`/apps/detail/${encodeURIComponent(targetName)}`, { replace: true })}>
+                  <Download size={14} /> {i18nT('pages.migrationPage.install_from_apps')}
+                </Btn>
+              )}
+              <Btn primary={!installPending} onClick={() => navigate('/apps')}>
                 {i18nT('pages.migrationPage.back_to_apps')} <ArrowRight size={14} />
               </Btn>
             </div>
@@ -158,6 +182,22 @@ export default function MigrationPage() {
                 </div>
               )}
 
+              {state === 'replace' && (
+                <div className="flex items-center gap-3 mt-4">
+                  <Btn
+                    primary
+                    onClick={() => cleanupMutation.mutate({ thenInstall: true })}
+                    disabled={cleanupMutation.isPending}
+                  >
+                    {cleanupMutation.isPending ? <RefreshCw size={14} className="animate-spin" /> : <Download size={14} />}
+                    {i18nT('pages.migrationPage.install_from_apps')}
+                  </Btn>
+                  <span className="text-[13px] text-muted">
+                    {i18nT('pages.migrationPage.install_the_standalone_version_to_continue_using')}
+                  </span>
+                </div>
+              )}
+
               {state === 'not-in-registry' && (
                 <div className="bg-bg-elevated border border-border rounded-lg p-4 mt-4">
                   <div className="text-[13px] text-muted mb-3">
@@ -185,7 +225,7 @@ export default function MigrationPage() {
                     </div>
                     <Btn
                       danger
-                      onClick={() => cleanupMutation.mutate()}
+                      onClick={() => cleanupMutation.mutate({ thenInstall: false })}
                       disabled={cleanupMutation.isPending}
                     >
                       <Trash2 size={14} /> {cleanupMutation.isPending ? i18nT('pages.migrationPage.cleaning_up') : i18nT('pages.migrationPage.clean_up_old_entry')}

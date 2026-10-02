@@ -325,7 +325,7 @@ def test_the_in_gateway_path_clears_inside_the_lock_via_the_live_map(tmp_path):
     src = (
         pathlib.Path(__file__).resolve().parents[1] / "src" / "kiro_crew" / "apps" / "routes.py"
     ).read_text(encoding="utf-8")
-    handler = src.split("async def handle_uninstall_app", 1)[1].split("\nasync def ", 1)[0]
+    handler = src.split("async def _run_uninstall", 1)[1].split("\nasync def ", 1)[0]
 
     assert "discard_conversation(" in handler, "the in-gateway path must use the live map"
     assert "discard_app_session_pointers" not in handler, (
@@ -392,7 +392,7 @@ def test_the_in_gateway_path_enumerates_through_the_live_manager(tmp_path):
     src = (
         pathlib.Path(__file__).resolve().parents[1] / "src" / "kiro_crew" / "apps" / "routes.py"
     ).read_text(encoding="utf-8")
-    handler = src.split("async def handle_uninstall_app", 1)[1].split("\nasync def ", 1)[0]
+    handler = src.split("async def _run_uninstall", 1)[1].split("\nasync def ", 1)[0]
 
     assert "mapped_keys=" in handler, (
         "the in-gateway path must hand its own live key set to the enumeration; "
@@ -553,7 +553,7 @@ def test_the_in_gateway_path_suppresses_replay_and_finishes_durable(tmp_path):
     src = (
         pathlib.Path(__file__).resolve().parents[1] / "src" / "kiro_crew" / "apps" / "routes.py"
     ).read_text(encoding="utf-8")
-    handler = src.split("async def handle_uninstall_app", 1)[1].split("\nasync def ", 1)[0]
+    handler = src.split("async def _run_uninstall", 1)[1].split("\nasync def ", 1)[0]
 
     assert "discard_conversation(key, replay=False)" in handler, (
         "the default replay=True discards standing suppression, so the removed "

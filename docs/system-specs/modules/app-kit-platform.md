@@ -1042,6 +1042,18 @@ lifecycle lock and the one step that can safely refuse runs FIRST:
 5. File removal, preserving `data/` unless the caller asked to purge.
 6. Resume pointers dropped for every conversation the app owned, on success only.
 
+The owner-only migration cleanup route delegates to uninstall for a retired builtin
+listed in `_MIGRATED_BUILTINS` or orphaned in this build. Eligibility is rechecked
+under the app lifecycle lock; linked/junction app directories and shipped builtins
+are refused with `not_orphaned` (HTTP 400). It keeps `data/`, purges uninstall's
+generated dependency artifacts, skips the retired app's `onUninstall` script,
+and removes the rest of the app tree. All other uninstall preconditions and cleanup
+steps apply. Missing records and standalone successors return idempotent success.
+Pointer flush failures and teardown warnings return a redacted `notice` on success;
+the migration page shows it above the completion card and retains the Install from
+Apps handoff. Without a notice, that handoff uses replacement navigation. Orphan
+status comes from the installed-app list, not the single-app detail response.
+
 Step 6 exists because an app's slot key is often DETERMINISTIC — one slot per object
 it tracks, named after that object — and `session.py` resumes a slot's previous
 kiro-cli conversation by that key. Correct while the app is installed; wrong once it
