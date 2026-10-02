@@ -344,6 +344,28 @@ MALICIOUS_COMMANDS = [
     r"A=\$; sh -c 'cat ~/.ssh$A/id_rsa'",
     # `\$NAME` in a value stores the literal text `$NAME` for a nested shell.
     r"A=\$B; sh -c 'cat ~/.ssh${A}/id_rsa'",
+    # BASH EXTGLOB operators compose a credential path that the literal text
+    # never contains: `~/.ss@(h)/id_rsa` expands to `~/.ssh/id_rsa` under
+    # `shopt -s extglob` or `bash -O extglob`.  Two shapes reach the filesystem:
+    # `shopt -s extglob; eval '...'` (eval re-parses with extglob set) and
+    # `bash -O extglob -c '...'` (extglob flag passed to a nested bash).
+    # Verified: all five operators and the alternation form read the key.
+    # All five operators: @(h) ?(h) +(h) *(h) and negation !(x).
+    "bash -O extglob -c 'cat ~/.ss@(h)/id_rsa'",
+    "bash -O extglob -c 'cat ~/.ss?(h)/id_rsa'",
+    "bash -O extglob -c 'cat ~/.ss+(h)/id_rsa'",
+    "bash -O extglob -c 'cat ~/.ss*(h)/id_rsa'",
+    "bash -O extglob -c 'cat ~/.ss!(x)/id_rsa'",
+    # Alternation form: @(ssh) and @(ssh|rsa).
+    "bash -O extglob -c 'cat ~/.@(ssh)/id_rsa'",
+    "bash -O extglob -c 'cat ~/.@(ssh|rsa)/id_rsa'",
+    # AWS credentials path.
+    "bash -O extglob -c 'cat ~/.a@(ws)/credentials'",
+    # shopt + eval path.
+    "shopt -s extglob; eval 'cat ~/.ss@(h)/id_rsa'",
+    "shopt -s extglob; eval 'cat ~/.a@(ws)/credentials'",
+    # Nested bash with shopt + eval.
+    "bash -c 'shopt -s extglob; eval \"cat ~/.ss@(h)/id_rsa\"'",
 ]
 
 # Shapes that LOOK like the smuggling patterns above but cannot actually reach a
@@ -396,6 +418,14 @@ BENIGN_LOOKALIKE_COMMANDS = [
     r'A=1; eval "echo \$A"',
     # An outer-shell reference that resolves to a harmless path.
     "A=s; cat ~/.ssh$A/id_rsa",  # .sshs, not .ssh
+    # Extglob operators in NON-CREDENTIAL paths must not be refused.
+    # None of these expand to a credential directory.
+    "echo @(foo|bar)",
+    "ls /tmp/@(a|b).txt",
+    "find /tmp -name '@(*.log|*.tmp)' -delete",
+    # An extglob operator whose alternatives do not reassemble a sensitive dir.
+    # @(s|sh)h expands to .sh/... and .shh/... -- neither is a credential path.
+    "bash -O extglob -c 'cat ~/.@(s|sh)h/public_key'",
 ]
 
 BENIGN_COMMANDS = [
@@ -2099,3 +2129,63 @@ def test_a_value_carrying_a_bare_dollar_is_refused():
     assert _vet_shell_command(r"A=\$B; sh -c 'cat ~/.ssh${A}/id_rsa'") is not None
     # Chaining to an earlier assignment is not synthesis.
     assert _vet_shell_command("A=logs; B=$A; tar czf /tmp/x.tgz ~/$B") is None
+
+
+def test_extglob_operators_are_refused():
+    """Bash extglob operators compose a credential path the literal text hides.
+
+    Two shapes reach the filesystem: `bash -O extglob -c '...'` and
+    `shopt -s extglob; eval '...'`.  The gate must refuse them regardless of
+    which operator is used.
+    """
+    # All five operators via bash -O extglob
+    blocked = [
+        "bash -O extglob -c 'cat ~/.ss@(h)/id_rsa'",
+        "bash -O extglob -c 'cat ~/.ss?(h)/id_rsa'",
+        "bash -O extglob -c 'cat ~/.ss+(h)/id_rsa'",
+        "bash -O extglob -c 'cat ~/.ss*(h)/id_rsa'",
+        "bash -O extglob -c 'cat ~/.ss!(x)/id_rsa'",
+        "bash -O extglob -c 'cat ~/.@(ssh)/id_rsa'",
+        "bash -O extglob -c 'cat ~/.@(ssh|rsa)/id_rsa'",
+        "bash -O extglob -c 'cat ~/.a@(ws)/credentials'",
+        "shopt -s extglob; eval 'cat ~/.ss@(h)/id_rsa'",
+        "shopt -s extglob; eval 'cat ~/.a@(ws)/credentials'",
+        "bash -c 'shopt -s extglob; eval \"cat ~/.ss@(h)/id_rsa\"'",
+    ]
+    for cmd in blocked:
+        err = _vet_shell_command(cmd)
+        assert err is not None and err.startswith(
+            "Error:"
+        ), f"extglob cred-reach should be blocked: {cmd!r}"
+
+    # Extglob operators in non-credential paths must not cause false positives
+    allowed = [
+        "echo @(foo|bar)",
+        "ls /tmp/@(a|b).txt",
+        "find /tmp -name '@(*.log|*.tmp)' -delete",
+    ]
+    for cmd in allowed:
+        err = _vet_shell_command(cmd)
+        assert err is None, f"extglob non-cred-path should be allowed: {cmd!r}"
+
+
+def test_extglob_expansion_helper():
+    """_extglob_expansions returns the correct literal alternatives."""
+    from kiro_crew.mcp_cron import _extglob_expansions
+
+    # @(h) -> exactly one alternative
+    assert _extglob_expansions("~/.ss@(h)/id_rsa") == ["~/.ssh/id_rsa"]
+    # @(ssh) -> one alternative, full directory name
+    assert _extglob_expansions("~/.@(ssh)/id_rsa") == ["~/.ssh/id_rsa"]
+    # @(ssh|rsa) -> two alternatives
+    assert set(_extglob_expansions("~/.@(ssh|rsa)/id_rsa")) == {"~/.ssh/id_rsa", "~/.rsa/id_rsa"}
+    # ?(h) -> empty + h
+    assert set(_extglob_expansions("~/.ss?(h)/id_rsa")) == {"~/.ss/id_rsa", "~/.ssh/id_rsa"}
+    # *(h) -> empty + h (same as ?)
+    assert set(_extglob_expansions("~/.ss*(h)/id_rsa")) == {"~/.ss/id_rsa", "~/.ssh/id_rsa"}
+    # !(x) -> None (negation, refuse)
+    assert None in _extglob_expansions("~/.ss!(x)/id_rsa")
+    # No extglob -> list with original
+    assert _extglob_expansions("~/.ssh/id_rsa") == ["~/.ssh/id_rsa"]
+    # AWS path
+    assert _extglob_expansions("~/.a@(ws)/credentials") == ["~/.aws/credentials"]
