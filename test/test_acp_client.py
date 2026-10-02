@@ -5655,6 +5655,66 @@ class TestWaitForCompaction:
         assert result == {"type": "failed", "summary": "error"}
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("summary", ["", None])
+    async def test_failed_with_empty_summary_carries_the_payload_reason(self, tmp_path, summary):
+        """kiro-cli's ``summary`` is empty on failure, so the wait result carries
+        the reason the payload names -- read by the same extractor the dispatch
+        loop uses -- and a manual /compact names its cause like auto-compaction."""
+        client = AcpClient(work_dir=tmp_path)
+        from kiro_crew.acp.types import METHOD_COMPACTION_STATUS, JsonRpcMessage
+
+        msg = JsonRpcMessage(
+            method=METHOD_COMPACTION_STATUS,
+            params={
+                "status": {"type": "failed", "error": "context window exceeded"},
+                "summary": summary,
+            },
+        )
+        client._read_message = AsyncMock(return_value=msg)
+
+        result = await client.wait_for_compaction(timeout=5.0)
+        assert result == {"type": "failed", "summary": "context window exceeded"}
+
+    @pytest.mark.asyncio
+    async def test_failed_without_a_reason_reports_the_extractor_fallback(self, tmp_path):
+        """No summary and no reason-bearing key: the result carries the
+        extractor's own generic text, the same line the streaming notice shows."""
+        client = AcpClient(work_dir=tmp_path)
+        from kiro_crew.acp.client import compaction_failure_detail
+        from kiro_crew.acp.types import METHOD_COMPACTION_STATUS, JsonRpcMessage
+
+        params = {"status": {"type": "failed"}, "summary": ""}
+        msg = JsonRpcMessage(method=METHOD_COMPACTION_STATUS, params=params)
+        client._read_message = AsyncMock(return_value=msg)
+
+        result = await client.wait_for_compaction(timeout=5.0)
+        assert result["type"] == "failed"
+        assert result["summary"] == compaction_failure_detail(params)
+        assert result["summary"].startswith("no reason reported by the agent")
+
+    @pytest.mark.asyncio
+    async def test_failed_with_a_credential_shaped_summary_is_redacted(self, tmp_path):
+        """A backend-echoed failure summary is LLM-influenced text, so the wait
+        result carries it scrubbed -- the same ``redact_text`` the session
+        handle applies -- before the dashboard or a channel mirror shows it."""
+        client = AcpClient(work_dir=tmp_path)
+        from kiro_crew.acp.types import METHOD_COMPACTION_STATUS, JsonRpcMessage
+
+        msg = JsonRpcMessage(
+            method=METHOD_COMPACTION_STATUS,
+            params={
+                "status": {"type": "failed"},
+                "summary": "backend error: key AKIAIOSFODNN7EXAMPLE rejected",
+            },
+        )
+        client._read_message = AsyncMock(return_value=msg)
+
+        result = await client.wait_for_compaction(timeout=5.0)
+        assert result["type"] == "failed"
+        assert "AKIAIOSFODNN7EXAMPLE" not in result["summary"]
+        assert "[REDACTED: credential]" in result["summary"]
+
+    @pytest.mark.asyncio
     async def test_timeout_returns_timeout_dict(self, tmp_path):
         client = AcpClient(work_dir=tmp_path)
         client._read_message = AsyncMock(return_value=None)

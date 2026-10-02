@@ -4403,6 +4403,81 @@ async def test_wait_for_compaction_drain_path_resets_context_stats():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("summary", ["", None])
+async def test_wait_for_compaction_drain_failed_with_empty_summary_carries_the_reason(summary):
+    """kiro-cli's ``summary`` is empty on failure, so the drain path carries the
+    reason the payload names -- read by the same extractor the dispatch loop
+    uses -- and a manual /compact names its cause the way auto-compaction does."""
+    from kiro_crew.acp.types import METHOD_COMPACTION_STATUS, JsonRpcMessage
+
+    rt, _reader, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    q["sA"].put_nowait(
+        JsonRpcMessage(
+            method=METHOD_COMPACTION_STATUS,
+            params={
+                "sessionId": "sA",
+                "status": {"type": "failed", "error": "context window exceeded"},
+                "summary": summary,
+            },
+        )
+    )
+
+    result = await handle.wait_for_compaction(timeout=3.0)
+
+    assert result == {"type": "failed", "summary": "context window exceeded"}
+
+
+@pytest.mark.asyncio
+async def test_wait_for_compaction_drain_failed_without_a_reason_reports_the_fallback():
+    """No summary and no reason-bearing key: the drain result carries the
+    extractor's own generic text, the same line the streaming notice shows."""
+    from kiro_crew.acp.transport_errors import compaction_failure_detail
+    from kiro_crew.acp.types import METHOD_COMPACTION_STATUS, JsonRpcMessage
+
+    rt, _reader, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    params = {"sessionId": "sA", "status": {"type": "failed"}, "summary": ""}
+    q["sA"].put_nowait(JsonRpcMessage(method=METHOD_COMPACTION_STATUS, params=params))
+
+    result = await handle.wait_for_compaction(timeout=3.0)
+
+    assert result["type"] == "failed"
+    assert result["summary"] == compaction_failure_detail(params)
+    assert result["summary"].startswith("no reason reported by the agent")
+
+
+@pytest.mark.asyncio
+async def test_wait_for_compaction_drain_failed_with_a_credential_shaped_summary_is_redacted():
+    """A backend-echoed failure summary is LLM-influenced text, so the drain
+    result carries it scrubbed -- the same ``redact_text`` the client wait path
+    applies -- before the dashboard or a channel mirror shows it."""
+    from kiro_crew.acp.types import METHOD_COMPACTION_STATUS, JsonRpcMessage
+
+    rt, _reader, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    q["sA"].put_nowait(
+        JsonRpcMessage(
+            method=METHOD_COMPACTION_STATUS,
+            params={
+                "sessionId": "sA",
+                "status": {"type": "failed"},
+                "summary": "backend error: key AKIAIOSFODNN7EXAMPLE rejected",
+            },
+        )
+    )
+
+    result = await handle.wait_for_compaction(timeout=3.0)
+
+    assert result["type"] == "failed"
+    assert "AKIAIOSFODNN7EXAMPLE" not in result["summary"]
+    assert "[REDACTED: credential]" in result["summary"]
+
+
+@pytest.mark.asyncio
 async def test_wait_for_compaction_drain_applies_post_compaction_metadata():
     """kiro emits the real post-compaction pct ~1s after the completed status;
     the drain path must capture it and derive against the KEPT served window."""

@@ -13754,7 +13754,17 @@ class AcpClient:
                     self._track_metadata(msg)
                     if s_type == "completed":
                         await self._drain_post_compaction_metadata()
-                    return {"type": s_type, "summary": params.get("summary", "")}
+                    # Redact the backend-echoed summary before it reaches callers
+                    # (compact() surfaces this to the dashboard and channel
+                    # mirrors). Mirrors AcpSessionHandle.wait_for_compaction.
+                    summary = redact_text(str(params.get("summary", "") or ""))
+                    if s_type == "failed" and not summary:
+                        # kiro-cli leaves `summary` empty on failure, so the
+                        # manual /compact notice would say nothing — carry the
+                        # notification's own reason, read by the same extractor
+                        # the dispatch loop uses for the streaming notice.
+                        summary = compaction_failure_detail(params)
+                    return {"type": s_type, "summary": summary}
             elif msg.is_method(METHOD_METADATA):
                 self._track_metadata(msg)
             else:

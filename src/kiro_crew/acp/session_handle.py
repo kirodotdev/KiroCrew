@@ -3408,10 +3408,15 @@ class AcpSessionHandle:
                             poisoned = await self._drain_post_compaction_metadata(buffered=buffered)
                         # Redact backend-echoed summary before it reaches callers
                         # (compact() surfaces this to the dashboard).
-                        return {
-                            "type": s_type,
-                            "summary": redact_text(str(params.get("summary", "") or "")),
-                        }
+                        summary = redact_text(str(params.get("summary", "") or ""))
+                        if s_type == "failed" and not summary:
+                            # kiro-cli leaves `summary` empty on failure, so the
+                            # manual /compact notice would say nothing — carry
+                            # the notification's own reason, read by the same
+                            # extractor the dispatch loop uses for the streaming
+                            # notice. Mirrors AcpClient.wait_for_compaction.
+                            summary = compaction_failure_detail(params)
+                        return {"type": s_type, "summary": summary}
                     continue
                 # Track metadata if it arrives (also consumes it).
                 if msg.method == "_kiro.dev/metadata":
