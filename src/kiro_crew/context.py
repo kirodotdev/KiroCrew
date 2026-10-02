@@ -1241,6 +1241,8 @@ _CRITICAL_RULES_TAIL = (
     "renders each label on a single line, so a long label displays cut off; "
     "put supporting detail in the message body before the [OPTIONS:] line and "
     "keep the label itself to the bare instruction.\n"
+    "Do not assume anyone's gender. When you have not been told a person's "
+    "pronouns, refer to them by name or with singular they/them.\n"
     "[END CRITICAL RULES]\n\n"
 )
 # The dashboard variant is the module's canonical block: tests and the

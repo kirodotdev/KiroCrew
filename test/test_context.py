@@ -2363,3 +2363,12 @@ class TestKeepVisibleMarkerRule:
         clause = "Prefer restructuring the turn so the deliverable IS its last message"
         assert clause in _CRITICAL_RULES
         assert clause not in _CRITICAL_RULES_CHANNEL
+
+
+def test_critical_rules_forbid_assuming_a_persons_gender():
+    """A named person whose pronouns were never given is not called "he"."""
+    from kiro_crew.context import _CRITICAL_RULES, _CRITICAL_RULES_CHANNEL
+
+    rule = "Do not assume anyone's gender."
+    assert rule in _CRITICAL_RULES
+    assert rule in _CRITICAL_RULES_CHANNEL
