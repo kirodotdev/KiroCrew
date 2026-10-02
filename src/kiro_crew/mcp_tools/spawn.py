@@ -1261,7 +1261,13 @@ def spawn_status(name: str, args: dict[str, Any]) -> str:
         result = f"[{' | '.join(hdr)}]\n{result}"
 
     if running:
-        status = ["QUEUED" if queued else "AWAITING-APPROVAL" if awaiting else "RUNNING"]
+        if queued:
+            state = "QUEUED"
+        elif awaiting:
+            state = "AWAITING-APPROVAL"
+        else:
+            state = "RUNNING"
+        status = [state]
         if "elapsed" in d:
             status.append(f"{d['elapsed']}s")
         if "turns" in d:
