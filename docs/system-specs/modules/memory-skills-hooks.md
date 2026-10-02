@@ -180,7 +180,11 @@ Global V1 uses structured files under `~/.kiro/crew/workspace/memory/`:
 V2 `MemoryStore` is a facade over an attached, prepared `VectorMemoryStore` for
 learned history and search. Its initialization creates no files. Manual profiles
 use the existing guarded filesystem reader and owner write path; they are not
-copied into the learned search index. A missing database is an explicit service
+copied into the learned search index. That reader compares the opened
+descriptor's real path with the requested path after resolving only the memory
+root's own spelling, so a store under a `$HOME` reached through a symlink
+(`/home/<user>` linking to `/local/home/<user>`) reads normally, while a link
+anywhere below the root, a leaf link and a hard link are still refused. A missing database is an explicit service
 failure, never an empty learned store or a JSONL fallback.
 
 ### A store's three paths, and where the index actually lives
@@ -1537,7 +1541,12 @@ retransmission and renewed suppression. Only the model transport is simulated;
 this pins the adapter/receipt pairing, not unobservable native history behavior.
 Canonical identity and permanent-rule checks are not cached by a
 receipt. A missing declared source still refuses; missing optional root guides
-change the snapshot instead. There is no mtime-only content cache or automatic
+change the snapshot instead. The project root's implicit `AGENTS.md` and
+`SOUL.md` go through the same reader, but a refusal there -- a link to a file
+outside the project, a dangling link, a managed memory file, a hard link -- does
+not refuse the turn: the guide is not read, a warning is logged, and an in-band
+`#omitted` note names it so the agent does not assume its contents. A template
+that declares the same file still refuses, and an oversized guide still raises. There is no mtime-only content cache or automatic
 retrieval on the warm path.
 
 Structural-marker scanning copies contiguous ASCII segments without per-character
