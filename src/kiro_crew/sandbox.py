@@ -1319,6 +1319,24 @@ def _private_window_spellings(
     return list(dict.fromkeys(windows))
 
 
+def _window_ancestors(target: str, windows: list[str]) -> list[str]:
+    """Every directory from masked *target* down to each window's parent.
+
+    These are the path components ``realpath`` must ``lstat`` to reach a
+    window, all of them inside the mask. Lexical, like
+    :func:`_private_window_spellings`.
+    """
+    root = target.rstrip("/")
+    ancestors: list[str] = []
+    for window in windows:
+        parent = os.path.dirname(window.rstrip("/"))
+        while parent.startswith(root + "/"):
+            ancestors.append(parent)
+            parent = os.path.dirname(parent)
+        ancestors.append(root)
+    return list(dict.fromkeys(ancestors))
+
+
 def carveout_shadowed_by_foreign_mask(path: str, mode: str = "standard") -> bool:
     """Whether carving *path* out of the sandbox masks would unmask a foreign tree.
 
