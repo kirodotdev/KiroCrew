@@ -11448,6 +11448,8 @@
       "folder_create_failed": "চ্যাট তৈরি করা যায়নি।",
       "folder_options_for": "{{name}}-এর ফোল্ডার অপশন",
       "folder_project_dir_missing": "ফোল্ডারের প্রজেক্ট ডিরেক্টরি আর নেই: {{path}}। ফোল্ডার সেটিংস থেকে এটি আপডেট করুন।",
+      "folder_undo_anchor_gone": "<name>{{name}}</name> <parent>{{parent}}</parent>-এর ভেতরে, শেষে ফিরে গিয়েছে। যে ফোল্ডারের পাশে এটি ছিল, সেটি সরে গিয়েছে বা মুছে ফেলা হয়েছে।",
+      "folder_undo_anchor_gone_top": "<name>{{name}}</name> শীর্ষ স্তরে, শেষে ফিরে গিয়েছে। যে ফোল্ডারের পাশে এটি ছিল, সেটি সরে গিয়েছে বা মুছে ফেলা হয়েছে।",
       "folders": "ফোল্ডার",
       "goal_loop_cycle": "গোল লুপ · {{total}}-এর মধ্যে সাইকেল {{count}}",
       "goal_loop_cycle_no_cap": "গোল লুপ · সাইকেল {{count}} (কোনো সীমা নেই)",

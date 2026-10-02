@@ -11607,6 +11607,8 @@
       "folder_create_failed": "No se pudo crear el chat.",
       "folder_options_for": "Opciones de la carpeta {{name}}",
       "folder_project_dir_missing": "El directorio del proyecto de la carpeta ya no existe: {{path}}. Actualízalo en la configuración de la carpeta.",
+      "folder_undo_anchor_gone": "<name>{{name}}</name> volvió dentro de <parent>{{parent}}</parent>, al final. La carpeta junto a la que estaba se ha movido o se ha eliminado.",
+      "folder_undo_anchor_gone_top": "<name>{{name}}</name> volvió al nivel superior, al final. La carpeta junto a la que estaba se ha movido o se ha eliminado.",
       "folders": "Carpetas",
       "goal_loop_cycle": "Bucle de objetivo · ciclo {{count}} de {{total}}",
       "goal_loop_cycle_no_cap": "Bucle de objetivo · ciclo {{count}} (sin límite)",

@@ -11448,6 +11448,8 @@
       "folder_create_failed": "चैट नहीं बनाई जा सकी।",
       "folder_options_for": "{{name}} के लिए फ़ोल्डर विकल्प",
       "folder_project_dir_missing": "फ़ोल्डर की प्रोजेक्ट डायरेक्टरी अब मौजूद नहीं है: {{path}}। फ़ोल्डर सेटिंग्स में इसे अपडेट करें।",
+      "folder_undo_anchor_gone": "<name>{{name}}</name> वापस <parent>{{parent}}</parent> के अंदर, अंत में चला गया। जिस फ़ोल्डर के बगल में यह था, वह हट गया है या हटा दिया गया है।",
+      "folder_undo_anchor_gone_top": "<name>{{name}}</name> वापस शीर्ष स्तर पर, अंत में चला गया। जिस फ़ोल्डर के बगल में यह था, वह हट गया है या हटा दिया गया है।",
       "folders": "फ़ोल्डर",
       "goal_loop_cycle": "लक्ष्य लूप · चक्र {{count}}/{{total}}",
       "goal_loop_cycle_no_cap": "लक्ष्य लूप · चक्र {{count}} (कोई सीमा नहीं)",

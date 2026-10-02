@@ -351,7 +351,8 @@ class TestChatFolderOrderIsNotA500:
             assert resp.status < 500, f"order={bad_order!r} produced {resp.status}"
 
     @pytest.mark.asyncio
-    async def test_valid_order_is_still_applied(self, tmp_path, monkeypatch):
+    async def test_a_valid_order_is_refused_as_retired(self, tmp_path, monkeypatch):
+        """Position is set with before/after now; an integer order is a 400, not a no-op."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         app = _make_folder_app(state)
@@ -359,8 +360,8 @@ class TestChatFolderOrderIsNotA500:
             created = await client.post("/api/chat/folders", json={"name": "Oncall"})
             folder_id = (await created.json())["id"]
             resp = await client.patch(f"/api/chat/folders/{folder_id}", json={"order": 7})
-            assert resp.status == 200
-            assert (await resp.json())["order"] == 7
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "order_retired"
 
 
 # ── SEC-FFBCB1 ───────────────────────────────────────────────────────────────

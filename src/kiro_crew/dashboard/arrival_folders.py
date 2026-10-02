@@ -56,6 +56,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 from kiro_crew.dashboard.chat_folders import MAX_CHAT_FOLDERS, folder_ids_filed_into
+from kiro_crew.dashboard.folder_rank import assign_append_rank
 from kiro_crew.sel import sel
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -186,11 +187,12 @@ def _new_folder(name: str, parent_id: str, order: int) -> dict[str, Any]:
 
 
 #: The fields of a created arrival row that carry CONTENT a person can invest in.
-#: Compared by :func:`_is_untouched_arrival_row`; ``id`` and ``order`` are left out
-#: because a row's identity and its sidebar position are not content, and so are
-#: ``collapsed`` and ``hidden``, which are view state that carries nothing a person
-#: loses when an EMPTY auto-created row is removed.
+#: Compared by :func:`_is_untouched_arrival_row`; ``id``, ``order`` and ``rank``
+#: are left out because a row's identity and its sidebar position are not content,
+#: and so are ``collapsed`` and ``hidden``, which are view state that carries
+#: nothing a person loses when an EMPTY auto-created row is removed.
 _ARRIVAL_ROW_CONTENT = ("name", "parent_id", "project_dir", "default_agent")
+_ARRIVAL_ROW_POSITION_KEYS = ("rank",)
 
 
 def _is_untouched_arrival_row(folder: dict[str, Any], *, name: str, parent_id: str) -> bool:
@@ -204,12 +206,13 @@ def _is_untouched_arrival_row(folder: dict[str, Any], *, name: str, parent_id: s
     deleted with the row.
 
     Two halves. The named content fields must still equal what
-    :func:`_new_folder` emits for this *name* and *parent_id*; and the row must
-    carry NO key that function does not emit, which is what covers ``color``,
-    ``icon``, ``tags`` and ``owner_app`` without naming them -- ``_new_folder``'s
-    own docstring is the anchor, since it states an arrival row carries none of
-    them. A key added to the folder record later is covered by the same test on
-    the day it is added rather than needing this list extended.
+    :func:`_new_folder` emits for this *name* and *parent_id*; and, apart from
+    ``rank`` (sidebar position like ``order``), the row must carry NO key that
+    function does not emit, which is what covers ``color``, ``icon``, ``tags``
+    and ``owner_app`` without naming them -- ``_new_folder``'s own docstring is
+    the anchor, since it states an arrival row carries none of them. A key added
+    to the folder record later is covered by the same test on the day it is added
+    rather than needing this list extended.
 
     A case-only rename counts as an edit here, even though :func:`_find` treats it
     as the same folder on purpose so a person who fixed the capitalisation still
@@ -220,7 +223,7 @@ def _is_untouched_arrival_row(folder: dict[str, Any], *, name: str, parent_id: s
     for key in _ARRIVAL_ROW_CONTENT:
         if str(folder.get(key, "") or "") != str(expected.get(key, "") or ""):
             return False
-    return all(key in expected for key in folder)
+    return all(key in expected or key in _ARRIVAL_ROW_POSITION_KEYS for key in folder)
 
 
 class ArrivalFiling(NamedTuple):
@@ -337,6 +340,7 @@ async def arrival_folder_id(
                 # inside ``mutate_folders`` rather than before it.
                 return False, ""
             group = _new_folder(group_name, "", len(folders))
+            assign_append_rank(group, folders)
             folders.append(group)
             created.append((str(group["id"]), group_name, ""))
             changed = True
@@ -369,6 +373,7 @@ async def arrival_folder_id(
                 # refusing here would discard a placement that costs no new row.
                 return changed, group_id
             child = _new_folder(child_name, group_id, len(folders))
+            assign_append_rank(child, folders)
             folders.append(child)
             created.append((str(child["id"]), child_name, group_id))
             changed = True

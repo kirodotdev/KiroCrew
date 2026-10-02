@@ -11766,6 +11766,8 @@
       "folder_create_failed": "Не удалось создать чат.",
       "folder_options_for": "Параметры папки {{name}}",
       "folder_project_dir_missing": "Каталог проекта этой папки больше не существует: {{path}}. Обновите его в настройках папки.",
+      "folder_undo_anchor_gone": "<name>{{name}}</name> вернулась в папку <parent>{{parent}}</parent>, в конец. Папка, рядом с которой она находилась, была перемещена или удалена.",
+      "folder_undo_anchor_gone_top": "<name>{{name}}</name> вернулась на верхний уровень, в конец. Папка, рядом с которой она находилась, была перемещена или удалена.",
       "folders": "Папки",
       "goal_loop_cycle": "Цикл цели · {{count}} из {{total}}",
       "goal_loop_cycle_no_cap": "Цикл цели · {{count}} (без лимита)",

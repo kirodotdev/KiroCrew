@@ -1,95 +1,71 @@
-import { arrayMove } from '@dnd-kit/sortable'
 import type { ChatFolder } from '../types'
 import { bySidebarOrder } from './folderTree'
-
-/**
- * Compute new order values after a drag-and-drop reorder.
- * Returns only folders whose order changed (for minimal PATCH calls).
- */
-export function computeReorderedFolders(
-  folders: ChatFolder[],
-  activeId: string,
-  overId: string,
-): { id: string; order: number }[] {
-  if (activeId === overId) return []
-  // The same comparator the sidebar draws with, not an order-only sort: this
-  // baseline decides which index each folder moves FROM, so a sort that differs
-  // from the rendered sequence computes the move the person did not make.
-  const sorted = [...folders].sort(bySidebarOrder)
-  const oldIndex = sorted.findIndex(f => f.id === activeId)
-  const newIndex = sorted.findIndex(f => f.id === overId)
-  if (oldIndex === -1 || newIndex === -1) return []
-  const reordered = arrayMove(sorted, oldIndex, newIndex)
-  const changes: { id: string; order: number }[] = []
-  reordered.forEach((f, idx) => {
-    if (f.order !== idx) changes.push({ id: f.id, order: idx })
-  })
-  return changes
-}
+import { planPosition } from './folderRank'
 
 /**
  * The container a folder is drawn in: its `parent_id`, or the root lane.
  *
  * A `parent_id` naming a folder that is not in the list resolves to the root
  * lane, because that is where `orderFoldersWithPaths` draws such a row — its
- * `childrenOf` applies the same fallback. Scoping an orphan to the id it points
- * at would put it alone in a container nothing renders, so the drag that lands
- * on a root sibling would compute no move at all.
+ * `childrenOf` applies the same fallback, and so does the gateway's
+ * `section_siblings`. Scoping an orphan to the id it points at would put it
+ * alone in a container nothing renders, so a drag that lands on a root sibling
+ * would compute no move at all.
  */
 const folderContainer = (f: ChatFolder, known: ReadonlySet<string>): string => {
   const pid = typeof f.parent_id === 'string' ? f.parent_id : ''
   return pid && known.has(pid) ? pid : ''
 }
 
-/**
- * The container a drag's renumber is computed against — the same scoping
- * `computeSiblingReorder` applies internally, exposed so the caller can state
- * it to the reorder endpoint as `expected_parent`. Empty string is the root
- * lane, a real claim rather than an absent one.
- */
-export const siblingReorderContainer = (
-  folders: ChatFolder[],
-  activeId: string,
-): string | undefined => {
-  const active = folders.find(f => f.id === activeId)
-  if (!active) return undefined
-  return folderContainer(active, new Set(folders.map(f => f.id)))
+/** What a sibling drag sends and what it draws while the server answers. */
+export interface SiblingMove {
+  /** The dragged folder. */
+  id: string
+  /** The PATCH body: the sibling the folder lands next to, and on which side. */
+  anchor: { before: string } | { after: string }
+  /** Every rank the gateway will write for this move, for the optimistic draw:
+   *  the moved folder's own, plus any sibling a section re-spread touches. */
+  ranks: Map<string, string>
 }
 
 /**
- * Compute new `order` values for a drag among the dragged folder's SIBLINGS.
+ * The move a drag of `activeId` onto `overId` makes among the dragged folder's
+ * SIBLINGS, or `null` when it makes none.
  *
- * `order` is a per-container index, not a global one: the sidebar sorts each
- * parent's children with `bySidebarOrder` independently, so a nested group
- * numbers itself 0..n exactly as the root lane does. That is why the renumber
- * has to be scoped — running it over the whole folder list would interleave
- * containers and hand every row an index from a sequence nobody draws.
+ * The baseline is the order the sidebar draws (`bySidebarOrder`), not a
+ * rank-only sort: it decides which index the folder moves from, so a sort that
+ * differs from the rendered sequence computes a move the person did not make.
+ * Dragging down lands the folder AFTER `over`, dragging up lands it BEFORE, which
+ * is where dnd-kit's `arrayMove` puts it.
  *
- * Only the container the ACTIVE folder already sits in is renumbered, and a drop
- * whose target is in a different container renumbers nothing: `overId` is absent
- * from the sibling list, so `computeReorderedFolders`' own `newIndex === -1`
- * refusal returns no changes. That gesture is a re-parent, the caller routes it to
- * the move path, and renumbering against a list the target is absent from would
- * otherwise shuffle the active folder's own siblings for a move that never
- * happened. There is deliberately no second membership check in front of that
- * refusal: no input exists that it alone decides, so it would read as a guard
- * while deciding nothing, and a mutation could remove it with every test still
- * green.
+ * Only the container the ACTIVE folder already sits in is considered. A drop on
+ * a folder in a different container returns `null`: that gesture is a re-parent
+ * and the caller routes it to the move path.
+ *
+ * The request carries only the anchor; the gateway picks the rank. `ranks` is
+ * the same plan computed here (`planPosition` mirrors the gateway's), so the
+ * sidebar can draw the drop before the write returns.
  */
-export function computeSiblingReorder(
+export function computeSiblingMove(
   folders: ChatFolder[],
   activeId: string,
   overId: string,
-): { id: string; order: number }[] {
-  if (activeId === overId) return []
+): SiblingMove | null {
+  if (activeId === overId) return null
   const known = new Set(folders.map(f => f.id))
   const active = folders.find(f => f.id === activeId)
-  if (!active) return []
+  if (!active) return null
   const container = folderContainer(active, known)
-  const siblings = folders.filter(f => folderContainer(f, known) === container)
-  // Every entry is an `{id, order}` pair and nothing else. `order` is a
-  // per-container index, and the reorder endpoint deliberately never reparents,
-  // so the request's SHAPE is what makes it auditable as a reorder: a body whose
-  // entries named a parent would be indistinguishable from a move.
-  return computeReorderedFolders(siblings, activeId, overId)
+  const sorted = folders.filter(f => folderContainer(f, known) === container).sort(bySidebarOrder)
+  const oldIndex = sorted.findIndex(f => f.id === activeId)
+  const newIndex = sorted.findIndex(f => f.id === overId)
+  if (oldIndex === -1 || newIndex === -1) return null
+  const anchor = newIndex > oldIndex ? { after: overId } : { before: overId }
+  // `newIndex` is also the landing slot in the list without the moved folder:
+  // moving down, every row between shifts up one; moving up, none before it does.
+  const siblings = sorted.filter(f => f.id !== activeId)
+  const { rank, respread } = planPosition(siblings, newIndex)
+  const ranks = new Map(respread)
+  ranks.set(activeId, rank)
+  return { id: activeId, anchor, ranks }
 }

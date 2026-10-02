@@ -5012,6 +5012,8 @@
       "folder_create_failed": "Could not create the chat.",
       "folder_options_for": "Folder options for {{name}}",
       "folder_project_dir_missing": "The folder's project directory no longer exists: {{path}}. Update it in Folder settings.",
+      "folder_undo_anchor_gone": "<name>{{name}}</name> went back under <parent>{{parent}}</parent>, at the end. The folder it sat next to has moved or was deleted.",
+      "folder_undo_anchor_gone_top": "<name>{{name}}</name> went back to the top level, at the end. The folder it sat next to has moved or was deleted.",
       "goal_loop_cycle": "Goal loop · cycle {{count}} of {{total}}",
       "goal_loop_cycle_no_cap": "Goal loop · cycle {{count}} (no cap)",
       "goal_loop_interrupted_title": "Goal loop armed — last turn was interrupted; resume the chat or wait for the next cycle",

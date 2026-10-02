@@ -107,7 +107,6 @@ const mocks = vi.hoisted(() => ({
   chatFolders: vi.fn(),
   kirocrewConfig: vi.fn(),
   updateChatFolder: vi.fn(),
-  reorderChatFolders: vi.fn(),
   setSlotFolder: vi.fn(),
   sessions: vi.fn(),
   sessionsSearch: vi.fn(),
@@ -263,7 +262,6 @@ beforeEach(() => {
   mocks.chatFolders.mockResolvedValue(FOLDERS)
   mocks.kirocrewConfig.mockResolvedValue({ dashboard: {} })
   mocks.updateChatFolder.mockResolvedValue({ ok: true })
-  mocks.reorderChatFolders.mockResolvedValue({ ok: true })
   mocks.setSlotFolder.mockResolvedValue({ ok: true })
   mocks.sessions.mockResolvedValue({ sessions: [], has_more: false })
   mocks.sessionsSearch.mockResolvedValue({ sessions: [] })
@@ -324,22 +322,22 @@ describe('haptic — pinned reorder', () => {
 })
 
 describe('haptic — sibling folder reorder', () => {
-  it('plays a light tap when the known Custom order renumbers two root folders', async () => {
+  it('plays a light tap when the known Custom order moves a root folder', async () => {
     renderSidebar()
     await ready()
     dragEnd({ id: 'f1', data: { type: 'folder' } }, { id: 'f2', data: { type: 'folder' } })
     expect(taps()).toEqual(['light'])
-    await waitFor(() => expect(mocks.reorderChatFolders).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(mocks.updateChatFolder).toHaveBeenCalledTimes(1))
   })
 
-  it('stays silent when nothing renumbers: a folder onto itself, or a reorder across containers', async () => {
+  it('stays silent when nothing moves: a folder onto itself, or a reorder across containers', async () => {
     renderSidebar()
     await ready()
     dragEnd({ id: 'f1', data: { type: 'folder' } }, { id: 'f1', data: { type: 'folder' } })
     // f3 lives under f2, so a sortable hit on root f1 is outside its ring.
     dragEnd({ id: 'f3', data: { type: 'folder', nested: true } }, { id: 'f1', data: { type: 'folder' } })
     expect(taps()).toEqual([])
-    expect(mocks.reorderChatFolders).not.toHaveBeenCalled()
+    expect(mocks.updateChatFolder).not.toHaveBeenCalled()
   })
 
   it('stays silent outside the Custom order, known or still being read', async () => {
@@ -353,7 +351,7 @@ describe('haptic — sibling folder reorder', () => {
     await ready()
     dragEnd({ id: 'f1', data: { type: 'folder' } }, { id: 'f2', data: { type: 'folder' } })
     expect(taps()).toEqual([])
-    expect(mocks.reorderChatFolders).not.toHaveBeenCalled()
+    expect(mocks.updateChatFolder).not.toHaveBeenCalled()
   })
 })
 

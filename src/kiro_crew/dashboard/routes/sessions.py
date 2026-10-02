@@ -83,14 +83,13 @@ def register(app: web.Application) -> None:
     # granted /api/project-scaffold and nothing else.
     app.router.add_post("/api/project-scaffold/scan", chat.api_chat_folders_scan)
     app.router.add_post("/api/project-scaffold/create", chat.api_chat_folders_scaffold)
+    # The batch reorder POST is retired (positions are set per folder by naming a
+    # sibling, on the PATCH below). Kept as a 410 tombstone so a tab still running
+    # the pre-rank bundle is told to reload instead of getting a bare 404.
+    app.router.add_post("/api/chat/folders/reorder", chat.api_chat_folder_reorder_retired)
     app.router.add_patch("/api/chat/folders/{id}", chat.api_chat_folder_update)
-    # Atomic multi-folder reorder -- one transaction for a whole sidebar drag or
-    # tool renumber, so a partial failure cannot leave a mix of old and new
-    # order numbers. Registered BEFORE the "{id}" delete so its literal path is
-    # not shadowed by the id parameter.
-    app.router.add_post("/api/chat/folders/reorder", chat.api_chat_folder_reorder)
     # Bulk delete of folders that hold no live session (dry run first). A literal
-    # path, registered before the "{id}" delete for the same reason as reorder.
+    # path, registered before the "{id}" delete so it is not shadowed by it.
     app.router.add_post("/api/chat/folders/cleanup", chat.api_chat_folders_cleanup)
     app.router.add_delete("/api/chat/folders/{id}", chat.api_chat_folder_delete)
     app.router.add_patch("/api/chat/slots/{slot}/folder", chat.api_chat_slot_folder)

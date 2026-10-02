@@ -43,6 +43,7 @@ from aiohttp import web
 from kiro_crew import hooks, model_registry
 from kiro_crew.apps.manager import is_app_enabled
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.dashboard.folder_rank import assign_append_rank
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.loop_lock import LoopBoundLock
 
@@ -2302,6 +2303,11 @@ async def _ensure_followup_folder(state: Any) -> str:
             # ``created`` folder sort reads it.
             "created_at": time.time(),
         }
+        # Same rank the dashboard's own folder creators give a new top-level
+        # folder, so this folder does not un-rank a section the person arranged
+        # (an unranked row makes the next app move fall back to a full re-spread
+        # and answer 409 folder_section_unranked).
+        assign_append_rank(folder, folders)
         folders.append(folder)
         return True, str(folder["id"])
 
