@@ -16,6 +16,15 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.lesson_cites import (
+    CiteReview,
+    fit_withheld,
+    normalize_cited_commit,
+    normalize_cites,
+    reconcile_cites,
+    reconcile_commit,
+    withheld_notice,
+)
 from kiro_crew.lesson_validation import (
     LESSON_APPLIES_ALWAYS,
     LESSON_APPLIES_ON_TOPIC,
@@ -135,24 +144,33 @@ class Lesson:
     # from ``category``, ``ts`` or wording -- see
     # ``kiro_crew.lesson_validation.normalize_lesson_applies``.
     applies: str | None = None
+    # The files this correction describes, each with the content hash it had when the
+    # lesson was written, and the commit the repository was at. ``None`` is the default
+    # and every row written before these fields carries it; a row without cites is
+    # never checked against the tree. See ``kiro_crew.lesson_cites``.
+    cites: list[dict[str, str]] | None = None
+    cited_commit: str | None = None
 
 
 # ── Storage ──
 
 
 def _serializable(lesson: Lesson) -> dict:
-    """The row as stored, omitting ``applies`` when the writer named no tier.
+    """The row as stored, omitting ``applies``, ``cites`` and ``cited_commit`` when unset.
 
     A bare ``asdict`` emits ``"applies": null`` on every row, which rewrites every
     legacy line the next time any lesson is saved and contradicts the additive
     contract the vector writer keeps ("absent when unset"). The two stores must
     agree on that, because the same absence has to read as unstated in both. Every
     other field is emitted unconditionally, including a ``None`` ``negative`` and
-    ``repo_scope``, so existing rows are byte-identical.
+    ``repo_scope``, so existing rows are byte-identical. The two cite fields follow the
+    ``applies`` rule for the same reason: a row that cites nothing keeps the shape it
+    always had.
     """
     row = asdict(lesson)
-    if row.get("applies") is None:
-        row.pop("applies", None)
+    for optional in ("applies", "cites", "cited_commit"):
+        if row.get(optional) is None:
+            row.pop(optional, None)
     return row
 
 
@@ -396,6 +414,11 @@ class LessonStore:
             # scope, and a non-string is refused before ``.strip()`` can raise,
             # because consolidation hands over a value the model produced.
             wanted_scope = canonical_scope(lesson.repo_scope)
+            # Cites are normalised here for the same reason: consolidation and the
+            # route hand over values the writer produced. The commit means nothing
+            # without the cites it was read for, so it is dropped with them.
+            wanted_cites = normalize_cites(lesson.cites)
+            wanted_commit = normalize_cited_commit(lesson.cited_commit) if wanted_cites else None
             # load_all() is called under the lock deliberately: it takes no lock of
             # its own, so this is not a re-entrant acquisition on a non-reentrant
             # Lock. Do NOT call save() from in here for the same reason.
@@ -432,7 +455,17 @@ class LessonStore:
                     next_scope = le.repo_scope
                     if wanted_scope is not None:
                         next_scope = wanted_scope
-                    if not enrich or (next_negative == le.negative and next_scope == le.repo_scope):
+                    # Cites are replaced as a set, with the commit that came with
+                    # them, and only when the submission carries some. A bare
+                    # re-submit never strips them, and re-submitting the same hashes
+                    # leaves the stored commit alone rather than churning the row.
+                    next_cites = reconcile_cites(le.cites, wanted_cites)
+                    next_commit = reconcile_commit(le.cited_commit, wanted_cites, wanted_commit)
+                    if not enrich or (
+                        next_negative == le.negative
+                        and next_scope == le.repo_scope
+                        and next_cites == le.cites
+                    ):
                         outcome = "unchanged"
                         updated.append(le)
                     else:
@@ -442,7 +475,15 @@ class LessonStore:
                         # edit followed by a failed write would leave the cache
                         # advertising a clause that was never persisted -- and that
                         # cache feeds context injection.
-                        updated.append(replace(le, negative=next_negative, repo_scope=next_scope))
+                        updated.append(
+                            replace(
+                                le,
+                                negative=next_negative,
+                                repo_scope=next_scope,
+                                cites=next_cites,
+                                cited_commit=next_commit,
+                            )
+                        )
                     continue
                 updated.append(le)
             if outcome == "unchanged":
@@ -450,7 +491,13 @@ class LessonStore:
             if not matched:
                 # Insert the normalised clause too, so a whitespace-only one is stored
                 # as absent rather than as blanks.
-                submitted = replace(lesson, negative=wanted_negative, repo_scope=wanted_scope)
+                submitted = replace(
+                    lesson,
+                    negative=wanted_negative,
+                    repo_scope=wanted_scope,
+                    cites=wanted_cites,
+                    cited_commit=wanted_commit,
+                )
                 updated.append(submitted)
                 if len(updated) > _MAX_LESSONS_TOTAL:
                     updated = _prune_to_total(updated)
@@ -583,6 +630,9 @@ class LessonStore:
                     not isinstance(raw_scope, str) or not raw_scope.strip()
                 ):
                     continue
+                # Unusable cites read as none rather than raising, for the reason
+                # above; the commit is kept only beside valid cites.
+                row_cites = normalize_cites(data.get("cites"))
                 lessons.append(
                     Lesson(
                         ts=data.get("ts", ""),
@@ -599,6 +649,10 @@ class LessonStore:
                             if isinstance(data.get("applies"), str)
                             and data["applies"].strip().lower() in LESSON_APPLIES_VALUES
                             else None
+                        ),
+                        cites=row_cites,
+                        cited_commit=(
+                            normalize_cited_commit(data.get("cited_commit")) if row_cites else None
                         ),
                     )
                 )
@@ -621,6 +675,31 @@ class LessonStore:
             if not contains_volatile_lesson_fact(le.rule, le.negative)
             and (not le.repo_scope or project_scope_satisfied(le.repo_scope, project_dir))
         ]
+
+    def _cite_checked(
+        self, lessons: list[Lesson], project_dir: str | Path | None
+    ) -> tuple[list[Lesson], dict[int, str], int]:
+        """Apply the cited-code check to rows already admitted by ``_applicable``.
+
+        Returns ``(kept rows, note by id(row), withheld count)``. A row whose cited
+        code is gone is dropped and counted; one whose cited code changed is kept with
+        a note for the renderer to append. Rows without cites pass through untouched.
+        """
+        review = CiteReview(project_dir)
+        kept: list[Lesson] = []
+        notes: dict[int, str] = {}
+        for le in lessons:
+            # ``_applicable`` already refused every scoped row the session does not
+            # satisfy, so a row that still carries a scope satisfies it.
+            keep, note = review.annotate(
+                le.cites, scope_satisfied=bool(le.repo_scope), cited_commit=le.cited_commit
+            )
+            if not keep:
+                continue
+            kept.append(le)
+            if note:
+                notes[id(le)] = note
+        return kept, notes, review.withheld
 
     @named_store_operation
     def get_context(
@@ -650,9 +729,15 @@ class LessonStore:
         ranking available when a budget forces a choice, and it is applied within
         each tier separately.
         """
-        lessons = self._applicable(self.load_all(), project_dir)
+        lessons, notes, withheld = self._cite_checked(
+            self._applicable(self.load_all(), project_dir), project_dir
+        )
+        # The withheld line is part of the block, so the budgets leave room for it.
+        notice, (cap, directive_budget, experience_budget) = fit_withheld(
+            withheld_notice(withheld) if withheld else "", cap, directive_budget, experience_budget
+        )
         if not lessons:
-            return ""
+            return notice
         # Newest-first, then split. Ordering before the split gives each tier a
         # newest-first baseline, which the per-tier relevance sort below preserves
         # for rows of equal overlap.
@@ -687,6 +772,12 @@ class LessonStore:
                 for lesson in rows
             ]
 
+        def noted(ranked: list[tuple[object, str]]) -> list[tuple[object, str]]:
+            # The changed-code note is added AFTER ranking: it is not about the
+            # request, so its words must not score against it. The budget still
+            # sees it, because it is part of what gets injected.
+            return [(row, text + notes.get(id(row), "")) for row, text in ranked]
+
         # Every tier is ordered by relevance to this request before the budget cuts,
         # and ordered PER TIER so authored rules keep their precedence over untagged
         # rows. Newest-first alone drops a row the task actually needs: measured on a
@@ -697,8 +788,8 @@ class LessonStore:
         # that tier unordered lost a match the vector store kept, which ranks its
         # whole eligible set. Ordering is not admission: it decides which rows
         # survive a truncation that is going to happen anyway.
-        ranked_directives = order_by_request_relevance(entries(authored), query_text)
-        ranked_directives += order_by_request_relevance(entries(unclassified), query_text)
+        ranked_directives = noted(order_by_request_relevance(entries(authored), query_text))
+        ranked_directives += noted(order_by_request_relevance(entries(unclassified), query_text))
         directive_room = tighter_lesson_budget(directive_budget, cap)
         directive_block, _ = render_lesson_tier(
             ranked_directives,
@@ -748,7 +839,7 @@ class LessonStore:
                 ),
             )
         else:
-            experiences = order_by_request_relevance(experience_entries, query_text)
+            experiences = noted(order_by_request_relevance(experience_entries, query_text))
             experience_block, _ = render_lesson_tier(
                 experiences,
                 experience_room,
@@ -770,4 +861,4 @@ class LessonStore:
                     "learn_list for the rest.]"
                 ),
             )
-        return directive_block + experience_block
+        return directive_block + experience_block + notice

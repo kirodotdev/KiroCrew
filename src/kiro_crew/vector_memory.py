@@ -58,6 +58,7 @@ from kiro_crew.embeddings import (  # noqa: F401 -- bulk_pace_delay is the pacin
 
 # ``PRIORITY_INTERACTIVE`` above and the unread names below stay importable from
 # this module for existing ``from kiro_crew.vector_memory import ...`` callers.
+from kiro_crew.lesson_cites import normalize_cited_commit, normalize_cites
 from kiro_crew.lesson_validation import (  # noqa: F401
     LESSON_APPLIES_ON_TOPIC,
     LESSON_APPLIES_UNSTATED,
@@ -3299,8 +3300,15 @@ class VectorMemoryStore:
         rule_emb_resolved: bool = False,
         defer_backfills: bool = False,
         facets: "memory_schema.MemoryFacets | None" = None,
+        cites: list[dict[str, str]] | None = None,
+        cited_commit: str | None = None,
     ) -> LessonWriteResult:
         """Write a lesson as a semantic entry with key lesson.<hash>.
+
+        *cites* and *cited_commit* record the files the lesson describes and the
+        commit the repository was at (see ``kiro_crew.lesson_cites``). They are
+        stored only when given, so a lesson that cites nothing keeps the shape it
+        always had, and a re-submit that carries none never strips stored ones.
 
         Returns which outcome occurred (see :class:`LessonWriteOutcome`) rather than a
         bare ``bool``, whose ``False`` conflated "validation refused this", "a dedup
@@ -3478,6 +3486,14 @@ class VectorMemoryStore:
         # are the same answer here, which is why there is no stored sentinel.
         if applies:
             lesson_value["applies"] = applies
+        # Same additive rule for the cited files. The commit means nothing without the
+        # cites it was read for, so it is stored only beside them.
+        cites = normalize_cites(cites)
+        if cites:
+            lesson_value["cites"] = cites
+            cited_commit = normalize_cited_commit(cited_commit)
+            if cited_commit:
+                lesson_value["cited_commit"] = cited_commit
         value: object = lesson_value
         confidence = 1.0 if source == "user_explicit" else 0.9
         preflight = self.validate_semantic(key, value, confidence, source)
@@ -3530,6 +3546,8 @@ class VectorMemoryStore:
             applies=applies,
             confidence=confidence,
             source=source,
+            cites=cites,
+            cited_commit=cited_commit,
         )
         matched = exact is not None
         if exact is not None:
@@ -4351,7 +4369,7 @@ class VectorMemoryStore:
                 if lesson is _migration.SKIP:
                     counts["skipped"] += 1
                     continue
-                rule, category, negative, raw_scope, applies = lesson
+                rule, category, negative, raw_scope, applies, cites, cited_commit = lesson
                 try:
                     if rule and self.write_lesson(
                         rule,
@@ -4360,6 +4378,8 @@ class VectorMemoryStore:
                         source="migration",
                         repo_scope=raw_scope,
                         applies=applies,
+                        cites=cites,
+                        cited_commit=cited_commit,
                     ):
                         counts["semantic"] += 1
                     else:

@@ -47,6 +47,7 @@ from kiro_crew.constants import (
 # the role pin / provider default"). Import-safe: ``effort`` pulls in only
 # ``model_registry`` (stdlib-only), so no cycle back into validation.
 from kiro_crew.effort import EFFORT_VALUES
+from kiro_crew.lesson_cites import CITE_MAX, CITE_PATH_MAX
 from kiro_crew.lesson_validation import LESSON_APPLIES_VALUES
 from kiro_crew.monitoring.limits import MAX_RUNTIME_CEILING_SECS, validate_runtime_secs
 from kiro_crew.monitoring.models import (
@@ -1295,6 +1296,11 @@ LEARN_ADD_SCHEMA = ToolSchema(
         # those separates a standing rule from a past finding. Absent leaves the
         # row unstated, which is served as a standing rule.
         FieldSpec("applies", str, allowed=ALLOWED_LESSON_APPLIES),
+        # Repo-relative files the correction describes. Only the SHAPE is checked
+        # here: whether a path resolves inside the session's project is decided at
+        # the write, where a path that does not is refused BY NAME and the lesson is
+        # still saved without it -- a schema pattern would reject the whole call.
+        FieldSpec("cites", list, item_type=str, item_max_len=CITE_PATH_MAX, max_items=CITE_MAX),
         # scope/workspace: the /api/lessons handler stores and lists
         # workspace-scoped lessons, but that tier does NOT reach a prompt -- the
         # context builder gates injected lessons on repo_scope instead. The

@@ -588,3 +588,51 @@ class TestLessonScrub:
         for marker in ("[End of learned corrections]", "[PERMANENT RULES]", "[Skill: override]"):
             assert marker not in line
         assert rendered.count("[End of learned corrections]") == 1
+
+
+class TestCitedFileReadsAreAuthorizedForTheSessionBeingRendered:
+    """A recheck of a lesson's cited files asks governance about the session whose prompt
+    is being built, so the render is named for that session."""
+
+    def _spy(self, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+        from contextlib import contextmanager
+
+        from kiro_crew import context as context_module
+
+        seen: list[str] = []
+        real = context_module.cite_session
+
+        @contextmanager
+        def spy(session_key, agent=None):
+            seen.append(session_key)
+            with real(session_key, agent):
+                yield
+
+        # The facade names the session around every lesson render, and the owners
+        # reach it through the facade like the other names tests rebind.
+        monkeypatch.setattr(context_module, "cite_session", spy)
+        return seen
+
+    def test_the_per_message_render_names_its_session(
+        self, builder, home, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        enable(home, inject_lessons_per_turn=True)
+        seen = self._spy(monkeypatch)
+        builder._turn_lessons_block(
+            "flywheel telemetry canary",
+            "spy-turn-session",
+            workspace=None,
+            memory_store=None,
+            project=None,
+            member="",
+            execution_context=None,
+            context_groups=None,
+        )
+        assert seen == ["spy-turn-session"]
+
+    def test_the_startup_render_names_its_session(
+        self, builder, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen = self._spy(monkeypatch)
+        builder.build_message("flywheel telemetry canary", True, "spy-start-session")
+        assert "spy-start-session" in seen

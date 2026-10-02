@@ -3988,6 +3988,41 @@ def safe_read_prefix(raw: str, n: int) -> bytes | None:
         os.close(fd)
 
 
+def safe_read_range(raw: str, offset: int, n: int) -> bytes | None:
+    """Read *n* bytes of a file starting at *offset*, through :func:`safe_read_prefix`'s guards.
+
+    For a caller that probes a large file at a few offsets (a binary search of a
+    pack index) and so cannot read a prefix. The path is canonicalized and refused
+    when sensitive, and the open is non-blocking and no-reparse, so a FIFO or a
+    final-component link is refused rather than followed or waited on. A short
+    read means the file ends before ``offset + n``; the caller decides what that
+    means.
+
+    Returns the bytes read, or None if the path is rejected or unreadable.
+    """
+    if n <= 0:
+        return b""
+    if offset < 0:
+        return None
+    path = validate_file_path(raw)
+    if path is None:
+        return None
+    try:
+        fd = platform_compat.open_file_no_reparse(path, nonblocking=True)
+    except OSError:
+        return None
+    try:
+        if not _opened_file_matches_validated_path(fd, path):
+            return None
+        with os.fdopen(fd, "rb", closefd=False) as fh:
+            fh.seek(offset)
+            return fh.read(n)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+
 # ---------------------------------------------------------------------------
 # Internal authorized reads of sensitive paths
 # ---------------------------------------------------------------------------

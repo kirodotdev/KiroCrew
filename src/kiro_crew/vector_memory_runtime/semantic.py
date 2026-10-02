@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew import memory_record_metadata as record_meta
 from kiro_crew import memory_schema, memory_v2
 from kiro_crew.embeddings import PRIORITY_BULK, PRIORITY_INTERACTIVE
+from kiro_crew.lesson_cites import normalize_cited_commit, normalize_cites
 from kiro_crew.lesson_validation import order_by_request_relevance
 from kiro_crew.validation import ALLOWED_LESSON_CATEGORIES
 from kiro_crew.vector_memory_runtime import lessons as _lessons
@@ -226,11 +227,19 @@ def validate_semantic(
         cat = value.get("category")
         raw_negative = value.get("negative")
         raw_scope = value.get("repo_scope")
+        raw_cites = value.get("cites")
+        raw_commit = value.get("cited_commit")
         if (
-            set(value.keys()) <= {"rule", "category", "negative", "repo_scope"}
+            set(value.keys())
+            <= {"rule", "category", "negative", "repo_scope", "cites", "cited_commit"}
             and (cat is None or (isinstance(cat, str) and cat in ALLOWED_LESSON_CATEGORIES))
             and (raw_negative is None or isinstance(raw_negative, str))
             and (raw_scope is None or isinstance(raw_scope, str))
+            # Cites and the commit are exempt only in the exact shape the cite
+            # normalizer produces, which bounds their count, path length and
+            # alphabet; any other shape is measured as its full envelope.
+            and (raw_cites is None or normalize_cites(raw_cites) == raw_cites)
+            and (raw_commit is None or normalize_cited_commit(raw_commit) == raw_commit)
         ):
             raw_rule = value["rule"]  # _lesson_fields guarantees a str
             if isinstance(raw_negative, str):
@@ -246,6 +255,13 @@ def validate_semantic(
             # caller with a JSONL fallback reported it saved.
             if isinstance(raw_scope, str):
                 size_basis = f"{size_basis}{_lessons._LESSON_NEGATIVE_SEP}{raw_scope}"
+            # Cites and the commit are measured at their raw size too, for the same
+            # reason: they are bounded by the normalizer, but this check does not
+            # rely on a bound it did not measure.
+            if raw_cites is not None:
+                size_basis += json.dumps(raw_cites, ensure_ascii=False)
+            if raw_commit is not None:
+                size_basis += raw_commit
     # json.dumps(..., ensure_ascii=False) accepts a lone surrogate (and so
     # does json.loads, so an LLM payload can carry one), but the result
     # cannot be UTF-8 encoded -- neither here nor by SQLite. Reject it as

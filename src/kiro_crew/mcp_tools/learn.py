@@ -21,6 +21,7 @@ from typing import Any
 from urllib.parse import urlencode
 
 from kiro_crew import mcp_core
+from kiro_crew.lesson_cites import CITE_MAX, CITE_PATH_MAX
 from kiro_crew.lesson_validation import (
     LESSON_APPLIES_INSTRUCTION,
     LESSON_REFUSED_AT_CAPACITY,
@@ -142,6 +143,22 @@ def schemas() -> list[dict[str, Any]]:
                         "type": "string",
                         "enum": ["always", "on_topic"],
                         "description": LESSON_APPLIES_INSTRUCTION,
+                    },
+                    "cites": {
+                        "type": "array",
+                        "items": {"type": "string", "maxLength": CITE_PATH_MAX},
+                        "maxItems": CITE_MAX,
+                        "description": (
+                            "Optional. Repo-relative paths of the files this "
+                            "correction is about (e.g. 'src/kiro_crew/learn.py'). "
+                            "Each file's content is recorded, so a later session "
+                            "whose copy differs is told the cited code changed, and "
+                            "one where the file is gone does not receive the rule. "
+                            "Use it for a rule about specific code; omit it for a "
+                            "durable preference. A path that is not a file inside "
+                            "this session's project is refused by name and the "
+                            "lesson is saved without it."
+                        ),
                     },
                 },
                 "required": ["rule", "category"],
@@ -279,7 +296,7 @@ def learn_add(name: str, args: dict[str, Any]) -> str:
     # prompt, so a lesson saved under it reported success and changed nothing.
     # Restricting a correction to one codebase is what repo_scope does, and the
     # context builder enforces it before injection.
-    payload: dict[str, str] = {"rule": rule, "category": category, "scope": "global"}
+    payload: dict[str, Any] = {"rule": rule, "category": category, "scope": "global"}
     # The tool schema advertises ``negative`` -- and the ``rule`` description
     # explicitly tells the model to prefer it over inlining a "-- NOT: ..."
     # clause -- but this payload never forwarded it, so the clause was dropped
@@ -297,6 +314,11 @@ def learn_add(name: str, args: dict[str, Any]) -> str:
     applies = args.get("applies", "")
     if applies:
         payload["applies"] = applies
+    # Forwarded as given: the route owns resolving each path against the session's
+    # project and refusing the ones that do not name a file there.
+    cites = args.get("cites")
+    if cites:
+        payload["cites"] = cites
     d = mcp_core._post("/api/lessons", payload)
     err_val = d.get("error")
     if err_val:
@@ -339,6 +361,35 @@ def learn_add(name: str, args: dict[str, Any]) -> str:
         # not just this one.
         return f"Error: {err_val}"
     scope_note = f" (applies only in {repo_scope})" if repo_scope else ""
+    # Cites the route did not record. The lesson itself was saved, so this rides
+    # along on every outcome that can carry it rather than turning a save into an
+    # error; the path is named so the model can correct it and re-submit.
+    raw_refused = d.get("cites_refused")
+    refused_cites = ""
+    if isinstance(raw_refused, list):
+        lines = [
+            f"\n  - {item['path']}: {item['reason']}"
+            for item in raw_refused
+            if isinstance(item, dict)
+            and isinstance(item.get("path"), str)
+            and isinstance(item.get("reason"), str)
+        ]
+        if lines:
+            refused_cites = (
+                "\n\nNOT recorded as cited files (the lesson was saved without "
+                f"them):{''.join(lines)}"
+            )
+    # Files the writer did not name but the rule's own text did. They are recorded, and
+    # a recorded cite can later put a changed-code note on the rule, so the writer is told.
+    raw_from_text = d.get("cites_from_text")
+    if isinstance(raw_from_text, list):
+        named = [item for item in raw_from_text if isinstance(item, str)]
+        if named:
+            refused_cites += (
+                "\n\nAlso recorded as cited files, because the rule's text names them: "
+                + ", ".join(named)
+                + ". If the rule is not about that code, re-save it without the path."
+            )
     # ``outcome`` names what actually happened, so this tool does not report
     # "Saved lesson" when the store REFUSED the value or a dedup rule dropped it.
     # An older gateway that does not send ``outcome`` falls through to the saved
@@ -455,23 +506,26 @@ def learn_add(name: str, args: dict[str, Any]) -> str:
                 f"Lesson was already stored{scope_note}, and it carries a NOT-clause "
                 f"this submission did not include -- the stored clause was kept, not "
                 f"removed. Nothing was written, and the lesson remains in effect: {rule}"
-                f"{lost}"
+                f"{lost}{refused_cites}"
             )
         return (
             f"Lesson was already stored{scope_note} and nothing was written. A "
             f"re-submit does not rewrite the stored category or NOT-clause, so those "
             f"keep the values they already had -- changing one means removing the "
-            f"lesson and adding it again. It remains in effect: {rule}{lost}"
+            f"lesson and adding it again. It remains in effect: {rule}{lost}{refused_cites}"
         )
     if outcome == "enriched":
-        return f"Updated the stored lesson{scope_note} with the new clause: {rule}{lost}"
+        return (
+            f"Updated the stored lesson{scope_note} with the new clause or cited files: "
+            f"{rule}{lost}{refused_cites}"
+        )
     # ``lost`` is interpolated on EVERY branch, including the two that cannot carry it
     # (``unchanged`` and ``enriched`` are decided before the dedup scan runs, so they
     # delete nothing). It renders to the empty string when nothing was superseded, so
     # the uniform interpolation costs nothing and means no future outcome can drop the
     # warning by being added to a branch that forgot it -- which is the mistake that
     # made this field necessary in the first place.
-    return f"Saved lesson{scope_note}: {rule}{lost}"
+    return f"Saved lesson{scope_note}: {rule}{lost}{refused_cites}"
 
 
 def learn_list(name: str, args: dict[str, Any]) -> str:

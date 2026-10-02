@@ -54,6 +54,7 @@ from kiro_crew.dashboard.state import DashboardState, SlotOrigin, note_crew_log_
 from kiro_crew.executors import discovery_executor
 from kiro_crew.history import is_incognito_transcript
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
+from kiro_crew.lesson_cites import capture_cites, governed_may_read
 from kiro_crew.lesson_validation import (
     LESSON_APPLIES_ON_TOPIC,
     LESSON_APPLIES_UNSTATED,
@@ -2734,6 +2735,27 @@ async def _prepare_member_lesson_store(store: str) -> web.Response | None:
     return None
 
 
+def _session_agent(state: DashboardState, session_key: str) -> str:
+    """The agent the dashboard slot *session_key* names runs, or ``""``.
+
+    A profile can bind to the agent, so the cited-file authorization carries it.
+    """
+    slot = state._slots.get(session_key.split(":", 1)[-1] if ":" in session_key else session_key)
+    agent = getattr(slot, "agent", "") if slot is not None else ""
+    return agent if isinstance(agent, str) else ""
+
+
+def _session_project(state: DashboardState, session_key: str) -> str | None:
+    """The project directory of the dashboard slot *session_key* names, or None.
+
+    A headless or channel session has no slot here, so it has no project to resolve
+    a cited file against.
+    """
+    slot = state._slots.get(session_key.split(":", 1)[-1] if ":" in session_key else session_key)
+    project = getattr(slot, "project", "") if slot is not None else ""
+    return project if isinstance(project, str) and project else None
+
+
 async def api_lessons_create(request: web.Request) -> web.Response:
     """POST /api/lessons — add a lesson (vector store or JSONL fallback)."""
     from kiro_crew.learn import Lesson  # noqa: F811
@@ -2826,6 +2848,18 @@ async def api_lessons_create(request: web.Request) -> web.Response:
     # which the context builder serves as a standing rule. Both write paths carry
     # it so the JSONL fallback tiers identically to the vector store.
     applies = cleaned.get("applies") or None
+    # The files this correction describes, hashed against the session's project at
+    # write time. The project is the SESSION's own, read off its slot here and never
+    # taken from the request: a caller-supplied directory would let a lesson write
+    # hash any file the gateway can read. A session with no slot has no project, so
+    # an explicit cite is refused with that reason and the lesson is still saved.
+    captured = await asyncio.to_thread(
+        capture_cites,
+        cleaned.get("cites") or [],
+        (rule, negative or ""),
+        _session_project(state, sk),
+        governed_may_read(sk, _session_agent(state, sk)),
+    )
     # Write to vector store if available, else JSONL
     # THE CALLER'S silo, not the global store. This is the agent's only durable
     # memory-write surface, so writing globally let a crew bound to one silo steer
@@ -2874,6 +2908,8 @@ async def api_lessons_create(request: web.Request) -> web.Response:
             rule_emb_generation,
             repo_scope,
             applies=applies,
+            cites=captured.cites,
+            cited_commit=captured.cited_commit,
         )
         # Sweep ONLY when the lesson actually landed. The write declines for a value
         # its preflight refuses (reachable because ``negative`` is forwarded here) and
@@ -2942,6 +2978,8 @@ async def api_lessons_create(request: web.Request) -> web.Response:
             negative=negative,
             repo_scope=repo_scope,
             applies=applies,
+            cites=captured.cites,
+            cited_commit=captured.cited_commit,
             ts=datetime.now(timezone.utc).isoformat(),
         )
         store = _lesson_jsonl_store(state, _lesson_silo, scope, cleaned.get("workspace"))
@@ -3003,9 +3041,25 @@ async def api_lessons_create(request: web.Request) -> web.Response:
     # so a client that re-reads /api/lessons after this response cannot see what it
     # lost. Always present, empty when nothing was superseded, so a client does not
     # have to tell "no deletions" from "this gateway is too old to say".
-    return web.json_response(
-        {"ok": stored, "outcome": outcome, "reason": reason, "superseded": superseded}
-    )
+    response: dict[str, Any] = {
+        "ok": stored,
+        "outcome": outcome,
+        "reason": reason,
+        "superseded": superseded,
+    }
+    # Additive and present only when a cite was refused or recorded from the rule's
+    # own text, so a client that predates the fields sees the body it always saw.
+    # A refused path is the caller's own text, so it is redacted like every other
+    # string this route echoes (see ``superseded`` above).
+    if captured.refused:
+        response["cites_refused"] = _redact_memory_field(
+            [{"path": path, "reason": why} for path, why in captured.refused]
+        )
+    # Reported only when the write landed: a refused or deduplicated lesson stored
+    # nothing, so claiming its cites were recorded would be false.
+    if captured.from_text and outcome in ("inserted", "enriched"):
+        response["cites_from_text"] = _redact_memory_field(list(captured.from_text))
+    return web.json_response(response)
 
 
 async def api_lessons_delete(request: web.Request) -> web.Response:

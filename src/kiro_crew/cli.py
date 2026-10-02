@@ -2711,6 +2711,7 @@ Computer use is OFF by default and is enabled only from the dashboard
 Examples:
   kirocrew learn list
   kirocrew learn add 'use snake_case for variables' --category tool
+  kirocrew learn add 'keep Lesson.save free of subprocesses' --cite src/kiro_crew/learn.py
   kirocrew learn remove 'snake_case'
 """,
         formatter_class=_fmt,
@@ -2725,6 +2726,18 @@ Examples:
         help="Lesson category (default: knowledge)",
     )
     learn_add.add_argument("--negative", help="What NOT to do (optional)")
+    learn_add.add_argument(
+        "--cite",
+        action="append",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Repo-relative file this lesson is about, resolved from the current "
+            "directory's repository; repeatable. Its content is recorded, so a later "
+            "session sees a note when the file changed and does not get the lesson "
+            "when it is gone."
+        ),
+    )
     learn_sub.add_parser("list", help="List all lessons")
     learn_rm = learn_sub.add_parser("remove", help="Remove lessons matching a substring")
     learn_rm.add_argument("query", help="Substring to match against lesson rules")

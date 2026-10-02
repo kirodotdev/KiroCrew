@@ -211,6 +211,7 @@ from kiro_crew.hooks import (
     safe_read_file_bytes_nolink,
 )
 from kiro_crew.learn import LessonStore
+from kiro_crew.lesson_cites import cite_session
 from kiro_crew.member_essential_context import (  # noqa: F401
     _MAX_DOCUMENTS,
     ESSENTIAL_MAX_CHARS,
@@ -2605,19 +2606,20 @@ class ContextBuilder:
         # Lessons: injected for ALL agents (skipped for temporary sessions), gated
         # by the same project scope the skill loader applies; the store that
         # answers is chosen by population, not by what a render returned.
-        lessons_renderer, lessons_part_index = _store_admission.session_lessons_part(
-            self,
-            blocks,
-            memory=memory,
-            member_vectors=member_vectors,
-            effective_groups=effective_groups,
-            workspace=workspace,
-            memory_store=memory_store,
-            project=project,
-            caps=caps,
-            essentials=essentials,
-            query_text=query_text,
-        )
+        with cite_session(session_key, agent):
+            lessons_renderer, lessons_part_index = _store_admission.session_lessons_part(
+                self,
+                blocks,
+                memory=memory,
+                member_vectors=member_vectors,
+                effective_groups=effective_groups,
+                workspace=workspace,
+                memory_store=memory_store,
+                project=project,
+                caps=caps,
+                essentials=essentials,
+                query_text=query_text,
+            )
         # V2 essential rules are query-free; V1 retains its query-ranked lessons.
         _mark("lessons")
 
@@ -2646,13 +2648,14 @@ class ContextBuilder:
         # If a later protected block consumed part of the model-safe allowance,
         # re-render lessons against the exact remaining room. Preferences,
         # identity, and safety rules are never sliced to make space.
-        protected_chars = _store_admission.refit_lessons(
-            blocks,
-            essentials=essentials,
-            caps=caps,
-            renderer=lessons_renderer,
-            part_index=lessons_part_index,
-        )
+        with cite_session(session_key, agent):
+            protected_chars = _store_admission.refit_lessons(
+                blocks,
+                essentials=essentials,
+                caps=caps,
+                renderer=lessons_renderer,
+                part_index=lessons_part_index,
+            )
         if session_key and _cfg.memory.inject_lessons_per_turn:
             # The block as sent, after any trim: per-message lessons skip what it holds.
             self._remember_startup_lessons(
@@ -3388,16 +3391,17 @@ class ContextBuilder:
                 if hook_result.action == HOOK_MODIFY
                 else text[user_text_range[0] : user_text_range[1]]
             )
-            turn_lessons = self._turn_lessons_block(
-                user_turn_text,
-                session_key,
-                workspace=workspace,
-                memory_store=memory_store,
-                project=project,
-                member=member,
-                execution_context=execution_context,
-                context_groups=context_groups,
-            )
+            with cite_session(session_key, agent):
+                turn_lessons = self._turn_lessons_block(
+                    user_turn_text,
+                    session_key,
+                    workspace=workspace,
+                    memory_store=memory_store,
+                    project=project,
+                    member=member,
+                    execution_context=execution_context,
+                    context_groups=context_groups,
+                )
             if turn_lessons:
                 parts.append(turn_lessons)
 

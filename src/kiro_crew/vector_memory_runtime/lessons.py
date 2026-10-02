@@ -20,6 +20,15 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from kiro_crew.embeddings import PRIORITY_INTERACTIVE
+from kiro_crew.lesson_cites import (
+    CiteReview,
+    fit_withheld,
+    normalize_cited_commit,
+    normalize_cites,
+    reconcile_cites,
+    reconcile_commit,
+    withheld_notice,
+)
 from kiro_crew.lesson_validation import (
     LESSON_APPLIES_ON_TOPIC,
     LESSON_APPLIES_UNSTATED,
@@ -97,6 +106,25 @@ def _lesson_scope(decoded: object) -> str | None:
     if not isinstance(scope, str) or not scope.strip():
         return None
     return scope.strip()
+
+
+def _lesson_cites(decoded: object) -> list[dict[str, str]] | None:
+    """Extract the cited files from a lesson value, or None when it cites none.
+
+    Only the mapping shape can carry cites; a legacy string row has nowhere to put
+    them and is never checked against the tree. Unusable cites read as none rather
+    than raising, because this runs while a prompt is being assembled.
+    """
+    if not isinstance(decoded, dict):
+        return None
+    return normalize_cites(decoded.get("cites"))
+
+
+def _lesson_cited_commit(decoded: object) -> str | None:
+    """The commit a lesson was written at, or None when it carries no valid one."""
+    if not isinstance(decoded, dict):
+        return None
+    return normalize_cited_commit(decoded.get("cited_commit"))
 
 
 def _lesson_scope_unusable(decoded: object) -> bool:
@@ -415,6 +443,8 @@ def resolve_exact_rule(
     applies: str | None,
     confidence: float,
     source: str,
+    cites: list[dict[str, str]] | None = None,
+    cited_commit: str | None = None,
 ) -> ExactRuleMatch | None:
     """Pass 1 of ``write_lesson``: find the stored row that IS this rule, if any.
 
@@ -473,11 +503,17 @@ def resolve_exact_rule(
         else:
             continue  # not lesson data (list, rule-less dict, ...)
 
-        if not negative and stored_clause:
+        # A mapping row's cites are compared as a set; a submission with none never
+        # strips what is stored. A legacy string row has no stored cites.
+        stored_cites = _lesson_cites(decoded) if fields is not None else None
+        next_cites = reconcile_cites(stored_cites, cites)
+        cites_change = next_cites != stored_cites
+        if not negative and stored_clause and not cites_change:
             # A BARE re-submit of a rule that already carries a clause. Writing
             # the bare value would delete the stored negative, so keep what is
             # there. This is also what the call did before the fix, so no caller
-            # sees a change here.
+            # sees a change here. A re-submit that brings new cites is not bare:
+            # it enriches the cites and carries the stored clause forward below.
             logger.info(
                 "Keeping the stored NOT-clause on %r; re-submit carried none",
                 existing["key"],
@@ -492,13 +528,15 @@ def resolve_exact_rule(
             # re-submit-with-clause is "attach the clause", not "recategorize"
             # (correcting a category means delete + re-add). The string form
             # never stored a category for anything to have depended on.
-            if negative == stored_negative:
+            if negative == stored_negative and not cites_change:
                 return ExactRuleMatch(vm.LessonWriteResult(vm.LessonWriteOutcome.UNCHANGED))
             stored_category = decoded.get("category")
             enriched: dict[str, object] = {
                 "rule": stored_rule,
                 "category": stored_category if isinstance(stored_category, str) else category,
-                "negative": negative,
+                # A re-submit that only brings cites carries the stored clause
+                # forward rather than clearing it.
+                "negative": negative or stored_negative,
             }
             # The scope is WRITE-ONCE for the same reason the category is: the
             # intent of a re-submit-with-clause is "attach the clause", not
@@ -517,6 +555,15 @@ def resolve_exact_rule(
                 effective_applies = stored_applies
             else:
                 effective_applies = None
+            # Cites are replaced as a set, with the commit that came with them, only
+            # when the submission carries some; otherwise the stored ones stay.
+            if next_cites:
+                enriched["cites"] = next_cites
+                next_commit = reconcile_commit(
+                    normalize_cited_commit(decoded.get("cited_commit")), cites, cited_commit
+                )
+                if next_commit:
+                    enriched["cited_commit"] = next_commit
             target: object = enriched
         else:
             # Legacy string row. Recompose from the STORED base so a
@@ -525,9 +572,24 @@ def resolve_exact_rule(
             # row is not churned into the new shape); an actual enrichment
             # rewrites it as a mapping, upgrading the row in place.
             target_text = base if not negative else f"{base}{_LESSON_NEGATIVE_SEP}{negative}"
-            if target_text == existing_val:
+            if target_text == existing_val and not cites_change:
                 return ExactRuleMatch(vm.LessonWriteResult(vm.LessonWriteOutcome.UNCHANGED))
-            target = {"rule": base, "category": category, "negative": negative}
+            carried = negative
+            if not carried and stored_clause:
+                # A cites-only re-submit of a row whose clause is stored in-band: the
+                # upgrade to the mapping shape carries that clause forward.
+                recovered = _lesson_fields_for_row(decoded, existing["key"])
+                carried = recovered[1] if recovered is not None else None
+            upgraded: dict[str, object] = {
+                "rule": base,
+                "category": category,
+                "negative": carried,
+            }
+            if next_cites:
+                upgraded["cites"] = next_cites
+                if cited_commit:
+                    upgraded["cited_commit"] = cited_commit
+            target = upgraded
         # The caller's preflight validated the value built from the SUBMITTED rule;
         # this one differs, so validate what is actually written.
         enrich_reject = store.validate_semantic(existing["key"], target, confidence, source)
@@ -936,9 +998,21 @@ def get_lessons_context(
     with store._db_lock:
         store._check_recall_query(recall_query)
         lesson_rows = store._eligible_rows(store.get_lessons(), "directive")
-    entries = _renderable_entries(lesson_rows, project_dir)
+    review = CiteReview(project_dir)
+    notes: dict[str, str] = {}
+    entries = _renderable_entries(lesson_rows, project_dir, review, notes)
+    # Rows withheld because the code they cite is gone are reported on their own, and
+    # never as budget omissions: those say a rule did not fit, this says it is moot.
+    # The line is part of the block, so every budget leaves room for it.
+    withheld, (cap, hard_cap, directive_budget, experience_budget) = fit_withheld(
+        withheld_notice(review.withheld) if review.withheld else "",
+        cap,
+        hard_cap,
+        directive_budget,
+        experience_budget,
+    )
     if not entries:
-        return ""
+        return withheld
     if background:
         # Two tiers, two budgets, and the split is AUTHORED rather than
         # inferred (see ``_lesson_applies``). Standing rules -- plus every row
@@ -981,7 +1055,10 @@ def get_lessons_context(
                 untagged.append(entry)
             else:
                 authored.append(entry)
-        directives = authored + untagged
+        # The changed-code note is added after ranking and tiering: it is not about
+        # the request, so its words must not score against it. The budget still sees
+        # it, because it is part of what gets injected.
+        directives = _noted(authored + untagged, notes)
         unclassified = len(untagged)
         # The model-safety ceiling bounds the two blocks TOGETHER, and the
         # directive block is served first: when room is short, a past finding
@@ -1062,7 +1139,7 @@ def get_lessons_context(
             experience_omitted = len(experiences)
         else:
             experience_block, experience_omitted = render_lesson_tier(
-                experiences,
+                _noted(experiences, notes),
                 experience_room,
                 header=(
                     "[Learned experience — past findings, relevant ones first.\n"
@@ -1093,12 +1170,15 @@ def get_lessons_context(
             len(experiences),
             len(experience_block),
         )
-        return directive_block + experience_block
+        return directive_block + experience_block + withheld
     total = len(entries)
-    ranked = (
-        store._rank_lessons(entries, query_text, recall_query=recall_query)
-        if query_text
-        else entries
+    ranked = _noted(
+        (
+            store._rank_lessons(entries, query_text, recall_query=recall_query)
+            if query_text
+            else entries
+        ),
+        notes,
     )
     order = "most relevant" if query_text else "most recent"
 
@@ -1116,10 +1196,10 @@ def get_lessons_context(
         return f"{header}]\n{body}\n{_EXPLICIT_LESSONS_FOOTER}"
 
     if not cap:
-        return render(ranked)
+        return render(ranked) + withheld
     whole = render(ranked)
     if len(whole) <= cap:
-        return whole
+        return whole + withheld
 
     # Each entry is judged against the RENDERED block, frame included, so an
     # admitted entry never has to be trimmed back out. Skip rather than stop,
@@ -1135,13 +1215,23 @@ def get_lessons_context(
         # silent. It exceeds *cap*; ``truncate_explicit_lessons`` shortens it
         # for a caller that needs the block to fit.
         selected = ranked[:1]
-    return render(selected)
+    return render(selected) + withheld
 
 
 def _renderable_entries(
-    lesson_rows: list[dict], project_dir: str | Path | None
+    lesson_rows: list[dict],
+    project_dir: str | Path | None,
+    review: CiteReview | None = None,
+    notes: dict[str, str] | None = None,
 ) -> list[tuple[dict, str]]:
-    """``(row, text)`` for every row that renders and is in scope for *project_dir*."""
+    """``(row, text)`` for every row that renders and is in scope for *project_dir*.
+
+    With *review*, a row whose cited code is gone is left out (and counted on the
+    review), and one whose cited code changed gets its note in *notes* under the
+    row's key. The note is kept apart from the text because ranking scores the text,
+    and a note about the code is not about the request; :func:`_noted` joins them
+    once the order is decided.
+    """
     entries: list[tuple[dict, str]] = []
     for row in lesson_rows:
         try:
@@ -1157,8 +1247,25 @@ def _renderable_entries(
         scope = _lesson_scope(decoded)
         if scope and not project_scope_satisfied(scope, project_dir):
             continue
+        if review is not None:
+            keep, note = review.annotate(
+                _lesson_cites(decoded),
+                scope_satisfied=bool(scope),
+                cited_commit=_lesson_cited_commit(decoded),
+            )
+            if not keep:
+                continue
+            if note and notes is not None:
+                notes[row["key"]] = note
         entries.append((row, text))
     return entries
+
+
+def _noted(entries: list[tuple[dict, str]], notes: dict[str, str]) -> list[tuple[dict, str]]:
+    """*entries* with each row's changed-code note appended to its text."""
+    if not notes:
+        return entries
+    return [(row, text + notes.get(row["key"], "")) for row, text in entries]
 
 
 #: Request words in ``lesson_keywords``' stop list and words of two letters or
@@ -1202,7 +1309,8 @@ def turn_lessons(
         return []
     with store._db_lock:
         lesson_rows = store._eligible_rows(store.get_lessons(), "directive")
-    entries = _renderable_entries(lesson_rows, project_dir)
+    notes: dict[str, str] = {}
+    entries = _renderable_entries(lesson_rows, project_dir, CiteReview(project_dir), notes)
     if not entries:
         return []
     query_stems = {_stem_one(word) for word in store._lesson_keywords(query_text.lower())}
@@ -1220,7 +1328,8 @@ def turn_lessons(
     admitted = [
         (sum(weight[stem] for stem in shared) / math.sqrt(sizes[index]), index)
         for index, shared in enumerate(shared_by_row)
-        if len(shared & rare_stems) >= _TURN_LESSON_TERMS and not shown(entries[index][1])
+        if len(shared & rare_stems) >= _TURN_LESSON_TERMS
+        and not shown(entries[index][1] + notes.get(entries[index][0]["key"], ""))
     ]
     # Stable, so equal scores keep the stored newest-first order.
     admitted.sort(key=lambda pair: -pair[0])
@@ -1230,6 +1339,9 @@ def turn_lessons(
         if len(chosen) == max_rows:
             break
         row, text = entries[index]
+        # Scored unmarked above; shown, sized and returned WITH the note, so the
+        # line is the same text the session-start block rendered for this row.
+        text += notes.get(row["key"], "")
         rendered = render_lesson(text) if render_lesson is not None else text
         size = len(rendered) + 3  # "- " prefix and newline
         if used + size > max_chars:
@@ -1254,13 +1366,19 @@ def truncate_explicit_lessons(block: str, cap: int) -> str:
     """
     if len(block) <= cap:
         return block
+    # A withheld-rules line follows the footer. It is reported whole, so the lesson
+    # text gives up the room for it rather than the line being cut as if it were text.
+    footer_end = block.index(_EXPLICIT_LESSONS_FOOTER) + len(_EXPLICIT_LESSONS_FOOTER)
+    notice = block[footer_end:]
+    block = block[:footer_end]
+    cap -= len(notice)
     body_start = block.index("]\n- ") + len("]\n- ")
     tail = "\n" + _EXPLICIT_LESSONS_FOOTER
     room = cap - body_start - len(tail) - len(LESSON_TRUNCATION_MARKER)
     if room < 1:
         return ""
     text = block[body_start : len(block) - len(tail)]
-    return block[:body_start] + text[:room] + LESSON_TRUNCATION_MARKER + tail
+    return block[:body_start] + text[:room] + LESSON_TRUNCATION_MARKER + tail + notice
 
 
 def rank_lessons(

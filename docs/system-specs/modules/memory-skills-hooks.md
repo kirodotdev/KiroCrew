@@ -2474,6 +2474,9 @@ When vector memory is active, lessons are stored as semantic entries:
 - Methods: `write_lesson()`, `get_lessons()`, `delete_lesson()`, `get_lessons_context()`
 - Context: injected as `[Learned corrections]` block, separate from `[Semantic Memory]`
 - Allowlist: `lesson.*` prefix in `_BUILTIN_PREFIXES`
+- `"cites"` and `"cited_commit"` are present only when the lesson cites code (see
+  [Cited code on lessons](#cited-code-on-lessons)); absent is the byte-identical legacy
+  shape, and neither key is part of the lesson's identity.
 
 A lesson's final embedding commit and deferred lazy backfills match the exact
 `value_json` that was embedded, require `is_deleted = 0` and `embedding IS NULL`,
@@ -2926,6 +2929,99 @@ store is still the authority (the first-boot migration window), while rows that 
 but are all out of scope for this project means the vector store already answered, so
 falling back would resurrect lessons the user deleted and ignore the scope gate. A row
 whose `repo_scope` is present but unusable counts as neither.
+
+### Cited code on lessons
+
+A lesson that describes a repository's code records what it was derived from, and
+prompt assembly rechecks it. `lesson_cites.py` is the shared helper; both stores
+(`learn.py` JSONL, the vector value mapping) carry the same two optional fields:
+
+- `cites`: `[{"path": <repo-relative path>, "sha256": <hex digest of the file>}]`, at
+  most `CITE_MAX` (8) entries (a cite recorded because the rule text named the file, not
+  the writer, also carries `"source": "text"` and only ever annotates, see below), each path inside the marker-safe alphabet
+  (`[\w.@+-]` segments) and admissible to the scope gate. A file larger than 1 MiB
+  cannot be cited.
+- `cited_commit`: the commit `HEAD` named when the lesson was written, read from `.git`
+  (a worktree's `.git` file and its `commondir` are followed) with no subprocess. It is
+  stored only beside cites.
+
+**Capture** (`capture_cites`, called by `POST /api/lessons`, and by `kirocrew learn add`
+with the repository of the working directory): every explicit cite (`cites` on
+`learn_add`, a repeatable `--cite PATH` on the CLI) and every path-looking token in the
+rule or NOT-clause that resolves to a readable file inside the project is hashed and
+recorded. At most `CITE_MAX` explicit cites are looked at (the rest are not resolved or hashed, and one refusal says so), and the pack-index search reads at most 1,024 directory entries and 64 index files. A `gitdir:` or `commondir` pointer that is UNC- or device-shaped is refused on the raw text before any path operation, because resolving it on Windows opens an outbound SMB connection. A `.git` location reached through a symlink or junction (`.git`, a worktree pointer's target or any directory above it, `commondir`'s target, `objects`, `objects/pack`) is not read at all: each is tested with `lstat` before any probe, because a junction can name a UNC share and the first `is_dir()` through it authenticates outbound. A worktree whose pointer path crosses a link therefore records no commit and renders as a row with no commit on record. A cited path is likewise never reached through a link or junction (refused at write, left unchecked at a recheck, and never resolved), and a loose object that is a link is not followed. Each metadata file the lookup reads (`HEAD`, a ref and its directories, `packed-refs`, `commondir`, a pack index) is likewise read only when no component of its path below the git directory is a link, because authorization is asked about the name a file is reached by and the guarded reader opens whatever that name resolves to. An explicit cite that is not recorded is refused BY NAME with a reason
+(`cites_refused` in the route response, shown by the tool and on the CLI's stderr), and
+the lesson is still saved. The route also asks the session's `filesystem.read` governance
+scope before it reads a cited file (the read is made by the gateway, outside the tool gate
+that governs `fs_read`) through `governance_profiles.vet_and_audit`, so every decision
+lands in the SEL trail, and an evaluation error denies. A missing path, a denied read, a
+symlink out of the project and a sensitive path all read the same reason, so a refusal is not an existence oracle, and the route
+redacts a refused path like every other string it echoes. A cite recorded because the rule
+text named the file, which the writer did not choose, is reported back (`cites_from_text`,
+the tool text, the CLI's stderr, redacted like the refused paths), because the writer did
+not choose it. Text-derived cites include a root-level file named in the text (`README.md`); a token that
+does not resolve to a file in the project is prose and is ignored. They are reported only
+when the write landed. A text-derived cite never withholds: a prose mention is often an example, so
+when its file is gone the row is injected with the changed-code note instead. A file that
+exists but can no longer be hashed (grown past the 1 MiB bound, unreadable) reads as
+`changed`, never `current`. Cites resolve
+against the repository root, never the session's subdirectory, so a session started
+below the root hashes the same file as one started at it. The route reads the project
+from the session's own dashboard slot and never from the request; a session with no slot
+(a headless or channel session) has no project, so its explicit cites are refused and
+its lesson is saved without them.
+
+**Check** (`CiteReview`, one per lesson render, caching each file's digest): every lesson
+renderer applies it after the scope gate: the JSONL `get_context`, the vector
+`get_lessons_context` (recall and background paths) and `turn_lessons`, which feeds the
+per-message block.
+
+| Outcome | When | Rendered |
+|---|---|---|
+| `missing` | a cited path the writer named no longer resolves | withheld; counted in its own `[Withheld N learned rule(s): the code they cite no longer exists…]` line, never as a budget omission |
+| `changed` | every cited path resolves and a hash differs | injected with ` [cited code changed since learned: <path>]` (at most two paths) |
+| `current`, or no cites | | byte-identical to a row that cites nothing |
+
+The check runs only when the row's repository is established for the session: its
+`repo_scope` is satisfied, or its `cited_commit` is an object of the session's repository
+(`commit_in_repo`: a loose object or a name in a pack index, found by plain file reads
+through `hooks.safe_read_range`, which refuses sensitive paths, FIFOs and links). A row
+with no commit on record falls back to "at least one of its cites resolves". A path that
+merely resolves does not establish a row that has a commit, because `README.md` exists in
+most repositories. Otherwise the row renders as it always did, so a session in a different
+checkout never reads a row as `missing` or `changed`. The commit is also what lets a
+deleted file withhold a row that has no `repo_scope` and no other cite left. A repository
+that borrows its objects through alternates, or that no longer holds the commit, is
+treated as unestablished. A session with no project checks nothing.
+
+Authorization is asked BEFORE the path is probed, at write and at a recheck, so a denial answers the same whether or not the file exists and is no way to tell a deleted file from one the session may not read. The file actually read is authorized as well as the name it was reached by (a link inside the project can name a target the session may not read), and so is every `.git` metadata file the commit lookup reads (`HEAD`, refs, `packed-refs`, `commondir`, loose objects, pack indexes), each asked once per lookup. The decision is resolved for the session and the agent running it (`vet_and_audit` takes the agent, so a profile bound to an agent or task applies): the route reads both from the caller's own slot, and the context builder names them with `cite_session(session_key, agent)`. Repository discovery tests for a `.git` entry with `lstat` (`_has_git_entry`), so a link or junction named `.git` marks the boundary without being followed. A recheck asks the same scope for the session whose prompt is being built (the context
+builder names it with `cite_session` around the three lesson renders, and the recall route hands
+its worker the authenticated session through `run_for_session`, because the renderers take no
+session and an executor does not carry the caller's context): a denied file is not hashed and its row is left unchecked, so a denial
+neither reads the file nor reports a change. With no session named there is no profile to ask (an empty key would resolve to the policy ceiling alone), so nothing is read and the row is left unchecked. The recheck goes through the same audited,
+fail-closed seam as the write (`vet_and_audit`), so every decision is in the SEL trail and an
+evaluation error leaves the row unchecked; the per-render file budget bounds how many records
+one render can write; a protected-context refit renders again with a fresh count.
+
+Rechecking is bounded per render: a lesson render examines at most `FILES_PER_BUILD` (64)
+distinct cited paths, each charged before it is authorized, probed or read, and a row whose
+cite falls past the budget is left unchecked and renders as it always did.
+
+The note is appended after ranking, so its words never score against the request; the
+budget and the per-message `shown` check both see the text with the note, so a row is
+not sent twice for carrying it. The per-message block does not print the withheld count:
+it only ever lists lessons it is adding.
+
+**Re-submit.** A submission that names a file explicitly replaces the stored set together
+with its commit (`reconcile_cites`, `reconcile_commit`), which is also how a lesson is
+re-anchored after its file changed or a cite is dropped, and reports `enriched` when the set
+differs. The same hashes report `unchanged` and leave the stored commit alone. A submission
+made only of text-derived cites states nothing, since the writer repeated a rule whose text
+names a file: it can add a file the row does not cite yet, but never replaces, re-hashes or
+demotes a stored cite. A re-submit without cites never strips stored ones, and a cites-only
+re-submit keeps the stored NOT-clause, including one stored in-band on a legacy row. `legacy_lessons` carries both fields
+through the JSONL → vector migration. In the vector size gate, the two keys stay inside
+the raw-measured lesson shape, and their raw bytes are added to the measured basis.
 
 **Single write path** — all lesson writes go through `write_lesson()` which provides:
 - Substring dedup, and it is ASYMMETRIC. A submitted rule contained in a stored one is

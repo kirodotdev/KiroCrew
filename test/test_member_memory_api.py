@@ -1713,3 +1713,28 @@ async def test_markdown_recall_is_bound_to_named_v1_not_global(env, monkeypatch)
     assert "OWN notebook" in response.text
     assert "GLOBAL notebook" not in response.text
     assert json.loads(response.text)["store"] == "legacy-notebook"
+
+
+@pytest.mark.asyncio
+async def test_recall_names_the_requesting_session_for_the_lesson_rechecks(env, monkeypatch):
+    """The recall render runs on a worker, which does not carry the caller's context, so
+    the route hands the worker the authenticated session to name for a cited-file check."""
+    from kiro_crew.lesson_cites import run_for_session
+
+    env.tiers["member-alice"].set_semantic(
+        "project.database", "PostgreSQL ALICEFACT", 1.0, "user_explicit"
+    )
+    seen: list[tuple[object, object]] = []
+    real = memory_member.run_in_embed_pool
+
+    async def spy(fn, *args, **kwargs):
+        seen.append((fn, args[0] if args else None))
+        return await real(fn, *args, **kwargs)
+
+    monkeypatch.setattr(memory_member, "run_in_embed_pool", spy)
+    response = await memory_member.api_memory_recall(
+        request(env, query={"q": "PostgreSQL database"}, internal=True, session="dashboard:alice")
+    )
+    assert response.status == 200
+    assert seen and seen[0][0] is run_for_session
+    assert seen[0][1] == "dashboard:alice"
