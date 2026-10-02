@@ -1,0 +1,9 @@
+haptics:
+  turn_done:
+    DEFAULT: completed
+
+  needs_input:
+    DEFAULT: ringing
+
+  notification:
+    DEFAULT: knock
