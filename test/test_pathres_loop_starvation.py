@@ -179,7 +179,11 @@ _EXPECTED_GATE_CALL_SITES: dict[str, int] = {
     # on the dashboard's path-probe pool worker, never the event loop -- resolving
     # the candidate there is what this endpoint must not do at all, since on Windows
     # it would follow a junction aimed at a share.
-    "kiro_crew/dashboard/handlers/files.py": 3,
+    # ``_project_tree_entries``: every dot-name and every entry under a
+    # dot-directory in the non-git project-tree walk, each handed the
+    # ``os.path.realpath`` computed on the line itself. The walk runs inside
+    # ``api_project_tree``'s ``asyncio.to_thread`` worker, never the event loop.
+    "kiro_crew/dashboard/handlers/files.py": 4,
     # ``_validate_spec_path``: ``validate_file_path`` has already rejected the
     # candidate without following a UNC/link-laundered target.  This call only
     # recovers the 403 classification for a lexically named sensitive path; an

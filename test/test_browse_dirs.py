@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 from unittest.mock import MagicMock, patch
 
@@ -10,6 +11,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from dashboard_owner_helpers import as_owner
 
+from conftest import requires_symlinks
 from kiro_crew import platform_compat
 from kiro_crew.dashboard.handlers import api_browse_dirs
 from kiro_crew.dashboard.handlers.files import (
@@ -68,16 +70,37 @@ class TestBrowseDirs:
             assert names == ["apple", "mango", "zebra"]
 
     @pytest.mark.asyncio
-    async def test_skips_hidden_and_excluded(self, tmp_path, mock_sel):
+    async def test_lists_dot_dirs_but_skips_excluded(self, tmp_path, mock_sel):
+        # Dot-directories such as ``.worktrees`` are listed; the skip
+        # set (``.git``, ``.kiro``, ...) still wins.
         (tmp_path / ".git").mkdir()
-        (tmp_path / ".hidden").mkdir()
+        (tmp_path / ".kiro").mkdir()
+        (tmp_path / ".idea").mkdir()
+        (tmp_path / ".worktrees" / "x").mkdir(parents=True)
         (tmp_path / "node_modules").mkdir()
         (tmp_path / "__pycache__").mkdir()
         (tmp_path / "src").mkdir()
         async with TestClient(TestServer(_make_app())) as client:
             resp = await client.get(f"/api/browse-dirs?path={tmp_path}")
             names = {d["name"] for d in (await resp.json())["dirs"]}
-            assert names == {"src"}
+            assert names == {".worktrees", "src"}
+
+    @pytest.mark.asyncio
+    @requires_symlinks
+    async def test_dot_dir_linked_to_a_sensitive_path_is_filtered(self, tmp_path, mock_sel):
+        secret = tmp_path / "secret_store"
+        secret.mkdir()
+        os.symlink(secret, tmp_path / ".creds", target_is_directory=True)
+        (tmp_path / ".worktrees").mkdir()
+
+        def is_sens(p: str) -> bool:
+            return os.path.realpath(p) == os.path.realpath(secret)
+
+        with patch("kiro_crew.dashboard.handlers.files.is_sensitive_path", side_effect=is_sens):
+            async with TestClient(TestServer(_make_app())) as client:
+                resp = await client.get(f"/api/browse-dirs?path={tmp_path}")
+                names = {d["name"] for d in (await resp.json())["dirs"]}
+        assert names == {".worktrees"}
 
     @pytest.mark.asyncio
     async def test_returns_parent(self, tmp_path, mock_sel):

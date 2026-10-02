@@ -8,8 +8,8 @@
  * childless is a folder that is
  *
  *  - `empty`: listed as a directory with no file and no subfolder in it;
- *  - `hidden-only`: not empty on disk, but every entry in it is a folder the
- *    listing filters out by nature (a dot-directory, a tooling cache) -- the
+ *  - `hidden-only`: not empty on disk, but every entry in it is one the
+ *    listing filters out by nature (a tooling folder, a protected entry) -- the
  *    server names these in `hiddenOnlyDirectories`, and without that signal
  *    `_bg/` holding only `.kiro/` would be called empty;
  *  - `linked`: it is a symlink to a directory. A visible, navigable entry, so
