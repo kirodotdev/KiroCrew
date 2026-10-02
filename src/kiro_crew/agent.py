@@ -151,6 +151,7 @@ from kiro_crew.sel import (  # circular import: sel imports config which imports
     SecurityEvent,
     sel,
 )
+from kiro_crew.user_json import load_mcp_servers, loads_user_json
 from kiro_crew.validation import is_registered_agent_name
 
 logger = logging.getLogger(__name__)
@@ -3884,7 +3885,7 @@ def _load_existing_config(
     runs reads the same decision the caller's audit will report.
     """
     try:
-        config = json.loads(path.read_text(encoding="utf-8"))
+        config = loads_user_json(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         config = None
     if not isinstance(config, dict):
@@ -5440,7 +5441,7 @@ def _durable_tool_aliases(path: Path) -> tuple[bool, object]:
     except OSError:
         return (False, None)
     try:
-        on_disk = json.loads(raw)
+        on_disk = loads_user_json(raw)
     except ValueError:
         return (True, None)
     return (True, on_disk.get("toolAliases") if isinstance(on_disk, dict) else None)
@@ -5955,7 +5956,7 @@ def rebuild_agent_config(
             # @ref if it ever lands there.
             config.setdefault("tools", []).append(f"@{_app_srv}")
 
-    shared_mcp = _load_json(_KIRO_MCP_JSON).get("mcpServers", {})
+    shared_mcp = load_mcp_servers(_KIRO_MCP_JSON)
     for name, spec in shared_mcp.items():
         if isinstance(spec, dict) and name not in managed_names:
             # Copy so config never aliases the source dict — a later update()
@@ -5980,7 +5981,7 @@ def rebuild_agent_config(
     # (replaces the old single ``cc_shared_mcp``).
     extra_shared_mcp: dict[str, dict] = {}
     for scope_global in _extra_mcp_scope_globals():
-        scope_shared_mcp = _load_json(scope_global).get("mcpServers", {})
+        scope_shared_mcp = load_mcp_servers(scope_global)
         for name, spec in scope_shared_mcp.items():
             if not isinstance(spec, dict):
                 continue
@@ -5995,7 +5996,7 @@ def rebuild_agent_config(
     # Uses update() to merge into existing specs, preserving user-set fields
     # like autoApprove while letting kirocrew's command/args/env win.
     # Skip managed servers for the same reason as above.
-    kirocrew_mcp = _load_json(_user_dir() / "mcp.json").get("mcpServers", {})
+    kirocrew_mcp = load_mcp_servers(_user_dir() / "mcp.json")
     for name, spec in kirocrew_mcp.items():
         if isinstance(spec, dict) and name not in managed_names:
             mcps = config.setdefault("mcpServers", {})
@@ -7665,7 +7666,13 @@ def _refresh_forked_templates_locked(*, gated_off: "frozenset[str] | None" = Non
             # refresh that reads, loses the CPU to a dashboard PATCH, then
             # writes its stale snapshot would silently revert the user's edit.
             with agents_spec_lock(agents_dir):
-                config = _load_json(spec_path)
+                # A strict read: `_load_json` answers `{}` for an unreadable
+                # file, which would pass the check below and be written back
+                # over the spec.
+                try:
+                    config = loads_user_json(spec_path.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    config = None
                 if not isinstance(config, dict):
                     # Unreadable spec: governance cannot be projected onto it.
                     failures.add(fork_name)

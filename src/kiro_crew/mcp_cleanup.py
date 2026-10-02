@@ -24,6 +24,7 @@ from typing import Any
 from kiro_crew.agent_sdk.mcp_refs import RESERVED_TOOL_NAMESPACES
 from kiro_crew.atomic_write import atomic_write, open_access_control_source
 from kiro_crew.config.paths import kiro_home
+from kiro_crew.user_json import loads_user_json
 
 #: kiro-cli's enterprise-governance discriminator. The spec WRITER owns the
 #: literal (``agent._MCP_REGISTRY_TYPE``); this is the copy the readers share, and
@@ -421,7 +422,7 @@ def clean_stale_managed_mcp() -> list[str]:
     if not _kiro_mcp_json().is_file():
         return []
     try:
-        data = json.loads(_kiro_mcp_json().read_text(encoding="utf-8"))
+        data = loads_user_json(_kiro_mcp_json().read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return []
     if not isinstance(data, dict):

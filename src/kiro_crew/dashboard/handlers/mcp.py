@@ -70,6 +70,7 @@ from kiro_crew.mcp_utils import (
 from kiro_crew.platform.governance import may_skip_gate_now
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
+from kiro_crew.user_json import loads_mcp_config, loads_user_json
 
 logger = logging.getLogger(__name__)
 
@@ -347,7 +348,7 @@ def _sync_mcp_to_agent_unlocked(name: str, enabled: bool, *, remove: bool = Fals
 
     path = _installed_agent_config()
     try:
-        cfg = json.loads(path.read_text(encoding="utf-8"))
+        cfg = loads_mcp_config(path.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError) as exc:
         logger.warning("Cannot read agent config %s, skipping sync: %s", path, exc)
         return
@@ -361,7 +362,7 @@ def _sync_mcp_to_agent_unlocked(name: str, enabled: bool, *, remove: bool = Fals
         if alias not in mcp_servers:
             # Copy spec from global mcp.json (looked up by original name)
             try:
-                gdata = json.loads(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"))
+                gdata = loads_mcp_config(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"))
                 spec = gdata.get("mcpServers", {}).get(name, {})
                 if isinstance(spec, dict) and spec:
                     entry = {k: v for k, v in spec.items() if k != "disabled"}
@@ -504,7 +505,7 @@ def _sync_mcp_to_agent_batch_unlocked(names: list[str], enabled: bool) -> None:
 
     path = _installed_agent_config()
     try:
-        cfg = json.loads(path.read_text(encoding="utf-8"))
+        cfg = loads_mcp_config(path.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError) as exc:
         logger.warning("Cannot read agent config %s, skipping batch sync: %s", path, exc)
         return
@@ -514,7 +515,7 @@ def _sync_mcp_to_agent_batch_unlocked(names: list[str], enabled: bool) -> None:
         # Ensure all servers exist in kirocrew.json mcpServers
         mcp_servers = cfg.setdefault("mcpServers", {})
         try:
-            gdata = json.loads(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"))
+            gdata = loads_mcp_config(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"))
         except (FileNotFoundError, json.JSONDecodeError):
             gdata = {}
         granted_refs: list[str] = []
@@ -959,7 +960,7 @@ async def _run_mcp_probe() -> None:
 
         global_mcps: dict[str, Any] = {}
         try:
-            data = json.loads(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"))
+            data = loads_mcp_config(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"))
             global_mcps = data.get("mcpServers", {})
         except (FileNotFoundError, json.JSONDecodeError):
             pass
@@ -1049,7 +1050,7 @@ async def api_mcp_servers(request: web.Request) -> web.Response:
     # Read global mcp.json for disabled state
     global_mcps: dict[str, Any] = {}
     try:
-        data = json.loads(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"))
+        data = loads_mcp_config(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"))
         global_mcps = data.get("mcpServers", {})
     except (FileNotFoundError, json.JSONDecodeError):
         pass
@@ -1165,7 +1166,7 @@ async def api_mcp_active(request: web.Request) -> web.Response:
 
     global_mcps: dict[str, Any] = {}
     try:
-        data = json.loads(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"))
+        data = loads_mcp_config(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"))
         global_mcps = data.get("mcpServers", {})
     except (FileNotFoundError, json.JSONDecodeError):
         pass
@@ -1226,7 +1227,7 @@ async def api_mcp_probe(request: web.Request) -> web.Response:
     # Read global mcp.json for enabled/disabledTools state
     global_mcps: dict[str, Any] = {}
     try:
-        data = json.loads(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"))
+        data = loads_mcp_config(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"))
         global_mcps = data.get("mcpServers", {})
     except (FileNotFoundError, json.JSONDecodeError):
         pass
@@ -1486,7 +1487,7 @@ async def api_mcp_sync(request: web.Request) -> web.Response:
         # Also add to global mcp.json (what ACP actually reads)
         async with _get_mcp_lock():
             try:
-                gdata = json.loads(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"))
+                gdata = loads_user_json(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"))
             except (FileNotFoundError, json.JSONDecodeError):
                 gdata = {"mcpServers": {}}
             gservers = gdata.setdefault("mcpServers", {})
@@ -1708,7 +1709,7 @@ async def api_mcp_toggle(request: web.Request) -> web.Response:
     async with _get_mcp_lock():
         # 1. Update global mcp.json
         try:
-            data = json.loads(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"))
+            data = loads_mcp_config(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"))
         except FileNotFoundError:
             data = {"mcpServers": {}}
         except json.JSONDecodeError:
@@ -1799,7 +1800,7 @@ async def api_mcp_toggle_tool(request: web.Request) -> web.Response:
 
     async with _get_mcp_lock():
         try:
-            data = json.loads(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"))
+            data = loads_mcp_config(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"))
         except FileNotFoundError:
             data = {"mcpServers": {}}
         except json.JSONDecodeError:
@@ -1865,7 +1866,7 @@ async def api_mcp_toggle_all(request: web.Request) -> web.Response:
 
     async with _get_mcp_lock():
         try:
-            data = json.loads(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"))
+            data = loads_mcp_config(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"))
         except FileNotFoundError:
             data = {"mcpServers": {}}
         except json.JSONDecodeError:
@@ -1943,7 +1944,7 @@ async def api_mcp_remove(request: web.Request) -> web.Response:
     # Remove from global mcp.json
     async with _get_mcp_lock():
         try:
-            data = json.loads(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"))
+            data = loads_user_json(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"))
         except (FileNotFoundError, json.JSONDecodeError):
             data = {"mcpServers": {}}
         removed = data.get("mcpServers", {}).pop(name, None) is not None
@@ -2015,7 +2016,7 @@ async def api_mcp_server_detail(request: web.Request) -> web.Response:
         # Remove from global mcp.json
         async with _get_mcp_lock():
             try:
-                data = json.loads(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"))
+                data = loads_user_json(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"))
             except (FileNotFoundError, json.JSONDecodeError):
                 data = {"mcpServers": {}}
             removed = data.get("mcpServers", {}).pop(name, None) is not None
@@ -2090,7 +2091,7 @@ async def api_mcp_server_detail(request: web.Request) -> web.Response:
     # Write to global mcp.json
     async with _get_mcp_lock():
         try:
-            data = json.loads(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"))
+            data = loads_user_json(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"))
         except (FileNotFoundError, json.JSONDecodeError):
             data = {"mcpServers": {}}
         data.setdefault("mcpServers", {})[name] = entry
@@ -2170,7 +2171,7 @@ def _load_json_or_empty(path: Path) -> dict[str, Any]:
     partially-applied changes without a rebuild.
     """
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = loads_user_json(path.read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else {}
     except (OSError, json.JSONDecodeError):
         return {}
@@ -2717,7 +2718,7 @@ def _scrub_preregistered_oauth_copies(slug: str) -> dict[str, str]:
         # still hold the retired secret. A scope that is absent is clean; one
         # that exists but cannot be read is a failure the caller surfaces.
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = loads_user_json(path.read_text(encoding="utf-8"))
         except FileNotFoundError:
             actions[label] = "noop"
             continue

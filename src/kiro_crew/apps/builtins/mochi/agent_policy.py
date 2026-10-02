@@ -37,6 +37,7 @@ from typing import Any
 
 from kiro_crew.apps.builtins.mochi.soul_loader import rendered_bg_prompt_path, rendered_prompt_path
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.user_json import loads_user_json
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +113,7 @@ def _configured_server_names() -> list[str]:
     """
     config = Path.home() / ".kiro" / "settings" / "mcp.json"
     try:
-        raw = json.loads(config.read_text(encoding="utf-8"))
+        raw = loads_user_json(config.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return []  # no global servers configured at all
     except Exception as exc:  # noqa: BLE001 — a malformed global file is not our error
