@@ -66,6 +66,7 @@ from kiro_crew.slack.format import (
     OPTIONS_ACTION_PREFIX,
     OPTIONS_CHECKBOXES_ACTION,
     OPTIONS_SUBMIT_ACTION,
+    SESSION_LINK_ACTION,
     build_options_selected_blocks,
     escape_mrkdwn,
     replace_options_blocks,
@@ -725,6 +726,14 @@ async def dispatch(payload: dict) -> None:
 
     # ── OPTIONS checkboxes toggle — no-op, wait for Send ──
     if action_id == OPTIONS_CHECKBOXES_ACTION:
+        return
+
+    # ── "Open session" deep-link button — no-op ──
+    # A URL button opens its link in the browser directly; Slack still POSTs a
+    # block_actions event for it, so ack it here as a no-op rather than letting it
+    # fall through to the tool-approval handler (which would look up a nonexistent
+    # approval). No server work, so no channels-governance gate is needed.
+    if action_id == SESSION_LINK_ACTION:
         return
 
     # ── OPTIONS Send / legacy choice buttons ──
