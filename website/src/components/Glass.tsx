@@ -22,20 +22,12 @@
  * they are (`variant`), how round they are (`radius`) and which element they
  * ARE (`as`); they never restate the optics.
  *
- * Three variants, differing ONLY in blur: `composer`, `panel` and `chip` all
- * share the light band (25, full white on every edge). `composer` is the ONE
- * surface that floats over the transcript scroller with the conversation
- * scrolling UNDER it and no opaque fade band, so its tint (~40-45% opaque) plus
- * blur are the only thing hiding the covered strip. At frost 4 a tall message
- * mid-scroll read straight THROUGH it (#15225): a 4px blur leaves ~13px body
- * glyphs legible and 55-60% of the backdrop shows past the tint. `composer`
- * therefore runs a heavier blur (12) to smear that strip past reading. `panel`
- * (notification cards / banner / feed, the side-panel float, tip and suggestion
- * cards) and `chip` (the small pills) both stay light (4): they do not float
- * over a scrolling transcript, and a heavy blur reads foggy on a short surface
- * -- the NotificationFeed stub is 12px tall. `panel` and `chip` are kept as
- * separate names so a call site still says which kind of box it is (they ran
- * different light once, chip at 18, before the bands were unified).
+ * Two variants, one recipe: `panel` and `chip` now share the same optics
+ * (frost 4, light 25) -- the maintainer wants one blur across every pane and the
+ * light band reaching full white on every edge, chips included -- and differ
+ * only in name, kept so a call site still says which kind of box it is; the
+ * chip used to run lighter (frost 4, light 18) for the small pills and cards, where
+ * the panel numbers read heavy at 30px tall.
  *
  * The pane IS the host element — there is no wrapper box. A follow-up chip is
  * `<Glass as="button" …>`: the button is the flex item, carries the width cap,
@@ -59,10 +51,9 @@
 import { forwardRef, type ReactElement, type Ref } from 'react'
 import { LiquidGlass, type GlassHostTag, type LiquidGlassOwnProps, type LiquidGlassProps } from './ui/liquid-glass'
 
-export type GlassVariant = 'composer' | 'panel' | 'chip'
+export type GlassVariant = 'panel' | 'chip'
 
 const RECIPE: Record<GlassVariant, Pick<LiquidGlassOwnProps, 'frost' | 'lightIntensity'>> = {
-  composer: { frost: 12, lightIntensity: 25 },
   panel: { frost: 4, lightIntensity: 25 },
   chip: { frost: 4, lightIntensity: 25 },
 }

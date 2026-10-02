@@ -33,7 +33,7 @@ const fakeContext = {
 const MAP_URL = 'data:image/png;base64,map'
 
 /** The composer's settings — the pane has no defaults, every caller sets all three. */
-const composer = { cornerRadius: 16, frost: 12, lightIntensity: 25 }
+const composer = { cornerRadius: 16, frost: 4, lightIntensity: 25 }
 
 function measure(width: number, height: number) {
   act(() => {
@@ -85,9 +85,9 @@ describe('LiquidGlass', () => {
     // The tint is the polarity-fixed token, not a per-caller colour.
     const frost = frostBoxOf(layers[1])
     expect(frost.style.background).toContain('var(--glass-tint)')
-    expect(frost.style.backdropFilter).toBe('blur(12px) saturate(1.55)')
+    expect(frost.style.backdropFilter).toBe('blur(4px) saturate(1.55)')
     // Two blur radii of overhang on every side, clipped by the layer.
-    expect(frost.style.inset).toBe('-24px')
+    expect(frost.style.inset).toBe('-8px')
     expect(layers[1].style.overflow).toBe('hidden')
     // Every layer clips on the same circular radius as the root, and paints
     // under the children inside the host's own stacking context.
@@ -174,7 +174,7 @@ describe('LiquidGlass', () => {
     const layers = layersOf(root)
     expect(layers).toHaveLength(4)
     expect(layers[0].style.backdropFilter).toBe(`url(#${filter.id})`)
-    expect(frostBoxOf(layers[1]).style.backdropFilter).toBe('blur(12px) saturate(1.55)')
+    expect(frostBoxOf(layers[1]).style.backdropFilter).toBe('blur(4px) saturate(1.55)')
     // The side lines lead: 1px of --glass-edge down each flank, nothing on the
     // top and bottom edges. Then the lit edges' crisp core: 1px of --glass-band
     // just inside the top and bottom edges (full strength, so a light page
