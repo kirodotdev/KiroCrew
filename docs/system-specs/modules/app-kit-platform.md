@@ -1505,6 +1505,129 @@ This re-gate covers
 `sessionApproval` only; `permissions.api` and `permissions.events` are likewise
 read live and still widen on update without a consent moment (issue #11212).
 
+**Every per-slot route takes one ownership decision.** `permissions.api` is a
+prefix match, so an app granted `/api/chat` reaches every
+`/api/chat/slots/{slot}/*` path. `slot_ownership_middleware`
+(`dashboard/slot_ownership.py`), registered inner to `token_auth_middleware` and
+`sel_audit_middleware` in both server chains, decides app reach for that whole
+family before any handler runs. It matches any single path parameter in the slot
+position (`{slot}`, `{name}`, or a spelling added later), so a new per-slot route
+is owner-gated by default:
+
+| Caller | Outcome |
+|---|---|
+| no app claim (the dashboard user, an internal-secret call with no derived app) | passes; the handler's own owner and identity checks apply |
+| app that owns the slot (`slot._app == request["app"]`) while the slot still runs on its own session and writes its own transcript | passes. The slot's own session is `dashboard:<key>`, or, for a task-runner result tab `task-review-<token>`, the `taskrunner:<task_id>:chat:<token>` session minted for that tab (`own_session_key`) |
+| app that owns the slot, but the slot is linked to another session or writes another transcript | 404 `slot_not_found`, plus an SEL `app_isolation` denial naming the route |
+| any other app, including on a slot with no app scope | 404 `slot_not_found`, plus an SEL `app_isolation` denial naming the route (`slot_route <METHOD> <template>`) |
+| any app, on a slot name that is not live | 404 `slot_not_found`, with no SEL row, so polling a closed tab cannot flood the log |
+
+Identity is positive: a slot with no app scope is never read as anyone's. Every
+refusal has the same body, so on these routes no response tells "not yours" from
+"does not exist". The decision is keyed by the PATH segment. A slot key read from
+the body, query or a header is covered only where the handler decides it. The
+other session-scoped families, `/api/approvals` and `/api/sessions`, are outside
+this checkpoint. It applies whether or not a handler carries a check of its own.
+`SLOT_ROUTE_POLICIES` lists the only exceptions, each with its reason:
+
+- `POST .../approve` is `SESSION_GRANT`: the owner app on its own session and
+  transcript, or the `sessionApproval` grant on a local user session
+  (`app_may_control_session`, the one rule send uses too). The handler also
+  requires the grant from every app caller, the owner included, so an app without
+  it gets `404` on a slot it does not own and `403 session_approval_not_granted`
+  on its own. The grant is read once per request, for every app caller, before
+  the slot is looked up (`session_grant`), so the cost of a refusal does not
+  depend on which kind of session was named. The handler reads it again, fresh,
+  after the body upload, and so does `/api/chat/mode`.
+- `POST .../resume` is `HANDLER`, because it opens a persisted transcript that
+  usually has no live slot (see below).
+
+The middleware publishes the slot object it judged on the request
+(`CHECKPOINT_SLOT_KEY`). A handler that awaits before it looks its slot up
+(regenerate and rewind after the readiness probe, mirror-unlink and slack-unlink
+after the body read) refuses with the same 404 when the slot it finds is not that
+object (`checkpoint_slot_replaced`). A close and same-name create inside that
+await is therefore never acted on undecided.
+
+`test_slot_ownership_checkpoint.py` pins that every route the router registers
+under `/api/chat/slots/{...}` is decided, that each exception names a registered
+route, and that the middleware sits in both chains. It also sweeps the live table
+on one server, refusing a non-owner app route by route.
+
+Handlers keep their own calls to the shared helpers, as defence in depth: behind
+the checkpoint they never refuse, and they catch a handler mounted outside the
+chain, and a missing slot there gets the same `slot_not_found` body as a
+refused one. The cancel routes (`_app_cancel_denied`) also authorize the session
+they cancel, against the slot's own session (`own_session_key`). The metadata writes (`deny_app_slot_session_access`) also authorize the
+session and transcript they persist into. The folder, tag and mode writes also
+authorize the transcript key (`app_owns_transcript`). Export answers an app the
+checkpoint's body for a missing slot and on every ownership refusal, including
+its own channel-linked slot.
+
+A request that can create the slot it names decides ownership before
+`get_or_create_slot`, whose memory-mode and under-construction 409s would
+otherwise answer an app about a session it may not see. That covers
+`POST /api/chat` and `POST /api/chat/slots` (`_app_slot_acquisition_denial`). The
+raw name is normalized once, as `get_or_create_slot` normalizes it. For an app
+caller, each of these gets the same 404, and nothing is created:
+
+- a member, cron or workflow key, judged on the history key so no spelling slips
+  past (`app_reserved_key_reason`);
+- a `dashboard_`-prefixed key, whose transcript is another slot's;
+- a key under construction (an import's async tail), in any letter case. This
+  gets no SEL row; the person still gets the retryable 409;
+- a key that matches another live slot's key or transcript key only up to letter
+  case (`live_case_alias_reason`): on a case-insensitive filesystem (the macOS
+  and Windows defaults) the two would write one transcript file, and the
+  transcript check below cannot see a live slot that has written nothing yet;
+- a live slot the app may not act on: on send, the session-control rule
+  (`app_may_control_session`); on create, the owner app on its own session and
+  transcript (`app_owns_slot_session`);
+- a key whose persisted transcript records a different app, or none
+  (`transcript_acquisition_reason`). An unreadable metadata line refuses under its
+  own audit reason, and a name the filesystem rejects refuses instead of
+  raising.
+
+The pre-check is an early out. Right before `get_or_create_slot`, with no await
+in between, send checks that the slot it is about to acquire is the one the
+pre-check judged (`_acquired_slot_was_judged`). A granted user session closed in
+the meantime is therefore not minted afresh as an app-owned slot on its key. A
+409 raised at acquisition is a 404 for an app unless the slot is the app's own
+live slot, the one the pre-check judged and that still holds the key
+(`_app_acquisition_conflict`): there the 409 text tells the app nothing new, and
+a 404 would tell it its own session is gone. Create re-applies the session half
+after acquisition (`deny_app_slot_session_access`), so a new slot that
+`get_or_create_slot` links to another conversation is refused too.
+
+Resume authorizes both transcripts at stake (`_app_resume_refusal`): the one it
+reads (`key`, which for an app defaults to the slot's own `dashboard:<name>`) must
+record the app, and the one the new slot writes (`dashboard:<name>`) must pass
+the acquisition rule above, a publish name under construction included (the
+person keeps the retryable `409 resume_in_progress`). A live slot that already
+satisfies the resume is judged like any per-slot route
+(`deny_app_slot_session_access`). It decides before any durable change, and
+decides the read key again on the post-read snapshot. A late refusal puts back
+the `closed` marker the eager clear dropped. A key with no transcript is the 404
+with no SEL row, as on every per-slot route. So a closed user session cannot be reopened as an
+app-owned slot. `/api/chat/mode` answers an app the same 404 for an unknown slot
+as for one it may not control.
+
+The cron and workflow binders never adopt an app-owned slot found under the key
+they mint (`app_holds_gateway_key`). Linking it would hand the app the job's or
+run's transcript, so the binder stands down and records the refusal under the
+actor that asked for the bind (the gateway, or the to-chat caller) with the
+holder app in its resources, since the holder made no request, and
+`POST /api/crons/{id}/to-chat` answers `409 cron_slot_unavailable`. The run-start
+pre-create (`ensure_cron_slot`) and the transcript prefetches skip such a slot
+before any read, so the one refusal per run is the result injection's. Request
+audit records an app-token call under the app's name (`server.audit_actor`); an
+internal-secret call whose app claim was derived from the calling session keeps
+its transport label, `<caller>:<app>`.
+
+Known limit: `POST /api/chat/slots` with a name answers 200 for a free key and 404
+for a taken one, so an app can still learn that a key is in use. Closing that
+needs app-chosen keys in their own namespace.
+
 **Filtering the frame is not always enough.** Two event shapes carry other
 tenants' data inside a payload the gate admits wholesale, so they are narrowed on
 the send path in `_serialize_for_client`: the `slots` re-push (a full slot list)
@@ -1552,7 +1675,11 @@ resolution), `dashboard/state.py` (`_send_ws_all`, `_ws_client_allowed`,
 `_serialize_for_client`, `SlotOrigin`), `dashboard/token_auth.py`
 (`_APP_TOKEN_IMPLICIT_ALLOW`, `app_token_path_allowed`, `_app_owns_path`,
 `RESERVED_APP_PATH_SEGMENTS`), `apps/manifest.py`
-(`_granted_list`, `RESERVED_APP_PATH_SEGMENTS`); consumers: `website/src/app-sdk/index.ts` (mirrors the tables
+(`_granted_list`, `RESERVED_APP_PATH_SEGMENTS`), `dashboard/slot_ownership.py`
+(`slot_ownership_middleware`, `SLOT_ROUTE_POLICIES`, `deny_app_slot_access`,
+`app_reserved_key_reason`, `transcript_acquisition_reason`, `app_holds_gateway_key`),
+`dashboard/chat_handlers.py` (`_app_slot_acquisition_denial`,
+`_app_resume_refusal`, `resume_slot_from_history`); consumers: `website/src/app-sdk/index.ts` (mirrors the tables
 for developer-facing diagnostics, drift-guarded by
 `website/src/test/appSdkEventScope.test.ts`). Runtime-facing summary for app
 authors: [../../architecture/app-platform-trust-model.md](../../architecture/app-platform-trust-model.md).

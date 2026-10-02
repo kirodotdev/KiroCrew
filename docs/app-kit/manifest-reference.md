@@ -845,7 +845,10 @@ API: `apps/spawn_sdk.py` — `SpawnSDK`, `build_spawn_impl`, `build_done_probe`,
 > user-session calls, in addition to `permissions.api`. The app must be enabled.
 > The grant reaches existing local user-owned sessions only; cron, system, remote,
 > member-mode, and other apps' sessions are denied. Apps retain their pre-existing
-> access to their own slots. Mode changes must name a live allowed slot and are
+> access to their own slots. On the per-slot routes (`/api/chat/slots/{slot}/*`)
+> the grant reaches approving or denying a pending tool request only; every other
+> per-slot route answers an app `404 slot_not_found` unless the app owns the slot,
+> whatever `permissions.api` prefix it holds. Mode changes must name a live allowed slot and are
 > limited to Normal, Reads and Trust; YOLO is a process-global override and stays
 > dashboard-only. An update that newly adds the flag disables the app until the user
 > enables it again from the detail page, which shows why (this re-gate is specific

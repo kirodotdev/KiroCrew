@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from aiohttp import web
 
+from kiro_crew.dashboard.slot_ownership import slot_ownership_middleware
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.history import ConversationLog
 from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
@@ -331,7 +332,10 @@ def _make_app(state: DashboardState) -> web.Application:
             request["user"] = "local-app"  # recognized as owner
         return await handler(request)
 
-    app = web.Application(middlewares=[_test_auth_middleware])
+    # The per-slot app-ownership checkpoint runs inner to auth, as in the real
+    # server chain, so an app-identity test exercises the decision every
+    # /api/chat/slots/{slot}/* route takes before its handler.
+    app = web.Application(middlewares=[_test_auth_middleware, slot_ownership_middleware])
     app["state"] = state
     app.router.add_post("/api/chat", api_chat)
     app.router.add_get("/api/chat/slots", api_chat_slots)
@@ -366,7 +370,7 @@ def _make_app_with_agent_routes(state: DashboardState) -> web.Application:
         api_chat_slots,
     )
 
-    app = web.Application()
+    app = web.Application(middlewares=[slot_ownership_middleware])
     app["state"] = state
     app.router.add_get("/api/chat/slots", api_chat_slots)
     app.router.add_post("/api/chat/slots", api_chat_slot_create)

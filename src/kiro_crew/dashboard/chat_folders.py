@@ -21,6 +21,11 @@ from kiro_crew.dashboard.chat_tags import tags_write_lock, validate_folder_tag_i
 from kiro_crew.dashboard.chat_utils import effective_session_key, slot_history_key
 from kiro_crew.dashboard.create_rate_limit import FOLDER_CREATE, allow_create
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
+from kiro_crew.dashboard.slot_ownership import (
+    audit_app_slot_denial,
+    deny_app_slot_access,
+    slot_not_found,
+)
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.dashboard.token_auth import (
     KNOWN_INTERNAL_CALLERS,
@@ -2405,20 +2410,10 @@ async def api_chat_slot_folder(request: web.Request) -> web.Response:
     if (refusal := member_slot_write_refused(state, request, slot, "chat.slot_folder")) is not None:
         return refusal
     request_app = _effective_request_app(state, request)
-    if request_app and getattr(slot, "_app", "") != request_app:
-        sel().log_api_access(
-            caller=request_app,
-            operation="chat.slot_folder",
-            outcome="denied",
-            source="app_isolation",
-            resources=f"slot={slot.key}",
-            error=(
-                "app cannot access unscoped slots"
-                if not getattr(slot, "_app", "")
-                else "app does not own this slot"
-            ),
-        )
-        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+    if (
+        denied := deny_app_slot_access(request_app, slot, slot.key, "chat.slot_folder")
+    ) is not None:
+        return denied
     # Capture the transcript key the ownership decision above just covered,
     # BEFORE the body-parse await: ``linked_session_key`` is rebound on
     # already-live slots with no ``running`` gate (cron completions, workflow
@@ -2432,15 +2427,10 @@ async def api_chat_slot_folder(request: web.Request) -> web.Response:
     # owner's session. Both must resolve to the caller's app (same rule as
     # ``chat_tags.api_chat_slot_tags``), same indistinguishable 404.
     if not app_owns_transcript(state._slots, request_app, authorized_history_key):
-        sel().log_api_access(
-            caller=request_app,
-            operation="chat.slot_folder",
-            outcome="denied",
-            source="app_isolation",
-            resources=f"slot={slot.key}",
-            error="app does not own this slot's transcript",
+        audit_app_slot_denial(
+            request_app, "chat.slot_folder", slot.key, "app does not own this slot's transcript"
         )
-        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+        return slot_not_found()
     try:
         body = await request.json()
     except Exception:
@@ -2574,20 +2564,8 @@ async def api_chat_slot_pin(request: web.Request) -> web.Response:
     if (refusal := member_slot_write_refused(state, request, slot, "chat.slot_pin")) is not None:
         return refusal
     request_app = _effective_request_app(state, request)
-    if request_app and getattr(slot, "_app", "") != request_app:
-        sel().log_api_access(
-            caller=request_app,
-            operation="chat.slot_pin",
-            outcome="denied",
-            source="app_isolation",
-            resources=f"slot={slot.key}",
-            error=(
-                "app cannot access unscoped slots"
-                if not getattr(slot, "_app", "")
-                else "app does not own this slot"
-            ),
-        )
-        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+    if (denied := deny_app_slot_access(request_app, slot, slot.key, "chat.slot_pin")) is not None:
+        return denied
     # Capture the transcript key the lookup above just covered, BEFORE the
     # body-parse await — the same rebind window api_chat_slot_folder
     # documents. The re-check below and the save's expected_history_key pin
@@ -2595,15 +2573,10 @@ async def api_chat_slot_pin(request: web.Request) -> web.Response:
     # against.
     authorized_history_key = slot_history_key(slot)
     if not app_owns_transcript(state._slots, request_app, authorized_history_key):
-        sel().log_api_access(
-            caller=request_app,
-            operation="chat.slot_pin",
-            outcome="denied",
-            source="app_isolation",
-            resources=f"slot={slot.key}",
-            error="app does not own this slot's transcript",
+        audit_app_slot_denial(
+            request_app, "chat.slot_pin", slot.key, "app does not own this slot's transcript"
         )
-        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+        return slot_not_found()
     try:
         body = await request.json()
     except Exception:
@@ -2720,33 +2693,16 @@ async def api_chat_slot_mode(request: web.Request) -> web.Response:
     if (refusal := refuse_unattributable_caller(state, request, "chat.slot_mode")) is not None:
         return refusal
     request_app = request.get("app", "")
-    if request_app and getattr(slot, "_app", "") != request_app:
-        sel().log_api_access(
-            caller=request_app,
-            operation="chat.slot_mode",
-            outcome="denied",
-            source="app_isolation",
-            resources=f"slot={slot.key}",
-            error=(
-                "app cannot access unscoped slots"
-                if not getattr(slot, "_app", "")
-                else "app does not own this slot"
-            ),
-        )
-        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+    if (denied := deny_app_slot_access(request_app, slot, slot.key, "chat.slot_mode")) is not None:
+        return denied
     # ``_app`` says who owns the slot OBJECT; the write persists into the
     # TRANSCRIPT ``authorized_history_key`` names. Same rule as the folder and
     # tag writes, same indistinguishable 404.
     if not app_owns_transcript(state._slots, request_app, authorized_history_key):
-        sel().log_api_access(
-            caller=request_app,
-            operation="chat.slot_mode",
-            outcome="denied",
-            source="app_isolation",
-            resources=f"slot={slot.key}",
-            error="app does not own this slot's transcript",
+        audit_app_slot_denial(
+            request_app, "chat.slot_mode", slot.key, "app does not own this slot's transcript"
         )
-        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+        return slot_not_found()
     try:
         body = await request.json()
     except Exception:

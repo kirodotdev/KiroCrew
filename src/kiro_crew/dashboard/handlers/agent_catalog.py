@@ -21,6 +21,7 @@ from kiro_crew.dashboard.handlers.agents import (
     _roster_mask,
 )
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+from kiro_crew.dashboard.slot_ownership import deny_app_slot_access, slot_not_found
 from kiro_crew.executors import discovery_executor
 from kiro_crew.platform import current_context, safe_context_call
 
@@ -109,13 +110,10 @@ async def api_agent_catalog(request: web.Request) -> web.Response:
     if state is not None and session_key:
         slot_name = session_key.split(":", 1)[-1]
         slot = state._slots.get(slot_name)
+        # One body for a missing slot and a refused one, so an app cannot tell them apart.
         if slot is None:
-            return web.json_response(
-                {"error": "Conversation not found", "code": "slot_not_found"}, status=404
-            )
-        from kiro_crew.dashboard.chat_handlers import _deny_cross_app_slot_access
-
-        denied = _deny_cross_app_slot_access(request, slot, slot_name, "agents.catalog")
+            return slot_not_found()
+        denied = deny_app_slot_access(request.get("app", ""), slot, slot_name, "agents.catalog")
         if denied is not None:
             return denied
         # No single-project fallback: an unscoped chat must not acquire choices

@@ -908,7 +908,7 @@ async def test_a_remote_bound_slot_refuses_the_tick() -> None:
 @pytest.mark.asyncio
 async def test_missing_slot_and_app_refusal_are_byte_identical() -> None:
     """An app holding chat permission must not learn from the 404 body whether
-    a slot name exists (``chat_handlers._slot_not_found`` invariant)."""
+    a slot name exists (``slot_ownership.slot_not_found`` invariant)."""
     slot = _slot(tasks=[("a", False)])
     _, missing = await _patch(_app(_state()), "nope", {"id": "1", "text": "a", "completed": True})
     _, refused = await _patch(
