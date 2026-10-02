@@ -1,17 +1,18 @@
 # Session Control — driving another session
 
 One chat session can open, fork, seed, watch, stop, close and revive another one,
-change its model, reload its agent process, and take another one under itself in
-the sidebar. The tools come from the
+change its model, reload its agent process, color it, and take another one under
+itself in the sidebar. The tools come from the
 `kirocrew-dashboard` MCP server, so an agent that does not mount that server
 never has them — exactly like any other MCP server. This page is the reference
-for all 28 of its tools, written for the agent that is about to use them.
+for all 29 of its tools, written for the agent that is about to use them.
 
 The server is defined in `src/kiro_crew/mcp_dashboard.py`. Two halves:
 
 - **Session control** — `session_create`, `session_fork`, `session_send`,
   `session_read_message`, `session_summary`, `session_stop`, `session_end_wait`,
-  `session_set_model`, `session_reload`, `session_close`, `session_revive`, `session_broadcast`,
+  `session_set_model`, `session_reload`, `session_set_color`, `session_close`,
+  `session_revive`, `session_broadcast`,
   `session_status`, `session_adopt`, `session_release`. These reach another session.
 - **Sidebar shape** — `chat_folder_tree`, `chat_folder_create`,
   `chat_folder_move`, `chat_folder_move_session`, `chat_folder_file_self`,
@@ -479,6 +480,24 @@ If the old process fails while shutting down after it was removed, the reload
 still counts as done: the notice is written, the process starts again, and the
 reply carries a `warning`. A failure before anything was removed answers
 `reload_failed`, and nothing was torn down.
+
+### `session_set_color`
+
+| Argument | Required | Meaning |
+|---|---|---|
+| `target` | yes | Session key or exact title; your own session key names this session |
+| `color` | yes | `"0"` to `"6"` for one of the seven palette swatches the sidebar color menu shows, or `""` to clear |
+
+Sets the sidebar color, the same thing as picking a swatch from the session's
+color menu; a custom hex the person set is cleared. Swatches follow the
+viewer's theme. The menu's custom `#rrggbb` cell is not offered here, and any
+other value is refused with `invalid_color` and nothing changes. The
+transcript, model and any running turn are untouched.
+
+Reach is narrower than `session_stop`'s: the caller itself, and sessions it
+created, for every caller. A person's own tabs are refused (`not_creator`) even
+when session control is switched on for everyone. Everything else
+`authorize_target` refuses stays refused.
 
 ### `session_revive`
 

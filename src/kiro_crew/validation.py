@@ -3540,6 +3540,18 @@ SESSION_RELOAD_SCHEMA = ToolSchema(
     ],
 )
 
+SESSION_SET_COLOR_SCHEMA = ToolSchema(
+    tool_name="session_set_color",
+    fields=[
+        FieldSpec("target", str, required=True, max_len=MAX_SHORT_STRING),
+        # "" clears and "0".."6" is a palette swatch. The
+        # route decides which; this only bounds the string. NOT ``required``:
+        # a required string field refuses "" as empty, and "" is the clear
+        # value. The tool's dispatch refuses a call that omits it.
+        FieldSpec("color", str, max_len=16),
+    ],
+)
+
 SESSION_CLOSE_SCHEMA = ToolSchema(
     tool_name="session_close",
     fields=[
@@ -3880,6 +3892,7 @@ MCP_DASHBOARD_SCHEMAS: dict[str, ToolSchema] = {
     "session_end_wait": SESSION_END_WAIT_SCHEMA,
     "session_set_model": SESSION_SET_MODEL_SCHEMA,
     "session_reload": SESSION_RELOAD_SCHEMA,
+    "session_set_color": SESSION_SET_COLOR_SCHEMA,
     "session_close": SESSION_CLOSE_SCHEMA,
     "session_revive": SESSION_REVIVE_SCHEMA,
     "session_send": SESSION_SEND_SCHEMA,

@@ -3506,11 +3506,12 @@ def authorize_target(
     member) the fence is evaluated inline as before.
 
     ``allow_self`` waives the self-target refusal, and with it the ownership fence for
-    that one case. Exactly one verb passes it: a release, where the target itself is a
-    legitimate caller because a session taken over must not depend on its holder still
-    running to get out. It waives nothing else -- an ephemeral, app-scoped or
-    channel-linked caller is still refused, and a target that is not the caller is
-    still judged by every rule above.
+    that one case. A release passes it, where the target itself is a legitimate caller
+    because a session taken over must not depend on its holder still running to get
+    out; so does :func:`set_color_target`, which then applies the creator
+    fence to every other target. It waives nothing else --
+    an ephemeral, app-scoped or channel-linked caller is still refused, and a target
+    that is not the caller is still judged by every rule above.
     """
 
     deny = _deny_factory(caller_session_key=caller_session_key, operation=operation, target=target)
@@ -4753,6 +4754,95 @@ async def set_model_target(
         detail={"model": model_name or "auto", "stage": "pending"},
     )
     return {"ok": True, "target": slot_key, "model": model_name, "pending": True}
+
+
+#: Swatches in the sidebar color menu. Mirrors ``PALETTE_SIZE`` in
+#: ``website/src/utils/sessionColors.ts``; a test pins the two together. The
+#: color route itself accepts a wider index range for older palettes, but an
+#: agent is held to what the menu offers.
+SESSION_PALETTE_SIZE = 7
+
+
+def _parse_session_color(color: str) -> int | None:
+    """The palette index for a ``session_set_color`` value, or ``None`` to clear.
+
+    ``""`` clears and ``"0"`` to ``"6"`` is one of the menu's swatches. Anything
+    else is refused, including the menu's custom ``#rrggbb`` cell: grouping a
+    fleet needs a few distinct marks, and the swatches follow the viewer's theme
+    where a fixed hex does not.
+    """
+    if color == "":
+        return None
+    if color.isascii() and color.isdigit() and len(color) == 1:
+        index = int(color)
+        if index < SESSION_PALETTE_SIZE:
+            return index
+    raise SessionControlError(
+        f'color must be a sidebar palette swatch index "0" to "{SESSION_PALETTE_SIZE - 1}", '
+        'or "" to clear; color not changed',
+        code="invalid_color",
+        status=400,
+    )
+
+
+async def set_color_target(
+    state: "DashboardState",
+    *,
+    caller_session_key: str,
+    target: str,
+    color: str,
+    caller_fenced: bool | None = None,
+) -> dict[str, Any]:
+    """Set *target*'s sidebar color, the way the session color menu does.
+
+    Reach is the caller itself and the sessions it created. Every rule in
+    :func:`authorize_target` applies, with ``allow_self`` so the caller may name
+    itself, and then the creator fence runs for EVERY caller, as
+    :func:`end_wait_target`'s does: a target other than the caller must carry
+    ``created_by`` equal to the caller's slot key. So an owner session with
+    session control switched on for everyone still cannot recolor the person's
+    own tabs. The write is the one a swatch
+    click in ``PATCH /api/chat/slots/{slot}/color`` makes: the index is set and
+    any custom hex the person picked is cleared, so exactly one color shows;
+    ``""`` clears both. Metadata only.
+
+    ``caller_fenced`` has the meaning :func:`stop_target` documents.
+    """
+    # Validated before any gate, as `set_model_target` does.
+    color_index = _parse_session_color(color)
+    # Same prewarm ordering as `stop_target`: nothing may suspend between the
+    # gate and the write it authorizes.
+    try:
+        await asyncio.to_thread(sel)
+    except Exception:  # noqa: BLE001 - a prewarm failure must not fail the write
+        logger.warning("session-control SEL prewarm failed", exc_info=True)
+    await prewarm_enabled_check()
+    slot = authorize_target(
+        state,
+        caller_session_key=caller_session_key,
+        target=target,
+        operation="set_color",
+        precomputed_ownership_fenced=caller_fenced,
+        allow_self=True,
+    )
+    caller_key = caller_slot_key(state, caller_session_key)
+    if slot.key != caller_key and _created_by_other(slot, caller_key):
+        deny = _deny_factory(
+            caller_session_key=caller_session_key, operation="set_color", target=target
+        )
+        raise deny("this verb reaches only this session and sessions it created", "not_creator")
+    slot.color_index = color_index
+    slot.color_hex = None
+    slot._dirty = True
+    state.push_slots_update()
+    _audit(
+        caller_session_key=caller_session_key,
+        operation="set_color",
+        slot_key=slot.key,
+        outcome="allowed",
+        detail={"color_index": color_index},
+    )
+    return {"ok": True, "target": slot.key, "color_index": color_index}
 
 
 @dataclass(frozen=True)

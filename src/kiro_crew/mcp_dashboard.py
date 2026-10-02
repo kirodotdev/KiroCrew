@@ -127,6 +127,7 @@ from kiro_crew.validation import (
     SESSION_RELOAD_SCHEMA,
     SESSION_REVIVE_SCHEMA,
     SESSION_SEND_SCHEMA,
+    SESSION_SET_COLOR_SCHEMA,
     SESSION_SET_MODEL_SCHEMA,
     SESSION_STATUS_SCHEMA,
     SESSION_STOP_SCHEMA,
@@ -152,6 +153,7 @@ SESSION_CONTROL_TOOLS: tuple[str, ...] = (
     "session_end_wait",
     "session_set_model",
     "session_reload",
+    "session_set_color",
     "session_close",
     "session_revive",
     "session_send",
@@ -769,6 +771,35 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     },
                 },
                 "required": ["target"],
+            },
+        },
+        {
+            "name": "session_set_color",
+            "description": (
+                "Set the sidebar color of this session or of a session you created, so a "
+                'conductor can group its workers at a glance. ``color`` is one of: "0" to '
+                '"6", the seven palette swatches the sidebar color menu shows (they follow '
+                'the viewer\'s theme), or "" to clear the color. Custom hex colors and '
+                "anything else are refused. Metadata only: the transcript, model and any "
+                "running turn are untouched. Sessions you did not create are refused, "
+                "including the person's own tabs."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": (
+                            "Session key from list_sessions or session_status, or its "
+                            "exact title. Your own session key names this session."
+                        ),
+                    },
+                    "color": {
+                        "type": "string",
+                        "description": '"0"-"6" palette swatch, or "" to clear.',
+                    },
+                },
+                "required": ["target", "color"],
             },
         },
         {
@@ -1984,10 +2015,19 @@ def _refuse_channel_board_write(name: str, caller_key: str) -> str | None:
 
 
 def _validate_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
-    """Validate tool arguments against schema. Returns cleaned args."""
+    """Validate tool arguments against schema. Returns cleaned args.
+
+    Validation sanitizes strings, which strips invisible characters, so
+    ``session_set_color``'s raw ``color`` is carried through unsanitized: else
+    "\\u200b" becomes "", the clear value, and erases a tint. The route's exact
+    color grammar then refuses anything that is not literally "" or "0".."6".
+    """
     schema = MCP_DASHBOARD_SCHEMAS.get(name)
     if schema:
-        return validate_tool_args(args, schema)
+        cleaned = validate_tool_args(args, schema)
+        if name == "session_set_color" and isinstance(args.get("color"), str):
+            cleaned["color"] = args["color"]
+        return cleaned
     return args
 
 
@@ -2543,6 +2583,30 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             f"\U0001f504 `{target}` is relaunching its agent process with the conversation "
             "kept. Its transcript shows the reload notice."
         )
+
+    if name == "session_set_color":
+        # The RAW argument is what goes to the route, not the sanitized one:
+        # sanitizing strips invisible characters, so "\u200b" would come out as
+        # "", the clear value, and erase a tint the caller never asked to clear.
+        # ``_validate_args`` (the wrapper's validation pass) carries the raw
+        # value through; the route's exact grammar ("" or "0".."6") refuses it.
+        raw_color = args.get("color")
+        if "color" not in args:
+            # The schema leaves `color` optional only so "" (clear) survives
+            # validation; omitting it is still a mistake, not a clear.
+            return 'Error: color is required: a palette swatch index "0"-"6", or "" to clear.'
+        args = validate_tool_args(args, SESSION_SET_COLOR_SCHEMA)
+        resp = _post(
+            "/api/session-control/set-color",
+            {"target": args["target"], "color": raw_color},
+            session_key=caller_key,
+        )
+        if resp.get("error"):
+            return f"Error: could not set that session's color: {resp['error']}"
+        target = resp.get("target", args["target"])
+        if resp.get("color_index") is None:
+            return redact(f"Cleared the color of `{target}`.")
+        return redact(f"Set the color of `{target}` to palette swatch {resp['color_index']}.")
 
     if name == "session_close":
         args = validate_tool_args(args, SESSION_CLOSE_SCHEMA)
