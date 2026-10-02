@@ -96,6 +96,7 @@ const SCENES = [
   { scene: 'range', marker: '.mc-line-reveal', note: 'panel revealed the whole 10-16 span' },
   { scene: 'folder', marker: '[role="treeitem"]', note: 'project folder tab renders the shared workspace tree' },
   { scene: 'folder-flow', marker: '[role="tablist"]', note: 'tree opens a separate file tab and preserves expansion' },
+  { scene: 'folder-truncated', marker: '[role="treeitem"]', note: 'a truncated tree hands its search to the server search, merged with its own matches' },
   { scene: 'markdown-link', marker: 'a[href*="release-notes.md"]', note: 'Markdown file link opened the file panel' },
 ]
 
@@ -196,6 +197,29 @@ const run = async () => {
         await target.screenshot({ path: `${OUT}/${theme}-${scene}-search.png` })
         await search.fill('')
         console.log(`  ${theme}/${scene} -> ${note}; collapsed + expanded + search` )
+      } else if (scene === 'folder-truncated') {
+        // Before: the capped tree with its limit notice. During: the query typed,
+        // the line above the results already saying the search also covers items
+        // not listed, and the tree's own matches already shown while the server's
+        // are in flight (so no "Searching…" is waited for). After: the server's
+        // matches merged in.
+        await page.getByText(/limit of 10,000 items reached/).waitFor()
+        await target.screenshot({ path: `${OUT}/${theme}-${scene}-before.png` })
+        await page.getByLabel('Search files').fill('read')
+        const takeover = page.getByTestId('folder-search-beyond-tree')
+        await takeover.waitFor()
+        await target.screenshot({ path: `${OUT}/${theme}-${scene}-during.png` })
+        await page.getByText('readme.txt').waitFor()
+        // The tree stays mounted (hidden) behind the results so its expansion
+        // survives clearing the query, so only a VISIBLE row is a failure.
+        if (await page.locator('[role="treeitem"]:visible').count() !== 0) {
+          console.error(`  FAIL ${theme}/${scene}: the tree stayed visible under the search results`)
+          failed += 1
+          await ctx.close()
+          continue
+        }
+        await target.screenshot({ path: `${OUT}/${theme}-${scene}-results.png` })
+        console.log(`  ${theme}/${scene} -> ${note}; before + during + results`)
       } else if (scene === 'folder-flow') {
         const src = page.getByRole('treeitem', { name: 'src' })
         await src.waitFor()

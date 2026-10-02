@@ -606,10 +606,23 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
   // inheriting its old dismissal. Pruned against a landed payload only -- a
   // mount that has not heard from the server yet knows nothing about the
   // folders and must not forget them, or a reload would re-alert every visit.
+  // A TRUNCATED payload is partial knowledge too, but only where it was cut: a
+  // remembered folder absent from it is kept while the cut could be what hid
+  // it -- its parent is itself absent, or is named in `truncatedDirectories` --
+  // and forgotten when its parent is listed whole, which says the folder is
+  // gone, so a folder recreated unreadable later alerts again.
   useEffect(() => {
     if (tree == null) return
     const current = unreadableFoldersRef.current
-    const kept = dismissedUnreadable.filter(folder => current.has(folder))
+    const listed = new Set((tree.directories ?? []).map(path => path.replace(/\/$/, '')))
+    const cut = new Set(tree.truncatedDirectories ?? [])
+    const hiddenByCut = (folder: string) => {
+      if (tree.truncated !== true || listed.has(folder)) return false
+      const slash = folder.lastIndexOf('/')
+      const parent = slash < 0 ? '' : folder.slice(0, slash)
+      return cut.has(parent) || (parent !== '' && !listed.has(parent))
+    }
+    const kept = dismissedUnreadable.filter(folder => current.has(folder) || hiddenByCut(folder))
     if (kept.length === dismissedUnreadable.length) return
     rememberDismissedUnreadable(projectDir, kept)
     setDismissedUnreadable(kept)
@@ -698,12 +711,24 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
           : 'components.workspaceTree.row_unreadable_marker')
         return { icon: { name: 'file-tree-icon-lock' }, title: label }
       }
-      if (!truncatedDirectoriesRef.current.has(path)) return null
+      // `flattenEmptyDirectories` folds a folder holding one subfolder and no
+      // listed file into a single chain row (`p/a`), and `item.path` names only
+      // its LAST folder -- a truncated `p` above it would lose its badge. Every
+      // folder in the chain is asked.
+      const chain = row.flattenedSegments?.length
+        ? row.flattenedSegments.map(segment => segment.path.replace(/\/$/, ''))
+        : [path]
+      const truncated = chain.filter(folder => truncatedDirectoriesRef.current.has(folder))
+      if (truncated.length === 0) return null
       // A truncated folder the cap left childless carries the state row that
       // says so beneath it; while that row is showing (the folder is expanded)
       // the badge would say it twice, so it yields until the folder is closed.
-      // Pierre re-renders the row on every toggle, so this reads the live state.
-      if (row.isExpanded && stateRowFoldersRef.current.has(path)) return null
+      // The row speaks only for the chain's last folder, so the badge yields
+      // only when that is the one truncated folder in the chain. Pierre
+      // re-renders the row on every toggle, so this reads the live state.
+      if (truncated.length === 1 && truncated[0] === path && row.isExpanded && stateRowFoldersRef.current.has(path)) {
+        return null
+      }
       const label = i18nT('pages.chat.activityViewer.workspace_directory_truncated')
       return { text: label, title: label }
     },
@@ -777,7 +802,7 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
     // degrades to a single (missing) row instead of a render crash; see
     // `dedupeTreePaths` for the file-vs-directory collision it also drops. Explicit
     // trailing-slash paths keep directory rows even when every direct
-    // file in that directory fell beyond the file budget.
+    // file in that directory fell beyond the row budget.
     const listed = dedupeTreePaths([
       ...(tree?.paths ?? []),
       ...(tree?.directories ?? []).map(path => `${path.replace(/\/$/, '')}/`),
@@ -1193,12 +1218,19 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, onAddToContext
     // on -- the items are there, this listing does not show them -- so no
     // action row.
     const rootHiddenOnly = (markers?.hiddenOnlyDirectories ?? []).includes('.')
+    // A truncated payload with no row at all: the server stopped reading before
+    // it reached anything it lists (a root whose first entries are all hidden
+    // folders, say). Nothing here is known to be empty, so the panel says what
+    // the payload does -- the limit was reached -- rather than "no files".
+    const rootTruncated = markers?.truncated === true
     const [Icon, message, testId] =
       mode === 'changed'
         ? ([FileDiff, i18nT('pages.chat.folderPanel.no_changes'), undefined] as const)
-        : rootHiddenOnly
-          ? ([FolderDot, i18nT('components.workspaceTree.root_hidden_only'), 'workspace-tree-root-hidden-only'] as const)
-          : ([FolderOpen, i18nT('pages.chat.activityViewer.workspace_empty'), undefined] as const)
+        : rootTruncated
+          ? ([FolderOpen, i18nT('pages.chat.activityViewer.workspace_truncated'), 'workspace-tree-root-truncated'] as const)
+          : rootHiddenOnly
+            ? ([FolderDot, i18nT('components.workspaceTree.root_hidden_only'), 'workspace-tree-root-hidden-only'] as const)
+            : ([FolderOpen, i18nT('pages.chat.activityViewer.workspace_empty'), undefined] as const)
     return (
       <div
         className="h-full flex flex-col items-center justify-center gap-2.5 text-muted px-6 text-center"

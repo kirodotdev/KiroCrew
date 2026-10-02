@@ -28,7 +28,7 @@ import uuid
 import zipfile
 from dataclasses import asdict
 from pathlib import Path, PurePath
-from typing import BinaryIO, Callable, NamedTuple, TypeVar
+from typing import BinaryIO, Callable, Iterator, NamedTuple, TypeVar
 
 from aiohttp import web
 from aiohttp.client_exceptions import ClientConnectionResetError
@@ -8458,9 +8458,22 @@ async def api_project_git_status(request: web.Request) -> web.Response:
     return web.json_response(result)
 
 
-# Cap on FILES returned by api_project_tree. Directory rows are returned
-# separately and uncapped so manual navigation never loses a subtree.
+# Cap on the ROWS api_project_tree returns -- files and directory rows
+# together (``_project_tree_allot``). One number for both kinds, because every
+# row costs the same to redact, serialize and render, and the dashboard asks
+# for this listing every 10 s while a tree is open: the work per poll has to be
+# bounded by this number, not by the size of the project.
 _PROJECT_TREE_MAX_ENTRIES = 10_000
+
+# Directory entries the non-git walk may READ per listing, shared across the
+# folders of each depth (``_project_tree_walk``). This is what makes the walk's
+# cost a function of this number instead of the size of the tree: reading an
+# entry costs about half a microsecond, so the whole budget is a fraction of a
+# second in the worker thread. It is larger than the row cap so the walk can
+# see past the rows it will show -- the subfolders of a large folder, and files
+# for the round-robin sampling to share out -- and a folder cut by it is named
+# as truncated, whether or not the row cap was also reached.
+_PROJECT_TREE_SCAN_LIMIT = 20 * _PROJECT_TREE_MAX_ENTRIES
 
 
 # Directories never worth listing in a workspace tree. Applied only on the
@@ -8489,15 +8502,36 @@ _PROJECT_TREE_SKIP_DIRS = frozenset(
 )
 
 
-def _project_tree_directories(paths: list[str]) -> list[str]:
-    """Return every POSIX parent directory named by *paths*."""
+def _project_tree_hides(name: str) -> bool:
+    """Whether the walk leaves the directory *name* out of the tree by nature."""
+    return name in _PROJECT_TREE_SKIP_DIRS or name.startswith(".")
+
+
+def _project_tree_git_layout(listed: list[str]) -> tuple[list[str], dict[str, list[str]]]:
+    """Directory rows and files by direct parent for a git listing.
+
+    A directory row exists only as an ancestor of a listed file. Rows are
+    ordered shallowest first, as the walk discovers them, so the row cap in
+    :func:`_project_tree_allot` is spent on the same folders on both branches.
+    """
+    files: dict[str, list[str]] = {}
     directories: set[str] = set()
-    for path in paths:
-        parent = posixpath.dirname(path)
-        while parent:
+    for path in listed:
+        parent, _, name = path.rpartition("/")
+        files.setdefault(parent, []).append(name)
+        # An ancestor already seen has had its own ancestors added with it.
+        while parent and parent not in directories:
             directories.add(parent)
             parent = posixpath.dirname(parent)
-    return sorted(directories)
+    # By depth, then segment by segment -- the walk's own order, which reads
+    # ``a/z`` before ``a-b/c`` because ``a`` sorts before ``a-b``. Git paths
+    # are POSIX on every platform.
+
+    def walk_order(directory: str) -> tuple[int, list[str]]:
+        segments = directory.split(posixpath.sep)
+        return len(segments), segments
+
+    return sorted(directories, key=walk_order), files
 
 
 def _project_tree_file_quotas(file_counts: dict[str, int], limit: int) -> dict[str, int]:
@@ -8518,27 +8552,358 @@ def _project_tree_file_quotas(file_counts: dict[str, int], limit: int) -> dict[s
     return quotas
 
 
-def _project_tree_sample_files(paths: list[str], limit: int) -> tuple[list[str], list[str]]:
-    """Cap files fairly by direct parent and report parents that lost files."""
-    file_counts: dict[str, int] = {}
-    for path in paths:
-        parent = posixpath.dirname(path)
-        file_counts[parent] = file_counts.get(parent, 0) + 1
-    quotas = _project_tree_file_quotas(file_counts, limit)
-    selected_counts = {directory: 0 for directory in file_counts}
-    selected: list[str] = []
-    for path in paths:
-        parent = posixpath.dirname(path)
-        if selected_counts[parent] >= quotas[parent]:
-            continue
-        selected.append(path)
-        selected_counts[parent] += 1
-    truncated_directories = sorted(
+def _project_tree_allot(
+    rows: list[str], files: dict[str, list[str]], incomplete: set[str], cap: int
+) -> tuple[list[str], set[str], list[str], list[str]]:
+    """Spend *cap* rows on directory *rows* and *files* together.
+
+    *rows* lists every parent before its children; *files* maps a directory
+    (``""`` is the root) to the names directly in it; *incomplete* names rows
+    whose own listing is not complete.
+
+    Folder rows are spent first, shallowest first, because a folder row is what
+    lets the user navigate to the rest -- but never past half the cap while
+    there are files to show, so a tree with more folders than the cap still
+    lists files, the root's ``README.md`` first among them. Half is the floor
+    for each side, not a split: what one side leaves unused goes to the other.
+    The files share their rows round-robin by direct parent, the root first
+    (:func:`_project_tree_file_quotas`), so no one folder takes every row; a
+    file whose folder lost its row is not listed either.
+
+    Returns the shown rows, the shown directory set (rows plus the root), the
+    shown file paths, and the sorted shown directories whose listing is cut
+    short -- files over their quota, a child row over the cap, or an
+    *incomplete* listing. The listing is truncated exactly when that last list
+    is non-empty.
+    """
+    total_files = sum(len(names) for names in files.values())
+    row_count = min(len(rows), max(cap // 2, cap - total_files))
+    shown = {"", *rows[:row_count]}
+    file_counts = {
+        directory: len(names) for directory, names in files.items() if directory in shown
+    }
+    quotas = _project_tree_file_quotas(file_counts, cap - row_count)
+    # Rows the files could not use -- some counted files sit in folders past the
+    # row budget -- go back to folder rows. Those folders' files are not
+    # listed: sharing the spare rows with them would evict files that fit.
+    spare = cap - row_count - sum(quotas.values())
+    if spare > 0 and row_count < len(rows):
+        row_count = min(len(rows), row_count + spare)
+        shown = {"", *rows[:row_count]}
+    shown_rows = rows[:row_count]
+    # Every parent precedes its children, so a row over the budget has a shown
+    # parent or a parent over the budget as well; only the shown one is marked.
+    truncated = {
+        parent for parent in (posixpath.dirname(row) for row in rows[row_count:]) if parent in shown
+    }
+    truncated.update(directory for directory in incomplete if directory in shown)
+    truncated.update(
         directory
-        for directory, count in file_counts.items()
-        if selected_counts[directory] < count
+        for directory, names in files.items()
+        if directory in shown and quotas.get(directory, 0) < len(names)
     )
-    return selected, truncated_directories
+    paths = [
+        (f"{directory}/{name}" if directory else name)
+        for directory in file_counts
+        for name in files[directory][: quotas[directory]]
+    ]
+    return shown_rows, shown, paths, sorted(truncated)
+
+
+# Whether this platform lists a directory through a descriptor. Read once: it is
+# a property of the platform, and a test seam that wraps ``os.scandir`` must not
+# silently turn it off and move every read onto the by-name branch.
+_PROJECT_TREE_SCANDIR_TAKES_FD = os.scandir in os.supports_fd
+
+
+class _ProjectTreeFolderMoved(Exception):
+    """The folder at a queued row's path is not the one its parent listed."""
+
+
+def _project_tree_is_link(st: os.stat_result) -> bool:
+    """Whether an ``lstat`` result is a link to another name.
+
+    A symlink, or a Windows name-surrogate reparse point (a junction, a
+    symlink). A reparse directory without that bit -- a cloud-files
+    placeholder, a dedup directory -- holds its own contents and is walked.
+    """
+    return _stat_mod.S_ISLNK(st.st_mode) or platform_compat.lstat_is_name_surrogate(st)
+
+
+@contextlib.contextmanager
+def _project_tree_scandir(
+    native: str, identity: tuple[int, int] | None
+) -> Iterator[Iterator[os.DirEntry[str]]]:
+    """``os.scandir`` of the folder a queued row names, and only that folder.
+
+    A row is queued by name, and its read happens one breadth-first level later,
+    so the name can be swapped in between -- renamed away, with a symlink to a
+    directory outside the project put in its place. The read is therefore pinned
+    to the folder's identity, the ``(st_dev, st_ino)`` its parent's listing
+    recorded (*identity*; ``None`` for the root, whose path is resolved already).
+
+    POSIX opens the name with ``O_DIRECTORY | O_NOFOLLOW``, so a link at the name
+    fails, ``fstat``s the descriptor, and lists THAT descriptor: the folder read is
+    the one compared, whatever the path names by then. An ancestor swapped for a
+    link reaches a different inode and fails the comparison the same way. One
+    descriptor is held per folder being read, never one per queued row.
+
+    Windows has no descriptor ``scandir``: the name is ``lstat``ed and compared,
+    and a link refused, before it is listed by path. A swap landing
+    between that check and the ``scandir`` is not caught -- the residual window
+    of a platform that lists only by name.
+
+    Raises :class:`_ProjectTreeFolderMoved` when the folder is not the one
+    recorded; any other ``OSError`` is the read failing.
+    """
+    if _PROJECT_TREE_SCANDIR_TAKES_FD and pinned_fs.supports_pinned_walk():
+        try:
+            fd = os.open(native, platform_compat.pinned_dir_flags() | getattr(os, "O_CLOEXEC", 0))
+        except OSError as exc:
+            if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+                raise _ProjectTreeFolderMoved(native) from exc
+            raise
+        try:
+            st = os.fstat(fd)
+            if identity is not None and (st.st_dev, st.st_ino) != identity:
+                raise _ProjectTreeFolderMoved(native)
+            with os.scandir(fd) as entries:
+                yield entries
+        finally:
+            os.close(fd)
+        return
+    if identity is not None:
+        st = os.lstat(native)
+        if _project_tree_is_link(st) or (st.st_dev, st.st_ino) != identity:
+            raise _ProjectTreeFolderMoved(native)
+    with os.scandir(native) as entries:
+        yield entries
+
+
+def _project_tree_identity(entry: os.DirEntry[str], native: str) -> os.stat_result:
+    """The ``lstat`` of a listed entry, with a real ``st_dev`` / ``st_ino``.
+
+    A descriptor listing answers from the open folder. A Windows ``DirEntry``
+    reports zero for both, so that platform asks the path.
+    """
+    if _PROJECT_TREE_SCANDIR_TAKES_FD:
+        return entry.stat(follow_symlinks=False)
+    return os.lstat(native)
+
+
+def _project_tree_walk(base: str, cap: int, scan_limit: int) -> dict:
+    """The non-git listing of *base*: one bounded breadth-first pass.
+
+    Reads at most *scan_limit* directory entries, each folder at most once, and
+    returns at most *cap* rows -- directory rows and files together, spent by
+    :func:`_project_tree_allot`. Breadth-first rather than depth-first, because
+    the cap is spent in discovery order: depth-first, the first deep subtree
+    would take every row and the top-level folders after it would vanish.
+
+    The read budget is shared so that no one folder can starve its siblings of
+    it: the folders of one depth and the depths below (one more claimant) are
+    each guaranteed a floor, half the even split the depth starts with, and the
+    folders are read in order, each up to everything the claimants after it do
+    not need for their floors -- capped at *cap* entries, more than one folder
+    could show -- and never less than an even split of what is left. So a tree
+    of at most about half *scan_limit* entries is read whole when no folder of
+    it holds more than *cap*, wherever its large folder sorts. A folder holding
+    more than its share is cut there; the entries it did not read are unknown,
+    so it is named as truncated rather than listed as if it were whole. Telling
+    a full folder from a cut one costs one look-ahead entry, drawn from the
+    same budget, so no more than *scan_limit* entries are ever read. A folder
+    whose row falls past *cap* is never read, and neither is anything after
+    it: nothing read there could be shown.
+
+    Each queued folder is read only if it is still the folder its parent
+    listed (:func:`_project_tree_scandir`); one swapped for another directory
+    or a link in between is shown as a row and named as unreadable -- a row
+    that claims nothing about its contents -- and nothing behind it is listed.
+
+    *base* is the native path, and each folder carries its own native path
+    alongside its project-relative row: an extended-length ``\\\\?\\`` root on
+    Windows does not convert a ``/`` inside a joined path.
+    """
+    # Directory rows in discovery (breadth-first) order. A folder is a row as
+    # soon as its parent's read names it, so a folder the walk then cannot
+    # read, or never reaches, is still shown.
+    rows: list[str] = []
+    # Symlinks (and Windows junctions) to directories, listed as rows of their
+    # own: ``ls`` shows them, but the walk never follows one (against link
+    # cycles), so nothing beneath it is listed and the dashboard says so
+    # beneath its row rather than calling the link -- or the folder holding
+    # only links -- empty. The name filter applies to links and real folders
+    # alike: what a folder shows must be predictable from the NAME alone, so a
+    # ``node_modules`` that is a link to another disk is as hidden as its real
+    # twin.
+    linked: list[str] = []
+    # Rows the walk could not read, whether ``scandir`` refused the folder, its
+    # listing failed part-way, the folder at the name is no longer the one its
+    # parent listed, or the ``lstat`` recording a listed child's identity
+    # failed (permission denied is the usual cause; any failure counts, because
+    # the parent listed the entry and a row that claims nothing about its
+    # contents is the honest rendering). The root failing is named as ``.``: it
+    # is no row, and the payload would otherwise be indistinguishable from an
+    # empty workspace.
+    unreadable: list[str] = []
+    # Fully read folders the listing leaves CHILDLESS although they are not
+    # empty on disk: every entry is a directory the filter drops by nature (a
+    # dot-directory or a ``_PROJECT_TREE_SKIP_DIRS`` cache) and there is no
+    # file. ``_bg/`` holding only ``.kiro/`` is the reported case. The root is
+    # judged by the same rule and named as ``.``. A folder the budget cut is
+    # never judged: what it did not read is unknown, and it is truncated.
+    hidden_only: list[str] = []
+    # Read folders and the file names they hold, in read order.
+    files: dict[str, list[str]] = {}
+    # Shown rows whose listing is not complete: the budget cut their read or
+    # ran out before the walk reached them, or a child's row fell past the cap.
+    incomplete: set[str] = set()
+    # (row, native path, identity) of every folder of the depth being read; the
+    # identity is the ``(st_dev, st_ino)`` the parent's listing saw (``None`` for
+    # the root). Only rows inside the cap are ever queued.
+    level: list[tuple[str, str, tuple[int, int] | None]] = [("", base, None)]
+    budget = scan_limit
+    while level:
+        deeper: list[tuple[str, str, tuple[int, int] | None]] = []
+        # What each claimant of this depth -- every folder of it, and the depths
+        # below as one more -- is guaranteed whatever the folders before it
+        # hold: half the even split the depth starts with.
+        floor = -(-budget // (2 * (len(level) + 1)))
+        for position, (directory, native, identity) in enumerate(level):
+            if budget <= 0:
+                incomplete.update(queued[0] for queued in level[position:])
+                break
+            claimants = len(level) - position + 1
+            # A folder may read everything the claimants after it do not need
+            # for their floor, up to *cap* entries -- more than it could ever
+            # show -- so a small tree is read whole wherever its one large
+            # folder sorts, and a huge folder sorted first still leaves every
+            # sibling its floor. Never less than an even split of what is left
+            # (ceiling division, so the first folders still get an entry each
+            # when the budget is smaller than their number).
+            share = max(-(-budget // claimants), min(cap, budget - (claimants - 1) * floor))
+            # One entry past the share is pulled to tell a full folder from a cut
+            # one, and it is drawn from the same budget: no read outlives it.
+            allowance = min(share + 1, budget)
+            names: list[str] = []
+            kept: list[os.DirEntry[str]] = []
+            had_subdirectories = False
+            complete = True
+            pulled = 0
+            try:
+                with _project_tree_scandir(native, identity) as entries:
+                    listing = iter(entries)
+                    while True:
+                        if pulled == allowance:
+                            complete = False
+                            break
+                        entry = next(listing, None)
+                        if entry is None:
+                            break
+                        pulled += 1
+                        if pulled > share:
+                            complete = False
+                            break
+                        # ``os.walk``'s classification: a link to a directory is
+                        # a directory, and an entry whose type cannot be read is
+                        # a file.
+                        try:
+                            is_dir = entry.is_dir()
+                        except OSError:
+                            is_dir = False
+                        if not is_dir:
+                            names.append(entry.name)
+                            continue
+                        had_subdirectories = True
+                        if not _project_tree_hides(entry.name):
+                            kept.append(entry)
+                    files[directory] = sorted(names)
+                    prefix = f"{directory}/" if directory else ""
+                    for kept_entry in sorted(kept, key=lambda e: e.name):
+                        # A row past the cap is never shown, never read and costs
+                        # no ``lstat``; its parent is named as truncated instead.
+                        if len(rows) >= cap:
+                            incomplete.add(directory)
+                            break
+                        child = prefix + kept_entry.name
+                        rows.append(child)
+                        child_native = os.path.join(native, kept_entry.name)
+                        try:
+                            st = _project_tree_identity(kept_entry, child_native)
+                        except OSError:
+                            # Listed but not stat-able -- a parent readable but
+                            # not searchable, or the entry gone since: a row
+                            # nothing read, which is what unreadable means.
+                            unreadable.append(child)
+                            continue
+                        if _project_tree_is_link(st):
+                            linked.append(child)
+                        else:
+                            deeper.append((child, child_native, (st.st_dev, st.st_ino)))
+            except (_ProjectTreeFolderMoved, OSError):
+                # Refused, failed part-way, or no longer the folder its parent
+                # listed (what is there now is not this row's content): nothing
+                # of it is read, and the row claims nothing about its contents.
+                budget -= pulled
+                files.pop(directory, None)
+                unreadable.append(directory or ".")
+                continue
+            budget -= pulled
+            if not complete:
+                incomplete.add(directory)
+            elif had_subdirectories and not names and not kept:
+                hidden_only.append(directory or ".")
+        # A budget spent part-way through a depth leaves ``deeper`` holding rows
+        # nobody will read; the next pass names them incomplete and stops.
+        level = deeper
+
+    shown_rows, shown, paths, truncated = _project_tree_allot(rows, files, incomplete, cap)
+    return {
+        "root": base,
+        "paths": paths,
+        "directories": shown_rows,
+        "repo": False,
+        "truncated": bool(truncated),
+        "truncatedDirectories": truncated,
+        "hiddenOnlyDirectories": [d for d in hidden_only if d == "." or d in shown],
+        "unreadableDirectories": [d for d in unreadable if d == "." or d in shown],
+        "linkedDirectories": [d for d in linked if d in shown],
+    }
+
+
+def _project_tree_body(result: dict) -> str:
+    """The redacted JSON body for an ``api_project_tree`` listing.
+
+    Egress redaction, same rationale as ``api_project_git_status``: listed names
+    are repo content and this body is rendered by the dashboard. ``root`` is an
+    absolute path and takes the path-aware redactor; every list entry goes
+    through ``redact_path_segments`` over the same context-aware ``redact()``.
+    The whole-string ``redact()`` collapses each matched token to a fixed
+    placeholder, so two genuinely-different paths whose only differing segment
+    is credential-shaped would redact to one string; the helper suffixes every
+    redacted segment with an opaque label keyed per gateway process, so both
+    stay in the tree, it never emits less redaction than ``redact()`` itself,
+    and the label is stable across responses within this process, so the git
+    status listing labels the same path identically and the dashboard's join by
+    path holds.
+
+    Then each list is de-duplicated, preserving order and first occurrence, as
+    the fallback for a collision the helper does not separate: the dashboard
+    tree hands this list straight to @pierre/trees, whose appendPresortedPaths
+    throws "Duplicate path" on adjacent identical entries. This does not affect
+    ``truncated``: the cap is applied to the raw listing.
+    """
+    result["root"] = _redact_project_path(result["root"])
+    for key in (
+        "paths",
+        "directories",
+        "truncatedDirectories",
+        "hiddenOnlyDirectories",
+        "unreadableDirectories",
+        "linkedDirectories",
+    ):
+        result[key] = list(dict.fromkeys(redact_path_segments(p, redact) for p in result[key]))
+    return json.dumps(result)
 
 
 async def api_project_tree(request: web.Request) -> web.Response:
@@ -8547,9 +8912,10 @@ async def api_project_tree(request: web.Request) -> web.Response:
     Returns project-relative POSIX file paths for rendering a workspace tree.
     Inside a git repository the listing is ``git ls-files --cached --others
     --exclude-standard`` scoped to the project dir (tracked + untracked,
-    .gitignore honored); outside one it walks the complete directory skeleton
-    while capping returned files. Path must match a known project directory
-    (same allow-list as api_project_git).
+    .gitignore honored); outside one, or when that listing fails, it is one
+    bounded breadth-first walk (:func:`_project_tree_walk`) that caps files and
+    directory rows together. Path must match a known project directory (same
+    allow-list as api_project_git).
     """
     state: DashboardState = request.app["state"]
     caller = request.get("user", "dashboard")
@@ -8626,17 +8992,20 @@ async def api_project_tree(request: web.Request) -> web.Response:
             )
             if ls_rc == 0:
                 # Git emits tracked and untracked files in separate blocks and
-                # documents no combined order. Sort once, then distribute the
-                # file budget round-robin across direct parent directories so a
-                # large subtree cannot consume every file row.
+                # documents no combined order. Sort once, then spend the row cap
+                # the way the walk does (``_project_tree_allot``): folder rows
+                # first but files keep at least half, the files round-robin
+                # across direct parent directories, so a large subtree cannot
+                # consume every file row.
                 listed = sorted(p for p in ls_out.split("\0") if p)
-                selected_paths, truncated_directories = _project_tree_sample_files(
-                    listed, _PROJECT_TREE_MAX_ENTRIES
+                rows, files = _project_tree_git_layout(listed)
+                shown_rows, _shown, selected_paths, truncated_directories = _project_tree_allot(
+                    rows, files, set(), _PROJECT_TREE_MAX_ENTRIES
                 )
                 return {
                     "root": base,
                     "paths": selected_paths,
-                    "directories": _project_tree_directories(listed),
+                    "directories": shown_rows,
                     "repo": True,
                     "truncated": bool(truncated_directories),
                     "truncatedDirectories": truncated_directories,
@@ -8657,173 +9026,15 @@ async def api_project_tree(request: web.Request) -> web.Response:
                     "linkedDirectories": [],
                 }
 
-        # Fallback: walk twice so the first pass can compute fair per-directory
-        # quotas without retaining every filename in memory. The complete walk
-        # is required to return the directory skeleton past the file cap.
-        directories: list[str] = []
-        # Directories the walk leaves CHILDLESS although they are not empty on
-        # disk: every entry is a directory this filter drops (a dot-directory
-        # or a tooling cache) and there is no file -- a symlink to a directory
-        # is NOT such an entry (it is a visible row of its own, see
-        # ``linked_directories``). The dashboard renders a childless folder
-        # with a state row beneath it, and the row must not call such a folder
-        # empty -- `_bg/` holding only `.kiro/` is the reported case. Reported
-        # separately from `directories` so the tree can tell the two apart; a
-        # directory with a listed file or a kept subfolder is never in this list
-        # even when it also holds hidden entries. The root itself, when its top
-        # level holds only such entries, is named as ``.`` (it is no row).
-        hidden_only_directories: list[str] = []
-        # Symlinks to directories, listed as rows of their own (see the walk
-        # below): the walk never follows a link, so nothing beneath one is
-        # listed, and the dashboard says so beneath its row rather than calling
-        # the link -- or the folder holding only links -- empty.
-        linked_directories: list[str] = []
-        # Directories the walk KEPT but could not read. ``os.walk`` reports a
-        # failed ``scandir`` on a subdirectory through ``onerror`` and then
-        # skips it WITHOUT yielding it (its default ``onerror=None`` swallows
-        # the failure), so a kept, non-symlink child the process may not read
-        # (permission denied is the usual cause) would otherwise leave no trace:
-        # its parent has no row beneath it, is not hidden-only (the child is no
-        # symlink), and the dashboard would call the parent empty -- a lie,
-        # ``ls`` shows the child. Such a directory is therefore listed as a row
-        # AND named here: the tree shows the folder, with nothing beneath it and
-        # no status line (a failed read is an error, and the dashboard reports
-        # an error only through its ``ErrorNotice`` above the tree, which names
-        # every directory in this list; the folder's own row carries a lock
-        # marker pointing at that notice), and its parent is not childless at
-        # all. Any failure
-        # counts, not only EACCES: the parent listed the entry, so a row that
-        # makes no claim about its contents is the honest rendering whatever
-        # stopped the read (a directory removed mid-walk is stale for exactly
-        # one refresh either way). The file pass below needs no hook: an
-        # unreadable directory has no files to list and is already a row. The
-        # root itself failing is recorded as ``.`` (see ``_record_unreadable``).
-        unreadable_directories: list[str] = []
+        # Fallback: one bounded breadth-first walk (``_project_tree_walk``).
+        return _project_tree_walk(base, _PROJECT_TREE_MAX_ENTRIES, _PROJECT_TREE_SCAN_LIMIT)
 
-        def _record_unreadable(error: OSError) -> None:
-            failed = error.filename
-            # ``scandir`` names the directory on every error it raises; the
-            # guard keeps a bare OSError from aborting the whole listing.
-            if not isinstance(failed, str):
-                return
-            rel_failed = os.path.relpath(failed, base)
-            if rel_failed == ".":
-                # The root itself could not be read: the walk yields nothing,
-                # so the payload would be indistinguishable from a workspace
-                # with no files in it and the dashboard would say so -- the
-                # same "empty" claim this listing refuses to make one level
-                # down. The root is no directory row (rows are relative to
-                # it), so it is named only here, as ``.``; the dashboard shows
-                # its not-readable state in place of the empty-workspace one.
-                unreadable_directories.append(".")
-                return
-            directory = rel_failed.replace(os.sep, "/")
-            directories.append(directory)
-            unreadable_directories.append(directory)
-
-        file_counts: dict[str, int] = {}
-        for dirpath, dirnames, filenames in os.walk(base, onerror=_record_unreadable):
-            had_subdirectories = bool(dirnames)
-            rel_dir = os.path.relpath(dirpath, base)
-            directory = "" if rel_dir == "." else rel_dir.replace(os.sep, "/")
-            if directory:
-                directories.append(directory)
-            # A symlink to a directory is a visible, navigable entry -- ``ls``
-            # shows it -- but the walk never descends it (``followlinks`` is
-            # off, against link cycles) and never yields it, so it would be
-            # neither a row nor a parent and its folder would read as childless.
-            # It is listed as a directory row of its own and named in
-            # ``linkedDirectories``: the row shows, nothing beneath it is
-            # listed (the target is not walked), and the dashboard says so
-            # beneath it instead of calling the link empty. The name filter
-            # below applies to every entry alike, link or not: what a folder
-            # shows must be predictable from the NAME alone, and a ``.cache``
-            # or ``node_modules`` that is a link to another disk is as much a
-            # hidden item as its real twin (Design lane on ``9f52681b54``) --
-            # so links are told apart among the names the filter KEPT, and a
-            # filtered link counts as a hidden entry like any filtered
-            # directory. Hidden-only therefore means every entry the folder
-            # holds is one the listing filters out by nature (dot-directories,
-            # the skip set), real or linked: it applies when the filter emptied
-            # ``dirnames`` and no file remains. A kept link is a row, and a
-            # folder holding only kept links is not hidden-only. The root is
-            # judged by the same rule, OUTSIDE the ``if directory`` above: a
-            # project directory whose top level holds only skipped or hidden
-            # entries yields no file and no kept subdirectory, so the payload
-            # would be the empty-workspace shape and the dashboard would call
-            # the workspace empty -- the claim this listing refuses to make one
-            # level down. The root is no directory row of its own, so it is
-            # named as ``.``, exactly as an unreadable root is.
-            dirnames[:] = sorted(
-                d for d in dirnames if d not in _PROJECT_TREE_SKIP_DIRS and not d.startswith(".")
-            )
-            links = [name for name in dirnames if os.path.islink(os.path.join(dirpath, name))]
-            for name in links:
-                link = f"{directory}/{name}" if directory else name
-                directories.append(link)
-                linked_directories.append(link)
-            if had_subdirectories and not filenames and not dirnames:
-                hidden_only_directories.append(directory or ".")
-            file_counts[directory] = len(filenames)
-
-        quotas = _project_tree_file_quotas(file_counts, _PROJECT_TREE_MAX_ENTRIES)
-        truncated_directories = sorted(
-            directory for directory, count in file_counts.items() if quotas[directory] < count
-        )
-        paths: list[str] = []
-        for dirpath, dirnames, filenames in os.walk(base):
-            dirnames[:] = sorted(
-                d for d in dirnames if d not in _PROJECT_TREE_SKIP_DIRS and not d.startswith(".")
-            )
-            rel_dir = os.path.relpath(dirpath, base)
-            directory = "" if rel_dir == "." else rel_dir.replace(os.sep, "/")
-            prefix = "" if not directory else directory + "/"
-            for name in sorted(filenames)[: quotas.get(directory, 0)]:
-                paths.append(prefix + name)
-        return {
-            "root": base,
-            "paths": paths,
-            "directories": directories,
-            "repo": False,
-            "truncated": bool(truncated_directories),
-            "truncatedDirectories": truncated_directories,
-            "hiddenOnlyDirectories": hidden_only_directories,
-            "unreadableDirectories": unreadable_directories,
-            "linkedDirectories": linked_directories,
-        }
-
-    result = await asyncio.to_thread(_run)
-    # Egress redaction, same rationale as api_project_git_status: listed names
-    # are repo content and this body is rendered by the dashboard.
-    result["root"] = _redact_project_path(result["root"])
-    # Redact each path with redact_path_segments over the same context-aware
-    # redact(): the whole-string redact() collapses each matched token to a
-    # fixed placeholder, so two genuinely-different project-relative paths
-    # whose only differing segment is credential-shaped redact to the same
-    # string. The helper redacts each path segment-wise and suffixes every
-    # redacted segment with an opaque label keyed per gateway process, so both
-    # stay in the tree; it never emits less redaction than redact() itself, and
-    # the label is stable across responses within this process, so the git
-    # status listing labels the same path identically and the dashboard's join
-    # by path holds.
-    # Then de-duplicate, preserving order and first occurrence, as the fallback
-    # for a collision the helper does not separate: the dashboard tree hands
-    # this list straight to @pierre/trees, whose appendPresortedPaths throws
-    # "Duplicate path" on adjacent identical entries. dict.fromkeys keeps first
-    # occurrence. This does not affect "truncated": the cap is applied to the
-    # raw listing above.
-    for key in (
-        "paths",
-        "directories",
-        "truncatedDirectories",
-        "hiddenOnlyDirectories",
-        "unreadableDirectories",
-        "linkedDirectories",
-    ):
-        result[key] = list(
-            dict.fromkeys(redact_path_segments(p, redact) for p in result[key])
-        )
-    return web.json_response(result)
+    # The listing, its redaction and its serialization all run in ONE worker
+    # thread: each is linear in the size of the listing, and the dashboard
+    # refetches this tree every 10 s while it is open, so any of them on the
+    # event loop stalls every other request the gateway is serving.
+    body = await asyncio.to_thread(lambda: _project_tree_body(_run()))
+    return web.Response(text=body, content_type="application/json")
 
 
 async def api_project_git_log(request: web.Request) -> web.Response:
