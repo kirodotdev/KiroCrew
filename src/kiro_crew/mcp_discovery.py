@@ -1428,6 +1428,25 @@ def _managed_tools_in_process(name: str) -> list[str] | None:
 _resolved_managed_invocation: dict[str, tuple[str, list[str]]] = {}
 
 
+def _cached_managed_invocation(name: str) -> tuple[str, list[str]] | None:
+    """The cached invocation for *name*, or ``None`` once its command is gone.
+
+    The cache outlives the install it was resolved from: an update that prunes
+    the previous version directory leaves an absolute command here that no
+    longer exists, and serving it would keep relaunching ``kirocrew-core`` /
+    ``kirocrew-cron`` from the pruned tree. A vanished absolute command is
+    evicted so the caller re-resolves against the current install.
+    """
+    invocation = _resolved_managed_invocation.get(name)
+    if invocation is None:
+        return None
+    command = invocation[0]
+    if os.path.isabs(command) and not os.path.isfile(command):
+        _resolved_managed_invocation.pop(name, None)
+        return None
+    return invocation
+
+
 def _fix_stale_managed_command(name: str, spec: dict) -> None:
     """Re-resolve command + args for a managed MCP server to the running install.
 
@@ -1451,7 +1470,7 @@ def _fix_stale_managed_command(name: str, spec: dict) -> None:
     subcommand = _MANAGED_SERVER_SUBCOMMANDS.get(name)
     if subcommand is None:
         return
-    invocation = _resolved_managed_invocation.get(name)
+    invocation = _cached_managed_invocation(name)
     if invocation is None:
         try:
             from kiro_crew.agent import _kirocrew_mcp_invocation  # circular import
@@ -1501,7 +1520,7 @@ def _is_first_party_managed_argv(
     subcommand = _MANAGED_SERVER_SUBCOMMANDS.get(name)
     if subcommand is None:
         return False
-    invocation = _resolved_managed_invocation.get(name)
+    invocation = _cached_managed_invocation(name)
     try:
         # circular import: agent is loaded during package init
         from kiro_crew.agent import _kirocrew_mcp_invocation, _managed_mcp_env

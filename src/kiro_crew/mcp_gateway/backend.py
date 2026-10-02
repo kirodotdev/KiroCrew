@@ -34,6 +34,7 @@ from kiro_crew.constants import (
     SUBAGENT_TIMEOUT_SECS,
 )
 from kiro_crew.executors import image_executor, maintenance_executor
+from kiro_crew.install_liveness import POOLED_BACKEND_ENV, POOLED_BACKEND_VALUE
 from kiro_crew.mcp_caller import (
     CALLER_CAPABILITY_KEY,
     CALLER_META_KEY,
@@ -4231,6 +4232,9 @@ async def spawn_backend(
     # identity (unlike a per-session value, which would be a correctness bug).
     spawn_env = dict(env)
     spawn_env[KIROCREW_SPAWNED_ENV] = KIROCREW_SPAWNED_VALUE
+    # Tells a first-party server it may exit to be replaced (its install was
+    # pruned): this pool respawns it. Constant, so PoolKey-safe like the above.
+    spawn_env[POOLED_BACKEND_ENV] = POOLED_BACKEND_VALUE
     # Per-process temp containment. Safe re: the pooled-backend
     # PoolKey invariant for the same reason as the marker above -- the value
     # is derived from the key's own digest plus a token generated AFTER

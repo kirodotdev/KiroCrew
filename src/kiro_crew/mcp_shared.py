@@ -18,6 +18,11 @@ from kiro_crew import platform_compat
 from kiro_crew.acp.types import JSONRPC_METHOD_NOT_FOUND
 from kiro_crew.config.loader import KiroCrewConfig, config_dir, read_local_secret  # noqa: F401
 from kiro_crew.dashboard.origin import parse_dashboard_url  # noqa: F401
+from kiro_crew.install_liveness import (
+    INSTALL_PRUNED_EXIT_CODE,
+    install_pruned,
+    respawned_by_pool,
+)
 from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.mcp_caller import (
     CallerContext,
@@ -1231,8 +1236,9 @@ def run_mcp_stdio_loop(
     _prior_caller = internal_caller()
     set_internal_caller(server_name)
     snapshot_stdout_fd()
+    pruned = False
     try:
-        _run_stdio_dispatch_loop(
+        pruned = _run_stdio_dispatch_loop(
             server_name,
             server_version,
             list_tools_fn,
@@ -1243,6 +1249,10 @@ def run_mcp_stdio_loop(
     finally:
         set_internal_caller(_prior_caller)
         release_stdout_fd()
+    if pruned:
+        # Non-zero so the pool records a death and the next call respawns this
+        # server from the current install's launch command.
+        sys.exit(INSTALL_PRUNED_EXIT_CODE)
 
 
 def _run_stdio_dispatch_loop(
@@ -1253,12 +1263,15 @@ def _run_stdio_dispatch_loop(
     *,
     advertise_caller_identity: bool = False,
     error_prefix_is_error: bool = False,
-) -> None:
+) -> bool:
     """Read/dispatch body of :func:`run_mcp_stdio_loop`.
 
     Split out so the public entry point can own the stdout-snapshot lifecycle
     (capture before the first request, release on exit) without indenting the
     whole dispatch loop under a ``try``.
+
+    Returns True when it stopped because this process's install was pruned
+    (see :func:`_refuse_from_pruned_install`), False on an ordinary EOF.
     """
     # In-flight tool execution state: at most one at a time (sequential dispatch).
     _current_req_id: Any = None
@@ -1463,6 +1476,47 @@ def _run_stdio_dispatch_loop(
                 _worker_audited[0] = True
         _result_ready.set()
 
+    def _refuse_from_pruned_install(first_req_id: Any, tool_name: str) -> None:
+        """Answer this call and every queued one, so none is left waiting.
+
+        The process is about to exit: anything it lazily imports would fail
+        with ``No module named 'kiro_crew.<x>'`` until it is replaced, and the
+        caller should hear "retry" rather than that error.
+        """
+        logger.warning(
+            "%s: the install this process runs from was removed by an update; "
+            "refusing %s and exiting so it is respawned from the current install",
+            server_name,
+            tool_name,
+        )
+        error = {
+            "code": -32000,
+            "message": (
+                f"{server_name} is running from an install that an update removed "
+                "and is restarting from the current one; retry the call"
+            ),
+        }
+        respond(first_req_id, None, error=error)
+        while _pending_calls:
+            queued = _pending_calls.popleft()
+            queued_id = queued.get("id")
+            queued_tool = queued.get("params", {}).get("name", "")
+            if queued_id is not None and str(queued_id) in _cancelled_ids:
+                # Same contract as the ordinary dispatch path: a request
+                # cancelled while it waited gets no response, only its audit.
+                _sel_audit("cancelled", queued_tool, queued_id, _req_caller_key(queued))
+                continue
+            # Each refusal is its own invocation decision and gets its own SEL
+            # record, like the first call's (security-controls: every
+            # invocation decision is audited).
+            _sel_audit(
+                "rejected_install_pruned",
+                queued_tool,
+                queued_id,
+                _req_caller_key(queued),
+            )
+            respond(queued_id, None, error=error)
+
     while True:
         # If a worker is running, poll for completion while also reading stdin
         if _worker_thread is not None and _worker_thread.is_alive():
@@ -1654,6 +1708,42 @@ def _run_stdio_dispatch_loop(
                     tool_name,
                     req_id,
                     _caller_ctx.session_key if _caller_ctx else "",
+                )
+                continue
+            # Checked before the policy read and the dispatch: both import
+            # lazily, so on a pruned install they fail with an import error
+            # instead of a refusal the caller can retry.
+            if install_pruned():
+                _sel_audit(
+                    "rejected_install_pruned",
+                    tool_name,
+                    req_id,
+                    _caller_ctx.session_key if _caller_ctx else "",
+                )
+                if respawned_by_pool():
+                    _refuse_from_pruned_install(req_id, tool_name)
+                    return True
+                # Launched directly by kiro-cli: nothing would respawn this
+                # process, so exiting would take every tool away for the rest
+                # of the session. Keep the transport and refuse each call with
+                # the action that actually recovers it.
+                logger.warning(
+                    "%s: the install this process runs from was removed by an "
+                    "update; refusing %s until Kiro Crew is restarted",
+                    server_name,
+                    tool_name,
+                )
+                respond(
+                    req_id,
+                    None,
+                    error={
+                        "code": -32000,
+                        "message": (
+                            f"{server_name} is running from an install that an "
+                            "update removed; restart Kiro Crew (kirocrew restart) "
+                            "to load the current install"
+                        ),
+                    },
                 )
                 continue
             # Defense-in-depth: reject calls to excluded tools even if
@@ -1870,3 +1960,4 @@ def _run_stdio_dispatch_loop(
                     "message": f"Unknown method: {method}",
                 },
             )
+    return False
