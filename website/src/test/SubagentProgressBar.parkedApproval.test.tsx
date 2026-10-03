@@ -15,13 +15,14 @@
  * and the chip stays mounted when the parked run is the ONLY member of the wave
  * (excluding it from `running` must not make the surface disappear).
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { render, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { configureStore } from '@reduxjs/toolkit'
 import chatReducer, {
   setActiveSlot, sseSubagentPending, sseSubagentSpawn, sseSubagentStalled,
+  markSubagentApprovalGone, selectSidebarApprovalCounts, sseSubagentTool, reconcileGoneSubagent,
 } from '../store/chatSlice'
 import dashboardReducer from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
@@ -30,10 +31,13 @@ vi.mock('../api/client', () => ({
   api: { spawnDelete: vi.fn().mockResolvedValue({}), spawnList: vi.fn().mockResolvedValue({ agents: [] }) },
 }))
 
+import { api } from '../api/client'
 import SubagentProgressBar from '../pages/chat/SubagentProgressBar'
 
 const SLOT = 'test-slot'
 const PARKED_LABEL = 'Waiting for your approval to start'
+const GONE_ERROR = 'This approval has expired or was already decided'
+const CHECKING = 'Checking whether it started…'
 
 function chip({ parked = 0, running = 0, seed }: {
   parked?: number
@@ -68,6 +72,7 @@ function chip({ parked = 0, running = 0, seed }: {
 const text = (el: Element | null) => (el?.textContent ?? '').trim()
 const runningCount = (c: HTMLElement) => text(c.querySelector('[data-testid="subagent-running-count"]'))
 const awaitingCount = (c: HTMLElement) => text(c.querySelector('[data-testid="subagent-awaiting-count"]'))
+const unresolvedCount = (c: HTMLElement) => text(c.querySelector('[data-testid="subagent-unresolved-count"]'))
 
 beforeEach(() => vi.clearAllMocks())
 
@@ -123,5 +128,189 @@ describe('subagent parked on a spawn approval', () => {
     })
     expect(runningCount(container)).toBe('2')
     expect(container.querySelector('[data-testid="subagent-awaiting-count"]')).toBeNull()
+  })
+})
+
+/**
+ * A resolve that came back terminal (404 / 400 "no pending approval") records the
+ * approval as gone. The composer and the activity panel both withdraw its
+ * buttons, so no other surface may keep telling the user they owe that decision
+ * -- but another surface may already have launched it. The chip therefore keeps
+ * liveness unresolved (neither awaiting nor running) until reconciliation.
+ */
+describe('subagent whose spawn approval is gone', () => {
+  const goneSeed = (d: (a: unknown) => void) => d(markSubagentApprovalGone({ id: 'p0', approval_id: 'spawn:p0' }))
+
+  it('is neither awaiting nor running, and its row no longer asks for approval', () => {
+    const { container } = chip({ parked: 1, running: 1, seed: goneSeed })
+    expect(runningCount(container)).toBe('1')
+    expect(container.querySelector('[data-testid="subagent-awaiting-count"]')).toBeNull()
+    expect(unresolvedCount(container)).toBe('1')
+    expect(container.textContent).not.toContain(PARKED_LABEL)
+  })
+
+  it('reports the failed approval request through ErrorNotice, and liveness as neutral status', () => {
+    const { container } = chip({ parked: 2, seed: goneSeed })
+    // The failure sentence: once, as an ErrorNotice with its alert semantics.
+    const notice = container.querySelector('[data-testid="subagent-approval-gone-error"]')
+    expect(notice).not.toBeNull()
+    expect(notice!.getAttribute('role')).toBe('alert')
+    expect(text(notice)).toContain(GONE_ERROR)
+    expect(container.textContent!.split(GONE_ERROR)).toHaveLength(2)
+    // The open liveness question: neutral, on the row and the count, never the
+    // failure sentence and never inside the notice's alert.
+    const rows = container.querySelectorAll('[data-testid="subagent-row-checking"]')
+    expect(rows).toHaveLength(1)
+    expect(text(rows[0])).toBe(CHECKING)
+    expect(rows[0].closest('[role="alert"]')).toBeNull()
+    expect(container.querySelector('[data-testid="subagent-unresolved-count"]')!.getAttribute('title')).toBe(CHECKING)
+  })
+
+  it('drops the unresolved state once a real spawn and tool frame arrive', () => {
+    const { container } = chip({
+      parked: 1,
+      seed: d => {
+        goneSeed(d)
+        d(sseSubagentSpawn({ slot: SLOT, id: 'p0', task: 'launched elsewhere', agent: 'kirocrew' }))
+        d(sseSubagentTool({ slot: SLOT, id: 'p0', tool: 'shell' }))
+      },
+    })
+    expect(runningCount(container)).toBe('1')
+    expect(container.querySelector('[data-testid="subagent-unresolved-count"]')).toBeNull()
+    expect(container.querySelector('[data-testid="subagent-approval-gone-error"]')).toBeNull()
+    expect(container.querySelector('[data-testid="subagent-row-checking"]')).toBeNull()
+    expect(container.textContent).toContain('→ shell')
+  })
+
+  it('leaves the sidebar approval count', () => {
+    const { store } = chip({ parked: 2, seed: goneSeed })
+    expect(selectSidebarApprovalCounts(store.getState())).toEqual({ [SLOT]: 1 })
+  })
+
+  it('counts again once the card carries a fresh approval', () => {
+    const { container } = chip({
+      parked: 1,
+      seed: d => {
+        goneSeed(d)
+        d(sseSubagentPending({ slot: SLOT, id: 'p0', task: 'parked 0', approval_id: 'spawn:p0:2' }))
+      },
+    })
+    expect(awaitingCount(container)).toBe('1')
+    expect(container.textContent).toContain(PARKED_LABEL)
+  })
+})
+
+/**
+ * The 30s poll is what settles a gone approval's liveness, and until it does the
+ * composer and Reload stay blocked on the card. A refused read used to land in a
+ * silent catch, so the chip showed only the neutral "Checking whether it
+ * started…" forever. It is now reported through ErrorNotice, cleared by the next
+ * successful read, and never taken as evidence that the agent ran or did not.
+ */
+describe('liveness poll for a gone spawn approval', () => {
+  const LIVENESS_FAILED = "Couldn't check whether it started. Retrying…"
+  const goneSeed = (d: (a: unknown) => void) => d(markSubagentApprovalGone({ id: 'p0', approval_id: 'spawn:p0' }))
+  const tick = () => act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  it('reports a failed read through ErrorNotice and keeps the card unresolved', async () => {
+    vi.mocked(api.spawnList).mockRejectedValueOnce(new Error('503'))
+    const { container, store } = chip({ parked: 1, seed: goneSeed })
+    expect(container.querySelector('[data-testid="subagent-liveness-error"]')).toBeNull()
+
+    await tick()
+
+    const notice = container.querySelector('[data-testid="subagent-liveness-error"]')
+    expect(notice).not.toBeNull()
+    expect(notice!.getAttribute('role')).toBe('alert')
+    expect(text(notice)).toContain(LIVENESS_FAILED)
+    // Neutral liveness: still unresolved, neither retired nor running.
+    expect(unresolvedCount(container)).toBe('1')
+    expect(text(container.querySelector('[data-testid="subagent-row-checking"]'))).toBe(CHECKING)
+    expect(store.getState().chat.subagents.p0.status).toBe('pending')
+    expect(store.getState().chat.subagents.p0.approvalGone).toBe('spawn:p0')
+  })
+
+  it('clears the failure once a later read succeeds', async () => {
+    vi.mocked(api.spawnList)
+      .mockRejectedValueOnce(new Error('503'))
+      // Still parked server-side: the read succeeds without settling the card,
+      // so only the transient failure may go away.
+      .mockResolvedValueOnce({ agents: [{ id: 'p0', parent: `dashboard:${SLOT}`, awaiting_approval: true }] })
+    const { container } = chip({ parked: 1, seed: goneSeed })
+
+    await tick()
+    expect(container.querySelector('[data-testid="subagent-liveness-error"]')).not.toBeNull()
+
+    await tick()
+    expect(container.querySelector('[data-testid="subagent-liveness-error"]')).toBeNull()
+    expect(unresolvedCount(container)).toBe('1')
+    expect(container.querySelector('[data-testid="subagent-approval-gone-error"]')).not.toBeNull()
+  })
+
+  it('stays silent when the failed poll had no gone approval to settle', async () => {
+    vi.mocked(api.spawnList).mockRejectedValueOnce(new Error('503'))
+    const { container } = chip({ running: 1 })
+    await tick()
+    expect(container.querySelector('[data-testid="subagent-liveness-error"]')).toBeNull()
+  })
+})
+
+/**
+ * The inventory row behind a gone approval is matched by run id: a nested,
+ * cron- or channel-born run's parent is not the tab key. A card the inventory
+ * retires was never launched, so nobody stopped it.
+ */
+describe('settling a gone spawn approval from the inventory', () => {
+  const goneSeed = (d: (a: unknown) => void) => d(markSubagentApprovalGone({ id: 'p0', approval_id: 'spawn:p0' }))
+  const tick = () => act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  it.each([
+    ['a nested child', 'subagent:root0001'],
+    ['a cron-born run', 'cron:abc'],
+  ])('finds %s by run id, so a launched run is not retired', async (_label, parent) => {
+    vi.mocked(api.spawnList).mockResolvedValueOnce({
+      agents: [{ id: 'p0', task: 'launched', done: false, parent }],
+    })
+    const { store } = chip({ parked: 1, seed: goneSeed })
+    await tick()
+    expect(store.getState().chat.subagents.p0.status).toBe('running')
+  })
+
+  it('does not tally a retired never-launched card as stopped', async () => {
+    // r0 stays live, so the chip stays mounted; p0 has no record and retires.
+    vi.mocked(api.spawnList).mockResolvedValueOnce({
+      agents: [{ id: 'r0', task: 'running 0', done: false, parent: `dashboard:${SLOT}` }],
+    })
+    const { container, store } = chip({ parked: 1, running: 1, seed: goneSeed })
+    await tick()
+    expect(store.getState().chat.subagents.p0.status).toBe('stopped')
+    expect(store.getState().chat.subagents.p0.approvalRetired).toBe(true)
+    expect(container.querySelector('[data-testid="subagent-stopped-count"]')).toBeNull()
+  })
+})
+
+describe('the inventory read behind several gone approvals', () => {
+  it('is one GET /api/spawn for every card that asks while it is in flight', async () => {
+    let answer!: (v: unknown) => void
+    vi.mocked(api.spawnList).mockReturnValueOnce(new Promise(resolve => { answer = resolve }) as never)
+    const { store } = chip({
+      parked: 3,
+      seed: d => { for (const i of [0, 1, 2]) d(markSubagentApprovalGone({ id: `p${i}`, approval_id: `spawn:p${i}` })) },
+    })
+    // A batch refusal (or a reconnect) reconciles every gone card at once.
+    const pending = [0, 1, 2].map(i => store.dispatch(
+      reconcileGoneSubagent({ slot: SLOT, id: `p${i}`, approval_id: `spawn:p${i}` }) as never,
+    ))
+    answer({ agents: [{ id: 'p1', task: 'parked 1', done: false, parent: `dashboard:${SLOT}` }] })
+    await act(async () => { await Promise.all(pending) })
+    expect(api.spawnList).toHaveBeenCalledTimes(1)
+    const subs = store.getState().chat.subagents
+    expect([subs.p0.status, subs.p1.status, subs.p2.status]).toEqual(['stopped', 'running', 'stopped'])
   })
 })

@@ -14,7 +14,18 @@ import chatReducer, {
   sseSubagentSnapshot,
   sseSubagentDone,
   sseSubagentQueued,
+  sseSubagentPending,
+  markSubagentApprovalGone,
+  reconcileSubagentApprovalGone,
+  sseSubagentTool,
+  isAwaitingSpawnApproval,
+  isSpawnApprovalGone,
+  isSpawnApprovalRetired,
+  selectSlotSubagentsActive,
   selectSubagentActivityCount,
+  selectSidebarSubagentCounts,
+  selectSidebarApprovalCounts,
+  selectComposerBusy,
 } from './chatSlice'
 import dashboardReducer from './dashboardSlice'
 import notificationsReducer from './notificationsSlice'
@@ -74,6 +85,191 @@ describe('selectSubagentActivityCount', () => {
     store.dispatch(setActiveSlot('a'))
     store.dispatch(sseSubagentQueued({ slot: 'a', queued: 3 }))
     expect(count(store)).toBe(3)
+  })
+
+  it.each(['a', 'background'])('retires a gone approval only after the authoritative list says it is absent in %s', slot => {
+    const store = makeStore()
+    store.dispatch(setActiveSlot('a'))
+    store.dispatch(sseSubagentPending({ slot, id: 'p1', task: 'wait', approval_id: 'ap-1' }))
+
+    const root = () => store.getState() as unknown as RootState
+    expect(selectSlotSubagentsActive(root(), slot)).toBe(true)
+    expect(selectSubagentActivityCount(root())).toBe(1)
+    expect(selectSidebarSubagentCounts(root())[slot]).toBe(1)
+    expect(selectSidebarApprovalCounts(root())[slot]).toBe(1)
+    expect(selectComposerBusy(root(), slot)).toBe(true)
+
+    store.dispatch(markSubagentApprovalGone({ id: 'p1', approval_id: 'ap-1' }))
+
+    // Decision controls disappear immediately, but a stale surface's 404 does
+    // not prove no process launched elsewhere. Busy/count/reload readers stay
+    // conservative until the authoritative inventory answers.
+    expect(selectSidebarApprovalCounts(root())[slot]).toBeUndefined()
+    expect(selectSlotSubagentsActive(root(), slot)).toBe(true)
+    expect(selectSubagentActivityCount(root())).toBe(1)
+    expect(selectSidebarSubagentCounts(root())[slot]).toBe(1)
+    expect(selectComposerBusy(root(), slot)).toBe(true)
+
+    store.dispatch(reconcileSubagentApprovalGone({
+      slot, id: 'p1', approval_id: 'ap-1', agent: null,
+    }))
+
+    const retired = root().chat.subagents.p1 ?? root().chat.slotActivity[slot]?.subagents.p1
+    expect(retired).toMatchObject({ status: 'stopped', approvalRetired: true })
+    expect(selectSlotSubagentsActive(root(), slot)).toBe(false)
+    expect(selectSubagentActivityCount(root())).toBe(0)
+    expect(selectSidebarSubagentCounts(root())[slot]).toBeUndefined()
+    expect(selectSidebarApprovalCounts(root())[slot]).toBeUndefined()
+    expect(selectComposerBusy(root(), slot)).toBe(false)
+
+    store.dispatch(sseSubagentPending({ slot, id: 'p1', task: 'wait again', approval_id: 'ap-2' }))
+    expect(selectSlotSubagentsActive(root(), slot)).toBe(true)
+    expect(selectSubagentActivityCount(root())).toBe(1)
+    expect(selectSidebarSubagentCounts(root())[slot]).toBe(1)
+    expect(selectSidebarApprovalCounts(root())[slot]).toBe(1)
+    expect(selectComposerBusy(root(), slot)).toBe(true)
+  })
+
+  it('promotes a gone approval to running when another surface launched it', () => {
+    const store = makeStore()
+    store.dispatch(setActiveSlot('a'))
+    store.dispatch(sseSubagentPending({ slot: 'a', id: 'p1', task: 'wait', approval_id: 'ap-1' }))
+    store.dispatch(markSubagentApprovalGone({ id: 'p1', approval_id: 'ap-1' }))
+
+    store.dispatch(reconcileSubagentApprovalGone({
+      slot: 'a',
+      id: 'p1',
+      approval_id: 'ap-1',
+      agent: {
+        id: 'p1',
+        parent: 'dashboard:a',
+        task: 'authoritative task',
+        agent: 'kirocrew',
+        started: 1_000,
+        last_tool: '',
+        done: false,
+      },
+    }))
+
+    const root = store.getState() as unknown as RootState
+    expect(root.chat.subagents.p1).toMatchObject({
+      status: 'running', task: 'authoritative task', approval_id: undefined, approvalGone: undefined,
+    })
+    expect(selectSlotSubagentsActive(root, 'a')).toBe(true)
+    expect(selectSubagentActivityCount(root)).toBe(1)
+    expect(selectSidebarSubagentCounts(root).a).toBe(1)
+    expect(selectSidebarApprovalCounts(root).a).toBeUndefined()
+    expect(selectComposerBusy(root, 'a')).toBe(true)
+  })
+
+  it('does not mistake an inventory row still parked on approval for a running process', () => {
+    const store = makeStore()
+    store.dispatch(setActiveSlot('a'))
+    store.dispatch(sseSubagentPending({ slot: 'a', id: 'p1', task: 'wait', approval_id: 'ap-1' }))
+    store.dispatch(markSubagentApprovalGone({ id: 'p1', approval_id: 'ap-1' }))
+
+    store.dispatch(reconcileSubagentApprovalGone({
+      slot: 'a', id: 'p1', approval_id: 'ap-1',
+      agent: { id: 'p1', parent: 'dashboard:a', done: false, awaiting_approval: true },
+    }))
+
+    const root = store.getState() as unknown as RootState
+    expect(root.chat.subagents.p1).toMatchObject({
+      status: 'pending', approval_id: 'ap-1', approvalGone: 'ap-1',
+    })
+    expect(selectSidebarApprovalCounts(root).a).toBeUndefined()
+    expect(selectSlotSubagentsActive(root, 'a')).toBe(true)
+    expect(selectComposerBusy(root, 'a')).toBe(true)
+  })
+
+  it.each([
+    // `outcome` alone decides, without the legacy stopped/error pair.
+    [{ outcome: 'failed' as const }, 'error'],
+    [{ outcome: 'stopped' as const }, 'stopped'],
+    [{ outcome: 'completed' as const, error: 'a partial-result note' }, 'done'],
+    // A row that predates `outcome` falls back to the legacy pair.
+    [{ error: 'boom' }, 'error'],
+  ])('adopts a finished row by its outcome (%o), with no wall-clock duration', (row, status) => {
+    const store = makeStore()
+    store.dispatch(setActiveSlot('a'))
+    store.dispatch(sseSubagentPending({ slot: 'a', id: 'p1', task: 'wait', approval_id: 'ap-1' }))
+    store.dispatch(markSubagentApprovalGone({ id: 'p1', approval_id: 'ap-1' }))
+
+    store.dispatch(reconcileSubagentApprovalGone({
+      slot: 'a', id: 'p1', approval_id: 'ap-1',
+      // Registered 25 minutes ago; a finished row carries no elapsed of its own.
+      agent: { id: 'p1', task: 'wait', done: true, started: Date.now() / 1000 - 1500, ...row },
+    }))
+
+    const card = (store.getState() as unknown as RootState).chat.subagents.p1
+    expect(card.status).toBe(status)
+    expect(card.elapsed).toBe(0)
+  })
+
+  it('does not let a stale reconciliation retire a fresh approval id', () => {
+    const store = makeStore()
+    store.dispatch(setActiveSlot('a'))
+    store.dispatch(sseSubagentPending({ slot: 'a', id: 'p1', task: 'first', approval_id: 'ap-1' }))
+    store.dispatch(markSubagentApprovalGone({ id: 'p1', approval_id: 'ap-1' }))
+    store.dispatch(sseSubagentPending({ slot: 'a', id: 'p1', task: 'fresh', approval_id: 'ap-2' }))
+
+    store.dispatch(reconcileSubagentApprovalGone({
+      slot: 'a', id: 'p1', approval_id: 'ap-1', agent: null,
+    }))
+
+    const root = store.getState() as unknown as RootState
+    expect(root.chat.subagents.p1).toMatchObject({ status: 'pending', task: 'fresh', approval_id: 'ap-2' })
+    expect(selectSidebarApprovalCounts(root).a).toBe(1)
+    expect(selectComposerBusy(root, 'a')).toBe(true)
+  })
+
+  it.each(['a', 'background'])('stops classifying a gone approval once a real spawn and tool frame arrive in %s', slot => {
+    // The spawn/tool frames move status without clearing the gone marker, so
+    // the classification itself must be scoped to the pending phase.
+    const store = makeStore()
+    store.dispatch(setActiveSlot('a'))
+    store.dispatch(sseSubagentPending({ slot, id: 'p1', task: 'wait', approval_id: 'ap-1' }))
+    store.dispatch(markSubagentApprovalGone({ id: 'p1', approval_id: 'ap-1' }))
+    const card = () => {
+      const root = store.getState() as unknown as RootState
+      return (slot === 'a' ? root.chat.subagents.p1 : root.chat.slotActivity[slot]?.subagents.p1)!
+    }
+    expect(isSpawnApprovalGone(card())).toBe(true)
+
+    store.dispatch(sseSubagentSpawn({ slot, id: 'p1', task: 'launched elsewhere', agent: 'kirocrew' }))
+    expect(card()).toMatchObject({ status: 'running', approvalGone: 'ap-1' })
+    expect(isSpawnApprovalGone(card())).toBe(false)
+    expect(isAwaitingSpawnApproval(card())).toBe(false)
+
+    store.dispatch(sseSubagentTool({ slot, id: 'p1', tool: 'shell' }))
+    expect(card()).toMatchObject({ status: 'tool', approvalGone: 'ap-1' })
+    expect(isSpawnApprovalGone(card())).toBe(false)
+    expect(isSpawnApprovalRetired(card())).toBe(false)
+
+    // A reconciliation answer that was in flight across the spawn is a no-op.
+    store.dispatch(reconcileSubagentApprovalGone({ slot, id: 'p1', approval_id: 'ap-1', agent: null }))
+    expect(card().status).toBe('tool')
+    expect(selectSlotSubagentsActive(store.getState() as unknown as RootState, slot)).toBe(true)
+  })
+
+  it('stops classifying a retired approval once a tool frame proves the launch', () => {
+    const store = makeStore()
+    store.dispatch(setActiveSlot('a'))
+    store.dispatch(sseSubagentPending({ slot: 'a', id: 'p1', task: 'wait', approval_id: 'ap-1' }))
+    store.dispatch(markSubagentApprovalGone({ id: 'p1', approval_id: 'ap-1' }))
+    store.dispatch(reconcileSubagentApprovalGone({ slot: 'a', id: 'p1', approval_id: 'ap-1', agent: null }))
+    const card = () => (store.getState() as unknown as RootState).chat.subagents.p1!
+    expect(isSpawnApprovalRetired(card())).toBe(true)
+
+    store.dispatch(sseSubagentTool({ slot: 'a', id: 'p1', tool: 'shell' }))
+    expect(card()).toMatchObject({ status: 'tool', approvalRetired: undefined })
+    expect(isSpawnApprovalRetired(card())).toBe(false)
+    expect(isSpawnApprovalGone(card())).toBe(false)
+
+    // The launched run is then stopped: it is a stopped run, not a retired card.
+    store.dispatch(sseSubagentDone({ slot: 'a', id: 'p1', elapsed: 5, outcome: 'stopped', stopped: true }))
+    expect(card().status).toBe('stopped')
+    expect(isSpawnApprovalRetired(card())).toBe(false)
   })
 
   it('sums started and queued across slots', () => {

@@ -1671,6 +1671,36 @@ The slow-command record (`record_slow_command`, `subagent_persistence.py`) is ap
 
 An incremental progress frame **creates** the panel entry when the client holds none for the id it names, rather than being discarded. The store's incremental reducers (`sseSubagentTool`, `sseSubagentStalled`, `sseSubagentRetrying`, `sseSubagentBatchUpdate`, `sseSubagentBatchChunks`) resolve through `upsertSlotSub` (`website/src/store/chat/subagents.ts`, the sub-agent reducer family the `website/src/store/chatSlice.ts` facade composes into the chat slice), which returns the existing entry or mints a minimal one (`status: 'running'`, empty `task`/`agent`, filled in by any later frame that carries them). This is required because these frames are the only evidence the panel receives between one `subagent_spawn` and one `subagent_done`, and `clearSubagentsForSnapshot` keeps only `pending` entries across a reconnect — so an agent already running at that moment has its entry discarded while every frame it has left is an incremental one, and a reducer that refused to create would leave it invisible for the rest of its run. The prototype-pollution contract is unchanged: `upsertSlotSub` refuses a poisoned slot or id via `isUnsafeKey` and routes any write through `safeKey`, so such a frame creates nothing. Reducers whose frame only decorates an existing card (`markSubagentApproving`) keep the read-only `getSlotSub` and still require one.
 
+A dashboard approval refusal and process liveness are separate facts. A terminal
+approval response (expired/already decided) immediately removes decision controls,
+but remains conservatively active because another browser may already have approved
+and launched the same id. A reconnect that finds a spawn approval gone with no known
+outcome records the same verdict. The client immediately reconciles against
+`GET /api/spawn`, matching the record by run id alone (a nested, cron- or channel-born
+run's `parent` is not its tab key): a non-terminal record promotes the card to
+running/tool once `awaiting_approval` is false, a terminal record adopts its `outcome`,
+and an absent record retires the card as stopped. A row
+still marked `awaiting_approval` is the manager's cleanup race, not proof of execution,
+so it remains unresolved for the next poll. The reducer compares the slot, subagent id,
+and refused approval id before applying the response, so a live spawn frame or a fresh
+approval id that arrives during the request cannot be overwritten. A failed inventory
+read leaves liveness unresolved and the existing progress-bar poll retries it; the
+failure is reported as an error notice in the composer and on the progress bar, never
+swallowed, and the progress bar clears it on the next successful read. Concurrent
+reads for several gone cards (a batch refusal, a reconnect, the Subagents tab opening)
+share the one `GET /api/spawn` in flight. Pending
+approval counts remain cleared while composer busy state, running counts, tip
+suppression, and Reload blocking stay conservative until reconciliation.
+The gone verdict belongs to the pending phase only: a real `subagent_spawn` or tool
+frame moves the card to running/tool without clearing the marker, so neither it nor
+the retired verdict (terminal `stopped` only) may classify a live card; a tool frame
+also clears the retired marker, so a launched run that later ends `stopped` reads as
+stopped, never as retired. The progress
+bar reports the failed approval request once as an error notice and each unresolved
+row as a neutral liveness check. The activity card of an unresolved gone approval reads "Checking whether it started…";
+a retired card reads "Never started". A retired card was never launched: it is not tallied
+as stopped, shows no run usage, and "Dismiss done" clears it locally without a DELETE.
+
 
 ### Model Provenance (#3582)
 

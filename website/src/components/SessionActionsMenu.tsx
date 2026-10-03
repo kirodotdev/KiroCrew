@@ -15,7 +15,7 @@ import LinkedSurfacesSection from './LinkedSurfacesSection'
 import { DropdownMenuItem, DropdownMenuSeparator } from './ui/dropdown-menu'
 import { ContextMenuItem, ContextMenuSeparator } from './ui/context-menu'
 import { useAppSelector } from '../store'
-import { selectSlotSubagents } from '../store/chatSlice'
+import { selectSlotSubagentsActive } from '../store/chatSlice'
 import { useTagPopover } from '../hooks/useTagPopover'
 import { api } from '../api/client'
 import { useSessionActions } from '../hooks/useSessionActions'
@@ -159,10 +159,7 @@ export default function SessionActionsMenu({
   // would tear down their shared runtime) — mirror that in the disable so a
   // slot whose turn ended but whose children still run doesn't offer a click
   // the backend will 409.
-  const slotSubagents = useAppSelector(s => selectSlotSubagents(s, slotKey))
-  const hasActiveSubagents = Object.values(slotSubagents).some(
-    a => a.status === 'pending' || a.status === 'running' || a.status === 'tool',
-  )
+  const hasActiveSubagents = useAppSelector(s => selectSlotSubagentsActive(s, slotKey))
   const reloadBlocked = isRunning || hasActiveSubagents
   const currentFolderId = slot?.folder_id
   const colorIndex = slot?.color_index

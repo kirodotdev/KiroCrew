@@ -1507,6 +1507,14 @@ export interface SubagentActivity {
   retrying?: boolean      // transient-backend retry (or cancel auto-continue) in flight
   approval_id?: string
   approving?: boolean
+  /** The `approval_id` a resolve attempt found gone (`isTerminalApprovalRefusal`):
+   *  decided or expired where this client could not see it. Scoped by id so a
+   *  fresh approval on the same card is decidable again; the card itself stays
+   *  pending, since no outcome is known. */
+  approvalGone?: string
+  /** The authoritative spawn inventory found no process for a gone approval.
+   *  Distinguishes a never-launched retired card from a user-stopped run. */
+  approvalRetired?: boolean
   /** Inline terminal output for native (`native:*`) cards only. Native cards
    *  cannot lazy-load from disk (no SubagentManager record), so the bounded
    *  done-event result is stored here. Managed cards leave this unset and use
@@ -1595,6 +1603,14 @@ export interface PendingApproval {
 
 export interface SubagentInfo {
   id: string; task: string; done: boolean; error?: string; result?: string
+  parent?: string
+  /** The terminal-state contract for a finished run (`SubagentInfo.outcome`). */
+  outcome?: 'completed' | 'failed' | 'stopped'
+  agent?: string
+  started?: number
+  last_tool?: string
+  stopped?: boolean
+  awaiting_approval?: boolean
 }
 
 export interface SessionInfo {

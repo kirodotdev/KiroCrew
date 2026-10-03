@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders, createTestStore } from './helpers'
 import { sseSlots } from '../store/dashboardSlice'
@@ -11,6 +11,7 @@ import {
 } from '../utils/errorReport'
 import type { ChatSlot } from '../types'
 import SessionActionsMenu from '../components/SessionActionsMenu'
+import { markSubagentApprovalGone, reconcileSubagentApprovalGone, sseSubagentPending } from '../store/chatSlice'
 import {
   ContextMenu,
   ContextMenuContent,
@@ -58,7 +59,7 @@ vi.mock('../hooks/useTagPopover', () => ({
   useTagPopover: () => ({ open: vi.fn() }),
 }))
 
-function mount() {
+function mount(seed?: (store: ReturnType<typeof createTestStore>) => void) {
   const store = createTestStore()
   store.dispatch(sseSlots([{
     key: 'context-slot',
@@ -66,6 +67,7 @@ function mount() {
     running: false,
     memory_mode: 'persistent',
   } as ChatSlot]))
+  seed?.(store)
   const view = renderWithProviders(
     <ContextMenu>
       <ContextMenuTrigger asChild>
@@ -78,7 +80,7 @@ function mount() {
     { store },
   )
   fireEvent.contextMenu(screen.getByTestId('context-trigger'))
-  return view
+  return { ...view, store }
 }
 
 beforeEach(() => {
@@ -97,6 +99,25 @@ afterEach(() => {
 })
 
 describe('SessionActionsMenu context-menu error hand-off', () => {
+  it('keeps Reload blocked while gone-approval liveness is unresolved, then releases it when absent', async () => {
+    const { store } = mount(s => {
+      s.dispatch(sseSubagentPending({ slot: 'context-slot', id: 'p1', task: 'wait', approval_id: 'ap-1' }))
+      s.dispatch(markSubagentApprovalGone({ id: 'p1', approval_id: 'ap-1' }))
+    })
+    const reload = await screen.findByRole('menuitem', { name: /reload session/i })
+    expect(reload).toHaveAttribute('data-disabled')
+    expect(reload).toHaveTextContent('sub-agents working')
+
+    act(() => {
+      store.dispatch(reconcileSubagentApprovalGone({
+        slot: 'context-slot', id: 'p1', approval_id: 'ap-1', agent: null,
+      }))
+    })
+
+    await waitFor(() => expect(reload).not.toHaveAttribute('data-disabled'))
+    expect(reload).not.toHaveTextContent('sub-agents working')
+  })
+
   it('keeps export activation on its row and gives Space to the sibling item', async () => {
     const user = userEvent.setup()
     mount()
