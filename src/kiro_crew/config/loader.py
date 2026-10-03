@@ -5672,13 +5672,17 @@ class KiroCrewConfig:
         whenever the surface named the crew — the same class of drift in the other
         direction. With no crew record to read, ``agent`` IS the agent name (the
         background/heartbeat session keys pass it directly) and is used as-is.
+
+        The bound name goes through :func:`dispatch_kiro_agent` first: the role
+        set holds DECLARED names, and a crew that recorded a worker's file name
+        runs that worker all the same.
         """
         crew = self._crew_record(agent, crew_agent)
         if crew is not None:
             pinned = coerce_effort(crew.reasoning_effort)
             if pinned:
                 return pinned
-        template = crew.kiro_agent if crew is not None else (agent or "")
+        template = dispatch_kiro_agent(crew.kiro_agent) if crew is not None else (agent or "")
         if template in BACKGROUND_WORKER_AGENTS:
             return self.agent.resolve_effort("background")
         return self.agent.reasoning_effort
@@ -6082,7 +6086,42 @@ def _workspace_name_for_dir(config: KiroCrewConfig, ws_dir: Path) -> str:
 
 
 _MATERIALIZED_AGENTS: frozenset[str] = frozenset()
+# Filename stem -> declared name, for the configs whose file is NOT named after
+# the agent (a package installs ``<Package>-<agent>.json`` declaring ``<agent>``).
+# Rewritten IN PLACE by each full refresh, never rebound: the integration
+# harness clears it between boots like every other home-derived dict, and its
+# residue witness compares a dict by identity. See :func:`dispatch_kiro_agent`.
+_MATERIALIZED_STEMS: dict[str, str] = {}
 _MATERIALIZED_AGENTS_READY = False
+# Whether the snapshot now installed came from a scan that read every spec.
+# Published with the snapshot, under the same lock, because the healer reads the
+# INSTALLED snapshot, which a later partial scan may have replaced since the
+# refresh that called it scanned (see :func:`reset_dangling_default_agent`).
+_MATERIALIZED_COMPLETE = False
+# Every name a landed snapshot or a publish has let a binding dispatch in this
+# process: declared names and the file names mapped to one. Updated in place,
+# never rebound. A name in it that the current snapshot does not declare was
+# REMOVED, which is the evidence :func:`reset_dangling_default_agent` needs;
+# keeping it here rather than diffing two consecutive scans means a refresh that
+# does not heal cannot use the evidence up before one that does.
+#
+# An insertion-ordered dict used as a set, bounded by :func:`_remember_seen`:
+# every name the directory still declares moves to the end on each scan, so the
+# oldest entries are the removals seen longest ago, and those go first when the
+# count passes its bound.
+_MATERIALIZED_SEEN: dict[str, None] = {}
+# The directory is user-writable and its files choose these names, so the
+# retained maps are bounded where they are kept: at most this many entries each,
+# and no name (a stem, or the name it maps to) longer than this. A name past the
+# length bound is not recorded. For the stem map that leaves the binding
+# dispatched verbatim; for the removal evidence it means a default bound to that
+# name is never reset, which is the healer's answer to anything it cannot be
+# sure of.
+_MATERIALIZED_SEEN_MAX = 4096
+_MATERIALIZED_SEEN_NAME_MAX_CHARS = 256
+# What the last bounded write dropped, so a diagnostic is written when that
+# changes rather than on every refresh of an unchanged directory.
+_MATERIALIZED_LAST_DROPPED: dict[str, int] = {}
 # Bumped by every publish. A refresh samples it before scanning and, if it moved
 # while the scan was in flight, unions instead of replacing — otherwise a scan
 # that globbed the directory BEFORE a registration wrote into it would assign its
@@ -6101,8 +6140,73 @@ _MATERIALIZED_REFRESH_APPLIED = 0
 _MATERIALIZED_AGENTS_LOCK = threading.Lock()
 
 
+def _report_dropped(what: str, dropped: int) -> None:
+    """One aggregate line when a bounded write's drop count changes.
+
+    Every bounded map reports through here, once per landed scan or publish
+    and only when the count differs from the last report for *what*, so an
+    unchanged oversized directory is reported once, not on every refresh.
+    """
+    if _MATERIALIZED_LAST_DROPPED.get(what, 0) == dropped:
+        return
+    _MATERIALIZED_LAST_DROPPED[what] = dropped
+    if dropped:
+        logger.warning(
+            "agents directory: %d %s not kept (bounds: %d entries, %d characters per name)",
+            dropped,
+            what,
+            _MATERIALIZED_SEEN_MAX,
+            _MATERIALIZED_SEEN_NAME_MAX_CHARS,
+        )
+
+
+def _remember_seen(names: Iterable[str]) -> None:
+    """Record *names* in ``_MATERIALIZED_SEEN`` as the newest entries, within its bounds.
+
+    Caller holds ``_MATERIALIZED_AGENTS_LOCK``. A name already present moves to
+    the end, so what the directory still declares stays newest and the oldest
+    entries are stale removal evidence; those are evicted first once the count
+    passes ``_MATERIALIZED_SEEN_MAX``. Overlong names and evictions are counted
+    and reported in one line (see :func:`_report_dropped`).
+    """
+    dropped = 0
+    for name in names:
+        if len(name) > _MATERIALIZED_SEEN_NAME_MAX_CHARS:
+            dropped += 1
+            continue
+        _MATERIALIZED_SEEN.pop(name, None)
+        _MATERIALIZED_SEEN[name] = None
+    while len(_MATERIALIZED_SEEN) > _MATERIALIZED_SEEN_MAX:
+        del _MATERIALIZED_SEEN[next(iter(_MATERIALIZED_SEEN))]
+        dropped += 1
+    _report_dropped("removal-evidence name(s)", dropped)
+
+
+# Whether the last :func:`_scan_materialized_index` on THIS thread read every
+# candidate spec. Thread-local, not returned: the scan's ``(names, stems)``
+# contract has other callers, and each refresh runs its scan and reads this on
+# one thread. A scan that skipped an unreadable or unparseable spec leaves that
+# agent's name out of the snapshot although its file is still there, so its
+# absence is not evidence of a removal (see :func:`refresh_materialized_agents`).
+_SCAN_STATE = threading.local()
+
+
 def _scan_materialized_agents(agents_dir: Path) -> frozenset[str]:
     """Every agent name declared by the kiro agent configs in *agents_dir*.
+
+    See :func:`_scan_materialized_index`, which this reads the names half of.
+    """
+    return _scan_materialized_index(agents_dir)[0]
+
+
+def _scan_materialized_index(agents_dir: Path) -> tuple[frozenset[str], dict[str, str]]:
+    """``(declared names, stem -> declared name)`` for the configs in *agents_dir*.
+
+    The names half is described below. The second half maps a filename stem to
+    the name its config declares, only where the two differ, the stem is not
+    itself a declared name, and exactly one parsed config has that stem. It lets
+    a binding that recorded the FILE name (``KiroPkg-captain`` for a config
+    declaring ``captain``) still dispatch the agent the file declares.
 
     Each config contributes its DECLARED ``name`` field; the filename stem is
     used only as a fallback when a config declares no name, since it is then the
@@ -6114,16 +6218,20 @@ def _scan_materialized_agents(agents_dir: Path) -> frozenset[str]:
     glob and the per-file reads, so callers must invoke it OFF the event loop.
     """
     names: set[str] = set()
+    stems: dict[str, str] = {}
+    ambiguous: set[str] = set()
     # Deferred import: `hooks` reaches back into this module for config paths, so
     # the edge must resolve lazily. A failure here propagates to
     # refresh_materialized_agents, which logs and leaves the snapshot untouched —
     # fail-closed, rather than falling back to an unguarded read.
     from kiro_crew.hooks import safe_read_file
 
+    _SCAN_STATE.complete = True
     try:
         candidates = iter_agent_spec_files(agents_dir)
     except OSError:
-        return frozenset()
+        _SCAN_STATE.complete = False
+        return frozenset(), {}
     for af in candidates:
         try:
             # Through the sensitive-path gate, not a bare read: this directory is
@@ -6134,6 +6242,8 @@ def _scan_materialized_agents(agents_dir: Path) -> frozenset[str]:
             # refused entry is skipped by the same handler as an unreadable one.
             data = parse_agent_spec_text(safe_read_file(str(af)), af)
         except (ValueError, OSError):
+            # Its agent may be one this scan now leaves out; the scan is partial.
+            _SCAN_STATE.complete = False
             continue
         # Skip stray non-object JSON a user may have dropped in the dir. The
         # filename stem is only trusted AFTER the file parses as an agent config:
@@ -6153,12 +6263,35 @@ def _scan_materialized_agents(agents_dir: Path) -> frozenset[str]:
         declared = data.get("name")
         if isinstance(declared, str) and declared:
             names.add(declared)
+            if declared != af.stem:
+                if af.stem in stems and stems[af.stem] != declared:
+                    ambiguous.add(af.stem)
+                stems[af.stem] = declared
         else:
             names.add(af.stem)
-    return frozenset(names)
+    # A stem that is itself some agent's declared name already dispatches that
+    # agent; one two configs share is no evidence of which was meant. The map is
+    # kept for the process, so it is bounded here, where it is built: an
+    # overlong stem or name is left out (the binding then dispatches verbatim),
+    # and past the count bound the rest are dropped. Both are reported once.
+    kept: dict[str, str] = {}
+    dropped = 0
+    for stem, name in stems.items():
+        if stem in names or stem in ambiguous:
+            continue
+        if (
+            len(stem) > _MATERIALIZED_SEEN_NAME_MAX_CHARS
+            or len(name) > _MATERIALIZED_SEEN_NAME_MAX_CHARS
+            or len(kept) >= _MATERIALIZED_SEEN_MAX
+        ):
+            dropped += 1
+            continue
+        kept[stem] = name
+    _report_dropped("file-name mapping(s)", dropped)
+    return frozenset(names), kept
 
 
-def refresh_materialized_agents() -> None:
+def refresh_materialized_agents(*, heal_default: bool = False) -> None:
     """Rescan the kiro agents directory into the in-memory snapshot.
 
     MUST be called off the event loop — it globs a directory and reads every
@@ -6170,6 +6303,18 @@ def refresh_materialized_agents() -> None:
     :func:`resolve_agent_bindings` on every turn of an app-bound session) then
     does zero filesystem work. Never raises.
 
+    A scan that lands is the one moment the snapshot is known to be whole, so
+    a caller acting for the owner passes ``heal_default=True`` to also run
+    :func:`reset_dangling_default_agent`. Healing is opt-in because the reset
+    writes the owner's ``config.json``: a refresh reached from anyone else's
+    request (an app token's turn, a lookup) must not, and a lazy build can run
+    inside a caller's own locked config write (the default-agent PUT reaches
+    :func:`dispatch_kiro_agent` from its mutate), where the reset's write would
+    wait on the lock that caller holds. A refresh that does not heal still
+    records what it saw removed, for the next one that does. A scan that could
+    not read or parse every spec never heals: the agent of a skipped file is
+    missing from that snapshot while its file is still on disk.
+
     Consequence worth stating plainly: editing an existing config IN PLACE — say
     renaming its ``name`` field by hand — refreshes nothing, so that new name
     stays undispatchable until the next registration or gateway boot. Hand-editing
@@ -6178,13 +6323,16 @@ def refresh_materialized_agents() -> None:
     rather than papered over with a per-file stat.
     """
     global _MATERIALIZED_AGENTS, _MATERIALIZED_AGENTS_READY, _MATERIALIZED_REFRESH_ISSUED
-    global _MATERIALIZED_REFRESH_APPLIED
+    global _MATERIALIZED_REFRESH_APPLIED, _MATERIALIZED_COMPLETE
     with _MATERIALIZED_AGENTS_LOCK:
         generation_at_start = _MATERIALIZED_AGENTS_GENERATION
         _MATERIALIZED_REFRESH_ISSUED += 1
         my_ticket = _MATERIALIZED_REFRESH_ISSUED
     try:
-        snapshot = _scan_materialized_agents(kiro_agents_dir())
+        agents_dir = kiro_agents_dir()
+        _SCAN_STATE.complete = True
+        snapshot, stems = _scan_materialized_index(agents_dir)
+        scan_complete = bool(getattr(_SCAN_STATE, "complete", True))
     except Exception:  # noqa: BLE001 — a refresh failure only costs a fallback
         logger.debug("Failed to refresh materialized agent names", exc_info=True)
         return
@@ -6204,6 +6352,16 @@ def refresh_materialized_agents() -> None:
             # registration apply the authoritative view (including removals).
             snapshot = frozenset(snapshot | _MATERIALIZED_AGENTS)
         _MATERIALIZED_AGENTS = snapshot
+        # In place, new entries first: a reader between the two statements sees
+        # every current stem (an old value for one just rewritten, never a hole),
+        # and the dict's identity holds across refreshes and boots.
+        _MATERIALIZED_STEMS.update(stems)
+        for stale in [stem for stem in _MATERIALIZED_STEMS if stem not in stems]:
+            del _MATERIALIZED_STEMS[stale]
+        # One call per landed snapshot, so its eviction and its report happen
+        # once for the whole of what it declares.
+        _remember_seen([*snapshot, *stems])
+        _MATERIALIZED_COMPLETE = scan_complete
         _MATERIALIZED_AGENTS_READY = True
         _MATERIALIZED_REFRESH_APPLIED = my_ticket
     # An app install/upgrade that rewrote agent JSON just landed in the snapshot;
@@ -6216,6 +6374,174 @@ def refresh_materialized_agents() -> None:
         invalidate_include_crew_context_cache()
     except Exception:  # noqa: BLE001 — best-effort; a stale flag is not fatal
         logger.debug("Failed to invalidate includeCrewContext cache", exc_info=True)
+    # Only a scan that read every spec may heal: one that skipped a file it could
+    # not read or parse is missing that file's agent while the file is still
+    # there, and the reset it would make is durable.
+    if heal_default and scan_complete:
+        reset_dangling_default_agent()
+
+
+def _removal_evidence() -> tuple[frozenset[str] | None, frozenset[str], bool]:
+    """``(installed names, removed names, scan complete)``, read in one lock hold.
+
+    ``None`` names while no snapshot has landed. Read together so the removals
+    and the completeness flag describe the same installed snapshot.
+    """
+    with _MATERIALIZED_AGENTS_LOCK:
+        names = _MATERIALIZED_AGENTS if _MATERIALIZED_AGENTS_READY else None
+        removed = frozenset(
+            _MATERIALIZED_SEEN.keys() - _MATERIALIZED_AGENTS - _MATERIALIZED_STEMS.keys()
+        )
+        return names, removed, _MATERIALIZED_COMPLETE
+
+
+def reset_dangling_default_agent() -> bool:
+    """Set ``default_agent`` back to ``default`` when its template file is gone.
+
+    An agent the owner made the default can lose its spec after the fact: a
+    package uninstall removes its file, a disabled app deregisters its
+    agents, a user deletes the file by hand. The alias row stays in
+    ``config.json`` and ``default_agent`` still names it, so every new chat
+    dispatches a name kiro-cli does not list and fails "Agent mode ... is not
+    available". The owner's call for that state is the shipped ``default`` crew,
+    which binds the managed template, so this points ``default_agent`` there.
+    The alias row is left alone: it is the owner's record, and the template may
+    come back.
+
+    "Gone" is a REMOVED name: one an earlier landed snapshot (or a publish) in
+    this process let a binding dispatch, and the current snapshot does not.
+    Absence alone is not evidence. A
+    binding can name an agent this directory never declared and still
+    dispatch: a project checkout's own spec (kiro-cli resolves ``--agent``
+    against the session's directory first) or an agent the edition contributes.
+    For the same reason a removed name the edition still supplies is kept.
+
+    Decides against the materialized snapshot only, so it is a pure in-memory
+    check between the config load and the write, and it never acts on
+    uncertainty -- a cold or empty snapshot, nothing removed, an unreadable or
+    degraded config, a missing ``default`` alias, or a default already
+    ``default`` all leave the file untouched. The managed ``kirocrew`` template is exempt: a missing one is
+    regenerated before spawn (``agent.ensure_agent_materialized``), not a loss.
+    The write is the same locked read-modify-write the default-agent PUT uses,
+    and both conditions are re-derived inside the lock, so a PUT that repointed
+    the default in the window wins. Runs OFF the event loop (it loads the config
+    and takes the config lock); :func:`refresh_materialized_agents` is its
+    caller. Never raises. Returns ``True`` when the default was reset.
+    """
+    names, removed, complete = _removal_evidence()
+    if not names or not removed or not complete:
+        return False
+    try:
+        cfg = KiroCrewConfig.load()
+    except Exception:  # noqa: BLE001 — an unreadable config is exactly when not to act
+        logger.debug("default agent check: config unreadable", exc_info=True)
+        return False
+    if cfg.degraded_sections:
+        return False
+    current = cfg.default_agent
+    row = cfg.agents.get(current)
+    if current == "default" or row is None or "default" not in cfg.agents:
+        return False
+    template = _dangling_template(row.kiro_agent, names)
+    if template is None or template not in removed or template in _edition_agent_names():
+        return False
+    reset = False
+
+    def _reset(data: dict) -> dict | None:
+        nonlocal reset
+        agents = data.get("agents")
+        if data.get("default_agent") != current or not isinstance(agents, dict):
+            return None
+        row = agents.get(current)
+        if "default" not in agents or not isinstance(row, dict):
+            return None
+        # Re-derived from the snapshot installed NOW: another refresh may have
+        # replaced the one read above, and if its scan was partial its absences
+        # are not evidence.
+        names_now, removed_now, complete_now = _removal_evidence()
+        if names_now is None or not complete_now or template not in removed_now:
+            return None
+        if _dangling_template(row.get("kiro_agent"), names_now) != template:
+            return None
+        data["default_agent"] = "default"
+        reset = True
+        return data
+
+    try:
+        update_config_locked(config_path(), mutate=_reset, stamp_meta=False)
+    except (ConfigReadError, ConfigWriteRefused, OSError):
+        logger.debug("default agent check: config write declined", exc_info=True)
+        return False
+    if not reset:
+        return False
+    logger.warning(
+        "default agent %r runs template %r, whose file is gone from %s; "
+        "default_agent reset to 'default'",
+        current,
+        template,
+        kiro_agents_dir(),
+    )
+    _log_default_agent_reset(current, template)
+    return True
+
+
+def _edition_agent_names() -> frozenset[str]:
+    """Names of the agents the edition contributes beside the on-disk specs.
+
+    Read through the platform seam the agent listing uses
+    (``agent_discovery._with_edition_agents``), failing closed to none. The
+    public edition contributes none.
+    """
+    from kiro_crew.platform.context import current_context, safe_context_call
+
+    rows: list[object] = safe_context_call(
+        lambda: list(current_context().agent_catalog.builtin_agents()),
+        fallback_factory=list,
+        log_message="builtin_agents lookup failed; using none",
+    )
+    return frozenset(
+        row["name"]
+        for row in rows
+        if isinstance(row, dict) and isinstance(row.get("name"), str) and row["name"]
+    )
+
+
+def _dangling_template(kiro_agent: object, names: frozenset[str]) -> str | None:
+    """The template a ``kiro_agent`` binding runs, when *names* does not declare it.
+
+    ``None`` for a healthy binding, and for the managed ``kirocrew`` template
+    (bound explicitly or by an empty binding), which self-heals elsewhere. The
+    binding goes through :func:`dispatch_kiro_agent` so a row that recorded a
+    file name counts as the agent that file declares.
+    """
+    bound = kiro_agent if isinstance(kiro_agent, str) else ""
+    template = dispatch_kiro_agent(bound) or "kirocrew"
+    if template == "kirocrew" or template in names:
+        return None
+    return template
+
+
+def _log_default_agent_reset(alias: str, template: str) -> None:
+    """Best-effort SEL record of a default-agent reset, like the clamp event."""
+    try:
+        from kiro_crew.sel import SecurityEvent, sel
+
+        sel().log(
+            SecurityEvent(
+                event_id=uuid.uuid4().hex[:16],
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                event_type="default_agent_reset",
+                caller_identity="config_loader",
+                agent="",
+                source="background",
+                operation="config.default_agent",
+                outcome="reset",
+                resources=f"agent:{alias}",
+                metadata={"template": template, "reset_to": "default"},
+            )
+        )
+    except Exception:
+        logger.debug("SEL default-agent-reset event failed", exc_info=True)
 
 
 def publish_materialized_agents(names: Iterable[str]) -> None:
@@ -6240,6 +6566,7 @@ def publish_materialized_agents(names: Iterable[str]) -> None:
         return
     with _MATERIALIZED_AGENTS_LOCK:
         _MATERIALIZED_AGENTS = frozenset(_MATERIALIZED_AGENTS | fresh)
+        _remember_seen(fresh)
         _MATERIALIZED_AGENTS_READY = True
         # Signals any in-flight refresh that its view predates this write, so it
         # unions rather than replacing (see refresh_materialized_agents).
@@ -6275,6 +6602,55 @@ def schedule_materialized_agents_refresh() -> None:
         loop.run_in_executor(None, refresh_materialized_agents)
     except Exception:  # noqa: BLE001 — a scheduling failure only costs a fallback
         logger.debug("Failed to schedule materialized agent refresh", exc_info=True)
+
+
+def dispatch_kiro_agent(kiro_agent: str) -> str:
+    """The name kiro-cli knows for a crewmate's bound ``kiro_agent``.
+
+    A crewmate created by hand, or by an older guide, can record the agent's
+    FILE name (``KiroPkg-captain``, from ``~/.kiro/agents/KiroPkg-captain.json``)
+    while the file declares ``"name": "captain"``. kiro-cli lists agents by
+    declared name only, so dispatching the file name fails closed with "Agent
+    mode ... is not available". This maps such a stem to the name its file
+    declares, so the existing crewmate works without editing its row.
+
+    Changes nothing else: a name that is itself declared, a stem two files share,
+    a name the edition contributes, and any unknown name are returned verbatim. A pure in-memory lookup (see
+    :func:`_materialized_kiro_agent` for why), built by the same full refresh.
+    """
+    if not kiro_agent or kiro_agent in _MATERIALIZED_AGENTS:
+        return kiro_agent
+    if not _MATERIALIZED_AGENTS_READY:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            refresh_materialized_agents(heal_default=False)
+        else:
+            return kiro_agent
+    mapped = _MATERIALIZED_STEMS.get(kiro_agent)
+    if mapped is None:
+        return kiro_agent
+    # A name the edition contributes is that agent, whatever a local file of the
+    # same stem declares: the directory is user-writable, so a file must not be
+    # able to redirect a binding to an edition agent onto some other agent.
+    # Asked only when a mapping exists, so the common path stays in memory.
+    if kiro_agent in _edition_agent_names():
+        return kiro_agent
+    return mapped
+
+
+def member_template_id(agent_cfg: KiroCrewAgentConfig) -> str:
+    """The template a crewmate row runs: its ``kiro_agent`` through
+    :func:`dispatch_kiro_agent`, ``kirocrew`` when the row binds none.
+
+    The one rule for turning a row into an ``ExecutionContext.template_id``.
+    Every dispatch path reads that field verbatim -- the subagent run hands it
+    to kiro-cli, ``resolve_session_agent_bindings`` republishes it as the
+    session's agent -- so a file-name binding is mapped where the row is read,
+    before the record exists, by each builder (:func:`resolve_member_execution`
+    and the subagent admission gate's resume and inherited-member arms).
+    """
+    return dispatch_kiro_agent(agent_cfg.kiro_agent) or "kirocrew"
 
 
 def _materialized_kiro_agent(agent_name: str | None, project_dir: str | None = None) -> str:
@@ -6341,8 +6717,9 @@ def _materialized_kiro_agent(agent_name: str | None, project_dir: str | None = N
         try:
             asyncio.get_running_loop()
         except RuntimeError:
-            # No loop on this thread: scanning here blocks nothing.
-            refresh_materialized_agents()
+            # No loop on this thread: scanning here blocks nothing. The lazy
+            # build only answers this lookup (see refresh_materialized_agents).
+            refresh_materialized_agents(heal_default=False)
             if agent_name in _MATERIALIZED_AGENTS:
                 return agent_name
         else:
@@ -6801,7 +7178,8 @@ def resolve_agent_identity(config, agent_name=None, *, selection_kind="") -> tup
     )
     return (
         alias,
-        passthrough or (record.kiro_agent if record else config.agent.default_agent),
+        passthrough
+        or (dispatch_kiro_agent(record.kiro_agent) if record else config.agent.default_agent),
         normalize_agent_model(record.model) if record else "",
     )
 
@@ -6874,11 +7252,12 @@ def resolve_agent_bindings(
             config, resolved_alias, require_directory=validate_memory_files
         )
 
-    kiro_agent = (
-        execution_context.template_id
-        if execution_context is not None
-        else passthrough or agent_cfg.kiro_agent
-    )
+    if execution_context is not None:
+        kiro_agent = execution_context.template_id
+        if execution_context.selection_kind == "member":
+            kiro_agent = dispatch_kiro_agent(kiro_agent)
+    else:
+        kiro_agent = passthrough or dispatch_kiro_agent(agent_cfg.kiro_agent)
 
     # Build effective memory config via dict-level merge
     store_cfg = config.memory_stores.get(store_name)

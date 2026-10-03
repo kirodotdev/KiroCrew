@@ -73,7 +73,7 @@ class _GateMixin(ManagerComponent):
         """Resolve routing on-loop; async admission supplies its off-loop record read."""
         from dataclasses import replace
 
-        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.config.loader import KiroCrewConfig, member_template_id
         from kiro_crew.execution_context import (
             ExecutionContext,
             derive_execution,
@@ -108,7 +108,7 @@ class _GateMixin(ManagerComponent):
                         raise ValueError("selected member is unavailable")
                 execution = replace(
                     execution,
-                    template_id=selected.kiro_agent or "kirocrew",
+                    template_id=member_template_id(selected),
                     selection_name=alias,
                 )
         else:
@@ -145,7 +145,7 @@ class _GateMixin(ManagerComponent):
                             execution,
                             selection_kind="member",
                             selection_name=inherited[1],
-                            template_id=selected.kiro_agent or "kirocrew",
+                            template_id=member_template_id(selected),
                         )
                     elif (
                         execution.store.store_id != "default"
