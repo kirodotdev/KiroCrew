@@ -1,2 +1,2 @@
 export { ProviderProvider, useProvider } from './context'
-export type { NormalizedUsage } from './types'
+export type { NormalizedUsage, TokenEstimate } from './types'

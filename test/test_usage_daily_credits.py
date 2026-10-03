@@ -208,6 +208,7 @@ class TestParseSessionsCarriesCredits:
                 "messages": 2,
                 "tool_calls": 0,
                 "credits": 3.23,  # 3.234 rounded to the Billing card's 2 decimals
+                "est_tokens": 0,
             }
         ]
 
@@ -245,8 +246,16 @@ class TestParseSessionsCarriesCredits:
                 "messages": 0,
                 "tool_calls": 0,
                 "credits": 2.5,
+                "est_tokens": 0,
             },
-            {"date": _day(today), "sessions": 1, "messages": 1, "tool_calls": 0, "credits": 0.0},
+            {
+                "date": _day(today),
+                "sessions": 1,
+                "messages": 1,
+                "tool_calls": 0,
+                "credits": 0.0,
+                "est_tokens": 0,
+            },
         ]
         # The credit-only day does not inflate the session statistics.
         assert r["total_sessions"] == 1

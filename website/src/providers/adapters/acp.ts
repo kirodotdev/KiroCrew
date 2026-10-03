@@ -9,6 +9,7 @@ import type {
   ProviderLabels,
   AgentBinding,
   NormalizedUsage,
+  TokenEstimate,
   NormalizedProviderHook,
   NormalizedPlugin,
   ModelInfo,
@@ -132,6 +133,44 @@ interface RawDailyHistory {
   messages: number
   tool_calls: number
   credits?: number
+  est_tokens?: number
+}
+
+/** Raw estimated token use over one period, from /api/usage/kiro. */
+interface RawTokenEstimate {
+  input?: number
+  output?: number
+  requests?: number
+}
+
+/** Raw `sessions.estimated_tokens` block from /api/usage/kiro. */
+interface RawEstimatedTokens {
+  this_month?: RawTokenEstimate
+  last_month?: RawTokenEstimate
+  unreadable_sessions?: number
+}
+
+/** A finite count from the payload, or 0. */
+function finiteCount(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0
+}
+
+function tokenEstimate(raw: RawTokenEstimate | undefined): TokenEstimate {
+  return { input: finiteCount(raw?.input), output: finiteCount(raw?.output), requests: finiteCount(raw?.requests) }
+}
+
+/**
+ * The estimate block, or undefined when the backend sends none (an older
+ * gateway), so the Usage tab shows no estimate rather than a confident zero.
+ */
+function estimatedTokens(raw: unknown): NormalizedUsage['sessions']['estimatedTokens'] {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined
+  const e = raw as RawEstimatedTokens
+  return {
+    thisMonth: tokenEstimate(e.this_month),
+    lastMonth: tokenEstimate(e.last_month),
+    incomplete: finiteCount(e.unreadable_sessions) > 0,
+  }
 }
 
 /** Raw provider-hook entry from /api/kiro-hooks. */
@@ -300,12 +339,14 @@ export class AcpAdapter implements ProviderAdapter {
         thisMonth: { sessions: s.this_month.sessions, messages: s.this_month.messages, toolCalls: s.this_month.tool_calls },
         avgMsgsPerSession: s.avg_msgs_per_session,
         refusedTranscripts: s.refused_transcripts ?? 0,
+        estimatedTokens: estimatedTokens(s.estimated_tokens),
         dailyHistory: (s.daily_history || []).map((d: RawDailyHistory) => ({
           date: d.date,
           sessions: d.sessions,
           messages: d.messages,
           toolCalls: d.tool_calls,
           credits: typeof d.credits === 'number' && Number.isFinite(d.credits) ? d.credits : undefined,
+          estTokens: typeof d.est_tokens === 'number' && Number.isFinite(d.est_tokens) ? d.est_tokens : undefined,
         })),
       },
       billing: b.plan ? {

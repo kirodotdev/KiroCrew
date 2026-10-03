@@ -66,6 +66,13 @@ class TestParseSessions:
             # ``s.refused_transcripts ?? 0`` would synthesise the promise of
             # completeness the payload never made.
             "refused_transcripts": 0,
+            # No session documents either, so the token estimate is a zero
+            # measurement in the same complete shape.
+            "estimated_tokens": {
+                "this_month": {"input": 0, "output": 0, "requests": 0},
+                "last_month": {"input": 0, "output": 0, "requests": 0},
+                "unreadable_sessions": 0,
+            },
         }
         assert sessions_dir.exists() == directory_exists
 

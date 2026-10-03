@@ -47,6 +47,61 @@ em dash rather than 0% when no plan parsed, the allowance is zero or absent, or
 the row has no figure. On a phone the two columns fold onto one second line
 under each day so the table never scrolls sideways.
 
+The sessions payload also carries `estimated_tokens`: Kiro CLI token use for
+the current calendar month (`this_month`) and the whole previous one
+(`last_month`), each as `input`, `output` and `requests`, plus
+`unreadable_sessions`. kiro-cli writes zero into every token field of its
+per-turn metadata, so the figures are estimates built from what each turn in a
+session document (`<id>.json` beside the transcript) does record. Every model
+request re-sends the context, so a turn's input is its `total_request_count`
+times the context size averaged between the previous turn's end and its own;
+the context size is `final_context_usage_percentage` (else
+`context_usage_percentage`) of the context window, which is the session
+document's own `context_window_tokens` for turns on the session's model or on
+`auto`, and the model registry's window for any other model. A turn with no
+usable reading keeps the context it started with, and a session's first turn
+starts from zero. Output is `assistant_response_length` divided by 4 as an
+approximation. The length leaves out tool-call arguments and reasoning, and
+characters per token vary, so the estimate is not a bound in either direction.
+Turns bucket
+by the local day their `end_timestamp` falls on; a turn stamped after today
+(clock skew, an imported session) is left out, so the estimate never puts
+tokens on a future day. The scan runs from the earlier of last month's first
+day and the first day of the 30-day history window through today, so a history
+day before last month's 1st still gets its estimate while the month sums keep
+their own bounds. The scan validates each document path before it reads an
+mtime. It reads that mtime from the validated path with `lstat`, then skips a
+document untouched since before the scan began without running the no-link
+reader. A document the validator refuses counts as unreadable whatever its age
+because the scan does not read an unvalidated path's mtime.
+`unreadable_sessions` also counts validated documents whose mtime cannot be
+read, or that the reader refuses because its path validation fails, a link is
+present at the name, the inode has a second hard link, the inode is not a
+regular file, the opened file is outside the sessions directory, the file
+cannot be read, or the file exceeds the 8 MiB bound. It also counts
+documents that are too deeply nested, are not JSON, are not shaped like a
+session document (a `session_state` object holding the
+`conversation_metadata.user_turn_metadatas` list) or whose non-empty turn list
+has no turn with a readable `end_timestamp`; a non-zero count means the sums
+leave those documents out. kiro-cli writes only session documents there, so a
+renamed key in its format raises the warning instead of reading as a session
+with nothing to count; an empty turn list is a session with nothing to count
+yet, not an unreadable one.
+Each `daily_history` row carries the day's `input` plus `output` as
+`est_tokens`, and a day inside the 30-day window with an estimate but no
+transcript gets a zero-session row. The cold-refresh payload carries the same
+zero-valued block. The Usage tab shows the block as an "Estimated Tokens" card
+(input, labelled as the context sent, plus output, total and model requests for
+both months, with a note saying
+how the figures are built and a warning when `unreadable_sessions` is
+non-zero), and the per-day figure as an "Est. tokens" column that folds into
+the phone line; a gateway that sends no estimate shows neither, and neither
+does an all-zero block with `unreadable_sessions` zero (a dashboard with no
+kiro-cli sessions, or a cold refresh still carrying the zero block), so a
+non-kiro harness never shows a permanent all-zero card. Zero totals with a
+non-zero `unreadable_sessions` keep the card for its warning, and a day with a
+non-zero `est_tokens` shows both the card and the column.
+
 The Overview usage summary and Usage report share a per-provider browser-memory
 cache for the dashboard lifetime. Opening either view shows the last successful
 report immediately. Data is fresh for five minutes; an older report refreshes

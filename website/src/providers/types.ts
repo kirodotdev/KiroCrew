@@ -35,6 +35,14 @@ export interface TokenBreakdown {
   total: number
 }
 
+/** Estimated token use over one period (see `NormalizedUsage.sessions.estimatedTokens`). */
+export interface TokenEstimate {
+  input: number
+  output: number
+  /** Model requests the estimate is built from. */
+  requests: number
+}
+
 export interface NormalizedUsage {
   /** Session analytics are still refreshing; billing data is already usable. */
   refreshing?: boolean
@@ -51,6 +59,17 @@ export interface NormalizedUsage {
      * failure the usage page must not render as a confident zero.
      */
     refusedTranscripts: number
+    /**
+     * Kiro CLI token use estimated from each turn's context size and request
+     * count, because kiro-cli records no token counts. Absent when the provider
+     * does not report it.
+     */
+    estimatedTokens?: {
+      thisMonth: TokenEstimate
+      lastMonth: TokenEstimate
+      /** Some session documents could not be read, so the sums leave those documents out. */
+      incomplete: boolean
+    }
     dailyHistory: {
       date: string
       sessions: number
@@ -58,6 +77,8 @@ export interface NormalizedUsage {
       toolCalls: number
       /** Credits billed that local day; absent when the provider does not report per-day spend. */
       credits?: number
+      /** Estimated input plus output tokens that local day; absent when the provider does not report it. */
+      estTokens?: number
     }[]
   }
   billing: {
