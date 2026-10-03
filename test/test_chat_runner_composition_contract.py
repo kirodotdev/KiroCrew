@@ -98,7 +98,7 @@ _BASE_NAMES = frozenset("""
         NATIVE_SUBAGENT_OUTPUT_HARD NATIVE_SUBAGENT_OUTPUT_TAIL NATIVE_SUBAGENT_TERMINAL_KEEP
         NATIVE_SUBAGENT_TERMINAL_TTL_SECS NamedTuple OUTCOME_REJECTED_TRANSPORT_FLOOR
         PENDING_CHANNEL_ATTR PHASE_PER_TURN PHASE_SESSION_START POISONED_SESSION_CYCLES Path
-        PostedOptions PromptBusyExhaustedError QUESTION_CARD_SHOWN_PREFIX QUICK_PROMPTS
+        PostedOptions PromptBusyExhaustedError QUICK_PROMPTS
         REFUSAL_INBAND_RECOVERY_PREFIX REFUSAL_RECOVERY_PREFIX RESTORED_QUEUE_KEY
         RecoveryPayload Refusal RefusalInfo
         ResetCause ResolvedBindings
@@ -219,7 +219,7 @@ _BASE_NAMES = frozenset("""
         _unregister_native_card _validate_tool_name acp_error_is_session_not_found
         acp_error_is_transient advance_fallback_candidate advertised_model_ids
         agent_welcome_message annotations app_inject_row append_and_surface
-        apply_session_directive approval_command approval_display_command asyncio
+        approval_command approval_display_command asyncio
         attachment_meta attributable_user_chars build_infra_retry_prompt build_recovery_requeue
         build_refusal_recovery_prompt build_refusal_steer_notice build_stale_recovery_prompt
         build_tool_stall_recovery_prompt canonical_memory_mode capabilities_of

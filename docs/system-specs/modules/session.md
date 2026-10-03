@@ -739,6 +739,22 @@ against sweep completeness, and are torn down at `close_all`.
   privacy-safe WARNING (`Turn-end contract violation`, counts and the directive
   kind only); it does not fail the turn and does not re-arm recovery, because
   re-arming would turn the quiet end the model asked for into a notice card.
+  A quiet end is also a FINISHED turn for the interrupted-turn scan: its tail
+  (`[user|nudge, tool…]`) is shape-identical to a gateway that died mid-turn, so
+  `state.is_turn_interrupted` and its mirror `selectTurnInterrupted` treat the
+  applied directive's tool row (`is_quiet_end_row` / `isQuietEndRow`, matched
+  on the row's persisted TRUSTED identity `meta.tool_name` + `meta.mcp_server`,
+  never on its title) as a terminator like the Stop card — otherwise every quiet
+  patrol cycle would offer Resume and flag the session as interrupted. The
+  Crewmate chat draws nothing for it: tool rows are machinery there
+  (`crewmateBubbles.MACHINERY_ROLES`), so the quiet turn leaves that surface
+  exactly as it was. The ladder's own cards — the continue and give-up rungs
+  and the post-compaction resume — carry `meta.kind = "empty_turn"`
+  (`chat_utils.EMPTY_TURN_NOTICE_KIND`), and the Crewmate chat drops a `notice`
+  row by that tag (`crewmateBubbles.isCrewmateChatRow`), never by its words: a
+  person reading a crewmate has nothing to do with the runner's recovery, while
+  an untagged notice (an automation arm refusal) still draws because it names
+  something they may have to act on. The Sessions page keeps drawing them.
 
   **Turn-end diagnostics.** The branch emits ONE privacy-safe WARNING per empty
   verdict, after the rung is chosen, naming a closed `cause` and `rung` plus

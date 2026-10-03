@@ -177,6 +177,28 @@ describe('selectContinuable', () => {
     expect(selectContinuable(bound)).toBe(false)
   })
 
+  it('a quiet end (nothing_to_do tool row) is a finished turn, not an interruption', () => {
+    // Mirrors `is_quiet_end_row` / `test_not_interrupted_after_a_quiet_end`:
+    // [user, tool, tool] is the crash tail too, so only the row's persisted
+    // trusted identity may close the turn.
+    const quiet = state({ messages: [
+      msg('user', 'patrol'),
+      msg('tool', '🔧 gh pr view', { tool_call_id: 'a' }),
+      msg('tool', '🔧 @kirocrew-core/nothing_to_do', { tool_call_id: 'b', tool_name: 'nothing_to_do', mcp_server: 'kirocrew-core' }),
+    ] })
+    expect(selectTurnInterrupted(quiet)).toBe(false)
+    const titleOnly = state({ messages: [
+      msg('user', 'patrol'),
+      msg('tool', '🔧 echo nothing_to_do', { tool_call_id: 'a' }),
+    ] })
+    expect(selectTurnInterrupted(titleOnly)).toBe(true)
+    const foreign = state({ messages: [
+      msg('user', 'patrol'),
+      msg('tool', '🔧 nothing_to_do', { tool_call_id: 'a', tool_name: 'nothing_to_do', mcp_server: 'other-mcp' }),
+    ] })
+    expect(selectTurnInterrupted(foreign)).toBe(true)
+  })
+
   it('still offers Continue on a local slot while another slot is crew-bound', () => {
     expect(selectContinuable(state({ messages: [msg('user')] }, [
       { key: 'other', executor: 'remote' },
