@@ -676,23 +676,47 @@ async def test_owned_factory_does_not_intercept_untracked_native_spawns(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_a_child_exiting_259_reads_as_exited_and_its_drain_finishes(tmp_path):
+@pytest.mark.parametrize("console_host_outlives_child", [False, True])
+async def test_a_child_exiting_259_reads_as_exited_and_its_drain_finishes(
+    tmp_path, console_host_outlives_child
+):
     """259 is both the value STILL_ACTIVE reserves and an ordinary exit code.
 
     An exit status alone cannot tell the two apart, so a child that picks 259
     reads back as running for as long as its handle is held: the drain signals it
     once, never reaches a terminal scan, raises at its deadline, and leaves the
     reservation charged until the gateway restarts.
+
+    The drain's members are the child AND whatever discovery reaches from it. A
+    ``CREATE_NO_WINDOW`` child owns a ``conhost.exe`` that Toolhelp lists as its
+    child, and on a loaded host that console host is still alive when the drain
+    scans, so it is a genuine member the drain must also finish. The ``True``
+    case holds it alive deterministically: a helper attached to the child's
+    console keeps the console host running after the child exits.
     """
 
     python = getattr(sys, "_base_executable", sys.executable)
+    go, attached, release = tmp_path / "go", tmp_path / "attached", tmp_path / "release"
+
+    async def wait_for_file(path):
+        deadline = time.monotonic() + 15
+        while not path.exists():
+            assert time.monotonic() < deadline, f"fixture never wrote {path.name}"
+            await asyncio.sleep(0.02)
+
     process = await asyncio.create_subprocess_exec(
         python,
         "-I",
         "-S",
         "-B",
         "-c",
+        "import pathlib, sys, time\n"
+        "go = pathlib.Path(sys.argv[1])\n"
+        "deadline = time.monotonic() + 30\n"
+        "while not go.exists() and time.monotonic() < deadline:\n"
+        "    time.sleep(0.01)\n"
         "raise SystemExit(259)",
+        str(go),
         cwd=tmp_path,
         stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.DEVNULL,
@@ -703,7 +727,36 @@ async def test_a_child_exiting_259_reads_as_exited_and_its_drain_finishes(tmp_pa
     assert token is not None
     handle = pc.open_process_termination_handle(process.pid, token)
     assert handle is not None
+    helper = None
+    state = None
     try:
+        if console_host_outlives_child:
+            helper = await asyncio.create_subprocess_exec(
+                python,
+                "-I",
+                "-S",
+                "-B",
+                "-c",
+                "import ctypes, pathlib, sys, time\n"
+                "kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)\n"
+                "attached = kernel32.AttachConsole(int(sys.argv[1]))\n"
+                "pathlib.Path(sys.argv[2]).write_text(str(attached), encoding='utf-8')\n"
+                "release = pathlib.Path(sys.argv[3])\n"
+                "deadline = time.monotonic() + 30\n"
+                "while not release.exists() and time.monotonic() < deadline:\n"
+                "    time.sleep(0.01)\n",
+                str(process.pid),
+                str(attached),
+                str(release),
+                cwd=tmp_path,
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+                creationflags=pc.CREATE_NEW_PROCESS_GROUP | 0x00000008,  # DETACHED_PROCESS
+            )
+            await wait_for_file(attached)
+            assert attached.read_text(encoding="utf-8") == "1", "helper did not attach"
+        go.touch()
         assert await asyncio.wait_for(process.wait(), 15) == 259, "fixture chose another status"
         # The kernel publishes the exit FILETIME just after the status, so read
         # within a bound rather than demanding the first observation carry it.
@@ -723,6 +776,17 @@ async def test_a_child_exiting_259_reads_as_exited_and_its_drain_finishes(tmp_pa
             None, pc._drain_windows_process_tree, state
         )
         assert drained is True
-        assert state.terminally_scanned == {process.pid}
+        assert process.pid in state.terminally_scanned
+        assert state.terminally_scanned == set(state.handles)
+        console_hosts = set(state.handles) - {process.pid}
+        if console_host_outlives_child:
+            assert console_hosts, "the held console host was not a drain member"
     finally:
+        release.touch()
+        go.touch()
+        if helper is not None:
+            await asyncio.wait_for(helper.wait(), 15)
+        for member in () if state is None else state.handles.values():
+            if member != handle:
+                pc.close_process_handle(member)
         pc.close_process_handle(handle)
