@@ -55,6 +55,8 @@ from kiro_crew.constants import (
 # the role pin / provider default"). Import-safe: ``effort`` pulls in only
 # ``model_registry`` (stdlib-only), so no cycle back into validation.
 from kiro_crew.effort import EFFORT_VALUES
+from kiro_crew.guide_catalog import GUIDE_ID_MAX_LEN
+from kiro_crew.guide_catalog import MAX_ACTIONS as GUIDE_MAX_ACTIONS
 from kiro_crew.lesson_validation import LESSON_APPLIES_VALUES
 from kiro_crew.monitoring.limits import MAX_RUNTIME_CEILING_SECS, validate_runtime_secs
 from kiro_crew.monitoring.models import (
@@ -4242,6 +4244,42 @@ PANEL_TEMPLATES_SCHEMA = ToolSchema(tool_name="panel_templates")
 MCP_PANEL_SCHEMAS: dict[str, ToolSchema] = {
     "panel_publish": PANEL_PUBLISH_SCHEMA,
     "panel_templates": PANEL_TEMPLATES_SCHEMA,
+}
+
+
+# ── Tool Schemas (MCP Guide — server ``kirocrew-guide``) ──
+#
+# Its own registry because the guide tools ship in an opt-in server. The shape
+# checked here is the envelope only: which action ids exist and what their params
+# mean is the gateway's catalog (``guide_catalog.validate_actions``), which is the
+# one place that can resolve a setting id against the packaged registry.
+_GUIDE_ID_PATTERN = re.compile(rf"^[A-Za-z0-9_-]{{1,{GUIDE_ID_MAX_LEN}}}$")
+
+GUIDE_LIST_ACTIONS_SCHEMA = ToolSchema(tool_name="guide_list_actions")
+GUIDE_START_SCHEMA = ToolSchema(
+    tool_name="guide_start",
+    fields=[
+        FieldSpec("actions", list, required=True, item_type=dict, max_items=GUIDE_MAX_ACTIONS),
+    ],
+)
+GUIDE_STATUS_SCHEMA = ToolSchema(
+    tool_name="guide_status",
+    fields=[FieldSpec("guide_id", str, max_len=GUIDE_ID_MAX_LEN, pattern=_GUIDE_ID_PATTERN)],
+)
+GUIDE_CANCEL_SCHEMA = ToolSchema(
+    tool_name="guide_cancel",
+    fields=[
+        FieldSpec(
+            "guide_id", str, required=True, max_len=GUIDE_ID_MAX_LEN, pattern=_GUIDE_ID_PATTERN
+        )
+    ],
+)
+
+MCP_GUIDE_SCHEMAS: dict[str, ToolSchema] = {
+    "guide_list_actions": GUIDE_LIST_ACTIONS_SCHEMA,
+    "guide_start": GUIDE_START_SCHEMA,
+    "guide_status": GUIDE_STATUS_SCHEMA,
+    "guide_cancel": GUIDE_CANCEL_SCHEMA,
 }
 
 MCP_COMPUTER_SCHEMAS: dict[str, ToolSchema] = {

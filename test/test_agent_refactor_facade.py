@@ -205,6 +205,7 @@ def test_every_prompt_is_listed_by_dir() -> None:
     """A read-only suite finds the spec prompts by scanning ``dir(agent)``."""
     prompts = {name for name in dir(agent) if name.endswith("_SYSTEM_PROMPT")}
     assert prompts == {
+        "_ASSISTANT_SYSTEM_PROMPT",
         "_CONDUCTOR_SYSTEM_PROMPT",
         "_HEARTBEAT_SYSTEM_PROMPT",
         "_KNOWLEDGE_SYSTEM_PROMPT",

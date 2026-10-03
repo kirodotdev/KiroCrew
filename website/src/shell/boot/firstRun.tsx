@@ -1,7 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import OnboardingFlow from '../../components/OnboardingFlow'
-import MeetCrewmatesFlow from '../../components/MeetCrewmatesFlow'
-import { useMeetCrewmatesGate } from '../../hooks/useMeetCrewmatesGate'
 import AgentImportFlow from '../../components/AgentImportFlow'
 import PrivacyChapter from '../../components/PrivacyChapter'
 import { OnboardingShellHost } from '../../components/OnboardingChapterShell'
@@ -17,7 +15,7 @@ interface FirstRunFlags {
 
 /**
  * Which first-run chapter is on screen: Import setup, then Privacy, then the
- * Customize tour, then Meet CrewMates. Derived from the completion flags on every
+ * Customize tour. Derived from the completion flags on every
  * change, so the hand-offs below and the derive effect cannot disagree.
  */
 export function useFirstRunChapters({ onboarded, importOnboarded, privacyAcked, themeBootReady, markOnboarded }: FirstRunFlags) {
@@ -97,16 +95,13 @@ export function useFirstRunChapters({ onboarded, importOnboarded, privacyAcked, 
     window.addEventListener('mc-start-import', replay)
     return () => window.removeEventListener('mc-start-import', replay)
   }, [])
-  // Meet CrewMates: the crewmate first-run chapter, gated on zero crewmates +
-  // zero custom agents (see the hook).
-  const meetCrewmates = useMeetCrewmatesGate()
   return {
     showAgentImport, setShowAgentImport, showPrivacy, setShowPrivacy, showOnboarding, setShowOnboarding,
-    continueTourAfterImport, privacyExit, endFirstRun, meetCrewmates,
+    continueTourAfterImport, privacyExit, endFirstRun,
   }
 }
 
-/** The four chapters, inside the one first-run chrome host. */
+/** The three chapters, inside the one first-run chrome host. */
 export function FirstRunChapters({ firstRun, onboarded, privacyAcked, markOnboarded, markImportOnboarded, markPrivacyAcked }: {
   firstRun: ReturnType<typeof useFirstRunChapters>
   onboarded: boolean
@@ -117,7 +112,7 @@ export function FirstRunChapters({ firstRun, onboarded, privacyAcked, markOnboar
 }) {
   const {
     showAgentImport, setShowAgentImport, showPrivacy, setShowPrivacy, showOnboarding, setShowOnboarding,
-    continueTourAfterImport, privacyExit, endFirstRun, meetCrewmates,
+    continueTourAfterImport, privacyExit, endFirstRun,
   } = firstRun
   return (
     <>
@@ -183,10 +178,6 @@ export function FirstRunChapters({ firstRun, onboarded, privacyAcked, markOnboar
         onComplete={endFirstRun}
         onSkipAll={endFirstRun}
       />
-      {/* First-run chapter 4 — Meet CrewMates. Fires once per workspace:
-          after the tour for a new user, or on the first Crewmates page
-          visit; also reopened from that page (mc-start-meet-crewmates). */}
-      <MeetCrewmatesFlow open={meetCrewmates.open} onDone={meetCrewmates.onDone} onCreated={meetCrewmates.onCreated} persistFailed={meetCrewmates.persistFailed} />
     </OnboardingShellHost>
     </>
   )

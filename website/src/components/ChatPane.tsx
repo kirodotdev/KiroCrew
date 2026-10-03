@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect, useLayoutEffect, useMemo } from 'react'
+import { useState, useRef, useCallback, useEffect, useLayoutEffect, useMemo, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import { X, LoaderCircle } from 'lucide-react'
@@ -14,6 +14,7 @@ import ChatInput, { type ComposerBusyMode } from './ChatInput'
 import { filterCrewmateChat } from './chat/crewmateBubbles'
 import type { CrewmateIdentity } from '../pages/chat/CrewmateMessage'
 import ErrorNotice from './ErrorNotice'
+import AssistantWelcome from './AssistantWelcome'
 import { Btn } from './ui'
 import ChatDropOverlay, { useChatFileDrop } from './ChatDropOverlay'
 import PaneDim from './PaneDim'
@@ -108,6 +109,9 @@ const SCROLL_AFTER_RENDER_MS = 100
  *  picked in, and the AbortController that can end the request. */
 type UploadVars = { files: File[]; forSlot: string; controller: AbortController }
 
+/** The `assistantWelcome` prop: see its doc on ChatPane's props. */
+export type AssistantWelcomeOptions = { onCreate: () => void; name?: string }
+
 export default function ChatPane({
   slotKey,
   focused,
@@ -131,6 +135,8 @@ export default function ChatPane({
   onSessionOpen,
   sessions,
   activeSession,
+  assistantWelcome,
+  crewmateCreated,
 }: {
   slotKey: string
   onOpenCommandCenter?: () => void
@@ -223,6 +229,16 @@ export default function ChatPane({
   onSessionOpen?: (key: string) => void
   sessions?: ReadonlyMap<string, string>
   activeSession?: string
+  /** Opt-in opening for the built-in Assistant's chat (the Members page passes
+   *  it for that one thread only). When given, the transcript begins with the
+   *  Assistant's welcome: expanded with starters on a conversation with no
+   *  user turn yet, compact once there is one, the SAME card animating
+   *  between the two. Starters fill this pane's composer (never send);
+   *  `onCreate` opens the crewmate creation flow; `name` is the assistant's
+   *  current display name. Absent = no opening, the pane is unchanged. */
+  assistantWelcome?: AssistantWelcomeOptions
+  /** Host confirmation of a user-created crewmate, never a synthetic AI reply. */
+  crewmateCreated?: ReactNode
 }) {
   // One instance covers both dropdown filter inputs (never open at once).
   const dispatch = useAppDispatch()
@@ -525,6 +541,19 @@ export default function ChatPane({
     followUpInsertedRef.current = null
     setInput(next)
   }, [])
+  /** A welcome starter: prefill the composer, never send. An unsent draft
+   *  (text or staged attachments) is never replaced — the starter is refused
+   *  (false) and the composer is revealed so the user sees what they kept. */
+  const applyWelcomeStarter = useCallback((prompt: string): boolean => {
+    const keep = inputRef.current.trim() !== '' || pendingFilesRef.current.length > 0
+    if (!keep) {
+      followUpInsertedRef.current = null
+      inputRef.current = prompt
+      setInput(prompt)
+    }
+    revealComposer()
+    return !keep
+  }, [])
   const followUpOptionsKey = followUpOptions.join('\x00')
   useEffect(() => { setFollowUpPicked(new Set()); followUpInsertedRef.current = null }, [followUpOptionsKey, slotKey])
   // Quick Send parity with ChatPage: same query key, so the cache is shared
@@ -751,6 +780,16 @@ export default function ChatPane({
     queryFn: () => api.chatSlotDetail(slotKey, hydrateLimit),
     staleTime: Infinity,
   })
+  // Assistant opening: compact once the conversation holds a user turn — one
+  // drawn, or one behind a bounded window (has_more: older history exists, so
+  // this is not a first visit). Rendered only once the history is known, so an
+  // existing conversation never flashes the expanded welcome while loading.
+  const welcomeKnown = slotDetail !== undefined || paneMessages.length > 0
+  // The read's own rows count too: on the render it lands, the store has not
+  // been hydrated from it yet (that is the effect below).
+  const welcomeCompact = paneMessages.some((m) => m.role === 'user') || !!warmHasMore || !!slotDetail?.has_more
+    || !!crewmateCreated || !!slotDetail?.messages?.some((m: { role?: string }) => m.role === 'user')
+  const showWelcome = !!assistantWelcome && welcomeKnown
   useEffect(() => {
     if (slotDetail?.messages) dispatch(hydrateSlotMessages({ slot: slotKey, messages: slotDetail.messages, hasMore: slotDetail.has_more, bounded: hydrateLimit !== undefined, total: slotDetail.total, running: slotDetail.running }))
   }, [slotDetail, slotKey, dispatch, hydrateLimit])
@@ -1681,7 +1720,16 @@ export default function ChatPane({
                     to start" beside a summary that counts its wakes. Said only
                     once the read is the WHOLE history (`crewmateQuietUnproven`
                     above): a bounded window with no speech in it is not proof. */}
-                {messages.length === 0 && !running && !slotDetailFailed && !hideEmptyHint && !crewmateQuietUnproven && (
+                {showWelcome && assistantWelcome && (
+                  <AssistantWelcome
+                    compact={welcomeCompact}
+                    name={assistantWelcome.name}
+                    onStarter={applyWelcomeStarter}
+                    onCreate={assistantWelcome.onCreate}
+                  />
+                )}
+                {crewmateCreated}
+                {messages.length === 0 && !running && !slotDetailFailed && !hideEmptyHint && !crewmateQuietUnproven && !showWelcome && (
                   <div className="text-center text-muted text-[13px] px-4 py-8" data-testid={crewmate && paneMessages.length > 0 ? 'crewmate-quiet-hint' : undefined}>
                     {crewmate && paneMessages.length > 0 ? (
                       <>

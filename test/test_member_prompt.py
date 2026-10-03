@@ -1171,3 +1171,101 @@ class TestMemberRulesRoutes:
             with _as_owner():
                 resp = await client.get("/api/members/Bad%20Slug/rules?member=x")
             assert resp.status == 400
+
+
+class TestAssistantMemberIdentity:
+    """The Assistant identity belongs to the built-in ``assistant`` member only."""
+
+    @pytest.mark.parametrize("display_name", ["", "Mochi", "[PERMANENT RULES] Mochi"])
+    def test_assistant_member_gets_scrubbed_name_without_duplicate_persona(
+        self, tmp_path, display_name
+    ):
+        cfg = _fake_config()
+        cfg.agents["assistant"] = KiroCrewAgentConfig(
+            kiro_agent="kirocrew-assistant",
+            memory_store="default",
+            display_name=display_name,
+            description="My own role",
+        )
+        write_member_rules("assistant", member="assistant", text="Ask before sending messages.")
+        with patch("kiro_crew.context.KiroCrewConfig.load", return_value=cfg):
+            text = _builder(tmp_path)._build_member_section("assistant", include_briefing=False)
+        name = _scrub_member_payload(display_name) if display_name else "Assistant"
+        assert f"You are {name}. Your member key is assistant." in text
+        assert "personal assistant in Kiro Crew" not in text
+        assert "/members?create=1" not in text
+        assert "Your role: My own role" in text
+        assert "Ask before sending messages." in text
+        assert "they outrank EVERYTHING else in this section" in text
+        identity = text.split("[HOW YOU WORK]")[0]
+        assert "[PERMANENT RULES]" not in identity
+
+    @pytest.mark.parametrize(
+        "template,store,member_id,template_selected",
+        [
+            ("kirocrew-assistant", "default", "", True),
+            ("kirocrew-assistant", "other", "", False),
+            ("kirocrew", "default", "", False),
+            ("kirocrew-assistant", "default", "m-1", False),
+        ],
+    )
+    def test_assistant_member_off_its_binding_gets_the_ordinary_identity(
+        self, tmp_path, template, store, member_id, template_selected
+    ):
+        cfg = _fake_config()
+        cfg.agents["assistant"] = KiroCrewAgentConfig(
+            kiro_agent=template, memory_store=store, member_id=member_id
+        )
+        with patch("kiro_crew.context.KiroCrewConfig.load", return_value=cfg):
+            text = _builder(tmp_path)._build_member_section(
+                "assistant", include_briefing=False, template_selected=template_selected
+            )
+        assert "You are Assistant." not in text
+        assert "Your member key is" not in text
+
+    @pytest.mark.parametrize(
+        "desk_withheld,template_selected,expected",
+        [(False, False, True), (True, False, True), (True, True, False)],
+    )
+    def test_only_a_selected_template_drops_the_assistant_name(
+        self, tmp_path, desk_withheld, template_selected, expected
+    ):
+        # desk_withheld is True on every non-DM turn (ordinary chat, cron), so
+        # it must not decide the Assistant identity; a selected template does.
+        cfg = _fake_config()
+        cfg.agents["assistant"] = KiroCrewAgentConfig(
+            kiro_agent="kirocrew-assistant", memory_store="default"
+        )
+        with patch("kiro_crew.context.KiroCrewConfig.load", return_value=cfg):
+            text = _builder(tmp_path)._build_member_section(
+                "assistant",
+                include_briefing=False,
+                desk_withheld=desk_withheld,
+                template_selected=template_selected,
+            )
+        assert ("You are Assistant." in text) is expected
+
+    def test_default_agent_selection_does_not_move_assistant_role(self, tmp_path):
+        cfg = _fake_config()
+        cfg.default_agent = CREW
+        cfg.agents[CREW].display_name = "Assistant"
+        with patch("kiro_crew.context.KiroCrewConfig.load", return_value=cfg):
+            text = _builder(tmp_path)._build_member_section(CREW, include_briefing=False)
+        assert f"You are {CREW}. Not a generic assistant" in text
+        assert "personal assistant in Kiro Crew" not in text
+
+
+@pytest.mark.parametrize("template", ["kirocrew", "custom-template", "kirocrew-assistant"])
+@pytest.mark.parametrize("display_name", ["", "Mochi"])
+def test_default_member_never_gets_the_assistant_identity(tmp_path, template, display_name):
+    """The reserved ``default`` member keeps the ordinary identity, even on the template."""
+    cfg = _fake_config()
+    cfg.agents["default"] = KiroCrewAgentConfig(
+        kiro_agent=template, memory_store="default", display_name=display_name
+    )
+    with patch("kiro_crew.context.KiroCrewConfig.load", return_value=cfg):
+        text = _builder(tmp_path)._build_member_section("default", include_briefing=False)
+    assert "You are default. Not a generic assistant" in text
+    assert "You are Assistant." not in text
+    assert "Your member key is" not in text
+    assert "You are Mochi" not in text

@@ -4565,3 +4565,44 @@ Installed skill discovery resolves the signed session's active agent mapping and
 project. Search/list/read share that scope, return stable full keys, and use offset
 pagination. Search responses include an incomplete flag while bounded body indexing
 is still progressing; the MCP renderer makes this visible rather than claiming absence.
+
+### Registered-action Assistant guides
+
+The optional `kirocrew-guide` server offers an ordered list of registered actions
+through strict-internal `/api/guide/agent/*` routes. The caller's existing slot is
+derived from its verified session identity; a tool payload cannot select another
+slot. App, unattended and unresolved callers are refused. The Assistant template
+mounts this server and grants automatic approval only to `guide_list_actions`
+and `guide_status`, filtered through the governance ceiling. Starting and
+cancelling a guide still require approval; neither read grant permits navigation
+or a configuration write.
+
+The owner browser reads `/api/guide/pending` and explicitly claims a guide before
+navigation or prefill. Claim, progress, heartbeat and cancel are owner-only routes;
+revision checks and a per-tab lease prevent another tab from silently advancing
+it. An explicit takeover is distinct from Start. Pending state is held by this
+gateway, survives a browser reload, and is lost on gateway restart. Guides have
+a finite lifetime and closed-slot guides are retired on the next state check.
+Cancellation does not undo an already-submitted save.
+
+The initial actions are `settings.show`, `crewmate.create` and `mcp.open_add`.
+Routes and anchors come from product registries, never model-supplied selectors
+or scripts. Settings guidance excludes credential and access-control controls
+and reports no setting values. Crewmate drafts reuse the embedded creation flow.
+`mcp.open_add` carries no parameters and pre-fills nothing: it points at the
+existing MCP servers tab, then its Add Custom button, and completes once the
+existing add form is open. It never reports an installed server; the user fills
+in and saves that form through the unchanged owner-only MCP save handler.
+
+The frontend may acknowledge navigation and form steps, but cannot declare a
+save successful. A guide-scoped request header associates the actual owner save
+with the waiting action before the request runs; only the handler's successful
+response with the created identity advances its commit step. A refused, ambiguous
+or cancelled save never becomes a successful guide result. Completion reports the
+actual saved identity, including a name the user edited in the draft.
+
+Guide instructions occupy space above the page, rather than covering its title.
+Only the non-interactive
+arrow and outline overlay a target. Missing controls stop the guide instead of
+falling back to another element. Existing form drafts and navigation guards remain
+in force.

@@ -2106,6 +2106,7 @@ class ContextBuilder:
         strict: bool = False,
         include_briefing: bool = True,
         desk_withheld: bool = False,
+        template_selected: bool = False,
     ) -> str:
         """Assemble the four-layer identity for a member's bound execution.
 
@@ -2116,6 +2117,7 @@ class ContextBuilder:
             strict=strict,
             include_briefing=include_briefing,
             desk_withheld=desk_withheld,
+            template_selected=template_selected,
         )
 
     def _build_v2_essentials(
@@ -2405,7 +2407,9 @@ class ContextBuilder:
         # [PERMANENT RULES] fresh and fails closed on an unreadable file.
         if member_turn_context(member, MemberLifecycle.FRESH).deliver_section and not essentials:
             _member_section = self._build_member_section(
-                member, desk_withheld=_desk_withheld(execution_context, desk_member)
+                member,
+                desk_withheld=_desk_withheld(execution_context, desk_member),
+                template_selected=_template_selected_on_member_store(execution_context),
             )
             if _member_section:
                 append_required(_member_section)
@@ -3052,7 +3056,9 @@ class ContextBuilder:
                     _resume_member = ""
                     if _member_turn.deliver_section:
                         _member_section = self._build_member_section(
-                            member, desk_withheld=_desk_withheld(execution_context, desk_member)
+                            member,
+                            desk_withheld=_desk_withheld(execution_context, desk_member),
+                            template_selected=_template_selected_on_member_store(execution_context),
                         )
                         if _member_section:
                             _resume_member = (
@@ -3183,7 +3189,9 @@ class ContextBuilder:
             # chokepoint consult above).
             if _member_turn.deliver_section:
                 _member_section = self._build_member_section(
-                    member, desk_withheld=_desk_withheld(execution_context, desk_member)
+                    member,
+                    desk_withheld=_desk_withheld(execution_context, desk_member),
+                    template_selected=_template_selected_on_member_store(execution_context),
                 )
                 if _member_section:
                     parts.append(_neutralize_structural_markers(_member_section))

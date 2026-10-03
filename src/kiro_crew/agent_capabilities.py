@@ -77,9 +77,34 @@ def _read_spec(path: Path) -> dict:
     return result
 
 
+def _is_owned_template(path: Path | str, spec: object) -> bool:
+    """True when *path* is a template Crew writes and refreshes itself.
+
+    Every ``OWNED_KIRO_AGENT_FILES`` name is Crew's by filename, except the
+    Assistant's: a ``kirocrew-assistant.json`` the installer did not create
+    belongs to its author, so it is owned only with the installer's provenance.
+    """
+    from kiro_crew import agent as agent_mod
+
+    filename = Path(path).name
+    if filename not in OWNED_KIRO_AGENT_FILES:
+        return False
+    if filename == agent_mod.ASSISTANT_AGENT_FILENAME:
+        return agent_mod._is_installed_assistant_spec(spec)
+    return True
+
+
+def _parent_is_owned(snap: dict) -> bool:
+    """True when *snap*'s parent is a global template Crew owns."""
+    parent = snap["parent"]
+    return parent.get("scope") == "global" and _is_owned_template(
+        parent.get("path", ""), snap["parent_spec"]
+    )
+
+
 def _source(name: str, project: str, *, allow_private: bool = False) -> tuple[Path, dict, dict]:
     """Project scope wins exactly as it does for the provider's cwd."""
-    from kiro_crew.agent import OWNED_KIRO_AGENT_FILES, _conflicting_spec_for, agent_spec_path
+    from kiro_crew.agent import _conflicting_spec_for, agent_spec_path
 
     if not is_registered_agent_name(name):
         raise CapabilityError("invalid_template_name")
@@ -109,7 +134,7 @@ def _source(name: str, project: str, *, allow_private: bool = False) -> tuple[Pa
 
             if scope == "project":
                 source = "project"
-            elif path.name in OWNED_KIRO_AGENT_FILES:
+            elif _is_owned_template(path, spec):
                 source = "builtin"
             elif _global_agent_info(path, spec).source == "package":
                 source = "package"
@@ -662,10 +687,7 @@ def _unvouched(snap: dict, spec: dict) -> list[str]:
     (``_INERT_FIELDS``). What remains is a hand edit no one has seen.
     """
     vouched = set(SECTIONS) | set(ORDINARY_FIELDS) | _STRUCTURAL_FIELDS | _INERT_FIELDS
-    if (
-        snap["parent"].get("scope") == "global"
-        and Path(snap["parent"].get("path", "")).name in OWNED_KIRO_AGENT_FILES
-    ):
+    if _parent_is_owned(snap):
         vouched |= _REBUILT_FIELDS
     if spec.get("permissions") == derived_agent_permissions(
         spec.get("allowedTools"), str(spec.get("name", ""))
@@ -706,16 +728,12 @@ def _stamp_reviewed(snap: dict, spec: dict, intent: dict) -> bool:
 def _maintain_owned(snap: dict, spec: dict) -> None:
     """Refresh host plumbing without regranting omitted capability entries."""
     from kiro_crew.agent import (
-        OWNED_KIRO_AGENT_FILES,
         _collect_app_mcp_servers,
         _refresh_dynamic_fields,
     )
 
     selected = copy.deepcopy(spec.get("mcpServers", {}))
-    if (
-        snap["parent"].get("scope") == "global"
-        and Path(snap["parent"].get("path", "")).name in OWNED_KIRO_AGENT_FILES
-    ):
+    if _parent_is_owned(snap):
         preserved = {
             key: copy.deepcopy(spec[key])
             for key in ("prompt", "model", "resources", "tools", "allowedTools")

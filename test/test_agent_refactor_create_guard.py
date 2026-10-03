@@ -603,6 +603,7 @@ def test_the_facade_is_found_under_every_name_src_binds_it_to() -> None:
     owners = {
         f"{agent_materialization.__name__}.{name}.agent_mod"
         for name in (
+            "assistant_agent",
             "auto_approve",
             "conductor_agents",
             "default_spec_commit",

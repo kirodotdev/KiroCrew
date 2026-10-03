@@ -38,6 +38,9 @@ interface CrewNotesTabProps {
   slug: string
   /** The exact crew name — slugs are lossy, so the read is keyed by both. */
   member: string
+  /** What the user calls this crewmate (e.g. "Assistant" for the built-in `assistant`).
+   *  Prose only; the read stays keyed by `member`. Defaults to `member`. */
+  displayName?: string
   /** The identity row (avatar + name + live status) the three panel tabs share. */
   header: ReactNode
   /** Whether this tab body is on screen — gates the briefing read, so a panel
@@ -52,7 +55,7 @@ function isSlugCollision(error: unknown): boolean {
   return error instanceof ApiError && error.status === 409
 }
 
-export default function CrewNotesTab({ slug, member, header, visible }: CrewNotesTabProps) {
+export default function CrewNotesTab({ slug, member, displayName, header, visible }: CrewNotesTabProps) {
   const { t } = useTranslation()
   const query = useQuery({
     queryKey: memberBriefingQueryKey(slug, member),
@@ -98,7 +101,7 @@ export default function CrewNotesTab({ slug, member, header, visible }: CrewNote
           written for them and looks for the edit control that deliberately does
           not exist (see the module comment for why there is no editor). */}
       <p className="px-3 pt-1.5 shrink-0 text-[11.5px] text-muted" data-testid="member-notes-agent-only">
-        {t('pages.membersPage.notes_agent_only', { name: member })}
+        {t('pages.membersPage.notes_agent_only', { name: displayName ?? member })}
       </p>
       <div className="flex-1 min-h-0 overflow-y-auto px-3 pt-2 pb-3">
         {loading ? (
@@ -144,7 +147,7 @@ export default function CrewNotesTab({ slug, member, header, visible }: CrewNote
                  always-present line above, so repeating it under the empty
                  state said the same thing twice to the same reader. */
               <p className="text-[12px] text-text" data-testid="member-notes-empty">
-                {t('pages.membersPage.notes_empty', { name: member })}
+                {t('pages.membersPage.notes_empty', { name: displayName ?? member })}
               </p>
             ) : (
               <>

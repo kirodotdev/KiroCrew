@@ -1521,6 +1521,37 @@ class TestCrewTemplateWarnings:
         assert portability.crew_template_refs(cfg) == []
         assert portability.crew_template_refs(tmp_path / "absent.json") == []
 
+    def test_a_hand_written_assistant_template_is_named_in_the_export(
+        self, tmp_path, monkeypatch
+    ):
+        # A kirocrew-assistant.json the installer did not create is never
+        # regenerated, so it must be named like any other unbundled template.
+        from kiro_crew import agent as agent_mod
+
+        agents = tmp_path / "kiro_agents"
+        agents.mkdir()
+        monkeypatch.setattr(portability, "kiro_agents_dir", lambda: agents)
+        cfg = tmp_path / "config.json"
+        cfg.write_text(json.dumps({"agents": {"assistant": {"kiro_agent": "kirocrew-assistant"}}}))
+
+        # Absent: the destination's installer writes it, so it stays managed.
+        assert portability.crew_template_refs(cfg) == []
+
+        spec = agents / "kirocrew-assistant.json"
+        spec.write_text(json.dumps({"name": "kirocrew-assistant", "prompt": "# Mine"}))
+        monkeypatch.setattr(agent_mod, "_is_installed_assistant_spec", lambda data: False)
+        assert portability.crew_template_refs(cfg) == [("assistant", "kirocrew-assistant")]
+
+        seen: list[object] = []
+
+        def owned(data: object) -> bool:
+            seen.append(data)
+            return True
+
+        monkeypatch.setattr(agent_mod, "_is_installed_assistant_spec", owned)
+        assert portability.crew_template_refs(cfg) == []
+        assert seen == [{"name": "kirocrew-assistant", "prompt": "# Mine"}]
+
     def test_missing_matches_by_stem_or_declared_name(self, tmp_path, monkeypatch):
         monkeypatch.setattr(portability, "kiro_agents_dir", lambda: self._agents_dir(tmp_path))
         cfg = tmp_path / "config.json"

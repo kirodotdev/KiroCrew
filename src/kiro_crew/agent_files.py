@@ -39,6 +39,14 @@ WORKER_AGENT_FILENAME = "kirocrew-worker.json"
 KNOWLEDGE_AGENT_FILENAME = "kirocrew-knowledge.json"
 RESEARCH_AGENT_FILENAME = "kirocrew-research.json"
 HEARTBEAT_AGENT_FILENAME = "kirocrew-heartbeat.json"
+# The personal-assistant template: the default toolset (or narrower) with a
+# prompt that teaches everyday help and crewmate drafting. A chat choice, not a
+# background file; nothing binds it unless a crew binding names it.
+ASSISTANT_AGENT_FILENAME = "kirocrew-assistant.json"
+# The built-in crew member created once to run that template. A separate member
+# on Global memory: the reserved ``default`` member is never rebound to it.
+ASSISTANT_MEMBER_NAME = "assistant"
+ASSISTANT_TEMPLATE_NAME = "kirocrew-assistant"
 
 # Collective allowlists — the EXACT filenames KiroCrew owns in each dir. Used by
 # the Playwright convergence sweep (browser/setup.py) so it rewrites only files
@@ -56,6 +64,7 @@ OWNED_KIRO_AGENT_FILES = (
     KNOWLEDGE_AGENT_FILENAME,
     RESEARCH_AGENT_FILENAME,
     HEARTBEAT_AGENT_FILENAME,
+    ASSISTANT_AGENT_FILENAME,
 )
 
 # The specs that MUST exist for the product to work at all. kiro-cli resolves an

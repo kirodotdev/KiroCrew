@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import type { ReactElement } from 'react'
 import { screen, fireEvent, waitFor } from '@testing-library/react'
 import { useLocation } from 'react-router-dom'
 import { renderWithProviders } from '../test/helpers'
@@ -12,6 +13,8 @@ import MeetCrewmatesFlow, {
 } from './MeetCrewmatesFlow'
 import { hasNoCrewmates } from '../hooks/useMeetCrewmatesGate'
 import { seededTraits } from './CrewAvatar'
+import { OnboardingShellHost } from './OnboardingChapterShell'
+import { NavigationLeaveGuardProvider, useMayLeaveForNavigation } from './NavigationLeaveGuard'
 import { api } from '../api/client'
 
 // framer-motion never finishes an exit animation in jsdom, so the step
@@ -57,6 +60,16 @@ vi.mock('framer-motion', async () => {
 // CliPanelCoverage.test.tsx.
 const touch = { value: false }
 vi.mock('../hooks/useIsTouchDevice', () => ({ useIsTouchDevice: () => touch.value }))
+
+// Guide headers a live guide would hand the committed save; undefined (no
+// guide) unless a test sets them.
+const guideHeaders = vi.hoisted(() => ({ value: undefined as Record<string, string> | undefined }))
+const guideSubmitRefused = vi.hoisted(() => vi.fn())
+vi.mock('../guide/GuideContext', async importOriginal => ({
+  ...(await importOriginal<typeof import('../guide/GuideContext')>()),
+  useGuideRequestHeaders: () => () => guideHeaders.value,
+  useGuideSubmitRefused: () => guideSubmitRefused,
+}))
 
 vi.mock('../api/client', async importOriginal => {
   const mod = await importOriginal<typeof import('../api/client')>()
@@ -331,6 +344,17 @@ describe('MeetCrewmatesFlow', () => {
     expect(await screen.findByTestId('meet-crewmates-ready')).toHaveTextContent('Radar is ready')
     expect(screen.queryByTestId('meet-crewmates-schedule-error')).toBeNull()
     expect(screen.getByTestId('meet-crewmates-ready-starts')).toHaveTextContent('Next run:')
+  })
+
+  it('the next-run line and where-it-reports line stay separate sentences in flattened text', async () => {
+    renderWithProviders(<MeetCrewmatesFlow open onDone={vi.fn()} onCreated={vi.fn()} />)
+    next()
+    next()
+    fireEvent.click(screen.getByTestId('meet-crewmates-create'))
+    const line = await screen.findByTestId('meet-crewmates-ready-starts')
+    // The two sentences are split by a <br>; textContent (and any flattened
+    // accessibility reading) must not glue them into "(UTC).Its reports".
+    expect(line.textContent).toMatch(/\)\. Its reports/)
   })
 
   it('a schedule write with no answer and no job on the Schedule list is reported as maybe-unsaved, pointing at the Schedule page', async () => {
@@ -735,9 +759,439 @@ describe('MeetCrewmatesFlow helpers', () => {
     expect(builtFromOptions(undefined)).toEqual(['kirocrew'])
   })
 
-  it('the empty-state predicate reads "no crewmates" past the default row', () => {
+  it('treats a default-only roster as empty; the built-in Assistant member is a crewmate', () => {
+    expect(hasNoCrewmates([])).toBe(true)
     expect(hasNoCrewmates([{ name: 'default' }])).toBe(true)
+    expect(hasNoCrewmates([{ name: 'default' }, { name: 'assistant' }])).toBe(false)
     expect(hasNoCrewmates([{ name: 'default' }, { name: 'Radar' }])).toBe(false)
     expect(hasNoCrewmates(undefined)).toBe(false)
+  })
+})
+
+describe('MeetCrewmatesFlow embedded and receipt', () => {
+  beforeEach(() => {
+    createAgent.mockReset()
+    createAgent.mockResolvedValue({ ok: true, name: 'Radar', memory_store: 'm1', member_id: 'radar-id' })
+    createCron.mockReset()
+    createCron.mockResolvedValue({ ok: true, id: 'job-1' })
+    vi.mocked(api.crons).mockReset()
+    vi.mocked(api.crons).mockResolvedValue({ jobs: [] })
+  })
+
+  describe('embedded', () => {
+    const goal = () => screen.getByTestId('meet-crewmates-goal') as HTMLInputElement
+    const typeGoal = (value: string) => fireEvent.change(goal(), { target: { value } })
+    const typeName = (value: string) => fireEvent.change(screen.getByTestId('meet-crewmates-name'), { target: { value } })
+    const MY_GOAL = 'Keep my weekly project update ready'
+    /** Goal on step 1, name on step 2, lands on step 3. */
+    const toStep3 = (name = 'Scout') => {
+      typeGoal(MY_GOAL)
+      next()
+      typeName(name)
+      next()
+    }
+
+    it('renders in place: a labelled region in the page, no dialog, no portal, no aria-modal', () => {
+      const { container } = renderWithProviders(
+        <MeetCrewmatesFlow open embedded onDone={vi.fn()} onCreated={vi.fn()} />,
+      )
+      expect(screen.queryByRole('dialog')).toBeNull()
+      const region = screen.getByRole('region', { name: 'Meet CrewMates' })
+      // Inside the render container, not portalled to document.body.
+      expect(container.contains(region)).toBe(true)
+      expect(region.getAttribute('aria-modal')).toBeNull()
+      expect(region.className).not.toMatch(/\bfixed\b/)
+      expect(document.body.querySelector('[aria-modal="true"]')).toBeNull()
+      // The purple split panel is still there.
+      expect(region.querySelector('aside')).not.toBeNull()
+    })
+
+    it('ignores an enclosing first-run modal host', () => {
+      const { container } = renderWithProviders(
+        <OnboardingShellHost>
+          <MeetCrewmatesFlow open embedded onDone={vi.fn()} onCreated={vi.fn()} />
+        </OnboardingShellHost>,
+      )
+      expect(screen.queryByRole('dialog')).toBeNull()
+      expect(container.contains(screen.getByRole('region', { name: 'Meet CrewMates' }))).toBe(true)
+    })
+
+    it('has no document Escape handler and no Tab trap', () => {
+      const onDone = vi.fn()
+      renderWithProviders(<MeetCrewmatesFlow open embedded onDone={onDone} onCreated={vi.fn()} />)
+      const esc = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+      document.dispatchEvent(esc)
+      expect(esc.defaultPrevented).toBe(false)
+      expect(onDone).not.toHaveBeenCalled()
+      const region = screen.getByRole('region', { name: 'Meet CrewMates' })
+      const focusables = Array.from(region.querySelectorAll<HTMLElement>('button:not([disabled]), input'))
+      focusables[focusables.length - 1].focus()
+      const tab = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true })
+      document.dispatchEvent(tab)
+      expect(tab.defaultPrevented).toBe(false)
+    })
+
+    it('a guided create carries the guide headers AND the pinned avatar on the create alone', async () => {
+      guideHeaders.value = { 'X-Test-Guide': 'g1' }
+      try {
+        touch.value = true
+        renderWithProviders(<MeetCrewmatesFlow open embedded onDone={vi.fn()} onCreated={vi.fn()} />)
+        try {
+          toStep3('Issue Radar')
+          // Embedded starts on "Only when I ask"; a daily run makes a cron write too.
+          fireEvent.change(screen.getByRole('combobox', { name: 'Run' }), { target: { value: 'morning' } })
+        } finally {
+          touch.value = false
+        }
+        fireEvent.click(screen.getByTestId('meet-crewmates-create'))
+        await waitFor(() => expect(createAgent).toHaveBeenCalledTimes(1))
+        expect(createAgent).toHaveBeenCalledWith(
+          expect.objectContaining({ name: 'Issue Radar', avatar: { kind: 'ghost', traits: seededTraits('Issue Radar') } }),
+          { 'X-Test-Guide': 'g1' },
+        )
+        await waitFor(() => expect(createCron).toHaveBeenCalledTimes(1))
+        // The cron write never carries guide headers.
+        expect(createCron.mock.calls[0]).toHaveLength(1)
+      } finally {
+        guideHeaders.value = undefined
+      }
+    })
+
+    it('a refused guided create clears the guide\'s submitted mark', async () => {
+      guideSubmitRefused.mockClear()
+      const { ApiError } = await import('../api/apiError')
+      createAgent.mockRejectedValueOnce(new ApiError(409, 'exists', JSON.stringify({ code: 'agent_exists' })))
+      renderWithProviders(<MeetCrewmatesFlow open embedded onDone={vi.fn()} onCreated={vi.fn()} />)
+      toStep3('Issue Radar')
+      fireEvent.click(screen.getByTestId('meet-crewmates-create'))
+      await waitFor(() => expect(guideSubmitRefused).toHaveBeenCalledTimes(1))
+    })
+
+    it('a create that may have committed (5xx) leaves the guide\'s submitted mark alone', async () => {
+      guideSubmitRefused.mockClear()
+      const { ApiError } = await import('../api/apiError')
+      createAgent.mockRejectedValueOnce(new ApiError(502, 'bad gateway', ''))
+      renderWithProviders(<MeetCrewmatesFlow open embedded onDone={vi.fn()} onCreated={vi.fn()} />)
+      toStep3('Issue Radar')
+      fireEvent.click(screen.getByTestId('meet-crewmates-create'))
+      await waitFor(() => expect(createAgent).toHaveBeenCalledTimes(1))
+      await waitFor(() => expect(screen.getByTestId('meet-crewmates-create')).not.toBeDisabled())
+      expect(guideSubmitRefused).not.toHaveBeenCalled()
+    })
+
+    it('asks for the goal first; Next waits for one; step entry never seats focus on "Not now"', () => {
+      renderWithProviders(<MeetCrewmatesFlow open embedded onDone={vi.fn()} onCreated={vi.fn()} />)
+      expect(goal().value).toBe('')
+      expect(screen.getByTestId('meet-crewmates-next')).toBeDisabled()
+      typeGoal(MY_GOAL)
+      next()
+      expect(document.activeElement).toBe(screen.getByTestId('meet-crewmates-name'))
+      // The starting setup is not a step-2 field any more.
+      expect(screen.queryByRole('combobox', { name: 'Starting setup' })).toBeNull()
+      // A name chip names the crewmate and leaves the goal alone.
+      fireEvent.click(screen.getByRole('button', { name: /Scribe/ }))
+      next()
+      expect((screen.getByTestId('meet-crewmates-job') as HTMLInputElement).value).toBe(MY_GOAL)
+    })
+
+    it('an example row fills the goal but keeps a name the user brought', () => {
+      renderWithProviders(
+        <MeetCrewmatesFlow open embedded initialDraft={{ name: 'Scout' }} onDone={vi.fn()} onCreated={vi.fn()} />,
+      )
+      fireEvent.click(screen.getByTestId('meet-crewmates-example-scribe'))
+      expect((screen.getByTestId('meet-crewmates-name') as HTMLInputElement).value).toBe('Scout')
+      next()
+      expect((screen.getByTestId('meet-crewmates-job') as HTMLInputElement).value).toBe(
+        'Keep release notes up to date with recent changes',
+      )
+    })
+
+    it('an example row keeps a goal the user already typed', () => {
+      renderWithProviders(
+        <MeetCrewmatesFlow open embedded initialDraft={{ name: 'Scout', goal: MY_GOAL }} onDone={vi.fn()} onCreated={vi.fn()} />,
+      )
+      fireEvent.click(screen.getByTestId('meet-crewmates-example-scribe'))
+      next()
+      expect((screen.getByTestId('meet-crewmates-job') as HTMLInputElement).value).toBe(MY_GOAL)
+    })
+
+    it('prefills from initialDraft', () => {
+      renderWithProviders(
+        <MeetCrewmatesFlow open embedded initialDraft={{ name: 'Scout', goal: MY_GOAL }} onDone={vi.fn()} onCreated={vi.fn()} />,
+      )
+      expect(goal().value).toBe(MY_GOAL)
+      next()
+      expect((screen.getByTestId('meet-crewmates-name') as HTMLInputElement).value).toBe('Scout')
+    })
+
+    it('the starting setup is under its own "Starting setup" disclosure on step 3', () => {
+      renderWithProviders(<MeetCrewmatesFlow open embedded onDone={vi.fn()} onCreated={vi.fn()} />)
+      toStep3()
+      const advanced = screen.getByTestId('meet-crewmates-advanced')
+      expect(advanced.tagName).toBe('DETAILS')
+      // Not "Advanced": that name belongs to the full create form in the "+" menu.
+      expect(advanced.querySelector('summary')).toHaveTextContent(/^Starting setup$/)
+    })
+
+    it('"Not now" returns to chat; closing and reopening keeps the step and the draft', () => {
+      const onDone = vi.fn()
+      const onReturnToChat = vi.fn()
+      const props = { embedded: true, onDone, onCreated: vi.fn(), onReturnToChat }
+      const { rerender } = renderWithProviders(<MeetCrewmatesFlow open {...props} />)
+      typeGoal(MY_GOAL)
+      next()
+      typeName('Scout')
+      fireEvent.click(screen.getByTestId('meet-crewmates-not-now'))
+      expect(onReturnToChat).toHaveBeenCalledTimes(1)
+      expect(onDone).toHaveBeenCalledWith('dismissed')
+      expect(createAgent).not.toHaveBeenCalled()
+      rerender(<MeetCrewmatesFlow open={false} {...props} />)
+      expect(screen.queryByRole('region', { name: 'Meet CrewMates' })).toBeNull()
+      rerender(<MeetCrewmatesFlow open {...props} />)
+      expect(screen.getByText('CrewMates · 2 of 4')).toBeInTheDocument()
+      expect((screen.getByTestId('meet-crewmates-name') as HTMLInputElement).value).toBe('Scout')
+      fireEvent.click(screen.getByTestId('meet-crewmates-back'))
+      expect(goal().value).toBe(MY_GOAL)
+    })
+
+    it('a create error survives closing and reopening', async () => {
+      const { ApiError } = await import('../api/apiError')
+      createAgent.mockRejectedValueOnce(new ApiError(403, 'forbidden', '{}'))
+      const props = { embedded: true, onDone: vi.fn(), onCreated: vi.fn() }
+      const { rerender } = renderWithProviders(<MeetCrewmatesFlow open {...props} />)
+      toStep3()
+      fireEvent.click(screen.getByTestId('meet-crewmates-create'))
+      expect(await screen.findByTestId('meet-crewmates-error')).toHaveTextContent('Scout could not be created')
+      rerender(<MeetCrewmatesFlow open={false} {...props} />)
+      rerender(<MeetCrewmatesFlow open {...props} />)
+      expect(screen.getByTestId('meet-crewmates-error')).toHaveTextContent('Scout could not be created')
+      expect((screen.getByTestId('meet-crewmates-job') as HTMLInputElement).value).toBe(MY_GOAL)
+    })
+
+    it('a different initialDraft replaces an untouched draft', () => {
+      const onDraftKept = vi.fn()
+      const props = { embedded: true, onDone: vi.fn(), onCreated: vi.fn(), onDraftKept }
+      const { rerender } = renderWithProviders(<MeetCrewmatesFlow open {...props} initialDraft={{ goal: 'first' }} />)
+      rerender(<MeetCrewmatesFlow open={false} {...props} initialDraft={{ goal: 'first' }} />)
+      rerender(<MeetCrewmatesFlow open {...props} initialDraft={{ goal: 'second' }} />)
+      expect(screen.getByText('CrewMates · 1 of 4')).toBeInTheDocument()
+      expect(goal().value).toBe('second')
+      expect(onDraftKept).not.toHaveBeenCalled()
+    })
+
+    it('a different initialDraft never overwrites an edited draft; it is handed back once', () => {
+      const onDraftKept = vi.fn()
+      const props = { embedded: true, onDone: vi.fn(), onCreated: vi.fn(), onDraftKept }
+      const { rerender } = renderWithProviders(<MeetCrewmatesFlow open {...props} initialDraft={{ goal: 'first' }} />)
+      next()
+      typeName('Scout')
+      rerender(<MeetCrewmatesFlow open={false} {...props} initialDraft={{ goal: 'first' }} />)
+      rerender(<MeetCrewmatesFlow open {...props} initialDraft={{ goal: 'second' }} />)
+      expect(screen.getByText('CrewMates · 2 of 4')).toBeInTheDocument()
+      expect((screen.getByTestId('meet-crewmates-name') as HTMLInputElement).value).toBe('Scout')
+      expect(onDraftKept).toHaveBeenCalledTimes(1)
+      expect(onDraftKept).toHaveBeenCalledWith({ goal: 'second' })
+      fireEvent.click(screen.getByTestId('meet-crewmates-back'))
+      expect(goal().value).toBe('first')
+      // The same proposal again (e.g. on the next opening) is not re-reported.
+      rerender(<MeetCrewmatesFlow open={false} {...props} initialDraft={{ goal: 'second' }} />)
+      rerender(<MeetCrewmatesFlow open {...props} initialDraft={{ goal: 'second' }} />)
+      expect(onDraftKept).toHaveBeenCalledTimes(1)
+      expect(goal().value).toBe('first')
+    })
+
+    it('an edited step-1 goal is kept when a new proposal arrives while open', () => {
+      const onDraftKept = vi.fn()
+      const props = { embedded: true, onDone: vi.fn(), onCreated: vi.fn(), onDraftKept }
+      const { rerender } = renderWithProviders(<MeetCrewmatesFlow open {...props} initialDraft={{ goal: 'first' }} />)
+      typeGoal(MY_GOAL)
+      rerender(<MeetCrewmatesFlow open {...props} initialDraft={{ goal: 'second' }} />)
+      expect(goal().value).toBe(MY_GOAL)
+      expect(onDraftKept).toHaveBeenCalledWith({ goal: 'second' })
+    })
+
+    it('the way back to the chat has a distinct label from the previous-step button', () => {
+      renderWithProviders(<MeetCrewmatesFlow open embedded onDone={vi.fn()} onCreated={vi.fn()} />)
+      expect(screen.getByTestId('meet-crewmates-not-now')).toHaveTextContent(/^Back to chat$/)
+      expect(screen.queryByText('Not now')).toBeNull()
+    })
+
+    describe('leave protection', () => {
+      const unloadPrevented = () => {
+        const ev = new Event('beforeunload', { cancelable: true })
+        window.dispatchEvent(ev)
+        return ev.defaultPrevented
+      }
+      let mayLeave: () => boolean = () => true
+      function Probe() {
+        mayLeave = useMayLeaveForNavigation()
+        return null
+      }
+      const guarded = (ui: ReactElement) => (
+        <NavigationLeaveGuardProvider>
+          <Probe />
+          {ui}
+        </NavigationLeaveGuardProvider>
+      )
+      afterEach(() => { vi.restoreAllMocks() })
+
+      it('an untouched flow guards nothing', () => {
+        const confirm = vi.spyOn(window, 'confirm')
+        renderWithProviders(guarded(<MeetCrewmatesFlow open embedded onDone={vi.fn()} onCreated={vi.fn()} />))
+        expect(unloadPrevented()).toBe(false)
+        expect(mayLeave()).toBe(true)
+        expect(confirm).not.toHaveBeenCalled()
+      })
+
+      it('an edited draft asks before a route change or unload, even while hidden', () => {
+        const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+        const props = { embedded: true, onDone: vi.fn(), onCreated: vi.fn() }
+        const { rerender } = renderWithProviders(guarded(<MeetCrewmatesFlow open {...props} />))
+        typeGoal(MY_GOAL)
+        expect(unloadPrevented()).toBe(true)
+        expect(mayLeave()).toBe(false)
+        expect(confirm).toHaveBeenCalledTimes(1)
+        rerender(guarded(<MeetCrewmatesFlow open={false} {...props} />))
+        expect(unloadPrevented()).toBe(true)
+        confirm.mockReturnValue(true)
+        expect(mayLeave()).toBe(true)
+      })
+
+      it('a create in flight asks with the busy wording; the ready step releases the guard', async () => {
+        let resolve: (v: unknown) => void = () => {}
+        createAgent.mockImplementationOnce(() => new Promise(r => { resolve = r }) as never)
+        const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+        renderWithProviders(guarded(<MeetCrewmatesFlow open embedded onDone={vi.fn()} onCreated={vi.fn()} />))
+        toStep3()
+        fireEvent.click(screen.getByTestId('meet-crewmates-create'))
+        await waitFor(() => expect(screen.getByTestId('meet-crewmates-not-now')).toBeDisabled())
+        expect(mayLeave()).toBe(false)
+        expect(confirm.mock.calls[0][0]).toMatch(/being created/)
+        resolve({ ok: true, name: 'Scout', member_id: 'scout-id' })
+        await screen.findByTestId('meet-crewmates-ready')
+        expect(unloadPrevented()).toBe(false)
+        expect(mayLeave()).toBe(true)
+      })
+
+      it('the standalone chapter registers no guard', () => {
+        const confirm = vi.spyOn(window, 'confirm')
+        renderWithProviders(guarded(<MeetCrewmatesFlow open onDone={vi.fn()} onCreated={vi.fn()} />))
+        next()
+        expect(unloadPrevented()).toBe(false)
+        expect(mayLeave()).toBe(true)
+        expect(confirm).not.toHaveBeenCalled()
+      })
+    })
+
+    it('defaults to "Only when I ask": no schedule, the receipt says none, Done returns to chat and the next entry is fresh', async () => {
+      touch.value = true
+      const onCreated = vi.fn()
+      const onDone = vi.fn()
+      const onReturnToChat = vi.fn()
+      const props = { embedded: true, onDone, onCreated, onReturnToChat }
+      const { rerender } = renderWithProviders(<MeetCrewmatesFlow open {...props} />)
+      try {
+        toStep3()
+        expect((screen.getByRole('combobox', { name: 'Run' }) as HTMLSelectElement).value).toBe('ask')
+      } finally {
+        touch.value = false
+      }
+      expect(screen.queryByTestId('meet-crewmates-time')).toBeNull()
+      fireEvent.click(screen.getByTestId('meet-crewmates-create'))
+      await screen.findByTestId('meet-crewmates-ready')
+      expect(createCron).not.toHaveBeenCalled()
+      expect(onCreated).toHaveBeenCalledWith({ name: 'Scout', goal: MY_GOAL, schedule: 'none' })
+      expect(onDone).not.toHaveBeenCalled()
+      // The primary action goes back to the chat; the mate's own chat stays offered.
+      expect(screen.getByTestId('meet-crewmates-open-chat')).toHaveTextContent("Open Scout's chat")
+      fireEvent.click(screen.getByTestId('meet-crewmates-done'))
+      expect(onReturnToChat).toHaveBeenCalledTimes(1)
+      expect(onDone).toHaveBeenCalledWith('completed')
+      rerender(<MeetCrewmatesFlow open={false} {...props} />)
+      rerender(<MeetCrewmatesFlow open {...props} />)
+      expect(screen.getByText('CrewMates · 1 of 4')).toBeInTheDocument()
+      expect(goal().value).toBe('')
+    })
+
+    it('opening the new crewmate\'s chat completes without returning to the original chat', async () => {
+      const onDone = vi.fn()
+      const onReturnToChat = vi.fn()
+      renderWithProviders(<MeetCrewmatesFlow open embedded onDone={onDone} onCreated={vi.fn()} onReturnToChat={onReturnToChat} />)
+      toStep3()
+      fireEvent.click(screen.getByTestId('meet-crewmates-create'))
+      await screen.findByTestId('meet-crewmates-ready')
+      fireEvent.click(screen.getByTestId('meet-crewmates-open-chat'))
+      expect(onDone).toHaveBeenCalledWith('completed')
+      expect(onReturnToChat).not.toHaveBeenCalled()
+    })
+
+    it('a daily schedule at a custom time is saved in the captured zone and reported in the receipt', async () => {
+      touch.value = true
+      const onCreated = vi.fn()
+      renderWithProviders(<MeetCrewmatesFlow open embedded onDone={vi.fn()} onCreated={onCreated} />)
+      try {
+        toStep3()
+        fireEvent.change(screen.getByRole('combobox', { name: 'Run' }), { target: { value: 'morning' } })
+      } finally {
+        touch.value = false
+      }
+      setTime('07:05')
+      fireEvent.click(screen.getByTestId('meet-crewmates-create'))
+      await waitFor(() => expect(createCron).toHaveBeenCalledTimes(1))
+      const body = createCron.mock.calls[0][0] as Record<string, unknown>
+      expect(body.cron).toBe('5 7 * * *')
+      expect(body.timezone).toBe(browserZone())
+      expect(body.strict_schedule).toBe(true)
+      expect(body.member_id).toBe('radar-id')
+      await screen.findByTestId('meet-crewmates-ready')
+      expect(onCreated).toHaveBeenCalledWith({ name: 'Scout', goal: MY_GOAL, schedule: 'saved' })
+    })
+
+    it('an invalid daily time blocks creation; a refused schedule is reported as refused', async () => {
+      const { ApiError } = await import('../api/apiError')
+      createCron.mockRejectedValue(new ApiError(400, 'invalid_cron', '{}'))
+      touch.value = true
+      const onCreated = vi.fn()
+      renderWithProviders(<MeetCrewmatesFlow open embedded onDone={vi.fn()} onCreated={onCreated} />)
+      try {
+        toStep3()
+        fireEvent.change(screen.getByRole('combobox', { name: 'Run' }), { target: { value: 'morning' } })
+      } finally {
+        touch.value = false
+      }
+      setTime('')
+      expect(screen.getByTestId('meet-crewmates-create')).toBeDisabled()
+      expect(createAgent).not.toHaveBeenCalled()
+      setTime('08:00')
+      fireEvent.click(screen.getByTestId('meet-crewmates-create'))
+      expect(await screen.findByTestId('meet-crewmates-schedule-error')).toHaveTextContent('its schedule was not saved')
+      expect(onCreated).toHaveBeenCalledWith({ name: 'Scout', goal: MY_GOAL, schedule: 'refused' })
+    })
+
+    it('while the create is in flight "Not now" and the Advanced setup are disabled', async () => {
+      let resolve: (v: unknown) => void = () => {}
+      createAgent.mockImplementationOnce(() => new Promise(r => { resolve = r }) as never)
+      const onDone = vi.fn()
+      renderWithProviders(<MeetCrewmatesFlow open embedded onDone={onDone} onCreated={vi.fn()} />)
+      toStep3()
+      fireEvent.click(screen.getByTestId('meet-crewmates-create'))
+      await waitFor(() => expect(screen.getByTestId('meet-crewmates-not-now')).toBeDisabled())
+      fireEvent.click(screen.getByTestId('meet-crewmates-not-now'))
+      expect(onDone).not.toHaveBeenCalled()
+      resolve({ ok: true, name: 'Scout', member_id: 'scout-id' })
+      await screen.findByTestId('meet-crewmates-ready')
+    })
+  })
+
+  it('a standalone zero-argument onCreated still receives the receipt harmlessly', async () => {
+    const onCreated = vi.fn(() => {})
+    renderWithProviders(<MeetCrewmatesFlow open onDone={vi.fn()} onCreated={onCreated} />)
+    next()
+    next()
+    fireEvent.click(screen.getByTestId('meet-crewmates-create'))
+    await screen.findByTestId('meet-crewmates-ready')
+    expect(onCreated).toHaveBeenCalledWith({ name: 'Radar', goal: RADAR_GOAL, schedule: 'saved' })
+    // Standalone is still the modal.
+    expect(screen.getByRole('dialog', { name: 'Meet CrewMates' })).toBeInTheDocument()
   })
 })

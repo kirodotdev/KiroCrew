@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from kiro_crew.config.loader import config_path
 from kiro_crew.context import ContextBuilder
 from kiro_crew.learn import LessonStore
@@ -181,11 +183,12 @@ class TestUserProfileSection:
         ctx = _builder(tmp_path).build_session_context()
         assert "if they ask for code, provide code" in ctx
 
-    def test_injected_for_custom_agents(self, tmp_path):
+    @pytest.mark.parametrize("agent_name", ["my-custom-agent", "kirocrew-assistant"])
+    def test_injected_for_custom_agents(self, tmp_path, agent_name):
         """Profile describes the person, not the workspace — custom agents
         (which skip workspace identity) still get it."""
         _seed_profile("product-manager", "codes")
-        ctx = _builder(tmp_path).build_session_context(agent="my-custom-agent")
+        ctx = _builder(tmp_path).build_session_context(agent=agent_name)
         assert "[USER PROFILE]" in ctx
         assert "product manager" in ctx
 

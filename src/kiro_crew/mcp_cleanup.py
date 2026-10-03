@@ -273,6 +273,7 @@ OPT_IN_BIN_MCP_SERVERS = (
     "kirocrew-crew-log",
     "kirocrew-debug",
     "kirocrew-panel",
+    "kirocrew-guide",
 )
 
 # Every managed-binary server name, regardless of how it reaches a spec. This is

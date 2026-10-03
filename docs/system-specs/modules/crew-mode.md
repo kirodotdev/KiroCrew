@@ -701,6 +701,34 @@ name into `ResolvedBindings`, in this order:
 An unresolvable workspace falls back to `default_workspace`. Memory identity
 resolves exactly: the reserved `default` assistant uses Global Memory V1;
 existing V1 members keep their declared V1 binding.
+The built-in `assistant` member is a separate crew member created once, bound to
+the managed `kirocrew-assistant` template on Global Memory V1 (`memory_store`
+`default`, no `member_id`), exactly as an existing V1 member resolves. It speaks
+as its scrubbed display name, falling back to Assistant, only while it is on that
+template and binding and not running as an explicitly selected template; its
+identity, rules and memory key stay `assistant`. The reserved `default` member is
+never rebound and keeps the ordinary member identity whatever template it names.
+The personal-assistant persona lives in the managed `kirocrew-assistant` template,
+not in the generic member identity block. That template reads the existing
+onboarding profile to calibrate communication: role informs examples, technical
+comfort informs depth, and explicit user requests take precedence. Skipped or
+withheld profiles are not inferred.
+`rebuild_agent_config` creates the `assistant` row once, after the template's
+install outcome is known, under the config lock. It is skipped when the key
+already exists in `config.json` or the `config.local.json` overlay, when the
+template did not install (a foreign or unreadable file owns the path), or when
+the overlay supplies the whole roster. An empty base roster is seeded with the
+same `default` row the loader's migration writes, so the implicit default member
+survives. The `assistant_member_created.json` sidecar records the attempt, so a
+user who deletes or renames the member does not get it back; it is deletable and
+renamable like any member. The ordinary chat template and `default_agent`
+selection are not changed.
+User-authored role text, permanent rules and briefing remain intact.
+Recommendations use only the memory and history already available to the session
+and explain their evidence. Settings changes go through the existing review and
+approval surfaces. Crewmate proposals
+use `/members?create=1&name=<encoded-name>&goal=<encoded-goal>` links to editable
+UI drafts; opening a draft never creates a member or starts a schedule.
 Explicitly created members own unique V2 stores identified by an immutable persisted `member_id`, independent of their editable label.
 Automatically discovered agents start on Global V1 without member allocation.
 Missing, unreadable, shared or mismatched member identity makes memory operations
@@ -752,45 +780,61 @@ retains its localized error heading and structured diagnostic report. Details
 reveals the redacted reason on demand; Ask the agent receives the same report
 when navigation permits. The cached conversation and its drafts remain available.
 
-The Crewmates page (`/members`, titled "Crewmates") creates a crewmate in place.
-Its "New crewmate" dialog — name, Built from (the default agent or an installed
-custom agent), "What it looks after", and an Advanced fold with workspace, model,
-triggers and session colour — is the ONE create form
-(`website/src/pages/members/NewCrewmateDialog.tsx`), mounted from every create
-door: the Crewmates page's header "+" and its empty-state hero, AND the crew
-manager's "Add crew member" tile / header button and its dashed roster card
-(`website/src/pages/KiroCrewAgentsPage.tsx`, the Crews tab of Agent
-Capabilities). The crew manager has no separate create sheet; clicking
-"Add crew member" there opens this same dialog, so a create is one form however
-it is reached. It posts to the same `POST /api/agents`: one write path, several
-front doors. "What it looks
-after" is stored as the crew record's `description`. What happens AFTER the
-create depends on the door. From the Crewmates page the page
-re-reads the roster, opens the new crewmate's chat through the verified
-thread-opening endpoint, and seeds one first user turn into that chat over the
-composer's own send path, so the chat opens with the crewmate's greeting; the
-seed names the job when one was given. If that chat open fails, the greeting is
-parked in page memory and seeds the crewmate's next successful open in this
-visit, once; leaving or reloading the page drops it, and nothing is persisted.
-From the crew manager the door is CONFIG mode: the dialog closes and the crew
-manager re-reads its roster so the new card appears in place; it does NOT
-navigate to the crewmate's chat and seeds no greeting, because the user is
-configuring crews, not opening a conversation. The dialog's own success path
-(cache invalidation, the post-failure reconcile, "what it looks after" stored as
-`description`) is identical on both doors; only the caller's `onCreated`
-differs. `NewCrewmateDialog` imports its field frame and field components from
-`KiroCrewAgentsPage`, so the two pages cannot drift; the resulting call-time
-import cycle is resolved because both reference the other's bindings only inside
-component bodies.
-Landing rule (Crewmates page): with no crewmates the page
-shows a single empty-state hero (ghost avatar, "No crewmates yet", one line,
-"New crewmate") in place of a roster call to action and a "pick a member" pane;
-with crewmates and no `?member=`, the remembered crewmate opens, else the most
-recently used one (greatest `last_active_ts`, ties keep roster order). Below md
-nothing auto-opens — the roster is the page. A `?member=` naming a crewmate that
-is gone falls back the same way, under the existing swap notice. The page's copy
-says crewmate / Crewmates and "Built from"; the crew record, its API and its
-identifiers are unchanged.
+The Crewmates page (`/members`, titled "Crewmates") opens the built-in
+`assistant` member when there is no previously used conversation.
+An explicitly configured display name takes precedence; its key, thread and
+Global V1 memory are its own. A roster containing only this member is not an
+empty state. Returning users restore their remembered member, otherwise the most
+recently used conversation, before falling back to Assistant. Explicit member
+and team links take precedence. On narrow screens, Back opens the roster through
+`view=roster`; that explicit roster view does not auto-open a conversation.
+Loading, a failed roster read and a genuinely empty roster remain distinct.
+
+Assistant's welcome is the opening content of its existing `ChatPane`, not a
+separate home screen. Its card contracts in place once user conversation exists;
+the same bottom composer remains mounted. Starters fill an empty composer without
+sending and never replace a draft or attachments. Suggestions ask the agent to
+consult permitted memory and history and state their basis, rather than drawing
+fabricated recommendations.
+
+The primary New crewmate action and Assistant proposals open the same embedded
+`MeetCrewmatesFlow`: goal, name, schedule and confirmation in the chapter shell's
+split-panel layout. The embedded shell retains the original 760px height and
+6xl width caps and the same four-mascot composition. From `xl` its aside takes the
+original shell's widest 415px and shows all four mascots; narrower asides show
+none, since the page navigation leaves no room for them beside the copy.
+No modal, viewport scrim or focus trap is added. The current
+chat stays mounted while hidden, preserving its draft and reading position.
+Back returns to it and retains the unfinished creation draft; navigation away
+warns before losing that draft. A proposal cannot replace an edited draft.
+Completion offers a return to the originating conversation with a host-rendered
+creation receipt, or an explicit link to the new member's chat. Receipts are
+shape-checked records in this browser tab's sessionStorage, keyed by originating
+member; they survive a page return in that tab but are not server-side transcript
+entries or cross-device history. The receipt is
+not an AI message and does not start an agent turn. Schedule failures are reported
+separately from successful member creation. Timing and write reconciliation are
+specified in [config](config.md#meet-crewmates-first-run-state).
+
+The explicit Advanced entry preserves the full create form's workspace, model,
+routing and colour controls, also embedded in the page. Both forms use the
+existing owner-gated `POST /api/agents`; editing an existing member still uses
+the crew manager. The advanced form's post-create greeting follows the existing
+verified-thread and composer-send path, with failures retaining their retry.
+
+The same `NewCrewmateDialog` (`website/src/pages/members/NewCrewmateDialog.tsx`)
+is also the crew manager's create form: its "Add crew member" tile, header
+button and dashed roster card (`website/src/pages/KiroCrewAgentsPage.tsx`, the
+Crews tab of Agent Capabilities) open it as a modal, so there is no separate
+create sheet. From that door it runs in CONFIG mode: the dialog closes and the
+crew manager re-reads its roster so the new card appears in place, without
+navigating to the crewmate's chat or seeding a greeting. The dialog's own
+success path (cache invalidation, the post-failure reconcile, "what it looks
+after" stored as `description`) is identical on every door; only the caller's
+`onCreated` differs. `NewCrewmateDialog` imports its field frame and field
+components from `KiroCrewAgentsPage`, so the two pages cannot drift; the
+resulting call-time import cycle is resolved because both reference the other's
+bindings only inside component bodies.
 
 The roster lists a row unasked when EITHER its Crewmates-page DM thread already
 holds a message (any origin) OR it was created on the dashboard (`source` is

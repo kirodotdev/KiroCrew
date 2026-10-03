@@ -2090,7 +2090,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
              accessible name on its own — it has to say what you are doing to it.
              An explicit aria-label outranks Radix's aria-labelledby, and the
              DialogTitle still has to EXIST or Radix warns. */
-          aria-label={i18nT('pages.kiroCrewAgentsPage.edit_crew_named', { name: displayName.trim() || editing })}
+          aria-label={i18nT('pages.kiroCrewAgentsPage.edit_crew_named', { name: crewDisplayName({ name: editing, display_name: displayName, kiro_agent: editingAgent?.kiro_agent }) })}
           /* Radix closes on an outside pointerdown and on Escape. Dismissing
              mid-write is DELIBERATELY still allowed: the sheetEpoch/settleFor
              machinery below exists to make the abandoned write land harmlessly,
@@ -2132,7 +2132,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
               <DialogTitle className="flex-1 font-mono">
                 {/* The draft label, live: retitling the crew is the one edit
                     whose effect IS this text, so it previews before Save. */}
-                {displayName.trim() || editing}
+                {crewDisplayName({ name: editing, display_name: displayName, kiro_agent: editingAgent?.kiro_agent })}
               </DialogTitle>
               {showsCrewSourceBadge(editingAgent?.source) && <CrewSourceBadge source={editingAgent.source} />}
             </div>

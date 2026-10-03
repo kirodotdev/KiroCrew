@@ -1003,7 +1003,13 @@ def test_the_unassignable_set_is_derived_from_the_registry(monkeypatch):
     only refusals; granting it would spend the worker's context on tools that
     cannot answer it."""
     assert agent._worker_unassignable_servers() == frozenset(
-        {"kirocrew-dashboard", "kirocrew-crew-log", "kirocrew-debug", "kirocrew-panel"}
+        {
+            "kirocrew-dashboard",
+            "kirocrew-crew-log",
+            "kirocrew-debug",
+            "kirocrew-panel",
+            "kirocrew-guide",
+        }
     )
     monkeypatch.setitem(
         agent._MANAGED_MCP_SERVERS,

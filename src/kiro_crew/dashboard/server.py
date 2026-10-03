@@ -532,6 +532,13 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # internal-secret call falls through to cookie auth and every publish
         # fails with 403.
         "/api/agent-panel",
+        # MCP-only (the four kirocrew-guide tools); no browser caller. Prefix
+        # matching covers "/actions", "/start", "/status" and "/cancel". STRICT:
+        # the caller's slot is derived from the X-Session-Key this secret backs,
+        # so a cookie fall-through would let a browser name any session as the one
+        # offering the guide. The browser half ("/api/guide/pending", "/claim",
+        # ...) is deliberately NOT under this prefix and stays on cookie auth.
+        "/api/guide/agent",
         # MCP-only (knowledge_add_document tool); no browser caller — the
         # dashboard ingests via its own cookie-authed knowledge routes. Same
         # wiring class as "/api/notifications/agent" above.
@@ -1868,6 +1875,23 @@ def _register_mcp_routes(app: web.Application) -> None:
         "/api/agent-panel/publish", _deferred("agent_panel", "api_agent_panel_publish")
     )
     app.router.add_get("/api/members/{slug}/panel", _deferred("agent_panel", "api_member_panel"))
+    # UI guides (``kirocrew-guide``). The agent half is MCP-only and sits under
+    # the strict "/api/guide/agent" prefix; the browser half is cookie-authed and
+    # owner-only, deliberately OFF that prefix. Deferred like the panel: the server
+    # is opt-in, so most gateways never load the module. The paths are duplicated
+    # from ``guide.register_guide_routes``, and a test pins the two together.
+    for _method, _path, _name in (
+        ("GET", "/api/guide/agent/actions", "api_guide_agent_actions"),
+        ("POST", "/api/guide/agent/start", "api_guide_agent_start"),
+        ("GET", "/api/guide/agent/status", "api_guide_agent_status"),
+        ("POST", "/api/guide/agent/cancel", "api_guide_agent_cancel"),
+        ("GET", "/api/guide/pending", "api_guide_pending"),
+        ("POST", "/api/guide/claim", "api_guide_claim"),
+        ("POST", "/api/guide/progress", "api_guide_progress"),
+        ("POST", "/api/guide/heartbeat", "api_guide_heartbeat"),
+        ("POST", "/api/guide/cancel", "api_guide_cancel"),
+    ):
+        app.router.add_route(_method, _path, _deferred("guide", _name))
     app.router.add_get("/api/crons", handlers.api_crons)
     app.router.add_post("/api/crons", handlers.api_crons_create)
     app.router.add_delete("/api/crons", handlers.api_cron_batch_delete)

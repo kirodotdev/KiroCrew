@@ -35,7 +35,7 @@ from kiro_crew.kiro_cli import SPEC_PERMISSIONS_MIN_VERSION
 
 #: One path segment under a normalized root, with the separator run before it: a
 #: Windows spec spells ``<TMP>\\bin\\kirocrew`` where POSIX spells ``<TMP>/bin/kirocrew``.
-_UNDER_ROOT = re.compile(r"(<TMP>|<HOME>)((?:\\+[^\\\"\s]+)+)")
+_UNDER_ROOT = re.compile(r"(<TMP>|<HOME>|<PKG>)((?:\\+[^\\\"\s]+)+)")
 _SEPARATORS = re.compile(r"\\+")
 
 
@@ -136,14 +136,22 @@ class _Rig:
         A root is spelled as-is, JSON-escaped once (inside a spec file) or twice
         (inside a JSON value an event records). A path under a root then keeps the
         host's separator, so it is folded to ``/``: the goldens are the same bytes
-        on every platform.
+        on every platform. ``<PKG>`` is the installed ``kiro_crew`` package, which
+        the assistant prompt names as the packaged docs index: it is wherever this
+        checkout lives, so it is labelled like the scratch roots.
         """
-        roots = {
-            str(self.tmp): "<TMP>",
-            str(self.tmp.resolve()): "<TMP>",
-            str(self.home): "<HOME>",
-            str(self.home.resolve()): "<HOME>",
+        package = Path(agent.__file__).resolve().parent
+        bases = {
+            self.tmp: "<TMP>",
+            self.tmp.resolve(): "<TMP>",
+            self.home: "<HOME>",
+            self.home.resolve(): "<HOME>",
+            package: "<PKG>",
         }
+        # A spec may also write a root forward-slashed (``Path.as_posix()``, as a
+        # ``skill://`` resource does), which on Windows differs from ``str()``.
+        roots = {str(p): label for p, label in bases.items()}
+        roots.update({p.as_posix(): label for p, label in bases.items()})
         spellings: dict[str, str] = {}
         for root, label in roots.items():
             once = json.dumps(root)[1:-1]
@@ -390,8 +398,9 @@ def materialize(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scenario: str) 
 #: Digests recorded from the pre-split ``kiro_crew.agent``. See the module docstring.
 GOLDEN: dict[str, dict[str, Any]] = {
     "clean_over_customized": {
-        "events": "e4016eba77605642de911e1089127f33fdb4c60579b4fd040df307c601101128",
+        "events": "62f61aff6c58b82a699a8b33901db0f4a9a791c931e292cc8e24c6cf0c93801b",
         "files": {
+            "kirocrew-assistant.json": "818056a3e30810be4b8b25ebbca39be5c29f9548e0664b79e9c68f9ac4575e2f",
             "kirocrew-conductor.json": "6745a4b08dc9735c8818963b7f441675e2556157fd4945e9f2f0559a2f8a7bca",
             "kirocrew-guest.json": "3ac87f33f4968a07c6f3dc45b29922d7002d38e93caabefa5005a7a1794fce38",
             "kirocrew-heartbeat.json": "7a212fc757669b2be5d1b141d58bac4bafc3dd9e19e206a68994f20f4c4f6ed4",
@@ -409,8 +418,9 @@ GOLDEN: dict[str, dict[str, Any]] = {
         "unrefreshed": [],
     },
     "customized": {
-        "events": "ff8139f99f8e5e4b35687ef3b53b613e4af6b12f27c340c749ff2f5ea483ecc5",
+        "events": "547297b4e0b51712afdb1354d4eb58d0940f88af12a63a8ef91f6df50c67be2d",
         "files": {
+            "kirocrew-assistant.json": "53df21f475143ab5e013c0a7fd987c2dab6ccf1b830272dcfd796e282698d249",
             "kirocrew-conductor.json": "6745a4b08dc9735c8818963b7f441675e2556157fd4945e9f2f0559a2f8a7bca",
             "kirocrew-guest.json": "3ac87f33f4968a07c6f3dc45b29922d7002d38e93caabefa5005a7a1794fce38",
             "kirocrew-heartbeat.json": "7a212fc757669b2be5d1b141d58bac4bafc3dd9e19e206a68994f20f4c4f6ed4",
@@ -428,8 +438,9 @@ GOLDEN: dict[str, dict[str, Any]] = {
         "unrefreshed": [],
     },
     "forks": {
-        "events": "10a993d77232f33f21f31d7aa0f7ae9297d826438f2355be401270358b26178e",
+        "events": "69ccf91fca126b49eb87a7fff1bbc60fcb77257837ba68b80e430e0e7663513e",
         "files": {
+            "kirocrew-assistant.json": "6c291255d26fa57ea49b53731ee967caa9f384b6a9e4241acdb74847aa1073fd",
             "kirocrew-conductor.json": "96f7570b3a408d11b8692c5aae35ab36fdca58250821de673e694c025fe61753",
             "kirocrew-guest.json": "3ac87f33f4968a07c6f3dc45b29922d7002d38e93caabefa5005a7a1794fce38",
             "kirocrew-heartbeat.json": "7a212fc757669b2be5d1b141d58bac4bafc3dd9e19e206a68994f20f4c4f6ed4",
@@ -449,8 +460,9 @@ GOLDEN: dict[str, dict[str, Any]] = {
         "unrefreshed": ["orphan-crew"],
     },
     "fresh": {
-        "events": "b2435da9299aec1e692da8225eb50db021d586c221eaa8e54b980598c7ae89c9",
+        "events": "bcf9417c83dc328a51c91ebe0b54a921d063237992a5f02a7eca59b76daca23f",
         "files": {
+            "kirocrew-assistant.json": "9b8575b1fcb135bc27185ddb7413141163d6037890b2573a067d100952c8c6dd",
             "kirocrew-conductor.json": "96f7570b3a408d11b8692c5aae35ab36fdca58250821de673e694c025fe61753",
             "kirocrew-guest.json": "3ac87f33f4968a07c6f3dc45b29922d7002d38e93caabefa5005a7a1794fce38",
             "kirocrew-heartbeat.json": "7a212fc757669b2be5d1b141d58bac4bafc3dd9e19e206a68994f20f4c4f6ed4",
@@ -468,8 +480,9 @@ GOLDEN: dict[str, dict[str, Any]] = {
         "unrefreshed": [],
     },
     "governed": {
-        "events": "1d7b1bc070305b97dd0158857e18eeaa38fd69f4c397e13e99a55f539f2bff9c",
+        "events": "4ec9a1e03eb42eb6c0c5ad9aba1215b3380be9f2ca5df89d80f1e2bbfbd56cf4",
         "files": {
+            "kirocrew-assistant.json": "0cb6ec59d4ea10fe42e4c8c985b828d7ee229f1ec167628b17d6c6970ccedb0b",
             "kirocrew-conductor.json": "36c5fdd13765c6c8519e7115c3f653e963a5c1f1b3cc9f1c6eeb1a1cd71bb65f",
             "kirocrew-guest.json": "3ac87f33f4968a07c6f3dc45b29922d7002d38e93caabefa5005a7a1794fce38",
             "kirocrew-heartbeat.json": "7a212fc757669b2be5d1b141d58bac4bafc3dd9e19e206a68994f20f4c4f6ed4",
@@ -487,8 +500,9 @@ GOLDEN: dict[str, dict[str, Any]] = {
         "unrefreshed": [],
     },
     "object_hooks": {
-        "events": "bdf18bf5093e7d69be03fba107e46b553e77a706c421f1471ecbd6f9f475c956",
+        "events": "a77550405fb09cd20d937768fcb51fbd0870739dfdb7a2884403bb5faf848b3d",
         "files": {
+            "kirocrew-assistant.json": "97c832710cee0dd81a5ed15b2532c22a0473e177bc3623931c7d353ede0689d4",
             "kirocrew-conductor.json": "2833507c5dc6164428a1e1ad9fce5777b57ac763103266fea0779f90c4eacea3",
             "kirocrew-guest.json": "3ac87f33f4968a07c6f3dc45b29922d7002d38e93caabefa5005a7a1794fce38",
             "kirocrew-heartbeat.json": "7a212fc757669b2be5d1b141d58bac4bafc3dd9e19e206a68994f20f4c4f6ed4",
@@ -506,8 +520,9 @@ GOLDEN: dict[str, dict[str, Any]] = {
         "unrefreshed": [],
     },
     "registry_mode": {
-        "events": "b2435da9299aec1e692da8225eb50db021d586c221eaa8e54b980598c7ae89c9",
+        "events": "bcf9417c83dc328a51c91ebe0b54a921d063237992a5f02a7eca59b76daca23f",
         "files": {
+            "kirocrew-assistant.json": "5a1bc89d09c68ca6242a2c75e4dbaee46c05578a0fa06e0d46a41b42bb964b99",
             "kirocrew-conductor.json": "3ec6f4930e439c9ef36901e87d86293fcb10ee6e9accf119a0a5abcd117867f9",
             "kirocrew-guest.json": "2423a7b447fbcedec2a64ab54a89d181cb2357456c8ddcfc189dc2afe3525780",
             "kirocrew-heartbeat.json": "6dbd5042238c4b0565f250dd4e235f0f77b01f7d7e6091a127a29ec25e183cc3",
@@ -525,8 +540,9 @@ GOLDEN: dict[str, dict[str, Any]] = {
         "unrefreshed": [],
     },
     "user_hooks": {
-        "events": "16eedef4f21d31a0c93ab48f5c6a1ad3757c21474e2e282084c791e565a2f871",
+        "events": "b56e6fdf497d40905fe7469ef137410d641792419b517e7c7661f9be3bc4d7a1",
         "files": {
+            "kirocrew-assistant.json": "94603bfaa4781030aa3c69f205b730f7dea770364530f50e8a562770d397f79a",
             "kirocrew-conductor.json": "8aaec096e2c4321549ec3ecdc2557e03cb30a23a0ca2842053f16ad6a1d0c522",
             "kirocrew-guest.json": "3ac87f33f4968a07c6f3dc45b29922d7002d38e93caabefa5005a7a1794fce38",
             "kirocrew-heartbeat.json": "7a212fc757669b2be5d1b141d58bac4bafc3dd9e19e206a68994f20f4c4f6ed4",

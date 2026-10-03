@@ -425,6 +425,34 @@ def _add_from_fd(zf: zipfile.ZipFile, fd: int, arcname: str) -> None:
 
 
 _MANAGED_TEMPLATES = frozenset(Path(name).stem for name in OWNED_KIRO_AGENT_FILES)
+_ASSISTANT_TEMPLATE = "kirocrew-assistant"
+
+
+def _managed_templates(agents_dir: Path) -> frozenset[str]:
+    """The template names every install regenerates, so no export warning is owed.
+
+    ``kirocrew-assistant`` is listed by filename, but a spec at that path the
+    installer did not create belongs to its author and is never regenerated, so
+    an export must name it like any other hand-written template. An absent file
+    stays managed: the destination's installer writes it.
+    """
+    path = agents_dir / f"{_ASSISTANT_TEMPLATE}.json"
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return _MANAGED_TEMPLATES
+    except OSError:
+        return _MANAGED_TEMPLATES - {_ASSISTANT_TEMPLATE}
+    try:
+        data = json.loads(raw)
+    except (ValueError, RecursionError):
+        data = None
+    from kiro_crew import agent as agent_mod  # lazy: agent is heavy and imports widely
+
+    if agent_mod._is_installed_assistant_spec(data):
+        return _MANAGED_TEMPLATES
+    return _MANAGED_TEMPLATES - {_ASSISTANT_TEMPLATE}
+
 
 #: The template warnings ride a response header (export) and a summary (import), so
 #: both are bounded: at most this many names, each cut to this many characters.
@@ -438,7 +466,7 @@ def _clip(name: str) -> str:
     return name[: MAX_TEMPLATE_NAME_CHARS - 1] + "\u2026"
 
 
-def crew_template_refs(config_path: Path) -> list[tuple[str, str]]:
+def crew_template_refs(config_path: Path, agents_dir: Path | None = None) -> list[tuple[str, str]]:
     """``(crew, kiro_agent)`` for each crew row in *config_path* that names a template.
 
     The two config-level selectors that also name a template, ``agent.default_agent``
@@ -446,7 +474,9 @@ def crew_template_refs(config_path: Path) -> list[tuple[str, str]]:
     A bundle never carries ``<kiro home>/agents``, so every name listed here must
     already exist on whichever machine applies the config. The templates Kiro Crew
     writes itself (``OWNED_KIRO_AGENT_FILES``) are left out: every install
-    regenerates them. An unreadable, malformed or pathologically nested file
+    regenerates them -- except a ``kirocrew-assistant`` spec the installer did not
+    create, which is listed (see :func:`_managed_templates`). An unreadable,
+    malformed or pathologically nested file
     answers ``[]``: this feeds a warning, never a refusal.
     """
     try:
@@ -463,10 +493,11 @@ def crew_template_refs(config_path: Path) -> list[tuple[str, str]]:
         block = data.get(section)
         if isinstance(block, dict):
             named.append((f"{section}.{key}", block.get(key)))
+    managed = _managed_templates(kiro_agents_dir() if agents_dir is None else agents_dir)
     return sorted(
         (holder, template)
         for holder, template in named
-        if isinstance(template, str) and template and template not in _MANAGED_TEMPLATES
+        if isinstance(template, str) and template and template not in managed
     )
 
 
@@ -489,13 +520,12 @@ def missing_crew_templates(config_path: Path) -> tuple[list[dict[str, str]], int
     Matches a spec by its ``name`` field or file stem, the same test the config
     loader applies when it resolves a crew's template.
     """
-    refs = crew_template_refs(config_path)
+    agents_dir = kiro_agents_dir()
+    refs = crew_template_refs(config_path, agents_dir)
     if not refs:
         return [], 0
     installed: set[str] = set()
-    for data, path in parsed_agent_specs(
-        kiro_agents_dir(), operation="portability", source="dashboard"
-    ):
+    for data, path in parsed_agent_specs(agents_dir, operation="portability", source="dashboard"):
         installed.add(path.stem)
         if isinstance(data, dict) and isinstance(data.get("name"), str):
             installed.add(data["name"])

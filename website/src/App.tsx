@@ -38,6 +38,7 @@ import { gcOrphanedStorage } from './utils/storageGc'
 import { useMetricsReadout, metricsSegment, MetricsCard } from './shell/topbar/metricsReadout'
 import { Rocket, Bell, Code, RefreshCw, Package, Download, Hammer, XCircle, Check, AlertTriangle, X, Coins, Compass, LayoutGrid, Fullscreen, Menu, SquareTerminal, Bot, Smartphone, Search as SearchIcon } from 'lucide-react'
 import { useFirstRunChapters, FirstRunChapters } from './shell/boot/firstRun'
+import { GuideProvider } from './guide/GuideContext'
 import ErrorNotice from './components/ErrorNotice'
 import { PREVIEW_EXPAND_EVENT } from './components/WebPreviewPanel'
 import { useMobileConnect, MobileConnectDialog } from './shell/nav/mobileConnect'
@@ -147,6 +148,8 @@ import { RailHeaderGlyph, RailBrandToggle, RailCommunityLinks } from './shell/na
 // mount gate at the render site means the chunk is fetched exactly when it
 // can render.
 const UpdateFoundModal = lazy(() => import('./components/UpdateFoundModal'))
+// The guide pill renders only once a guide is offered; keep it off the entry chunk.
+const GuideLayer = lazy(() => import('./guide/GuideLayer'))
 // Same boundary, same reason: the pill renders nothing without an update,
 // so its code rides the on-demand chunk instead of the app core.
 const UpdatePill = lazy(() => import('./components/UpdatePill'))
@@ -2652,6 +2655,11 @@ export default function App() {
           {/* The rail renderer reaches the chat page through context rather than
               a prop: the route element is shared with the popout/embed frames. */}
           <MobileNavRailContext.Provider value={mobileNavRail}>
+          {/* Registered-action guide: offered in the chat it came from, driven
+              only after the human presses Start; the pages it walks through
+              read their draft and request-header seams from this provider. */}
+          <GuideProvider>
+          <Suspense fallback={null}><GuideLayer /></Suspense>
           <Routes>
             <Route path="/chat/:slug?" element={<ErrorBoundary><ChatPage /></ErrorBoundary>} />
             <Route path="/orchestrated/:slug?" element={<OrchestratedRedirect />} />
@@ -2713,6 +2721,7 @@ export default function App() {
             <Route path="/:builtinApp/*" element={<BuiltinAppRoute />} />
             <Route path="*" element={<ChatRedirect />} />
           </Routes>
+          </GuideProvider>
           </MobileNavRailContext.Provider>
         </main>
         {/* App-wide docked terminal panel — renders beside <main> (right) or

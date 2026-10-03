@@ -10,6 +10,7 @@ a session on. The boot path defers the refresh to a thread
 
 from __future__ import annotations
 
+import json
 import threading
 from pathlib import Path
 from typing import Literal
@@ -184,11 +185,29 @@ def _refresh_forked_templates_locked(*, gated_off: "frozenset[str] | None" = Non
         bound = cfg_agents.get(crew) if isinstance(crew, str) else None
         return bound is not None and bound.kiro_agent == name
 
+    assistant_stem = Path(agent_mod.ASSISTANT_AGENT_FILENAME).stem
+    assistant_owned: list[bool] = []
+
+    def _assistant_is_installed() -> bool:
+        # The Assistant filename is owned only when the installer wrote it: a
+        # hand-authored spec on that stem belongs to its author, so a fork of it
+        # is a custom-template fork and gets no managed plumbing.
+        if not assistant_owned:
+            path = agent_mod.kiro_agents_dir_path() / agent_mod.ASSISTANT_AGENT_FILENAME
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                data = None
+            assistant_owned.append(agent_mod._is_installed_assistant_spec(data))
+        return assistant_owned[0]
+
     def _origin_is_owned(name: str) -> bool:
         seen: set[str] = set()
         while name in forks and name not in seen:
             seen.add(name)
             name = forks[name]["forked_from"]
+        if name == assistant_stem:
+            return _assistant_is_installed()
         return name in owned_names
 
     agents_dir = agent_mod.kiro_agents_dir_path()

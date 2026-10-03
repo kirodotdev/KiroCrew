@@ -1632,6 +1632,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # WOULD need redaction and refuses the pin when it would. Nothing is
         # emitted here; the chat routes that act on the answer are the sinks.
         "members.py",
+        # Gate-side, like `link_meta.py` above: the UI-guide catalog asks whether
+        # the redactor WOULD change a proposed crewmate name or goal, and REFUSES
+        # the guide when it would. Nothing it returns is redacted text.
+        "guide_catalog.py",
         # Inbound / gate-side: redacts what comes IN or what a gate logs, not what
         # goes out to a human.
         "context.py",
@@ -2108,6 +2112,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # is the MODEL over the stdio transport -- the boundary is that transport,
         # not this module, exactly as for `mcp_dashboard.py` above.
         "mcp_panel.py",
+        # Same class as `mcp_panel.py`: the guide shim relays gateway results and
+        # redacts only the refusal prose it hands back to the model; the boundary
+        # is the stdio transport, not this module.
+        "mcp_guide.py",
         "mcp_gateway/backend.py",
         # The kirocrew-core tool handlers, moved out of mcp_core.py into their
         # domain modules. Same classification as mcp_core.py above for the same
@@ -2567,6 +2575,7 @@ _SCHEMA_REGISTRY_NAMES: tuple[str, ...] = (
     "MCP_DEBUG_SCHEMAS",
     "MCP_WORK_SCHEMAS",
     "MCP_PANEL_SCHEMAS",
+    "MCP_GUIDE_SCHEMAS",
 )
 
 

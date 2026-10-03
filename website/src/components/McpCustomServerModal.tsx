@@ -206,7 +206,7 @@ export default function McpCustomServerModal({ open, onClose, editName }: Props)
         : i18nT('components.mcpCustomServerModal.add_custom_server')}
       maxWidth={640}
     >
-      <div className="flex flex-col gap-3 p-1">
+      <div className="flex flex-col gap-3 p-1" data-guide-anchor={editing ? undefined : 'mcp.custom-form'}>
         {!editing && (
           <p className="text-xs text-muted m-0">
             {i18nT('components.mcpCustomServerModal.paste_an')} <code>{i18nT('components.mcpCustomServerModal.mcpservers')}</code> {i18nT('components.mcpCustomServerModal.block_from_a_readme_a')}{' '}

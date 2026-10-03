@@ -220,6 +220,7 @@ def build_member_section(
     strict: bool = False,
     include_briefing: bool = True,
     desk_withheld: bool = False,
+    template_selected: bool = False,
 ) -> str:
     """Assemble the four-layer identity for a member's bound execution.
 
@@ -264,6 +265,7 @@ def build_member_section(
     which chat paths already run off-loop.
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
+    from kiro_crew.agent_files import ASSISTANT_MEMBER_NAME, ASSISTANT_TEMPLATE_NAME
 
     try:
         cfg = ctx.KiroCrewConfig.load()
@@ -333,11 +335,35 @@ def build_member_section(
     rules = _markers._scrub_member_payload(rules)
     briefing = _markers._scrub_member_payload(briefing)
 
-    identity = [
-        f"[MEMBER IDENTITY]\nYou are {member}. Not a generic assistant, and not an "
-        f"extension of the user: {member} is an identity of your own — your name, "
-        "your role, your memory of this thread, and your track record belong to you."
-    ]
+    # The Assistant identity belongs to the separate built-in ``assistant``
+    # member only, on Global memory and its own template. The reserved
+    # ``default`` member keeps the ordinary identity whatever it is bound to.
+    assistant = (
+        member == ASSISTANT_MEMBER_NAME
+        and not strict
+        and not template_selected
+        and crew is not None
+        and getattr(crew, "kiro_agent", "") == ASSISTANT_TEMPLATE_NAME
+        and not getattr(crew, "member_id", "")
+        and getattr(crew, "memory_store", "") == "default"
+    )
+    display_name = getattr(crew, "display_name", "") if assistant else ""
+    spoken_name = (
+        _markers._scrub_member_payload(display_name.strip())
+        if isinstance(display_name, str) and display_name.strip()
+        else "Assistant"
+    )
+    identity = (
+        [
+            f"[MEMBER IDENTITY]\nYou are {spoken_name}. Your member key is {member}.",
+        ]
+        if assistant
+        else [
+            f"[MEMBER IDENTITY]\nYou are {member}. Not a generic assistant, and not an "
+            f"extension of the user: {member} is an identity of your own — your name, "
+            "your role, your memory of this thread, and your track record belong to you."
+        ]
+    )
     if description:
         identity.append(f"Your role: {description}")
     if triggers:

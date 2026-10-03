@@ -19,6 +19,7 @@ import { memberProjectionStore } from '../../state/memberProjectionStore'
 import { threadLiveStore, type ThreadReplyFrame } from '../../state/threadLiveStore'
 import { threadQueryKey, threadsQueryKey } from '../../api/threads'
 import { applyStatusDelta, parseStatusDelta } from '../../utils/pullRequestStatusDelta'
+import { GUIDE_PENDING_QUERY_KEY } from '../../api/guide'
 import { slotChangeUrls } from '../../utils/pullRequestLinks'
 import type { ChatSlot, PullRequestStatusBatch } from '../../types'
 import { emitArtifactDeleted } from './browserEvents'
@@ -153,6 +154,8 @@ export function refreshServerStateAfterReconnect(queryClient: QueryClient): void
   threadLiveStore.reset()
   queryClient.invalidateQueries({ queryKey: ['chat-thread'] })
   queryClient.invalidateQueries({ queryKey: ['chat-threads'] })
+  // A guide frame missed while the socket was down is recovered by re-reading.
+  queryClient.invalidateQueries({ queryKey: GUIDE_PENDING_QUERY_KEY })
   // A dropped socket is the one client-visible sign the gateway may have
   // restarted — and a restart drops an unmessaged member slot while its
   // binding survives. The Crew Members page mounts a cached thread key

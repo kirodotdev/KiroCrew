@@ -748,7 +748,7 @@ describe('MembersPage Schedules chip', () => {
       default_agent: 'kirocrew',
     })
     fireEvent.pointerDown(screen.getByTestId('member-add'), { button: 0, pointerType: 'mouse' })
-    fireEvent.click(await screen.findByTestId('member-add-crewmate'))
+    fireEvent.click(await screen.findByTestId('member-add-advanced'))
     const createForm = await screen.findByTestId('crewmate-create-form')
     fireEvent.change(within(createForm).getByLabelText('Name'), { target: { value: 'radar' } })
     fireEvent.submit(createForm)

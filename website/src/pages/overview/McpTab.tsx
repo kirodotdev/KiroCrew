@@ -590,7 +590,7 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
       )}
       <InfoTip text={i18nT('pages.overview.mcpTab.servers_scope_tip', { provider: provider.displayName })} />
       <span className="ml-auto flex items-center gap-2">
-        <Btn onClick={() => setCustomOpen(true)}><Braces size={14} /> {i18nT('pages.overview.mcpTab.add_custom')}</Btn>
+        <Btn onClick={() => setCustomOpen(true)} data-guide-anchor="mcp.add-custom"><Braces size={14} /> {i18nT('pages.overview.mcpTab.add_custom')}</Btn>
         <Btn primary onClick={() => setBrowserOpen(true)}><Download size={14} /> {i18nT('pages.overview.mcpTab.add_server')}</Btn>
       </span>
     </h4>

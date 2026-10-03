@@ -141,10 +141,10 @@ app agent). Plain kiro-cli agents outside Kiro Crew keep kiro-cli's own default.
 
 ### Managed servers
 
-`agent._MANAGED_MCP_SERVERS` holds the eight servers the gateway owns end to
+`agent._MANAGED_MCP_SERVERS` holds the nine servers the gateway owns end to
 end: the always-on `kirocrew-cron` and `kirocrew-core`, the gated
 `kirocrew-computer`, and the opt-in `kirocrew-dashboard`, `kirocrew-work`,
-`kirocrew-crew-log`, `kirocrew-debug` and `kirocrew-panel`. Every emitted or
+`kirocrew-crew-log`, `kirocrew-debug`, `kirocrew-panel` and `kirocrew-guide`. Every emitted or
 explicitly granted entry is refreshed on every rebuild by
 `_refresh_dynamic_fields()`, which rewrites `command`/`args` from the live
 `kirocrew` binary, strips stale remote-transport fields (`url`, `headers`) left by
@@ -1367,6 +1367,35 @@ Managed servers, registered by `agent._MANAGED_MCP_SERVERS` and installed into
 | `kirocrew-crew-log` | `kirocrew mcp-crew-log` (`mcp_crew_log.py`) | `crew_log_list`, `crew_log_read`, `crew_log_projection` |
 | `kirocrew-debug` | `kirocrew mcp-debug` (`mcp_debug.py`) | `debug_gateway`, `debug_refusals`, `debug_threads`, `debug_processes`, `debug_snapshots` |
 | `kirocrew-panel` | `kirocrew mcp-panel` (`mcp_panel.py`) | `panel_publish`, `panel_templates` |
+| `kirocrew-guide` | `kirocrew mcp-guide` (`mcp_guide.py`) | `guide_list_actions`, `guide_start`, `guide_status`, `guide_cancel` |
+
+`kirocrew-guide` is opt-in and granted explicitly by one template,
+`kirocrew-assistant` (`agent._grant_assistant_guide_set`). Exact `allowedTools`
+grants let `guide_list_actions` and `guide_status` run without an approval prompt
+when the governance ceiling permits it; KAS permissions derive from that final
+filtered list. `guide_start` and `guide_cancel` still require tool approval.
+There is no server-wide grant or `autoApprove` entry. Session checks, browser
+acceptance and owner-only save controls remain in force.
+It lets an agent offer the human a non-modal pointer through a REGISTERED
+dashboard action (`guide_catalog.ACTIONS`: `settings.show`, `crewmate.create`,
+`mcp.open_add`); the agent sends an action id and parameters, never a route,
+selector or code. The shim is stateless and sends the strictly resolved session
+key to the strict-internal `/api/guide/agent/*` routes, which derive the caller's
+slot only from that key against the LIVE slot table and refuse apps, subagents,
+unattended tabs and a key with no open slot. All guide state lives in the
+gateway (`dashboard/guide_runs.py`, in memory, 30-minute TTL, 45-second tab
+lease, revision compare-and-set); the owner's browser reads and advances it
+through the cookie-authed, owner-only `/api/guide/*` routes and receives
+owner-only `guide_update` frames. A browser advances only UI steps. A mutation
+step completes only through `handlers/guide.run_guided_crewmate_create`, which wraps the
+existing owner-only `POST /api/agents`: the tab names the guide in
+`X-Guide-Id`/`X-Guide-Tab`/`X-Guide-Revision`, the request is associated before
+the handler runs, and the guide advances only from that handler's own 200
+response (the new crewmate's `member_id`). A cancel or expiry in between retires
+the association. `mcp.open_add` takes no parameters and has only UI steps: it
+points at the existing MCP servers tab and its Add Custom button, and completes
+when the add form is reached -- never when a server is saved. Settings
+credential and security-ceiling controls are excluded from the catalog.
 
 `kirocrew-panel` is opt-in and reaches a crew member's DM session the way
 `kirocrew-dashboard` does: as a session-level `mcpServers` entry carrying that
@@ -2095,7 +2124,8 @@ gatewayd spawns a pooled backend from its OWN environment, so the per-session
 token the stub carries never reaches the backend's `os.environ`. That is right
 for a third-party server, which has no business proving a session to anyone.
 `kirocrew-core`, `kirocrew-cron` and the opt-in Crew servers (`kirocrew-dashboard`,
-`kirocrew-work`, `kirocrew-crew-log`, `kirocrew-debug`, `kirocrew-panel`) are
+`kirocrew-work`, `kirocrew-crew-log`, `kirocrew-debug`, `kirocrew-panel`,
+`kirocrew-guide`) are
 different: they
 post back to the gateway over loopback (`/api/crons/tools`, the memory routes,
 the session and folder routes) on behalf of the session they act for, and every

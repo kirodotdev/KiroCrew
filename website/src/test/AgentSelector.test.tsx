@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
-import AgentSelector from '../components/AgentSelector'
+import AgentSelector, { crewDisplayName } from '../components/AgentSelector'
 import type { KiroCrewAgent } from '../components/AgentSelector'
 
 const agents: KiroCrewAgent[] = [
@@ -44,5 +44,19 @@ describe('AgentSelector', () => {
   it('uses defaultAgent when value is empty', () => {
     render(<AgentSelector agents={agents} defaultAgent="coding" value="" onChange={() => {}} />)
     expect(screen.getByText('coding')).toBeInTheDocument()
+  })
+})
+
+describe('crewDisplayName', () => {
+  it('names the built-in Assistant (assistant + kirocrew-assistant) by its localized label; default and look-alikes keep their name', () => {
+    expect(crewDisplayName({ name: 'assistant', kiro_agent: 'kirocrew-assistant' })).toBe('Assistant')
+    // A label of the user's own wins.
+    expect(crewDisplayName({ name: 'assistant', kiro_agent: 'kirocrew-assistant', display_name: 'Ada' })).toBe('Ada')
+    // The reserved default member is presented exactly as before.
+    expect(crewDisplayName({ name: 'default', kiro_agent: 'kirocrew' })).toBe('default')
+    expect(crewDisplayName({ name: 'default' })).toBe('default')
+    // A member merely NAMED assistant on another template is not the Assistant.
+    expect(crewDisplayName({ name: 'assistant', kiro_agent: 'kirocrew' })).toBe('assistant')
+    expect(crewDisplayName({ name: 'assistant' })).toBe('assistant')
   })
 })

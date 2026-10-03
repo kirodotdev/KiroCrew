@@ -21,6 +21,8 @@ layout below can change without touching a caller.
 * :mod:`.conductor_agents` -- the four conductor specs.
 * :mod:`.worker_agent` -- the worker's mirror of the default spec and its spawn-time
   freshness gate.
+* :mod:`.assistant_agent` -- the ``kirocrew-assistant`` template and the one-time
+  creation of the built-in ``assistant`` member that runs it.
 
 Importing this package imports the facade first, and the facade imports every owner
 once its own names are bound, so no owner can be observed half-built whichever module

@@ -1863,6 +1863,7 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
           </button>
           <button
             id="connections-mcp-tab"
+            data-guide-anchor="mcp.servers-tab"
             type="button"
             role="tab"
             aria-selected={activeTab === 'mcp-servers'}

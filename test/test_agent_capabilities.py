@@ -1317,6 +1317,26 @@ def test_owned_parent_refreshes_real_plumbing_without_regranting_tools(editor, m
     assert spec_for(home, specs)["mcpServers"]["kirocrew-core"]["args"] == ["mcp-core", "--new"]
 
 
+def test_hand_written_assistant_parent_is_not_refreshed_as_owned(editor, monkeypatch):
+    # A kirocrew-assistant.json the installer did not create is its author's:
+    # its fork keeps the author's hooks and MCP setting and is not "builtin".
+    service, home, specs, parent = editor
+    parent.update(name="kirocrew-assistant", prompt="# Mine\nhand written")
+    parent["hooks"] = {"agentSpawn": [{"command": "my-own-hook"}]}
+    parent["includeMcpJson"] = True
+    (specs / "kirocrew-assistant.json").write_text(json.dumps(parent))
+    config = json.loads((home / "config.json").read_text())
+    config["agents"]["A"]["kiro_agent"] = "kirocrew-assistant"
+    (home / "config.json").write_text(json.dumps(config))
+    loader._invalidate_config_cache()
+    monkeypatch.setattr(agent, "_is_installed_assistant_spec", lambda data: False)
+    assert service.get("A")["template"]["source"] == "custom"
+    save(service, enroll=True)
+    fork = spec_for(home, specs)
+    assert fork["hooks"] == {"agentSpawn": [{"command": "my-own-hook"}]}
+    assert fork["includeMcpJson"] is True
+
+
 def test_retained_secret_is_bound_to_member_revision(editor):
     service, _, specs, parent = editor
     current = service.get("A")

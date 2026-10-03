@@ -216,6 +216,7 @@ def test_every_owned_spec_is_classified_for_the_picker():
         agent_files.KNOWLEDGE_AGENT_FILENAME,
         agent_files.RESEARCH_AGENT_FILENAME,
         agent_files.HEARTBEAT_AGENT_FILENAME,
+        agent_files.ASSISTANT_AGENT_FILENAME,
     }
     background = set(agent_catalog._BACKGROUND_ONLY_FILES)
     assert not picker_rows & background
