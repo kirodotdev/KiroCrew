@@ -10,7 +10,11 @@ minutes and a forced restart may fail on slow cold starts.
 This watchdog runs inside the gateway itself and catches the problem at the
 source: if the dashboard static bundle is missing, log a CRITICAL warning
 and initiate graceful shutdown so a supervisor (systemd, launchd) can
-restart a fresh process immediately.
+restart a fresh process immediately. Two cases stand it down instead: a gap
+an update step this gateway is running owns (``update_ownership``), since
+shutting down would cancel that step mid-write; and a supervisor that could not
+relaunch the gateway (``gateway_restart.supervisor_reentry``), since the exit
+would then leave nothing running.
 
 The check is cheap (one Path.is_file() + one Path.is_file() — no I/O beyond
 stat()) and runs every 60 seconds by default. It only arms itself if assets
@@ -27,11 +31,15 @@ fallback), so a partial-prune state where an empty
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Protocol
 
+from kiro_crew import update_ownership
 from kiro_crew.dashboard.handlers.core import _DIST_INDEX
+from kiro_crew.update_ownership import Reentry, ReentryVerdict
 
 logger = logging.getLogger(__name__)
 
@@ -49,11 +57,21 @@ _CONFIRM_DELAY_SECS = 2.0
 # a confirmed asset vanish. An update prune only breaks static-asset serving —
 # live ACP turns keep working — so draining lets active turns complete (result
 # captured, history saved) instead of being killed mid-prompt when the
-# supervisor restarts. Bounded so a wedged turn can't defer the restart forever.
+# supervisor restarts. Bounded so a wedged turn can't defer the restart forever;
+# the drain after the re-entry check gets only what the first one left of it.
 _DRAIN_TIMEOUT_SECS = 120.0
 # Poll cadence while draining (seconds). Also the max latency to react to an
 # external SIGTERM arriving mid-drain.
 _DRAIN_POLL_SECS = 2.0
+
+# Bound on one re-entry check (it reads the service definition and probes an
+# interpreter). Past it the check is inconclusive; the probe is not restarted
+# while it is still running.
+_REENTRY_CHECK_TIMEOUT_SECS = 30.0
+# After the re-entry check refuses, it is asked again on a backoff instead of
+# every tick: from one check interval, doubling, up to this ceiling (seconds).
+# A few intervals, so a repaired install is relaunched within minutes.
+_REENTRY_RECHECK_MAX_SECS = 300.0
 
 # Process exit status the gateway uses when THIS watchdog initiated the
 # shutdown. Non-zero on purpose: the whole point of the shutdown is to be
@@ -84,6 +102,15 @@ def shutdown_exit_code(watchdog: "asyncio.Future[bool] | None") -> int:
         logger.debug("Stale-asset watchdog task raised", exc_info=True)
         return 0
     return STALE_ASSET_EXIT_CODE if fired else 0
+
+
+@dataclass
+class _Standing:
+    """A refusal keeping the gateway up: when to ask again, and what was said."""
+
+    until: float
+    backoff: float
+    said: str
 
 
 class _ShutdownSignal(Protocol):
@@ -120,6 +147,7 @@ async def run_stale_asset_watchdog(
     count_in_flight: Callable[[], int] | None = None,
     drain_timeout: float = _DRAIN_TIMEOUT_SECS,
     drain_poll: float = _DRAIN_POLL_SECS,
+    reentry_check: Callable[[], ReentryVerdict] | None = None,
 ) -> bool:
     """Background loop: check asset presence, trigger shutdown if stale.
 
@@ -150,6 +178,25 @@ async def run_stale_asset_watchdog(
     static-asset serving, so active ACP turns can finish rather than being
     killed mid-prompt when the supervisor restarts a fresh process.
 
+    A missing bundle that an update step this gateway is running owns
+    (``update_ownership.current_owner``) does not shut down. The owner is read on
+    every missing sample, and once more as the last thing before signalling,
+    with no await in between, because a step can start inside the confirm or
+    drain window. A bundle missing at startup while a step owns it is waited out
+    rather than read as a dev install; if it is still missing once that step
+    ends, the update made the gap, so the watchdog arms and handles it like any
+    other vanish.
+
+    Right before signalling it also asks whether the supervisor could relaunch
+    the gateway (``reentry_check``), and whether an update chose to stay up
+    instead of restarting (``update_ownership.restart_refusal``, read with no
+    await before the signal). A refusal keeps the gateway up on its loaded code:
+    it is said once, then asked again on a backoff without re-running the confirm
+    and the drain each tick; a positive answer then runs them again, and the check
+    after the drain decides. An inconclusive answer is logged and is not a
+    refusal, but it does not end one that is standing either. Work admitted while
+    the check ran is drained again before the signal.
+
     Parameters
     ----------
     shutdown_event:
@@ -166,11 +213,113 @@ async def run_stale_asset_watchdog(
         before triggering shutdown. ``None`` disables draining (shut down
         immediately on vanish).
     drain_timeout:
-        Max seconds to wait for in-flight work to finish. Default 120s.
+        Max seconds to wait for in-flight work to finish, shared by the drains
+        before and after the re-entry check. Default 120s.
     drain_poll:
         Seconds between in-flight re-counts while draining. Default 2s.
+    reentry_check:
+        Optional: whether the supervisor could relaunch the gateway. Blocking;
+        run on its own worker under a bound, and a check that raises or does not
+        answer is inconclusive. A check still running is waited on again rather
+        than started twice, and one that answered after its ask gave up is read
+        once before a new one starts.
     """
-    if not assets_present():
+    announced: str | None = None
+
+    def _owner(*, after_drain: bool = False) -> str | None:
+        nonlocal announced
+        owner = update_ownership.current_owner()
+        if owner is not None and (after_drain or owner != announced):
+            # After a drain that logged "proceeding with shutdown", always say
+            # why the shutdown is not happening.
+            announced = owner
+            logger.warning(
+                "Stale-asset watchdog: assets missing while %s owns the gap; "
+                "standing down%s.",
+                owner,
+                " after drain" if after_drain else "",
+            )
+        return owner
+
+    loop = asyncio.get_running_loop()
+    check_worker: concurrent.futures.ThreadPoolExecutor | None = None
+    check_pending: asyncio.Future[ReentryVerdict] | None = None
+    standing: _Standing | None = None
+    inconclusive_said: str | None = None
+
+    async def _reentry() -> ReentryVerdict:
+        nonlocal check_worker, check_pending
+        if reentry_check is None:
+            return ReentryVerdict(Reentry.REENTERABLE)
+        try:
+            # A check an earlier ask stopped waiting for is waited on again, and
+            # read if it has answered since; only one that was read is replaced.
+            if check_pending is None:
+                if check_worker is None:
+                    check_worker = concurrent.futures.ThreadPoolExecutor(
+                        1, thread_name_prefix="stale-asset-reentry"
+                    )
+                check_pending = loop.run_in_executor(check_worker, reentry_check)
+            verdict = await asyncio.wait_for(
+                asyncio.shield(check_pending), _REENTRY_CHECK_TIMEOUT_SECS
+            )
+            check_pending = None
+            return verdict
+        except asyncio.TimeoutError:
+            return ReentryVerdict(Reentry.INCONCLUSIVE, "the check did not answer")
+        except Exception as exc:
+            check_pending = None
+            logger.debug("Stale-asset watchdog: re-entry check failed", exc_info=True)
+            return ReentryVerdict(Reentry.INCONCLUSIVE, str(exc) or type(exc).__name__)
+
+    def _with_stay_up(verdict: ReentryVerdict) -> ReentryVerdict:
+        """An update that chose to stay up refuses too; read with no await."""
+        stayed_up = update_ownership.restart_refusal()
+        if stayed_up is not None:
+            return ReentryVerdict(Reentry.REFUSED, f"an update stopped before restart: {stayed_up}")
+        return verdict
+
+    def _say_inconclusive(verdict: ReentryVerdict) -> None:
+        nonlocal inconclusive_said
+        if verdict.reason != inconclusive_said:
+            inconclusive_said = verdict.reason
+            logger.warning(
+                "Stale-asset watchdog: could not tell whether the gateway's supervisor "
+                "can relaunch it (%s).",
+                verdict.reason,
+            )
+
+    def _refused(verdict: ReentryVerdict) -> None:
+        """Hold off for the next backoff step; say a refusal once per reason."""
+        nonlocal standing
+        said = standing.said if standing is not None else ""
+        if verdict.status is Reentry.REFUSED and verdict.reason != said:
+            said = verdict.reason
+            logger.critical(
+                "Dashboard static assets vanished, but the gateway's supervisor could "
+                "not relaunch it (%s), so it stays up on its loaded code.",
+                verdict.reason,
+            )
+        elif verdict.status is Reentry.INCONCLUSIVE:
+            _say_inconclusive(verdict)
+        backoff = interval
+        if standing is not None:
+            backoff = max(interval, min(standing.backoff * 2, _REENTRY_RECHECK_MAX_SECS))
+        standing = _Standing(until=loop.time() + backoff, backoff=backoff, said=said)
+
+    present = assets_present()
+    owner_seen = False
+    while not present and _owner() is not None:
+        # An update started at boot can have the bundle missing before the
+        # watchdog arms: wait for it rather than disarm as a dev install.
+        owner_seen = True
+        try:
+            await asyncio.wait_for(shutdown_event.wait(), timeout=interval)
+            return False
+        except asyncio.TimeoutError:
+            pass
+        present = assets_present()
+    if not present and not owner_seen:
         # Assets were never here — this is likely a dev/source install that
         # hasn't built its frontend yet. Don't arm the watchdog; let the
         # gateway serve the fallback page as it always has.
@@ -188,6 +337,18 @@ async def run_stale_asset_watchdog(
             pass
 
         if not assets_present():
+            if _owner() is not None:
+                continue
+            if standing is not None:
+                # A refusal is standing: skip the confirm and the drain (both
+                # would only lead back to it) until the backoff is up, and go on
+                # to them only on a positive answer.
+                if loop.time() < standing.until:
+                    continue
+                asked = _with_stay_up(await _reentry())
+                if asked.status is not Reentry.REENTERABLE:
+                    _refused(asked)
+                    continue
             # Re-confirm after a short delay: a frontend rebuild in a source
             # install deletes and recreates static/dist/, and an unlucky tick
             # inside that window must not kill a healthy gateway. An update
@@ -211,15 +372,34 @@ async def run_stale_asset_watchdog(
                 # Someone else shut us down during the confirm window; don't
                 # log a misleading "watchdog fired" CRITICAL.
                 return False
+            drain_started = loop.time()
             await _drain_in_flight(
                 shutdown_event,
                 count_in_flight,
                 drain_timeout=drain_timeout,
                 drain_poll=drain_poll,
             )
+            drained = loop.time() - drain_started
             if shutdown_event.is_set():
                 # An external SIGTERM arrived during the drain window and has
                 # already begun graceful shutdown — don't double-signal.
+                return False
+            verdict = await _reentry()
+            if shutdown_event.is_set():
+                # An operator stop landed during that check: it is theirs.
+                return False
+            # A turn can be admitted while the check runs: drain again. On an
+            # idle gateway this counts once and returns without yielding, and it
+            # is the last await before signalling: everything below reads state
+            # and signals without yielding. One budget covers both drains, so a
+            # wedged turn holds the signal for at most one drain's worth.
+            await _drain_in_flight(
+                shutdown_event,
+                count_in_flight,
+                drain_timeout=max(0.0, drain_timeout - drained),
+                drain_poll=drain_poll,
+            )
+            if shutdown_event.is_set():
                 return False
             # Re-check once more now that in-flight work has drained. This
             # covers a rebuild that outlives the confirmation but finishes
@@ -235,6 +415,19 @@ async def run_stale_asset_watchdog(
                     "shutting down."
                 )
                 continue
+            # With no await in between: an update step can have started, or an
+            # update can have chosen to stay up, inside the confirm, the drains
+            # or the re-entry check.
+            if _owner(after_drain=True) is not None:
+                continue
+            verdict = _with_stay_up(verdict)
+            if verdict.status is Reentry.REFUSED or (
+                standing is not None and verdict.status is not Reentry.REENTERABLE
+            ):
+                _refused(verdict)
+                continue
+            if verdict.status is Reentry.INCONCLUSIVE:
+                _say_inconclusive(verdict)
             logger.critical(
                 "Dashboard static assets vanished — an update likely "
                 "pruned the running install. Initiating graceful shutdown "
@@ -242,6 +435,13 @@ async def run_stale_asset_watchdog(
             )
             shutdown_event.set()
             return True
+        else:
+            # A healthy sample ends the gap: a later one is announced, asked and
+            # said afresh, and a check still running from it is not its answer.
+            announced = None
+            standing = None
+            inconclusive_said = None
+            check_pending = None
     # Loop never entered: the event was already set when the watchdog armed.
     return False
 

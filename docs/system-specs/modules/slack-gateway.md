@@ -306,7 +306,7 @@ a restart-on-failure supervisor never relaunches an exit 0:
 | Status | Source | Meaning |
 | --- | --- | --- |
 | 0 | operator (SIGTERM, `systemctl stop`, Ctrl+C) | stay down as asked |
-| 75 (`EX_TEMPFAIL`) | stale-asset watchdog | the served assets vanished |
+| 75 (`EX_TEMPFAIL`) | stale-asset watchdog | the served assets vanished and no update step this gateway is running owns the gap. Not while the service manager could not relaunch the gateway (`supervisor_reentry`), or after an update chose to stay up instead of restarting |
 | 69 (`EX_UNAVAILABLE`) | listener guard (`dashboard/listener_guard.py`) | the TCP listener could not be restored, so the process was alive but unreachable |
 | 78 (`EX_CONFIG`) | gateway lock refusal (`gateway_lock.LIVE_HOLDER_EXIT_CODE`), before the gateway runs — not a shutdown | the serving-holder predicate (`GatewayLock._serving_verdict`) is True: the process `/proc/locks` positively identifies as holding `gateway.lock` is running, holds the configured dashboard port with its OWN socket at the address this gateway is configured to bind, and answers HTTP there — a sibling gateway already serves this home. The systemd unit's `RestartPreventExitStatus=` names this one status so it is NOT relaunched (see [cli](cli.md), *Service Management*); every other lock refusal — a holder no surface can identify, however the recorded pid looks; a holder whose own socket at the probed address is silent (a wedged gateway); a holder on the port only at another address, or one the platform did not report (the residual row, unasserted by design, so a stranger's answer there is never credited to it) among them — exits 1 and is relaunched |
 
@@ -315,6 +315,106 @@ closes the LISTEN socket after one failed `accept()` and never re-arms it. The
 guard rebinds first and only sets this status when rebinding keeps failing, or
 when the rebind binds yet the loopback `/api/live` probe still gets no answer —
 a state no rebind can fix.
+
+**The stale-asset watchdog stands down for this gateway's own update steps.**
+Some update steps leave the served bundle missing while they run: the
+managed-venv installer or a policy `apply_command` replacing the install in
+place, and a frontend build while `static/dist` is still the dev-mode link into
+`website/dist` (Vite empties its output directory first; once
+`_stage_dist_locked` has made `static/dist` a real directory, a rebuild leaves
+it intact). Shutting down then cancels the step mid-write, and a cancelled
+installer leaves a venv without its console scripts. So each such step the
+gateway runs registers with `update_ownership` for as long as it rewrites the
+install: the git auto-update (from the reset), the managed-venv installer,
+`CommandProvider.apply`, and the dashboard update's worker. So do
+`_restart_after_update` and the dashboard's `_restart_gateway`, so a restart's
+teardown is not raced. An update step hands the gap to the restart it awaits:
+its own entry ends as the restart's begins, with no yield between. A restart
+deferred while callback work drains stays owned for `DEFERRED_RESTART_MAX_SECS`
+counted from the FIRST deferral; the coordinator's retries do not extend it, and
+it ends early only when a restart commits (`restart_committed`, right before the
+sessions close) or finds no usable interpreter (`clear_restart_deferral`), never
+when a restart merely starts and then coalesces or refuses with an interpreter
+still in place. A restart deferred for want of a usable interpreter is not owned
+either: the pruned tree took the bundle with it, and the watchdog's exit is what
+lets the supervisor relaunch through its own command. Both `_restart_after_update`
+and the dashboard's `_restart_gateway` end the deferral on that refusal. Each kind has a generous
+maximum duration (`update_ownership.Step`); an entry past it stops counting,
+with a WARNING, so a step wedged on an unbounded wait cannot switch the
+watchdog off for good. An expired entry is skipped and the search goes on to
+older live ones, whatever its kind: the registry is shared by every task, so
+the entry before an expired restart can be an unrelated update step (the
+dashboard's worker next to the coordinator's restart) that still owns the gap.
+
+The watchdog reads the registry (on the loop, no I/O) on every missing sample
+and once more as the last thing before it signals, with no await in between, so
+a step that starts inside the confirm or drain window still stands it down; it
+names the owner in a WARNING. A bundle missing at startup while a step owns it
+is waited out before the arming check; if it is still missing once no step owns
+it, the update made that gap, so the watchdog arms and treats it as a vanish
+(only a bundle missing at startup with no owner ever seen is a dev install that
+leaves it disarmed). The registry is in-process only: a
+shutdown can cancel only this gateway's own steps, never another process's
+installer, so coordinating with a terminal `kirocrew update` belongs to a
+cross-process lease, not to this.
+
+Right before it signals, the watchdog also asks whether the gateway could be
+relaunched (`gateway_restart.supervisor_reentry`). Its exit is a request to the
+service manager, which runs its OWN command, so that command is what is tested:
+on Linux the `ExecStart` systemd has loaded for the unit whose main pid is this
+process (or the launcher that spawned it), read with a bounded `systemctl show`
+so drop-ins and the scope that actually runs it count (a unit changed on disk
+since it was loaded is not judged); on macOS the launchd agent's launcher
+target. It must exist through its links and be executable, and when it is a
+Python script its interpreter must import `kiro_crew.cli` in a bounded probe run
+the way the relaunch runs it: without `-I`, under the unit's own `Environment=`
+and `EnvironmentFile=` (or the plist's `EnvironmentVariables`), from `/`.
+`systemctl` is resolved with `platform_compat.trusted_system_bin`, never from the
+gateway's `PATH`; none there is inconclusive. A live target the relaunch would
+exec into (`live_target.json`) is tested the same way, except that an exec of it
+that would fail (its entry point or interpreter missing, unreachable or not
+executable) is not a refusal: `live_target.maybe_reexec` catches that and boots
+the supervisor's own build, so the command's verdict stands. A target that
+starts and then cannot import is refused.
+An apply that pruned the tree this process runs from while the command's stable
+link points at a healthy new one therefore relaunches as before; a venv killed
+mid-install, whose interpreter is present but whose package or console script is
+not, is refused, and the refusal names a repair: `pip install -e` only for a pip
+checkout's own venv, re-running the installer otherwise. A shell wrapper, an
+`env` lookup, a service definition or `EnvironmentFile` it cannot read, or an
+I/O error (`EIO`, `ESTALE`) checking a path is inconclusive. A command or
+interpreter this user cannot reach or read (`EACCES`/`EPERM`, an exec-only `#!`
+script included) is refused, because the service runs as this user and its
+exec could not run it either. Whether a generated service definition launched the gateway is read
+from the launch marker even after `start_dashboard` consumed it
+(`config.loader.launched_as_managed_service`), and the marker is handed back to
+the gateway's own exec successor (`platform_compat.keep_for_reexec`), so an
+in-app restart is still a managed launch. Without a service manager (a
+foreground run, the desktop app, a container) nothing relaunches through a
+command it can read, and nothing is refused.
+
+An update that chose to stay up rather than restart records why
+(`update_ownership.refuse_restart`): once it has moved the tree and its
+dependency sync failed, or it raised after the move. The move counts from the
+moment its `git merge` / `git reset` child started: a spawn that raised wrote
+nothing, so it records nothing. Only a later update that
+synced the dependencies of the tree it moved clears it, so an attempt that fails
+before replacing anything keeps it. The watchdog reads it with no await before
+the signal and refuses on it as well.
+
+A refusal is logged once per reason and keeps the gateway up on its loaded code;
+it is asked again on a backoff (doubling to `_REENTRY_RECHECK_MAX_SECS`, a few
+check intervals) without re-running the confirm and the drain; a positive answer
+runs them again, and the check after the drain decides. A check that fails for
+any other reason, or does not answer within its bound, is inconclusive and its
+reason is logged: not a refusal, but not an end to a standing one either. The
+check runs on its own worker; one still running is waited on again rather than
+started twice, one that answered after its ask stopped waiting is read at the
+next ask, and a healthy sample drops it. Work admitted while the check ran is
+drained again, within what the first drain left of `_DRAIN_TIMEOUT_SECS` (one
+budget covers both, so a wedged turn holds the signal for at most one drain's
+worth), and that drain is the last await: the presence, owner and stay-up reads
+that follow it, and the signal, do not yield.
 
 ### Event-loop stall watchdog & blocking-work executors
 

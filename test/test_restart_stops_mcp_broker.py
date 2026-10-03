@@ -80,6 +80,78 @@ def _dashboard_exec_seams(monkeypatch, seen: list[str]) -> None:
 
 class TestTheDashboardRestart:
     @pytest.mark.asyncio
+    async def test_the_restart_owns_a_missing_bundle_through_its_teardown(
+        self, monkeypatch, tmp_path
+    ):
+        """Every caller restarts through here, so none of them is raced by the watchdog.
+
+        After an outside installer the bundle can be gone; close_all drops the
+        in-flight count to 0, and an unowned gap would let the watchdog fire
+        in the middle of the teardown.
+        """
+        from kiro_crew import update_ownership
+
+        seen: list[str] = []
+        owners: list[object] = []
+        _dashboard_exec_seams(monkeypatch, seen)
+        state = _state(seen)
+        state.sessions.close_all = AsyncMock(
+            side_effect=lambda: owners.append(update_ownership.current_owner())
+        )
+
+        assert await updates._restart_gateway(state, resolver=lambda: _executable(tmp_path)) is True
+
+        assert owners == ["the restart into an applied update"]
+        assert update_ownership.current_owner() is None
+
+    @pytest.mark.asyncio
+    async def test_a_restart_that_coalesces_leaves_a_deferral_in_place(self, monkeypatch, tmp_path):
+        """Only a restart that commits ends one; a coalesced click must not let the watchdog fire."""
+        from kiro_crew import update_ownership
+
+        seen: list[str] = []
+        _dashboard_exec_seams(monkeypatch, seen)
+        state = _state(seen)
+        state._gateway_restart_in_progress = True
+        update_ownership.note_restart_deferred()
+
+        restarted = await updates._restart_gateway(state, resolver=lambda: _executable(tmp_path))
+
+        assert restarted is False
+        assert update_ownership.current_owner() == "a deferred restart into an applied update"
+
+    @pytest.mark.asyncio
+    async def test_a_restart_with_no_interpreter_ends_the_deferral(self, monkeypatch, tmp_path):
+        """The pruned tree took the bundle too; the watchdog's exit is what relaunches."""
+        from kiro_crew import update_ownership
+
+        seen: list[str] = []
+        _dashboard_exec_seams(monkeypatch, seen)
+        state = _state(seen)
+        update_ownership.note_restart_deferred()
+
+        restarted = await updates._restart_gateway(
+            state, resolver=lambda: str(tmp_path / "pruned" / "python")
+        )
+
+        assert restarted is False
+        assert seen == []
+        assert update_ownership.current_owner() is None
+
+    @pytest.mark.asyncio
+    async def test_a_restart_that_commits_ends_the_deferral(self, monkeypatch, tmp_path):
+        from kiro_crew import update_ownership
+
+        seen: list[str] = []
+        _dashboard_exec_seams(monkeypatch, seen)
+        state = _state(seen)
+        update_ownership.note_restart_deferred()
+
+        assert await updates._restart_gateway(state, resolver=lambda: _executable(tmp_path)) is True
+
+        assert update_ownership.current_owner() is None
+
+    @pytest.mark.asyncio
     async def test_stops_the_broker_between_closing_sessions_and_the_exec(
         self, monkeypatch, tmp_path
     ):

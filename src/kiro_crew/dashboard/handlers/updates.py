@@ -21,7 +21,7 @@ from aiohttp import web
 from aiohttp.client_exceptions import ClientConnectionResetError
 
 from kiro_crew import __version__ as _local_version
-from kiro_crew import dep_sync, platform_compat, shutdown_event
+from kiro_crew import dep_sync, platform_compat, shutdown_event, update_ownership
 from kiro_crew.changelog import Release, base_version, build_release_list, release_of_build
 from kiro_crew.config.live import ConfigChange
 from kiro_crew.config.loader import (
@@ -1678,6 +1678,7 @@ async def _venv_pip_install(proj: str, state: DashboardState) -> bool:
     return rc == 0
 
 
+@update_ownership.owning(update_ownership.Step.RESTART)
 async def _restart_gateway(
     state: DashboardState, *, resolver: Callable[[], str] | None = None
 ) -> bool:
@@ -1689,6 +1690,10 @@ async def _restart_gateway(
     not return; a refused or test-double exec releases the claim.  An exec the
     kernel refuses does not: by then the sessions are closed, so it exits the
     process rather than release a claim nothing can use.
+
+    Owns a missing bundle while it runs (``update_ownership``): after an apply,
+    or after an installer run from a terminal, the stale-asset watchdog must not
+    shut the gateway down in the middle of this teardown.
     """
     if state._gateway_restart_in_progress:
         logger.info("Gateway restart already in progress; coalescing duplicate request")
@@ -1726,6 +1731,9 @@ async def _restart_gateway(
                 # with admission shut and nothing able to reopen it. Refusing
                 # before the drain keeps every session answerable and leaves the
                 # operator a repair-then-relaunch they can actually perform.
+                # The pruned tree took the bundle too, so a deferred restart
+                # into an applied update does not hold the watchdog's exit.
+                update_ownership.clear_restart_deferral()
                 state.push_update_progress(
                     "error", "Cannot restart: invalid Python executable path"
                 )
@@ -1750,6 +1758,10 @@ async def _restart_gateway(
             )
         except Exception:
             logger.debug("History save before restart failed", exc_info=True)
+        # Past the last refusal: the restart commits here, so a deferred restart
+        # into an applied update is over. Not at entry: a restart that coalesces
+        # or finds a broken launcher above leaves the deferral it found in place.
+        update_ownership.restart_committed()
         try:
             await state.sessions.close_all()
         except Exception:
@@ -2036,6 +2048,12 @@ async def api_update_apply(request: web.Request) -> web.Response:
         )
 
     async def _apply() -> None:
+        # Owns a missing bundle from the merge until the restart takes over.
+        owned = contextlib.ExitStack()
+        owned.enter_context(update_ownership.step(update_ownership.Step.DASHBOARD_UPDATE))
+        # Set once the merge may have moved the tree, cleared once its
+        # dependencies are installed: in between, a relaunch could die at import.
+        tree_moved = False
         try:
             state.push_update_progress("pulling", "Pulling latest changes…")
             # Fast-forward to the PINNED commit, not `git pull`: a pull refetches
@@ -2054,6 +2072,9 @@ async def api_update_apply(request: web.Request) -> web.Response:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
+            # Only a merge that started can have moved the tree: a spawn that
+            # raised wrote nothing.
+            tree_moved = True
             try:
                 await asyncio.wait_for(pull.communicate(), timeout=60)
             except asyncio.TimeoutError:
@@ -2085,15 +2106,35 @@ async def api_update_apply(request: web.Request) -> web.Response:
 
             # Reinstall the package so any new Python deps / entry points land.
             if not await _venv_pip_install(proj, state):
+                # On the new revision with its dependencies unsynced, and not
+                # restarting: a relaunch would die at import, so the stale-asset
+                # watchdog must not take one either.
+                update_ownership.refuse_restart(
+                    "the dependency install after the dashboard update did not complete"
+                )
                 return
+            # The tree and its dependencies agree again: a refusal an earlier
+            # attempt recorded does not describe the install.
+            tree_moved = False
+            update_ownership.clear_restart_refusal()
 
             # Restart: save history + clean up sessions then exec the same process.
             logger.info("Update complete — saving history and cleaning up before restart")
+            # Hand the gap to the restart: this step's ownership ends here and
+            # the restart's begins as the await starts, with no yield between.
+            owned.close()
             await _restart_gateway(state, resolver=respawn_executable)
         except Exception:
             logger.exception("Update failed")
+            if tree_moved:
+                update_ownership.refuse_restart(
+                    "the dashboard update failed after the tree moved, before its "
+                    "dependencies were installed"
+                )
             state.push_update_progress("failed", "Update failed — check logs")
             state.push_refresh("update_failed")
+        finally:
+            owned.close()
 
     task = asyncio.create_task(_apply())
     state._background_tasks.add(task)

@@ -141,8 +141,11 @@ class _FakeProc:
             raise ProcessLookupError("already gone")
 
 
-def _sequence_procs(monkeypatch, procs: list[_FakeProc]) -> list[tuple[str, ...]]:
-    """Serve *procs* in order to successive ``create_subprocess_exec`` calls."""
+def _sequence_procs(monkeypatch, procs: list[_FakeProc | OSError]) -> list[tuple[str, ...]]:
+    """Serve *procs* in order to successive ``create_subprocess_exec`` calls.
+
+    An ``OSError`` in the sequence is raised by that spawn instead.
+    """
     argv_seen: list[tuple[str, ...]] = []
     pending = list(procs)
 
@@ -150,7 +153,10 @@ def _sequence_procs(monkeypatch, procs: list[_FakeProc]) -> list[tuple[str, ...]
         argv_seen.append(tuple(str(a) for a in args))
         if not pending:
             raise AssertionError(f"unexpected extra subprocess: {args}")
-        return pending.pop(0)
+        served = pending.pop(0)
+        if isinstance(served, OSError):
+            raise served
+        return served
 
     monkeypatch.setattr("asyncio.create_subprocess_exec", _fake_exec)
     return argv_seen
@@ -919,7 +925,7 @@ class TestApplyRefusals:
         assert pin.killed and pin.communicate_calls == 2
         assert req.app["state"]._background_tasks == set()
 
-    async def _drive_worker(self, monkeypatch, tmp_path, procs: list[_FakeProc]):
+    async def _drive_worker(self, monkeypatch, tmp_path, procs: list[_FakeProc | OSError]):
         """Accept the request, then await the background worker it scheduled."""
         from kiro_crew import dep_sync
 
@@ -996,6 +1002,110 @@ class TestApplyRefusals:
         worker_argv = self._argv_seen[4]
         assert worker_argv[:4] == ("git", "merge", "--ff-only", _UPSTREAM_OID.decode())
         assert not any(c[:2] == ("git", "pull") for c in self._argv_seen)
+
+    @pytest.mark.asyncio
+    async def test_the_worker_owns_the_bundle_gap(self, monkeypatch, tmp_path):
+        """The build can empty the served bundle, so the watchdog must see an owner."""
+        from kiro_crew import update_ownership
+
+        seen = []
+
+        async def _build(_proj, _state):
+            seen.append(update_ownership.current_owner())
+
+        async def _pip(_proj, _state):
+            seen.append(update_ownership.current_owner())
+            return False
+
+        monkeypatch.setattr(updates, "_build_frontend", _build)
+        monkeypatch.setattr(updates, "_venv_pip_install", _pip)
+
+        await self._drive_worker(monkeypatch, tmp_path, [_FakeProc()])
+
+        assert seen == ["the dashboard update", "the dashboard update"]
+        assert update_ownership.current_owner() is None
+
+    @pytest.mark.asyncio
+    async def test_the_worker_hands_the_gap_to_the_restart(self, monkeypatch, tmp_path):
+        """No update step is still open around the restart, so its own maximum binds."""
+        from kiro_crew import update_ownership
+
+        open_at_restart = []
+
+        async def _restart(_state, *, resolver=None):
+            open_at_restart.append(list(update_ownership._live))
+            return True
+
+        monkeypatch.setattr(updates, "_build_frontend", AsyncMock())
+        monkeypatch.setattr(updates, "_venv_pip_install", AsyncMock(return_value=True))
+        monkeypatch.setattr(updates, "_restart_gateway", _restart)
+
+        await self._drive_worker(monkeypatch, tmp_path, [_FakeProc()])
+
+        assert open_at_restart == [[]]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_reinstall_refuses_the_watchdogs_relaunch(self, monkeypatch, tmp_path):
+        from kiro_crew import update_ownership
+
+        monkeypatch.setattr(updates, "_build_frontend", AsyncMock())
+        monkeypatch.setattr(updates, "_venv_pip_install", AsyncMock(return_value=False))
+
+        await self._drive_worker(monkeypatch, tmp_path, [_FakeProc()])
+
+        assert update_ownership.restart_refusal() is not None
+
+    @pytest.mark.asyncio
+    async def test_a_later_update_whose_merge_fails_keeps_the_refusal(self, monkeypatch, tmp_path):
+        """The unsynced tree the refusal describes is still on disk."""
+        from kiro_crew import update_ownership
+
+        update_ownership.refuse_restart("an earlier install did not complete")
+
+        await self._drive_worker(monkeypatch, tmp_path, [_FakeProc(returncode=1)])
+
+        assert update_ownership.restart_refusal() == "an earlier install did not complete"
+
+    @pytest.mark.asyncio
+    async def test_a_later_update_that_installs_its_tree_ends_the_refusal(
+        self, monkeypatch, tmp_path
+    ):
+        from kiro_crew import update_ownership
+
+        update_ownership.refuse_restart("an earlier install did not complete")
+        monkeypatch.setattr(updates, "_build_frontend", AsyncMock())
+        monkeypatch.setattr(updates, "_venv_pip_install", AsyncMock(return_value=True))
+        monkeypatch.setattr(updates, "_restart_gateway", AsyncMock(return_value=False))
+
+        await self._drive_worker(monkeypatch, tmp_path, [_FakeProc()])
+
+        assert update_ownership.restart_refusal() is None
+
+    @pytest.mark.asyncio
+    async def test_a_merge_that_never_spawned_records_no_refusal(self, monkeypatch, tmp_path):
+        """A fork failure wrote nothing to the checkout, so nothing describes a moved tree."""
+        from kiro_crew import update_ownership
+
+        await self._drive_worker(
+            monkeypatch, tmp_path, [BlockingIOError(11, "Resource temporarily unavailable")]
+        )
+
+        assert self._argv_seen[-1][:3] == ("git", "merge", "--ff-only")
+        assert update_ownership.restart_refusal() is None
+
+    @pytest.mark.asyncio
+    async def test_an_update_that_raises_after_the_merge_refuses_the_relaunch(
+        self, monkeypatch, tmp_path
+    ):
+        from kiro_crew import update_ownership
+
+        monkeypatch.setattr(
+            updates, "_build_frontend", AsyncMock(side_effect=RuntimeError("vite crashed"))
+        )
+
+        await self._drive_worker(monkeypatch, tmp_path, [_FakeProc()])
+
+        assert "after the tree moved" in (update_ownership.restart_refusal() or "")
 
     @pytest.mark.asyncio
     async def test_an_unexpected_crash_surfaces_as_a_failed_update(self, monkeypatch, tmp_path):
