@@ -259,6 +259,7 @@ import { useTipTrigger } from '../components/TipCard'
 import { Composer, type ComposerHandle, type ComposerVoiceOptions } from '../chat-core/composer/Composer'
 import { createComposerDraftStore, useComposerDraft, useComposerDraftSelector, type ComposerDraftStore } from '../chat-core/composer/draftStore'
 import { ChatFooter, AssistantMessage, UserMessage, PinnedPrompt } from './chat'
+import { pinCandidateKey } from './chat/usePinnedPrompt'
 import { useStreamIdle } from './chat/ChatFooter'
 import type { TurnStats } from './chat/AssistantMessage'
 import { prevUserTextFor } from './chat/share/shareSupport'
@@ -5702,6 +5703,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   onJump={() => scrollToPinnedPrompt(pinned.idx)}
                   cardRef={pinCardRef}
                   onCollapsedHeight={onPinCollapsedHeight}
+                  promptKey={pinCandidateKey(pinned.idx, pinned.ts)}
                   scrollTranscriptBy={scrollTranscriptBy}
                 />
               )}

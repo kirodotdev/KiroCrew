@@ -19,6 +19,23 @@ import {
 import { attachUserScrollIntent } from '../../utils/searchScroll'
 import { glideDurationMs, runConvergingGlide } from '../../utils/convergingGlide'
 
+/**
+ * The identity of a pin candidate: the prompt's transcript index AND its `ts`.
+ *
+ * Two readers key on it and must agree on what counts as a change, so there is
+ * one definition. `usePinnedPrompt` resets the resting height to the seed when
+ * it changes (the measured height belongs to one prompt's card), and the host
+ * passes it to `PinnedPrompt` as `promptKey` so a card that stays mounted
+ * across the change — the same text at a new index, one image-only prompt
+ * handing off to another — re-measures and reports its height for the new
+ * identity. The index is part of the key because a transcript whose messages
+ * carry no timestamp (an import, a legacy log) reads `ts` as '' for every
+ * prompt, and `ts` alone would then never change across a hand-off.
+ */
+export function pinCandidateKey(idx: number, ts: string | undefined): string {
+  return `${idx}:${ts ?? ''}`
+}
+
 export interface UsePinnedPromptOptions {
   /** The transcript scroll container. Rows inside it carry `data-display-index`. */
   scrollerRef: RefObject<HTMLElement | null>
@@ -62,8 +79,9 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
   // only place the SETTLED height is knowable: measuring the card from here would
   // sample the expand/collapse morph mid-flight and drag the line with it.
   const pinCollapsedHRef = useRef(DEFAULT_PINNED_CARD_H)
-  // The prompt the hook last resolved as the pin candidate. `pinCollapsedHRef`
-  // is reset when it changes; see updatePinnedPrompt.
+  // The prompt the hook last resolved as the pin candidate (pinCandidateKey).
+  // `pinCollapsedHRef` is reset when it changes and the card re-reports for the
+  // new identity; see updatePinnedPrompt.
   const pinCandidateKeyRef = useRef<string | null>(null)
   const onPinCollapsedHeight = useCallback((h: number) => {
     if (h > 0) pinCollapsedHRef.current = h
@@ -133,7 +151,14 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
     // until this prompt's own card reports. A previous card's height read by the
     // gate below would let a card mount that then measures shorter, fails the
     // gate and unmounts with no scroll in between.
-    const candidateKey = pinItem.msg.ts ?? `idx:${pinIdx}`
+    //
+    // The card reports for the new identity whether or not it remounts: the host
+    // hands it this same key as `promptKey`, and its collapsed-height measure
+    // re-runs on a key change, so a card that keeps its text while its index
+    // moves (older history prepended) still re-reports rather than leaving the
+    // seed in place under a taller card. See pinCandidateKey for why the index
+    // is part of the key.
+    const candidateKey = pinCandidateKey(pinIdx, pinItem.msg.ts)
     if (pinCandidateKeyRef.current !== null && pinCandidateKeyRef.current !== candidateKey) {
       pinCollapsedHRef.current = DEFAULT_PINNED_CARD_H
     }

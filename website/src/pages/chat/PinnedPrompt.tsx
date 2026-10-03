@@ -78,6 +78,17 @@ interface PinnedPromptProps {
    * expanded-size height and moves the line by the difference.
    */
   onCollapsedHeight?: (h: number) => void
+  /**
+   * Identity of the pinned prompt (`pinCandidateKey` in usePinnedPrompt: its
+   * transcript index and `ts`). The host resets the resting height it holds to
+   * the seed whenever this changes, so the card must report again for the new
+   * identity — and it is not remounted for one (a remount would restart the
+   * glide and the morph), so `text` alone cannot carry the signal: the same text
+   * at a new index (older history prepended) or one image-only prompt handing
+   * off to another leaves `text` unchanged. The collapsed-height measure below
+   * re-runs on a change of this key and reports what it reads.
+   */
+  promptKey?: string
 }
 
 /**
@@ -191,7 +202,7 @@ const THUMB_FRAME = 'bg-muted forced-colors:border'
  * size and the band it slides through is sized for it.
  */
 export default function PinnedPrompt({
-  text, fullText, images, bodyBeyondPreview, pushUp, liveH, maxH, bannerH, expanded, onToggleExpanded, onJump, cardRef, onCollapsedHeight, scrollTranscriptBy,
+  text, fullText, images, bodyBeyondPreview, pushUp, liveH, maxH, bannerH, expanded, onToggleExpanded, onJump, cardRef, onCollapsedHeight, scrollTranscriptBy, promptKey,
 }: PinnedPromptProps) {
   const textRef = useRef<HTMLParagraphElement | null>(null)
   const boxRef = useRef<HTMLDivElement | null>(null)
@@ -536,7 +547,11 @@ export default function PinnedPrompt({
     ro.observe(el)
     if (box) ro.observe(box)
     return () => ro.disconnect()
-  }, [text, expanded, peek, folding, onCollapsedHeight])
+    // `promptKey` re-runs this for a new prompt identity whose text is unchanged:
+    // the host has reset its resting height to the seed for that identity, and
+    // nothing above resizes (same text, same box), so without the key the
+    // observer never fires and the seed stays in place under this card.
+  }, [text, expanded, peek, folding, onCollapsedHeight, promptKey])
 
   // Whether the expanded paragraph has content below its visible edge. Re-read on
   // its own scroll (the reader moving through it), on a resize of the paragraph

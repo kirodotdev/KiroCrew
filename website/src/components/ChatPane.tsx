@@ -30,7 +30,7 @@ import { PREVIEW_DASHBOARD } from '../utils/previewFlags'
 import ChatFooter from '../pages/chat/ChatFooter'
 import PinnedPrompt from '../pages/chat/PinnedPrompt'
 import SessionTitleControl from '../pages/chat/SessionTitleControl'
-import { usePinnedPrompt } from '../pages/chat/usePinnedPrompt'
+import { pinCandidateKey, usePinnedPrompt } from '../pages/chat/usePinnedPrompt'
 import { useJevAutoSend } from '../pages/chat/useJevAutoSend'
 import type { DisplayItem } from '../pages/chat/types'
 import AgentDropdownList, { DefaultAgentRow, ManageAgentsFooter } from './AgentDropdownList'
@@ -1631,6 +1631,7 @@ export default function ChatPane({
                 })}
                 cardRef={pin.pinCardRef}
                 onCollapsedHeight={pin.onPinCollapsedHeight}
+                promptKey={pinCandidateKey(pinnedState.idx, pinnedState.ts)}
                 scrollTranscriptBy={pin.scrollTranscriptBy}
               />
             </div>
