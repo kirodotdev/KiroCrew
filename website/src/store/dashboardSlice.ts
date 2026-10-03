@@ -647,7 +647,9 @@ export interface SlotPatchFrame {
  *  Deliberately NOT applied to membership changes (`addSlotOptimistic`,
  *  `removeSlotOptimistic`): the reply's own membership is reconciled by the
  *  close-tombstone machinery and by `applySlots`, and those two are already
- *  ordered against each other. This guards row CONTENT. */
+ *  ordered against each other. This guards row CONTENT. `addSlotOptimistic`
+ *  does stamp the row it inserts, so `fetchSlots.fulfilled` keeps it when a
+ *  reply sent before the insert omits it. */
 const patchSlotRow = (state: DashboardState, key: string, patch: RowPatch): void => {
   const slot = (state.slots ?? []).find(s => s.key === key) // row-write: via patchSlotRow
   if (!slot) return
@@ -975,6 +977,8 @@ const dashboardSlice = createSlice({
       }
       if (!state.slots.find(s => s.key === action.payload.key)) { // row-read: membership test, adds a row rather than changing one
         state.slots.push(action.payload)
+        // Stamped so a `fetchSlots` reply already in flight keeps the row.
+        stampSlotWrite(state, action.payload.key)
       }
     },
     /** Drop a close tombstone (see `applySlots`). `deleteSlot` dispatches this in
@@ -1386,6 +1390,18 @@ const dashboardSlice = createSlice({
             return staleKeys.has(s.key) ? [] : [s]
           })
           : action.payload
+        // An outranked key the reply omits was written on screen after the
+        // request left, so for that key the screen is newer than the reply. The
+        // case that matters is a row `addSlotOptimistic` just inserted: dropping
+        // it would unlist a session that was just created and bounce whoever is
+        // showing it to another one. The next authoritative list decides it.
+        if (current) {
+          const listed = new Set(rows.map(s => s.key))
+          for (const key of outranked) {
+            const live = current.get(key)
+            if (live && !listed.has(key)) rows.push(live)
+          }
+        }
         // A reply in flight can be older than the live frames that arrived while
         // it travelled, so it may omit a slot the stream has since created. The
         // unread drain still runs — that is this path's documented job, and a
