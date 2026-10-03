@@ -1382,19 +1382,23 @@ def _remove_any_shape(path: Path) -> None:
         path.unlink(missing_ok=True)
 
 
-def uninstall_app(name: str, *, keep_data: bool = True) -> AppResult:
+def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = False) -> AppResult:
     """Uninstall an app while preserving its ``data/`` directory by default.
 
     Passing ``keep_data=False`` is the explicit purge action. Resource
     deregistration should be done before calling this.
-    Built-in apps cannot be uninstalled — only disabled.
+    Built-in apps stay locked unless explicitly cleaning up an eligible retired builtin.
     """
     if not _check_path_safety(name):
         return AppResult(ok=False, name=name, error=f"unsafe app name: {name!r}")
     meta = _read_installed(name)
     if not meta:
         return AppResult(ok=False, name=name, error=f"app {name!r} is not installed")
-    if meta.lifecycle == "locked":
+    if retired_builtin and not migrated_builtin_cleanup_applies(name):
+        return AppResult(
+            ok=False, name=name, error="not a migrated builtin", error_code="not_orphaned"
+        )
+    if meta.lifecycle == "locked" and not retired_builtin:
         return AppResult(
             ok=False,
             name=name,
@@ -1778,6 +1782,9 @@ def uninstall_app(name: str, *, keep_data: bool = True) -> AppResult:
         remove_dev_app(name)
     except Exception:
         logger.debug("dev-mode cleanup on uninstall of %r failed", name, exc_info=True)
+    # The orphan set may have named this app; a successor installed under the
+    # same name must not inherit its stale `orphaned` flag.
+    invalidate_orphan_cache()
     return AppResult(ok=True, name=name, message=f"uninstalled {name}{residual}")
 
 
@@ -3820,6 +3827,30 @@ def invalidate_orphan_cache() -> None:
 # ---------------------------------------------------------------------------
 # Migration cleanup
 # ---------------------------------------------------------------------------
+
+
+def migrated_builtin_cleanup_applies(name: str) -> bool:
+    """Whether a safe builtin-owned record qualifies for migration teardown and removal.
+
+    An app directory that is a symlink or junction is ineligible, and so is anything
+    at ``data`` that is not a real directory (:func:`gateway_data_dir_obstruction`):
+    the teardown keeps only a directory there, so it would delete anything else.
+    """
+    from kiro_crew.apps.builtins import _MIGRATED_BUILTINS
+
+    if not _check_path_safety(name):
+        return False
+    path = app_dir(name)
+    if path.is_symlink() or is_link_or_junction(path):
+        return False
+    if gateway_data_dir_obstruction(path):
+        return False
+    meta = _read_installed(name)
+    return bool(
+        meta
+        and meta.origin == "builtin"
+        and (name in _MIGRATED_BUILTINS or name in detect_orphaned_builtins(force_refresh=True))
+    )
 
 
 def cleanup_migrated_builtin(name: str) -> AppResult:

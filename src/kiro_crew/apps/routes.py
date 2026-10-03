@@ -71,7 +71,6 @@ from kiro_crew.apps.manager import (
     app_enabled_state,
     app_lifecycle_lock,
     apps_dir,
-    cleanup_migrated_builtin,
     disable_app,
     enable_app,
     get_app,
@@ -1254,15 +1253,6 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
             status=400,
         )
 
-    resources = info.get("resources", "gateway")
-    manifest = info.get("manifest", {})
-    uninstall_log: list[str] = []
-    # Serialized as ``warnings``, which ``print_result`` renders per item, so a
-    # delegated uninstall surfaces it too. A still-listening port is also
-    # appended to ``uninstall_log`` above, because that is the field the
-    # dashboard's uninstall reads.
-    backend_warnings: list[str] = []
-
     # Parse body
     # Preserve app data unless the caller supplies the dedicated destructive
     # action. Legacy ``keep_data: false`` payloads are intentionally ignored:
@@ -1283,6 +1273,37 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
             keep_specific = [k for k in raw_keep if isinstance(k, str) and k]
     except Exception:
         pass
+
+    return await _run_uninstall(
+        request,
+        name,
+        info,
+        keep_data=keep_data,
+        keep_dependencies=keep_dependencies,
+        keep_specific=keep_specific,
+    )
+
+
+async def _run_uninstall(
+    request: web.Request,
+    name: str,
+    info: dict[str, Any],
+    *,
+    keep_data: bool,
+    keep_dependencies: bool,
+    keep_specific: list[str],
+    retired_builtin: bool = False,
+) -> web.Response:
+    """Run the uninstall preconditions and teardown for an owner-authorized request."""
+    operation = "app_migrate_cleanup" if retired_builtin else "app_uninstall"
+    resources = info.get("resources", "gateway")
+    manifest = info.get("manifest", {})
+    uninstall_log: list[str] = []
+    # Serialized as ``warnings``, which ``print_result`` renders per item, so a
+    # delegated uninstall surfaces it too. A still-listening port is also
+    # appended to ``uninstall_log`` above, because that is the field the
+    # dashboard's uninstall reads.
+    backend_warnings: list[str] = []
 
     # Per-app lifecycle lock, wrapping the ENTIRE uninstall sequence:
     # cron-cleanup precondition → onUninstall script → backend stop →
@@ -1305,10 +1326,27 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
     dropped = 0
     pointer_flush_failed = False
     async with app_lifecycle_lock(name):
+        if retired_builtin:
+            from kiro_crew.apps.manager import migrated_builtin_cleanup_applies
+
+            if not await asyncio.to_thread(migrated_builtin_cleanup_applies, name):
+                sel().log_api_access(
+                    caller="dashboard",
+                    operation=operation,
+                    outcome="denied",
+                    resources=name,
+                    error="not a migrated builtin",
+                )
+                return web.json_response(
+                    {"ok": False, "error": "not a migrated builtin", "code": "not_orphaned"},
+                    status=400,
+                )
         # A retained startup hook still owns the old app's AppContext. Bound the
         # wait and refuse the uninstall if it remains live; deleting files or
         # withdrawing trust first would falsely report that old code is gone.
-        startup_refusal = await _refuse_while_startup_hook_runs(name, action="uninstall")
+        startup_refusal = await _refuse_while_startup_hook_runs(
+            name, action="migrate_cleanup" if retired_builtin else "uninstall"
+        )
         if startup_refusal is not None:
             return startup_refusal
 
@@ -1335,7 +1373,7 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
             )
             sel().log_api_access(
                 caller="dashboard",
-                operation="app_uninstall",
+                operation=operation,
                 outcome="denied",
                 resources=f"app={name}",
                 error=f"trust grant not removable, uninstall aborted: {grant_blocked}",
@@ -1416,7 +1454,7 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
                 )
                 sel().log_api_access(
                     caller="dashboard",
-                    operation="app_uninstall",
+                    operation=operation,
                     outcome="denied",
                     resources=f"app={name}",
                     error=f"cron cleanup failed, uninstall aborted: {exc}",
@@ -1453,7 +1491,7 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
                 )
                 sel().log_api_access(
                     caller="dashboard",
-                    operation="app_uninstall",
+                    operation=operation,
                     outcome="denied",
                     resources=f"app={name}",
                     error=f"cron store unreadable, uninstall aborted: {exc}",
@@ -1491,7 +1529,7 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
                 )
                 sel().log_api_access(
                     caller="dashboard",
-                    operation="app_uninstall",
+                    operation=operation,
                     outcome="denied",
                     resources=f"app={name}",
                     error=f"cron cleanup failed, uninstall aborted: {exc}",
@@ -1517,7 +1555,8 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
         # non-idempotent teardown never runs on an uninstall that will be
         # retried.
         on_uninstall = (manifest.get("setup") or {}).get("onUninstall", "")
-        if on_uninstall:
+        if on_uninstall and not retired_builtin:
+            # The successor inherits data/, so retired code must not run a destructive hook.
             script_output = await _run_lifecycle_script(
                 name,
                 on_uninstall,
@@ -1597,7 +1636,9 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
             backend_warnings.append(message)
             uninstall_log.append(message)
         if resources == "gateway":
-            await _deregister_app_off_loop(name)
+            deregistered = await _deregister_app_off_loop(name)
+            if retired_builtin:
+                backend_warnings.extend(deregistered.errors)
 
         # Step 4: Clean dependencies (atomic classify + ledger update)
         cleaned_deps: list[str] = []
@@ -1610,7 +1651,10 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
             # and classification emits canonical ones — comparing the two raw
             # would drop the keep and delete a dep the user chose to keep.
             keep_canonical = [canonical_dep_key(k) for k in keep_specific]
-            classification = classify_and_clean_for_uninstall(
+            # Off-loop: the classification takes a blocking ledger lock and
+            # rewrites the ledger, the same shape the preview offloads above.
+            classification = await asyncio.to_thread(
+                classify_and_clean_for_uninstall,
                 name,
                 declared_deps,
                 keep_specific=keep_canonical,
@@ -1650,7 +1694,12 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
 
         async with _get_config_lock():
             result = await asyncio.get_running_loop().run_in_executor(
-                subprocess_executor(), lambda: uninstall_app(name, keep_data=keep_data)
+                subprocess_executor(),
+                lambda: (
+                    uninstall_app(name, keep_data=keep_data, retired_builtin=True)
+                    if retired_builtin
+                    else uninstall_app(name, keep_data=keep_data)
+                ),
             )
 
         # Step 6: drop the resume pointer of every conversation the app owned.
@@ -1791,7 +1840,7 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
     if not result.ok:
         sel().log_api_access(
             caller="dashboard",
-            operation="app_uninstall",
+            operation=operation,
             outcome="failed",
             resources=name,
             error=result.error,
@@ -1816,9 +1865,24 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
             uninstall_log.append(f"Dropped {dropped} conversation pointer(s)")
 
     sel().log_api_access(
-        caller="dashboard", operation="app_uninstall", outcome="completed", resources=name
+        caller="dashboard", operation=operation, outcome="completed", resources=name
     )
     resp = result.to_dict()
+    if retired_builtin:
+        from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+
+        for index, warning in enumerate(backend_warnings):
+            cleaned, _ = redact_exfiltration_urls(warning)
+            backend_warnings[index], _ = redact_credentials(cleaned)
+        notices = list(backend_warnings)
+        if pointer_flush_failed:
+            notices.append(
+                "Conversation pointers were dropped in memory, but the write "
+                "did not persist -- a reinstall may still resume one"
+            )
+        if notices:
+            notice, _ = redact_exfiltration_urls("\n".join(notices))
+            resp["notice"], _ = redact_credentials(notice)
     if uninstall_log:
         resp["uninstall_log"] = "\n".join(uninstall_log)
     if backend_warnings:
@@ -4528,36 +4592,75 @@ def _end_relay_midbody(request: web.Request, resp: web.StreamResponse) -> web.St
 
 
 async def handle_migrate_cleanup(request: web.Request) -> web.Response:
-    """DELETE /api/apps/{name}/migrate-cleanup — remove orphaned builtin metadata.
-
-    Validates:
-    1. Target app is an orphaned builtin
-    2. The standalone replacement is installed
-
-    Preserves data/ directory.
-    """
-    name = request.match_info["name"]
-    result = cleanup_migrated_builtin(name)
-    if not result.ok:
-        # Map structured error_code to HTTP status
-        _cleanup_status = {
-            "not_orphaned": 400,
-            "replacement_missing": 409,
-            "io_error": 500,
-        }
-        status = _cleanup_status.get(result.error_code, 400)
-        sel().log_api_access(
-            caller="dashboard",
-            operation="app_migrate_cleanup",
-            outcome="failed",
-            resources=name,
-            error=result.error,
-        )
-        return web.json_response(result.to_dict(), status=status)
-    sel().log_api_access(
-        caller="dashboard", operation="app_migrate_cleanup", outcome="completed", resources=name
+    """DELETE /api/apps/{name}/migrate-cleanup — uninstall a retired builtin, keeping data."""
+    from kiro_crew.apps.manager import (
+        AppResult,
+        _check_path_safety,
+        _read_installed,
+        migrated_builtin_cleanup_applies,
     )
-    return web.json_response(result.to_dict())
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    if request.get("app"):
+        sel().log_api_access(
+            caller=request.get("app", ""),
+            operation="app_migrate_cleanup",
+            outcome="denied",
+            resources=request.path,
+            error="app token cannot clean up migrated apps",
+        )
+        return web.json_response(
+            {
+                "ok": False,
+                "error": "app tokens cannot clean up migrated apps",
+                "code": "app_token_forbidden",
+            },
+            status=403,
+        )
+    denied = await require_owner_dashboard_request(request, "app_migrate_cleanup")
+    if denied is not None:
+        return denied
+
+    name = request.match_info["name"]
+    result = AppResult(
+        ok=False, name=name, error="not a migrated builtin", error_code="not_orphaned"
+    )
+    if _check_path_safety(name):
+        meta = await asyncio.to_thread(_read_installed, name)
+        if meta is None:
+            result = AppResult(ok=True, name=name, message="not installed — nothing to clean up")
+        elif meta.origin != "builtin":
+            result = AppResult(
+                ok=True, name=name, message="already migrated — standalone version is in place"
+            )
+        elif await asyncio.to_thread(migrated_builtin_cleanup_applies, name):
+            info = await asyncio.to_thread(get_app, name)
+            if info is not None:
+                response = await _run_uninstall(
+                    request,
+                    name,
+                    info,
+                    keep_data=True,
+                    keep_dependencies=False,
+                    keep_specific=[],
+                    retired_builtin=True,
+                )
+                # Uninstall precondition refusals retain their status and retry contract.
+                payload = json.loads(response.text or "{}")
+                payload["ok"] = response.status < 400
+                return web.json_response(payload, status=response.status)
+    sel().log_api_access(
+        caller="dashboard",
+        operation="app_migrate_cleanup",
+        outcome="completed" if result.ok else "denied",
+        resources=name,
+        error=result.error,
+    )
+    if result.ok:
+        return web.json_response(result.to_dict())
+    return web.json_response(
+        {"ok": False, "name": name, "error": result.error, "code": "not_orphaned"}, status=400
+    )
 
 
 async def handle_registries(request: web.Request) -> web.Response:

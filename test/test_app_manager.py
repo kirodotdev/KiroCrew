@@ -1582,6 +1582,18 @@ class TestInstalledApp:
         assert meta.origin == "local"
         assert meta.resources == "gateway"  # default, not migrated to "app"
 
+    @pytest.mark.parametrize("origin", ["builtin", "local"])
+    def test_retired_uninstall_refuses_locked_non_qualifying_app(self, app_home, origin):
+        from kiro_crew.apps.manager import app_dir
+
+        name = "agent-worlds"
+        _write_installed(name, InstalledApp(name=name, origin=origin, lifecycle="locked"))
+        path = app_dir(name) / "installed.json"
+        before = path.read_bytes()
+        result = uninstall_app(name, retired_builtin=True)
+        assert not result.ok and result.error_code == "not_orphaned"
+        assert path.read_bytes() == before
+
     def test_uninstall_locked_rejected(self, tmp_path, app_home):
         """lifecycle=locked apps cannot be uninstalled."""
         from kiro_crew.apps.manager import register_builtin_apps

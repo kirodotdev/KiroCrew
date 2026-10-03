@@ -2288,10 +2288,10 @@ def test_uninstall_holds_the_shared_config_lock_across_the_grant_drop(
     from kiro_crew.apps import routes as approutes
 
     src = Path(approutes.__file__).read_text(encoding="utf-8")
-    handler = src[src.index("async def handle_uninstall_app") :]
+    handler = src[src.index("async def _run_uninstall") :]
     handler = handler[: handler.index("\nasync def ", 1)]
     lock_at = handler.index("_get_config_lock()")
-    call_at = handler.index("uninstall_app(name, keep_data=keep_data)")
+    call_at = handler.index("uninstall_app(name, keep_data=keep_data")
     assert lock_at < call_at, "the shared config lock must be held across uninstall_app"
 
 
