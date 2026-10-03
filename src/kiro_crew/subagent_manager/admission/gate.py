@@ -58,6 +58,13 @@ if TYPE_CHECKING:
     )
 
 
+#: ``tool`` on a spawn prompt's crew-log entries. The parent's own tool call is
+#: what is waiting on the human, so the name is that call's, not the child's
+#: agent -- and it is one constant because the request and the decision must
+#: agree for a reader pairing them by ``approval_id``.
+_SPAWN_APPROVAL_TOOL = "spawn_run"
+
+
 class _GateMixin(ManagerComponent):
     __slots__ = ()
 
@@ -1859,6 +1866,86 @@ class _GateMixin(ManagerComponent):
             )
         except Exception:
             _logger.debug("crew log: recording a subagent spawn failed", exc_info=True)
+
+    def _record_crew_log_spawn_approval_requested(
+        self, info: SubagentInfo, *, approval_id: str, reason: str
+    ) -> "tuple[str, int]":
+        """Write *info*'s spawn prompt as an ``approval/requested`` entry.
+
+        Returns the parent session and asking turn the entry was filed under, so
+        the decision is recorded beside its own request. An empty session id means
+        nothing was written and the caller's decision write is a no-op too -- the
+        pair is all-or-nothing by construction rather than by two separate checks.
+
+        The origin comes from the pin, read through ``dispatch_origin`` because the
+        prompt happens BEFORE the opener: the dispatch has been accepted and the
+        run has not started, which is the one window ``child_origin`` is designed
+        to refuse. Reading the parent's live turn instead would file the prompt
+        under whatever turn the parent reached while a person took their time.
+
+        ``tool`` is the spawn tool rather than the child's own agent name, because
+        what is waiting on the human is the parent's tool call.
+        """
+        from kiro_crew.crew_log import emit as crew_log_emit
+        from kiro_crew.subagent import logger as _logger
+
+        try:
+            if not crew_log_emit.enabled():
+                return ("", 0)
+            sid, asked_turn = crew_log_emit.dispatch_origin(info.id)
+            if not sid:
+                return ("", 0)
+            crew_log_emit.on_approval_requested(
+                sid,
+                asked_turn,
+                approval_id=approval_id,
+                tool=_SPAWN_APPROVAL_TOOL,
+                reason=reason,
+            )
+            return (sid, asked_turn)
+        except Exception:
+            _logger.debug("crew log: recording a spawn approval request failed", exc_info=True)
+            return ("", 0)
+
+    def _record_crew_log_spawn_approval_decided(
+        self,
+        origin: "tuple[str, int]",
+        *,
+        approval_id: str,
+        decision: str,
+        by: str = "",
+        cause: str = "",
+    ) -> None:
+        """Write how *approval_id* resolved, under the request's own origin.
+
+        *origin* is what ``_record_crew_log_spawn_approval_requested`` returned, so
+        a request that was not written answers itself with nothing and a written one
+        is always answered. Reading the pin again here would not do: a decline and
+        an undeliverable prompt both drop the pin on their way out, and an approved
+        spawn's pin is opened by the start that follows.
+
+        ``by`` and ``cause`` carry the host's own attribution and reason code when
+        the host decided without a human; a person's answer arrives through the
+        approval future from a surface this site cannot name, so both are omitted
+        for it.
+        """
+        from kiro_crew.crew_log import emit as crew_log_emit
+        from kiro_crew.subagent import logger as _logger
+
+        sid, asked_turn = origin
+        if not sid:
+            return
+        try:
+            crew_log_emit.on_approval_decided(
+                sid,
+                asked_turn,
+                approval_id=approval_id,
+                decision=decision,
+                by=by,
+                cause=cause,
+            )
+        except Exception:
+            _logger.debug("crew log: recording a spawn approval decision failed", exc_info=True)
 
     def _announce_rejection_impl(self, info: SubagentInfo) -> SubagentInfo:
         """Route a terminal spawn rejection through the done callback.

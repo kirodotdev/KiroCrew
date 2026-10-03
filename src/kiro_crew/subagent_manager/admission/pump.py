@@ -17,6 +17,8 @@ if TYPE_CHECKING:
 
     from ...subagent import (
         _RELEASE_REPUMP_SECS,
+        DENY_CAUSE_APPROVAL_UNDELIVERABLE,
+        DENY_CAUSE_HOOK_ERROR,
         MEMORY_PRESSURE_NEVER_STARTED,
         SpawnAdmissionCoordinator,
         SpawnApprovalUnreachable,
@@ -44,6 +46,20 @@ class _PumpMixin(ManagerComponent):
         async def taskq_child_registered_async(self, info: "SubagentInfo") -> None: ...
 
         def _record_crew_log_spawn_started(self, info: "SubagentInfo") -> None: ...
+
+        def _record_crew_log_spawn_approval_requested(
+            self, info: "SubagentInfo", *, approval_id: str, reason: str
+        ) -> "tuple[str, int]": ...
+
+        def _record_crew_log_spawn_approval_decided(
+            self,
+            origin: "tuple[str, int]",
+            *,
+            approval_id: str,
+            decision: str,
+            by: str = "",
+            cause: str = "",
+        ) -> None: ...
 
         @staticmethod
         def entry_is_resident_resume(params: "Mapping[str, Any]") -> bool: ...
@@ -813,92 +829,135 @@ class _PumpMixin(ManagerComponent):
         # Also the flag that picks the audit reason below, so the two cannot
         # drift apart.
         no_surface_error: str = ""
+        # The crew-log pair for this prompt, which is the only record of the wait
+        # a fold can read: the SEL audit below says how the spawn ended, not that
+        # anyone was ever asked. ``_log_origin`` is what the request entry was
+        # filed under, so the decision lands beside its own request rather than
+        # under whatever turn the parent reached while a person took their time.
+        #
+        # The decision fields are PRE-SEEDED with the reading that holds for an
+        # exit neither handler below sees: a user Stop or a reap cancels this
+        # task, and a CancelledError is not an ``Exception``. Nothing judged the
+        # spawn there, so it is attributed to the host with no reason code --
+        # the same shape the chat runner's own host-cancelled approval writes.
+        # Seeding them and writing in a ``finally`` is what makes the pair total
+        # over every exit; an unanswered request left in the fold's ``pending``
+        # map forever is the same silence this fix removes, one step along.
+        _log_origin: tuple[str, int] = ("", 0)
+        _log_decision: str = "rejected"
+        _log_by: str = "host"
+        _log_cause: str = ""
         try:
-            from kiro_crew.security import (
-                redact_credentials,
-                redact_exfiltration_urls,
-            )
-
-            task_safe, _ = redact_exfiltration_urls(info.task)
-            task_safe, _ = redact_credentials(task_safe)
-            task_preview: str = task_safe[:80]
-            # Mark the pre-execution spawn gate as a human-wait so the reaper
-            # does not misreport it. This is the SAME lifecycle the mid-run TOOL
-            # approvals use in run.py: set before the await, cleared in a
-            # finally. The run has NOT started here (_exec_started is None),
-            # which is exactly what lets _force_reap distinguish a never-answered
-            # spawn approval from a mid-run tool prompt and report the accurate
-            # cause.
-            info._awaiting_approval = True
-            # Name the wait as well as marking it. The flag above is machine
-            # state read by the reaper and by the wire; this is the line an
-            # operator gets. Without it an operator has no lead at all:
-            # ``kirocrew logs`` holds no record keyed to the affected run id,
-            # while a wait with no deadline of its own holds the run at turn 0.
-            # ``parent_session_key`` is in the record on purpose: an unowned
-            # spawn (the CLI posts none) raises its prompt with ``slot=""``, so
-            # it is surfaced only on the global approvals feed and appears in no
-            # chat tab, which is the case with the least other evidence.
-            logger.info(
-                "Subagent %s awaiting spawn approval (request_id=%s, parent=%s)",
-                info.id,
-                request_id,
-                info.parent_session_key or "<unowned>",
-            )
             try:
-                approved: bool = await self._manager._on_spawn_approval(
-                    request_id, f"spawn_run({task_preview})", info.parent_session_key
+                from kiro_crew.security import (
+                    redact_credentials,
+                    redact_exfiltration_urls,
                 )
-            finally:
-                info._awaiting_approval = False
-        except SpawnApprovalUnreachable as unreachable:
-            # Not a refusal: nobody was there to refuse. Ordered ABOVE the
-            # generic handler below, which would otherwise flatten this into the
-            # same "spawn rejected" a human decline produces — and the generic
-            # prose is slow to diagnose.
-            #
-            # The raiser names the missing SURFACE; the rungs are this gate's own
-            # cascade. Keeping the split means the sentence does not go stale
-            # when a channel learns to deliver the prompt itself.
-            detail = (
-                str(unreachable).strip() if info.memory_mode == "persistent" else ""
-            ) or "no interactive surface is attached"
-            # TWO AUDIENCES, and which text each gets is a security decision, not
-            # a formatting one. The rung list is the OPERATOR's: it names two
-            # `config.json` keys, and `security.py` records that `config.json` is
-            # writable by any auto-approved agent shell. `info.error` travels to
-            # the calling agent as a completion event — automation input — so
-            # putting the how-to there hands the party this gate CONSTRAINS the
-            # recipe for removing it, which an unattended or prompt-injected
-            # agent can simply follow. The log is where an operator looks, so
-            # the how-to lives here and nowhere the agent can read it.
-            logger.warning(
-                "Subagent %s refused: the spawn approval prompt reached no "
-                "surface that could answer it (%s, parent=%s). To let spawns run "
-                "without a prompt, use any one of: spawn with "
-                'approval_mode="auto"; turn on Trust for the parent session in '
-                "the dashboard; set hooks.auto_approve_subagent_spawn to true in "
-                'config.json; or add "subagent" to hooks.auto_approve_sources.',
-                info.id,
-                detail,
-                info.parent_session_key or "<unowned>",
+
+                task_safe, _ = redact_exfiltration_urls(info.task)
+                task_safe, _ = redact_credentials(task_safe)
+                task_preview: str = task_safe[:80]
+                # Mark the pre-execution spawn gate as a human-wait so the reaper
+                # does not misreport it. This is the SAME lifecycle the mid-run TOOL
+                # approvals use in run.py: set before the await, cleared in a
+                # finally. The run has NOT started here (_exec_started is None),
+                # which is exactly what lets _force_reap distinguish a never-answered
+                # spawn approval from a mid-run tool prompt and report the accurate
+                # cause.
+                info._awaiting_approval = True
+                # Name the wait as well as marking it. The flag above is machine
+                # state read by the reaper and by the wire; this is the line an
+                # operator gets. Without it an operator has no lead at all:
+                # ``kirocrew logs`` holds no record keyed to the affected run id,
+                # while a wait with no deadline of its own holds the run at turn 0.
+                # ``parent_session_key`` is in the record on purpose: an unowned
+                # spawn (the CLI posts none) raises its prompt with ``slot=""``, so
+                # it is surfaced only on the global approvals feed and appears in no
+                # chat tab, which is the case with the least other evidence.
+                logger.info(
+                    "Subagent %s awaiting spawn approval (request_id=%s, parent=%s)",
+                    info.id,
+                    request_id,
+                    info.parent_session_key or "<unowned>",
+                )
+                # Before the await, so a fold read while the prompt is still open
+                # shows it as pending -- which is the whole point of recording it.
+                _log_origin = self._record_crew_log_spawn_approval_requested(
+                    info, approval_id=request_id, reason=f"spawn_run({task_preview})"
+                )
+                try:
+                    approved: bool = await self._manager._on_spawn_approval(
+                        request_id, f"spawn_run({task_preview})", info.parent_session_key
+                    )
+                finally:
+                    info._awaiting_approval = False
+                # A person answered, at a surface this site cannot name, so the
+                # entry asserts neither who decided nor why.
+                _log_decision = "approved" if approved else "rejected"
+                _log_by = ""
+                _log_cause = ""
+            except SpawnApprovalUnreachable as unreachable:
+                # Not a refusal: nobody was there to refuse. Ordered ABOVE the
+                # generic handler below, which would otherwise flatten this into the
+                # same "spawn rejected" a human decline produces — and the generic
+                # prose is slow to diagnose.
+                #
+                # The raiser names the missing SURFACE; the rungs are this gate's own
+                # cascade. Keeping the split means the sentence does not go stale
+                # when a channel learns to deliver the prompt itself.
+                detail = (
+                    str(unreachable).strip() if info.memory_mode == "persistent" else ""
+                ) or "no interactive surface is attached"
+                # TWO AUDIENCES, and which text each gets is a security decision, not
+                # a formatting one. The rung list is the OPERATOR's: it names two
+                # `config.json` keys, and `security.py` records that `config.json` is
+                # writable by any auto-approved agent shell. `info.error` travels to
+                # the calling agent as a completion event — automation input — so
+                # putting the how-to there hands the party this gate CONSTRAINS the
+                # recipe for removing it, which an unattended or prompt-injected
+                # agent can simply follow. The log is where an operator looks, so
+                # the how-to lives here and nowhere the agent can read it.
+                logger.warning(
+                    "Subagent %s refused: the spawn approval prompt reached no "
+                    "surface that could answer it (%s, parent=%s). To let spawns run "
+                    "without a prompt, use any one of: spawn with "
+                    'approval_mode="auto"; turn on Trust for the parent session in '
+                    "the dashboard; set hooks.auto_approve_subagent_spawn to true in "
+                    'config.json; or add "subagent" to hooks.auto_approve_sources.',
+                    info.id,
+                    detail,
+                    info.parent_session_key or "<unowned>",
+                )
+                approved = False
+                _log_cause = DENY_CAUSE_APPROVAL_UNDELIVERABLE
+                # Terse, and names no file and no key — so it is actionable for the
+                # agent (tell the human, or stop delegating) without being followable
+                # into a self-granted bypass.
+                no_surface_error = (
+                    "spawn rejected: no surface could show the approval prompt, so "
+                    f"nobody could answer it ({detail}). The spawn was refused now "
+                    "rather than held until the reaper's deadline. Ask the operator "
+                    "to open the dashboard and spawn again, or to enable spawn "
+                    "auto-approval."
+                )
+            except Exception:
+                logger.error(
+                    "Spawn approval failed for %s",
+                    info.id,
+                    exc_info=info.memory_mode == "persistent",
+                )
+                approved = False
+                _log_cause = DENY_CAUSE_HOOK_ERROR
+        finally:
+            # The request's answer, on every exit including the cancelled one.
+            # A no-op when no request was written, so the two are all-or-nothing.
+            self._record_crew_log_spawn_approval_decided(
+                _log_origin,
+                approval_id=request_id,
+                decision=_log_decision,
+                by=_log_by,
+                cause=_log_cause,
             )
-            approved = False
-            # Terse, and names no file and no key — so it is actionable for the
-            # agent (tell the human, or stop delegating) without being followable
-            # into a self-granted bypass.
-            no_surface_error = (
-                "spawn rejected: no surface could show the approval prompt, so "
-                f"nobody could answer it ({detail}). The spawn was refused now "
-                "rather than held until the reaper's deadline. Ask the operator "
-                "to open the dashboard and spawn again, or to enable spawn "
-                "auto-approval."
-            )
-        except Exception:
-            logger.error(
-                "Spawn approval failed for %s", info.id, exc_info=info.memory_mode == "persistent"
-            )
-            approved = False
 
         if not approved:
             info.done = True

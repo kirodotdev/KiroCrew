@@ -5297,6 +5297,28 @@ def child_origin(agent_id: str) -> "tuple[str, int]":
         return (found[0], found[1])
 
 
+def dispatch_origin(agent_id: str) -> "tuple[str, int]":
+    """*agent_id*'s pinned origin whether or not its spawn was recorded.
+
+    The one reader that is correct BEFORE the opener exists. :func:`child_origin`
+    refuses an unopened pin because a fact about a child that never started would
+    have no cause in the log; a spawn approval is the exception, because the wait
+    for it is the cause of the gap. It happens between the dispatch being accepted
+    and the run starting, and on two of its three exits no run ever starts -- so
+    gating it on opened would lose exactly the prompt a reader is looking for.
+
+    Answers ``("", 0)`` for a child with no pin at all, which is what a caller
+    needs to skip the write rather than guess a parent.
+    """
+    if not agent_id:
+        return ("", 0)
+    with _lock:
+        found = _child_origin.get(agent_id)
+        if found is None:
+            return ("", 0)
+        return (found[0], found[1])
+
+
 def forget_child_origin(agent_id: str) -> "tuple[str, int]":
     """Release *agent_id*'s origin and return it, or ``("", 0)``.
 
