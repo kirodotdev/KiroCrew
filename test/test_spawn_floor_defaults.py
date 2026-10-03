@@ -8,9 +8,9 @@ learned settled RSS)``, or the measured unlearned figure before a bucket has one
 
 The scenarios patch ONLY the host's free-memory reading. Config is the isolated
 home's real defaults (no ``KiroCrewConfig`` patch), the free figure goes through
-the real ``/proc/meminfo`` parser, and the posture verdict is computed for real
-from the same number, so a scenario fails if any default, any price or the
-sharing prediction drifts.
+the real ``/proc/meminfo`` parser, and the posture reading (which spawns no
+longer consult) reads the same number, so a scenario fails if any default, any
+price or the sharing prediction drifts.
 """
 
 from __future__ import annotations
@@ -70,7 +70,6 @@ class _Host:
 
         monkeypatch.setattr(subagent_mod, "check_memory_available", _check)
         monkeypatch.setattr(rs, "_read_available_gb", lambda: self.gb)
-        monkeypatch.setattr(subagent_mod, "cached_admission_check", lambda: rs.admission_check())
 
     def set(self, gb: float) -> None:
         self.gb = gb
@@ -537,29 +536,517 @@ async def test_the_wait_reads_memory_off_the_event_loop(monkeypatch, tmp_path) -
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(30)
-@pytest.mark.parametrize("pool", ["stuck", "refuses-a-thread"])
-async def test_a_pool_that_cannot_answer_gets_the_synchronous_reading(
-    monkeypatch, tmp_path, pool
-) -> None:
-    """An unanswered off-loop read is never mistaken for 'below the floor':
-    the poller takes the reading on the loop instead, as the gate does."""
-    _Host(monkeypatch, tmp_path, 4.0)
-    mgr, _ = await _manager(monkeypatch, eligible=True)
-    audit = MagicMock()
-    monkeypatch.setattr(subagent_mod, "sel", audit)
-    monkeypatch.setattr(subagent_mod, "_HOST_READ_OFF_LOOP_SECS", 0.05)
+@pytest.mark.parametrize("mode", ["persistent", "incognito", "no-store"])
+async def test_the_gate_reads_memory_off_the_event_loop(monkeypatch, tmp_path, mode) -> None:
+    """Every event-loop entry to the gate reads the floor on a worker.
 
-    async def _stuck(func, /, *args, **kwargs):
+    ``spawn_async`` (a durable row, a non-durable start that runs the whole gate
+    in its prepare pass, and a manager with the task queue off) and the
+    coroutine pump re-checking a deferred row: the reading walks cgroup files,
+    so none of them may take it on the loop. The bar each asked with is still
+    the gate's own. With no store the pump drains inline, on whatever thread
+    calls it, so only ``spawn_async``'s own read is pinned there.
+    """
+    from kiro_crew.subagent_manager.admission import SpawnAdmissionCoordinator
+
+    # Production's pump: a coroutine whose store reads run off the loop. The
+    # suite switches it off for its inline settle loops.
+    monkeypatch.setattr(SpawnAdmissionCoordinator, "pump_off_loop", True)
+    host = _Host(monkeypatch, tmp_path, 2.4)
+    mgr, started = await _manager(monkeypatch, eligible=False)
+    mgr._taskq_admit_wait_secs = 0.05
+    store = mgr._taskq
+    if mode == "no-store":
+        mgr._taskq = None
+    loop_thread = threading.get_ident()
+    seen: list[int] = []
+    timed = subagent_mod.check_memory_available
+
+    def _check(min_gb, **kw):
+        seen.append(threading.get_ident())
+        return timed(min_gb=min_gb, **kw)
+
+    monkeypatch.setattr(subagent_mod, "check_memory_available", _check)
+    try:
+        info = await mgr.spawn_async(
+            "one",
+            parent_session_key=PARENT,
+            _memory_mode="persistent" if mode == "no-store" else mode,
+        )
+        assert info.queued_reason == QUEUED_REASON_LOW_MEMORY and started == []
+        assert seen and seen[0] != loop_thread
+        host.set(4.5)
+        # The pump's re-check, once the admit wait has passed.
+        await _until(lambda: info.id in started, "the deferred start never ran")
+        assert host.gated() == [pytest.approx(FLOOR + DEDICATED)] * 2
+        if mode != "no-store":
+            assert loop_thread not in seen
+    finally:
+        mgr._taskq = store
+        await _teardown(mgr)
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(30)
+@pytest.mark.parametrize("mode", ["incognito", "no-store"])
+async def test_a_spawn_with_no_row_registers_its_parent_wait_off_the_loop(
+    monkeypatch, tmp_path, mode
+) -> None:
+    """A spawn with no row to write (non-persistent, or the task queue off) runs
+    the whole gate in ``spawn_async``'s own passes. Its nested-child
+    registration (a parent blocked in ``spawn_sub_agents`` yields its slot,
+    taskq.waits W3) reads the store's ledger, so it is awaited off the loop,
+    as the durable path does, and never taken synchronously by the gate."""
+    _Host(monkeypatch, tmp_path, 2.4)
+    mgr, started = await _manager(monkeypatch, eligible=False)
+    store = mgr._taskq
+    if mode == "no-store":
+        mgr._taskq = None
+    coordinator = type(mgr._admission)  # slotted: patched on the class
+    sync = MagicMock()
+    monkeypatch.setattr(coordinator, "taskq_child_registered", sync)
+    registered: list[str] = []
+
+    async def _registered_async(_self, child) -> None:
+        registered.append(child.id)
+
+    monkeypatch.setattr(coordinator, "taskq_child_registered_async", _registered_async)
+    try:
+        info = await mgr.spawn_async(
+            "one",
+            parent_session_key=PARENT,
+            _memory_mode="incognito" if mode == "incognito" else "persistent",
+        )
+        assert info.queued_reason == QUEUED_REASON_LOW_MEMORY and started == []
+        assert registered == [info.id]
+        sync.assert_not_called()
+    finally:
+        mgr._taskq = store
+        await _teardown(mgr)
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(30)
+@pytest.mark.parametrize("store", [True, False])
+async def test_a_memory_wait_woken_early_still_starts(monkeypatch, tmp_path, store) -> None:
+    """A loop timer may fire up to a clock tick before its time (asyncio runs
+    whatever falls due within its clock resolution: 15.6 ms on Windows). A
+    non-durable memory wait woken before its not-before stamp must re-arm, not
+    drain a pass that skips it and leaves nothing armed."""
+    host = _Host(monkeypatch, tmp_path, 2.4)
+    mgr, started = await _manager(monkeypatch, eligible=False)
+    admit_wait = 0.3
+    mgr._taskq_admit_wait_secs = admit_wait
+    keep = mgr._taskq
+    if not store:
+        mgr._taskq = None
+    loop = asyncio.get_running_loop()
+    on_time = loop.call_later
+
+    def early(delay, callback, *args, **kwargs):
+        # A coarse clock, exaggerated: every timer of the admit wait or longer
+        # runs 0.1 s early.
+        return on_time(delay - 0.1 if delay >= admit_wait else delay, callback, *args, **kwargs)
+
+    monkeypatch.setattr(loop, "call_later", early)
+    try:
+        info = await mgr.spawn_async("one", parent_session_key=PARENT, _memory_mode="incognito")
+        assert info.queued_reason == QUEUED_REASON_LOW_MEMORY and started == []
+        host.set(4.5)
+        await _until(lambda: info.id in started, "an early wake stranded the wait")
+    finally:
+        monkeypatch.setattr(loop, "call_later", on_time)
+        mgr._taskq = keep
+        await _teardown(mgr)
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(30)
+@pytest.mark.parametrize("pool", ["stuck", "refuses-a-thread"])
+@pytest.mark.parametrize("mode", ["persistent", "incognito"])
+async def test_an_unanswered_gate_read_waits_and_never_reads_on_the_loop(
+    monkeypatch, tmp_path, pool, mode
+) -> None:
+    """The gate's off-loop read has no on-loop fallback. A worker that misses
+    ``_HOST_READ_OFF_LOOP_SECS``, or a pool that cannot start a thread, read
+    nothing: the start waits as ``low_memory`` (never fails open on a host
+    nobody measured) and starts on the re-check once the pool answers."""
+    from kiro_crew.subagent_manager.admission import SpawnAdmissionCoordinator
+
+    # Production's pump, as in the off-loop test above: its re-check reads off
+    # the loop too, so the whole round trip can be pinned.
+    monkeypatch.setattr(SpawnAdmissionCoordinator, "pump_off_loop", True)
+    host = _Host(monkeypatch, tmp_path, 8.0)  # ample: any reading would admit it
+    mgr, started = await _manager(monkeypatch, eligible=False)
+    mgr._taskq_admit_wait_secs = 0.05
+    monkeypatch.setattr(subagent_mod, "_HOST_READ_OFF_LOOP_SECS", 0.05)
+    loop_thread = threading.get_ident()
+    on_loop: list[float] = []
+    real_check = subagent_mod.check_memory_available
+
+    def _check(min_gb, **kw):
+        if threading.get_ident() == loop_thread:
+            on_loop.append(min_gb)
+        return real_check(min_gb, **kw)
+
+    monkeypatch.setattr(subagent_mod, "check_memory_available", _check)
+    real_to_thread = asyncio.to_thread
+    answering = False
+
+    async def _pool(func, /, *args, **kwargs):
+        if func is not subagent_mod._host_memory_reading or answering:
+            return await real_to_thread(func, *args, **kwargs)
         if pool == "refuses-a-thread":
             raise RuntimeError("can't start new thread")
         await asyncio.Event().wait()
 
-    monkeypatch.setattr(subagent_mod.asyncio, "to_thread", _stuck)
+    monkeypatch.setattr(subagent_mod.asyncio, "to_thread", _pool)
+    try:
+        info = await mgr.spawn_async("one", parent_session_key=PARENT, _memory_mode=mode)
+        assert info.queued and not info.done and started == []
+        assert info.queued_reason == QUEUED_REASON_LOW_MEMORY
+        assert "did not answer" in info.queued_reason_detail
+        assert on_loop == [] and host.gated() == []
+        answering = True
+        await _until(lambda: info.id in started, "the unanswered wait never re-checked")
+        assert on_loop == []
+    finally:
+        await _teardown(mgr)
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(30)
+@pytest.mark.parametrize("mode", ["persistent", "incognito"])
+async def test_a_disabled_floor_takes_no_reading_so_an_unanswered_pool_cannot_hold_it(
+    monkeypatch, tmp_path, caplog, mode
+) -> None:
+    """``agent.spawn_min_memory_gb: 0`` disables the floor. The gate then takes
+    no host reading at all, so a pool that cannot start a thread (an unanswered
+    read) never defers the start as ``low_memory``, and a floor nobody asked to
+    check is not reported on Linux as a guard that could not run."""
+    import logging
+
+    _write_agent_config({"spawn_min_memory_gb": 0.0})
+    _Host(monkeypatch, tmp_path, 0.5)  # short: any floor read would hold it
+    mgr, started = await _manager(monkeypatch, eligible=False)
+    monkeypatch.setattr(subagent_mod.platform_compat, "IS_LINUX", True)
+    audit = MagicMock()
+    monkeypatch.setattr(subagent_mod, "sel", audit)
+    reads: list[float] = []
+    real_to_thread = asyncio.to_thread
+
+    async def _refuses(func, /, *args, **kwargs):
+        if func is subagent_mod._host_memory_reading:
+            reads.append(args[0] if args else kwargs.get("min_gb"))
+            raise RuntimeError("can't start new thread")
+        return await real_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(subagent_mod.asyncio, "to_thread", _refuses)
+    caplog.set_level(logging.WARNING, logger="kiro_crew.subagent")
+    try:
+        info = await mgr.spawn_async("one", parent_session_key=PARENT, _memory_mode=mode)
+        assert info.queued_reason != QUEUED_REASON_LOW_MEMORY and not info.done
+        await _until(lambda: info.id in started, "a disabled floor held the start")
+        outcomes = [c.kwargs["outcome"] for c in audit.return_value.log_tool_invocation.mock_calls]
+        assert "deferred_low_memory" not in outcomes
+        assert "memory_check_unavailable" not in outcomes
+        assert "memory guard could not run" not in caplog.text
+        assert reads == []
+    finally:
+        await _teardown(mgr)
+
+
+class _HeldRead:
+    """The floor's off-loop host read, parked on demand: with ``held`` set, the
+    next read waits for :meth:`release`, so a test can change the world DURING
+    it. Every other ``to_thread`` call passes straight through."""
+
+    def __init__(self, monkeypatch) -> None:
+        self.held = False
+        self.entered = asyncio.Event()
+        self._released = asyncio.Event()
+        real = asyncio.to_thread
+
+        async def _pool(func, /, *args, **kwargs):
+            if func is subagent_mod._host_memory_reading and self.held:
+                self.held = False
+                self.entered.set()
+                await self._released.wait()
+            return await real(func, *args, **kwargs)
+
+        monkeypatch.setattr(subagent_mod.asyncio, "to_thread", _pool)
+        # The read's own bound is not what these tests exercise.
+        monkeypatch.setattr(subagent_mod, "_HOST_READ_OFF_LOOP_SECS", _WAIT_SECS)
+
+    def release(self) -> None:
+        self._released.set()
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(30)
+@pytest.mark.parametrize("mode", ["persistent", "incognito", "no-store"])
+async def test_governance_tightened_during_the_read_still_refuses(
+    monkeypatch, tmp_path, mode
+) -> None:
+    """The memory read's re-entry re-runs the policy gates: a spawn admitted by
+    governance before the read and forbidden during it is refused, not run.
+    ``persistent`` is the default path, whose row ``spawn_async`` committed
+    before the read: the refusal fails that row, so it cannot run later."""
+    from kiro_crew import taskq as _taskq
+
+    _Host(monkeypatch, tmp_path, 8.0)  # ample: only governance can stop it
+    mgr, started = await _manager(monkeypatch, eligible=False)
+    store = mgr._taskq
+    if mode == "no-store":
+        mgr._taskq = None
+    read = _HeldRead(monkeypatch)
+    read.held = True
+    try:
+        pending = asyncio.ensure_future(
+            mgr.spawn_async(
+                "one",
+                parent_session_key=PARENT,
+                _memory_mode="persistent" if mode == "no-store" else mode,
+            )
+        )
+        await asyncio.wait_for(read.entered.wait(), _WAIT_SECS)
+        monkeypatch.setattr(
+            subagent_mod, "_vet_spawn_governance", lambda *_a, **_k: "spawning is off"
+        )
+        read.release()
+        info = await asyncio.wait_for(pending, _WAIT_SECS)
+        assert info.done and "spawn refused by governance" in info.error
+        if mode == "persistent":
+            await _until(
+                lambda: store.state_of(info.id) == _taskq.FAILED,
+                "the refused row is still runnable",
+            )
+            mgr._drain_queue()
+            await asyncio.sleep(0.1)
+        assert started == []
+    finally:
+        mgr._taskq = store
+        await _teardown(mgr)
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(30)
+async def test_governance_tightened_during_a_drain_read_fails_the_row(
+    monkeypatch, tmp_path
+) -> None:
+    """The coroutine pump's re-check of a deferred row reads the floor off the
+    loop too; a governance change made during that read fails the row
+    (``_refuse_row``) instead of starting it."""
+    from kiro_crew import taskq as _taskq
+    from kiro_crew.subagent_manager.admission import SpawnAdmissionCoordinator
+
+    monkeypatch.setattr(SpawnAdmissionCoordinator, "pump_off_loop", True)
+    host = _Host(monkeypatch, tmp_path, 2.4)
+    mgr, started = await _manager(monkeypatch, eligible=False)
+    mgr._taskq_admit_wait_secs = 0.05
+    read = _HeldRead(monkeypatch)
+    try:
+        info = await mgr.spawn_async("one", parent_session_key=PARENT)
+        assert info.queued_reason == QUEUED_REASON_LOW_MEMORY
+        # No await since the defer: the pump's wake has not run yet.
+        read.held = True
+        host.set(8.0)
+        await asyncio.wait_for(read.entered.wait(), _WAIT_SECS)
+        monkeypatch.setattr(
+            subagent_mod, "_vet_spawn_governance", lambda *_a, **_k: "spawning is off"
+        )
+        read.release()
+        await _until(
+            lambda: mgr._taskq.state_of(info.id) == _taskq.FAILED, "the refused row was not failed"
+        )
+        assert started == []
+    finally:
+        await _teardown(mgr)
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(30)
+async def test_admission_closing_during_the_read_fails_the_committed_row(
+    monkeypatch, tmp_path
+) -> None:
+    """``spawn_async`` commits a durable row before it reads the floor. If gateway
+    admission closes during that read, the caller is refused, so the row is
+    failed with it: left queued, it would run once admission reopens."""
+    from kiro_crew import taskq as _taskq
+
+    _Host(monkeypatch, tmp_path, 8.0)
+    mgr, started = await _manager(monkeypatch, eligible=False)
+    read = _HeldRead(monkeypatch)
+    read.held = True
+    try:
+        pending = asyncio.ensure_future(mgr.spawn_async("one", parent_session_key=PARENT))
+        await asyncio.wait_for(read.entered.wait(), _WAIT_SECS)
+        mgr._sessions.admission_closed = True
+        read.release()
+        info = await asyncio.wait_for(pending, _WAIT_SECS)
+        assert info.done and info.error == "spawn refused: gateway admission is closed"
+        await _until(
+            lambda: mgr._taskq.state_of(info.id) == _taskq.FAILED,
+            "the refused row is still runnable",
+        )
+        mgr._sessions.admission_closed = False
+        mgr._drain_queue()
+        await asyncio.sleep(0.1)
+        assert started == []
+    finally:
+        await _teardown(mgr)
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(30)
+@pytest.mark.parametrize("reading", ["unanswered", "unmeasurable", "measured-low"])
+async def test_only_a_read_that_answered_unmeasurable_proceeds_unchecked(
+    monkeypatch, tmp_path, caplog, reading
+) -> None:
+    """On Linux a -1 reading that the reader returned means the guard could not
+    run: the start proceeds, with a WARNING and a ``memory_check_unavailable``
+    SEL row. An unanswered read also carries -1 but measured nothing: it waits
+    as ``low_memory``, is never audited as a start that proceeded, and its
+    defer audit and wait label carry no ``available_gb`` figure. A read that
+    measured a short host waits as ``low_memory`` too, and both carry the
+    figure it measured."""
+    import logging
+
+    _Host(monkeypatch, tmp_path, 8.0)
+    mgr, started = await _manager(monkeypatch, eligible=False)
+    monkeypatch.setattr(subagent_mod.platform_compat, "IS_LINUX", True)
+    audit = MagicMock()
+    monkeypatch.setattr(subagent_mod, "sel", audit)
+    waits: list[dict] = []
+    emit = mgr._emit_queue_depth
+
+    def _emit(*args, **kwargs):
+        waits.append(dict(kwargs.get("wait") or {}))
+        return emit(*args, **kwargs)
+
+    monkeypatch.setattr(mgr, "_emit_queue_depth", _emit)
+    if reading == "unanswered":
+        real_to_thread = asyncio.to_thread
+
+        async def _refuses(func, /, *args, **kwargs):
+            if func is subagent_mod._host_memory_reading:
+                raise RuntimeError("can't start new thread")
+            return await real_to_thread(func, *args, **kwargs)
+
+        monkeypatch.setattr(subagent_mod.asyncio, "to_thread", _refuses)
+    else:
+        answer = (True, -1.0) if reading == "unmeasurable" else (False, 0.5)
+        monkeypatch.setattr(subagent_mod, "check_memory_available", lambda *_a, **_k: answer)
+    caplog.set_level(logging.WARNING, logger="kiro_crew.subagent")
+    try:
+        info = await mgr.spawn_async("one", parent_session_key=PARENT, _memory_mode="incognito")
+        calls = audit.return_value.log_tool_invocation.mock_calls
+        outcomes = [c.kwargs["outcome"] for c in calls]
+        unchecked = "memory guard could not run" in caplog.text
+        if reading == "unmeasurable":
+            await _until(lambda: info.id in started, "an unmeasurable host must fail open")
+            assert "memory_check_unavailable" in outcomes and unchecked
+            assert "deferred_low_memory" not in outcomes
+            return
+        assert info.queued and info.queued_reason == QUEUED_REASON_LOW_MEMORY
+        assert started == []
+        assert "memory_check_unavailable" not in outcomes and not unchecked
+        (deferred,) = [
+            c.kwargs["metadata"] for c in calls if c.kwargs["outcome"] == "deferred_low_memory"
+        ]
+        (wait,) = waits
+        assert wait["reason"] == QUEUED_REASON_LOW_MEMORY and "required_gb" in wait
+        if reading == "unanswered":
+            assert deferred["cause"] == subagent_mod.MEMORY_CAUSE_READ_UNANSWERED
+            assert "available_gb" not in deferred and "available_gb" not in wait
+        else:
+            assert deferred["available_gb"] == 0.5 and wait["available_gb"] == 0.5
+    finally:
+        await _teardown(mgr)
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(30)
+@pytest.mark.parametrize("pool", ["stuck", "refuses-a-thread"])
+async def test_an_unanswered_top_up_read_keeps_waiting_and_never_reads_on_the_loop(
+    monkeypatch, tmp_path, pool
+) -> None:
+    """An unanswered off-loop read is headroom unknown, as it is to the gate: the
+    top-up never fails open on it and never re-reads on the loop; it keeps
+    waiting and starts once a read answers."""
+    _Host(monkeypatch, tmp_path, 4.0)  # ample: any reading would let it start
+    mgr, _ = await _manager(monkeypatch, eligible=True)
+    audit = MagicMock()
+    monkeypatch.setattr(subagent_mod, "sel", audit)
+    monkeypatch.setattr(subagent_mod, "_HOST_READ_OFF_LOOP_SECS", 0.05)
+    monkeypatch.setattr(subagent_mod, "_DEDICATED_TOPUP_POLL_SECS", 0.05)
+    loop_thread = threading.get_ident()
+    on_loop: list[float] = []
+    real_check = subagent_mod.check_memory_available
+
+    def _check(min_gb, **kw):
+        if threading.get_ident() == loop_thread:
+            on_loop.append(min_gb)
+        return real_check(min_gb, **kw)
+
+    monkeypatch.setattr(subagent_mod, "check_memory_available", _check)
+    real_to_thread = asyncio.to_thread
+    answering = False
+
+    async def _pool(func, /, *args, **kwargs):
+        if func is not subagent_mod._host_memory_reading or answering:
+            return await real_to_thread(func, *args, **kwargs)
+        if pool == "refuses-a-thread":
+            raise RuntimeError("can't start new thread")
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(subagent_mod.asyncio, "to_thread", _pool)
+    info = _row(id="b3", _start_price_gb=SHARED, _start_priced_shared=True)
+    mgr._agents[info.id] = info
+    try:
+        task = asyncio.ensure_future(mgr._ensure_dedicated_start_priced(info))
+        await asyncio.sleep(0.3)  # several unanswered polls
+        assert not task.done() and info._start_priced_shared is True
+        answering = True
+        await asyncio.wait_for(task, _WAIT_SECS)
+        assert info._start_priced_shared is False
+        assert audit.return_value.log_tool_invocation.mock_calls == []
+        assert on_loop == []
+    finally:
+        await _teardown(mgr)
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(30)
+async def test_a_top_up_that_never_got_an_answer_starts_and_says_headroom_unknown(
+    monkeypatch, tmp_path, caplog
+) -> None:
+    import logging
+
+    _Host(monkeypatch, tmp_path, 4.0)
+    mgr, _ = await _manager(monkeypatch, eligible=True)
+    monkeypatch.setattr(subagent_mod, "_DEDICATED_TOPUP_WAIT_SECS", 0.2)
+    monkeypatch.setattr(subagent_mod, "_DEDICATED_TOPUP_POLL_SECS", 0.05)
+    audit = MagicMock()
+    monkeypatch.setattr(subagent_mod, "sel", audit)
+    real_to_thread = asyncio.to_thread
+
+    async def _refuses(func, /, *args, **kwargs):
+        if func is subagent_mod._host_memory_reading:
+            raise RuntimeError("can't start new thread")
+        return await real_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(subagent_mod.asyncio, "to_thread", _refuses)
+    caplog.set_level(logging.WARNING, logger="kiro_crew.subagent")
     info = _row(id="b3", _start_price_gb=SHARED, _start_priced_shared=True)
     mgr._agents[info.id] = info
     try:
         await asyncio.wait_for(mgr._ensure_dedicated_start_priced(info), _WAIT_SECS)
-        assert audit.return_value.log_tool_invocation.mock_calls == []
+        (call,) = audit.return_value.log_tool_invocation.mock_calls
+        assert call.kwargs["outcome"] == "dedicated_start_below_floor"
+        assert call.kwargs["metadata"]["cause"] == subagent_mod.MEMORY_CAUSE_READ_UNANSWERED
+        assert "available_gb" not in call.kwargs["metadata"]
+        assert "memory headroom unknown" in caplog.text
         assert info._start_priced_shared is False
     finally:
         await _teardown(mgr)

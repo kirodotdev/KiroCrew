@@ -44,6 +44,7 @@ if TYPE_CHECKING:
         FALLBACK_STORY_ATTR,
         HOOK_EVENT_POST_TOOL_USE,
         MAX_ERROR_DETAIL_LEN,
+        MEMORY_CAUSE_READ_UNANSWERED,
         STOP_CLASS_CANCELLED,
         STOP_RECOVERY_MAX_RETRIES,
         TOOL_AUTO_APPROVE,
@@ -63,7 +64,7 @@ if TYPE_CHECKING:
         _cost_bucket,
         _dedicated_start_price_gb,
         _describe_exception,
-        _host_available_gb_off_loop,
+        _host_memory_reading_off_loop,
         _redact,
         _resolved_model_of,
         _RunCreditAccounting,
@@ -3813,13 +3814,17 @@ class RunEventCoordinator(ManagerComponent):
             )
             while True:
                 asked = _need()
-                avail = await _host_available_gb_off_loop(asked)
+                avail, cause = await _host_memory_reading_off_loop(asked)
+                # A read that never answered measured nothing: unknown, so it
+                # keeps waiting, as the gate does. It is never the reader's
+                # "unmeasurable" -1 (that fails open) and never re-read on the loop.
+                unanswered = cause == MEMORY_CAUSE_READ_UNANSWERED
                 # Decided here, on the loop, against what the reserve owes NOW:
                 # other rows may have started or settled while the read ran.
                 need = max(asked, _need())
                 pressure = self._manager._memory_pressure_hold(floor_gb=floor) if root else None
                 # -1 is the reader's "unmeasurable": fail open, as the gate does.
-                fits = avail < 0 or avail >= need
+                fits = not unanswered and (avail < 0 or avail >= need)
                 if fits and pressure is None:
                     info._start_priced_shared = False
                     break
@@ -3848,10 +3853,14 @@ class RunEventCoordinator(ManagerComponent):
                 if time.monotonic() >= deadline:
                     waited = time.monotonic() - started
                     logger.warning(
-                        "Subagent %s: starting a dedicated process with %.2f GB available, "
+                        "Subagent %s: starting a dedicated process with %s, "
                         "below the %.2f GB its start needs; waited %.0fs",
                         info.id,
-                        avail,
+                        (
+                            "memory headroom unknown (the host reading did not answer)"
+                            if unanswered
+                            else f"{avail:.2f} GB available"
+                        ),
                         need,
                         waited,
                     )
@@ -3861,7 +3870,8 @@ class RunEventCoordinator(ManagerComponent):
                         tool_name="spawn_run",
                         outcome="dedicated_start_below_floor",
                         metadata={
-                            "available_gb": avail,
+                            # No figure when nothing was read: -1 is not an amount.
+                            **({"cause": cause} if unanswered else {"available_gb": avail}),
                             "min_gb": need,
                             "start_price_gb": info._start_price_gb,
                             "waited_secs": round(waited, 1),

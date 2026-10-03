@@ -1778,8 +1778,8 @@ class TestSpawnMemoryGuard:
         assert call_kwargs["outcome"] == "deferred_low_memory"
         assert call_kwargs["metadata"]["available_gb"] == 2.5
 
-    def test_spawn_refused_low_memory(self):
-        """Without a store, spawn() returns an error SubagentInfo."""
+    def test_spawn_queued_low_memory_without_a_store(self):
+        """Without a store, spawn() still queues: the in-memory window holds it."""
         from unittest.mock import MagicMock, patch
 
         mgr = self._mgr()
@@ -1797,13 +1797,16 @@ class TestSpawnMemoryGuard:
             info = mgr.spawn(task="test task", parent_session_key="sess-1")
 
         assert info is not None
-        assert info.done is True
-        assert "2.5" in info.error
-        assert "need 5.0 GB" in info.error  # the 4.0 floor plus this start
-        assert "1.00 GB for this start" in info.error
+        assert info.done is False and info.queued is True and info.error == ""
+        assert info.queued_reason == "low_memory"
+        assert "2.5 GB available" in info.queued_reason_detail
+        assert "need 5.0 GB" in info.queued_reason_detail  # the 4.0 floor plus this start
+        assert "1.00 GB for this start" in info.queued_reason_detail
+        assert [p["_preassigned_id"] for p in mgr._queue] == [info.id]
+        assert info.id not in mgr._agents and mgr._running_count == 0
         mock_sel.return_value.log_tool_invocation.assert_called_once()
         call_kwargs = mock_sel.return_value.log_tool_invocation.call_args[1]
-        assert call_kwargs["outcome"] == "refused_low_memory"
+        assert call_kwargs["outcome"] == "deferred_low_memory"
 
 
 class TestSpawnEmptyTaskGuard:

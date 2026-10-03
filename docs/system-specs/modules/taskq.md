@@ -884,13 +884,16 @@ the health sampler.
 
 `defer(task_id, until, reason)` sets `next_run_at` on a claimable row and
 appends `deferred`; the state does not change and the row holds nothing. The
-subagent adapter calls it — instead of refusing — when
-`check_memory_available` or `cached_admission_check` says no, with
-`until = now + agent.admit_wait_secs`, and arms a pump wake-up for then. The
-caller receives a `queued` id. Only when there is no store (the feature is
-off, or the row is a legacy in-memory entry the store never saw) does pressure
-still refuse, exactly as before. `agent.admission_gate=false` still turns the
-posture tier off entirely. The macOS kernel memory-pressure hold is not a deferral: it
+subagent adapter calls it — instead of refusing — when the memory floor
+(`check_memory_available`) says no, with `until = now + agent.admit_wait_secs`,
+and arms a pump wake-up for then. The caller receives a `queued` id. With no
+store (the feature is off) or no row to defer (an incognito or temporary
+spawn), the start waits in the in-memory window instead, not eligible until the
+same admit wait passes. A durable defer the store could not write (a `_queue`
+entry it never saw, or the store unavailable) is refused as a store failure
+(`task_store_unavailable`), never as a capacity verdict. Spawns do not read the posture tier
+(`cached_admission_check`); `agent.admission_gate=false` turns it off for cron.
+The macOS kernel memory-pressure hold is not a deferral: it
 is a capacity-style wait in the window (subagent.md), and the runner lane,
 cron and workflow `ctx.agent` gates deliberately do not read the kernel level;
 only the subagent gate acts on it.

@@ -108,14 +108,8 @@ def _mgr():
 
 def _spawn(mgr, *, min_gb: float = 4.0, memory=None):
     """Spawn with the memory guard on; ``memory`` mocks the check when given."""
-    from kiro_crew import resource_status as rs
-
-    admitted = rs.AdmissionDecision(admitted=True, posture=rs.POSTURE_AMPLE, available_gb=16.0)
     with ExitStack() as stack:
         cfg = stack.enter_context(patch("kiro_crew.subagent.KiroCrewConfig"))
-        stack.enter_context(
-            patch("kiro_crew.subagent.cached_admission_check", return_value=admitted)
-        )
         sel = stack.enter_context(patch("kiro_crew.subagent.sel"))
         if memory is not None:
             stack.enter_context(

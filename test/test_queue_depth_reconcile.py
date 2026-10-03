@@ -23,7 +23,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from overload_fakes import (
-    memory_critical,
+    memory_below_floor,
     mock_ctx,
     mock_sessions,
     settle_depth_emits,
@@ -180,7 +180,7 @@ def _store_waiting(mgr: SubagentManager, parent: str = _PARENT) -> int:
 
 def _defer(mgr: SubagentManager, count: int, parent: str = _PARENT) -> list[SubagentInfo]:
     """*count* spawns the memory gate defers: rows held by the store alone."""
-    with patch.object(subagent_mod, "cached_admission_check", memory_critical):
+    with patch.object(subagent_mod, "check_memory_available", memory_below_floor):
         with patch.object(SubagentManager, "_run", new=AsyncMock()):
             infos = [mgr.spawn(f"deferred-{i}", parent_session_key=parent) for i in range(count)]
     assert all(info.queued and not info.done for info in infos)
@@ -417,6 +417,15 @@ async def test_stop_all_over_thirty_queued_and_ten_running_sends_at_most_three_f
     monkeypatch: pytest.MonkeyPatch, pump_off_loop: bool
 ) -> None:
     """Thirty stops, ten reaped-run terminals: one burst."""
+    # Ten unsettled dedicated starts at once owe the floor plus ten unlearned
+    # start prices, more than ``healthy_host_memory``'s 8 GB host has, so the
+    # memory guard would park four of them. This test is about the frames, not
+    # the guard: it reads a host big enough for ten, compared honestly.
+    monkeypatch.setattr(
+        subagent_mod,
+        "check_memory_available",
+        lambda min_gb=None, path=None: (64.0 >= (min_gb or 0.0), 64.0),
+    )
     mgr = await _manager(monkeypatch, pump_off_loop=pump_off_loop, max_concurrent=10)
     mgr._taskq._window = 10
     try:

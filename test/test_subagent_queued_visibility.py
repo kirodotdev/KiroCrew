@@ -16,7 +16,6 @@ from overload_fakes import mock_ctx, mock_sessions
 
 import kiro_crew.subagent as subagent_mod
 from kiro_crew.config.loader import KiroCrewConfig
-from kiro_crew.resource_status import POSTURE_AMPLE, AdmissionDecision
 from kiro_crew.subagent import QUEUED_REASON_LOW_MEMORY, SubagentManager
 from kiro_crew.subagent_manager.admission import SpawnAdmissionCoordinator
 
@@ -40,11 +39,6 @@ async def test_a_deferred_spawn_is_readable_until_it_starts(monkeypatch) -> None
         return free["gb"] >= min_gb, free["gb"]
 
     monkeypatch.setattr(subagent_mod, "check_memory_available", memory_check)
-    monkeypatch.setattr(
-        subagent_mod,
-        "cached_admission_check",
-        lambda: AdmissionDecision(admitted=True, posture=POSTURE_AMPLE, available_gb=32.0),
-    )
     mgr = SubagentManager(sessions=mock_sessions(), ctx_builder=mock_ctx(), max_concurrent=3)
     await asyncio.wait_for(mgr.wait_taskq_ready(), 5)
     mgr._spawn_stagger_secs = 0.0

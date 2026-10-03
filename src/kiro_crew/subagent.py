@@ -158,11 +158,7 @@ from kiro_crew.providers.base import (
     EVENT_TOOL_RESULT,
     LLMEvent,
 )
-from kiro_crew.resource_status import (
-    cached_admission_check,
-    pressure_level_held,
-    read_memory_pressure_level,
-)
+from kiro_crew.resource_status import pressure_level_held, read_memory_pressure_level
 from kiro_crew.sandbox import _agents_slice_cgroup_dir
 from kiro_crew.security import (
     redact_and_truncate,
@@ -195,6 +191,7 @@ from kiro_crew.subagent_manager import (
     CancellationCoordinator,
     ClaimPoint,
     ContinuationCoordinator,
+    MemoryReadPoint,
     OrphanStallMonitor,
     PreparedSpawn,
     RunEventCoordinator,
@@ -239,7 +236,6 @@ from kiro_crew.subagent_wait_reasons import (  # noqa: F401 - re-exported: the g
     QUEUED_REASON_CONCURRENCY_LIMIT,
     QUEUED_REASON_LOW_MEMORY,
     QUEUED_REASON_MEMORY_PRESSURE,
-    QUEUED_REASON_POSTURE_CRITICAL,
     adaptive_pause_text,
 )
 from kiro_crew.validation import _AGENT_NAME_RE, is_registered_agent_name
@@ -1190,8 +1186,9 @@ _PRESSURE_EPISODE_MAX_GAP_SECS = 4.0 * MEMORY_PRESSURE_RECHECK_SECS
 #: SEL outcome of a root start ended, never started, because the pressure hold
 #: kept it past its bound (or its episode had already outlived the bound).
 SEL_MEMORY_PRESSURE_NEVER_STARTED = "never_started_memory_pressure"
-# How long one off-loop host-memory read may wait for the shared executor before
-# the poller takes the same reading synchronously instead.
+# How long one off-loop host-memory read may wait for the shared executor. A read
+# that misses it comes back unanswered (``MEMORY_CAUSE_READ_UNANSWERED``) and is
+# never retaken on the loop.
 _HOST_READ_OFF_LOOP_SECS = 2.0
 _REPORT_DRAIN_TIMEOUT = (
     30.0  # max seconds cancel_all() waits for shielded terminal reports to drain
@@ -1547,6 +1544,11 @@ def _timeout_context(
 #: Cause recorded when a finite cgroup memory limit is set but that level's
 #: usage file cannot be read: the headroom is unknown, not measured as low.
 MEMORY_CAUSE_CGROUP_USAGE_UNREADABLE = "cgroup_usage_unreadable"
+
+#: Cause the spawn gate's off-loop read records when its worker did not answer
+#: in time or no thread could be started: the host was not read at all, so the
+#: start waits for a re-check instead of failing open or reading on the loop.
+MEMORY_CAUSE_READ_UNANSWERED = "host_read_unanswered"
 
 #: Set by the cgroup probe inside :func:`check_memory_available` and read by the
 #: spawn gate with :func:`pop_memory_check_cause`. Thread-local, so a probe on
@@ -2245,25 +2247,37 @@ def _spawn_memory_floor_and_cost(agent_cfg: Any = None) -> tuple[float, float]:
         return DEFAULT_SPAWN_MIN_MEMORY_GB, DEFAULT_SUBAGENT_COST_GB
 
 
-async def _host_available_gb_off_loop(min_gb: float) -> float:
-    """The floor's host reading (GiB, -1 when unmeasurable), taken off the loop.
+def _host_memory_reading(min_gb: float) -> tuple[float, str]:
+    """The floor's host reading and its cause, on whichever thread calls it.
 
-    For a caller that POLLS it (the dedicated top-up): the Linux reader walks
-    cgroup files. Each read has its own bound, ``_HOST_READ_OFF_LOOP_SECS``,
-    independent of the caller's wait, and a pool that does not answer in time
-    or cannot start a thread falls back to the same synchronous read the
-    admission gate makes on every spawn, so the caller always gets a real
-    answer. *min_gb* is passed through for the reader's own comparison, which
-    the caller does not use: it decides against a need it recomputes after.
+    The cause is thread-local (:func:`pop_memory_check_cause`), so it is read on
+    the same thread as the reading it describes and travels back with it.
+    """
+    pop_memory_check_cause()  # drop a cause left by any earlier reading
+    _ok, avail = check_memory_available(min_gb=min_gb)
+    return avail, pop_memory_check_cause()
+
+
+async def _host_memory_reading_off_loop(min_gb: float) -> tuple[float, str]:
+    """The floor's host reading (GiB, -1 when unmeasurable) and its cause, off the loop.
+
+    For the spawn gate's second half (``MemoryReadPoint``) and the dedicated
+    top-up's poll: the Linux reader walks cgroup files, so it never runs on the
+    loop, not even as a fallback. A worker that does not answer within
+    ``_HOST_READ_OFF_LOOP_SECS``, or a pool that cannot start a thread, comes
+    back as :data:`MEMORY_CAUSE_READ_UNANSWERED`: both callers treat that as a
+    start that does not fit yet, so it keeps waiting (the gate re-checks after
+    the admit wait, the top-up at its next poll). It is never taken as
+    "unmeasurable" (that fails open) and never read again on the loop (that is
+    the stall this split exists to avoid).
     """
     try:
-        _ok, avail = await asyncio.wait_for(
-            asyncio.to_thread(check_memory_available, min_gb=min_gb),
+        return await asyncio.wait_for(
+            asyncio.to_thread(_host_memory_reading, min_gb),
             timeout=_HOST_READ_OFF_LOOP_SECS,
         )
     except (asyncio.TimeoutError, RuntimeError):
-        _ok, avail = check_memory_available(min_gb=min_gb)
-    return avail
+        return -1.0, MEMORY_CAUSE_READ_UNANSWERED
 
 
 def _row_settled(info: SubagentInfo, now: float) -> bool:
@@ -3730,6 +3744,12 @@ class SubagentManager:
         # as long as it waits: the store never carries it, so a window refill
         # restores it from here (``_refill_apply``).
         self._held_approval_modes: dict[str, str] = {}
+        # Durable rows whose last defer was the memory floor's (``low_memory``):
+        # the store keeps only ``next_run_at``, so a window refill stamps the
+        # entry as a floor wait from here (``_refill_apply``) and the pump's pick
+        # leaves it to the gate, which re-checks the floor before the pressure
+        # hold. Process-local, as the hold's own clocks are.
+        self._floor_deferred_ids: set[str] = set()
         # Rows the pump has popped from the window but not yet claimed. Their
         # durable state is still QUEUED, so without this set every store-backed
         # depth read between pop and claim counts them as waiting.
@@ -5397,6 +5417,8 @@ class SubagentManager:
         _stage_boundary_owner: str = "",
         _parent_spawn_policy: "ParentSpawnPolicy | None" = None,
         _agent_check: "AgentCheck | None" = None,
+        _stop_before_memory_read: bool = False,
+        _memory_reading: "tuple[float, str] | None" = None,
     ) -> SubagentInfo | None:
         result = self._admission.spawn_impl(
             task,
@@ -5436,22 +5458,43 @@ class SubagentManager:
             _stage_boundary_owner=_stage_boundary_owner,
             _parent_spawn_policy=_parent_spawn_policy,
             _agent_check=_agent_check,
+            _stop_before_memory_read=_stop_before_memory_read,
+            _memory_reading=_memory_reading,
         )
         assert not isinstance(result, PreparedSpawn)
         # Every synchronous gate return (started, queued, or refused) receives
         # the same admission snapshot before a scheduled announce can run.
         if isinstance(result, SubagentInfo):
             result._stage_boundary_owner = _stage_boundary_owner
-        # ``ClaimPoint`` comes back ONLY for ``_stop_before_claim=True``, whose
-        # sole caller is the coroutine pump's ``_dispatch_async``; every other
-        # caller receives a ``SubagentInfo`` or None as declared.
+        # ``ClaimPoint`` comes back ONLY for ``_stop_before_claim=True`` and
+        # ``MemoryReadPoint`` ONLY for ``_stop_before_memory_read=True``, whose
+        # callers are the event-loop entries (``spawn_async`` and the coroutine
+        # pump); every other caller receives a ``SubagentInfo`` or None as
+        # declared.
         return result  # type: ignore[return-value]
 
-    def prepare_spawn(self, task: str, **kwargs: Any) -> "SubagentInfo | PreparedSpawn | None":
+    async def _spawn_after_memory_read(self, first: Any, **reentry: Any) -> Any:
+        """Finish a spawn the gate stopped at its memory read, else return *first*.
+
+        The host is read on a worker (:func:`_host_memory_reading_off_loop`) and
+        the gate re-entered from the params its first half built, with the
+        caller's own re-entry flags (*reentry*) on top, so the floor is never
+        read on the event loop. Anything else -- a refusal, a queued handle, a
+        ``ClaimPoint`` -- passes through untouched.
+        """
+        if not isinstance(first, MemoryReadPoint):
+            return first
+        reading = await _host_memory_reading_off_loop(first.min_gb)
+        return self.spawn(**{**first.params, **reentry}, _memory_reading=reading)
+
+    def prepare_spawn(
+        self, task: str, **kwargs: Any
+    ) -> "SubagentInfo | PreparedSpawn | MemoryReadPoint | None":
         """Run every policy gate of :meth:`spawn` and return the row to persist
         instead of starting anything. A refusal comes back as the same done
         ``SubagentInfo`` :meth:`spawn` would return; ``None`` is the legacy
-        at-capacity answer."""
+        at-capacity answer. A spawn with no row to persist runs the whole gate
+        here, and with ``_stop_before_memory_read`` stops at its memory read."""
         kwargs.pop("_from_queue", None)
         kwargs.pop("_store_accepted", None)
         prepared = self._admission.spawn_impl(task, _prepare_only=True, **kwargs)
@@ -5623,12 +5666,35 @@ class SubagentManager:
                 execution_context=kwargs.get("_execution_context"),
                 prevalidated=bool(kwargs.get("_agent_prevalidated")),
             )
-        store = self._admission.taskq_store()
-        if store is None:
-            return self.spawn(task, **kwargs)
-        prepared = self.prepare_spawn(task, **kwargs)
+        # The memory read's re-entry re-runs the policy gates and the agent
+        # check; the parent's declaration and the agent answer read off the
+        # loop above are handed to it too, so neither scans the agents
+        # directory on the loop.
+        # Neither pass registers a nested child synchronously: that walks the
+        # store's ledger on the loop. It is awaited below, off-loop, as the
+        # durable path does (taskq.waits, W3).
+        policy = {
+            "_parent_spawn_policy": kwargs.get("_parent_spawn_policy"),
+            "_agent_check": kwargs.get("_agent_check"),
+            "_child_registration": False,
+        }
+        prepared: Any = (
+            self.spawn(task, **kwargs, _stop_before_memory_read=True, _child_registration=False)
+            if self._admission.taskq_store() is None
+            else self.prepare_spawn(
+                task, **kwargs, _stop_before_memory_read=True, _child_registration=False
+            )
+        )
         if not isinstance(prepared, PreparedSpawn):
-            return prepared
+            # No row to write: the task queue is off, the spawn was refused, or
+            # it is non-persistent and ran the whole gate in the prepare pass,
+            # stopping at its memory read.
+            result: SubagentInfo | None = await self._spawn_after_memory_read(prepared, **policy)
+            if result is not None and not result.done:
+                # Started or queued under a parent blocked in spawn_sub_agents:
+                # the parent yields its slot, with the store I/O off the loop.
+                await self._admission.taskq_child_registered_async(result)
+            return result
         # From the moment the row exists until this call has claimed or
         # windowed it, the pump's refill must not pick it up: the awaits below
         # are where a concurrent drain could otherwise start it twice.
@@ -5702,7 +5768,16 @@ class SubagentManager:
             _child_registration=False,  # the W3 branch runs awaited, below
             _agent_check=kwargs.get("_agent_check"),
         )
-        first: Any = self.spawn(**params, **common, _stop_before_claim=True)
+        # The read's re-entry re-runs the policy gates on this committed row
+        # (a refusal there fails it); the parent's declaration ``spawn_async``
+        # read off the loop is handed along so the allowlist vet does not
+        # scan the agents directory on the loop.
+        first: Any = await self._spawn_after_memory_read(
+            self.spawn(**params, **common, _stop_before_claim=True, _stop_before_memory_read=True),
+            **common,
+            _stop_before_claim=True,
+            _parent_spawn_policy=kwargs.get("_parent_spawn_policy"),
+        )
         if not isinstance(first, ClaimPoint):
             if first is not None and first.queued and not first.done:
                 # The gate queued the row this call still holds (deferred, or
@@ -5775,6 +5850,7 @@ class SubagentManager:
         self._pressure_holds.pop(agent_id, None)
         self._pressure_hold_expired.discard(agent_id)
         self._held_approval_modes.pop(agent_id, None)
+        self._floor_deferred_ids.discard(agent_id)
 
     # ── Continuable conversations (keep=True) ─────────────────────────────
 
@@ -6675,7 +6751,6 @@ _COMPONENT_GLOBAL_BINDINGS = (
     append_fallback_story,
     apply_completion_keep,
     asyncio,
-    cached_admission_check,
     pressure_level_held,
     read_memory_pressure_level,
     cap_result_file,

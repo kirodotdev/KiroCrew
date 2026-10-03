@@ -2041,38 +2041,33 @@ def named_cron_caller(monkeypatch):
     return key
 
 
-#: Comfortably clear of both memory guards ``SubagentManager.spawn`` runs at
-#: defaults: the absolute floor (``agent.spawn_min_memory_gb``, 2 GB after a
-#: start of up to 1 GB, plus the starts still warming) and the posture tier
-#: (``agent.resource_critical_gb``, 2 GB). A HEALTHY host, not an infinite one:
-#: the floor still compares against this figure, so a test asking for more than
-#: it is refused the way a real 8 GB host would refuse it.
+#: Comfortably clear of the memory floor ``SubagentManager.spawn`` admits on at
+#: defaults (``agent.spawn_min_memory_gb``, 2 GB after a start of up to 1 GB,
+#: plus the starts still warming). A HEALTHY host, not an infinite one: the
+#: floor still compares against this figure, so a test asking for more than it
+#: is refused the way a real 8 GB host would refuse it.
 _HEALTHY_AVAILABLE_GB = 8.0
 
 
 @pytest.fixture
 def healthy_host_memory(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Pin the host-memory readings ``SubagentManager.spawn`` consults.
+    """Pin the host-memory reading ``SubagentManager.spawn`` consults.
 
-    ``spawn`` refuses -- returning before it registers anything in ``_tasks`` --
-    whenever the machine looks short of memory, and it does so twice: an
-    absolute floor (``check_memory_available`` against
-    ``agent.spawn_min_memory_gb``) and the posture tier
-    (``cached_admission_check``, which refuses while the cgroup-clamped reading
-    is CRITICAL). Both read the host the suite happens to be running on, so
-    without this the verdict is the operator's machine rather than the test's
-    own input.
+    ``spawn`` queues -- returning before it registers anything in ``_tasks`` --
+    whenever the machine looks short of memory: the absolute floor
+    (``check_memory_available`` against ``agent.spawn_min_memory_gb``). It reads
+    the host the suite happens to be running on, so without this the verdict is
+    the operator's machine rather than the test's own input.
 
     The failure it produces is misleading, which is why it is worth a shared
-    fixture: a refusal IS a ``SubagentInfo`` -- a done one carrying ``error`` --
-    so ``assert info is not None`` still passes and the test dies one line later
-    on ``mgr._tasks[info.id]`` with a bare ``KeyError``. Measured on a CI runner
-    with ~0.5 GB free.
+    fixture: a queued spawn IS a ``SubagentInfo``, so ``assert info is not None``
+    still passes and the test dies one line later on ``mgr._tasks[info.id]``
+    with a bare ``KeyError``. Measured on a CI runner with ~0.5 GB free.
 
     Only the HOST reading is pinned: a caller that names its own ``path`` is
     feeding the ``/proc/meminfo`` parser a fixture file rather than asking about
     this machine, so it still runs the real function and a parser regression
-    still goes red. A test that is actually ABOUT either guard patches it in its
+    still goes red. A test that is actually ABOUT the guard patches it in its
     own body, which lands on top of this and reverts to it.
 
     The pinned host has ``_HEALTHY_AVAILABLE_GB`` free and the floor is still
@@ -2081,7 +2076,6 @@ def healthy_host_memory(monkeypatch: pytest.MonkeyPatch) -> None:
     a bar no 8 GB machine clears -- a wave whose reserve outgrew the host would
     read as admitted here and as queued on the operator's.
     """
-    import kiro_crew.resource_status as resource_status
     import kiro_crew.subagent as subagent
     from kiro_crew.constants import DEFAULT_SPAWN_MIN_MEMORY_GB
 
@@ -2097,17 +2091,7 @@ def healthy_host_memory(monkeypatch: pytest.MonkeyPatch) -> None:
             return real_check(path=path)
         return real_check(min_gb=min_gb, path=path)
 
-    def _admit() -> resource_status.AdmissionDecision:
-        return resource_status.AdmissionDecision(
-            admitted=True,
-            posture=resource_status.POSTURE_AMPLE,
-            available_gb=_HEALTHY_AVAILABLE_GB,
-        )
-
     monkeypatch.setattr(subagent, "check_memory_available", _pinned_check)
-    # Also keeps the 5s-TTL refresh thread behind the cached verdict from
-    # starting, so no test leaves one probing the host after it ends.
-    monkeypatch.setattr(subagent, "cached_admission_check", _admit)
 
 
 @pytest.fixture

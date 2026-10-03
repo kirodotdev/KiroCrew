@@ -1,7 +1,7 @@
 """Focused coordinators behind the stable SubagentManager facade."""
 
 from ._component import bind_component_globals, copy_component_docs
-from .admission import ClaimPoint, PreparedSpawn, SpawnAdmissionCoordinator
+from .admission import ClaimPoint, MemoryReadPoint, PreparedSpawn, SpawnAdmissionCoordinator
 from .cancellation import CancellationCoordinator
 from .continuation import ContinuationCoordinator
 from .monitoring import OrphanStallMonitor
@@ -15,6 +15,7 @@ __all__ = [
     "OrphanStallMonitor",
     "TerminalCoordinator",
     "ClaimPoint",
+    "MemoryReadPoint",
     "PreparedSpawn",
     "SpawnAdmissionCoordinator",
     "ContinuationCoordinator",

@@ -10884,9 +10884,7 @@
         "adaptive_cap_zero": "en attente de démarrage — les démarrages sont suspendus tant que cet ordinateur manque de mémoire ou est surchargé ; ils reprennent d’eux-mêmes une fois la situation rétablie",
         "low_memory": "en attente de démarrage — nécessite {{required}} de mémoire libre, {{available}} libres actuellement ; libère de la mémoire pour continuer",
         "low_memory_no_figures": "en attente de démarrage — mémoire libre insuffisante ; libère de la mémoire pour continuer",
-        "memory_pressure": "en attente de démarrage — macOS signale une pression mémoire ; les démarrages reprennent d’eux-mêmes dès qu’elle diminue ou que les agents en cours se terminent ; les démarrages abandonnent dès que la pression dure depuis 30 minutes",
-        "posture_critical": "en attente de démarrage — la mémoire de cet ordinateur est critiquement basse ({{available}} libres) ; libère de la mémoire pour continuer",
-        "posture_critical_no_figures": "en attente de démarrage — la mémoire de cet ordinateur est critiquement basse ; libère de la mémoire pour continuer"
+        "memory_pressure": "en attente de démarrage — macOS signale une pression mémoire ; les démarrages reprennent d’eux-mêmes dès qu’elle diminue ou que les agents en cours se terminent ; les démarrages abandonnent dès que la pression dure depuis 30 minutes"
       },
       "subagentRunCard": {
         "agent_finished_many": "{{count}} agents terminés",

@@ -10884,9 +10884,7 @@
         "adaptive_cap_zero": "aguardando para iniciar — os inícios estão pausados enquanto este computador está com pouca memória ou sobrecarregado; eles retomam sozinhos quando ele se recupera",
         "low_memory": "aguardando para iniciar — precisa de {{required}} de memória livre, {{available}} livres agora; libere memória para continuar",
         "low_memory_no_figures": "aguardando para iniciar — memória livre insuficiente; libere memória para continuar",
-        "memory_pressure": "aguardando para iniciar — o macOS relata pressão de memória; os inícios são retomados sozinhos quando ela diminuir ou os agentes em execução terminarem; os inícios desistem quando a pressão dura 30 minutos",
-        "posture_critical": "aguardando para iniciar — a memória deste computador está criticamente baixa ({{available}} livres); libere memória para continuar",
-        "posture_critical_no_figures": "aguardando para iniciar — a memória deste computador está criticamente baixa; libere memória para continuar"
+        "memory_pressure": "aguardando para iniciar — o macOS relata pressão de memória; os inícios são retomados sozinhos quando ela diminuir ou os agentes em execução terminarem; os inícios desistem quando a pressão dura 30 minutos"
       },
       "subagentRunCard": {
         "agent_finished_many": "{{count}} agentes concluídos",
