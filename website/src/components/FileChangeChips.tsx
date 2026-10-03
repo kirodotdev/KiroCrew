@@ -11,6 +11,7 @@ import {
   ROW_CSS_OPEN,
 } from './fileChangeChipsCss'
 import { countLines } from '../utils/diffLineCounts'
+import { normalizeWindowsPath } from '../utils/fileTokens'
 import { useDiffSplit } from '../hooks/useDiffSplit'
 
 import { i18nT } from '../i18n/t'
@@ -116,7 +117,13 @@ function TurnBudgetNotice({ fc, canOpen, className }: { fc: FileChangeEntry; can
  *  it the Pierre diff runtime). */
 export { countLines }
 
-const basename = (p: string) => p.split('/').pop() || p
+/* The last segment of the path, which is what every row surface shows while the
+ * full path stays on the tooltip and the control labels. A Windows gateway
+ * sends `C:\…` and UNC `\\srv\…` paths with backslashes, so those are folded to
+ * `/` first (`normalizeWindowsPath` rewrites only drive-letter and UNC shapes);
+ * a POSIX name is left alone, because there `\` is an ordinary filename
+ * character and a blanket split would invent a nested path (#14557). */
+const basename = (p: string) => normalizeWindowsPath(p).split('/').pop() || p
 const FALLBACK_CONTENT_STYLE = { maxHeight: ROW_BODY_MAX_H, overflowY: 'auto' } as const
 
 /* Removals first, additions second — the order Pierre's own file headers use
@@ -176,9 +183,15 @@ function RowMetadata({ added, removed, isArtifact }: {
   isArtifact?: boolean
 }) {
   return (
+    /* `shrink-0`, and no reserved basis. Everything in here is fixed-size (the
+       badge, five 7px cells), so a rail allowed to shrink below that did not
+       free space for the filename — it drew its cells over the count beside
+       it (#14557). A reserved basis is the other wrong answer: a 124px floor
+       crushed the filename at the 320px viewport (#8316). Sized to content, the
+       filename's `min-w-0 truncate` is the only part of the row that gives. */
     <span
       data-testid="fcc-metadata"
-      className="ml-auto flex min-w-0 items-center gap-2"
+      className="ml-auto flex shrink-0 items-center gap-2"
     >
       <span className="flex items-center gap-2">
         {isArtifact && (
@@ -244,7 +257,11 @@ function CollapsedRowHeader({ fc, added, removed, isArtifact, onFileOpen, onTogg
         <span className="min-w-0 truncate" title={fc.path} data-fcc-filename>{name}</span>
       )}
       <RowMetadata added={added} removed={removed} isArtifact={isArtifact} />
-      <span className="flex min-w-[8ch] items-center justify-end gap-1">
+      {/* `min-w-[8ch]` replaces flex's `min-width:auto`, so without `shrink-0`
+          a count wider than 8ch ("-965 +1032") was squeezed to 8ch and, being
+          `justify-end`, spilled LEFT under the diffstat cells (#14557). The
+          floor stays so short counts right-align in one column. */}
+      <span data-fcc-count className="flex min-w-[8ch] shrink-0 items-center justify-end gap-1">
         <Stats added={added} removed={removed} />
       </span>
     </div>
