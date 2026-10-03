@@ -9,6 +9,7 @@ import {
   Languages,
   ListChecks,
   MoreHorizontal,
+  NotebookPen,
   Pause as PauseIcon,
   Play,
   RefreshCw,
@@ -31,6 +32,7 @@ import AgentPillBar from './components/AgentPillBar'
 import BroadcastBar from './components/BroadcastBar'
 import MeetingTitle from './components/MeetingTitle'
 import MeetingWorkspace from './components/MeetingWorkspace'
+import NoteSidebar from './components/NoteSidebar'
 import TaskSidebar from './components/TaskSidebar'
 import TranscriptPanel from './components/TranscriptPanel'
 import TranslationSidebar from './components/TranslationSidebar'
@@ -56,6 +58,15 @@ export default function MeetingView({
 }: Props) {
   const session = useMeetingSession({ eventId, fallbackTitle, config, notify })
   const [sidebarOpen, setSidebarOpen] = useState(false)
+
+  // Every way out of this view goes through here. The note draft lives in the
+  // session hook and unmounts with this view, so the exit first waits for its save
+  // and navigates only once the note is on disk; a refusal keeps the user here, where
+  // the panel is showing that refusal, instead of navigating away from the only copy.
+  // Browser-level navigation is not intercepted — see `useNoteDraft` for what covers it.
+  const leave = async () => {
+    if (await session.leaveNote()) onBack()
+  }
   const [attachMenuOpen, setAttachMenuOpen] = useState(false)
 
   const {
@@ -82,6 +93,7 @@ export default function MeetingView({
     actions,
     pending,
     translation,
+    note,
   } = session
 
   if (loading) return <Skeleton className="h-40 m-6" />
@@ -111,7 +123,7 @@ export default function MeetingView({
         onBack={actions.backToMeeting}
         onClose={() => {
           actions.stop()
-          onBack()
+          void leave()
         }}
         onFile={actions.fileTask}
         onArchive={actions.archiveTask}
@@ -146,7 +158,7 @@ export default function MeetingView({
       <div className="flex-1 min-w-0 min-h-0 flex flex-col overflow-hidden">
         <div className="flex-none px-4 md:px-6 py-4 border-b border-border flex items-center justify-between gap-3">
           <div className="flex items-center gap-3 min-w-0">
-            <Btn onClick={onBack} aria-label={i18nT('apps.meetings.meeting.back')}>
+            <Btn onClick={() => { void leave() }} aria-label={i18nT('apps.meetings.meeting.back')}>
               <ArrowLeft className="lucide-inline" />
               {i18nT('apps.meetings.meeting.back')}
             </Btn>
@@ -267,6 +279,17 @@ export default function MeetingView({
                   />
                   <span>{i18nT('apps.meetings.meeting.refresh')}</span>
                 </DropdownMenuItem>
+                <DropdownMenuItem
+                  onSelect={() => {
+                    // One side panel at a time (see the translation item below).
+                    setSidebarOpen(false)
+                    session.setTranslationOpen(false)
+                    session.setNoteOpen(open => !open)
+                  }}
+                >
+                  <NotebookPen size={13} className="shrink-0 text-muted" />
+                  <span>{i18nT('apps.meetings.meeting.toggleNote')}</span>
+                </DropdownMenuItem>
                 {/* Offered only when a target language is configured: with translation
                     off (the default) the item would open a panel that can never fill.
                     Settings is where it gets turned on. */}
@@ -277,6 +300,7 @@ export default function MeetingView({
                       // panels' 260px height floors together exceed a short
                       // viewport and squeeze the transcript out entirely.
                       setSidebarOpen(false)
+                      session.setNoteOpen(false)
                       session.setTranslationOpen(open => !open)
                     }}
                   >
@@ -287,6 +311,7 @@ export default function MeetingView({
                 <DropdownMenuItem
                   onSelect={() => {
                     session.setTranslationOpen(false)
+                    session.setNoteOpen(false)
                     setSidebarOpen(open => !open)
                   }}
                 >
@@ -405,6 +430,25 @@ export default function MeetingView({
           />
         )}
       </div>
+
+      {note.open && (
+        <NoteSidebar
+          draft={note.draft}
+          dirty={note.dirty}
+          loaded={note.loaded}
+          updatedAt={note.updatedAt}
+          path={note.path}
+          saving={note.saving}
+          saveFailed={note.saveFailed}
+          loadFailed={note.loadFailed}
+          uploading={note.uploading}
+          uploadError={note.uploadError}
+          onChange={session.changeNote}
+          onFlush={session.flushNote}
+          onPasteImage={session.pasteNoteImage}
+          onClose={() => session.setNoteOpen(false)}
+        />
+      )}
 
       {translation.open && translation.language && (
         <TranslationSidebar
