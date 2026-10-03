@@ -45,6 +45,10 @@ def catalog(monkeypatch, tmp_path):
     monkeypatch.setattr(KiroCrewConfig, "load", lambda: config)
     discovery = Mock(return_value=[_template("reviewer"), _template("test-writer")])
     monkeypatch.setattr(agent_catalog, "list_agents", discovery)
+    # The refresh scans the real agents dir and would replace a snapshot a test
+    # arranged; stubbed here, asserted by its own test.
+    refresh = Mock()
+    monkeypatch.setattr(agent_catalog, "refresh_materialized_agents", refresh)
     monkeypatch.setattr(agent_catalog.agent_state, "all_fork_info", lambda: {})
     save = Mock(side_effect=AssertionError("Catalog must not persist config"))
     allocate = Mock(side_effect=AssertionError("Catalog must not allocate member memory"))
@@ -72,6 +76,7 @@ def catalog(monkeypatch, tmp_path):
         app=app,
         config=config,
         discovery=discovery,
+        refresh=refresh,
         save=save,
         allocate=allocate,
         state=state,
@@ -99,6 +104,34 @@ async def test_catalog_keeps_namespaces_and_never_changes_registry(catalog):
     assert dataclasses.asdict(catalog.config) == before
     catalog.save.assert_not_called()
     catalog.allocate.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_catalog_fetch_refreshes_the_snapshot_before_reading_the_default(
+    catalog, monkeypatch
+):
+    # The picker's fetch is the moment an agent removed outside the gateway is
+    # noticed: the refresh (whose landed scan resets a dangling default) runs off
+    # the loop with the template scan, and the config is read AFTER it so the
+    # response names the default the user will get.
+    import threading
+
+    order: list[str] = []
+    loop_thread = threading.get_ident()
+    catalog.refresh.side_effect = lambda: order.append(
+        "refresh-off-loop" if threading.get_ident() != loop_thread else "refresh-on-loop"
+    )
+    catalog.discovery.side_effect = lambda **kwargs: order.append("templates") or [
+        _template("reviewer")
+    ]
+    config = catalog.config
+    monkeypatch.setattr(KiroCrewConfig, "load", lambda: order.append("config") or config)
+    async with TestClient(TestServer(catalog.app)) as client:
+        response = await client.get("/api/agents/catalog")
+        assert response.status == 200
+    # Later loads (the roster rows) may follow; the first comes after the scan.
+    assert order[:3] == ["refresh-off-loop", "templates", "config"]
+    assert set(order[3:]) <= {"config"}
 
 
 @pytest.mark.asyncio
@@ -276,6 +309,29 @@ async def test_member_rows_carry_the_companion_runtime_policy(catalog, engine_id
         lookup_key,
         "missing-template",
     ]
+
+
+@pytest.mark.asyncio
+async def test_file_name_bound_member_asks_the_policy_for_the_declared_agent(catalog, monkeypatch):
+    # A row that recorded the engine's FILE name runs the agent that file
+    # declares, so the companion is asked about that agent, not the file name.
+    import kiro_crew.config.loader as loader
+
+    catalog.config.agents["reviewer"].kiro_agent = "Pkg-review-engine"
+    monkeypatch.setattr(loader, "_MATERIALIZED_AGENTS", frozenset({"review-engine"}))
+    monkeypatch.setattr(loader, "_MATERIALIZED_STEMS", {"Pkg-review-engine": "review-engine"})
+    monkeypatch.setattr(loader, "_MATERIALIZED_AGENTS_READY", True)
+    policy = {"runtime": "engine-a", "model": "selectable"}
+    policy_getter = Mock(side_effect=lambda key: policy if key == "review-engine" else None)
+    provider = SimpleNamespace(agent_runtime_policy=policy_getter)
+    set_context(dataclasses.replace(build_default_context(catalog.config), providers=provider))
+    async with TestClient(TestServer(catalog.app)) as client:
+        response = await client.get("/api/agents/catalog")
+        assert response.status == 200
+        rows = (await response.json())["agents"]
+    members = [r for r in rows if r["selection_kind"] == "member"]
+    assert members[0]["runtime_policy"] == policy
+    assert policy_getter.call_args_list[0].args == ("review-engine",)
 
 
 @pytest.mark.asyncio

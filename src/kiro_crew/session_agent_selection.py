@@ -9,7 +9,11 @@ from dataclasses import replace as dataclass_replace
 from typing import Any
 
 from kiro_crew.agent_spec_format import NATIVE_SKILL_ALIAS_PREFIX
-from kiro_crew.config.loader import ResolvedBindings, resolve_agent_bindings
+from kiro_crew.config.loader import (
+    ResolvedBindings,
+    dispatch_kiro_agent,
+    resolve_agent_bindings,
+)
 from kiro_crew.execution_context import (
     ExecutionContext,
     MemoryStoreRef,
@@ -107,7 +111,13 @@ def resolve_session_agent_bindings(
         raise UnknownMemoryStore("Conversation agent selection is unavailable") from exc
     if execution is not None:
         bindings.memory_store_name = execution.store.store_id
-        bindings.kiro_agent = _source_of_view(execution.template_id)
+        # Both recorded kinds can need a skill-view repair. Only a MEMBER's
+        # template id came from a crewmate row that may hold a package filename;
+        # a template id is already the provider selection and must stay exact.
+        kiro_agent = _source_of_view(execution.template_id)
+        if execution.selection_kind == "member":
+            kiro_agent = dispatch_kiro_agent(kiro_agent)
+        bindings.kiro_agent = kiro_agent
         bindings.execution_context = execution
     bindings.selection_revision = _revision(execution)
     return bindings

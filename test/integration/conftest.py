@@ -124,6 +124,10 @@ cross-home flake three tests later.
      shutdown, which would keep the next boot's writer from starting.
    * ``sandbox._SHIM_ARGV_CACHE`` -- the spawn shim's resolved argv, derived
      from the boot's config and home.
+   * ``config.loader`` materialized-agent snapshot (``_MATERIALIZED_AGENTS``,
+     ``_MATERIALIZED_STEMS``, ``_MATERIALIZED_AGENTS_READY``) -- the declared
+     names and file-name map of the home's ``kiro/agents`` directory, which the
+     next boot would read as its own until its first refresh lands.
    * ``dashboard.handlers.updates._auto_effect`` -- the update loop's derived
      ``auto_update_effect``, read from the boot's install root and policy; a
      stale one is served on the next boot's status frames, and it is also what
@@ -225,6 +229,7 @@ from kiro_crew import (
 )
 from kiro_crew.browser_cli import launch as browser_launch
 from kiro_crew.config import live as config_live
+from kiro_crew.config import loader as config_loader
 from kiro_crew.config.loader import CREDENTIAL_KEYS
 from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.dashboard import loop_watchdog, revocation_gen, token_auth, token_secret
@@ -715,6 +720,9 @@ def _reset_home_bound_globals() -> None:
     sandbox._SLICE_MEMHIGH_EVENTS_SEEN = None
     sandbox._SLICE_OOM_SEEN = None
     sandbox._SHIM_ARGV_CACHE.clear()
+    config_loader._MATERIALIZED_AGENTS = frozenset()
+    config_loader._MATERIALIZED_STEMS.clear()
+    config_loader._MATERIALIZED_AGENTS_READY = False
     dashboard_updates._auto_effect = None
     dashboard_updates._auto_effect_task = None
     dashboard_updates._shape_effect = None
@@ -742,6 +750,9 @@ def home_bound_globals_are_clear() -> bool:
         and sandbox._SLICE_THROTTLE_PROBE_SEEN is None
         and sandbox._SLICE_THROTTLE_EDGE_AT is None
         and not sandbox._SHIM_ARGV_CACHE
+        and not config_loader._MATERIALIZED_AGENTS
+        and not config_loader._MATERIALIZED_STEMS
+        and not config_loader._MATERIALIZED_AGENTS_READY
         and dashboard_updates._auto_effect is None
         and not browser_launch._warned_lifecycle_losses
     )

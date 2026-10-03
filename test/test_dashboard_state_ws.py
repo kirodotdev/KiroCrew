@@ -573,7 +573,7 @@ class TestSlotEffectiveAgent:
             raise AssertionError("effective-agent resolution scanned the filesystem")
 
         monkeypatch.setattr(loader, "refresh_materialized_agents", _boom)
-        monkeypatch.setattr(loader, "_scan_materialized_agents", _boom)
+        monkeypatch.setattr(loader, "_scan_materialized_index", _boom)
         monkeypatch.setattr(discovery, "project_agent_names", _boom)
         monkeypatch.setattr(discovery, "cached_project_agent_names", lambda _d: frozenset())
 

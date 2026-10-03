@@ -231,7 +231,7 @@ class TestMemoryInjectionAllAgents:
         monkeypatch.setattr(
             ctx, "invalidate_include_crew_context_cache", lambda: hit.setdefault("v", True)
         )
-        monkeypatch.setattr(loader, "_scan_materialized_agents", lambda d: frozenset())
+        monkeypatch.setattr(loader, "_scan_materialized_index", lambda d: (frozenset(), {}))
         saved = loader._MATERIALIZED_AGENTS
         saved_ready = loader._MATERIALIZED_AGENTS_READY
         try:

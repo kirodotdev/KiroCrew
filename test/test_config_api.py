@@ -682,6 +682,13 @@ class TestDefaultAgentGuard:
     currently hides the action.
     """
 
+    @pytest.fixture(autouse=True)
+    def _agents_lock_root(self, monkeypatch, tmp_path: Path) -> None:
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.agents.kiro_agents_dir_path",
+            lambda: tmp_path,
+        )
+
     def _default_agent_app(self) -> web.Application:
         from kiro_crew.dashboard.handlers import api_default_agent
 
@@ -760,37 +767,163 @@ class TestDefaultAgentGuard:
     async def test_installed_template_is_enrolled_and_made_default(self, tmp_path: Path) -> None:
         """An installed user-level template the picker offers can become the
         default: it is enrolled as an alias with default bindings in the same
-        write, so the default resolves to exactly that template."""
+        write, so the default resolves to exactly that template. The
+        registration is audited like every other one."""
         tmp = tmp_path / "config.json"
         tmp.write_text(json.dumps(_seed_config()), encoding="utf-8")
         found = [self._installed(source="package")]
+        events: list[dict] = []
+
+        class _Sel:
+            def log_api_access(self, **kw):
+                events.append(kw)
+
         with (
             unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp),
             unittest.mock.patch("kiro_crew.dashboard.handlers.config_path", return_value=tmp),
             unittest.mock.patch(
                 "kiro_crew.dashboard.handlers.agents.list_agents", return_value=found
             ),
+            unittest.mock.patch("kiro_crew.dashboard.handlers.agents._sel", lambda: _Sel()),
         ):
             async with TestClient(TestServer(self._default_agent_app())) as client:
                 resp = await client.put("/api/config/default-agent", json={"agent": "atlas"})
                 assert resp.status == 200, await resp.text()
+                assert (await resp.json())["default_agent"] == "atlas"
         saved = json.loads(tmp.read_text())
         assert saved["default_agent"] == "atlas"
         assert saved["agents"]["atlas"]["kiro_agent"] == "atlas"
         assert saved["agents"]["atlas"]["memory_store"] == "default"
-        assert saved["agents"]["atlas"]["source"] == "package"
+        # Owner-chosen, so no sync/startup prune treats it as a generated row.
+        assert saved["agents"]["atlas"]["source"] == "kirocrew"
         # The existing alias is untouched.
         assert saved["agents"]["default"]["kiro_agent"] == "kirocrew"
+        assert [(e["operation"], e["outcome"], e["resources"]) for e in events] == [
+            ("agent.create", "success", "atlas")
+        ]
+
+    @pytest.mark.asyncio
+    async def test_deleted_template_is_refused_inside_locked_write(self, tmp_path: Path) -> None:
+        """A spec removed after discovery cannot become a durable default."""
+        tmp = tmp_path / "config.json"
+        tmp.write_text(json.dumps(_seed_config()), encoding="utf-8")
+        found = [self._installed(source="package")]
+        lock_held: list[bool] = []
+        scans = 0
+
+        class _SpecLock:
+            def __enter__(self):
+                lock_held.append(True)
+
+            def __exit__(self, *_exc):
+                lock_held.pop()
+
+        def _scan(*_args, **_kwargs):
+            nonlocal scans
+            scans += 1
+            if scans == 1:
+                return found
+            assert lock_held, "the enrollment revalidation ran outside agents_spec_lock"
+            return []
+
+        with (
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp),
+            unittest.mock.patch("kiro_crew.dashboard.handlers.config_path", return_value=tmp),
+            unittest.mock.patch("kiro_crew.dashboard.handlers.agents.list_agents", _scan),
+            unittest.mock.patch(
+                "kiro_crew.dashboard.handlers.agents.agents_spec_lock",
+                side_effect=lambda _root: _SpecLock(),
+            ),
+        ):
+            async with TestClient(TestServer(self._default_agent_app())) as client:
+                resp = await client.put("/api/config/default-agent", json={"agent": "atlas"})
+                assert resp.status == 409, await resp.text()
+                assert (await resp.json())["code"] == "stale_binding"
+
+        saved = json.loads(tmp.read_text())
+        assert scans == 2
+        assert saved["default_agent"] == "default"
+        assert "atlas" not in saved["agents"]
+
+    @pytest.mark.asyncio
+    async def test_app_registered_template_is_not_enrolled(self, tmp_path: Path) -> None:
+        """An app's agent (``<app>--<agent>.json``, written by apps.bridges) is
+        refused: disabling the app unlinks that file, and an enrolled row is
+        exempt from every prune, so the default would then open no chat. Package
+        (AIM) enrollment remains allowed; this test makes no claim about what
+        uninstall does to package files."""
+        tmp = tmp_path / "config.json"
+        tmp.write_text(json.dumps(_seed_config()), encoding="utf-8")
+        found = [self._installed(filename="mochi--atlas.json", source="package")]
+        events: list[dict] = []
+
+        class _Sel:
+            def log_api_access(self, **kw):
+                events.append(kw)
+
+        with (
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp),
+            unittest.mock.patch("kiro_crew.dashboard.handlers.config_path", return_value=tmp),
+            unittest.mock.patch(
+                "kiro_crew.dashboard.handlers.agents.list_agents", return_value=found
+            ),
+            unittest.mock.patch("kiro_crew.dashboard.handlers.agents._sel", lambda: _Sel()),
+        ):
+            async with TestClient(TestServer(self._default_agent_app())) as client:
+                resp = await client.put("/api/config/default-agent", json={"agent": "atlas"})
+                assert resp.status == 409, await resp.text()
+                assert (await resp.json())["code"] == "app_registered_template"
+        saved = json.loads(tmp.read_text())
+        assert saved["default_agent"] == "default"
+        assert set(saved["agents"]) == {"default"}
+        assert events == []
+
+    @pytest.mark.asyncio
+    async def test_alias_write_is_not_audited_as_a_registration(self, tmp_path: Path) -> None:
+        """Setting the default to an existing alias registers nothing, so no
+        ``agent.create`` record is written."""
+        tmp = tmp_path / "config.json"
+        tmp.write_text(json.dumps(_seed_config()), encoding="utf-8")
+        events: list[dict] = []
+
+        class _Sel:
+            def log_api_access(self, **kw):
+                events.append(kw)
+
+        with (
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp),
+            unittest.mock.patch("kiro_crew.dashboard.handlers.config_path", return_value=tmp),
+            unittest.mock.patch("kiro_crew.dashboard.handlers.agents._sel", lambda: _Sel()),
+        ):
+            async with TestClient(TestServer(self._default_agent_app())) as client:
+                resp = await client.put("/api/config/default-agent", json={"agent": "default"})
+                assert resp.status == 200
+        assert events == []
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        "info_kw",
-        [{"scope": "project"}, {"private_to": "someone"}, {"name": "other"}],
-        ids=["project-scope", "private-copy", "not-installed"],
+        ("info_kw", "name"),
+        [
+            ({"scope": "project"}, "atlas"),
+            ({"name": "other"}, "atlas"),
+            (
+                {
+                    "name": "kirocrew-lite",
+                    "filename": "kirocrew-lite.json",
+                    "kirocrew_owned": True,
+                    "source": "kirocrew",
+                },
+                "kirocrew-lite",
+            ),
+        ],
+        ids=["project-scope", "not-installed", "background-only"],
     )
-    async def test_non_global_template_is_still_rejected(self, info_kw, tmp_path: Path) -> None:
-        """The default is global, so a project agent, a crew's private copy and
-        a name nothing installs stay refused, and nothing is written."""
+    async def test_non_global_template_is_still_rejected(
+        self, info_kw, name, tmp_path: Path
+    ) -> None:
+        """The default is global, so a project agent and a name nothing installs
+        stay refused; so does the background-only managed spec the picker
+        withholds. Nothing is written."""
         tmp = tmp_path / "config.json"
         tmp.write_text(json.dumps(_seed_config()), encoding="utf-8")
         found = [self._installed(**info_kw)]
@@ -802,12 +935,290 @@ class TestDefaultAgentGuard:
             ),
         ):
             async with TestClient(TestServer(self._default_agent_app())) as client:
-                resp = await client.put("/api/config/default-agent", json={"agent": "atlas"})
+                resp = await client.put("/api/config/default-agent", json={"agent": name})
                 assert resp.status == 400
                 assert (await resp.json())["code"] == "default_agent_not_alias"
         saved = json.loads(tmp.read_text())
         assert saved["default_agent"] == "default"
+        assert name not in saved["agents"]
+
+    @pytest.mark.asyncio
+    async def test_private_copy_is_refused_on_the_strict_lineage_read(self, tmp_path: Path) -> None:
+        """One crew's private copy cannot become the global default. The
+        decision is the strict sidecar read inside the locked write, never the
+        scan's display field: a roster that reports the copy as shared (the
+        lenient read of a degraded sidecar) still cannot enroll it."""
+        from kiro_crew import agent_state
+
+        tmp = tmp_path / "config.json"
+        seed = _seed_config()
+        seed["agents"]["owner-crew"] = {"kiro_agent": "owner-copy"}
+        tmp.write_text(json.dumps(seed), encoding="utf-8")
+        agent_state.set_fork_info("atlas", forked_from="kirocrew", private_to="owner-crew")
+        # The scan says shared; the sidecar says private.
+        found = [self._installed(private_to="")]
+        with (
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp),
+            unittest.mock.patch("kiro_crew.dashboard.handlers.config_path", return_value=tmp),
+            unittest.mock.patch(
+                "kiro_crew.dashboard.handlers.agents.list_agents", return_value=found
+            ),
+        ):
+            async with TestClient(TestServer(self._default_agent_app())) as client:
+                resp = await client.put("/api/config/default-agent", json={"agent": "atlas"})
+                assert resp.status == 409
+                assert (await resp.json())["code"] == "foreign_private_copy"
+        saved = json.loads(tmp.read_text())
+        assert saved["default_agent"] == "default"
         assert "atlas" not in saved["agents"]
+
+    @pytest.mark.asyncio
+    async def test_unverifiable_lineage_refuses_the_enrollment(self, tmp_path: Path) -> None:
+        """An unreadable sidecar fails closed: the scan cannot tell a shared
+        template from a private copy, so nothing is enrolled and the default is
+        unchanged, with the 409 every binding writer answers."""
+        from kiro_crew import agent_state
+
+        tmp = tmp_path / "config.json"
+        tmp.write_text(json.dumps(_seed_config()), encoding="utf-8")
+        found = [self._installed()]
+        with (
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp),
+            unittest.mock.patch("kiro_crew.dashboard.handlers.config_path", return_value=tmp),
+            unittest.mock.patch(
+                "kiro_crew.dashboard.handlers.agents.list_agents", return_value=found
+            ),
+            unittest.mock.patch.object(
+                agent_state, "get_fork_info", side_effect=OSError("sidecar unreadable")
+            ),
+        ):
+            async with TestClient(TestServer(self._default_agent_app())) as client:
+                resp = await client.put("/api/config/default-agent", json={"agent": "atlas"})
+                assert resp.status == 409
+                assert (await resp.json())["code"] == "lineage_unverifiable"
+        saved = json.loads(tmp.read_text())
+        assert saved["default_agent"] == "default"
+        assert "atlas" not in saved["agents"]
+
+    @pytest.mark.asyncio
+    async def test_template_an_alias_already_runs_makes_that_alias_the_default(
+        self, tmp_path: Path
+    ) -> None:
+        """Choosing a template some alias already binds makes THAT alias the
+        default and writes no second row: ``kirocrew`` is bound by ``default`` on
+        every install, so its picker row must not split the agent in two."""
+        tmp = tmp_path / "config.json"
+        seed = _seed_config()
+        seed["agents"]["other"] = {"kiro_agent": "oncall"}
+        seed["default_agent"] = "other"
+        tmp.write_text(json.dumps(seed), encoding="utf-8")
+        found = [
+            self._installed(
+                name="kirocrew", filename="kirocrew.json", kirocrew_owned=True, source="kirocrew"
+            )
+        ]
+        with (
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp),
+            unittest.mock.patch("kiro_crew.dashboard.handlers.config_path", return_value=tmp),
+            unittest.mock.patch(
+                "kiro_crew.dashboard.handlers.agents.list_agents", return_value=found
+            ),
+        ):
+            async with TestClient(TestServer(self._default_agent_app())) as client:
+                resp = await client.put("/api/config/default-agent", json={"agent": "kirocrew"})
+                assert resp.status == 200, await resp.text()
+                assert (await resp.json())["default_agent"] == "default"
+        saved = json.loads(tmp.read_text())
+        assert saved["default_agent"] == "default"
+        assert set(saved["agents"]) == {"default", "other"}
+
+    @pytest.mark.asyncio
+    async def test_template_run_by_several_aliases_is_ambiguous(self, tmp_path: Path) -> None:
+        """Two aliases bind the template and neither is the default: each has
+        its own memory store, so the request names no winner. 409, no write. The
+        current default binding it is the one exception (it already holds)."""
+        tmp = tmp_path / "config.json"
+        seed = _seed_config()
+        seed["agents"]["crew-a"] = {"kiro_agent": "atlas"}
+        seed["agents"]["crew-b"] = {"kiro_agent": "atlas"}
+        tmp.write_text(json.dumps(seed), encoding="utf-8")
+        with (
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp),
+            unittest.mock.patch("kiro_crew.dashboard.handlers.config_path", return_value=tmp),
+            unittest.mock.patch(
+                "kiro_crew.dashboard.handlers.agents.list_agents", return_value=[]
+            ) as scan,
+        ):
+            async with TestClient(TestServer(self._default_agent_app())) as client:
+                resp = await client.put("/api/config/default-agent", json={"agent": "atlas"})
+                assert resp.status == 409
+                data = await resp.json()
+                assert data["code"] == "default_agent_ambiguous"
+                assert data["agents"] == ["crew-a", "crew-b"]
+                assert json.loads(tmp.read_text())["default_agent"] == "default"
+                # Decided from the config alone: no installed-agent scan ran.
+                scan.assert_not_called()
+
+                # Once one of them holds the default, the template row is a no-op
+                # that keeps it.
+                saved = json.loads(tmp.read_text())
+                saved["default_agent"] = "crew-b"
+                tmp.write_text(json.dumps(saved), encoding="utf-8")
+                resp = await client.put("/api/config/default-agent", json={"agent": "atlas"})
+                assert resp.status == 200
+                assert (await resp.json())["default_agent"] == "crew-b"
+        saved = json.loads(tmp.read_text())
+        assert saved["default_agent"] == "crew-b"
+        assert "atlas" not in saved["agents"]
+
+    def test_file_name_binding_counts_as_running_the_declared_template(self) -> None:
+        """A crewmate whose ``kiro_agent`` recorded the FILE name dispatches the
+        declared agent, so it binds that template for this choice too."""
+        from kiro_crew.dashboard.handlers import agents as handlers
+
+        with unittest.mock.patch.object(
+            handlers,
+            "dispatch_kiro_agent",
+            side_effect=lambda bound: {"KiroPkg-captain": "captain"}.get(bound, bound),
+        ):
+            assert (
+                handlers._alias_binding_template(
+                    {"default": "kirocrew", "pkg": "KiroPkg-captain"}, "default", "captain"
+                )
+                == "pkg"
+            )
+            assert (
+                handlers._alias_binding_template({"default": "kirocrew"}, "default", "captain")
+                is None
+            )
+
+    @pytest.mark.asyncio
+    async def test_concurrent_binding_is_caught_inside_the_lock(self, tmp_path: Path) -> None:
+        """A crew bound to the template between the pre-lock read and the
+        locked write makes the enrollment a second row for it: the in-lock
+        re-check refuses with the rebind's 409 and writes nothing."""
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        tmp = tmp_path / "config.json"
+        tmp.write_text(json.dumps(_seed_config()), encoding="utf-8")
+        real_load = KiroCrewConfig.load
+
+        def load_before_concurrent_create():
+            loaded = real_load()
+            concurrent = json.loads(tmp.read_text(encoding="utf-8"))
+            concurrent["agents"]["crew-x"] = {"kiro_agent": "atlas"}
+            tmp.write_text(json.dumps(concurrent), encoding="utf-8")
+            return loaded
+
+        found = [self._installed()]
+        with (
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp),
+            unittest.mock.patch("kiro_crew.dashboard.handlers.config_path", return_value=tmp),
+            unittest.mock.patch(
+                "kiro_crew.dashboard.handlers.agents.list_agents", return_value=found
+            ),
+            unittest.mock.patch.object(
+                KiroCrewConfig, "load", side_effect=load_before_concurrent_create
+            ),
+        ):
+            async with TestClient(TestServer(self._default_agent_app())) as client:
+                resp = await client.put("/api/config/default-agent", json={"agent": "atlas"})
+                assert resp.status == 409
+                assert (await resp.json())["code"] == "stale_binding"
+        saved = json.loads(tmp.read_text())
+        assert saved["default_agent"] == "default"
+        assert "atlas" not in saved["agents"]
+
+    async def _put_after_concurrent_rows(
+        self, tmp_path: Path, rows: dict, *, agent: str = "atlas", seed: dict | None = None
+    ) -> tuple[int, dict, dict]:
+        """PUT *agent* as the default with *rows* added to ``agents`` between
+        the pre-lock load and the locked write; returns status, body, saved."""
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.dashboard.handlers import agents as handlers
+
+        tmp = tmp_path / "config.json"
+        tmp.write_text(json.dumps(seed or _seed_config()), encoding="utf-8")
+        real_load = KiroCrewConfig.load
+
+        def load_before_concurrent_create():
+            loaded = real_load()
+            concurrent = json.loads(tmp.read_text(encoding="utf-8"))
+            concurrent["agents"].update(rows)
+            tmp.write_text(json.dumps(concurrent), encoding="utf-8")
+            return loaded
+
+        with (
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp),
+            unittest.mock.patch("kiro_crew.dashboard.handlers.config_path", return_value=tmp),
+            unittest.mock.patch(
+                "kiro_crew.dashboard.handlers.agents.list_agents",
+                return_value=[self._installed()],
+            ),
+            unittest.mock.patch.object(
+                KiroCrewConfig, "load", side_effect=load_before_concurrent_create
+            ),
+            unittest.mock.patch.object(
+                handlers,
+                "dispatch_kiro_agent",
+                side_effect=lambda bound: {"KiroPkg-atlas": "atlas"}.get(bound, bound),
+            ),
+        ):
+            async with TestClient(TestServer(self._default_agent_app())) as client:
+                resp = await client.put("/api/config/default-agent", json={"agent": agent})
+                return resp.status, await resp.json(), json.loads(tmp.read_text())
+
+    @pytest.mark.asyncio
+    async def test_concurrent_file_name_binding_is_caught_inside_the_lock(
+        self, tmp_path: Path
+    ) -> None:
+        """The in-lock re-check matches as the pre-lock read matched: a crew
+        bound in the window to the template's FILE name runs it too."""
+        status, body, saved = await self._put_after_concurrent_rows(
+            tmp_path, {"crew-x": {"kiro_agent": "KiroPkg-atlas"}}
+        )
+        assert (status, body["code"]) == (409, "stale_binding")
+        assert saved["default_agent"] == "default"
+        assert "atlas" not in saved["agents"]
+
+    @pytest.mark.asyncio
+    async def test_same_name_alias_running_another_template_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        """An alias created in the window under the template's own name but
+        bound to ANOTHER template is not the enrollment the owner asked for:
+        the default is not set to it."""
+        status, body, saved = await self._put_after_concurrent_rows(
+            tmp_path, {"atlas": {"kiro_agent": "other"}}
+        )
+        assert (status, body["code"]) == (409, "stale_binding")
+        assert saved["default_agent"] == "default"
+        assert saved["agents"]["atlas"] == {"kiro_agent": "other"}
+
+    @pytest.mark.asyncio
+    async def test_same_name_alias_running_the_template_becomes_the_default(
+        self, tmp_path: Path
+    ) -> None:
+        """The same alias created in the window bound to the template IS what
+        the enrollment would have written, so it becomes the default as is."""
+        status, body, saved = await self._put_after_concurrent_rows(
+            tmp_path, {"atlas": {"kiro_agent": "KiroPkg-atlas"}}
+        )
+        assert (status, body["default_agent"]) == (200, "atlas")
+        assert saved["default_agent"] == "atlas"
+        assert saved["agents"]["atlas"] == {"kiro_agent": "KiroPkg-atlas"}
+
+    @pytest.mark.asyncio
+    async def test_chosen_alias_rebound_in_the_window_is_refused(self, tmp_path: Path) -> None:
+        """The alias the pre-lock read chose because it ran the template may
+        be rebound before the write; the lock re-checks that it still does."""
+        seed = _seed_config()
+        seed["agents"]["pkg"] = {"kiro_agent": "atlas"}
+        status, body, saved = await self._put_after_concurrent_rows(
+            tmp_path, {"pkg": {"kiro_agent": "other"}}, seed=seed
+        )
+        assert (status, body["code"]) == (409, "stale_binding")
+        assert saved["default_agent"] == "default"
 
 
 # ---------------------------------------------------------------------------

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import functools
 import logging
 from pathlib import Path
 from typing import Any
@@ -13,7 +12,11 @@ from aiohttp import web
 from kiro_crew import agent_state
 from kiro_crew.agent_discovery import AgentInfo, list_agents
 from kiro_crew.agent_files import AGENT_FILENAME, GUEST_AGENT_FILENAME, LITE_AGENT_FILENAME
-from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.config.loader import (
+    KiroCrewConfig,
+    dispatch_kiro_agent,
+    refresh_materialized_agents,
+)
 from kiro_crew.dashboard.handlers._shared import _read_session_key, requesting_slot_project
 from kiro_crew.dashboard.handlers.agents import (
     _agent_roster_row,
@@ -123,10 +126,21 @@ async def api_agent_catalog(request: web.Request) -> web.Response:
         project_dir = requesting_slot_project(state, session_key)
 
     try:
-        config = await asyncio.to_thread(KiroCrewConfig.load)
+        # The picker's fetch is the one moment, after boot, that an agent removed
+        # OUTSIDE the gateway (a package uninstall, a hand-deleted file) is
+        # certain to be noticed: it already rescans the directory off the loop
+        # for the template rows, so the snapshot refresh -- whose landed scan
+        # resets a default agent whose template is gone -- rides the same
+        # executor call, and the config is read AFTER it so the response names
+        # the default the user will actually get.
+        def _refreshed_templates() -> list[AgentInfo]:
+            refresh_materialized_agents()
+            return _templates(project_dir)
+
         templates = await asyncio.get_running_loop().run_in_executor(
-            discovery_executor(), functools.partial(_templates, project_dir)
+            discovery_executor(), _refreshed_templates
         )
+        config = await asyncio.to_thread(KiroCrewConfig.load)
     except Exception:
         logger.warning("Agent execution catalog could not be loaded", exc_info=True)
         return web.json_response(
@@ -143,7 +157,9 @@ async def api_agent_catalog(request: web.Request) -> web.Response:
         row = _agent_roster_row(name, "global", member, redact=redact)
         row["selection_kind"] = "member"
         if not redact:
-            engine_identity = member.kiro_agent or name
+            # The companion keys its policy on the agent that RUNS, which for a
+            # row that recorded a file name is the agent that file declares.
+            engine_identity = dispatch_kiro_agent(member.kiro_agent) or name
             policy = _agent_runtime_policy(name, engine_identity)
             if policy is not None:
                 row["runtime_policy"] = policy
