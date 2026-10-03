@@ -901,7 +901,6 @@ the endpoint; it does not import provider code.
   "setup": {
     "onInstall": "cd ui && npm install && npm run build",
     "onUninstall": "echo cleanup done",
-    "onUpdate": "cd ui && npm install && npm run build",
     "onEnable": "echo enabled",
     "onDisable": "echo disabled",
     "configSchema": {}
@@ -911,9 +910,9 @@ the endpoint; it does not import provider code.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `setup.onInstall` | string | `""` | Shell command run only during a registry install, after clone/build and before the installed copy is created |
+| `setup.onInstall` | string | `""` | Shell command run during a registry install **and again on every registry update** (an update re-enters the install transaction), after clone/build and before the installed copy is created. Not run for a local-path install. Make it idempotent |
 | `setup.onUninstall` | string | `""` | Shell command run before uninstall |
-| `setup.onUpdate` | string | `""` | Preserved in the manifest but currently not executed; do not rely on it |
+| `setup.onUpdate` | string | `""` | Declared and preserved in the manifest but **not executed** — no code path dispatches it. Put update-time work in an idempotent `onInstall`, which a registry update re-runs |
 | `setup.onEnable` | string | `""` | Shell command run when app is enabled |
 | `setup.onDisable` | string | `""` | Shell command run when app is disabled |
 | `setup.onEnableTimeout` | number | `30` | Timeout in seconds for `onEnable` script |

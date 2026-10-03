@@ -849,8 +849,15 @@ class Permissions:
 class SetupConfig:
     """Installation and setup configuration for an app."""
 
-    onInstall: str = ""  # shell command run after first install  # noqa: N815
-    onUpdate: str = ""  # shell command run after update (new code in place)  # noqa: N815
+    # `onInstall` runs during a registry install AND again on every registry update:
+    # `handle_update_app` re-enters `install_from_registry`, which runs the script
+    # before the installed copy is created. A local-path install does not run it.
+    # Keep it idempotent.
+    onInstall: str = ""  # shell command, registry install + every registry update  # noqa: N815
+    # `onUpdate` is declared and round-trips but NOTHING dispatches it (see the
+    # declared-not-wired paragraph in docs/system-specs/modules/app-kit-platform.md
+    # and test/test_setup_hooks_contract.py). Put update-time work in `onInstall`.
+    onUpdate: str = ""  # declared, not executed: no code path dispatches it  # noqa: N815
     onUninstall: str = ""  # shell command run before removing app files  # noqa: N815
     onEnable: str = ""  # shell command run when app is enabled  # noqa: N815
     onDisable: str = ""  # shell command run when app is disabled  # noqa: N815
