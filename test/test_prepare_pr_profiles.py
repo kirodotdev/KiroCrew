@@ -444,6 +444,12 @@ def test_ci_blocking_scans_are_covered_by_the_floor():
         # Resolves the diff base inside Actions (it lives under .github/scripts).
         # The floor resolves the same base with `git merge-base` inline.
         "scripts/resolve-i18n-base.sh",
+        # Polls the GitHub API for the Fast Gate run's verdict on the commit
+        # under test (it lives under .github/scripts). It produces no verdict of
+        # its own -- it reads another workflow's result over the network -- so it
+        # is a CI orchestration barrier, not a pre-push static gate; the floor
+        # cannot poll Actions for a run that only exists once CI starts.
+        "scripts/await-fast-gate.sh",
         # Installs the built Linux packages in Ubuntu and Amazon Linux containers.
         # It needs docker AND a completed electron-builder run, so it cannot be a
         # pre-push gate: the floor would then demand a ~10-minute desktop build

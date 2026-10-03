@@ -132,8 +132,44 @@ def fast_gate() -> dict:
 @pytest.fixture(scope="module")
 def barrier_step(ci: dict) -> dict:
     steps = ci["jobs"]["await-fast-gate"]["steps"]
-    assert len(steps) == 1, "the barrier is one step; update this contract if it grows"
-    return steps[0]
+    # The job checks out .github/scripts (so the poll script is on disk) and
+    # then runs it: a checkout step followed by the one run step. Pin that
+    # shape so neither a dropped checkout nor a smuggled extra run step slips
+    # through.
+    assert len(steps) == 2, "the barrier is checkout + one run step; update if it grows"
+    checkout, run_step = steps
+    assert checkout.get("uses", "").startswith(
+        "actions/checkout@"
+    ), "the barrier must check out the script before running it"
+    assert (
+        checkout.get("with", {}).get("sparse-checkout") == ".github/scripts"
+    ), "the checkout should fetch only .github/scripts"
+    # The checkout uses the default ref (the merge ref on a pull_request) so
+    # the script this job adds is present. A base-pinned ref would predate the
+    # script and fail the step exit 127, and it would not make the barrier
+    # fork-safe anyway: on a pull_request the fork supplies this step's run:/env:
+    # too, so the real control against a forged barrier is approval + CODEOWNERS
+    # (fork-workflow-guard.yml), not a checkout pin.
+    ref = checkout.get("with", {}).get("ref", "")
+    assert ref == "", (
+        "the barrier checkout must use the default merge ref so the newly added "
+        "script is present; a base pin predates it and fails exit 127"
+    )
+    assert "run" in run_step, "the second step runs the poll script"
+    return run_step
+
+
+# The poll body lives in a script so its whole control flow runs against a
+# stubbed gh and a fake clock (test_await_fast_gate_poll.py). The step only
+# NAMES the script, so the properties below are read out of the script file;
+# the step itself owns the identity env and the one-line invocation, asserted
+# below.
+_SCRIPT = _REPO_ROOT / ".github" / "scripts" / "await-fast-gate.sh"
+
+
+@pytest.fixture(scope="module")
+def barrier_script() -> str:
+    return _SCRIPT.read_text(encoding="utf-8")
 
 
 def _assert_push_to_main_reaches_exactly_the_macos_boot_leg(ci: dict) -> None:
@@ -363,10 +399,16 @@ class TestFastGatePythonRuntime:
 
 
 class TestTheBarrierIdentifiesTheRightRun:
+    def test_the_step_invokes_the_extracted_script(self, barrier_step: dict) -> None:
+        # The poll is one script, called with the identity env and nothing else.
+        # A step that grew an inline body again would defeat the extraction and
+        # leave test_await_fast_gate_poll.py running a stale copy.
+        assert barrier_step["run"].strip() == "bash .github/scripts/await-fast-gate.sh"
+
     def test_the_lookup_binds_branch_and_head_repository_not_just_the_sha(
-        self, barrier_step: dict
+        self, barrier_step: dict, barrier_script: str
     ) -> None:
-        env, script = barrier_step["env"], barrier_step["run"]
+        env, script = barrier_step["env"], barrier_script
 
         # The identity triple has to be available to the step at all...
         for var in ("SHA", "EVENT", "BRANCH", "HEAD_REPO"):
@@ -394,11 +436,11 @@ class TestTheBarrierIdentifiesTheRightRun:
         assert "github.event.pull_request.head.sha" in sha
         assert "github.sha" in sha, "the push path still needs a sha"
 
-    def test_the_run_is_selected_after_filtering_never_before(self, barrier_step: dict) -> None:
-        # Scoped to the jq program, not the whole step: the prose above it names
+    def test_the_run_is_selected_after_filtering_never_before(self, barrier_script: str) -> None:
+        # Scoped to the jq program, not the whole script: the prose above it names
         # max_by(.id) while explaining why the order matters, and searching the raw
         # script would match that comment and "prove" the ordering from a sentence.
-        selector = TestTheSelectorBehavesOnRealPayloadShapes._selector(barrier_step["run"])
+        selector = TestTheSelectorBehavesOnRealPayloadShapes._selector(barrier_script)
         select_at = selector.find(".head_repository.full_name == $repo")
         collapse_at = selector.find("max_by(.id)")
         assert select_at != -1, "the selector lost its head-repository match"
@@ -410,8 +452,8 @@ class TestTheBarrierIdentifiesTheRightRun:
 
 
 class TestTheBarrierFailsClosed:
-    def test_all_three_unreadable_outcomes_exit_non_zero(self, barrier_step: dict) -> None:
-        script = barrier_step["run"]
+    def test_all_three_unreadable_outcomes_exit_non_zero(self, barrier_script: str) -> None:
+        script = barrier_script
         # A run that never appears, one that never completes, and one that completed
         # non-success are three distinct paths, and each must be an error exit.
         assert (
@@ -424,8 +466,8 @@ class TestTheBarrierFailsClosed:
         )
         assert "exit 0" in script, "the success path must still release the matrix"
 
-    def test_the_only_success_path_is_a_successful_conclusion(self, barrier_step: dict) -> None:
-        script = barrier_step["run"]
+    def test_the_only_success_path_is_a_successful_conclusion(self, barrier_script: str) -> None:
+        script = barrier_script
         head, _, tail = script.partition("success)")
         assert tail, "the conclusion case statement lost its success branch"
         # `exit 0` may appear only under that branch; anything earlier would release
@@ -433,13 +475,15 @@ class TestTheBarrierFailsClosed:
         assert "exit 0" not in head, "the barrier can exit 0 before reading a conclusion"
 
     def test_the_budgets_are_bounded_and_the_job_has_a_timeout(
-        self, ci: dict, barrier_step: dict
+        self, ci: dict, barrier_script: str
     ) -> None:
-        script = barrier_step["run"]
+        script = barrier_script
         assert "APPEAR_BUDGET=" in script and "TOTAL_BUDGET=" in script
-        # The job cap has to outlast the poll budget, or the step is killed before it
-        # can report its own fail-closed verdict and the job reports a timeout instead.
-        total = int(script.split("TOTAL_BUDGET=", 1)[1].split("\n", 1)[0].strip())
+        # The default is what a real runner uses (the seam form is
+        # `${TOTAL_BUDGET:-720}`), so read the default, not an override. The job cap
+        # has to outlast the poll budget, or the step is killed before it can report
+        # its own fail-closed verdict and the job reports a timeout instead.
+        total = int(script.split("TOTAL_BUDGET:-", 1)[1].split("}", 1)[0].strip())
         cap_seconds = int(ci["jobs"]["await-fast-gate"]["timeout-minutes"]) * 60
         assert cap_seconds > total, (
             f"timeout-minutes ({cap_seconds}s) must exceed TOTAL_BUDGET ({total}s) so "
@@ -601,39 +645,39 @@ class TestTheSelectorBehavesOnRealPayloadShapes:
         chosen = json.loads(proc.stdout.strip())
         return chosen["id"] if isinstance(chosen, dict) else None
 
-    def test_a_colliding_run_on_another_branch_is_refused(self, barrier_step: dict) -> None:
+    def test_a_colliding_run_on_another_branch_is_refused(self, barrier_script: str) -> None:
         payload = {"workflow_runs": [self._run(900, "other/pr", self._REPO)]}
-        assert self._select(barrier_step["run"], payload) is None
+        assert self._select(barrier_script, payload) is None
 
-    def test_a_fork_reusing_the_branch_name_is_refused(self, barrier_step: dict) -> None:
+    def test_a_fork_reusing_the_branch_name_is_refused(self, barrier_script: str) -> None:
         payload = {"workflow_runs": [self._run(901, self._BRANCH, "attacker/KiroCrew")]}
-        assert self._select(barrier_step["run"], payload) is None
+        assert self._select(barrier_script, payload) is None
 
-    def test_a_newer_colliding_run_does_not_outrank_my_older_one(self, barrier_step: dict) -> None:
+    def test_a_newer_colliding_run_does_not_outrank_my_older_one(self, barrier_script: str) -> None:
         payload = {
             "workflow_runs": [
                 self._run(904, self._BRANCH, self._REPO),
                 self._run(999, "other/pr", self._REPO),
             ]
         }
-        assert self._select(barrier_step["run"], payload) == 904
+        assert self._select(barrier_script, payload) == 904
 
-    def test_my_own_rerun_collapses_to_the_newest(self, barrier_step: dict) -> None:
+    def test_my_own_rerun_collapses_to_the_newest(self, barrier_script: str) -> None:
         payload = {
             "workflow_runs": [
                 self._run(905, self._BRANCH, self._REPO),
                 self._run(906, self._BRANCH, self._REPO),
             ]
         }
-        assert self._select(barrier_step["run"], payload) == 906
+        assert self._select(barrier_script, payload) == 906
 
     @pytest.mark.parametrize("payload", [{"workflow_runs": []}, {}])
     def test_an_empty_or_absent_list_yields_nothing_rather_than_erroring(
-        self, barrier_step: dict, payload: dict
+        self, barrier_script: str, payload: dict
     ) -> None:
         # The caller treats null as "keep waiting", so a jq error here would turn a
         # transient empty page into a hard failure on the first poll.
-        assert self._select(barrier_step["run"], payload) is None
+        assert self._select(barrier_script, payload) is None
 
 
 class TestTheConclusionArmsBehaveOnRealConclusions:
@@ -692,9 +736,9 @@ class TestTheConclusionArmsBehaveOnRealConclusions:
         return line[0][len(self._STATUS) :]
 
     def test_a_pending_fork_approval_keeps_polling_rather_than_failing(
-        self, barrier_step: dict, tmp_path: Path
+        self, barrier_script: str, tmp_path: Path
     ) -> None:
-        proc = self._exec(barrier_step["run"], "action_required", tmp_path)
+        proc = self._exec(barrier_script, "action_required", tmp_path)
         assert proc.returncode == 0, proc.stderr
         assert self._POLLING in proc.stdout, (
             "action_required left the case with a non-zero exit instead of falling "
@@ -704,14 +748,14 @@ class TestTheConclusionArmsBehaveOnRealConclusions:
         assert "::error::" not in proc.stdout
 
     def test_a_pending_fork_approval_names_the_state_it_waits_on(
-        self, barrier_step: dict, tmp_path: Path
+        self, barrier_script: str, tmp_path: Path
     ) -> None:
         # The fail-closed message below the case interpolates $status, whose raw API
         # value here is "completed": left alone it reports a completed run as still
         # waiting and names no pending approval for the reader to act on. Asserted on
         # the value the shell actually leaves behind, not on the arm's source text,
         # so re-assigning the same "completed" back cannot satisfy it.
-        status = self._status_after(barrier_step["run"], "action_required", tmp_path)
+        status = self._status_after(barrier_script, "action_required", tmp_path)
         assert status != "completed", (
             "the action_required arm no longer renames $status, so the budget-spent "
             "error reads \"still 'completed'\" about a run nobody has judged"
@@ -721,8 +765,8 @@ class TestTheConclusionArmsBehaveOnRealConclusions:
             f"thing the reader has to act on: {status!r}"
         )
 
-    def test_success_still_releases_the_matrix(self, barrier_step: dict, tmp_path: Path) -> None:
-        proc = self._exec(barrier_step["run"], "success", tmp_path)
+    def test_success_still_releases_the_matrix(self, barrier_script: str, tmp_path: Path) -> None:
+        proc = self._exec(barrier_script, "success", tmp_path)
         assert proc.returncode == 0, proc.stderr
         assert self._POLLING not in proc.stdout, "success no longer leaves the loop"
 
@@ -731,9 +775,9 @@ class TestTheConclusionArmsBehaveOnRealConclusions:
         ["failure", "cancelled", "timed_out", "startup_failure", "neutral", "skipped"],
     )
     def test_every_other_conclusion_is_still_terminal(
-        self, barrier_step: dict, conclusion: str, tmp_path: Path
+        self, barrier_script: str, conclusion: str, tmp_path: Path
     ) -> None:
-        proc = self._exec(barrier_step["run"], conclusion, tmp_path)
+        proc = self._exec(barrier_script, conclusion, tmp_path)
         assert proc.returncode == 1, f"{conclusion} stopped failing closed"
         assert "::error::" in proc.stdout
         assert self._POLLING not in proc.stdout

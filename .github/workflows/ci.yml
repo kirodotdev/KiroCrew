@@ -367,6 +367,29 @@ jobs:
       actions: read
       contents: read
     steps:
+      # The poll body lives in a script on disk, so the file has to be present
+      # before the step can run it. Only .github/scripts is needed, so the
+      # checkout is sparse and shallow, and it carries no credentials -- the gh
+      # read authenticates with GH_TOKEN below, not the checkout token.
+      #
+      # ref is pinned to the TRUSTED script, never the untrusted one. On a
+      # pull_request the default checkout is the merge ref, which contains the
+      # PR head's -- i.e. a fork's -- copy of this script; a fork could edit it
+      # to exit success unconditionally and release the heavy matrix on a Fast
+      # Gate that never confirmed. The checkout uses the default ref (the
+      # merge ref on a pull_request) so the script this job just added is
+      # present -- a base-pinned ref would predate the script and fail the step
+      # exit 127. The barrier is not the control against a fork editing the
+      # script: on a pull_request the fork also supplies this step's run:/env:,
+      # so a pin buys nothing; fork-workflow-guard.yml (approval + CODEOWNERS)
+      # is the real control, and the commit being POLLED stays head-derived via
+      # the SHA/BRANCH env below.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+          sparse-checkout-cone-mode: false
+
       - name: Wait for the Fast Gate verdict on this commit
         env:
           GH_TOKEN: ${{ github.token }}
@@ -387,87 +410,11 @@ jobs:
           # re-verified on the run that is selected.
           BRANCH: ${{ github.event_name == 'pull_request' && github.head_ref || github.ref_name }}
           HEAD_REPO: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name || github.repository }}
-        run: |
-          set -euo pipefail
-
-          # Both workflows start from the same webhook, so Fast Gate's run may not
-          # be visible for the first few seconds. APPEAR_BUDGET covers that race;
-          # after it, a missing run is a real misconfiguration and fails.
-          APPEAR_BUDGET=180
-          TOTAL_BUDGET=720
-          started="$(date +%s)"
-          seen=false
-
-          while :; do
-            elapsed=$(( $(date +%s) - started ))
-
-            runs="$(gh api --method GET \
-              "repos/$REPO/actions/workflows/fast-gate.yml/runs" \
-              -f "head_sha=$SHA" -f "event=$EVENT" -f "branch=$BRANCH" \
-              -f per_page=100 2>/dev/null || true)"
-
-            # `branch=` is passed to the API as a narrowing hint, but the match is
-            # re-asserted here: a filter the server silently ignores would hand
-            # back another PR's run, and selecting max_by(.id) out of an unfiltered
-            # list would pick the NEWEST such run -- the most likely one to be a
-            # different PR's. Filter first, collapse second.
-            latest="$(printf '%s' "$runs" \
-              | jq -c --arg branch "$BRANCH" --arg repo "$HEAD_REPO" \
-                  '[(.workflow_runs // [])[]
-                    | select(.head_branch == $branch)
-                    | select(.head_repository.full_name == $repo)]
-                   | if length == 0 then null else max_by(.id) end' \
-                  2>/dev/null || echo null)"
-
-            if [ "$latest" = "null" ] || [ -z "$latest" ]; then
-              if [ "$elapsed" -ge "$APPEAR_BUDGET" ]; then
-                echo "::error::No Fast Gate run found for $SHA on $HEAD_REPO@$BRANCH" \
-                     "($EVENT) after ${elapsed}s. The gates cannot be confirmed, so the" \
-                     "matrix is not cleared to run."
-                exit 1
-              fi
-              sleep 10
-              continue
-            fi
-
-            status="$(printf '%s' "$latest" | jq -r '.status')"
-            conclusion="$(printf '%s' "$latest" | jq -r '.conclusion // ""')"
-            url="$(printf '%s' "$latest" | jq -r '.html_url')"
-
-            if [ "$seen" = false ]; then
-              echo "Fast Gate run: $url"
-              seen=true
-            fi
-
-            if [ "$status" = "completed" ]; then
-              case "$conclusion" in
-                success)
-                  echo "Fast Gate passed. Releasing the heavy jobs."
-                  exit 0
-                  ;;
-                action_required)
-                  # A fork run still awaiting maintainer approval is reported as
-                  # completed/action_required. That is pending, not decided, so keep
-                  # polling under TOTAL_BUDGET -- otherwise which of the two pending
-                  # runs a maintainer approves first decides whether the matrix runs.
-                  status="awaiting maintainer approval"
-                  ;;
-                *)
-                  echo "::error::Fast Gate concluded '$conclusion' ($url)." \
-                       "Fix the gate it reports; the heavy jobs are skipped on purpose."
-                  exit 1
-                  ;;
-              esac
-            fi
-
-            if [ "$elapsed" -ge "$TOTAL_BUDGET" ]; then
-              echo "::error::Fast Gate still '$status' after ${elapsed}s ($url)." \
-                   "Failing closed rather than starting the matrix unverified."
-              exit 1
-            fi
-
-            sleep 10
-          done
+        # The poll lives in a script so its whole control flow -- not just the
+        # jq selector and the conclusion case -- can be run against a stubbed gh
+        # and a fake clock (test_await_fast_gate_poll.py). The identity of the
+        # commit under test reaches it through the env above and nothing else.
+        run: bash .github/scripts/await-fast-gate.sh
 
   backend-lint:
     name: Backend Lint & Type Check
