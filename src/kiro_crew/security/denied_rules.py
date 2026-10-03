@@ -1758,6 +1758,30 @@ _SELF_PROTECTION_FLOOR_NOTES: dict[str, str] = {
     ),
 }
 
+# ── The world-rwx ``chmod`` row's argv-structural floor ──
+# ``local-destructive-chmod-777`` is the literal ``chmod 777.*``, one SPELLING of
+# a mode change that every option between the program and the mode re-spells
+# (``chmod -R 777 ~``, ``-Rv``, ``-R -v``, ``--recursive``).  The row keeps its
+# literal -- the golden fixture, the governance pin map and the refusal text all
+# report it unchanged -- and gains a floor (``chmod_floor._is_chmod_world_rwx``)
+# that reads the argv: options at any position, in any packing, and the first
+# operand after them as the mode.  Same enforcement story as the dev-mode
+# confirm row above: regex+floor UNION, the row stays in the regex tier, and the
+# floor runs only while the row is in the effective set, so an operator opt-out
+# of the row disables both.  Derived from the catalog so the id and the pattern
+# cannot drift apart; the comprehension raises at import if the row is renamed,
+# which is the loud failure a silently-disabled floor must not become.
+_CHMOD_WORLD_RWX_FLOOR_RULE_ID = "local-destructive-chmod-777"
+_CHMOD_WORLD_RWX_FLOOR_PATTERN: str = _RULES_BY_ID[_CHMOD_WORLD_RWX_FLOOR_RULE_ID].pattern
+_CHMOD_WORLD_RWX_FLOOR_NOTE = (
+    "Matched structurally on the command's argv, not by the pattern text above: "
+    "chmod is the program that runs (directly, through a wrapper such as sudo, env, "
+    "xargs or find -exec, or inside a nested shell payload) and the mode operand "
+    "after its options is 777, with or without a leading special-bits digit, in any "
+    "option order or packing. The rule blocks a world-writable mode, not one "
+    "spelling of it."
+)
+
 # The two INTERPRETER-payload rules.  They are ordinary regex-tier rules, but an
 # interpreter CONCATENATES adjacent string literals, so they are additionally matched
 # against a copy of the text with those joins collapsed.

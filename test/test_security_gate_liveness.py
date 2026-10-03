@@ -153,12 +153,23 @@ def _url_payload_command(n: int) -> str:
 #: Windows file too large to hash on the gate is never served, so a dotless target
 #: there is pending, and the ssh self-target refusal note says so.
 #:
+#: Raised again, from 28,399, for the world-rwx ``chmod`` floor (``chmod_floor.py``,
+#: its own module because ``argv_floor`` sits at its per-module cap): the
+#: ``chmod 777.*`` row names one spelling of the mode change, so the floor reads each
+#: command's argv -- redirections set aside as the shell's, options at any position in
+#: any packing, ``--reference`` anywhere in the argv, the first operand after them as
+#: the mode in the grammar the real binary grants (leading zeros, ``=``/``+`` octal,
+#: brace expansion) -- in the command and in every nested payload, as a union with the
+#: row that is gated on the row's own opt-out. Plus the row's gate table and refusal
+#: note in ``denied_rules`` and the one call site in the facade's evaluator.
+#: No catalog pattern changed and no new regex pass.
+#:
 #: The number IS the package's measured total, carrying no spare room: a ratchet with
 #: headroom admits exactly the unreviewed growth it exists to catch, so the next line
 #: added here fails this gate and has to be re-pinned deliberately, with its reason
 #: written above. The guards that detect a monolith growing back are the per-file cap
 #: and the facade's share below, and both must stay untouched.
-_PACKAGE_LINE_BUDGET = 28_399
+_PACKAGE_LINE_BUDGET = 28_773
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
