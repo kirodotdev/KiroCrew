@@ -663,7 +663,6 @@ test/test_mcp_preflight.py
 test/test_mcp_preflight_real_server.py
 test/test_mcp_probe_treadmill.py
 test/test_mcp_probe_warn_once.py
-test/test_mcp_registry_governance.py
 test/test_mcp_seed.py
 test/test_mcp_shareability.py
 test/test_mcp_shared_cache.py

@@ -595,6 +595,31 @@ Security properties:
   [secrets-env.md](../../guides/secrets-env.md) and
   [cli.md](cli.md#secrets-command).
 
+### Mediated Custom-secret requests
+
+An authorization policy is accepted only when its canonical authorizations map
+verifies under a subkey derived from the gateway-created root in the
+`secret-request-policy-signing` directory beneath the Kiro Crew data home. The
+whole directory is on the
+agent file-tool floor and in `sandbox._CREW_HIDDEN_LEAVES`, including before its
+first key is minted. The key document is certified by the independently hidden
+dashboard token-signing root. Gateway startup creates it; policy signing and
+verification never create it, and an occupied uncertified document fails closed
+instead of being adopted or replaced.
+
+After a credential-bearing send, EVERY outcome collapses to the same fixed
+withheld constant, padded until the normalized request timeout expires before
+returning. Success, an SSRF/DNS refusal, a transport failure, and
+origin-selected response latency therefore complete at the same request-bounded
+deadline, so neither an error-vs-success signal nor a per-call
+blocked-vs-public DNS answer can encode a secret bit. The tool never returns the
+origin's response — no body, headers, status, content-type, or length — because
+any of them is an origin-controlled channel a reflected credential could ride
+out on. Every agent-supplied outbound value (request body, headers, query) is
+also scanned with the credential and exfiltration-URL redactors and the request
+is refused before the vault read if either would change it, so the agent cannot
+smuggle a credential OUT through the request it hands the mediator.
+
 ### OS-Level Sandbox (`sandbox.py`)
 
 `kiro_crew.sandbox` is the import and patch surface. The two programs it writes out

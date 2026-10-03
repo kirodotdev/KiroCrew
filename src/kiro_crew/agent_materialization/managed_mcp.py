@@ -16,6 +16,7 @@ earlier writer left in the file.
 from __future__ import annotations
 
 import math
+from fnmatch import fnmatchcase
 from typing import Any
 
 from kiro_crew import agent as agent_mod
@@ -423,12 +424,110 @@ def managed_mcp_spec_entry(name: str, *, include_opt_in: bool = False) -> dict[s
     return entry
 
 
+#: Managed servers that must NEVER carry an autoApprove grant, in any mode: a
+#: credential-bearing or governance-authorizing egress whose calls must always
+#: reach ``hooks.on_tool_call``. An inherited grant on one of these (a migrated
+#: config, a wildcard) is stripped even under "preserve"; other managed servers
+#: keep a user's own preference. ``kirocrew-secrets`` injects a stored secret
+#: into an outbound request — exactly the action the approval gate exists for.
+_NEVER_AUTO_APPROVE_SERVERS: frozenset[str] = frozenset({"kirocrew-secrets"})
+
+#: The mediated-secret tool's identifiers, for scrubbing any allowedTools grant
+#: that would auto-approve it (auto-approve never reaches hooks.on_tool_call).
+_SECRET_TOOL_REF = "kirocrew-secrets/call_api_with_secret"
+_SECRET_TOOL_BARE = "call_api_with_secret"
+_SECRET_SERVER_ALIAS = "kirocrew-secrets"
+
+
+def _grant_reaches_secret_tool(ref: object) -> bool:
+    """True if allowedTools entry *ref* would auto-approve ``call_api_with_secret``.
+
+    A grant is a glob (kiro-cli matches *, ?, [seq]); test it against BOTH the
+    full ``server/tool`` ref and the bare tool name, plus the server alias, so a
+    partial glob (``@kirocrew-secrets/call_*``, ``@kirocrew*``, ``*``) or a
+    bare-name grant cannot slip an auto-approve past the credential gate. A plain
+    (glob-free) ref still matches its exact target. The leading ``@`` is optional.
+    """
+    if not isinstance(ref, str):
+        return False
+    pattern = ref.strip().lstrip("@")
+    if not pattern:
+        return False
+    # Canonicalize a trailing-slash whole-server grant: `@kirocrew-secrets/`
+    # names the whole server (every tool under it), the same broad grant as
+    # `@kirocrew-secrets` — but as a literal glob `kirocrew-secrets/` matches
+    # neither the bare alias nor the full server/tool ref, so without this it
+    # would slip an auto-approve of the credential tool past the scrub. Treat a
+    # trailing `/` as a whole-server wildcard.
+    if pattern.endswith("/"):
+        pattern = pattern + "*"
+    return (
+        fnmatchcase(_SECRET_TOOL_REF, pattern)
+        or fnmatchcase(_SECRET_TOOL_BARE, pattern)
+        or fnmatchcase(_SECRET_SERVER_ALIAS, pattern)
+    )
+
+
+#: Probe refs standing for "some unrelated tool a user might have auto-approved":
+#: a bare tool name, a tool under a different server, and a different whole
+#: server. A grant that reaches the secret tool AND also matches any of these is
+#: BROAD — removing it would also strip the user's standing auto-approval for
+#: those unrelated tools (the collateral a wilderness-wide scrub causes). None of
+#: these can themselves be the secret tool, so a secret-tool-SPECIFIC grant never
+#: matches one.
+#: kiro-cli's allowedTools glob alphabet — the metacharacters that make a ref
+#: match more than its own literal text. A ref containing ANY of these covers an
+#: open-ended set of tools, so it can never be proven to reach ONLY the secret
+#: tool and is always treated as broad.
+_GLOB_METACHARACTERS = "*?["
+
+#: The exact, literal (glob-free) refs that each name the secret tool and nothing
+#: else: the full ``server/tool`` ref, the bare tool name, and the ``@`` form of
+#: the full ref. The ``@`` is stripped before comparison, so both ``@``-prefixed
+#: and bare spellings land here.
+_SECRET_TOOL_LITERALS = frozenset(
+    {
+        _SECRET_TOOL_REF,
+        _SECRET_TOOL_BARE,
+    }
+)
+
+
+def _grant_reaches_only_secret_tool(ref: object) -> bool:
+    """True only if *ref* is an EXACT, literal spelling of the secret tool.
+
+    Such a grant covers only the credential tool, so it can be removed wholesale:
+    dropping it strips no other standing auto-approval.
+
+    A ref containing any glob metacharacter (``*``, ``?``, ``[``) is NEVER
+    classed secret-only, even when it reaches the secret tool, because a glob can
+    cover unrelated tools whose set cannot be enumerated — ``*/call_*`` reaches
+    ``call_api_with_secret`` yet also every other ``call_``-prefixed tool under
+    every server, so deleting it would destroy those approvals. There is no
+    probe set that can prove an arbitrary glob reaches only one tool, so every
+    glob is handled by withholding the mount (via the broad-grant branch in the
+    caller) rather than scrubbed. Only an exact literal — the full
+    ``kirocrew-secrets/call_api_with_secret`` ref or the bare
+    ``call_api_with_secret`` — is removed; the ``@`` prefix is optional and the
+    bare server alias ``@kirocrew-secrets`` is a glob-free whole-server grant that
+    still reaches other tools on that server, so it too is left to the broad
+    branch rather than removed.
+    """
+    if not isinstance(ref, str):
+        return False
+    literal = ref.strip().lstrip("@")
+    if any(ch in literal for ch in _GLOB_METACHARACTERS):
+        return False
+    return literal in _SECRET_TOOL_LITERALS
+
+
 def _enforce_managed_mcp_ownership(
     entry: dict,
     spec: dict,
     registry_mode: bool,
     *,
     auto_approve: str,
+    server_name: str = "",
 ) -> None:
     """Strip/re-pin the fields Kiro Crew owns on one managed-server entry.
 
@@ -594,6 +693,14 @@ def _enforce_managed_mcp_ownership(
             entry.pop("autoApprove", None)
     elif auto_approve == "seed" and "autoApprove" in spec:
         entry["autoApprove"] = list(spec["autoApprove"])
+    elif "autoApprove" not in spec and server_name in _NEVER_AUTO_APPROVE_SERVERS:
+        # A NEVER-auto-approved credential/governance server (kirocrew-secrets)
+        # must never carry an inherited autoApprove — not even under "preserve" on
+        # an existing config, where a prior or wildcard grant would otherwise
+        # survive and silently bypass hooks.on_tool_call (the governance ceiling +
+        # approval gate) on a credential-bearing egress. Scoped to that set so an
+        # unrelated managed server's user-removed grant is left as the user left it.
+        entry.pop("autoApprove", None)
 
 
 def emit_managed_servers(mcp: dict, *, gated_off: frozenset[str], registry_mode: bool) -> None:
@@ -632,7 +739,9 @@ def emit_managed_servers(mcp: dict, *, gated_off: frozenset[str], registry_mode:
         entry = dict(existing) if isinstance(existing, dict) else {}
         entry["command"] = cmd
         entry["args"] = args
-        _enforce_managed_mcp_ownership(entry, spec, registry_mode, auto_approve="own")
+        _enforce_managed_mcp_ownership(
+            entry, spec, registry_mode, auto_approve="own", server_name=name
+        )
         mcp[name] = entry
 
 
@@ -696,7 +805,11 @@ def refresh_managed_servers(mcp: dict, *, gated_off: frozenset[str], registry_mo
         # genuinely new entry — all via the same helper the fresh-build loop
         # uses, so the two ownership rules cannot hand-drift.
         _enforce_managed_mcp_ownership(
-            entry, spec, registry_mode, auto_approve="seed" if is_new else "preserve"
+            entry,
+            spec,
+            registry_mode,
+            auto_approve="seed" if is_new else "preserve",
+            server_name=name,
         )
 
 
@@ -772,6 +885,116 @@ def register_managed_refs(config: dict, *, fresh_install: bool, gated_off: froze
                 source="install_agent",
                 resources=f"{cu_ref} added to tools (existing config upgrade)",
             )
+
+    # Same narrow ADD-only migration for the always-on mediated-secret server:
+    # an UPGRADING install gains its ``mcpServers`` entry but never the
+    # ``@kirocrew-secrets`` tools ref (the fresh-install loop above is the only
+    # other place a ref is added), so kiro-cli would expose the server and none
+    # of its tools — the mediated-secret feature silently absent for every
+    # pre-existing user. DELIBERATELY tools-only, never ``allowedTools``: this
+    # server has no autoApprove precisely so ``call_api_with_secret`` reaches
+    # ``hooks.on_tool_call`` (the credential-egress approval gate); adding it to
+    # the blanket auto-approve list would delete that plane. Gated on the shipped
+    # template granting the ref and on the server having resolved, scoped to this
+    # one server so no other managed ref is re-added behind the user's back.
+    if "kirocrew-secrets" in valid_servers:
+        sec_ref = "@kirocrew-secrets"
+        # Before mounting, deal with any EXISTING allowedTools grant that would
+        # auto-approve this credential tool. allowedTools is the one path that
+        # never reaches hooks.on_tool_call, so a pre-existing grant (migrated
+        # config, a user's wildcard) would silently bypass the approval gate on a
+        # credential-bearing egress. But a grant comes in two shapes and they must
+        # be handled differently:
+        #
+        #  * A SECRET-TOOL-SPECIFIC grant — an EXACT, glob-free spelling of the
+        #    tool, i.e. the full ``kirocrew-secrets/call_api_with_secret`` ref or
+        #    the bare ``call_api_with_secret`` — covers only the credential tool,
+        #    so it is removed wholesale: dropping it strips no other approval.
+        #  * ANY grant containing a glob metacharacter (``*``, ``?``, ``[``), and
+        #    the glob-free whole-server alias ``@kirocrew-secrets``, is treated as
+        #    BROAD: a glob covers an open-ended set of tools (``*/call_*`` reaches
+        #    ``call_api_with_secret`` yet also every other ``call_``-prefixed tool
+        #    the user approved), and the server alias reaches other tools on that
+        #    server. Removing such a grant wholesale would destroy those standing
+        #    approvals — collateral far beyond this one tool. There is no glob that
+        #    covers "everything the wildcard did EXCEPT the secret tool" (kiro-cli's
+        #    allowedTools has no negation), and no probe set can prove an arbitrary
+        #    glob reaches only one tool, so rather than silently rewrite the user's
+        #    config we WITHHOLD the mount: the credential server's ``mcpServers``
+        #    entry is dropped and its tools ref is not added, so the feature is
+        #    simply absent until the user narrows their own wildcard — and crucially
+        #    the broad grant can never reach the tool, because the tool is not
+        #    mounted.
+        existing_allowed = config.get("allowedTools")
+        broad_grant_present = False
+        if isinstance(existing_allowed, list):
+            broad_grant_present = any(
+                _grant_reaches_secret_tool(r) and not _grant_reaches_only_secret_tool(r)
+                for r in existing_allowed
+            )
+            scrubbed = [r for r in existing_allowed if not _grant_reaches_only_secret_tool(r)]
+            if scrubbed != existing_allowed:
+                config["allowedTools"] = scrubbed
+                try:
+                    agent_mod.sel().log_api_access(
+                        caller="system",
+                        operation="mcp_auto_approve_withheld",
+                        outcome="ok",
+                        source="install_agent",
+                        resources=(
+                            "removed an existing secret-tool-specific allowedTools "
+                            f"grant matching {sec_ref} (credential egress must reach "
+                            "the approval gate)"
+                        ),
+                    )
+                except Exception:  # noqa: BLE001 — audit must not break the install
+                    agent_mod.logger.debug(
+                        "SEL audit unavailable for secrets grant scrub", exc_info=True
+                    )
+        if broad_grant_present:
+            # Cannot narrow the user's broad grant without stripping unrelated
+            # approvals, so withhold the mount instead. Drop the server entry so
+            # kiro-cli does not spawn the backend, and skip adding the tools ref:
+            # the broad grant then auto-approves nothing of ours because the tool
+            # is not present.
+            valid_servers.pop("kirocrew-secrets", None)
+            try:
+                agent_mod.sel().log_api_access(
+                    caller="system",
+                    operation="mcp_server_withheld",
+                    outcome="ok",
+                    source="install_agent",
+                    resources=(
+                        "kirocrew-secrets mount withheld: an existing broad "
+                        "allowedTools wildcard would auto-approve the credential "
+                        "tool, and narrowing it would strip the user's unrelated "
+                        "auto-approvals — the user's config is left untouched"
+                    ),
+                )
+            except Exception:  # noqa: BLE001 — audit must not break the install
+                agent_mod.logger.debug(
+                    "SEL audit unavailable for secrets mount withhold", exc_info=True
+                )
+        # The tools-ref ADD is only for an UPGRADING install (a fresh build gets
+        # the ref from the shipped template); the ``in valid_servers`` guard skips
+        # it when the broad-grant branch above withheld the mount (dropping the
+        # server from valid_servers).
+        if not fresh_install and "kirocrew-secrets" in valid_servers:
+            shipped_tools = agent_mod.get_shipped_tools().get("tools", [])
+            existing_tools = config.get("tools")
+            if (
+                isinstance(existing_tools, list)
+                and sec_ref in shipped_tools
+                and sec_ref not in existing_tools
+            ):
+                existing_tools.append(sec_ref)
+                agent_mod.sel().log_api_access(
+                    caller="system",
+                    operation="mcp_tools_added",
+                    outcome="ok",
+                    source="install_agent",
+                    resources=f"{sec_ref} added to tools (existing config upgrade)",
+                )
 
     # Audit the DECISION, not a config delta. Nothing in the spec changes shape
     # when a gate closes — the ``@ref`` stays exactly where the template put it

@@ -557,6 +557,16 @@ class CallerContext:
     #: (the Toolbox-shim report took three wrong diagnoses to find it). Diagnostic text,
     #: never a credential; empty everywhere else.
     identity_denial: str = ""
+    #: The harness ACP ``toolCallId`` for this call, carried in the
+    #: gateway-authored caller block. It is the identifier the approval gate keys
+    #: its grant by, so it is the correlation key between an approval and the MCP
+    #: execution that redeems it. The harness carries that id to the backend as
+    #: the ``tools/call`` ``_meta.progressToken``, which the gateway promotes
+    #: into this field — so this is the SAME value as ``progressToken``, read
+    #: from one place, NOT an independent source. Empty when the request carried
+    #: no progress token; a call with no correlation id is refused fail-closed
+    #: rather than silently sent.
+    tool_call_id: str = ""
 
     @classmethod
     def from_meta(cls, meta: Any) -> "CallerContext | None":
@@ -589,6 +599,7 @@ class CallerContext:
             raw=MappingProxyType(dict(block)),
             session_token=str(block.get("sessionToken") or ""),
             identity_denial=str(block.get("identityDenial") or ""),
+            tool_call_id=str(block.get("toolCallId") or ""),
         )
 
     @classmethod
@@ -697,6 +708,8 @@ def build_caller_meta(ctx: CallerContext) -> dict[str, Any]:
         meta[CALLER_META_KEY]["sessionToken"] = ctx.session_token
     if ctx.identity_denial:
         meta[CALLER_META_KEY]["identityDenial"] = ctx.identity_denial
+    if ctx.tool_call_id:
+        meta[CALLER_META_KEY]["toolCallId"] = ctx.tool_call_id
     return meta
 
 
@@ -796,6 +809,19 @@ def current_caller() -> "CallerContext | None":
     resolution paths.
     """
     return _CURRENT_CALLER.get()
+
+
+_CURRENT_TOOL_CALL_ID: ContextVar[str] = ContextVar("kirocrew_current_tool_call_id", default="")
+
+
+def set_current_tool_call_id(tool_call_id: str) -> None:
+    """Install the harness-generated correlation id for the current MCP call."""
+    _CURRENT_TOOL_CALL_ID.set(tool_call_id)
+
+
+def current_tool_call_id() -> str:
+    """Return the current MCP call's harness-generated correlation id, if any."""
+    return _CURRENT_TOOL_CALL_ID.get()
 
 
 # Held in its own slot rather than on ``CallerContext`` because the case it

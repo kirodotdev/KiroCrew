@@ -26,7 +26,12 @@ from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from kiro_crew import acp_tool_gate, model_registry, permission_floor
+from kiro_crew import (
+    acp_tool_gate,
+    mediated_request_capability,
+    model_registry,
+    permission_floor,
+)
 from kiro_crew.acp import kas_wire
 from kiro_crew.acp._dispatch import (
     DRAIN_YIELD_AFTER_S,
@@ -2207,10 +2212,30 @@ class AcpSessionHandle:
                 resolved_id = recorded.get("once") or resolved_id
         if resolved_id is None:
             resolved_id = OPTION_ALLOW_ONCE
-        await self._runtime.send_response(
-            request_id,
-            {"outcome": {"outcome": OUTCOME_SELECTED, "optionId": resolved_id}},
-        )
+        capability_token = ""
+        capability_session = self._session_key or ""
+        capability_call_id = gate_event.tool_call_id if gate_event is not None else ""
+        if gate_event is not None and isinstance(gate_event.raw_tool_params, dict):
+            capability_token = mediated_request_capability.mint_for_approved_call(
+                session_key=capability_session,
+                tool_call_id=capability_call_id,
+                mcp_server_name=gate_event.mcp_server_name,
+                tool_name=gate_event.tool_name,
+                tool_args=gate_event.raw_tool_params,
+                identity_trusted=gate_event.mcp_identity_trusted,
+                args_trusted=gate_event.raw_params_trusted,
+            )
+        try:
+            await self._runtime.send_response(
+                request_id,
+                {"outcome": {"outcome": OUTCOME_SELECTED, "optionId": resolved_id}},
+            )
+        except Exception:
+            if capability_token:
+                mediated_request_capability.revoke_pending(
+                    capability_session, capability_call_id, capability_token
+                )
+            raise
         return True
 
     async def reject_tool(self, request_id: str | int) -> None:
@@ -2225,7 +2250,16 @@ class AcpSessionHandle:
         later tool call in it without prompting.
         """
         recorded = self._permission_options.pop(request_id, None)
-        self._permission_gate_events.pop(request_id, None)
+        gate_event = self._permission_gate_events.pop(request_id, None)
+        # A deny (or cancel) must invalidate any capability grant minted for this
+        # call: an approve-then-reject on the same request id would otherwise leave
+        # the earlier approval's grant claimable, letting a reused id send the
+        # secret-bearing request despite this denial. The deny path holds no mint
+        # token, so this invalidation is by call id, not by token.
+        if gate_event is not None and gate_event.tool_call_id:
+            mediated_request_capability.invalidate_call(
+                self._session_key or "", gate_event.tool_call_id
+            )
         # Answered (see approve_tool) — a rejection ends the human wait too.
         self._end_human_wait()
         self._note_steering_denial()

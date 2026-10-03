@@ -523,13 +523,13 @@ async def test_client_without_an_event_map_is_still_held_to_the_floor():
 # ── AcpSessionHandle ──
 
 
-def _handle():
+def _handle(*, session_key: str = ""):
     from kiro_crew.acp.session_handle import AcpSessionHandle
 
     runtime = MagicMock()
     runtime.send_response = AsyncMock()
     runtime.send_error = AsyncMock()
-    return AcpSessionHandle("s1", asyncio.Queue(), runtime)
+    return AcpSessionHandle("s1", asyncio.Queue(), runtime, session_key=session_key)
 
 
 @pytest.mark.asyncio
@@ -1404,3 +1404,50 @@ async def test_channel_blocked_tool_row_names_the_tool(monkeypatch):
     client.reject_tool.assert_awaited_once_with("req-blocked")
     rows = [kw for _, kw in order]
     assert [(kw["outcome"], kw["tool_name"]) for kw in rows] == [("rejected_blocked_tool", title)]
+
+
+@pytest.mark.asyncio
+async def test_handle_approval_mints_mediated_request_capability(monkeypatch):
+    from kiro_crew.acp import session_handle
+
+    tool_args = {
+        "secret_name": "WEATHER_API_KEY",
+        "method": "GET",
+        "url": "https://api.weather.example/x",
+    }
+    event = AcpEvent(
+        kind=EVENT_PERMISSION_REQUEST,
+        request_id="req-mediated",
+        tool_call_id="tc-mediated",
+        raw_tool_params=tool_args,
+        raw_params_trusted=True,
+        mcp_server_name="kirocrew-secrets",
+        tool_name="call_api_with_secret",
+        mcp_identity_trusted=True,
+    )
+    mint = MagicMock(return_value="capability-token")
+    revoke = MagicMock()
+    monkeypatch.setattr(session_handle.mediated_request_capability, "mint_for_approved_call", mint)
+    monkeypatch.setattr(session_handle.mediated_request_capability, "revoke_pending", revoke)
+    handle = _handle(session_key="dashboard:member")
+    _record(handle, event)
+
+    assert await handle.approve_tool("req-mediated") is True
+
+    mint.assert_called_once_with(
+        session_key="dashboard:member",
+        tool_call_id="tc-mediated",
+        mcp_server_name="kirocrew-secrets",
+        tool_name="call_api_with_secret",
+        tool_args=tool_args,
+        identity_trusted=True,
+        args_trusted=True,
+    )
+    assert len(_allowed(handle._runtime.send_response)) == 1
+    revoke.assert_not_called()
+
+    handle._runtime.send_response.side_effect = RuntimeError("write failed")
+    _record(handle, event)
+    with pytest.raises(RuntimeError, match="write failed"):
+        await handle.approve_tool("req-mediated")
+    revoke.assert_called_once_with("dashboard:member", "tc-mediated", "capability-token")

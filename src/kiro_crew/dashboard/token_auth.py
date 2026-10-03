@@ -83,6 +83,7 @@ from kiro_crew.mcp_gateway.socketsec import PeerCredResult, check_peer_is_self, 
 from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.peer_resolve import resolve_peer_tenancy
 from kiro_crew.runtime_ownership import session_keys_bound_to_pid
+from kiro_crew.secrets_mediation.provenance import initialize_host_key
 from kiro_crew.sel import sel as _sel_fn
 from kiro_crew.session_token_sig import verify_session_token
 
@@ -1670,26 +1671,100 @@ def _enforce_app_scope(request: web.Request, app_name: str, path: str) -> web.Re
 
 
 async def warm_auth_singletons() -> None:
-    """Prime the signing-secret and revoked-nonce singletons OFF the event loop.
+    """Prime auth and revoked-nonce state off the event loop.
 
-    Both ``_get_secret()`` and ``_get_revoked_store()`` do blocking file I/O on
-    first use (read/create ``token_signing.key`` + read the persisted nonce
-    denylist; on Windows also the owner-only DACL on the key file).
-    Calling them lazily from the request path — or synchronously inside the
+    The token secret and revocation stores perform blocking file I/O on first
+    use. Calling them lazily from the request path — or synchronously inside the
     ``token_auth_middleware()`` factory, which runs on the loop via the async
     ``start_dashboard()`` / ``start_api_server()`` — would land that I/O on the
     event loop (no-blocking-call-on-event-loop).
 
     The async startup paths ``await`` this exactly once, BEFORE constructing
     the middleware chain and before the server begins accepting connections, so
-    the first auth op hits the already-built singletons with no blocking I/O on
-    the loop. Idempotent: both callees memoize under a lock.
+    the first auth op hits initialized state with no blocking I/O on the loop.
+    Idempotent: each helper memoizes or reloads the same state.
+
+    The mediated-secret policy-signing root is NOT minted here: minting touches
+    the data-home filesystem, and a stalled data home must never block the bind.
+    It is minted by ``mint_mediation_signing_root()``, kicked as a deferred task
+    AFTER the listener binds, with mediation fail-closed until it completes.
     """
     await asyncio.to_thread(_get_secret)
     await asyncio.to_thread(_get_revoked_store)
     # The revocation generation is lazy-loaded from disk on first use; prime it
     # here too so the first token validation never does file I/O on the loop.
     await asyncio.to_thread(current_revocation_gen)
+
+
+async def mint_mediation_signing_root() -> None:
+    """Mint the mediated-secret policy-signing root AFTER the listener binds.
+
+    This runs as a deferred background task kicked once the gateway port is
+    bound, never awaited on the boot path before ``site.start()``: minting
+    touches the data-home filesystem (``make_owner_only_dir`` / ``atomic_write``
+    / ``os.link``), and a stalled or full data home must never block the bind
+    (no-new-work-on-gateway-boot-path). Mediation stays FAIL-CLOSED until this
+    completes: ``_member_key`` returns ``None`` while the root is absent, so
+    ``verify_authorizations`` refuses every mediated-secret request that arrives
+    before the key is ready rather than serving it. The root is still minted
+    only by the gateway process here, never lazily by an owner CLI or an agent
+    subprocess.
+
+    Degrade, never fail-stop. An occupied-but-uncertifiable key.json is
+    reachable without any tampering by the fenced agent -- a pre-upgrade plant
+    under a then-unmasked leaf, a partial data-home restore, or an operator
+    deleting token_signing.key (whose recreation yields a token root that does
+    not certify the existing key.json). Halting buys no security: ``_member_key``
+    already converts the same raise to ``None``, so policy verification -- and
+    thus all mediation -- fails closed with the root unloaded, the safest state.
+    So audit the degradation loudly and leave mediation disabled-closed.
+    """
+    try:
+        await asyncio.to_thread(initialize_host_key)
+    except (RuntimeError, OSError) as exc:
+        # DEGRADE, never fail-stop, on EITHER failure class. An occupied-but-
+        # uncertifiable key.json raises RuntimeError; but on the FIRST boot after
+        # upgrade the key is absent and initialize_host_key mints it, and its
+        # write paths (make_owner_only_dir / atomic_write / os.link) raise a bare
+        # OSError on a read-only or full data home (EROFS/ENOSPC/EPERM). Both must
+        # leave mediation disabled-closed rather than crash the task: halting buys
+        # no security (policy verification already fails closed with the root
+        # unloaded), and the listener is already serving. The SEL audit's first
+        # access does bounded filesystem init, so run it on a worker thread.
+        detail = str(exc)
+
+        def _audit_degradation() -> None:
+            # Best-effort ONLY: this runs on the degradation path whose trigger is
+            # often an unwritable or full data home, so SEL's own first-access
+            # filesystem init (its key dir mkdir + HMAC key load) can hit the SAME
+            # failing disk and raise. The whole point of degrading rather than
+            # fail-stopping is defeated if the audit that records the degradation
+            # can itself crash, so swallow every error here and fall back to a
+            # local warning. The security posture does not depend on this line
+            # landing: policy verification already fails closed with the root
+            # unloaded.
+            try:
+                _sel_fn().log_api_access(
+                    caller="gateway",
+                    operation="mediated_secret_signing_key_init",
+                    outcome="degraded",
+                    source="token_auth",
+                    resources=(
+                        "the mediated-secret policy signing root could not be "
+                        "initialized or certified; running with custom-secret "
+                        "mediation DISABLED-CLOSED (policy verification fails "
+                        f"closed): {detail}"
+                    ),
+                )
+            except Exception:
+                logger.warning(
+                    "mediated-secret signing root degraded and the degradation "
+                    "audit could not be written (SEL unavailable on this data "
+                    "home); running with mediation DISABLED-CLOSED: %s",
+                    detail,
+                )
+
+        await asyncio.to_thread(_audit_degradation)
 
 
 def _unix_request_socket(request: web.Request) -> Any:

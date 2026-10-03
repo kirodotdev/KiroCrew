@@ -168,6 +168,7 @@ from kiro_crew.dashboard.token_auth import (
     _is_spa_shell_request,
     internal_path_matches,
     is_csrf_exempt,
+    mint_mediation_signing_root,
     register_app_window_paths,
     token_auth_middleware,
     token_embed_parent_port,
@@ -471,6 +472,13 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         "/api/apps/dev-fleet/pod/status",
         "/api/apps/dev-fleet/pod/list",
         "/api/session-tool-policy",
+        # The mediated-secret request endpoint. Its only legitimate caller is the
+        # in-sandbox kirocrew-secrets MCP subprocess forwarding a request over
+        # loopback with the gateway IPC secret; no browser ever posts to it, and
+        # keeping it strict means a dashboard cookie cannot reach the handler that
+        # resolves a vault secret and performs a credential-bearing egress.
+        "/api/mediated-secret-capability",
+        "/api/mediated-secret-request",
         # NOTE: "/api/hooks/agent" is deliberately NOT here. It is an inbound
         # webhook for EXTERNAL callers (CI runners, review bots) that hold no
         # dashboard cookie and no gateway IPC secret, so a strict-internal entry
@@ -2082,6 +2090,8 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_post("/api/session-keepalive", handlers.api_session_keepalive)
     app.router.add_post("/api/session-directive", handlers.api_session_directive)
     app.router.add_get("/api/session-tool-policy", handlers.api_session_tool_policy)
+    app.router.add_post("/api/mediated-secret-capability", handlers.api_mediated_secret_capability)
+    app.router.add_post("/api/mediated-secret-request", handlers.api_mediated_secret_request)
     app.router.add_post("/api/slack-profile", handlers.api_slack_profile)
     app.router.add_get("/api/notifications", handlers.api_notifications)
     app.router.add_post("/api/notifications/push", handlers.api_push_notification)
@@ -3999,6 +4009,24 @@ def _kick_local_decision_model(state: DashboardState) -> None:
             logger.info("local decision model: starting %s", preset)
 
     task = asyncio.create_task(_resume())
+    state._background_tasks.add(task)
+    task.add_done_callback(state._background_tasks.discard)
+
+
+def _kick_mediation_signing_root_mint(state: DashboardState) -> None:
+    """Mint the mediated-secret policy-signing root as a tracked task, post-bind.
+
+    Called by both gateway entrypoints only after ``_start_site`` has returned, so
+    key creation (``make_owner_only_dir`` / ``atomic_write`` / ``os.link`` on the
+    data home) can never block the bind on a stalled or full filesystem
+    (no-new-work-on-gateway-boot-path). Mediation is FAIL-CLOSED until it lands:
+    ``provenance._member_key`` returns ``None`` while the root is absent, so every
+    mediated-secret request that arrives before it completes is refused, not
+    served. The coroutine degrades (never raises) on a key that cannot be minted
+    or certified, so a failing data home leaves mediation disabled-closed rather
+    than crashing the task.
+    """
+    task = asyncio.create_task(mint_mediation_signing_root())
     state._background_tasks.add(task)
     task.add_done_callback(state._background_tasks.discard)
 
@@ -6562,6 +6590,10 @@ async def start_dashboard(
     _kick_session_search_index(state)
     _kick_config_watch(app, state)
     _kick_local_decision_model(state)
+    # Mint the mediated-secret policy-signing root here, post-bind, so a stalled
+    # or full data home can never block the listener on key creation; mediation
+    # stays fail-closed (policy verification refuses) until the root is ready.
+    _kick_mediation_signing_root_mint(state)
     # Same shape for the knowledge store's writer-locked orphan sweep: it left
     # the constructor (which runs pre-bind, on the loop) and runs here on a
     # worker thread once requests are already being served.
@@ -7574,6 +7606,10 @@ async def start_api_server(
     _kick_session_search_index(state)
     _kick_config_watch(app, state)
     _kick_local_decision_model(state)
+    # Mint the mediated-secret policy-signing root here, post-bind (parity with
+    # start_dashboard), so key creation on a stalled or full data home never
+    # blocks the bind; mediation stays fail-closed until the root is ready.
+    _kick_mediation_signing_root_mint(state)
 
     logger.info("API-only server listening on %s:%d", bind_addr, port)
 

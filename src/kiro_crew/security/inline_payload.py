@@ -45,6 +45,14 @@ _MINT_SURFACE_RE = re.compile(
     r"kiro_crew[./\\](?:cli|cli_server|__main__|_bootstrap)(?![a-z0-9_])"
     r"|kiro_crew[\w./\\]*token(?!iz)"
     r"|from\s+kiro_crew\s+import\b[^;]{0,120}?(?<![a-z0-9_.-])(?:cli|cli_server|__main__|_bootstrap)(?![a-z0-9_])"
+    # The policy-signing surface re-exported through cli_commands / secrets_mediation
+    # reaches the token-signing key, so a payload that NAMES one of its producer
+    # functions is a mint attempt and is covered. Keyed on the producer NAME rather
+    # than the bare module, so a maintainer's `import kiro_crew.cli_commands`
+    # import-cycle smoke or a `py_compile`/`ast.parse` of the file -- which names
+    # no producer -- is NOT refused, while `from ...cli_commands import _member_key`
+    # or `m.sign_authorizations()` is.
+    r"|(?<![a-z0-9_])(?:_member_key|sign_authorizations|verify_authorizations)(?![a-z0-9_])"
 )
 # A simple statement begins at the start of input, after ``;``, after a newline,
 # or after the ``:`` that closes a compound header (``if x:``, ``for``, ``try:``,

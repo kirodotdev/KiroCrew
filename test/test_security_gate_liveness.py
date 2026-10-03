@@ -153,12 +153,38 @@ def _url_payload_command(n: int) -> str:
 #: Windows file too large to hash on the gate is never served, so a dotless target
 #: there is pending, and the ssh self-target refusal note says so.
 #:
+#: Re-pinned again for the mediated custom-secret egress feature: the
+#: ``secret_request_policy.json`` authorization file and its ``.lock`` added to the
+#: keystone floor in ``paths.py``, each with the security rationale for why a
+#: sandboxed run may neither forge the owner's egress allowlist nor pre-seat the
+#: authorize mutex. Twenty-one lines, all the two fence entries and their reasons --
+#: no new control logic and no new matching pass; the per-file cap is untouched.
+#:
+#: Re-pinned again for the mediated-secret F2 hardening: the authorize CLI now
+#: stages its atomic policy publication through a wholly-masked
+#: ``secret-request-policy-staging`` directory so the staging inode cannot be
+#: hard-linked from the sandbox before the publish rename; ``paths.py`` gains the
+#: three-line keystone entry naming that staging directory. No new matching pass.
+#:
+#: Re-pinned again for the host-only signing key: the mediated-secret policy is
+#: signed with a gateway-only key under ``secret-request-policy-signing/``
+#: (hidden from the sandbox) rather than the sandbox-visible SEL key, so an
+#: in-sandbox process cannot forge an owner-policy signature; ``paths.py`` gains
+#: the keystone entry naming that signing directory. No new matching pass.
+#:
+#: Re-pinned once more for the argv-floor coverage: the mediated-secret signing
+#: surface (``cli_commands`` and the ``secrets_mediation`` subpackage, whose
+#: ``sign_authorizations`` / ``_member_key`` reach the policy-signing key) is a
+#: token-producer the credential-exfil floor's own gate requires be covered, so
+#: ``security/inline_payload.py`` gains those two mint-surface alternation
+#: entries. No new matching pass.
+#:
 #: The number IS the package's measured total, carrying no spare room: a ratchet with
 #: headroom admits exactly the unreviewed growth it exists to catch, so the next line
 #: added here fails this gate and has to be re-pinned deliberately, with its reason
 #: written above. The guards that detect a monolith growing back are the per-file cap
 #: and the facade's share below, and both must stay untouched.
-_PACKAGE_LINE_BUDGET = 28_399
+_PACKAGE_LINE_BUDGET = 28_436
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

@@ -26,7 +26,7 @@ from kiro_crew.kiro_cli import (
     signed_in_via_idc,
 )
 
-MANAGED = ("kirocrew-core", "kirocrew-cron", "kirocrew-computer")
+MANAGED = ("kirocrew-core", "kirocrew-cron", "kirocrew-computer", "kirocrew-secrets")
 
 # ``kirocrew-computer`` carries a ``spec_gate`` and is therefore absent from an
 # emitted spec on any non-macOS host (and on macOS with the keystone off) -- see
@@ -234,7 +234,7 @@ class TestIdcDetection:
         assert signed_in_via_idc("linux", tmp_path, {}) is False
 
     def test_corrupt_store_is_not_idc(self, tmp_path):
-        """"Cannot tell" must never render as an enterprise diagnosis."""
+        """ "Cannot tell" must never render as an enterprise diagnosis."""
         db = kiro_cli_state_dbs("linux", tmp_path, {})[0]
         db.parent.mkdir(parents=True, exist_ok=True)
         db.write_bytes(b"not a database")
@@ -411,9 +411,7 @@ class TestDoctorSurvivesAMalformedSpec:
     whole doctor run.
     """
 
-    @pytest.mark.parametrize(
-        "servers", ["not-a-dict", ["kirocrew-core"], 7, True, "", [], {}]
-    )
+    @pytest.mark.parametrize("servers", ["not-a-dict", ["kirocrew-core"], 7, True, "", [], {}])
     def test_non_dict_mcp_servers_does_not_crash(self, tmp_path, monkeypatch, capsys, servers):
         path = tmp_path / "kirocrew.json"
         path.write_text(json.dumps({"mcpServers": servers}), encoding="utf-8")

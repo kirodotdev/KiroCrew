@@ -57,6 +57,7 @@ from kiro_crew import (
     acp_tool_gate,
     agent_scratch,
     agent_sdk,
+    mediated_request_capability,
     model_registry,
     model_scope,
     permission_floor,
@@ -11987,10 +11988,30 @@ class AcpClient:
             resolved_id = (recorded or {}).get("always" if always else "once")
             if resolved_id is None:
                 resolved_id = OPTION_ALLOW_ALWAYS if always else OPTION_ALLOW_ONCE
-        await self._send_response(
-            request_id,
-            {"outcome": {"outcome": OUTCOME_SELECTED, "optionId": resolved_id}},
-        )
+        _capability_token = ""
+        _capability_session = getattr(self, "_session_key", "") or ""
+        _capability_call_id = gate_event.tool_call_id if gate_event is not None else ""
+        if gate_event is not None and isinstance(gate_event.raw_tool_params, dict):
+            _capability_token = mediated_request_capability.mint_for_approved_call(
+                session_key=_capability_session,
+                tool_call_id=_capability_call_id,
+                mcp_server_name=gate_event.mcp_server_name,
+                tool_name=gate_event.tool_name,
+                tool_args=gate_event.raw_tool_params,
+                identity_trusted=gate_event.mcp_identity_trusted,
+                args_trusted=gate_event.raw_params_trusted,
+            )
+        try:
+            await self._send_response(
+                request_id,
+                {"outcome": {"outcome": OUTCOME_SELECTED, "optionId": resolved_id}},
+            )
+        except Exception:
+            if _capability_token:
+                mediated_request_capability.revoke_pending(
+                    _capability_session, _capability_call_id, _capability_token
+                )
+            raise
         return True
 
     def _note_pi_gate_denied(self, request_id: str | int) -> None:
@@ -12016,7 +12037,15 @@ class AcpClient:
         (kiro-cli), which kiro handles as an ordinary rejection.
         """
         recorded = self._permission_options.pop(request_id, None)
-        getattr(self, "_permission_gate_events", {}).pop(request_id, None)
+        _rej_gate_event = getattr(self, "_permission_gate_events", {}).pop(request_id, None)
+        # A deny (or cancel) invalidates any capability grant minted for this call
+        # id, so an approve-then-reject on the same id cannot leave a stale grant a
+        # reused id could claim and send the secret-bearing request with. By call
+        # id, not token — the deny path holds no mint token.
+        if _rej_gate_event is not None and _rej_gate_event.tool_call_id:
+            mediated_request_capability.invalidate_call(
+                getattr(self, "_session_key", "") or "", _rej_gate_event.tool_call_id
+            )
         self._note_pi_gate_denied(request_id)
         reject_id = recorded.get("reject") if recorded else None
         if reject_id:

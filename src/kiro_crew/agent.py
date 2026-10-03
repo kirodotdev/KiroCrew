@@ -200,9 +200,11 @@ if TYPE_CHECKING:  # served by ``__getattr__`` at runtime; named here for mypy
         _MANAGED_MCP_ENTRY_KEYS,
         _MANAGED_MCP_ENTRY_VALUE_TYPES,
         _MCP_REGISTRY_TYPE,
+        _NEVER_AUTO_APPROVE_SERVERS,
         CU_MCP_SERVER,
         _enforce_managed_mcp_ownership,
         _gated_off_servers,
+        _grant_reaches_secret_tool,
         _managed_mcp_env,
         _managed_opt_in_entry,
         _mcp_registry_mode,
@@ -1168,6 +1170,19 @@ _MANAGED_MCP_SERVERS: dict[str, dict] = {
         "invocation_fn": lambda: _kirocrew_mcp_invocation("mcp-panel"),
         "opt_in": True,
     },
+    # Mediated secret requests: the ONE trusted tool that lets an agent
+    # call an owner-authorized API with a Custom secret without ever seeing the
+    # value. Always-on (no spec_gate / opt_in) so the capability cannot be
+    # toggled away from the trust boundary it enforces.
+    #
+    # DELIBERATELY NO ``autoApprove`` — like kirocrew-computer/-dashboard: an
+    # autoApproved MCP tool is approved inside kiro-cli and never reaches
+    # ``hooks.on_tool_call``, so the governance ceiling and approval gate would
+    # be bypassed for a credential-bearing egress. Injecting a stored secret into
+    # an outbound request is exactly the action that must stay gated.
+    "kirocrew-secrets": {
+        "invocation_fn": lambda: _kirocrew_mcp_invocation("mcp-secrets"),
+    },
 }
 
 
@@ -1823,6 +1838,8 @@ _EXPORTS_BY_OWNER: dict[str, tuple[str, ...]] = {
         "_gated_off_servers",
         "managed_mcp_spec_entry",
         "_enforce_managed_mcp_ownership",
+        "_grant_reaches_secret_tool",
+        "_NEVER_AUTO_APPROVE_SERVERS",
         "_managed_opt_in_entry",
         "CU_MCP_SERVER",
         "sanitize_spec_env",
