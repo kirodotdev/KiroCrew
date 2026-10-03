@@ -15,6 +15,16 @@ was already chosen stops working mid-session is
 concrete model. `"auto"` is validated like any other id and is not assumed usable: a
 partition that does not serve it makes it as unusable as any other unentitled id.
 
+## Model-name format
+
+The shared spawn and cron model-name validator accepts an alphanumeric first
+character followed by alphanumerics, dots, underscores or hyphens, optionally
+ending in one nonempty bracketed qualifier using those same characters.
+Empty, unbalanced, nested, repeated or non-trailing qualifiers are rejected;
+shell metacharacters remain invalid. The existing field length limit still
+applies. This format check does not establish entitlement or alter the separate
+`MODEL_ID_RE` grammar or ACP runtime validation.
+
 ## Resolve, don't guess
 
 For a model chosen on the caller's behalf — background one-liners, tips, inherited or
