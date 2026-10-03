@@ -437,6 +437,13 @@ BENIGN_LOOKALIKE_COMMANDS = [
     # An extglob operator whose alternatives do not reassemble a sensitive dir.
     # @(s|sh)h expands to .sh/... and .shh/... -- neither is a credential path.
     "bash -O extglob -c 'cat ~/.@(s|sh)h/public_key'",
+    # `*(` `+(` `!(` in ordinary code and file names are not paths to a
+    # credential; refusing them outright over-blocked everyday one-liners.
+    "python3 -c 'print(3*(4+5))'",
+    "node -e 'if(!(x)) process.exit(1)'",
+    "awk '{s+=(NF*(2))} END{print s}' /tmp/a.log",
+    "echo 'Done!(ok)'",
+    "find /tmp/downloads -name '*(1).jpg' -delete",
 ]
 
 BENIGN_COMMANDS = [
@@ -2168,6 +2175,10 @@ def test_extglob_operators_are_refused():
         "bash -O extglob -c 'cat ~/.s?h?(x)/id_rsa'",
         # Escaped paren: \) is a literal ) not a group close
         r"bash -O extglob -c 'cat ~/.@(\)|ssh)/id_rsa'",
+        # Unbounded group at a segment start can still produce the leading dot.
+        "bash -O extglob -c 'cat ~/!(x)ssh/id_rsa'",
+        "bash -O extglob -c 'cat ~/*(.)ssh/id_rsa'",
+        "bash -O extglob -c 'cat ~/.a+(w)s/credentials'",
     ]
     for cmd in blocked:
         err = _vet_shell_command(cmd)
@@ -2198,12 +2209,15 @@ def test_extglob_expansion_helper():
     assert set(_extglob_expansions("~/.@(ssh|rsa)/id_rsa")) == {"~/.ssh/id_rsa", "~/.rsa/id_rsa"}
     # ?(h) -> empty + h
     assert set(_extglob_expansions("~/.ss?(h)/id_rsa")) == {"~/.ss/id_rsa", "~/.ssh/id_rsa"}
-    # *(h) -> None (repetition cannot be enumerated)
-    assert _extglob_expansions("~/.ss*(h)/id_rsa") == [None]
-    # +(h) -> None (repetition cannot be enumerated)
-    assert _extglob_expansions("~/.ss+(h)/id_rsa") == [None]
-    # !(x) -> None (negation, refuse)
-    assert None in _extglob_expansions("~/.ss!(x)/id_rsa")
+    # Unbounded groups (*, +, !) widen to the plain globs `*` and `.*`: a
+    # superset of what they match, judged by the same fnmatch window.
+    assert _extglob_expansions("~/.ss*(h)/id_rsa") == ["~/.ss*/id_rsa", "~/.ss.*/id_rsa"]
+    assert _extglob_expansions("~/.ss+(h)/id_rsa") == ["~/.ss*/id_rsa", "~/.ss.*/id_rsa"]
+    assert _extglob_expansions("~/.ss!(x)/id_rsa") == ["~/.ss*/id_rsa", "~/.ss.*/id_rsa"]
+    # An unmatched paren is not a group: only the paren is dropped.
+    assert _extglob_expansions("a*(4") == ["a*4"]
+    # Budget exhaustion on adversarial input ends in a refusal sentinel.
+    assert _extglob_expansions("@(a|b)" * 7)[-1] is None
     # No extglob -> list with original
     assert _extglob_expansions("~/.ssh/id_rsa") == ["~/.ssh/id_rsa"]
     # AWS path
