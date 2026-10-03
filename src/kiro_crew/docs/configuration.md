@@ -607,10 +607,12 @@ commands or a packaged app's managed-install marker. A pause set in that
 package manager holds only if the edition's check command honors it: the
 gateway runs the policy's apply command whenever the check reports a version
 while `auto_update` is on or a minimum version requires the update, and the app
-runs the marker's update command on quit while its switch is on. The About
-page does not show that switch on a managed install, so it keeps whatever value
-it had, on by default, and the app then runs the marker's update command on
-quit whenever its check command reports a version. See
+runs the marker's update command on quit whenever its check command reports a
+version while its switch is on. On a managed install whose marker names an
+update command, the About page still shows the **Auto-update on restart**
+switch, on by default. Turn it off there and the app no longer runs that
+command on quit. A marker that names no update command only says who manages
+updates, and the app runs nothing. See
 [externally managed installs](../../../docs/build/desktop-app.md#externally-managed-installs-repackagers).
 
 ## Credentials

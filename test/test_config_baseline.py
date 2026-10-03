@@ -450,9 +450,19 @@ class TestAutoUpdateHelpSaysWhatItDoes:
         assert (
             "it is independent of auto_update" in flat
         ), "the page does not say the app's switch and auto_update are separate"
-        # The About page draws the switch only off a managed install, so the page
-        # must not leave a managed-install reader looking for it.
-        assert "the about page does not show that switch on a managed install" in flat
+        # A marker that names an update command runs createManagedLane, whose
+        # handle carries no `disabled` (pinned in auto-update.test.js), so the
+        # About page draws the switch there and managed-lane.js re-reads it at
+        # quit. The page must send that operator to the switch, not away from it.
+        shown = (
+            "on a managed install whose marker names an update command, the about"
+            f" page still shows the **{label.lower()}** switch"
+        )
+        assert (
+            shown in flat
+        ), "the page does not say a marker-driven install still shows the app's switch"
+        assert "turn it off there and the app no longer runs that command on quit" in flat
+        assert "does not show that switch" not in flat
 
 
 # ---------------------------------------------------------------------------
