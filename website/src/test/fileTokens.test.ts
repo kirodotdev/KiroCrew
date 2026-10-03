@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { describe, it, expect } from 'vitest'
 import { addPendingFile, extendsConsumably, findUnreferencedAttachments, foldWinSep, isWindowsShapedPath, mentionBoundary, mentionBoundaryFor, mentionTokenRegex, normalizeWindowsPath, parseFiles, prepareSendPayload, buildFileLabels, resolveFileSegment, mdImageDest, mdImageDestToPath, restoreQueuedContent, restoreUnreferencedImages, serializeDirTokens } from '../utils/fileTokens'
 
@@ -284,6 +286,43 @@ describe('prepareSendPayload', () => {
       // on-disk name, not an encoding.
       expect(mdImageDestToPath('/tmp/photo%20copy.png')).toBe('/tmp/photo%20copy.png')
     })
+  })
+
+  describe('mdImageDest grammar is one table on both sides of the wire', () => {
+    // The backend writes rows into the same transcript (an image posted in a
+    // linked Slack thread is promoted into uploads/ and spelled by
+    // kiro_crew.uploads.markdown_image_dest) and reads the composer's rows back
+    // out (kiro_crew.messaging.outbound_files.iter_local_refs). The fixture is
+    // the contract both pairs are pinned to: test/test_slack_one_renderer.py
+    // walks the same cases, so an escaping change here fails THIS suite instead
+    // of silently breaking the backend's round-trip. A new case belongs in the
+    // fixture, not in either test.
+    type DestCase = { name: string; path: string; dest: string; decoded: string }
+    type LegacyCase = { name: string; dest: string; decoded: string }
+    const fixturePath = resolve(__dirname, '../../../test/fixtures/markdown_image_dest.json')
+    const table = JSON.parse(readFileSync(fixturePath, 'utf8')) as {
+      cases: DestCase[]
+      legacy_bare: LegacyCase[]
+    }
+
+    it('has enough cases to be a contract', () => {
+      expect(table.cases.length).toBeGreaterThanOrEqual(10)
+    })
+
+    for (const c of table.cases) {
+      it(`producer: ${c.name}`, () => {
+        expect(mdImageDest(c.path)).toBe(c.dest)
+      })
+      it(`inverse: ${c.name}`, () => {
+        expect(mdImageDestToPath(c.dest)).toBe(c.decoded)
+      })
+    }
+
+    for (const c of table.legacy_bare) {
+      it(`legacy: ${c.name}`, () => {
+        expect(mdImageDestToPath(c.dest)).toBe(c.decoded)
+      })
+    }
   })
 
   it('includes @-referenced files inline and unreferenced as appended tokens', () => {

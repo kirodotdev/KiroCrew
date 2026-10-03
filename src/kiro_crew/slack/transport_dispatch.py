@@ -600,8 +600,11 @@ async def handle_message_transport(
         # `files_outbound=True` advertises it: an agent that writes
         # `![chart](/tmp/chart.png)` ships the raw path as text. The root is the
         # provider's own resolved cwd, which is what bounds extraction to files
-        # the session may read. Mirrors the Discord dispatcher.
-        renderer.authorize_upload_root(client.cwd)
+        # the session may read. Mirrors the Discord dispatcher. Awaited off the
+        # loop: the Slack renderer's approval resolves the cwd and pins the
+        # uploads directory, filesystem work a stalled mount would hold the
+        # loop on.
+        await renderer.authorize_upload_root_off_loop(client.cwd)
         # Expire AGAIN, now that the turn is serialized. The pass above (just
         # before the turn machinery) runs before `get_or_create` waits its turn,
         # so two messages arriving together both clear the control while it is

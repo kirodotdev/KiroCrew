@@ -98,7 +98,7 @@ _BASE_NAMES = frozenset("""
         NATIVE_SUBAGENT_OUTPUT_HARD NATIVE_SUBAGENT_OUTPUT_TAIL NATIVE_SUBAGENT_TERMINAL_KEEP
         NATIVE_SUBAGENT_TERMINAL_TTL_SECS NamedTuple OUTCOME_REJECTED_TRANSPORT_FLOOR
         PENDING_CHANNEL_ATTR PHASE_PER_TURN PHASE_SESSION_START POISONED_SESSION_CYCLES Path
-        PostedOptions PromptBusyExhaustedError QUESTION_CARD_SHOWN_PREFIX QUICK_PROMPTS
+        PromptBusyExhaustedError QUESTION_CARD_SHOWN_PREFIX QUICK_PROMPTS
         REFUSAL_INBAND_RECOVERY_PREFIX REFUSAL_RECOVERY_PREFIX RESTORED_QUEUE_KEY
         RecoveryPayload Refusal RefusalInfo
         ResetCause ResolvedBindings
@@ -801,6 +801,7 @@ def test_run_chat_keeps_its_entry_signature() -> None:
         "_directive_loop_gen",
         "_directive_channel_origin",
         "_turn_actor",
+        "_ingress",
         "regenerate_hint",
         "_on_consumed",
         "_on_irreversibly_consumed",

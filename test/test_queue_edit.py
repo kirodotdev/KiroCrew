@@ -46,6 +46,24 @@ class TestQueueEditHelper:
 
         assert "_directive_user_origin" not in slot._queue[0]
 
+    def test_edit_by_id_drops_the_slack_ingress_tag(self):
+        # A linked-thread message queued with Slack ingress is not echoed back
+        # into the thread when it drains. Once the dashboard user rewrites it,
+        # the words are the dashboard's, so the tag goes with the other
+        # provenance flags: the drain echoes the edited text to the thread
+        # rather than answering text the thread never saw.
+        from kiro_crew.messaging.link import SLACK_NAMESPACE
+
+        slot = _ChatSlot("s1")
+        qid = slot.queue_append("from the thread", ingress=SLACK_NAMESPACE)
+        assert slot._queue[0]["_ingress"] == SLACK_NAMESPACE
+        assert slot.queue_edit_by_id(qid, "rewritten in the dashboard") is True
+        assert "_ingress" not in slot._queue[0]
+        # An entry that never carried the tag is unaffected.
+        qid2 = slot.queue_append("typed here")
+        assert slot.queue_edit_by_id(qid2, "retyped here") is True
+        assert "_ingress" not in slot._queue[1]
+
     def test_edit_by_id_not_found(self):
         slot = _ChatSlot("s1")
         slot.queue_append("msg")

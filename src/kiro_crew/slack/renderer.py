@@ -45,10 +45,16 @@ from typing import Any, Awaitable, Callable
 
 from kiro_crew.constants import DENY_CAUSE_APPROVAL_TIMEOUT, strip_control_comments
 from kiro_crew.messaging.approval import adoptable_reservation
-from kiro_crew.messaging.display_safety import redact_for_display
+from kiro_crew.messaging.display_safety import (
+    canonicalize_display,
+    mirror_echo_text,
+    redact_for_display,
+)
 from kiro_crew.messaging.outbound_files import (
+    ApprovedRoot,
     OutboundFile,
     Rejection,
+    approve_root,
     extract_local_refs_off_loop,
     hide_local_refs,
     protected_ref_spans,
@@ -62,7 +68,8 @@ from kiro_crew.messaging.renderer import (
 )
 from kiro_crew.messaging.split import repaired_for_delivery, split_markdown_safe
 from kiro_crew.messaging.transport import TransportCapabilities
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.platform.context import redact_via_context
+from kiro_crew.security import _CRED_CLASS, redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.slack.files import UPLOAD_LIMITS, upload_outbound_files
 from kiro_crew.slack.format import (
@@ -70,6 +77,7 @@ from kiro_crew.slack.format import (
     TRUNCATION_NOTICE,
     extract_options,
     is_wait_identity,
+    render_for_slack,
     strip_thinking_tags,
 )
 from kiro_crew.slack.handler import (
@@ -90,18 +98,30 @@ from kiro_crew.slack.handler import (
 )
 from kiro_crew.slack.outbound import PostedOptions
 from kiro_crew.slack.transport import SLACK_CAPABILITIES
+from kiro_crew.uploads import upload_dir
 
 logger = logging.getLogger(__name__)
 
 #: Block Kit action_id prefixes for tool approve/deny buttons.
 TOOL_APPROVE_ACTION_PREFIX = "mc_tool_approve_"
 TOOL_DENY_ACTION_PREFIX = "mc_tool_deny_"
+#: Task-card bound, applied after redaction so cuts only shorten masked tokens.
+TOOL_CARD_LIMIT = 75
 #: "Trust" auto-approves all subsequent tools for THIS session only (not
 #: global). Mirrors the native path's per-session trust_tool button.
 TOOL_TRUST_ACTION_PREFIX = "mc_tool_trust_"
 
 #: Thread-status text shown while the turn is in flight (mirrors handler).
 _STATUS_WORKING = "is working on your request"
+
+#: The dashboard-ingress echo: the words a person typed into the dashboard,
+#: repeated into the linked thread so the conversation there reads as question
+#: then answer. Italic, behind a speech balloon, so it cannot be mistaken for
+#: something the agent said.
+USER_ECHO_PREFIX = "💬"
+#: History rows seeded into a freshly linked thread, one icon per role.
+HISTORY_USER_ICON = "\U0001f9d1"
+HISTORY_AGENT_ICON = "\U0001f916"
 
 #: Characters held back below ``max_message_chars`` when splitting. The shared
 #: splitter may exceed its limit by the fence scaffolding of a whole-line
@@ -166,6 +186,67 @@ def _split_trailing_word(text: str) -> tuple[str, str]:
     return text, ""
 
 
+#: Longest trailing run, in DISPLAY form, that a throttled flush withholds as a
+#: possible credential spelled across markup. Comfortably above the longest
+#: credential shape the redactors match, like ``_REF_HOLD_LOOKBEHIND_CHARS``;
+#: a longer run is not a key and is sent as written.
+_DISPLAY_HOLD_MAX = 256
+#: How much RAW tail the display-form scan reads. A link destination inflates the
+#: raw length of a run whose display form is short, so this is well above
+#: ``_DISPLAY_HOLD_MAX``; beyond it the run is not a word, a path or a key.
+_DISPLAY_HOLD_SCAN = 1024
+#: Characters that mark Slack-rendered markup inside a run. A run without any of
+#: them displays as written, and the raw credential-class holdback upstream
+#: (``StreamRedactor``) already covers that case, so the scan is skipped.
+_DISPLAY_MARKUP_CHARS = frozenset("[*_`~<|")
+
+
+def _split_trailing_display_run(text: str) -> tuple[str, str]:
+    """Split off the raw tail that Slack RENDERS as a trailing credential run.
+
+    ``StreamRedactor`` holds back a trailing run of credential-class characters
+    on the RAW text, so a key cut between two chunks is rejoined before any scan.
+    Slack renders markup away, so a key the model splits WITH markup --
+    ``[AKIA](https://example.invalid/a-long-path)`` at the end of one chunk, the
+    rest of the key opening the next -- is whole on screen while the raw scan
+    sees ``)`` end the run and releases the head; the display-form scan of each
+    append then sees two fragments, and appends are final on Slack's side. The
+    cure is the same holdback applied to the DISPLAY form: the shortest raw
+    suffix whose rendering is a non-empty run of credential-class characters is
+    held, so the next flush (or the final one) scans the joined run as Slack
+    shows it before anything is appended.
+
+    Returns ``(ready, held)``. A run with no markup character in it needs no
+    hold here (raw and display forms coincide, and the upstream redactor already
+    held the raw run); a display run over ``_DISPLAY_HOLD_MAX`` or a raw run over
+    ``_DISPLAY_HOLD_SCAN`` is sent as written, for the same reason the word
+    holdback bounds itself: a run that long is not a key mid-flight. An image
+    reference (``![alt](path)``) is never cut here: ``_withhold_refs`` holds it
+    whole and scans the join at the seal.
+    """
+    if not text or text[-1].isspace():
+        return text, ""
+    # A credential run renders without whitespace, so it lives inside the
+    # trailing whitespace-free run of the raw text.
+    run_start = len(text)
+    while run_start > 0 and not text[run_start - 1].isspace():
+        run_start -= 1
+    run = text[run_start:]
+    if len(run) > _DISPLAY_HOLD_SCAN or not any(ch in _DISPLAY_MARKUP_CHARS for ch in run):
+        return text, ""
+    for start in range(run_start, len(text)):
+        if text[start] == "[" and start > 0 and text[start - 1] == "!":
+            # An image reference. Cutting between its ``!`` and ``[`` would hide
+            # it from ``_withhold_refs``, which owns image markup end to end
+            # (held whole until the seal, released with the markup removed and
+            # the join scanned there). Leave it to that hold.
+            continue
+        shown = canonicalize_display(text[start:])
+        if shown and len(shown) <= _DISPLAY_HOLD_MAX and all(ch in _CRED_CLASS for ch in shown):
+            return text[:start], text[start:]
+    return text, ""
+
+
 def _redact_all(text: str) -> str:
     """Both outbound redactors as one callable, in the canonical order."""
     text, _ = redact_exfiltration_urls(text)
@@ -186,6 +267,30 @@ def _display_safe(text: str) -> str:
     costs nothing and keeps the guarantee at the sink instead of at the caller.
     """
     return redact_for_display(text, _redact_all)[0]
+
+
+def _approved_roots(cwd: str) -> tuple[ApprovedRoot, ...]:
+    """The upload roots a session with resolved cwd *cwd* may read from.
+
+    The cwd itself plus the dashboard's uploads directory. An invalid (relative
+    or empty) cwd yields NO roots -- not "the uploads dir alone" -- so the
+    pre-existing rule that an unauthorized session ships no bytes is unchanged;
+    the uploads directory only ever widens a root that was already valid.
+
+    Each root is approved HERE, once, and carries the identity it has now
+    (:class:`ApprovedRoot`): the extractor verifies every opened file against
+    that identity rather than resolving the root again at read time, so a root
+    swapped for a link after this call cannot move the boundary. The uploads
+    directory is also refused outright when a link already sits at its name --
+    the same line the inbound promotion holds when it pins ``uploads/`` before
+    writing into it -- while the cwd keeps the rule it always had (a symlinked
+    working directory is the user's own layout, and it resolves once, here).
+    """
+    cwd_root = approve_root(cwd) if os.path.isabs(cwd) else None
+    if cwd_root is None:
+        return ()
+    uploads_root = approve_root(upload_dir(), refuse_link=True)
+    return (cwd_root,) if uploads_root is None else (cwd_root, uploads_root)
 
 
 #: Slack channel capabilities live in ``slack/transport.py`` (imported above).
@@ -575,9 +680,16 @@ class SlackApprovalDecider:
 class SlackRenderer(Renderer):
     """Renders abstract output events onto a Slack thread.
 
-    Holds (and exposes) the underlying ``SlackClientOps`` so the inline
-    dashboard->Slack mirror keeps working unchanged (guardrail G2). The
-    streaming message is lazily opened on the first text/tool event.
+    The ONE Slack output path for a session with a Slack attachment, whichever
+    surface a turn arrived from -- a second, text-only path beside it is how a
+    pasted picture reached the thread as a filesystem path: the Slack
+    transport dispatcher drives it through ``TurnDriver`` for a Slack-born turn,
+    and the dashboard turn loop calls the same ``on_*`` methods from its own
+    event sites for a dashboard-born turn on a linked session. The two entry
+    points a Slack-born turn never needs -- the user echo and the history seed --
+    sit at the bottom of the class. Holds (and exposes) the underlying
+    ``SlackClientOps``. The streaming message is lazily opened on the first
+    text/tool event.
     """
 
     channel_type = "slack"
@@ -597,11 +709,17 @@ class SlackRenderer(Renderer):
         user_id: str = "",
         uploads_allowed: bool = True,
         upload_root: str = "",
+        session_key: str = "",
     ) -> None:
         super().__init__(capabilities or SLACK_CAPABILITIES)
         self.slack = slack
         self.channel = channel
         self.thread_ts = thread_ts
+        # The conversation this renderer serves, for the SEL audit line on an
+        # upload decision. A Slack-born turn carries it on the decider; a
+        # dashboard-ingress turn has no decider (the dashboard owns approval) and
+        # names its session here instead, so both ingress kinds audit alike.
+        self._session_key = session_key
         # The sending user. Two consumers:
         #   * DashboardContributor.decorate_reply on the final outbound text, so a
         #     composed edition can refresh its auth window / append an expiry
@@ -695,11 +813,12 @@ class SlackRenderer(Renderer):
         self._redacted_urls = 0
         self._t0 = 0.0
         self._started = False  # guards on_turn_start against double-fire
-        # Outbound-upload gates. The root is the provider's resolved cwd, so it
-        # is UNSET until the dispatcher authorizes one (``authorize_upload_root``)
-        # and uploads stay off until then: extraction reads files the model named,
-        # and "anywhere" is not an approved root.
-        self._upload_root = upload_root if os.path.isabs(upload_root) else ""
+        # Outbound-upload gates. The roots are the provider's resolved cwd plus
+        # the dashboard's uploads directory (see ``authorize_upload_root``), so
+        # they are UNSET until the dispatcher authorizes the cwd and uploads stay
+        # off until then: extraction reads files the model named, and "anywhere"
+        # is not an approved root.
+        self._upload_roots: tuple[ApprovedRoot, ...] = _approved_roots(upload_root)
         self._uploads_allowed = uploads_allowed
         # Visible text withheld from the append-only stream because a local image
         # reference is in play; released (markup removed) at the seal.
@@ -915,7 +1034,15 @@ class SlackRenderer(Renderer):
         flush = self._word_hold + flush
         self._word_hold = ""
         if not final:
-            flush, self._word_hold = _split_trailing_word(flush)
+            # Two holdbacks, display form first: a key the model split WITH
+            # markup renders whole on Slack while the raw scan released its head
+            # (``_split_trailing_display_run``), then the ordinary trailing
+            # partial word. Both ride ``_word_hold`` so every release path --
+            # the next flush, ``release_held_word``, ``close()`` -- carries them
+            # in order.
+            flush, display_held = _split_trailing_display_run(flush)
+            flush, word_held = _split_trailing_word(flush)
+            self._word_hold = word_held + display_held
             if not flush:
                 return
         if self._uploads_enabled():
@@ -926,15 +1053,38 @@ class SlackRenderer(Renderer):
 
     # -- outbound local-image uploads ---------------------------------------
     def authorize_upload_root(self, root: str) -> None:
-        """Authorize the provider's resolved cwd; an invalid root disables uploads."""
-        self._upload_root = root if os.path.isabs(root) else ""
+        """Authorize the provider's resolved cwd; an invalid root disables uploads.
+
+        The dashboard's uploads directory is admitted ALONGSIDE the cwd, never
+        instead of it: a picture pasted into the dashboard composer, or drawn by
+        the agent there, is written under ``<data_home>/uploads/`` and the
+        transcript row names that path, so a linked thread can only receive it if
+        that tree is an approved root too. The same renderer serves a Slack-born
+        turn and a dashboard-born one, so both get both roots; a session with no
+        valid cwd gets neither, exactly as before.
+        """
+        self._upload_roots = _approved_roots(root)
+
+    async def authorize_upload_root_off_loop(self, root: str) -> None:
+        """:meth:`authorize_upload_root` for a caller on the event loop.
+
+        Approving a root touches the filesystem -- ``realpath`` on the cwd, and a
+        pinned open of the uploads directory to read its identity -- and a cwd or
+        data home on a stalled network mount would hold the gateway loop, and
+        with it every session's turn and the heartbeat, until the mount answered.
+        The resolution runs in a worker thread and only the result is assigned
+        on the loop, which is the shape every other filesystem touch on this
+        renderer takes (:func:`extract_local_refs_off_loop`). The synchronous
+        form stays for callers already off the loop and for tests.
+        """
+        self._upload_roots = await asyncio.to_thread(_approved_roots, root)
 
     def _uploads_enabled(self) -> bool:
         """Require the transport capability, an unrestricted session, and a root."""
         return (
             bool(self.capabilities.files_outbound)
             and self._uploads_allowed
-            and bool(self._upload_root)
+            and bool(self._upload_roots)
         )
 
     #: How much text immediately BEFORE an image span is held back with it.
@@ -1011,7 +1161,7 @@ class SlackRenderer(Renderer):
         """
         try:
             result = await extract_local_refs_off_loop(
-                text, within_root=self._upload_root, limits=UPLOAD_LIMITS
+                text, within_root=self._upload_roots, limits=UPLOAD_LIMITS
             )
         except Exception:
             logger.warning("slack: outbound file extraction failed", exc_info=True)
@@ -1083,7 +1233,7 @@ class SlackRenderer(Renderer):
 
     def _audit_caller(self) -> str:
         """Identity for the SEL audit line: the session, else the conversation."""
-        session_key = self.decider.session_key if self.decider else ""
+        session_key = self.decider.session_key if self.decider else self._session_key
         return session_key or self.channel or "slack"
 
     # -- length splitting ---------------------------------------------------
@@ -1244,8 +1394,8 @@ class SlackRenderer(Renderer):
             self._tool_timer_task.cancel()
         self._tool_timer_task = None
 
-    async def close(self) -> None:
-        """Idempotent teardown for the transport dispatcher's ``finally``.
+    async def close(self, *, publish: bool = True) -> None:
+        """Idempotent teardown for the dispatcher's ``finally``.
 
         Cancels the 30s ``_tool_elapsed_updater`` timer and finalizes the
         reaction controller. Without this, a ``TurnDriver.run()`` exception
@@ -1254,13 +1404,87 @@ class SlackRenderer(Renderer):
         loop shuts down. Safe to call after ``on_done`` (no-op) and multiple
         times: the ``_finalized`` guard prevents flipping a already-successful
         turn's reaction to the error state.
+
+        A turn that never reached ``on_done`` also leaves its Slack SURFACE open:
+        a task card stuck at ``in_progress`` and a streaming message spinning
+        forever -- or, on the no-stream fallback, a ``_Thinking…_`` placeholder
+        that never changes. Both are closed here on every exit path -- the card
+        marked complete, the stream stopped (or the placeholder sealed with the
+        text the reader already saw, and deleted when there was none, the way the
+        native handler disposes of its own), the thread status cleared -- so a
+        cancelled or crashed turn reads as ended rather than as still running.
+        Text the stream still holds goes out first: the throttle buffer (a chunk
+        that arrived after the last flush, with the word that flush held back in
+        front of it) and the withheld reference tail (text held back for a seal
+        that will never run). Appended as written, the way
+        the ``wait`` finalize does it -- a visible path is the honest degradation,
+        a dropped sentence is not. Each call is best-effort; teardown must never
+        mask the exception that got us here.
+
+        ``publish=False`` is the teardown for a turn whose audience fence forbids
+        publication (the dashboard's ``cross_surface_withheld``): nothing new
+        reaches the thread -- no buffered text, no reference tail, no card
+        completion (that would publish the title for the first time), no
+        placeholder seal -- but the stream is still stopped, the placeholder
+        deleted, the status cleared and the timer cancelled, so the thread reads
+        as ended without saying what it was not allowed to say.
         """
         self._cancel_tool_timer()
-        if not self._finalized and self._controller is not None:
-            try:
-                self._controller.finalize(error=True)
-            except Exception:
-                pass  # non-critical teardown; never raise from close()
+        if not self._finalized:
+            if self._stream_ts and self._use_slack_stream:
+                if self._active_task_id and publish:
+                    await self._append_task(
+                        self._active_task_id, self._active_task_title, "complete"
+                    )
+                self._active_task_id = ""
+                if publish:
+                    try:
+                        # Final, like ``on_done``'s: the word a throttled flush
+                        # held back goes out with the buffer behind it. A
+                        # non-final flush here would hold a new tail for a
+                        # flush that never comes (see ``release_held_word``).
+                        await self._flush_stream_buffer(final=True)
+                        if self._ref_hold:
+                            held, self._ref_hold = self._ref_hold, ""
+                            await self._append_stream(held)
+                    except Exception:
+                        logger.warning("Slack stream flush failed at teardown", exc_info=True)
+                self._ref_hold = ""
+                try:
+                    await self.slack.stop_stream(self.channel, self._stream_ts)
+                except Exception:
+                    logger.warning("Slack stop_stream failed at teardown", exc_info=True)
+                self._stream_ts = None
+            elif self._stream_ts and not self._use_slack_stream:
+                # No-stream fallback: ``_stream_ts`` is the placeholder message.
+                # ``_stream_buffer`` holds everything rendered into it so far.
+                try:
+                    shown, _ = strip_thinking_tags(
+                        self._stream_buffer + self._ref_hold, strip_whitespace=False
+                    )
+                    if self._uploads_enabled():
+                        shown = await asyncio.to_thread(hide_local_refs, shown)
+                    if not shown.strip():
+                        await self.slack.delete_message(self.channel, self._stream_ts)
+                    elif publish:
+                        await self._render_fallback(_display_safe(shown))
+                    # else: fenced -- what the placeholder already shows stays as
+                    # it is (a reply already shown cannot be recalled); nothing
+                    # buffered since is rendered into it.
+                except Exception:
+                    logger.warning("Slack placeholder teardown failed", exc_info=True)
+                self._stream_ts = None
+                self._ref_hold = ""
+            if self._started:
+                try:
+                    await self.slack.set_thread_status(self.channel, self.thread_ts or "", "")
+                except Exception:
+                    logger.warning("Slack set_thread_status failed at teardown", exc_info=True)
+            if self._controller is not None:
+                try:
+                    self._controller.finalize(error=True)
+                except Exception:
+                    pass  # non-critical teardown; never raise from close()
         self._finalized = True
 
     async def release_held_word(self) -> None:
@@ -1304,6 +1528,77 @@ class SlackRenderer(Renderer):
             await self._append_stream(tail)
         except Exception:
             logger.warning("Slack: releasing a held word failed", exc_info=True)
+
+    # -- entry points a Slack-born turn never needed ---------------------------
+    #
+    # A turn that ARRIVED from Slack already has its question in the thread and
+    # its history behind it. A dashboard-born turn on a linked session does not:
+    # the person typed into the dashboard, so the thread has to be told what they
+    # said, and a thread linked mid-conversation has to be seeded with what came
+    # before. Both live on the renderer because the renderer is the one thing
+    # that knows how to put this session's words AND pictures into this thread;
+    # a text-only copy beside the turn loop is how a pasted picture reaches Slack
+    # as a filesystem path.
+
+    async def _extract_for_post(self, text: str) -> tuple[str, list[OutboundFile]]:
+        """Pull local images out of *text* for a plain (non-streamed) post.
+
+        Runs BEFORE any redaction or length split, always: extraction has to see
+        each ``![alt](path)`` whole and in its original fence context, and a cut
+        or a truncation upstream of it is how a reference gets bisected and its
+        picture lost. Refusal notes are folded into the returned text so a missing
+        picture is explained in the same message that would have shown it.
+        """
+        if not text or not self._uploads_enabled():
+            return text, []
+        body, files, _notes = await self._extract_uploads(text)
+        return body, files
+
+    async def echo_user_message(self, text: str) -> None:
+        """Repeat what the person typed in the dashboard into the linked thread.
+
+        The ``💬 _..._`` echo with the redact-then-truncate contract of every
+        mirror echo (:func:`mirror_echo_text`), and the pictures the message
+        carried uploaded after it so the thread shows the same attachment the
+        dashboard does. Never raises: an echo is context for the reader, not the
+        answer, and a Slack refusal here must not cost the turn.
+        """
+        body, files = await self._extract_for_post(text or "")
+        safe = mirror_echo_text(body, redact_via_context)
+        if safe:
+            try:
+                await self.slack.post_message(
+                    self.channel, f"{USER_ECHO_PREFIX} _{safe}_", self.thread_ts
+                )
+            except Exception:
+                logger.debug("slack: user echo failed", exc_info=True)
+        if files:
+            await self._upload_files(files)
+
+    async def post_history_row(self, role: str, content: str) -> bool:
+        """Seed one transcript row into the thread, pictures included.
+
+        The backfill a freshly linked thread receives: ``🧑`` for the person,
+        ``🤖`` for the agent, rendered through the shared Slack render pipeline
+        (:func:`render_for_slack`, which owns the redact/convert/split ordering
+        and charges the icon against the message limit). Images are extracted
+        first and uploaded after the text, in the same order the dashboard shows
+        them. Returns ``False`` when a text part could not be posted, so a caller
+        seeding a whole history can stop rather than leave a gap mid-thread.
+        """
+        icon = HISTORY_USER_ICON if role == "user" else HISTORY_AGENT_ICON
+        body, files = await self._extract_for_post(strip_control_comments(content or ""))
+        for part in render_for_slack(body, prefix=f"{icon} "):
+            try:
+                await self.slack.post_message(self.channel, part, self.thread_ts)
+            except Exception:
+                # Never bare-pass: a silent swallow here is what made a partial
+                # seed invisible. The caller decides whether to keep going.
+                logger.debug("slack: history row post failed", exc_info=True)
+                return False
+        if files:
+            await self._upload_files(files)
+        return True
 
     @property
     def delivered_text(self) -> str:
@@ -1458,6 +1753,9 @@ class SlackRenderer(Renderer):
     async def on_tool_call(
         self, tool_call_id: str, title: str, tool_kind: str = "", tool_purpose: str = ""
     ) -> None:
+        # Redact each full field before bounding it; both callers inherit the order.
+        title = self.redact_for_target(title)[:TOOL_CARD_LIMIT]
+        tool_purpose = self.redact_for_target(tool_purpose)[:TOOL_CARD_LIMIT]
         # Mirror native EVENT_TOOL_CALL: flush pending text, status update,
         # complete the previous task (with elapsed), start a new in-progress
         # task + its 30s elapsed timer.
@@ -1569,6 +1867,15 @@ class SlackRenderer(Renderer):
         tool_purpose: str = "",
         tool_input: str = "",
     ) -> None:
+        # No decider, no card. The driver already skips this dispatch when
+        # nothing awaits the click, and the renderer holds the same line at its
+        # own boundary: a card no decider resolves is a dead control, and on a
+        # dashboard-ingress turn the dashboard owns the approval and posts its
+        # own linked prompt -- a second card here would offer the same decision
+        # twice, one of them answerable by nobody.
+        if self.decider is None:
+            logger.debug("slack: prompt_choice with no decider -- no approval card posted")
+            return
         # The tool THIS request asks about. The options are the ANSWERS ("Allow",
         # "Reject"), so falling back to the first one's label puts a verb where the
         # card promises a tool name; it stays only as the last resort for a

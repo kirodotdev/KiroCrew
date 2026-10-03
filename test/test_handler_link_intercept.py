@@ -282,9 +282,14 @@ class TestLinkedThreadIntercept:
         slot.key = "slot1"
         slot._queue = []
 
-        def queue_append(content, *, meta=None, directive_user_origin, directive_channel_origin):
+        def queue_append(
+            content, *, meta=None, directive_user_origin, directive_channel_origin, ingress=""
+        ):
             assert directive_user_origin is True
             assert directive_channel_origin is True
+            # The entry names Slack as its ingress, so the drained turn's mirror
+            # knows the message is already in the thread and does not echo it.
+            assert ingress == "slack"
             # The linked-thread enqueue stamps the admission-time containment
             # snapshot so the drain can re-assert it at delivery.
             from kiro_crew.dashboard.session_control import QUEUED_CONTAINMENT_META_KEY

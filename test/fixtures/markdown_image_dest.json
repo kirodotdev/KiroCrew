@@ -1,0 +1,106 @@
+{
+  "_comment": [
+    "Shared contract for the ![image](...) destination grammar, which exists in two",
+    "languages: the dashboard composer's producer `mdImageDest` and its inverse",
+    "`mdImageDestToPath` (website/src/utils/fileTokens.ts), and the backend's",
+    "producer `kiro_crew.uploads.markdown_image_dest` with the outbound scanner",
+    "`kiro_crew.messaging.outbound_files.iter_local_refs` as its inverse. A row the",
+    "backend writes must render in the dashboard, and a row the composer writes",
+    "must resolve on the way out to a channel, so both producers must spell each",
+    "`path` as exactly `dest`, and both inverses must read `dest` back as exactly",
+    "`decoded`. The FRONTEND test (website/src/test/fileTokens.test.ts) and the",
+    "BACKEND test (test/test_slack_one_renderer.py) each walk every case, so an",
+    "escaping change on either side fails that side's suite instead of silently",
+    "breaking the other side's round-trip.",
+    "",
+    "`decoded` is the inverse's output, not the original `path`: slash",
+    "normalisation of a Windows path is one-way by design, so a drive-letter or",
+    "UNC path decodes to its forward-slashed spelling.",
+    "",
+    "`outbound_local: false` marks a destination the outbound scanner does not",
+    "treat as a local file at all -- a `//host/share` spelling is a remote",
+    "reference there (an SMB probe nobody asked for), so it yields no local",
+    "reference. The frontend inverse still decodes it, because it only renders.",
+    "",
+    "`legacy_bare` pins the other half of the provenance rule: an UNWRAPPED",
+    "destination is never percent-decoded, because it is either inside the",
+    "pass-through-safe alphabet (decode is the identity) or pre-existing history",
+    "whose `%20` is part of the on-disk name."
+  ],
+  "cases": [
+    {
+      "name": "a POSIX uploads path inside the safe alphabet passes through unchanged",
+      "path": "/home/u/.kiro/crew/uploads/0123abcd_shot.png",
+      "dest": "/home/u/.kiro/crew/uploads/0123abcd_shot.png",
+      "decoded": "/home/u/.kiro/crew/uploads/0123abcd_shot.png"
+    },
+    {
+      "name": "a Windows drive path is spelled with forward slashes",
+      "path": "C:\\Users\\me\\.kiro\\crew\\uploads\\shot.png",
+      "dest": "C:/Users/me/.kiro/crew/uploads/shot.png",
+      "decoded": "C:/Users/me/.kiro/crew/uploads/shot.png"
+    },
+    {
+      "name": "a UNC path is forward-slashed too",
+      "path": "\\\\host\\share\\uploads\\shot.png",
+      "dest": "//host/share/uploads/shot.png",
+      "decoded": "//host/share/uploads/shot.png",
+      "outbound_local": false
+    },
+    {
+      "name": "a space in a Windows path wraps the destination",
+      "path": "C:\\Users\\John Doe\\uploads\\shot.png",
+      "dest": "<C:/Users/John Doe/uploads/shot.png>",
+      "decoded": "C:/Users/John Doe/uploads/shot.png"
+    },
+    {
+      "name": "a space and parentheses wrap a POSIX path, parentheses unescaped",
+      "path": "/tmp/screenshot (1).png",
+      "dest": "</tmp/screenshot (1).png>",
+      "decoded": "/tmp/screenshot (1).png"
+    },
+    {
+      "name": "a percent sign is written %25 inside the wrap",
+      "path": "/tmp/100%.png",
+      "dest": "</tmp/100%25.png>",
+      "decoded": "/tmp/100%.png"
+    },
+    {
+      "name": "angle brackets are backslash-escaped inside the wrap",
+      "path": "/tmp/a<b>.png",
+      "dest": "</tmp/a\\<b\\>.png>",
+      "decoded": "/tmp/a<b>.png"
+    },
+    {
+      "name": "a space and angle brackets together",
+      "path": "/tmp/a <b>.png",
+      "dest": "</tmp/a \\<b\\>.png>",
+      "decoded": "/tmp/a <b>.png"
+    },
+    {
+      "name": "a POSIX backslash is a filename byte, escaped inside the wrap",
+      "path": "/tmp/my dir\\.hidden.png",
+      "dest": "</tmp/my dir\\\\.hidden.png>",
+      "decoded": "/tmp/my dir\\.hidden.png"
+    },
+    {
+      "name": "the safe alphabet is ASCII, so a non-ASCII letter wraps",
+      "path": "/tmp/josé/shot.png",
+      "dest": "</tmp/josé/shot.png>",
+      "decoded": "/tmp/josé/shot.png"
+    },
+    {
+      "name": "a literal %20 in a name survives the wrap as %2520",
+      "path": "/tmp/photo%20copy.png",
+      "dest": "</tmp/photo%2520copy.png>",
+      "decoded": "/tmp/photo%20copy.png"
+    }
+  ],
+  "legacy_bare": [
+    {
+      "name": "an unwrapped legacy destination is preserved verbatim",
+      "dest": "/tmp/photo%20copy.png",
+      "decoded": "/tmp/photo%20copy.png"
+    }
+  ]
+}

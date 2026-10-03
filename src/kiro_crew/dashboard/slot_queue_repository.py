@@ -582,8 +582,17 @@ class SlotQueueRepository:
         *,
         directive_user_origin: bool = False,
         directive_channel_origin: bool = False,
+        ingress: str = "",
     ) -> str:
-        """Append an entry and return its process-local queue ID."""
+        """Append an entry and return its process-local queue ID.
+
+        *ingress* names the surface the message ARRIVED from when it is not the
+        dashboard's own composer (``"slack"`` for a linked-thread message). The
+        drain hands it to the turn so the mirror can tell a message that is
+        already in the thread from one that has to be echoed there. Recorded only
+        when set, like the provenance flag, so an untagged entry's shape is
+        unchanged.
+        """
         queue_id = self._id_provider()
         item: dict[str, Any] = {
             "id": queue_id,
@@ -598,6 +607,8 @@ class SlotQueueRepository:
             item["_directive_user_origin"] = True
         if directive_channel_origin:
             item["_directive_channel_origin"] = True
+        if ingress:
+            item["_ingress"] = ingress
         owner._queue.append(item)
         owner._note_enqueue()
         return queue_id
@@ -743,6 +754,11 @@ class SlotQueueRepository:
                 item["_directive_channel_origin"] = True
             else:
                 item.pop("_directive_channel_origin", None)
+            # The words are now the dashboard's: whoever edited the entry typed
+            # the replacement here, whichever surface the original arrived
+            # from. An entry that kept its Slack ingress would drain unechoed,
+            # and the thread would read an answer to text it never saw.
+            item.pop("_ingress", None)
             return True
         return False
 

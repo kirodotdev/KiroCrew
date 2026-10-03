@@ -3987,9 +3987,13 @@ def _dequeue_next_message(slot, merge_enabled: bool) -> tuple:
     """Drain the queue: merge non-cron messages or pop the first one.
 
     A merge run stops at a system injection, at an attachment-bearing entry
-    (see :func:`carries_attachments`) and at a possibly-delivered steer
-    (``STEER_POSSIBLY_DELIVERED_META``); either of the last two at the head of
-    the queue pops alone.
+    (see :func:`carries_attachments`), at a possibly-delivered steer
+    (``STEER_POSSIBLY_DELIVERED_META``), and at an entry whose ingress differs
+    from the run's first entry: a Slack-routed message and a dashboard-typed one
+    never share a batch, so the turn's ingress is exact and the mirror's echo
+    decision (skip what already sits in the thread, echo what does not) applies
+    to every message in the batch alike. An attachment-bearing entry or a
+    possibly-delivered steer at the head of the queue pops alone.
     """
     if merge_enabled and len(slot._queue) > 1:
         to_merge: list[dict] = []
@@ -4001,6 +4005,8 @@ def _dequeue_next_message(slot, merge_enabled: bool) -> tuple:
                 # messages never written to any pipe may already have run.
                 or (item.get("meta") or {}).get(STEER_POSSIBLY_DELIVERED_META)
             ):
+                break
+            if to_merge and item.get("_ingress", "") != to_merge[0].get("_ingress", ""):
                 break
             to_merge.append(item)
         if len(to_merge) > 1:
