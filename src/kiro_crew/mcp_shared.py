@@ -1723,10 +1723,11 @@ def _run_stdio_dispatch_loop(
                 if respawned_by_pool():
                     _refuse_from_pruned_install(req_id, tool_name)
                     return True
-                # Launched directly by kiro-cli: nothing would respawn this
-                # process, so exiting would take every tool away for the rest
-                # of the session. Keep the transport and refuse each call with
-                # the action that actually recovers it.
+                # Launched directly by kiro-cli, or pooled with a respawn
+                # command that went with the prune: nothing would bring this
+                # process back, so exiting would take every tool away for the
+                # rest of the session. Keep the transport and refuse each call
+                # with the action that actually recovers it.
                 logger.warning(
                     "%s: the install this process runs from was removed by an "
                     "update; refusing %s until Kiro Crew is restarted",

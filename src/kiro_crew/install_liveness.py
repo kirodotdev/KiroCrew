@@ -15,6 +15,7 @@ check itself can never be the import that fails after a prune.
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 
 #: Set by the MCP gateway pool on every backend it spawns. Only there does an
@@ -26,6 +27,14 @@ from pathlib import Path
 #: A compile-time constant, so it cannot split or collapse pool identity.
 POOLED_BACKEND_ENV = "KIROCREW_MCP_POOLED_BACKEND"
 POOLED_BACKEND_VALUE = "1"
+
+#: Set by the pool beside the marker: the command it launched this backend with.
+#: The pool respawns from the same frozen target, so an exit only gets this
+#: process replaced if that command still resolves. A launcher inside the
+#: pruned tree is gone with it, and the respawn would fail and leave the session
+#: with no first-party tools at all. Derived from the PoolKey's own command, so
+#: it cannot split or collapse pool identity either.
+POOLED_RESPAWN_COMMAND_ENV = "KIROCREW_MCP_POOLED_RESPAWN_COMMAND"
 
 #: Package directory of the running process, fixed at import time. Resolved so
 #: a symlinked launch path (a stable link repointed at the next version) is
@@ -50,5 +59,17 @@ def install_pruned(package_root: Path | None = None) -> bool:
 
 
 def respawned_by_pool() -> bool:
-    """True when this process is a pooled backend, so exiting gets it replaced."""
-    return os.environ.get(POOLED_BACKEND_ENV) == POOLED_BACKEND_VALUE
+    """True when this process is a pooled backend AND exiting gets it replaced.
+
+    The pool relaunches from the command it spawned this backend with, so that
+    command must still resolve. Absent or unresolvable means no working
+    respawn: the caller keeps its transport instead of exiting.
+    """
+    if os.environ.get(POOLED_BACKEND_ENV) != POOLED_BACKEND_VALUE:
+        return False
+    command = os.environ.get(POOLED_RESPAWN_COMMAND_ENV, "")
+    if not command:
+        return False
+    if os.path.isabs(command):
+        return os.path.isfile(command) and os.access(command, os.X_OK)
+    return shutil.which(command) is not None
