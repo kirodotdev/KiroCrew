@@ -256,6 +256,23 @@ For Python app hooks with an existing cron grant, use
 `update_job` and `update_job_async` reject `enabled` and `user_paused` arguments;
 use the toggle methods instead. Foreign and missing job IDs are refused.
 
+When your app notices work is ready before the job's next due time, use
+`await ctx.cron.run_job_async(job_id)` rather than lowering `every_secs` to force
+an early fire: shrinking the interval persists a schedule change to express a
+one-off action and cannot react faster than the 60s minimum. This one has no sync
+form, because running a job claims and spawns on the event loop and there is
+nothing for an off-loop caller to await. It returns once the run has really
+STARTED, not when it finishes, so the result you want is in the job's history
+rather than in the returned bool. `True` means the run started. `False` means no
+run started: one was already in flight, or the run was refused before it began,
+for example because the cron store was too busy to re-check the job. Nothing is
+written to the job's history for a `False`, so if you still want the run, call
+again later. A foreign or missing job ID raises
+`PermissionError`. That check reads a cache, so a job deleted a moment before
+the call can return `False` instead. Triggering this way does not bypass the checks a scheduled
+fire passes, so a job owned by a disabled app still does not execute; a paused job
+does run, because pausing stops the schedule rather than the owner.
+
 ## Shared React Query
 
 Externalize `@tanstack/react-query` when bundling your app. The dashboard import
