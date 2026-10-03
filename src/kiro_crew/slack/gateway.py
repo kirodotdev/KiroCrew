@@ -416,6 +416,7 @@ from kiro_crew.slack.gateway_runtime.cron_verdict import (  # noqa: F401
     _SUCCESS_REMINDER_SECS,
     _VOLATILE_RE,
     _annotate_partial_block,
+    _dedup_text,
     _GateTally,
     _result_hash,
 )
@@ -5138,7 +5139,11 @@ class GatewayOrchestrator:
                 # succeeded stop reason.
                 _turn_landed = stop_reason_landed(_turn_stop["reason"])
 
-                if not result_text:
+                # Recorded, not inferred from the text: the dedup hash below
+                # swaps the placeholder for its count-free twin only when the
+                # placeholder was substituted here, never over model prose.
+                _empty_reply = not result_text
+                if _empty_reply:
                     result_text = _gate.empty_reply_placeholder()
 
                 if _model_downgraded:
@@ -5212,8 +5217,10 @@ class GatewayOrchestrator:
                 # identical output is equally noisy in a Telegram chat, and the
                 # 24h reminder plus the "same result N times in a row" caption
                 # are what keep a persistently-identical job from going
-                # unnoticed.
-                rh = _result_hash(result_text)
+                # unnoticed. An empty reply is hashed over its count-free
+                # placeholder: the approved-call count the user sees is per-run,
+                # and a key that moves with it never suppresses.
+                rh = _result_hash(_dedup_text(result_text, _gate, empty_reply=_empty_reply))
 
                 _gate_counted = _apply_gate_verdict(job, _gate)
 

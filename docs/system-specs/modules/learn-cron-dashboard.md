@@ -307,6 +307,20 @@ split is the contract:
 - **The dashboard-notification-only path does NOT advance it.** The bell is
   passive and the operator may never open it, so counting it as delivered would
   suppress a result nobody has seen.
+- **The hash is taken over the delivered text, except an empty reply's count.**
+  `_result_hash` strips ISO timestamps, UUIDs and near-now epochs and nothing
+  else -- small integers in model prose are the result, so "3 failures" and
+  "5 failures" are different results. A turn that returned no prose delivers
+  `_GateTally.empty_reply_placeholder()`, whose approved-call count is a per-run
+  diagnostic that moves even when the job did the same thing, so the run records
+  that the placeholder was substituted and hashes `_dedup_text(...)`: the
+  delivered text with the placeholder swapped for `empty_reply_dedup_text()`,
+  the same shape with the count slot held constant. The three shapes (a
+  `send_message` attempt, work without one, a turn that approved no tool) still
+  hash apart, and the annotations wrapped around the placeholder (model
+  downgrade, model fallback, partial block) stay in the key. The swap is keyed
+  on the substitution, never on the text, so prose that happens to read like the
+  placeholder is hashed as written.
 
 The Slack branch additionally records where its post landed
 (`sessions.set_thread` / `set_channel` on the `cron:{id}` key) so a later

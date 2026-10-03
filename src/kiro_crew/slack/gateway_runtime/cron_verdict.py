@@ -86,6 +86,19 @@ class _GateTally:
         else:
             self.unresolved += 1
 
+    def _empty_reply_text(self, count: str) -> str:
+        """The empty-reply shape this tally names, with *count* in the count slot.
+
+        One template for the displayed placeholder and its dedup twin, so the
+        two cannot drift apart: the twin differs from the display in the
+        count slot and nowhere else.
+        """
+        if self.delivered:
+            return f"_Silent run completed -- delivery attempted via send_message ({count})._"
+        if self.approved:
+            return f"_Completed with no reply text -- {count}._"
+        return _NO_RESPONSE
+
     def empty_reply_placeholder(self) -> str:
         """Row text for a turn that returned no prose.
 
@@ -97,18 +110,25 @@ class _GateTally:
         not confirmed: ``on_tool_gate`` fires at the permission decision and
         never sees the tool's result, so the text does not claim the message
         arrived.
+
+        The approved-call count is a per-run diagnostic and belongs in what
+        the user reads, not in what dedup compares: hash the text through
+        :func:`_dedup_text`, not directly.
         """
-        if self.delivered:
-            return (
-                f"_Silent run completed -- delivery attempted via send_message"
-                f" ({self.approved} tool call{'s' if self.approved != 1 else ''} ran)._"
-            )
-        if self.approved:
-            return (
-                f"_Completed with no reply text -- {self.approved} tool call"
-                f"{'s' if self.approved != 1 else ''} ran._"
-            )
-        return _NO_RESPONSE
+        n = self.approved
+        return self._empty_reply_text(f"{n} tool call{'s' if n != 1 else ''} ran")
+
+    def empty_reply_dedup_text(self) -> str:
+        """The placeholder with its count slot held constant: the dedup key.
+
+        Duplicate suppression hashes the delivered text, and the count moves
+        from run to run even when the job did the same thing (one more read,
+        one fewer), so a key taken over the displayed placeholder re-posts a
+        job that keeps returning no prose every time the count moves. The
+        SHAPE is kept: a delivery attempt, work without one, and a turn that
+        approved no tool are different outcomes and still hash apart.
+        """
+        return self._empty_reply_text("N tool calls ran")
 
     @property
     def all_blocked(self) -> bool:
@@ -171,6 +191,27 @@ def _annotate_partial_block(result_text: str, tally: _GateTally) -> str:
     if not tally.partially_blocked:
         return result_text
     return f"⛔ {tally.refusal_summary()} — that work did not happen.\n\n{result_text}"
+
+
+def _dedup_text(result_text: str, tally: _GateTally, *, empty_reply: bool) -> str:
+    """What duplicate suppression hashes for this run.
+
+    The delivered text, except that an empty reply's placeholder is swapped
+    for its count-free twin (:meth:`_GateTally.empty_reply_dedup_text`), so
+    the hash does not move with the approved-call count. *empty_reply* is
+    recorded at the substitution site -- the text alone cannot say whether the
+    placeholder was substituted or the model wrote those words -- and when it
+    is false the text is hashed as delivered: model prose keeps every number it
+    carries, so "3 failures" and "5 failures" stay different results.
+
+    The swap is a substring replacement rather than a rebuild because the
+    annotations (model downgrade, model fallback, partial block) only wrap the
+    placeholder, and each of them must stay in the key: a run that lost a call
+    never hashes equal to one that did not.
+    """
+    if not empty_reply:
+        return result_text
+    return result_text.replace(tally.empty_reply_placeholder(), tally.empty_reply_dedup_text(), 1)
 
 
 def _result_hash(text: str) -> str:
