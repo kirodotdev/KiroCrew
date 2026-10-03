@@ -13,7 +13,7 @@ import FolderGlyph from '../components/FolderGlyph'
 import { DndContext, DragOverlay, MeasuringStrategy } from '@dnd-kit/core'
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { usePreviewFlag } from '../hooks/usePreviewFlag'
 import { PREVIEW_DASHBOARD } from '../utils/previewFlags'
 import { shallowEqual, useStore } from 'react-redux'
@@ -26,7 +26,7 @@ import { offlineProps } from '../utils/offline'
 import { switchSlot, createSlot, deleteSlot, fetchHistory, resumeFromHistory, deleteHistorySession, selectSidebarWorkflowActive, selectAutomationForSlot } from '../store/chatSlice'
 import { slotIsRemoteBound } from '../store/dashboardSlice'
 import { IS_MAC } from '../hooks/useKeyboardShortcuts'
-import { api, SEARCH_MIN_CHARS } from '../api/client'
+import { api, ApiError, SEARCH_MIN_CHARS } from '../api/client'
 import { errMessage } from '../utils/thunkError'
 import { findReport } from '../utils/errorReport'
 import { computeRecentRank, recencyTintShadow, clampTintCount } from '../utils/recencyTint'
@@ -45,6 +45,7 @@ import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useDndSensors } from '../hooks/useDndSensors'
 import { useSessionPalette } from '../hooks/useSessionPalette'
 import { ancestorsOf, descendantsOf, orphanCitation } from '../lib/sessionLineage'
+import { isEmbeddedPane } from '../lib/embedded'
 import { useReducedMotion } from '../hooks/useReducedMotion'
 import { useSimplifiedToolNames } from '../hooks/useSimplifiedToolNames'
 import { useLanguage } from '../i18n/LanguageProvider'
@@ -942,6 +943,45 @@ function adoptFailureText(err: unknown, crewName: string): string {
  *  per-slot state (status line, goal loop, queued sub-agents, workflow runs)
  *  is subscribed to HERE, slot-scoped, so a background event re-renders only
  *  the row it belongs to. */
+/** The ONE notice for a failed ['instances'] read issued by the rows'
+ *  runs-elsewhere chips, mounted only where InstanceTabBar is not: an embedded pane (the bar never
+ *  polls there) and a top-level /embed/* route (that layout has no top bar).
+ *  Everywhere else the bar already shows the same failure, so a second notice
+ *  would duplicate it. The one silent case is the gateway's own
+ *  `instances_disabled` 403 (the feature is simply off); the route's other
+ *  403s (non-owner, Slack-origin) are real authorization failures and show. */
+function isInstancesDisabledError(error: unknown): boolean {
+  if (!(error instanceof ApiError) || error.status !== 403) return false
+  try {
+    return (JSON.parse(error.body) as { code?: unknown } | null)?.code === 'instances_disabled'
+  } catch {
+    return false
+  }
+}
+
+function RemoteCrewNamesError() {
+  const { pathname } = useLocation()
+  const topBarAbsent = isEmbeddedPane() || pathname.startsWith('/embed/')
+  // Same key and fetcher as the chips, so this observer adds no request.
+  const { error } = useQuery({
+    queryKey: ['instances'],
+    queryFn: () => api.listInstances(),
+    enabled: topBarAbsent,
+  })
+  if (!topBarAbsent || !error || isInstancesDisabledError(error)) return null
+  return (
+    <div className="mx-2 mt-2 shrink-0">
+      <ErrorNotice
+        variant="inline"
+        className="flex-wrap w-full"
+        message={errMessage(error) || i18nT('components.instanceTabBar.instances_load_failed')}
+        askAgent
+        testId="remote-crew-names-error"
+      />
+    </div>
+  )
+}
+
 const SessionRow = memo(function SessionRow({
   slot: s, showDivider, scope, navScope, holdContainer, conductor, isActive, connected, isOut, isPinned, isUnread, isRunning,
   recent, recentTintCount, subagentCount, subagentApprovalCount, digitBadge,
@@ -2487,6 +2527,12 @@ function ChatSidebar({
     historySearchResults, instancesList, instanceSessions, remoteSessionsError, allRows, allLiveSlots,
     selectInstance,
   } = useSessionSources({ historyFilter, slotTitleDigest, localSlots })
+  // Whether any row renders a runs-elsewhere chip, i.e. whether this sidebar
+  // issues the ['instances'] read that RemoteCrewNamesError reports on.
+  const hasRemoteExecutedRow = useMemo(
+    () => allRows.some(r => r.executor === 'remote' && !!r.instance_id),
+    [allRows],
+  )
   // Adopt state, keyed by ROW IDENTITY (`<peerId>:<key>`) rather than raw slot
   // key: a peer key can be byte-identical to a local one, and to another peer's,
   // so a raw-key map would show one row's failure on another row. Two separate
@@ -5562,6 +5608,9 @@ function ChatSidebar({
           </div>
         </div>
       )}
+      {/* Yields to the preview's instance-sessions banner, which already reports
+       *  a failed ['instances'] read when the preview flag is on. */}
+      {hasRemoteExecutedRow && !remoteSessionsError && <RemoteCrewNamesError />}
       {/* Read failures for the two lists this pane is built from. Same placement
        *  rationale as the seed banner: a failed folders query means no folder
        *  tree, a failed columns query means no board, so neither branch can host
