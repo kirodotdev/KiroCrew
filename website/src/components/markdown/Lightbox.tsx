@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
-import { Download, Minus, Plus, Search, X } from 'lucide-react'
+import { Check, Copy, Download, Minus, Plus, Search, X } from 'lucide-react'
 import Clickable from '../Clickable'
 import { DOUBLE_TAP_MS, DOUBLE_TAP_SLOP, DOUBLE_TAP_ZOOM, usePinchZoom } from '../../hooks/usePinchZoom'
+import { copyImageToClipboard, imageBlobToPng } from '../../utils/clipboard'
 import { isEditableTarget } from '../../utils/editableTarget'
 import { downloadBlob } from '../../utils/download'
 import { i18nT } from '../../i18n/t'
@@ -46,6 +47,10 @@ const LIGHTBOX_PAGE_DISTANCE = 64
  *  not commit but must not feel dead either — a silent no-op reads as broken. */
 const LIGHTBOX_RUBBER_BAND_DIVISOR = 4
 
+/** Longer than the table copy buttons' flash because this is also where a
+ *  failure is reported, so it has to stay up long enough to be read. */
+const LIGHTBOX_COPY_FLASH_MS = 2500
+
 /** Derive a download filename for a lightbox image. Local images are served
  *  as `/api/file-raw?path=<abs>`, so prefer the basename of that path; for
  *  other URLs fall back to the pathname basename, then the alt text. */
@@ -72,13 +77,23 @@ function lightboxFilename(image: LightboxImage): string {
 async function downloadLightboxImage(image: LightboxImage): Promise<void> {
   const name = lightboxFilename(image)
   try {
-    const res = await fetch(image.src)
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    const blob = await res.blob()
-    downloadBlob(blob, name)
+    downloadBlob(await fetchLightboxBlob(image), name)
   } catch {
     window.open(image.src, '_blank', 'noopener,noreferrer')
   }
+}
+
+async function fetchLightboxBlob(image: LightboxImage): Promise<Blob> {
+  const res = await fetch(image.src)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return await res.blob()
+}
+
+/** Resolves whether the image reached the clipboard. The bytes are passed
+ *  UNAWAITED: WebKit checks user activation when write() is called, so awaiting
+ *  the fetch first would spend the click that asked for the copy. */
+function copyLightboxImage(image: LightboxImage): Promise<boolean> {
+  return copyImageToClipboard(fetchLightboxBlob(image).then(imageBlobToPng))
 }
 
 /** Build the lightbox payload for an image click. The set is "all images
@@ -112,6 +127,18 @@ export function Lightbox() {
   const stateRef = useRef<LightboxDetail | null>(null)
   stateRef.current = state
   const imgRef = useRef<HTMLImageElement>(null)
+  const [copyState, setCopyState] = useState<'idle' | 'ok' | 'failed'>('idle')
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => () => { if (copyTimerRef.current != null) clearTimeout(copyTimerRef.current) }, [])
+  const copyCurrentImage = useCallback(() => {
+    const cur = stateRef.current
+    if (!cur) return
+    void copyLightboxImage(cur.images[cur.index]).then(ok => {
+      setCopyState(ok ? 'ok' : 'failed')
+      if (copyTimerRef.current != null) clearTimeout(copyTimerRef.current)
+      copyTimerRef.current = setTimeout(() => { setCopyState('idle'); copyTimerRef.current = null }, LIGHTBOX_COPY_FLASH_MS)
+    })
+  }, [])
   /** The overlay root. Separate from `imgRef` because the transform target is the
    *  image while the surface a user perceives as "the viewer" is the whole
    *  backdrop — see the `containRef` note on the pinch hook. */
@@ -439,6 +466,9 @@ export function Lightbox() {
     swipeRef.current.engaged = false
     swipeRef.current.axis = ''
     swipeRef.current.pointerId = -1
+    // A confirmation left standing would claim the next image was copied.
+    setCopyState('idle')
+    if (copyTimerRef.current != null) { clearTimeout(copyTimerRef.current); copyTimerRef.current = null }
     // Contacts do not survive the viewer: closing mid-pinch (or an image change
     // driven from the keyboard while fingers are down) must not leave a stale
     // pair behind for the next open to scale against. `resetZoom` clears the
@@ -474,6 +504,11 @@ export function Lightbox() {
         e.preventDefault()
         const cur = stateRef.current
         if (cur) void downloadLightboxImage(cur.images[cur.index])
+      } else if ((e.key === 'c' || e.key === 'C') && !isEditableTarget(e) && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        // Bare `c` only: this listener runs in capture phase, so taking Cmd/Ctrl+C
+        // would break copying selected text while the viewer is open.
+        e.preventDefault()
+        copyCurrentImage()
       }
     }
     // CAPTURE phase, matching DiagramLightbox: dialog panels (Modal, the Radix
@@ -488,10 +523,15 @@ export function Lightbox() {
     // modal open and Escape closes only the viewer.
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
-  }, [isOpen, zoomIn, zoomOut, setZoom])
+  }, [isOpen, zoomIn, zoomOut, setZoom, copyCurrentImage])
   if (!state) return null
   const img = state.images[state.index]
   const zoomed = zoom > LIGHTBOX_ZOOM_MIN
+  const copyLabel = copyState === 'ok'
+    ? i18nT('components.markdownRenderer.image_copied')
+    : copyState === 'failed'
+      ? i18nT('components.markdownRenderer.copy_failed')
+      : i18nT('components.markdownRenderer.copy_image')
   // 0 → untouched, 1 → full dismiss feedback. Downward pull only; the
   // rubber-banded upward direction keeps the backdrop at full strength.
   const swipeProgress = Math.min(1, Math.max(0, swipeY) / LIGHTBOX_DISMISS_TRAVEL)
@@ -629,6 +669,17 @@ export function Lightbox() {
         </button>
         <span className="w-px h-5 bg-white/20 mx-0.5" aria-hidden="true" />
         <button
+          data-testid="lightbox-copy-image"
+          aria-label={copyLabel}
+          title={copyState === 'idle' ? i18nT('components.markdownRenderer.copy_image_c') : copyLabel}
+          className="text-white/90 hover:text-white p-1.5 rounded-full hover:bg-white/15 transition-colors"
+          onClick={(e) => { e.stopPropagation(); copyCurrentImage() }}
+        >
+          {copyState === 'ok'
+            ? <Check className="lucide-inline text-ok" aria-hidden="true" />
+            : <Copy className="lucide-inline" aria-hidden="true" />}
+        </button>
+        <button
           aria-label={i18nT('components.markdownRenderer.download_image')}
           title={i18nT('components.markdownRenderer.download_d')}
           className="text-white/90 hover:text-white p-1.5 rounded-full hover:bg-white/15 transition-colors"
@@ -643,6 +694,17 @@ export function Lightbox() {
         >
           <X className="lucide-inline" aria-hidden="true" />
         </button>
+      </div>
+      {/* Always mounted: a live region inserted together with its text is
+          announced inconsistently, and the tick glyph is invisible to a screen reader. */}
+      <div
+        data-testid="lightbox-copy-status"
+        aria-live="polite"
+        className={copyState === 'idle'
+          ? 'sr-only'
+          : 'fixed top-safe-offset-16 right-safe-offset-4 rounded-full bg-black/60 backdrop-blur-md ring-1 ring-white/15 shadow-lg px-3 py-1 text-sm text-white/90'}
+      >
+        {copyState === 'idle' ? '' : copyLabel}
       </div>
       {/* Position in the set. Without it the swipe is invisible — nothing on
           screen says a set exists, which is how every image after the first came

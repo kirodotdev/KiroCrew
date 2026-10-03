@@ -62,6 +62,67 @@ export async function copyToClipboard(text: string): Promise<boolean> {
   return (await copyWithOutcome(text)).ok
 }
 
+/** Re-encode `blob` as PNG, because PNG is the one image type the async
+ *  Clipboard API accepts everywhere. Chromium writes only the types on its own
+ *  allowlist and rejects the rest, so a JPEG or WebP handed over with its own
+ *  type never reaches the clipboard — and the failure arrives as a rejected
+ *  `write()`, indistinguishable from a refused permission.
+ *
+ *  The pixels go through a canvas, so this is a real re-encode rather than a
+ *  relabelling. Rejects when the bytes cannot be decoded (a truncated file, an
+ *  SVG with no intrinsic size), which the caller must surface as "not copied":
+ *  writing a blank canvas instead would paste an empty rectangle, and the user
+ *  would only find out in the document they pasted into. */
+export async function imageBlobToPng(blob: Blob): Promise<Blob> {
+  if (blob.type === 'image/png') return blob
+  const bitmap = await createImageBitmap(blob)
+  try {
+    const canvas = document.createElement('canvas')
+    canvas.width = bitmap.width
+    canvas.height = bitmap.height
+    const ctx = canvas.getContext('2d')
+    if (!ctx) throw new Error('canvas 2d context unavailable')
+    ctx.drawImage(bitmap, 0, 0)
+    const png = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/png'))
+    if (!png) throw new Error('PNG encode produced no blob')
+    return png
+  } finally {
+    bitmap.close()
+  }
+}
+
+/** Copy an IMAGE to the clipboard. Resolves `true` only once the bytes are
+ *  actually on it and `false` otherwise, never rejecting — the same contract
+ *  `copyToClipboard` has, and for the same reason: a tick shown over an
+ *  unchanged clipboard is discovered at paste time.
+ *
+ *  Takes a PENDING promise rather than a `Blob` deliberately. The bytes have to
+ *  be fetched and usually re-encoded first, and WebKit tests user activation
+ *  when `write()` is called, so awaiting them at the call site spends the click
+ *  and the write is refused on a gesture that plainly happened. Handing
+ *  `ClipboardItem` the unresolved promise issues the write inside that gesture
+ *  and lets the bytes land afterwards.
+ *
+ *  There is no `execCommand` fallback, unlike text: that path stages its payload
+ *  in a `<textarea>`, which can hold nothing but a string. So on a non-secure
+ *  origin — a plain-HTTP LAN or remote gateway, where `navigator.clipboard` does
+ *  not exist at all — this returns `false` having attempted nothing, and the
+ *  caller must keep offering whatever it offered before. */
+export async function copyImageToClipboard(png: Promise<Blob>): Promise<boolean> {
+  // `write()` consumes this promise, but every early return below leaves it with
+  // no reader, and an unhandled rejection is a console error (and a fatal
+  // `unhandledRejection` under the test runner) on a path already reported as
+  // `false`. A promise may carry more than one handler, so this costs nothing.
+  void png.catch(() => {})
+  if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') return false
+  try {
+    await navigator.clipboard.write([new ClipboardItem({ 'image/png': png })])
+    return true
+  } catch {
+    return false
+  }
+}
+
 /** `execCommand('copy')` fallback for the two cases the async Clipboard API
  *  cannot serve: a non-secure context (a plain-HTTP LAN or remote gateway,
  *  where `navigator.clipboard` does not exist at all) and a browser that
