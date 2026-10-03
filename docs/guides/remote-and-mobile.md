@@ -654,23 +654,36 @@ Safari's address bar.
 
 **The service worker provides a limited offline shell.**
 [`website/public/sw.js`](../../website/public/sw.js) caches exactly `/` and
-`/index.html`. Every other same-origin `GET` is either passed straight to the
-browser or handled network-first; no other response is cached:
+`/index.html`. Every other same-origin `GET` falls into one of two buckets: a
+small set of **boot-critical assets** the worker takes over only so a transient
+`5xx` can be retried (never cached — the HTTP immutable cache still owns them),
+and the paths it **declines** and hands straight to the network. Only the shell is
+ever cached.
 
-| Path | Service-worker behavior |
+Retried (intercepted so one transient `5xx` cannot dead-page the boot):
+
+| Path | Why it earns a retry |
 |---|---|
-| any URL with a `token` query parameter (the `/?token=...` sign-in link) | Declines to intercept, never answers from the cached shell and never caches it, so the gateway's token exchange always runs |
-| `/api`, `/sandbox-doc/`, `/app-windows/`, `/apps/` | Declines to intercept API, one-shot document, standalone app-window, and app-backend responses |
-| `/assets/`, `/vendor/` | Retries network errors and 5xx responses twice with jitter, but never caches the response |
-| `/fonts/`, `/sprites/` | Declines to intercept non-critical static resources |
-| `/logo.png`, `/static/` | Declines to intercept gateway-served brand assets |
+| `/assets/` | Vite content-hashed bundles a document cannot boot without; one 502 leaves a dark skeleton no reload clears |
+| `/vendor/` | Bare-specifier module stubs the import map depends on; boot-critical on standalone app-window documents |
+| `/pcm-worklet.js` | The dictation/STT worklet; `addModule` is called once with no retry, so a new-session-churn 503 would reject it and surface the "audio worklet unavailable" toast |
 
-Every other same-origin `GET` is network-first, with the cached shell used only
-for failed navigation requests. So offline you get the shell and its reconnecting
-state — and only while the browser's own HTTP cache still holds the hashed
-`/assets/` bundles, which the worker never caches. After a build that changes
-those hashes, the cached shell references bundle URLs nothing has downloaded yet.
-Sessions, history, and notifications are never served from disk.
+Declined (handed straight to the network, never intercepted):
+
+| Path | Why it is not intercepted |
+|---|---|
+| any URL with a `token` query parameter (the `/?token=...` sign-in link) | Never answers from the cached shell and never caches it, so the gateway's token exchange always runs |
+| `/api`, `/apps/` | Gateway and app-backend responses must never be served stale |
+| `/fonts/`, `/sprites/` | Cost looks, not boot — a failed font or sprite does not stop the page running, so it earns no retry |
+| `/logo.png`, `/static/` | Gateway-served brand assets; intercepting them strands a broken image across a gateway restart |
+| `/sandbox-doc/`, `/app-windows/`, navigations into a widget frame | One-shot credentialed URLs, standalone app-window documents, and the shell fallback must not render into a widget frame |
+
+Everything not listed above is intercepted network-first, but only the shell is
+ever cached. So offline you get the shell and its reconnecting state — and only
+while the browser's own HTTP cache still holds the hashed `/assets/` bundles, which
+the worker never caches. After a build that changes those hashes, the cached shell
+references bundle URLs nothing has downloaded yet. Sessions, history, and
+notifications are never served from disk.
 
 **Two current limits**, documented here so they read as boundaries rather than
 bugs:

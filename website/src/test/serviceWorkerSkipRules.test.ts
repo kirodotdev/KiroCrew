@@ -241,6 +241,16 @@ describe('hashed-asset 5xx retry', () => {
     expect((await r.result).status).toBe(200)
     expect(r.attempts()).toBe(2)
   })
+
+  it('retries /pcm-worklet.js, the boot-critical dictation module', async () => {
+    // addModule('/pcm-worklet.js') is called once with no retry, and a voice
+    // session cannot start without it. New-session churn (503s on session
+    // rotation) is exactly the transient failure this retry recovers from,
+    // instead of surfacing the "audio worklet unavailable" toast.
+    const r = assetRequest([503, 200], '/pcm-worklet.js')
+    expect((await r.result).status).toBe(200)
+    expect(r.attempts()).toBe(2)
+  })
 })
 
 // A sign-in link (`/?token=...`, from `kirocrew token`) is honoured only by the
@@ -289,5 +299,16 @@ describe('what deliberately gets no retry', () => {
     // page plainer, it does not stop it running, so it earns no retry attempts.
     expect(intercepts('/fonts/Inter-Regular.woff2', 'no-cors')).toBe(false)
     expect(intercepts('/sprites/icons.svg', 'no-cors')).toBe(false)
+  })
+
+  it('DOES take /pcm-worklet.js over, so a churn 5xx can be retried', () => {
+    // The worklet is fetched by audioWorklet.addModule('/pcm-worklet.js') when a
+    // voice session mounts, and addModule is called ONCE with no retry of its own,
+    // so a voice session cannot start without this module. A bare skip left the
+    // browser to fetch it with no retry, so a churn-shaped 503 (session rotation on
+    // a new chat) still rejected addModule and surfaced the "audio worklet
+    // unavailable" toast. The worker now owns it, like /vendor, so the 5xx retries.
+    // no-cors is the real mode of an addModule fetch.
+    expect(intercepts('/pcm-worklet.js', 'no-cors')).toBe(true)
   })
 })
