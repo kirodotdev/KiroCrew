@@ -2279,22 +2279,25 @@ that round-trip if it needs a result.
 Two shapes are both correct; pick by whether the tool needs a value back inside
 the same turn.
 
-**`POST` to a gateway endpoint that holds the pending future.** The
-`/api/ask-question` handler (`dashboard/handlers/ask_question.py`) is the model:
-the pending question lives in `DashboardState._pending_questions` /
-`_question_futures`, keyed by `ask_id`, and is addressed to one slot resolved from
-the posted `session_key`. The handler refuses an unknown slot with 404 rather
-than blocking for the full window on a card nobody will render, and the answer is
-routed back by `ask_id` from `POST /api/ask-question/{ask_id}/answer`. A stateful
-version, parking the pending question in a module global and trusting env-var
-identity, would hand the answer to whichever session the shared process last saw
-and let a sub-agent's card land in its parent's slot.
+**`POST` to gateway endpoints that hold the pending future.** The blocking
+`ask_question` tool (`mcp_tools/control.py`) with its `/api/agent-ask/*` routes
+(`dashboard/handlers/ask_question.py`) is the model: the pending question lives in
+`DashboardState._agent_asks` / `_question_futures`, keyed by a client-chosen
+`ask_id`, and is addressed to the slot of the ATTESTED session making the call —
+the strict internal transport vouches for the `X-Session-Key`, never a body
+field. The open refuses a session with no dashboard tab (404) or no attached
+client (`clients: 0`) rather than blocking for the full window on a card nobody
+will render; the tool then waits in fixed 20s slices with a keepalive between
+them and the answer is routed back by `ask_id` from
+`POST /api/ask-question/{ask_id}/answer`. A stateful version, parking the pending
+question in a module global and trusting env-var identity, would hand the answer
+to whichever session the shared process last saw and let a sub-agent's card land
+in its parent's slot.
 
 **Return a session directive and let the session-aware consumer apply it.** This
-is what the `ask_question` MCP tool itself now does, along with `monitor_start`,
-`monitor_watch`, `monitor_update`, `monitor_stop`, `autonudge_stop`, `set_project`
-and `suggest_followup`, `reset_conversation` and `chat_tag`
-(`session_directive.DIRECTIVE_TOOLS`). The tool validates its arguments and
+is what `monitor_start`, `monitor_watch`, `monitor_update`, `monitor_stop`,
+`autonudge_stop`, `set_project`, `suggest_followup`, `reset_conversation` and
+`chat_tag` do (`session_directive.DIRECTIVE_TOOLS`). The tool validates its arguments and
 returns a human-readable confirmation plus a marker line carrying the validated
 payload and **no session key**. `dashboard/chat_runner`'s tool-result handler
 decodes the marker, applies the effect against **its own** `slot.key`, then

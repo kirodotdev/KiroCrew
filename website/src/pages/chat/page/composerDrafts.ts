@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, type Dispatch, type MutableRefObject, t
 
 import type { ComposerDraftStore } from '../../../chat-core/composer/draftStore'
 import type { RootState } from '../../../store'
-import { DRAFT_SAVE_DEBOUNCE_MS, loadDrafts, saveDrafts as persistDrafts, setDraft, appendTypedText, typedDuringCreate } from '../../../utils/chatDrafts'
+import { DRAFT_SAVE_DEBOUNCE_MS, loadDrafts, saveDrafts as persistDrafts, setDraft, appendTypedText, mergeIntoDraft, typedDuringCreate } from '../../../utils/chatDrafts'
+import { registerMainComposer } from '../../../utils/composerRestore'
 import { loadFileDrafts, saveFileDrafts as persistFileDrafts, setFileDraft } from '../../../utils/chatFileDrafts'
 import { loadFileTokenDrafts, saveFileTokenDrafts as persistFileTokenDrafts } from '../../../utils/chatFileTokenDrafts'
 import { loadPasteDrafts, savePasteDrafts as persistPasteDrafts, setPasteDraft } from '../../../utils/chatPasteDrafts'
@@ -366,6 +367,14 @@ export function useComposerDraftLifecycle({
     window.addEventListener('beforeunload', h)
     return () => window.removeEventListener('beforeunload', h)
   }, [flushDrafts, prevSlot, drafts, inputRef, fileDrafts, pendingFilesRef, pasteDrafts, pasteBlocksRef, sessionRefDrafts, pendingSessionsRef])
+  // Answers a retired question card hands back land in this composer or in that slot's stored draft.
+  useEffect(() => registerMainComposer((slot, text, showingOnly) => {
+    if (slot === composerSlotRef.current) { setInput(prev => mergeIntoDraft(prev, text)); return true }
+    if (showingOnly) return false
+    setDraft(drafts.current, slot, mergeIntoDraft(drafts.current[slot], text))
+    saveDraftsDebounced()
+    return true
+  }), [composerSlotRef, setInput, drafts, saveDraftsDebounced])
   return { reconcileFileChipsRef, onComposerDraftCommit, noCarryCreateIdsRef }
 }
 

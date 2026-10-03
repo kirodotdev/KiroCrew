@@ -577,7 +577,7 @@ class TestApplierAuditAndFailSoft:
         assert slot.project == "/existing"
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("kind", ["suggest_followup", "ask_question"])
+    @pytest.mark.parametrize("kind", ["suggest_followup"])
     @pytest.mark.parametrize("session_key", ["cron:job-abc", "slack:C123.456", "sub:agent-1", ""])
     async def test_slot_targeting_directives_are_dashboard_only(
         self, kind, session_key, tmp_path, monkeypatch, sel_spy

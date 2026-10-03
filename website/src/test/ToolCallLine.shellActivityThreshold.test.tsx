@@ -114,6 +114,79 @@ describe('ToolCallLine — shell activity line threshold', () => {
     await waitFor(() => expect(screen.queryByTestId('shell-activity')).toBeNull())
   })
 
+  it('labels a pending ask_question Waiting for your answer, not Running', () => {
+    freezeClock()
+    const msg: ChatMessage = { role: 'tool', content: '🔧 @kirocrew-core/ask_question', cls: '', meta: { tool_call_id: 'tc_ask' } }
+    const store = createTestStore({
+      chat: {
+        messages: [msg],
+        activeSlot: 'S',
+        toolLog: [{ type: 'tool', text: '@kirocrew-core/ask_question', tool_name: 'ask_question', mcp_server: 'kirocrew-core', tool_call_id: 'tc_ask', ts: NOW_MS - 30_000 }],
+        slotRunning: true,
+      } as unknown as ChatState,
+    })
+    renderWithProviders(<ToolCallLine message={msg} running={true} />, { store })
+    expect(screen.getByText(/Waiting for your answer · 30s/)).toBeTruthy()
+    expect(screen.queryByText(/Running ·/)).toBeNull()
+  })
+
+  it.each(['ask_question', '@kirocrew-core/ask_question'])(
+    'labels %s Waiting for your answer before MCP server metadata arrives',
+    (toolName) => {
+      freezeClock()
+      const msg: ChatMessage = { role: 'tool', content: `🔧 ${toolName}`, cls: '', meta: { tool_call_id: 'tc_ask_bare' } }
+      const store = createTestStore({
+        chat: {
+          messages: [msg],
+          activeSlot: 'S',
+          toolLog: [{ type: 'tool', text: toolName, tool_name: 'ask_question', tool_call_id: 'tc_ask_bare', ts: NOW_MS - 30_000 }],
+          slotRunning: true,
+        } as unknown as ChatState,
+      })
+      renderWithProviders(<ToolCallLine message={msg} running={true} />, { store })
+      expect(screen.getByText(/Waiting for your answer · 30s/)).toBeTruthy()
+      expect(screen.queryByText(/Running ·/)).toBeNull()
+    },
+  )
+
+  it('does not label a third-party ask_question Waiting', () => {
+    freezeClock()
+    const msg: ChatMessage = { role: 'tool', content: '🔧 @other/ask_question', cls: '', meta: { tool_call_id: 'tc_x' } }
+    const store = createTestStore({
+      chat: {
+        messages: [msg],
+        activeSlot: 'S',
+        toolLog: [{ type: 'tool', text: '@other/ask_question', tool_name: 'ask_question', tool_call_id: 'tc_x', ts: NOW_MS - 30_000 }],
+        slotRunning: true,
+      } as unknown as ChatState,
+    })
+    renderWithProviders(<ToolCallLine message={msg} running={true} />, { store })
+    expect(screen.queryByText(/Waiting ·/)).toBeNull()
+  })
+
+  it('keeps the plain wait label on a non-ask wait countdown row', () => {
+    freezeClock()
+    const msg: ChatMessage = { role: 'tool', content: '🔧 wait', cls: '', meta: { tool_call_id: 'tc_wait' } }
+    const store = createTestStore({
+      chat: {
+        messages: [msg],
+        activeSlot: 'S',
+        toolLog: [{ type: 'tool', text: 'wait', tool_name: 'wait', tool_call_id: 'tc_wait', ts: NOW_MS - 30_000 }],
+        slotRunning: true,
+      } as unknown as ChatState,
+      dashboard: {
+        slots: [{ key: 'S', messages: 1, running: true, wait_state: { wait_id: 'w1', seconds: 60, deadline_ts: NOW_MS / 1000 + 60 } }],
+        unreadSlots: [],
+        refreshTrigger: 0,
+        connected: true,
+      } as unknown as RootState['dashboard'],
+    })
+    renderWithProviders(<ToolCallLine message={msg} running={true} />, { store })
+    const row = screen.getByTestId('wait-countdown')
+    expect(row.textContent).toContain('Waiting · ')
+    expect(row.textContent).not.toContain('Waiting for your answer')
+  })
+
   it('never shows the line for a tool that was ALREADY done at mount', () => {
     // A historical row (reload, scrollback) starts done: the line is a live
     // indicator and has nothing to indicate for a finished command, however

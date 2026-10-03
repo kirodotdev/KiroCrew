@@ -135,6 +135,11 @@ export interface FollowupItem {
  *  resolves any of them into the string a row shows. */
 export type SlotStatusDetail = ((ToolPhaseDetail & { toolCallId?: string }) | PhaseDetail) & { ts: number }
 
+export interface QuestionNotice {
+  message: string
+  kind: 'restored' | 'release_failed'
+}
+
 export interface ChatState {
   activeSlot: string | null
   messages: ChatMessage[]
@@ -459,7 +464,12 @@ export interface ChatState {
   /** Pending ask_question cards keyed by slot. Keyed (rather than a single
    *  card) so concurrent ask_question calls from two slots cannot evict each
    *  other — the losing agent would block until its timeout. */
-  pendingQuestions: Record<string, { slot: string; ask_id?: string; questions: Array<{ question: string; header?: string; options: Array<{ label: string; description?: string }>; multiSelect?: boolean }>; serverCardId?: string; native?: boolean; draftActive?: boolean }>
+  pendingQuestions: Record<string, { slot: string; ask_id?: string; questions: Array<{ question: string; header?: string; options: Array<{ label: string; description?: string }>; multiSelect?: boolean }>; serverCardId?: string; native?: boolean; draftActive?: boolean; draftAnswers?: Record<string, string> }>
+  questionRequestsInFlight: Record<string, true>
+  /** Ask ids whose successful settlement must suppress draft recovery on every surface. */
+  questionsSettled: Record<string, true>
+  /** Restored-answer statuses and card-release failures kept outside transcript hydration. */
+  restoredQuestionNotices: Record<string, QuestionNotice>
   // Agent-authored follow-up suggestions (suggest_followup MCP tool), rendered
   // as a card above the composer. Keyed BY SLOT: a single global card let a
   // suggestion arriving in session B silently evict session A's unacted-on card,
@@ -564,6 +574,9 @@ export const initialState: ChatState = {
   slotHistory: [],
   slotsSnapshotSeen: false,
   pendingQuestions: {},
+  questionRequestsInFlight: {},
+  questionsSettled: {},
+  restoredQuestionNotices: {},
   followups: {},
   folderSuggestions: {},
   stopPressedAt: {},

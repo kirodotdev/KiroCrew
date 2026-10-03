@@ -8,7 +8,10 @@ import { missingSourcesNotice, useCommandCenter } from '../pages/chat/command-ce
 import { fmtList } from '../i18n/format'
 import { i18nT } from '../i18n/t'
 import { teamRoots } from '../pages/chat/command-center/model'
+import { markQuestionSettled, setQuestionRequestInFlight } from '../store/chatSlice'
+import { updateSlot } from '../store/dashboardSlice'
 import TaskDashboardFrame, { TASK_DASHBOARD_SANDBOX } from '../pages/chat/command-center/TaskDashboardFrame'
+import { registerMainComposer } from '../utils/composerRestore'
 import type { Artifact } from '../types'
 
 const artifact = (slug: string, session: string, content = '<h1>Task-specific map</h1>'): Artifact => ({
@@ -206,23 +209,25 @@ describe('task dashboard sources and containment', () => {
     expect(both).not.toContain(i18nT('commandCenter.source_work'))
   })
 
-  it('retains only stateless drafts by exact normalized slot and card, clearing on scope changes', async () => {
+  it('retains stateless drafts by normalized slot and card, clearing on scope changes', async () => {
     let root: string | null = 'root'
     let scope: 'task' | 'fleet' = 'task'
     const { result, rerender } = renderHookWithProviders(() => useCommandCenter(root, true, scope), { store: store() })
     await waitFor(() => expect(result.current.loading).toBe(false))
     const questions = [{ question: 'Which scope?', options: [{ label: 'Stable' }] }]
     const own = { slot: 'dashboard:root', card_id: 'same', questions }
+    const answers = { 'Which scope?': 'Stable' }
     act(() => {
-      result.current.onQuestionDraftChange(own, true)
-      result.current.onQuestionDraftChange({ slot: 'builder', card_id: 'same', questions }, true)
-      result.current.onQuestionDraftChange({ slot: 'root', card_id: 'other', questions }, true)
-      result.current.onQuestionDraftChange({ slot: 'root', ask_id: 'blocked', card_id: 'blocked-card', questions }, true)
-      result.current.onQuestionDraftChange({ slot: 'root', questions }, true)
+      result.current.onQuestionDraftChange(own, answers)
+      result.current.onQuestionDraftChange({ slot: 'builder', card_id: 'same', questions }, answers)
+      result.current.onQuestionDraftChange({ slot: 'root', card_id: 'other', questions }, answers)
+      result.current.onQuestionDraftChange({ slot: 'root', ask_id: 'blocked', card_id: 'blocked-card', questions }, answers)
+      result.current.onQuestionDraftChange({ slot: 'root', questions }, answers)
     })
+    // The missing blocking ask restores immediately; only stateless drafts stay visible.
     expect(result.current.attention.map(a => a.id)).toEqual(['question:root:same', 'question:builder:same', 'question:root:other'])
     const departingCallback = result.current.onQuestionDraftChange
-    act(() => result.current.onQuestionDraftChange({ ...own, slot: 'root' }, false))
+    act(() => result.current.onQuestionDraftChange({ ...own, slot: 'root' }, {}))
     expect(result.current.attention.map(a => a.id)).toEqual(['question:builder:same', 'question:root:other'])
     root = 'unrelated'
     rerender()
@@ -233,8 +238,8 @@ describe('task dashboard sources and containment', () => {
     root = null
     scope = 'fleet'
     rerender()
-    act(() => result.current.onQuestionDraftChange(own, true))
-    act(() => departingCallback(own, false))
+    act(() => result.current.onQuestionDraftChange(own, answers))
+    act(() => departingCallback(own, {}))
     expect(result.current.attention.map(a => a.id)).toEqual(['question:root:same'])
     scope = 'task'
     rerender()
@@ -248,36 +253,142 @@ describe('task dashboard sources and containment', () => {
     // past its retirement. Read off the retention map, a blocking ask reported no
     // draft at all -- the host released the panel and the typed answer went with
     // the unmount.
+    const questions = [{ question: 'Which scope?', options: [{ label: 'Stable' }] }]
+    const typed = { 'Which scope?': 'Stable' }
+    const blocking = { slot: 'root', ask_id: 'blocked', card_id: 'blocked-card', questions }
+    // The ask is live: a draft on a retired ask moves to the composer instead of being held.
+    vi.mocked(api.pendingQuestions).mockResolvedValue([blocking])
     const { result, rerender } = renderHookWithProviders(() => useCommandCenter('root'), { store: store() })
     await waitFor(() => expect(result.current.loading).toBe(false))
-    const questions = [{ question: 'Which scope?', options: [{ label: 'Stable' }] }]
-    const blocking = { slot: 'root', ask_id: 'blocked', card_id: 'blocked-card', questions }
     expect(result.current.hasQuestionDraft).toBe(false)
-    act(() => { result.current.onQuestionDraftChange(blocking, true) })
+    act(() => { result.current.onQuestionDraftChange(blocking, typed) })
     expect(result.current.hasQuestionDraft).toBe(true)
-    // Still not retained: the attention list carries nothing this hook invented.
-    expect(result.current.attention).toEqual([])
-    act(() => { result.current.onQuestionDraftChange(blocking, false) })
+    // Only the live card is listed: the hook invents no second copy.
+    expect(result.current.attention.map(a => a.id)).toEqual(['question:root:blocked'])
+    act(() => { result.current.onQuestionDraftChange(blocking, {}) })
     expect(result.current.hasQuestionDraft).toBe(false)
     // A stateless card reports the same way, and is retained as before.
     const stateless = { slot: 'root', card_id: 'same', questions }
-    act(() => { result.current.onQuestionDraftChange(stateless, true) })
+    act(() => { result.current.onQuestionDraftChange(stateless, typed) })
     expect(result.current.hasQuestionDraft).toBe(true)
-    expect(result.current.attention.map(a => a.id)).toEqual(['question:root:same'])
+    expect(result.current.attention.map(a => a.id)).toEqual(['question:root:blocked', 'question:root:same'])
     // A question with neither id cannot be tracked, and must not claim a draft.
-    act(() => { result.current.onQuestionDraftChange(stateless, false) })
-    act(() => { result.current.onQuestionDraftChange({ slot: 'root', questions }, true) })
+    act(() => { result.current.onQuestionDraftChange(stateless, {}) })
+    act(() => { result.current.onQuestionDraftChange({ slot: 'root', questions }, typed) })
     expect(result.current.hasQuestionDraft).toBe(false)
     rerender()
     expect(result.current.hasQuestionDraft).toBe(false)
-    // A trailing [OPTIONS:] ask carries no id either, but a pick in it is a draft
-    // the host must hold the panel for; it is never retained as a card.
-    const followUp = { slot: 'root', followUp: true, questions }
-    act(() => { result.current.onQuestionDraftChange(followUp, true) })
-    expect(result.current.hasQuestionDraft).toBe(true)
-    expect(result.current.attention).toEqual([])
-    act(() => { result.current.onQuestionDraftChange(followUp, false) })
-    expect(result.current.hasQuestionDraft).toBe(false)
+  })
+
+  it('holds a pick in a trailing [OPTIONS:] ask as a draft only while that ask is offered', async () => {
+    // The ask carries no id, but a pick in it is unsent text the host must hold
+    // the panel for. It is the session's own, never retained past its retirement
+    // and never restored to the composer: the labels are the agent's words.
+    const initial = createTestStore().getState()
+    const taskStore = createTestStore({ ...initial, dashboard: { ...initial.dashboard, connected: true, slots: [
+      { key: 'root', title: 'Conductor', messages: 0, running: true },
+      { key: 'builder', created_by: 'root', messages: 1, running: false, has_options: true, options: ['Stable', 'Nightly'] },
+    ] } })
+    const restored: string[] = []
+    const unregister = registerMainComposer((slot, text) => {
+      restored.push(`${slot}:${text}`)
+      return true
+    })
+    try {
+      const { result } = renderHookWithProviders(() => useCommandCenter('root'), { store: taskStore })
+      await waitFor(() => expect(result.current.loading).toBe(false))
+      const [offered] = result.current.attention
+      expect(offered.question?.followUp).toBe(true)
+      expect(result.current.hasQuestionDraft).toBe(false)
+      act(() => { result.current.onQuestionDraftChange(offered.question!, { '': 'Stable' }) })
+      expect(result.current.hasQuestionDraft).toBe(true)
+      // The hook invents no second card for the pick.
+      expect(result.current.attention.map(a => a.id)).toEqual([offered.id])
+      act(() => { result.current.onQuestionDraftChange(offered.question!, {}) })
+      expect(result.current.hasQuestionDraft).toBe(false)
+      // The session moved on under the pick: the draft goes with the ask.
+      act(() => { result.current.onQuestionDraftChange(offered.question!, { '': 'Stable' }) })
+      expect(result.current.hasQuestionDraft).toBe(true)
+      act(() => { taskStore.dispatch(updateSlot({ key: 'builder', running: true })) })
+      await waitFor(() => expect(result.current.hasQuestionDraft).toBe(false))
+      expect(result.current.attention).toEqual([])
+      expect(restored).toEqual([])
+      expect(result.current.restoredQuestionNotices).toEqual([])
+    } finally {
+      unregister()
+    }
+  })
+
+  it('discards a settled blocking draft retired by another card surface', async () => {
+    const questions = [{ question: 'Which scope?', options: [{ label: 'Stable' }] }]
+    const blocking = { slot: 'root', ask_id: 'settled-elsewhere', questions }
+    const taskStore = store()
+    vi.mocked(api.pendingQuestions).mockResolvedValue([blocking])
+    const restored: string[] = []
+    const unregister = registerMainComposer((slot, text) => {
+      restored.push(`${slot}:${text}`)
+      return true
+    })
+    const view = renderHookWithProviders(() => ({
+      ...useCommandCenter('root'),
+      queryClient: useQueryClient(),
+    }), { store: taskStore })
+
+    try {
+      await waitFor(() => expect(view.result.current.loading).toBe(false))
+      act(() => {
+        view.result.current.onQuestionDraftChange(blocking, { 'Which scope?': 'Stable' })
+        taskStore.dispatch(setQuestionRequestInFlight({ ask_id: 'settled-elsewhere', inFlight: true }))
+        taskStore.dispatch(markQuestionSettled({ ask_id: 'settled-elsewhere' }))
+        taskStore.dispatch(setQuestionRequestInFlight({ ask_id: 'settled-elsewhere', inFlight: false }))
+      })
+      vi.mocked(api.pendingQuestions).mockResolvedValue([])
+      await act(async () => {
+        await view.result.current.queryClient.refetchQueries({ queryKey: ['command-center', 'questions'] })
+      })
+      await waitFor(() => expect(view.result.current.hasQuestionDraft).toBe(false))
+      expect(restored).toEqual([])
+      expect(view.result.current.restoredQuestionNotices).toEqual([])
+      expect(view.result.current.attention.some(item => item.id === 'question:root:settled-elsewhere')).toBe(false)
+    } finally {
+      unregister()
+    }
+  })
+
+  it('discards a blocking draft when the pending snapshot says it was answered', async () => {
+    const questions = [{ question: 'Which scope?', options: [{ label: 'Stable' }] }]
+    const blocking = { slot: 'root', ask_id: 'answered-elsewhere', questions }
+    const taskStore = store()
+    vi.mocked(api.pendingQuestions).mockResolvedValue([blocking])
+    const restored: string[] = []
+    const unregister = registerMainComposer((slot, text) => {
+      restored.push(`${slot}:${text}`)
+      return true
+    })
+    const view = renderHookWithProviders(() => ({
+      ...useCommandCenter('root'),
+      queryClient: useQueryClient(),
+    }), { store: taskStore })
+
+    try {
+      await waitFor(() => expect(view.result.current.loading).toBe(false))
+      act(() => view.result.current.onQuestionDraftChange(
+        blocking,
+        { 'Which scope?': 'Stable' },
+      ))
+      const retired = Object.assign([], {
+        resolved: { 'answered-elsewhere': 'answered' },
+      })
+      vi.mocked(api.pendingQuestions).mockResolvedValue(retired)
+      await act(async () => {
+        await view.result.current.queryClient.refetchQueries({ queryKey: ['command-center', 'questions'] })
+      })
+      await waitFor(() => expect(view.result.current.hasQuestionDraft).toBe(false))
+      expect(restored).toEqual([])
+      expect(view.result.current.restoredQuestionNotices).toEqual([])
+    } finally {
+      unregister()
+    }
   })
 
   it('renders model HTML through the sandbox document service without a privileged bridge', async () => {

@@ -195,13 +195,14 @@ class TestMarkerlessReturnsAreTaggedRefusals:
         assert "No auto-nudge loop to stop" in out
         assert session_directive.is_refusal(out)
 
-    def test_nested_question_validation_is_tagged(self, dashboard_session):
-        """``ask_question`` validates its questions inside the handler. That used
-        to RAISE, escaping this server's return path so the text was neither
-        audited with the call's args nor taggable."""
+    def test_nested_question_validation_is_returned_not_raised(self, dashboard_session):
+        """``ask_question`` validates its questions inside the handler and RETURNS
+        the error (raising escaped this server's return path unaudited). It is no
+        longer a directive tool, so the error is plain text, not a tagged
+        directive refusal."""
         out = _call_tool("ask_question", {"questions": [{"text": "", "options": []}]})
         assert out.startswith("Error:")
-        assert session_directive.is_refusal(out)
+        assert not session_directive.is_refusal(out)
 
     def test_an_unparseable_monitor_target_is_tagged(self, dashboard_session):
         out = _call_tool(
@@ -351,7 +352,6 @@ class TestTheRefusalTagSurvivesDelivery:
 # dispatch wrapper. Either way the result must be a marker or a tagged refusal.
 _HOSTILE_CALLS: dict[str, dict] = {
     "autonudge_stop": {"reason": "x" * 1391},
-    "ask_question": {"questions": [{"text": "", "options": []}]},
     "monitor_start": {"message": "   "},
     "monitor_watch": {
         "kind": "github_pull_request",

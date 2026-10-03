@@ -63,7 +63,6 @@ DIRECTIVE_TOOLS: frozenset[str] = frozenset(
         "autonudge_stop",
         "set_project",
         "suggest_followup",
-        "ask_question",
         "reset_conversation",
         "chat_tag",
     }
