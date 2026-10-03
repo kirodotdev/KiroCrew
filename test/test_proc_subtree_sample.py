@@ -30,6 +30,7 @@ from unittest.mock import AsyncMock, MagicMock, mock_open, patch
 
 import pytest
 
+from conftest import absent_sysconf
 from kiro_crew import platform_compat
 from kiro_crew import subagent as sa
 from kiro_crew.mcp_gateway import pool as pool_mod
@@ -108,6 +109,61 @@ class TestPerProcessReads:
         # post-comm tokens: state(0) ... utime(11)=120 stime(12)=60
         stat = b"1234 (kiro cli (node)) S 2 3 4 5 6 7 8 9 10 11 120 60 0 0"
         assert platform_compat._parse_cpu_jiffies(stat) == 180
+
+    def test_stat_is_read_as_bytes_past_a_comm_that_is_not_utf8(self, tmp_path) -> None:
+        # A prctl(PR_SET_NAME) name is arbitrary bytes, here with a ')' inside.
+        # post-comm tokens: state(0) ppid(1)=7 pgrp(2)=8 ... starttime(19)=4242
+        (tmp_path / "1234").mkdir()
+        (tmp_path / "1234" / "stat").write_bytes(
+            b"1234 (\xff) \xfe) S 7 8 " + b"0 " * 16 + b"4242 0"
+        )
+        assert platform_compat.read_proc_stat(1234, proc_root=tmp_path) == platform_compat.ProcStat(
+            state="S", ppid=7, pgrp=8, start_ticks=4242
+        )
+        assert platform_compat._parse_ppid((tmp_path / "1234" / "stat").read_bytes()) == 7
+
+    def test_stat_fields_tolerate_a_missing_separator_after_comm(self) -> None:
+        assert platform_compat._parse_ppid(b"1 (x)S 7 8") == 7
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            (b"no-parens-here", None),
+            (b"1 (x)", platform_compat.ProcStat(None, None, None, None)),
+            (b"1 (x) S -7 +8", platform_compat.ProcStat("S", None, None, None)),
+        ],
+    )
+    def test_malformed_stat_lines(self, tmp_path, raw: bytes, expected) -> None:
+        (tmp_path / "1").mkdir()
+        (tmp_path / "1" / "stat").write_bytes(raw)
+        assert platform_compat.read_proc_stat(1, proc_root=tmp_path) == expected
+
+    def test_unreadable_stat_is_none(self, tmp_path) -> None:
+        assert platform_compat.read_proc_stat(1, proc_root=tmp_path) is None
+
+    def test_an_overlong_numeric_token_is_none_not_a_raise(self, tmp_path) -> None:
+        (tmp_path / "1").mkdir()
+        (tmp_path / "1" / "stat").write_bytes(b"1 (x) S " + b"9" * 5000 + b" 8")
+        assert platform_compat.read_proc_stat(1, proc_root=tmp_path) == platform_compat.ProcStat(
+            "S", None, 8, None
+        )
+
+    def test_a_zero_tick_rate_dates_nothing(self, monkeypatch) -> None:
+        real = getattr(os, "sysconf", absent_sysconf)  # Windows has no os.sysconf
+        monkeypatch.setattr(
+            os, "sysconf", lambda name: 0 if name == "SC_CLK_TCK" else real(name), raising=False
+        )
+        assert platform_compat.process_start_boot_secs(4242) is None
+        assert platform_compat.process_age_secs(4242) is None
+
+    def test_process_age_is_boot_clock_now_minus_start(self, monkeypatch) -> None:
+        real = getattr(os, "sysconf", absent_sysconf)  # Windows has no os.sysconf
+        monkeypatch.setattr(
+            os, "sysconf", lambda name: 100 if name == "SC_CLK_TCK" else real(name), raising=False
+        )
+        monkeypatch.setattr(platform_compat, "boottime_now", lambda: 100.0)
+        assert platform_compat.process_age_secs(4242) == pytest.approx(57.58)
+        assert platform_compat.process_age_secs(20_000) == 0.0  # floored, never negative
 
     @pytest.mark.parametrize("raw", [b"", b"no-parens-here", b"1 (x) S 1 2 3"])
     def test_malformed_jiffies_are_zero(self, raw: bytes) -> None:

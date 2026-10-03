@@ -178,6 +178,10 @@ class CleanupState:
     # at most once per ``PROBE_FAILURE_WARN_INTERVAL_SECS`` across all keys,
     # never once per candidate per tick.
     probe_failure_warned_at: float | None = None
+    # When the agent-scope reap hook last failed loudly. A failure there stops
+    # every scope from being reclaimed, so it surfaces at WARNING at most once
+    # per ``PROBE_FAILURE_WARN_INTERVAL_SECS``; a clean pass re-arms it.
+    scope_reap_failure_warned_at: float | None = None
     stuck_reported: dict[str, float] = field(default_factory=dict)
     last_pycache_gc: float | None = None
     active_dashboard_slots: set[str] | None = None
@@ -486,6 +490,7 @@ class SessionCleanup:
                 self._deps.reap_agent_scopes,
                 active_pids,
             )
+            self.state.scope_reap_failure_warned_at = None
             reclaimed = int(getattr(summary, "reclaimed", 0) or 0)
             if reclaimed:
                 self._deps.logger.info(
@@ -493,8 +498,9 @@ class SessionCleanup:
                     reclaimed,
                 )
         except Exception:
-            # Best-effort, like the orphan-MCP sweep: never promote severity.
-            self._deps.logger.debug("agent-scope reap hook failed", exc_info=True)
+            # Best-effort, like the orphan-MCP sweep, but not silent: an escape
+            # here skips every scope, so it reaches WARNING, rate-limited.
+            self._note_scope_reap_failure()
 
     def _sessions_on_pid(self, pid: int) -> list[str]:
         """The session keys whose provider is running on *pid*.
@@ -976,6 +982,20 @@ class SessionCleanup:
         except Exception:
             self._note_probe_failure(key)
             return True
+
+    def _note_scope_reap_failure(self) -> None:
+        """Log an agent-scope reap escape: the traceback at debug, the fact at a bounded WARNING."""
+        self._deps.logger.debug("agent-scope reap hook failed", exc_info=True)
+        now = self._deps.monotonic()
+        last = self.state.scope_reap_failure_warned_at
+        if last is not None and now - last < self.PROBE_FAILURE_WARN_INTERVAL_SECS:
+            return
+        self.state.scope_reap_failure_warned_at = now
+        self._deps.logger.warning(
+            "Agent-scope reap failed, so no abandoned scope was reclaimed this tick "
+            "(details at debug; this warning repeats at most once per %.0fs)",
+            self.PROBE_FAILURE_WARN_INTERVAL_SECS,
+        )
 
     def _note_probe_failure(self, key: str) -> None:
         """Log a work-probe failure: the traceback at debug, the fact at a bounded WARNING."""

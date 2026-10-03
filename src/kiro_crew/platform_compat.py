@@ -8464,9 +8464,9 @@ def proc_rss_bytes_for_pid(pid: int) -> int | None:
 # ceiling would let a fix to either policy reach only one surface.
 # :func:`proc_subtree_sample` is the
 # single entry point for BOTH, and the helpers below are the per-process reads it
-# is built from -- module-private, because no caller outside this module wants a
-# single read on its own. Pure stdlib: on a host without ``/proc`` every access
-# raises ``OSError`` and each reading degrades to its own sentinel.
+# is built from -- module-private, except :func:`read_proc_stat`, the stat
+# reader for callers elsewhere. Pure stdlib: on a host without ``/proc`` every
+# access raises ``OSError`` and each reading degrades to its own sentinel.
 #
 # NOT the only way this repository walks a process tree, and deliberately so.
 # ``session_pid._build_child_map`` sums a session's tree from a full ``/proc``
@@ -8513,18 +8513,88 @@ def _proc_status_rss_kb(pid: int) -> int:
     return -1
 
 
-def _parse_ppid(stat: bytes) -> "int | None":
-    """The parent pid from raw ``/proc/<pid>/stat`` bytes, or None on a parse error.
+def _stat_tokens(stat: bytes) -> "list[bytes] | None":
+    """The fields after ``comm`` in raw ``/proc/<pid>/stat`` bytes, or None.
 
-    Splits after the final ``)`` for the same reason :func:`_parse_cpu_jiffies`
-    does: ``comm`` may contain spaces and parens. ppid is field 4 (1-indexed),
-    index 1 of the post-comm tokens.
+    ``comm`` is parenthesised and may contain spaces and ``)``, so the split is
+    after the LAST ``)``. It is also arbitrary bytes -- any process may name
+    itself through ``prctl(PR_SET_NAME)``, and the kernel truncates a multibyte
+    name at 15 bytes mid-character -- so the line is never decoded. Index 0 is
+    ``state`` (field 3), so field *N* is index *N - 3*. None only when the line
+    has no ``)`` at all; any other damage shows up as missing or non-numeric
+    tokens.
     """
-    try:
-        rparen = stat.rindex(b")")
-        return int(stat[rparen + 2 :].split()[1])
-    except (ValueError, IndexError):
+    rparen = stat.rfind(b")")
+    if rparen < 0:
         return None
+    return stat[rparen + 1 :].split()
+
+
+#: Longest stat token read as a number: a 64-bit counter has 20 digits, and the
+#: bound keeps ``int()`` clear of the interpreter's digit limit on a hostile line.
+_STAT_TOKEN_MAX_DIGITS = 20
+
+
+def _stat_token_int(tokens: "list[bytes] | None", index: int) -> "int | None":
+    """Post-``comm`` token *index* as a non-negative int, or None when absent or not digits."""
+    if tokens is None or index >= len(tokens):
+        return None
+    token = tokens[index]
+    if not token.isdigit() or len(token) > _STAT_TOKEN_MAX_DIGITS:
+        return None
+    return int(token)
+
+
+def _parse_ppid(stat: bytes) -> "int | None":
+    """The parent pid (field 4) from raw ``/proc/<pid>/stat`` bytes, or None."""
+    return _stat_token_int(_stat_tokens(stat), 1)
+
+
+class ProcStat(NamedTuple):
+    """Fields of one ``/proc/<pid>/stat`` line.
+
+    Each is None on its own when its token is missing or not a number, which no
+    line the kernel writes produces; a fixture or a truncated read can.
+    """
+
+    state: str | None
+    ppid: int | None
+    pgrp: int | None
+    start_ticks: int | None
+
+
+def read_proc_stat(pid: int, *, proc_root: "Path | None" = None) -> "ProcStat | None":
+    """*pid*'s ``/proc/<pid>/stat`` from ONE bytes read, or None. Linux only.
+
+    The stat reader new code uses; the text-mode readers that predate it are
+    being moved onto it. It never decodes ``comm`` (see :func:`_stat_tokens`): a
+    text read raises ``UnicodeDecodeError`` on a process whose name is not
+    UTF-8, which an ``except OSError`` does not catch. Every field comes from the
+    same read, so a caller needing several never mixes two processes behind a
+    recycled pid. ``start_ticks`` is in clock ticks since boot;
+    :func:`process_age_secs` turns it into an age.
+
+    None when the file cannot be read (gone, permission, no ``/proc``) or the
+    line has no ``)``; otherwise a :class:`ProcStat` whose fields may each be
+    None. *proc_root* substitutes a fixture process table on every host.
+    """
+    if proc_root is None:
+        if not IS_LINUX:
+            return None
+        proc_root = Path("/proc")
+    try:
+        raw = (proc_root / str(pid) / "stat").read_bytes()
+    except OSError:
+        return None
+    tokens = _stat_tokens(raw)
+    if tokens is None:
+        return None
+    return ProcStat(
+        state=tokens[0].decode("ascii", "replace") if tokens else None,
+        ppid=_stat_token_int(tokens, 1),
+        pgrp=_stat_token_int(tokens, 2),
+        start_ticks=_stat_token_int(tokens, 19),
+    )
 
 
 def proc_child_map() -> "dict[int, list[int]] | None":
@@ -8636,12 +8706,11 @@ def _parse_cpu_jiffies(stat: bytes) -> int:
     handled. utime/stime are fields 14/15 (1-indexed) → indices 11/12 of the
     post-comm tokens. Returns 0 on any parse error.
     """
-    try:
-        rparen = stat.rindex(b")")
-        fields = stat[rparen + 2 :].split()
-        return int(fields[11]) + int(fields[12])
-    except (ValueError, IndexError):
+    tokens = _stat_tokens(stat)
+    utime, stime = _stat_token_int(tokens, 11), _stat_token_int(tokens, 12)
+    if utime is None or stime is None:
         return 0
+    return utime + stime
 
 
 def _proc_cpu_jiffies(pid: int) -> int:
@@ -9327,6 +9396,37 @@ def boottime_now() -> float | None:
         if sys.platform == "darwin":
             return time.time()
         return None
+
+
+def process_start_boot_secs(starttime_ticks: float) -> float | None:
+    """A process's ``starttime`` ticks as seconds on the :func:`boottime_now` clock.
+
+    None when the tick rate cannot be read — including on a platform with no
+    ``os.sysconf`` at all (Windows raises AttributeError, not OSError), where
+    there is no ``/proc`` to date processes against either. Callers read None as
+    "cannot attribute", never as a time.
+    """
+    try:
+        hz = os.sysconf("SC_CLK_TCK")
+    except (AttributeError, OSError, ValueError):
+        return None
+    if hz <= 0:
+        return None
+    return starttime_ticks / hz
+
+
+def process_age_secs(starttime_ticks: int) -> float | None:
+    """Age of a process whose stat ``starttime`` is *starttime_ticks*, or None.
+
+    ``boottime_now() - process_start_boot_secs(ticks)``, floored at 0: both are
+    on the suspend-inclusive clock ``starttime`` counts on. None when either
+    side cannot be read, which callers read as "age unknown".
+    """
+    started = process_start_boot_secs(starttime_ticks)
+    now = boottime_now()
+    if started is None or now is None:
+        return None
+    return max(0.0, now - started)
 
 
 # ---------------------------------------------------------------------------

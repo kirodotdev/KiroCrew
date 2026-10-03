@@ -146,6 +146,7 @@ from kiro_crew import platform_compat
 from kiro_crew.constants import WAIT_TOOL_MAX_SECS
 from kiro_crew.platform_compat import (  # noqa: F401 - re-exported for existing importers
     boottime_now,
+    process_start_boot_secs,
 )
 from kiro_crew.session_directive import CORE_MCP_SERVER
 
@@ -587,23 +588,6 @@ def steady_now() -> float | None:
         return time.clock_gettime(time.CLOCK_MONOTONIC)
     except (AttributeError, OSError):  # pragma: no cover - platform dependent
         return None
-
-
-def process_start_boot_secs(starttime_ticks: float) -> float | None:
-    """A process's ``starttime`` ticks as seconds on the :func:`boottime_now` clock.
-
-    None when the tick rate cannot be read — including on a platform with no
-    ``os.sysconf`` at all (Windows raises AttributeError, not OSError), where
-    there is no ``/proc`` to date processes against either. Callers read None as
-    "cannot attribute", never as a time.
-    """
-    try:
-        hz = os.sysconf("SC_CLK_TCK")
-    except (AttributeError, OSError, ValueError):
-        return None
-    if hz <= 0:  # pragma: no cover - defensive
-        return None
-    return starttime_ticks / hz
 
 
 # ── Darwin process backend (a host without procfs) ──

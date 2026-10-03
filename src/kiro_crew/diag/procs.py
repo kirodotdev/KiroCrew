@@ -331,9 +331,10 @@ def _stat_fields(proc_root: Path, pid: int) -> list[str] | None:
     """``/proc/<pid>/stat`` fields from ``state`` onward, or ``None``.
 
     ``comm`` (field 2) is parenthesised and may itself contain spaces and
-    ``)``, so the split is on the LAST ``)`` -- the same parse
-    :mod:`kiro_crew.session_scope_reap` uses. Index 0 is then ``state``
-    (field 3), so field *N* is index *N - 3*.
+    ``)``, so the split is on the LAST ``)`` -- the split
+    :func:`kiro_crew.platform_compat.read_proc_stat` makes. Index 0 is then
+    ``state`` (field 3), so field *N* is index *N - 3*. The text read replaces
+    bytes that are not UTF-8, so a ``comm`` set to arbitrary bytes cannot raise.
     """
     raw = _read_text(proc_root / str(pid) / "stat")
     if raw is None:

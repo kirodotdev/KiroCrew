@@ -1248,14 +1248,21 @@ against sweep completeness, and are torn down at `close_all`.
   reclaimable"; (iii) the group leader is dead OR the
   scope's `ActiveEnterTimestampMonotonic` predates this gateway's boot stamp;
   and (iv) the scope is older than the module's 600-second grace floor. Reclaim is
-  `systemctl --user stop <unit>`, then a fallback SIGTERM → 3s → SIGKILL that
+  `systemctl --user stop <unit>`, then a fallback SIGTERM → grace → SIGKILL that
   re-reads `cgroup.procs`, opens a pidfd, requires a post-pin `cgroup.procs`
-  read to retain that PID in the same scope, re-derives tree ownership, and
-  signals through that pidfd. A recycled PID can therefore never redirect a
-  signal; a host without pidfd support leaves the member untouched. `pid <= 1` and the
-  gateway's own PID are never signalled, and each reclaimed scope emits a SEL
-  `agent_scope_reap` event. Only THIS install's per-instance child slice is
-  enumerated: a degraded instance token (no per-instance child) is treated as
+  read to retain that PID in the same scope, and signals through that pidfd. A
+  member attributed before the stop is signalled on identity (same pid, same
+  stat start ticks read after the pin), so an env-cleared child whose marked
+  parent died to SIGTERM and was reparented still gets the SIGKILL; any other
+  member must pass fresh tree ownership, and one that cannot is skipped with a
+  logged reason. A recycled PID can therefore never redirect a signal; a host
+  without pidfd support leaves the member untouched. The 3 s grace and a 2 s
+  settle after SIGKILL (a killed task stays listed until its exit completes)
+  each end as soon as the members signalled in that rung have left
+  `cgroup.procs`. `pid <= 1` and the gateway's own PID are never signalled,
+  and each reclaimed scope emits a SEL `agent_scope_reap` event. Only THIS
+  install's per-instance child slice is enumerated: a degraded instance token
+  (no per-instance child) is treated as
   "nothing to reap here" rather than reaching into a co-resident gateway's
   scopes. A no-op off Linux or without cgroup v2 delegation
   (`sandbox._probe_cgroup_scope`). Marker inheritance by itself never authorizes
@@ -1266,7 +1273,26 @@ against sweep completeness, and are torn down at `close_all`.
   whose runtime-anchor members have all died is never reclaimed, even if every
   survivor still has the marker or is an attributable env-cleared descendant;
   old skipped scopes are summarized at INFO by stable reason category, making
-  that residual operator-visible. Stale
+  that residual operator-visible. Each member's `/proc/<pid>/stat` is read as
+  BYTES through `platform_compat.read_proc_stat`; it, `environ` and `cmdline` are
+  read lazily and at most once per pid per evaluation, and the reclaim reuses
+  those reads (a scope rejected at (i) with an active-enter stamp reads no stat):
+  `comm` is whatever a process named itself through `prctl(PR_SET_NAME)`, and a
+  text read raises on a name that is not UTF-8. The gateway's own boot stamp is
+  read the same way, so a gateway whose `comm` is not UTF-8 still has a stamp
+  and the predates-boot arm stays available to it. `systemctl` output is decoded
+  with `errors="replace"`, since a localized diagnostic in a legacy locale is
+  not UTF-8. One scope whose evaluation or reclaim RAISES costs that scope
+  alone: an evaluation error is skipped as category `error`, and a reclaim that
+  raises is audited by what it left behind (`completed` when the scope is empty,
+  else `failed`, category `reclaim_error`); both count as old, so the INFO
+  summary counts them by category on every tick, and the unit is named in a
+  WARNING once per scope, phase and exception type, repeated at most hourly while
+  it keeps failing and re-armed by the next clean check. An `AssertionError` is
+  never absorbed. Residuals: a read that BLOCKS (an `environ` or `cmdline` read
+  waiting on a process's mmap lock behind a hung mount) still stalls the sweep;
+  and under `/proc` `hidepid`, a live group leader outside the scope whose stat
+  cannot be read is taken as dead. Stale
   `session_pid_<pid>.txt`/`.sig` files are separately pruned by
   `_prune_stale_session_pid_files` (below); the reaper adds no second deletion
   path.
