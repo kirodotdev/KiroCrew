@@ -15,10 +15,14 @@
  * speaks (`resetPaths` input, and `FileTreeVisibleRow.path` with the library's
  * trailing directory slash stripped), so a `project-tree` refetch that
  * rebuilds the snapshot with fresh node ids cannot invalidate them. Storage
- * access is best-effort: private mode or a full quota degrades to
- * session-only memory, never to a crash — the same tolerance the rail width
- * code has for a bad stored value.
+ * access goes through `utils/safeStorage`, so it is best-effort but not
+ * defeatist: a FULL quota reclaims a tier of disposable cache and retries
+ * rather than losing the write, while storage that is unusable at all
+ * (private mode) degrades to session-only memory and never to a crash — the
+ * same tolerance the rail width code has for a bad stored value.
  */
+
+import { safeGetItem, safeSetItem } from '../utils/safeStorage'
 
 /** One storage key for every project directory, holding a `{ dir: paths }`
  *  record in least-recently-written-first insertion order. A key per project
@@ -70,17 +74,25 @@ export function createProjectPathMemory(storageKey: string): ProjectPathMemory {
     }
   }
 
-  /** Read the whole stored record. `{}` for a missing or malformed value;
-   *  `null` when storage itself is unusable (so a write should not follow). */
-  const readStore = (): Record<string, unknown> | null => {
+  /** Read the whole stored record, or `{}` for anything unusable — missing,
+   *  unreadable, or not a JSON object.
+   *
+   *  There is deliberately no "storage is broken, skip the write" channel. It
+   *  existed to avoid a write that could only fail, and `safeSetItem` already
+   *  makes such a write harmless. Keeping it cost more than it saved: a value
+   *  that throws in `JSON.parse` took the same branch, so ONE corrupt string
+   *  blocked every later write and the mirror stayed dead for the life of the
+   *  profile. Falling back to `{}` overwrites the bad value on the next
+   *  expansion instead. */
+  const readStore = (): Record<string, unknown> => {
+    const raw = safeGetItem(storageKey)
+    if (!raw) return {}
     try {
-      const raw = localStorage.getItem(storageKey)
-      if (!raw) return {}
       const parsed: unknown = JSON.parse(raw)
       if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
       return parsed as Record<string, unknown>
     } catch {
-      return null
+      return {}
     }
   }
 
@@ -94,25 +106,27 @@ export function createProjectPathMemory(storageKey: string): ProjectPathMemory {
       const capped = paths.slice(0, MAX_REMEMBERED_PATHS)
       setBounded(projectDir, capped)
       const store = readStore()
-      if (store === null) return
       // Delete-then-set keeps insertion order meaning "least recently written
       // first", so eviction below always drops the stalest project.
       delete store[projectDir]
       store[projectDir] = capped
       const dirs = Object.keys(store)
       for (let i = 0; i < dirs.length - MAX_REMEMBERED_DIRS; i++) delete store[dirs[i]]
-      try {
-        localStorage.setItem(storageKey, JSON.stringify(store))
-      } catch {
-        // Private mode / quota exceeded: the session map above still covers
-        // the remount case, only reload persistence is lost.
-      }
+      // `safeSetItem`, not a raw write in a bare catch: on a full origin quota it
+      // drops a tier of disposable cache and retries, where the bare catch lost
+      // the write outright. That quota is reached in normal use — the per-session
+      // virtualizer height caches accumulate across every chat ever opened — so
+      // the bare catch meant the mirror quietly stopped persisting while several
+      // MB of re-derivable cache sat next to it. It still never throws: a
+      // private-mode SecurityError is not reclaimable, returns false, and leaves
+      // the session map above covering the remount case.
+      safeSetItem(storageKey, JSON.stringify(store))
     },
     recall(projectDir) {
       const inSession = session.get(projectDir)
       if (inSession) return inSession
       const store = readStore()
-      const entry = store?.[projectDir]
+      const entry = store[projectDir]
       if (!Array.isArray(entry)) return []
       const paths = entry
         .filter((p): p is string => typeof p === 'string')
