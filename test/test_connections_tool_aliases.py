@@ -75,7 +75,7 @@ URLS = {
     "linear": "https://mcp.linear.app/mcp/readonly",
     "vercel": "https://mcp.vercel.com",
     "gitlab": "https://gitlab.com/api/v4/mcp",
-    "atlassian": "https://mcp.atlassian.com/v1/mcp/authv2",
+    "atlassian": "https://mcp.atlassian.com/v2/mcp",
     "neon": "https://mcp.neon.tech/mcp?readonly=true",
     "todoist": "https://ai.todoist.net/mcp",
 }
