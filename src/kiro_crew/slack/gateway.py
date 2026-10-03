@@ -13685,6 +13685,23 @@ async def run_gateway(
                 # sweep runs an hour in, and nothing here is boot-urgent --
                 # scratch reclamation has no correctness deadline.
                 await asyncio.sleep(3600)
+                # A conductor spec the boot rebuild left unwritten (it could not be
+                # read or written) rides this wake too, and FIRST: it is the one rider
+                # with a security deadline. The only other retry is the policy
+                # distribution poll's post-install hook, and a host with no central
+                # distribution runs no poll -- so without this, that spec kept the
+                # ``allowedTools`` the previous boot's ceiling wrote for the process
+                # lifetime, past a local tightening. A no-op whenever the last rebuild
+                # wrote every spec (``agent.retry_held_conductor_specs``), which is
+                # every wake on a healthy host; its own try/except, like the sweeps.
+                try:
+                    from kiro_crew.agent import retry_held_conductor_specs
+
+                    await asyncio.to_thread(retry_held_conductor_specs)
+                except Exception:
+                    logging.getLogger(__name__).debug(
+                        "held conductor spec retry failed", exc_info=True
+                    )
                 try:
                     await asyncio.to_thread(agent_scratch.sweep_dead_scratch)
                 except Exception:

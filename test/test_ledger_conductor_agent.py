@@ -242,7 +242,7 @@ def test_the_boot_installer_writes_this_spec():
     which is exactly what the alias is for, so eager installation is load-bearing
     rather than tidy."""
     source = Path(agent.__file__).read_text(encoding="utf-8")
-    assert "_install_ledger_conductor_agent()" in source
+    assert "_install_ledger_conductor_agent(clean=clean)" in source
 
 
 # ── the deprecated skill ──────────────────────────────────────────────────

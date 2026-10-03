@@ -3062,6 +3062,15 @@ class TestAllowedToolsIsReDerivedWhenTheCeilingTightens:
     short-circuits inside the harness and never reaches Kiro Crew's own PreToolUse gate.
     """
 
+    @pytest.fixture(autouse=True)
+    def _no_hold_carried_in(self, monkeypatch):
+        """``prime_ceiling_projection`` seeds nothing while the last real rebuild left a
+        conductor spec unwritten; these tests pin the seeded baseline, so a hold a test
+        elsewhere in this process left behind must not reach them."""
+        from kiro_crew import agent as agent_mod
+
+        monkeypatch.setattr(agent_mod, "_conductor_spec_held", False, raising=False)
+
     @staticmethod
     def _hook(monkeypatch):
         from kiro_crew import agent as agent_mod
