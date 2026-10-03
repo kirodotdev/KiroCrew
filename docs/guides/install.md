@@ -201,6 +201,18 @@ home (`~/.kiro/crew-venv`, override with `KIROCREW_VENV`) and symlinks
 data home, so no whole-home operation can ever delete the live interpreter. The
 selected channel is recorded to `~/.kiro/crew/channel`.
 
+Updates to a managed venv (`kirocrew update`, an approved in-app update, and the
+gateway's automatic update) build each new version as its own tree beside it,
+`crew-venv-<version>` (about 350 MiB with its dependencies), and switch the
+`crew-venv-current` link to it. After each update the engine keeps the current
+tree, the previous one (a recovery target), and any tree a running `kirocrew`
+process still uses; older ones are removed. A direct installer run still
+rebuilds the fixed `crew-venv` in place. On a host that restricts unprivileged user
+namespaces and uses the `kirocrew-userns` AppArmor profile, run
+`kirocrew service install` again after every update so the profile follows the
+new launcher; the gateway's automatic update waits for you instead of applying
+there, and `kirocrew doctor` reports the attachment under Sandbox.
+
 The installer provisions its own Python by default instead of depending on the
 system one: it downloads a SHA-256-pinned [uv](https://docs.astral.sh/uv/)
 binary (an installed `uv` on `PATH` is deliberately never executed -- `PATH`
@@ -215,8 +227,9 @@ choice is sticky: it is recorded in the data home (`python-mode`, next to
 `channel`), so later installer runs keep it without the flag; opt back in
 with `--managed-python`.
 Installs that predate the managed default migrate onto it at their next
-direct installer run — on a managed venv, a staged update applied from the
-dashboard or the CLI's update command keeps its current interpreter — unless
+direct installer run — on a managed venv, an update applied from the
+dashboard, by the CLI's update command or by the gateway's automatic update
+keeps its current interpreter — unless
 they recorded the `--system-python` opt-out. A re-run resolves the
 interpreter through the pinned uv binary; an already-provisioned interpreter
 is reused rather than re-downloaded.
@@ -244,12 +257,12 @@ the packages, instead of failing deep inside a compiler run. Use a newer host,
 or — on a host that does have a toolchain and the headers — opt back into
 compiling with `KIROCREW_ALLOW_SOURCE_BUILDS=1`. The same policy applies to
 `install.sh`'s editable install (the dependency set only; the local kirocrew
-tree is still built) and to the update engine that builds the shadow venv for
-`kirocrew update` on a managed-venv install. The opt-in is not remembered: the
-update engine reads it from the environment the gateway runs under, so a host
-that installed with it must also carry it there (in the service unit for a
-`kirocrew service install`), or its next update that pulls a wheel-less
-dependency refuses with the same platform message.
+tree is still built) and to the update engine that builds the shadow venv on a
+managed-venv install. The opt-in is not remembered. To compile a dependency
+during an update, run `KIROCREW_ALLOW_SOURCE_BUILDS=1 kirocrew update` from a
+shell where the toolchain is on `PATH`: that command builds with the shell's own
+environment, while the gateway's automatic and approved updates run their build
+steps on the trusted system `PATH` only.
 
 ### b. From source (development)
 
@@ -1130,16 +1143,42 @@ pipx uninstall kirocrew
 ### One-line install via `cli.sh` (managed venv)
 
 If `pipx` was not available, `cli.sh` created a managed venv and a symlink.
-Remove both:
+Updates add versioned trees beside it (`crew-venv-<version>`), the stable link
+`crew-venv-current` that names the live one, the update lock
+`crew-venv.update.lock`, and, after an interrupted update, a hidden
+`.crew-venv-<version>.deleting-<pid>` tree or a `crew-venv-current.<pid>.new`
+link. Remove them (this works the same in `sh`, `bash` and `zsh`, and removes
+nothing when a pattern matches nothing):
 
 ```bash
-rm -f ~/.local/bin/kirocrew
-rm -rf "${KIROCREW_VENV:-${KIROCREW_HOME:-$HOME/.kiro/crew}-venv}"
+VENV="${KIROCREW_VENV:-${KIROCREW_HOME:-$HOME/.kiro/crew}-venv}"
+VENV="${VENV%/}"
+PARENT="$(cd "$(dirname "$VENV")" && pwd -P)"
+NAME="$(basename "$VENV")"
+rm -f ~/.local/bin/kirocrew "$VENV-current" "$VENV.update.lock"
+rm -rf "$VENV"
+find "$PARENT" -maxdepth 1 -type l -name "$NAME-current.*.new" -exec rm -f {} +
+find "$PARENT" -maxdepth 1 -type d \( -name "$NAME-[0-9]*" -o -name ".$NAME-*.deleting-*" \) \
+  -exec sh -c '
+    venv=$1 real=$2; shift 2
+    for tree; do
+      owner="$(cat "$tree/.kirocrew-tree" 2>/dev/null)"
+      if [ -n "$owner" ] && { [ "$owner" = "$venv" ] || [ "$owner" = "$real" ]; }; then
+        rm -rf "$tree"
+      else
+        echo "left in place, check and remove by hand: $tree"
+      fi
+    done' sh "$VENV" "$PARENT/$NAME" {} +
 ```
 
-If you set `KIROCREW_VENV` to a custom path, verify its contents before
-removing it — `cli.sh` overlays that directory with venv files, and an `rm -rf`
-on a path you already used for something else will take that too.
+A versioned tree is removed only when its `.kirocrew-tree` marker names this
+install's venv. Any other match is listed instead: a neighbouring directory that
+merely shares the name prefix (a backup, another install's trees), or a tree an
+earlier release built before it wrote the marker. Remove the ones that are this
+install's by hand. If you set `KIROCREW_VENV` to a custom path, verify its
+contents before removing it — `cli.sh` overlays that directory with venv files,
+and an `rm -rf` on a path you already used for something else will take that
+too.
 
 ### pip / pip wheel install
 

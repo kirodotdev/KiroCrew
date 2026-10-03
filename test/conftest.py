@@ -1107,6 +1107,19 @@ def _no_restart_ready_timeout_override(_floor_monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_managed_venv_override(_floor_monkeypatch):
+    """Keep a developer's ``KIROCREW_VENV`` out of every test.
+
+    ``wheel_engine.managed_venv_layout`` reads it first, so an exported value
+    would make a test that takes the real update lock create and hold
+    ``${KIROCREW_VENV}.update.lock`` beside the operator's managed venv, racing
+    that install's own updates. Without it the layout sits beside the test's
+    scratch ``KIROCREW_HOME``. A test that needs a layout sets the variable itself.
+    """
+    _floor_monkeypatch.delenv("KIROCREW_VENV", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_kiro_window_cache():
     """Give every test an EMPTY ``model_registry._KIRO_WINDOWS``, then restore it.
 

@@ -89,51 +89,21 @@ def _process_userns_vantage_confined() -> bool | None:
 
 def _service_profile_applies(profile_path: Path, profile_name: str) -> bool:
     """True when the installed profile is ATTACHED to the launcher script this
-    host currently resolves.
+    host currently resolves, and no ``AppArmorProfile=`` directive overrides it.
 
-    The confining mechanism is a path attachment, not a systemd
-    ``AppArmorProfile=<name>`` directive: the profile is attached BY PATH to
-    ``kirocrew_bin()`` (the same path ``ExecStart`` uses), and installing the
-    directive alongside a path attachment makes the directive silently win,
-    defeating the attachment. ``kirocrew service install`` therefore does not
-    write it, and this check reads the profile's own attachment clause and
-    compares it against the CURRENTLY resolved launcher path, the same
-    comparison ``apparmor.launcher_status()`` already makes for the AppImage
-    case.
-
-    A moved or reinstalled launcher (a venv rebuilt at a new path, a symlink
-    re-pointed) makes this False until ``kirocrew service install`` re-renders
-    the profile against the new path — the same staleness
-    ``kirocrew sandbox status`` already reports for the launcher profile.
+    The decision is :func:`kiro_crew.service.apparmor.service_profile_attachment`,
+    the predicate the update engine's re-attach question uses too, read here
+    through the doctor facade's ``service_linux`` and ``apparmor`` handles.
     """
-    attached = cli_doctor.apparmor.installed_attachment(profile_path, profile_name)
-    if attached is None:
-        return False
-    try:
-        current = str(Path(cli_doctor.service_linux.kirocrew_bin()).resolve(strict=True))
-    except OSError:
-        return False
-    if attached != current:
-        return False
-    # A unit that still carries ``AppArmorProfile=`` — a hand-edited unit, a
-    # systemd drop-in, an older install — silently WINS over the kernel's path
-    # attachment, which is why the directive is not used, so an attachment that
-    # matches is not enough: the service would run under the directive's
-    # semantics, leaving its own probe unconfined, while a shell launch through
-    # the same path probes green. Best-effort read — an
-    # unreadable unit (or none installed) proves nothing and must not flip a
-    # verified attachment to "broken".
-    try:
-        # errors="replace" for the same reason as installed_attachment(): a
-        # unit with undecodable bytes must not crash the verdict —
-        # UnicodeDecodeError is a ValueError, outside the OSError guard.
-        unit_text = cli_doctor.service_linux.UNIT_PATH.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return True
-    for line in unit_text.splitlines():
-        if line.strip().startswith("AppArmorProfile="):
-            return False
-    return True
+    return (
+        cli_doctor.apparmor.service_profile_attachment(
+            cli_doctor.service_linux.kirocrew_bin(),
+            cli_doctor.service_linux.UNIT_PATH,
+            profile_path,
+            profile_name,
+        )
+        is not None
+    )
 
 
 def _doctor_sandbox_apparmor(reason: str, issues: list[str]) -> None:

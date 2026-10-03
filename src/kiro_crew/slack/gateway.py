@@ -614,6 +614,10 @@ async def _subagent_batch_pending(manager: Any, batch_id: str) -> bool:
 
 logger = logging.getLogger(__name__)
 
+#: The update coordinator's shutdown grace when the managed-venv apply module was
+#: never loaded (no apply can be running); otherwise its own STOP_GRACE_SECS.
+_UPDATE_STOP_GRACE_SECS = 3.0
+
 # Full chat turn timeout — tool calls, multi-step reasoning, spawning.
 # More generous than INJECTION_TIMEOUT (default 900s, tunable via
 # KIROCREW_INJECTION_TIMEOUT) which only covers a single injected continuation turn.
@@ -1036,8 +1040,20 @@ class GatewayOrchestrator:
         self._update_check_task: "asyncio.Task[None] | None" = None
         self._update_apply_deferred = False
         self._pending_update_respawn: Callable[[], str] | None = None
+        # Whether the pending restart serves a policy floor, and its target key:
+        # kept beside the respawn so every retry runs under the same mandatory
+        # grace instead of restarting the clock.
+        self._pending_update_mandatory = False
+        self._pending_update_mandatory_key = ""
         self._mandatory_update_deferred_at: float | None = None
         self._mandatory_update_deferred_key: str | None = None
+        # Managed-venv notices already sent in this process, so each reaches the
+        # operator once per release: the signed metadata excludes this host
+        # (``incompatible:<version>``), or applying it would detach the
+        # sandbox's AppArmor profile (``reattach:<version>``). Nothing here
+        # suppresses an attempt: incompatibility is decided again, before any
+        # download, on every cycle.
+        self._wheel_update_noticed: set[str] = set()
         self._mcp_gateway_manager: GatewayManager | None = None
         # Detached pre-resolve pass for npm-launcher MCP targets. Held so the
         # loop keeps a strong reference (a bare create_task is only weakly held)
@@ -1130,6 +1146,12 @@ class GatewayOrchestrator:
         except Exception:
             logger.warning("in-flight count: refusal write state failed", exc_info=True)
             background += 1
+        # A managed-venv apply still building (an approved in-app one, say): a
+        # restart now would cancel it and exec an older promotion over it. When
+        # it promotes, its own restart path owns the exec.
+        wheel_apply = self._wheel_apply_module()
+        if wheel_apply is not None:
+            background += wheel_apply.applies_in_flight()
 
         seen_handler_tasks: set[int] = set()
         handler_owners: list[object] = [
@@ -10502,8 +10524,37 @@ class GatewayOrchestrator:
     # Shutdown
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _wheel_apply_module() -> Any:
+        """The loaded managed-venv apply module, or ``None``. Never imports.
+
+        Looked up in ``sys.modules``: no apply can be in flight in a process that
+        never loaded it, and the stop paths must not import from a tree an update
+        may have changed.
+        """
+        return sys.modules.get("kiro_crew.platform.wheel_apply")
+
+    async def _settle_update_work(self, update_task: "asyncio.Task[None] | None") -> None:
+        """Wait, bounded, for the update coordinator and the applies it cancelled.
+
+        The grace is the apply module's own (``STOP_GRACE_SECS``); with the module
+        not loaded no apply can be running, so only the coordinator is waited on.
+        """
+        module = self._wheel_apply_module()
+        grace = float(getattr(module, "STOP_GRACE_SECS", _UPDATE_STOP_GRACE_SECS))
+        waits = []
+        if module is not None:
+            waits.append(module.stop_wheel_applies())
+        if update_task is not None and not update_task.done():
+            waits.append(asyncio.wait({update_task}, timeout=grace))
+        if waits:
+            await asyncio.gather(*waits)
+
     async def _shutdown(self) -> None:
         """Graceful cleanup of all services."""
+        # First: a stop owns any apply in flight (the exit hooks cancel it), and
+        # its build child dies now rather than after the teardown below.
+        platform_compat.run_process_exit_hooks("shutdown")
         self._memory_repair_stop.set()
         if self._memory_repair_task is not None:
             self._memory_repair_task.cancel()
@@ -10642,10 +10693,12 @@ class GatewayOrchestrator:
         # Cancel background auto-migration if still in flight
         if self._auto_migrate_task is not None and not self._auto_migrate_task.done():
             self._auto_migrate_task.cancel()
-        # Cancel the recurring update coordinator if it is still in flight — a
-        # check or installer subprocess can take ~70s to time out.
+        # The update coordinator, and the managed-venv applies cancelled at the
+        # top of this method: each gets a bounded grace to unwind, concurrently
+        # with the teardown above rather than ahead of it.
         if self._update_check_task is not None and not self._update_check_task.done():
             self._update_check_task.cancel()
+        cleanup_tasks.append(self._settle_update_work(self._update_check_task))
         from kiro_crew.dashboard.handlers.updates import _cancel_update_check
 
         cleanup_tasks.append(_cancel_update_check())
@@ -10691,11 +10744,20 @@ class GatewayOrchestrator:
             await asyncio.sleep(delay)
 
     async def _retry_pending_update_restart(self) -> None:
-        """Retry only the safe restart after an update already applied."""
+        """Run, or retry, only the safe restart after an update already applied.
+
+        Admission pauses here and nowhere earlier: an apply that builds beside
+        the live install leaves the gateway serving until this point. A pending
+        restart that serves a policy floor keeps its mandatory grace across
+        retries (``_pending_update_mandatory`` and its key).
+        """
         respawn = getattr(self, "_pending_update_respawn", None)
         if respawn is None:
             return
-        if not await self._prepare_auto_update_apply(mandatory=False):
+        if not await self._prepare_auto_update_apply(
+            mandatory=self._pending_update_mandatory,
+            mandatory_key=self._pending_update_mandatory_key,
+        ):
             return
         try:
             await self._restart_after_update(respawn)
@@ -10967,6 +11029,27 @@ class GatewayOrchestrator:
                     "Update applied — restart needs a usable interpreter",
                 )
             return
+        # ONE restart sequence per process: the dashboard's ``_restart_gateway``
+        # claims the same flag, and two sequences must never both drain sessions
+        # and race separate successors. A restart already under way owns the
+        # exec; this one stays pending and retries if that one is refused.
+        state = self.dashboard_state
+        if state is not None and getattr(state, "_gateway_restart_in_progress", False) is True:
+            self._update_apply_deferred = True
+            logger.info("A gateway restart is already in progress; the update restart waits")
+            return
+        if state is not None:
+            state._gateway_restart_in_progress = True
+        try:
+            # Through the class, not ``self``: the restart is also driven with a
+            # stand-in ``self`` that carries only the state it reads.
+            await GatewayOrchestrator._restart_after_update_claimed(self, launcher, exe)
+        finally:
+            if state is not None:
+                state._gateway_restart_in_progress = False
+
+    async def _restart_after_update_claimed(self, launcher: str | None, exe: str | None) -> None:
+        """The restart's drain-to-exec half, run with the process restart claimed."""
         if self.dashboard_state:
             self.dashboard_state.push_update_progress("restarting", "Preparing safe restart…")
             from kiro_crew.dashboard.chat import save_all_slots_to_history
@@ -11099,9 +11182,9 @@ class GatewayOrchestrator:
                 # A mandatory floor is handled by the route `auto_update_effect`
                 # chose, because "apply" means different things per install shape:
                 #   * git checkout -> git fetch + reset applies.
-                #   * managed venv -> the installer can apply it, so a floor does
-                #     drive it; a floor above the newest build notifies instead of
-                #     reinstalling the same bytes forever.
+                #   * managed venv -> the shadow engine can apply it beside the
+                #     live venv, so a floor does drive it; a floor above the newest
+                #     build notifies instead of reinstalling the same bytes forever.
                 #   * externally managed (dmg/appimage/deb/rpm/nsis/docker: no
                 #     `can_apply` and no command) -> its own updater owns this; the
                 #     backend must not drive a git reset on a non-git tree nor show
@@ -11173,8 +11256,8 @@ class GatewayOrchestrator:
                     finally:
                         await self._finish_auto_update_apply()
                     return
-                # A managed-venv install cannot apply in-process, but its
-                # installer can, and a policy floor outranks auto_update. Runtime
+                # A managed-venv install cannot apply in-process, but the shadow
+                # engine can, and a policy floor outranks auto_update. Runtime
                 # ownership is authoritative: older managed wheels have no build
                 # stamp, while a foreign source or wheel must never be rewritten.
                 if (
@@ -11186,7 +11269,7 @@ class GatewayOrchestrator:
                     and _remediation_command(info)
                 ):
                     # Only apply when a NEWER build is available; otherwise the
-                    # installer reinstalls the same below-floor version and the
+                    # apply reinstalls the same below-floor version and the
                     # execv-restart re-enters this branch forever (the git path's
                     # no-new-commits guard is the equivalent). A floor pinned
                     # above the latest build must notify, not loop.
@@ -11200,21 +11283,24 @@ class GatewayOrchestrator:
                         if self.dashboard_state:
                             self.dashboard_state.push_refresh("update_available")
                         return
-                    if not await self._prepare_auto_update_apply(
+                    logger.warning(
+                        "Version compliance: running %s is below the policy minimum %s — "
+                        "applying mandatory update beside the managed venv "
+                        "(overrides auto_update)",
+                        _running_version,
+                        min_version(),
+                    )
+                    # Admission stays open while the new tree builds; only the
+                    # restart into it pauses, under the mandatory grace. A
+                    # promotion that would detach the sandbox's AppArmor profile
+                    # waits for the operator instead, retried on the short
+                    # cadence with a notice naming the two commands.
+                    await self._auto_apply_wheel_update(
+                        str(info.get("channel") or ""),
+                        str(info.get("latest_version") or ""),
                         mandatory=True,
                         mandatory_key=mandatory_target_key,
-                    ):
-                        return
-                    try:
-                        logger.warning(
-                            "Version compliance: running %s is below the policy minimum %s — "
-                            "applying mandatory update via installer (overrides auto_update)",
-                            _running_version,
-                            min_version(),
-                        )
-                        await self._auto_apply_wheel_update()
-                    finally:
-                        await self._finish_auto_update_apply()
+                    )
                     return
                 if effect.blocked:
                     # The source pin refuses every update path, `kirocrew update`
@@ -11287,8 +11373,8 @@ class GatewayOrchestrator:
                 cfg = await asyncio.to_thread(KiroCrewConfig.load)
                 # `_auto_apply_update` replaces code with git fetch + reset, so it
                 # serves only the git route `auto_update_effect` chose. A managed
-                # venv replaces itself by re-running the installer, which the
-                # branch below drives instead.
+                # venv is replaced by the shadow engine, which the branch below
+                # drives instead.
                 #
                 # `version_newer` is the other half, and it is not redundant:
                 # `update_available` is true on commit distance alone, which for a
@@ -11308,16 +11394,14 @@ class GatewayOrchestrator:
                     finally:
                         await self._finish_auto_update_apply()
                 elif installs and effect.route == AUTO_ROUTE_WHEEL and _remediation_command(info):
-                    if not await self._prepare_auto_update_apply(mandatory=False):
-                        return
-                    try:
-                        # Only the managed venv can be safely self-updated by
-                        # re-running cli.sh: it replaces the environment serving this
-                        # process. Other source and wheel installs notify instead.
-                        logger.info("Auto-update enabled for managed install — running installer")
-                        await self._auto_apply_wheel_update()
-                    finally:
-                        await self._finish_auto_update_apply()
+                    # Only the managed venv self-updates: the engine builds the new
+                    # version beside the tree serving this process and flips the
+                    # stable link, with admission open. Other source and wheel
+                    # installs notify.
+                    logger.info("Auto-update enabled for managed install — building beside it")
+                    await self._auto_apply_wheel_update(
+                        str(info.get("channel") or ""), str(info.get("latest_version") or "")
+                    )
                 else:
                     if cfg.auto_update and not installs:
                         logger.warning(
@@ -11369,10 +11453,10 @@ class GatewayOrchestrator:
         proj = os.environ.get("KIROCREW_PROJECT_DIR", "")
         if not proj:
             return
-        # Timeout/cancel discipline for every spawn below. Function-local like
-        # the wheel path's import further down this file: the helper owns the
-        # kill-the-tree + bounded-reap contract, and there is exactly one
-        # implementation of it.
+        # Timeout/cancel discipline for every asyncio spawn below: the helper owns
+        # the kill-the-tree + bounded-reap contract for an asyncio child. (The
+        # managed-venv engine's build children are synchronous ``Popen`` children
+        # and use ``platform_compat.kill_popen_tree`` instead.)
         from kiro_crew.platform.update_provider import _kill_and_reap
 
         # Loaded before the reinstall below for the same reason as the provider
@@ -12142,204 +12226,153 @@ class GatewayOrchestrator:
                 hint = await asyncio.to_thread(restart_command_hint)
                 self.dashboard_state.push_update_progress("failed", f"Restart failed — run: {hint}")
 
-    async def _auto_apply_wheel_update(self) -> None:
-        """Auto-apply a wheel/cli.sh update by re-running the signed installer.
+    async def _auto_apply_wheel_update(
+        self,
+        channel: str,
+        version: str,
+        *,
+        mandatory: bool = False,
+        mandatory_key: str = "",
+    ) -> None:
+        """Apply a managed-venv update unattended, building it BESIDE the live venv.
 
-        The installer (``cli.sh``) handles the full security chain: RSA-SHA256
-        signature verification of the manifest against a pinned public key,
-        SHA-256 checksum of the downloaded wheel, and channel assertion. This
-        method simply invokes it as a subprocess, then restarts the gateway via
-        ``os.execv`` so the new code takes effect.
+        Runs :func:`kiro_crew.platform.wheel_apply.run_wheel_apply`, the path
+        ``POST /api/update/approve`` runs too (and the engine ``kirocrew update``
+        drives): the signed manifest and wheel digest are verified,
+        ``crew-venv-<version>`` is built as a sibling tree, proven to serve the
+        version, memory is copied, and ``crew-venv-current`` is flipped with
+        ``os.replace``. Nothing this process loads from is moved, rewritten or
+        deleted, so a stop at any point before the flip leaves the running
+        install whole. That holds because this process runs from a versioned
+        tree, not through the link: a restart execs the link's RESOLVED tree, and
+        a gateway an earlier version restarted through the link itself
+        (:func:`~kiro_crew.platform.wheel_apply.relaunch_before_apply`) restarts
+        onto its resolved tree, at the same version, before anything is built.
 
-        Preconditions (checked by the caller):
-        * ``auto_update`` is True in config, or a policy floor mandates the update.
-        * ``auto_update_effect`` chose the wheel route: a managed venv on POSIX
-          with a safe, policy-permitted CDN (not a git checkout, not externally
-          managed).
+        Admission stays OPEN while the tree builds. Only the restart into the
+        promoted tree pauses it, through :meth:`_retry_pending_update_restart`,
+        which a busy gateway retries on the short cadence; a policy floor's
+        restart keeps the mandatory grace across those retries.
 
-        Re-checked here, after the caller paused admission: the capability's
-        ``remediation`` carries the installer command (the feed check succeeded
-        and composed it locally from validated inputs).
-
-        The command is composed by
-        :func:`kiro_crew.platform.update_layout.wheel_update_command` from a
-        validated channel name and a scheme-pinned artifact base URL
-        (``--proto '=https'``), never from feed data. A successful run replaces the
-        venv in-place; a failure leaves the existing install intact (cli.sh writes
-        to a temp dir and atomically replaces via ``ln -sf``).
+        Preconditions (checked by the caller): ``auto_update`` is on or a policy
+        floor mandates the update, ``auto_update_effect`` chose the wheel route (a
+        managed venv on POSIX, not a git checkout, not externally managed), and
+        the check reported *version* newer on *channel*. The source pin and the
+        CDN shape are checked again here, by the shared preflight.
         """
-        from kiro_crew.dashboard.handlers import _update_info
-
-        # Loaded before cli.sh runs: the installer's legacy-venv migration
-        # `rm -rf`s the venv this process imports from once the new tree is
-        # linked, so a deferred import after it would not find the module.
-        # Called only after the installer succeeded (see the exec below).
-        from kiro_crew.platform.wheel_engine import respawn_executable
-
-        # Read the command through the SAME accessor the caller selected this
-        # branch with. Reading a bare `_update_info["update_command"]` here is
-        # what made this method a silent no-op: the capability contract carries the
-        # command inside `remediation`, so the old key is never populated, the
-        # branch was still entered, and a mandated update logged a warning instead
-        # of applying.
-        update_cmd = _remediation_command(_update_info)
-        if not update_cmd:
-            logger.warning("Auto-update (wheel): no installer command in the capability")
-            return
-
-        # Platform guard: cli.sh is POSIX shell. Windows wheel installs do not
-        # exist in practice (install.ps1 makes Windows a thin client to a Linux
-        # gateway), but guard anyway.
-        if sys.platform == "win32":
-            logger.warning("Auto-update (wheel): not supported on Windows")
-            if self.dashboard_state:
-                self.dashboard_state.push_refresh("update_available")
-            return
-
-        # Source pin: the CDN bases that compose the installer command must
-        # satisfy the policy source pin, same check the git path applies to
-        # its remote. A pinned fleet's wheel installs cannot bypass the ceiling.
-        from kiro_crew.platform.update_governance import update_blocked_reason
-        from kiro_crew.platform.update_layout import cdn_bases, cdn_bases_are_safe
-
-        # The installer command embeds the CDN bases and is handed to a shell, and
-        # KIROCREW_CDN_BASE is operator-set: a metacharacter could close the URL
-        # and append a second command, and an http:// override would make the
-        # piped installer interceptable. Same gate `kirocrew update` applies.
-        if not cdn_bases_are_safe():
-            logger.error(
-                "Auto-update (wheel): CDN base contains disallowed characters "
-                "or is not HTTPS — refusing to run"
-            )
-            if self.dashboard_state:
-                self.dashboard_state.push_refresh("update_available")
-            return
-
-        feed_base, artifact_base = cdn_bases()
-        blocked = update_blocked_reason(feed_base)
-        if not blocked:
-            blocked = update_blocked_reason(artifact_base)
-        if blocked:
-            logger.warning("Auto-update (wheel) refused: %s", blocked)
-            if self.dashboard_state:
-                self.dashboard_state.push_refresh("update_available")
-            return
-
-        if self.dashboard_state:
-            self.dashboard_state.push_update_progress("pulling", "Downloading update from CDN…")
-
-        logger.info("Auto-update (wheel): running installer")
-        # Resolve sh through the trusted system dirs, not the gateway's PATH
-        # (which can lead with an agent-writable venv/bin), so a planted shim
-        # cannot hijack the installer spawn. Fail CLOSED if no trusted shell:
-        # a bare-name fallback would reopen the very hole this closes.
-        from kiro_crew.platform.update_provider import (
-            _kill_and_reap,
-            _read_bounded_output,
-            _trusted_path_env,
+        # Loaded before the apply, as every update path here does, so the restart
+        # never depends on an import after the install changed.
+        from kiro_crew.platform import wheel_apply
+        from kiro_crew.platform.wheel_engine import (
+            WheelUpdateError,
+            check_release_version,
+            respawn_executable,
         )
-        from kiro_crew.platform_compat import trusted_system_bin
 
-        _sh = trusted_system_bin("sh")
-        if not _sh:
-            logger.error("Auto-update (wheel): no trusted shell found — refusing to run")
-            if self.dashboard_state:
-                self.dashboard_state.push_update_progress(
-                    "failed", "No trusted shell — run manually: kirocrew update"
-                )
-            return
-        # Pinning the shell is only half of it: the installer line is
-        # ``curl … | sh``, so the child resolves `curl` (and its own inner shell)
-        # through the inherited PATH. Narrow the child's PATH to trusted system
-        # dirs, and fail CLOSED when there is none rather than handing over an
-        # agent-influenceable lookup.
-        _env = _trusted_path_env()
-        if _env is None:
-            logger.error("Auto-update (wheel): no trusted PATH — refusing to run")
-            if self.dashboard_state:
-                self.dashboard_state.push_update_progress(
-                    "failed", "No trusted PATH — run manually: kirocrew update"
-                )
-            return
-        proc: asyncio.subprocess.Process | None = None
+        state = self.dashboard_state
         try:
-            proc = await asyncio.create_subprocess_exec(
-                _sh,
-                "-c",
-                update_cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=_env,
-                # Root, not the gateway's cwd, which can be an agent-writable
-                # checkout a relative command word would resolve inside.
-                cwd="/",
-                # Own session: the installer line is a pipeline, so the whole
-                # tree must be one killable group that cannot signal back into
-                # the gateway's own group.
-                start_new_session=platform_compat.IS_POSIX,
+            check_release_version(version)
+            feed_base, artifact_base = wheel_apply.preflight_bases()
+        except (WheelUpdateError, wheel_apply.WheelApplyRefused) as exc:
+            # A version no tree can be named for, or a preflight refusal.
+            logger.warning("Auto-update (wheel) refused: %s", exc)
+            if state:
+                state.push_refresh("update_available")
+            return
+        # Promotion would move the launcher a userns AppArmor profile applies to,
+        # and only the operator can re-attach it, so this waits for them, a policy
+        # floor included: the floor is then retried on the short cadence, and the
+        # notice says exactly what to run.
+        if await asyncio.to_thread(wheel_apply.userns_reattach_needed, version):
+            logger.warning(
+                "Auto-update (wheel) to %s waits for the operator: it would detach "
+                "the sandbox's AppArmor profile",
+                version,
             )
-            # Bounded: the installer's stdout is chatter and only a capped
-            # stderr is logged, so a verbose CDN script cannot exhaust the
-            # gateway's memory buffering it.
-            stdout, stderr = await _read_bounded_output(proc, timeout=300, want_stdout=False)
-        except asyncio.CancelledError:
-            # Shutdown (SIGTERM) cancels this task. Without this branch the
-            # installer keeps mutating the installation after the gateway exits,
-            # leaving a half-replaced venv nobody is supervising. Kill the whole
-            # TREE (the line is a pipeline) and reap under a bound, then re-raise
-            # so cancellation still propagates. ``proc`` is None when the
-            # cancellation landed during the spawn itself.
-            if proc is not None:
-                await _kill_and_reap(proc)
-            logger.warning("Auto-update (wheel): cancelled — installer child killed")
-            raise
-        except asyncio.TimeoutError:
-            # Terminate the whole tree and reap under a bound so nothing keeps
-            # modifying the installation after we return.
-            if proc is not None:
-                await _kill_and_reap(proc)
-            logger.error("Auto-update (wheel): installer timed out (5 min)")
-            if self.dashboard_state:
-                self.dashboard_state.push_update_progress(
-                    "failed", "Installer timed out — run manually: kirocrew update"
-                )
-            return
-        except OSError:
-            # OSError, not just FileNotFoundError: fd or process exhaustion
-            # raises a different OSError, and this runs on the boot path.
-            logger.exception("Auto-update (wheel): could not start the installer")
-            if self.dashboard_state:
-                self.dashboard_state.push_update_progress(
-                    "failed", "'sh' not available — run manually: kirocrew update"
-                )
-            return
-
-        if proc.returncode != 0:
-            from kiro_crew.security import redact_credentials, redact_exfiltration_urls
-
-            # Redact BEFORE truncating. Slicing first can cut a credential in
-            # half, and half a token does not match the redactors' patterns
-            # (an AWS key needs its full 20 chars to match), so the surviving
-            # fragment would reach gateway.log and /api/logs verbatim. The
-            # 500-char cap is for log volume, so it belongs last.
-            err_text = (stderr or b"").decode(errors="replace")
-            err_text, _ = redact_exfiltration_urls(err_text)
-            err_text, _ = redact_credentials(err_text)
-            err_text = err_text[:500]
-            logger.error(
-                "Auto-update (wheel): installer failed (rc=%d): %s",
-                proc.returncode,
-                err_text,
+            self._notice_wheel_update_once(
+                f"reattach:{version}",
+                f"Kiro Crew {version} needs you to apply it",
+                wheel_apply.userns_reattach_remedy(version),
             )
-            if self.dashboard_state:
-                self.dashboard_state.push_update_progress(
-                    "failed",
-                    f"Installer failed (exit {proc.returncode}) — " "run manually: kirocrew update",
-                )
+            if mandatory:
+                self._update_apply_deferred = True
+            if state:
+                state.push_refresh("update_available")
             return
 
-        logger.info("Auto-update (wheel): installer succeeded, preparing safe restart")
-        await self._restart_after_update(respawn_executable)
+        if await asyncio.to_thread(wheel_apply.relaunch_before_apply):
+            # The flip would swap this process's own modules under it while a busy
+            # restart waits. The pending restart retries like an update's; the
+            # successor runs from the resolved tree and builds on its next cycle.
+            logger.info(
+                "Auto-update (wheel): this gateway loads its code through the stable "
+                "link; restarting onto its resolved tree before building %s",
+                version,
+            )
+            self._pending_update_respawn = respawn_executable
+            self._pending_update_mandatory = mandatory
+            self._pending_update_mandatory_key = mandatory_key
+            await self._retry_pending_update_restart()
+            return
+
+        logger.info("Auto-update (wheel): building %s beside the running install", version)
+        outcome = await wheel_apply.run_wheel_apply(
+            channel=channel,
+            version=version,
+            feed_base=feed_base,
+            artifact_base=artifact_base,
+            state=state,
+        )
+        if outcome.status == "promoted":
+            if not await asyncio.to_thread(wheel_apply.restart_reaches, version):
+                # Restarting would exec the running version again, and its next
+                # cycle would promote and restart again, for ever.
+                logger.error(
+                    "Auto-update (wheel): %s promoted, but the restart would not reach "
+                    "it; not restarting",
+                    version,
+                )
+                self._notice_wheel_update_once(
+                    f"unreachable:{version}",
+                    f"Kiro Crew {version} needs the installer to finish",
+                    wheel_apply.restart_unreachable_remedy(version, channel),
+                )
+                if state:
+                    state.push_refresh("update_available")
+                return
+            logger.info("Auto-update (wheel): %s promoted, preparing safe restart", version)
+            self._pending_update_respawn = respawn_executable
+            self._pending_update_mandatory = mandatory
+            self._pending_update_mandatory_key = mandatory_key
+            await self._retry_pending_update_restart()
+        elif outcome.status in wheel_apply.RETRY_SOON:
+            # Another apply holds the lock, memory is still preparing, or the
+            # apply was stopped: retry on the short cadence, pushing nothing onto
+            # another apply's progress feed.
+            self._update_apply_deferred = True
+        elif outcome.status == "incompatible":
+            self._notice_wheel_update_once(
+                f"incompatible:{version}",
+                f"Kiro Crew {version} cannot be applied automatically",
+                f"{outcome.message}. {wheel_apply.incompatible_remedy(channel)}",
+            )
+            if state:
+                state.push_refresh("update_available")
+        elif state:
+            # failed, timed_out, snapshot_failed: an ordinary failure, retried on
+            # the normal cadence. A refused memory copy names its own repair.
+            suffix = (
+                "" if outcome.status == "snapshot_failed" else " — run manually: kirocrew update"
+            )
+            state.push_update_progress("failed", f"{outcome.message}{suffix}")
+
+    def _notice_wheel_update_once(self, key: str, title: str, body: str) -> None:
+        """Send one dashboard notice per *key* for the life of this process."""
+        if key in self._wheel_update_noticed:
+            return
+        self._wheel_update_noticed.add(key)
+        if self.dashboard_state:
+            self.dashboard_state.notify("update", title, body)
 
     # ------------------------------------------------------------------
     # Main run loop
@@ -12974,6 +13007,10 @@ class GatewayOrchestrator:
 
         def _on_signal(*_args: object) -> None:
             nonlocal _shutting_down
+            # Before anything else, on either signal: a stop owns any apply in
+            # flight (the exit hooks cancel it), so its build child dies here,
+            # ahead of any exit path.
+            platform_compat.run_process_exit_hooks("shutdown")
             if _shutting_down:
                 print("\n👻 Force exit!")
                 # Synchronous by necessity: a signal handler cannot await.
@@ -13006,7 +13043,7 @@ class GatewayOrchestrator:
                     _stop_log_queue_listener(timeout=2.0)
                 except Exception:
                     pass  # force exit must never be blocked by logging
-                os._exit(0)
+                platform_compat.hard_exit(0)
             _shutting_down = True
             shutdown_event.set()
 
