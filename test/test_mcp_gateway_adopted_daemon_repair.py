@@ -1110,6 +1110,13 @@ async def test_a_stale_survivor_is_repaired_end_to_end(
             "KIROCREW_MCP_TARGET_PDF": "npx -y server-pdf --stdio",
         }
         _only_targets(monkeypatch, wanted)
+        # The replacement is a real cold start (import, fingerprint, bind) on
+        # whatever host runs this, and production's 5 s readiness ceiling is not
+        # the subject: on a loaded host it expires against a daemon that is
+        # coming up correctly. The wait polls, so this lifts only the ceiling
+        # (flake class 2), and stays well inside the suite's 120 s test timeout
+        # so a daemon that never binds still fails on the assertion below.
+        monkeypatch.setattr(mgr, "_SOCKET_READY_TIMEOUT_SECS", 30.0)
         manager = mgr.GatewayManager(
             mgr.GatewaySpec(
                 socket_path=sock,
