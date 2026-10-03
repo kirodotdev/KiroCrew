@@ -156,9 +156,9 @@ async def test_record_frame_offloads_the_write_off_the_event_loop(monkeypatch, t
         seen: list[int] = []
         real_write = _frame_record.write_frame
 
-        def spy(backend, frame, dest):
+        def spy(backend, frame, dest, direction=_frame_record.DIRECTION_IN):
             seen.append(threading.get_ident())
-            real_write(backend, frame, dest)
+            real_write(backend, frame, dest, direction)
 
         monkeypatch.setattr(_frame_record, "write_frame", spy)
         await _frame_record.record_frame("kas", {"jsonrpc": "2.0", "id": 1})
@@ -184,6 +184,50 @@ def test_a_frame_lands_in_the_backend_file(monkeypatch, tmp_path):
     lines = kiro_file.read_text(encoding="utf-8").splitlines()
     assert [json.loads(ln)["id"] for ln in lines] == [1, 2]
     assert json.loads((Path(dest) / "kas.jsonl").read_text(encoding="utf-8"))["id"] == 3
+
+
+def test_an_outbound_frame_lands_in_its_own_file(monkeypatch, tmp_path):
+    """client->agent frames never interleave with the replay corpus material."""
+    _clean(monkeypatch)
+    dest = str(tmp_path / "frames")
+    _frame_record.write_frame(ACP_BACKEND_KIRO, {"jsonrpc": "2.0", "id": 1}, dest)
+    _frame_record.write_frame(
+        ACP_BACKEND_KIRO,
+        {"jsonrpc": "2.0", "id": 2, "method": "session/prompt"},
+        dest,
+        _frame_record.DIRECTION_OUT,
+    )
+
+    inbound = (Path(dest) / "kiro.jsonl").read_text(encoding="utf-8").splitlines()
+    outbound = (Path(dest) / "kiro.out.jsonl").read_text(encoding="utf-8").splitlines()
+    assert [json.loads(ln)["id"] for ln in inbound] == [1]
+    assert [json.loads(ln)["method"] for ln in outbound] == ["session/prompt"]
+    assert _mode(Path(dest) / "kiro.out.jsonl") == _frame_record.FILE_MODE
+
+
+@pytest.mark.asyncio
+async def test_record_frame_carries_the_direction_to_the_writer(monkeypatch, tmp_path):
+    _clean(monkeypatch)
+    async with _live_writer():
+        monkeypatch.setenv(_frame_record.ENV_RECORD_FRAMES, str(tmp_path))
+        _frame_record.start_recorder()
+        await _frame_record.record_frame(
+            "kas",
+            {"jsonrpc": "2.0", "id": 7, "method": "session/prompt"},
+            40,
+            _frame_record.DIRECTION_OUT,
+        )
+        await _frame_record.flush_for_tests()
+        assert json.loads((tmp_path / "kas.out.jsonl").read_text(encoding="utf-8"))["id"] == 7
+        assert not (tmp_path / "kas.jsonl").exists()
+
+
+def test_an_unknown_direction_stands_recording_down(monkeypatch, tmp_path):
+    """A programming error in a caller costs one stand-down, never a raise."""
+    _clean(monkeypatch)
+    _frame_record.write_frame("kas", {"jsonrpc": "2.0"}, str(tmp_path), "sideways")
+    assert _frame_record._stood_down is True
+    assert not list(tmp_path.iterdir())
 
 
 def test_a_credential_is_scrubbed_before_it_is_written(monkeypatch, tmp_path):
@@ -771,9 +815,9 @@ async def test_record_frame_returns_while_the_writer_is_wedged(monkeypatch, tmp_
         gate = threading.Event()
         real_write = _frame_record.write_frame
 
-        def slow(backend, frame, dest):
+        def slow(backend, frame, dest, direction=_frame_record.DIRECTION_IN):
             gate.wait(timeout=10)
-            real_write(backend, frame, dest)
+            real_write(backend, frame, dest, direction)
 
         monkeypatch.setattr(_frame_record, "write_frame", slow)
         try:
@@ -980,7 +1024,7 @@ async def test_one_failure_logs_once_and_discards_the_backlog(monkeypatch, tmp_p
         gate = threading.Event()
         attempts: list[int] = []
 
-        def failing(backend, frame, dest):
+        def failing(backend, frame, dest, direction=_frame_record.DIRECTION_IN):
             gate.wait(timeout=10)
             attempts.append(frame["id"])
             _frame_record._stand_down(OSError("disk gone"))
@@ -1522,9 +1566,9 @@ def test_two_event_loops_share_one_writer_and_one_byte_budget(monkeypatch, tmp_p
     gate = threading.Event()
     real_write = _frame_record.write_frame
 
-    def slow(backend, frame, dest):
+    def slow(backend, frame, dest, direction=_frame_record.DIRECTION_IN):
         gate.wait(timeout=10)
-        real_write(backend, frame, dest)
+        real_write(backend, frame, dest, direction)
 
     monkeypatch.setattr(_frame_record, "write_frame", slow)
 

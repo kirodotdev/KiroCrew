@@ -57,8 +57,10 @@ class Wire:
             AcpEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
         ]
 
-    async def stream_events(self, message):
+    async def stream_events(self, message, *, on_sent=None):
         self.messages.append(message)
+        if on_sent is not None:
+            on_sent()  # the real transports say so right after the write
         for event in self.events:
             if isinstance(event, BaseException):
                 raise event

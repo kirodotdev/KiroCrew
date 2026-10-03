@@ -221,7 +221,7 @@ class TestAcpSessionProviderStream:
             AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
         ]
 
-        async def mock_prompt(msg):
+        async def mock_prompt(msg, *, on_sent=None):
             for e in events:
                 yield e
 
@@ -255,7 +255,7 @@ class TestAcpSessionProviderStream:
             for e in events:
                 yield e
 
-        async def mock_prompt(msg):  # pragma: no cover — must never run
+        async def mock_prompt(msg, *, on_sent=None):  # pragma: no cover — must never run
             raise AssertionError("stream_command must not route through prompt()")
             yield  # make it a generator
 
@@ -396,7 +396,7 @@ class TestAcpSessionProviderErrorPropagation:
 
         handle = _make_handle()
 
-        async def dying_prompt(msg):
+        async def dying_prompt(msg, *, on_sent=None):
             yield AcpEvent(kind=EVENT_TEXT_CHUNK, text="partial ")
             raise AcpProcessDied("Runtime process died during prompt")
 
@@ -424,7 +424,7 @@ class TestAcpSessionProviderErrorPropagation:
 
         handle = _make_handle()
 
-        async def dead_prompt(msg):
+        async def dead_prompt(msg, *, on_sent=None):
             raise AcpRuntimeDead("runtime is dead")
             yield  # noqa: unreachable — makes this an async generator
 
@@ -757,7 +757,7 @@ class TestAcpSessionProviderRound4Parity:
 
         handle = _make_handle()
 
-        async def _boom(_msg):
+        async def _boom(_msg, *, on_sent=None):
             raise AcpRuntimeDead("dead")
             yield  # pragma: no cover -- unreachable, makes this an async gen
 
@@ -776,7 +776,7 @@ class TestAcpSessionProviderRound4Parity:
 
         handle = _make_handle()
 
-        async def _boom(_msg):
+        async def _boom(_msg, *, on_sent=None):
             raise AcpRuntimeDead("dead")
             yield  # pragma: no cover
 
@@ -945,7 +945,7 @@ class TestAcpSessionProviderContractParity:
 
         handle = _make_handle()
 
-        async def boom(msg):
+        async def boom(msg, *, on_sent=None):
             raise AcpRuntimeError("A turn is already active")
             yield  # pragma: no cover
 

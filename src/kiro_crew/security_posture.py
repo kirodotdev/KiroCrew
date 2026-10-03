@@ -812,6 +812,19 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "redacting it would overwrite the user's own file with markers.",
     ),
     (
+        "Prompt as sent (Context tab)",
+        "prompt_trace.py",
+        "The verbatim prompt text each turn handed the agent transport, held in "
+        "memory for the Developer-Mode Context tab and served by "
+        "/api/telemetry/prompt-trace. The ring keeps the prompt as sent because "
+        "that is what a developer is reading, and a prompt carries the user's "
+        "memory and recall bodies, which no write path scrubs — so the READ is the "
+        "boundary: `PromptRecord.presented` runs the whole text through the "
+        "exfiltration-URL then credential chain and rebuilds the block spans by "
+        "scanning the scrubbed text, and `to_dict` never serves the raw string. The row "
+        "carries `redacted` so the tab can say a value was masked.",
+    ),
+    (
         "Telemetry spend ranking",
         "dashboard/handlers/telemetry.py",
         "Session titles attached to the conversations-by-spend rows of "

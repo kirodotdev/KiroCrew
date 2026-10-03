@@ -38,6 +38,7 @@ reader task is still running.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import threading
@@ -49,8 +50,8 @@ import pytest
 pytestmark = pytest.mark.skipif(os.name == "nt", reason="ACP frame recorder is Linux-only")
 
 from kiro_crew.acp import _frame_record  # noqa: E402
-from kiro_crew.acp.client import AcpClient, JsonRpcMessage  # noqa: E402
-from kiro_crew.acp.runtime import AcpRuntime  # noqa: E402
+from kiro_crew.acp.client import AcpClient, AcpProcessDied, JsonRpcMessage  # noqa: E402
+from kiro_crew.acp.runtime import AcpRuntime, AcpRuntimeDead  # noqa: E402
 from kiro_crew.acp.types import METHOD_SESSION_UPDATE  # noqa: E402
 from kiro_crew.acp_backends import ACP_BACKENDS_KNOWN, POLICY_ID_BY_BACKEND  # noqa: E402
 
@@ -216,6 +217,234 @@ def _fresh_recorder(monkeypatch):
     finally:
         loop.close()
     _frame_record._reset_for_tests()
+
+
+# ── 0. OUTBOUND: what the transports write is recorded beside what they read ──
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", PROVIDERS, ids=lambda b: b or "kiro-cli")
+async def test_runtime_records_the_frames_it_writes(monkeypatch, tmp_path, backend):
+    """``send_request`` is the path every ``session/prompt`` takes."""
+    monkeypatch.setenv(_frame_record.ENV_RECORD_FRAMES, str(tmp_path))
+    _frame_record.start_recorder()
+    async with _LiveRuntime(backend) as live:
+        await live.rt.send_request(
+            "session/prompt",
+            {"sessionId": live.session_id, "prompt": [{"type": "text", "text": "hi"}]},
+        )
+        await live.rt.send_notification("session/cancel", {"sessionId": live.session_id})
+        await _frame_record.flush_for_tests()
+    out = tmp_path / f"{_frame_record.fixture_dir_name(backend)}.out.jsonl"
+    methods = [json.loads(ln)["method"] for ln in out.read_text(encoding="utf-8").splitlines()]
+    assert methods == ["session/prompt", "session/cancel"]
+    assert live.rt._process.stdin.write.call_count == 2, "recording must not replace the write"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["incognito", "temporary"])
+async def test_restricted_runtime_never_records_what_it_writes(monkeypatch, tmp_path, mode):
+    monkeypatch.setenv(_frame_record.ENV_RECORD_FRAMES, str(tmp_path))
+    _frame_record.start_recorder()
+    async with _LiveRuntime("kas") as live:
+        live.rt.recording_allowed = False  # what create_session(memory_mode=mode) sets
+        await live.rt.send_request("session/prompt", {"sessionId": live.session_id, "prompt": []})
+        await _frame_record.flush_for_tests()
+    assert not list(tmp_path.iterdir()), f"{mode}: an outbound frame was recorded"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", PROVIDERS, ids=lambda b: b or "kiro-cli")
+async def test_client_records_the_requests_it_writes(monkeypatch, tmp_path, backend):
+    monkeypatch.setenv(_frame_record.ENV_RECORD_FRAMES, str(tmp_path))
+    _frame_record.start_recorder()
+    client = AcpClient(acp_backend=backend)
+    process = MagicMock()
+    process.stdin = MagicMock()
+    process.stdin.write = MagicMock()
+    process.stdin.drain = AsyncMock()
+    process.returncode = None
+    client._process = process
+    await client._send_request("session/prompt", {"sessionId": "s-1", "prompt": []})
+    client.memory_mode = "incognito"
+    await client._send_request("session/prompt", {"sessionId": "s-1", "prompt": []})
+    await _frame_record.flush_for_tests()
+    out = tmp_path / f"{_frame_record.fixture_dir_name(backend)}.out.jsonl"
+    lines = out.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1, "the incognito request must not be recorded"
+    assert json.loads(lines[0])["method"] == "session/prompt"
+    assert process.stdin.write.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_client_does_not_record_a_frame_the_pipe_refused(monkeypatch, tmp_path):
+    """The capture says what was SENT: a write that raised leaves no line.
+
+    Recording happens after the transport write returned, on every client
+    writer (request, response, error, cancel), so a broken pipe cannot leave
+    the durable capture claiming a frame the backend never received.
+    """
+    monkeypatch.setenv(_frame_record.ENV_RECORD_FRAMES, str(tmp_path))
+    _frame_record.start_recorder()
+    client = AcpClient(acp_backend="")
+    process = MagicMock()
+    process.stdin = MagicMock()
+    process.stdin.write = MagicMock(side_effect=BrokenPipeError("closed"))
+    process.stdin.drain = AsyncMock()
+    process.returncode = None
+    client._process = process
+    client._session_id = "s-1"
+    with pytest.raises(AcpProcessDied):
+        await client._send_request("session/prompt", {"sessionId": "s-1", "prompt": []})
+    with pytest.raises(AcpProcessDied):
+        await client._send_response(
+            "r-1", {"outcome": {"outcome": "selected", "optionId": "allow"}}
+        )
+    with pytest.raises(AcpProcessDied):
+        await client._send_error("r-2", -32601, "Method not found")
+    # cancel_session swallows pipe errors by design (best effort); it must still not record.
+    await client.cancel_session()
+    await _frame_record.flush_for_tests()
+    assert process.stdin.write.call_count >= 3, "the writes were attempted"
+    assert not list(tmp_path.glob("*.out.jsonl")), "a refused frame was recorded as sent"
+
+
+@pytest.mark.asyncio
+async def test_runtime_does_not_record_a_frame_the_pipe_refused(monkeypatch, tmp_path):
+    """Same contract on the shared runtime's writers."""
+    monkeypatch.setenv(_frame_record.ENV_RECORD_FRAMES, str(tmp_path))
+    _frame_record.start_recorder()
+    async with _LiveRuntime("kas") as live:
+        live.rt._process.stdin.write = MagicMock(side_effect=BrokenPipeError("closed"))
+        with pytest.raises(AcpRuntimeDead):
+            await live.rt.send_request(
+                "session/prompt", {"sessionId": live.session_id, "prompt": []}
+            )
+        await _frame_record.flush_for_tests()
+    assert not list(tmp_path.glob("*.out.jsonl")), "a refused frame was recorded as sent"
+
+
+@pytest.mark.asyncio
+async def test_client_capture_holds_wire_order_when_a_cancel_overtakes_a_stalled_drain(
+    monkeypatch, tmp_path
+):
+    """The outbound file is in the order frames HIT THE PIPE, not the order
+    their drains completed.
+
+    A prompt's drain parks on a reader that stopped; the cancel does not get the
+    lock within the bound and is appended unlocked (``write_notification_best_effort``).
+    Recording after the drain inverted this capture — cancel first, then the
+    prompt it was appended behind — in exactly the stall an operator runs the
+    recorder to see. Recording at write time keeps the wire order.
+    """
+    from kiro_crew.acp import transport_framing
+
+    monkeypatch.setenv(_frame_record.ENV_RECORD_FRAMES, str(tmp_path))
+    _frame_record.start_recorder()
+    monkeypatch.setattr(transport_framing, "_RESPONSE_WRITE_BOUND_SECS", 0.05)
+    monkeypatch.setattr(transport_framing, "_RESPONSE_WRITE_UNOBSERVABLE_BOUND_SECS", 0.05)
+    monkeypatch.setattr(transport_framing, "_is_proactor_loop", lambda _loop: False, raising=False)
+    release = asyncio.Event()
+
+    async def _parked_drain():
+        await release.wait()
+
+    client = AcpClient(acp_backend="")
+    process = MagicMock()
+    process.stdin = MagicMock()
+    process.stdin.write = MagicMock()
+    process.stdin.drain = AsyncMock(side_effect=_parked_drain)
+    process.returncode = None
+    client._process = process
+    client._session_id = "s-1"
+    prompt = asyncio.ensure_future(
+        client._send_request("session/prompt", {"sessionId": "s-1", "prompt": []})
+    )
+    await asyncio.sleep(0)  # the prompt is written and parked in its drain, lock held
+    await asyncio.wait_for(client.cancel_session(), timeout=2.0)
+    release.set()
+    # The prompt's own drain ran past the bound while the cancel waited, so the
+    # request writer may report the stall (AcpProcessDied, ambiguous delivery)
+    # rather than return — either way its bytes went first, and so must its line.
+    with contextlib.suppress(AcpProcessDied):
+        await asyncio.wait_for(prompt, timeout=2.0)
+    await _frame_record.flush_for_tests()
+    out = tmp_path / f"{_frame_record.fixture_dir_name('')}.out.jsonl"
+    methods = [json.loads(ln)["method"] for ln in out.read_text(encoding="utf-8").splitlines()]
+    assert methods == ["session/prompt", "session/cancel"], methods
+    written = [json.loads(c.args[0])["method"] for c in process.stdin.write.call_args_list]
+    assert written == methods, "the capture order is the write order"
+
+
+@pytest.mark.asyncio
+async def test_a_write_the_transport_refused_is_not_recorded(monkeypatch, tmp_path):
+    """An asyncio pipe transport does not raise from ``write()``: a refused write
+    marks the transport closing and only the later drain raises. Recording at
+    write time therefore asks the transport, so the capture still says only what
+    was sent."""
+    monkeypatch.setenv(_frame_record.ENV_RECORD_FRAMES, str(tmp_path))
+    _frame_record.start_recorder()
+    client = AcpClient(acp_backend="")
+    process = MagicMock()
+    process.stdin = MagicMock()
+    process.stdin.write = MagicMock()
+    process.stdin.transport.is_closing = MagicMock(return_value=True)
+    process.stdin.drain = AsyncMock(side_effect=BrokenPipeError("closed"))
+    process.returncode = None
+    client._process = process
+    with pytest.raises(AcpProcessDied):
+        await client._send_request("session/prompt", {"sessionId": "s-1", "prompt": []})
+    await _frame_record.flush_for_tests()
+    assert process.stdin.write.call_count == 1
+    assert not list(tmp_path.glob("*.out.jsonl")), "a refused frame was recorded as sent"
+    # A healthy transport (a real bool False, or a double without one) records.
+    process.stdin.transport.is_closing = MagicMock(return_value=False)
+    process.stdin.drain = AsyncMock()
+    await client._send_request("session/prompt", {"sessionId": "s-1", "prompt": []})
+    await _frame_record.flush_for_tests()
+    out = tmp_path / f"{_frame_record.fixture_dir_name('')}.out.jsonl"
+    assert len(out.read_text(encoding="utf-8").splitlines()) == 1
+
+
+@pytest.mark.asyncio
+async def test_client_records_the_responses_and_errors_it_writes(monkeypatch, tmp_path):
+    """The response and error writers record at write time too, through the bounded
+    response writer's ``after_write`` -- a permission answer missing from the capture
+    would leave an operator reading a prompt the agent never saw answered."""
+    monkeypatch.setenv(_frame_record.ENV_RECORD_FRAMES, str(tmp_path))
+    _frame_record.start_recorder()
+    client = AcpClient(acp_backend="")
+    process = MagicMock()
+    process.stdin = MagicMock()
+    process.stdin.write = MagicMock()
+    process.stdin.drain = AsyncMock()
+    process.returncode = None
+    client._process = process
+    await client._send_response("r-1", {"outcome": {"outcome": "selected", "optionId": "allow"}})
+    await client._send_error("r-2", -32601, "Method not found")
+    await _frame_record.flush_for_tests()
+    out = tmp_path / f"{_frame_record.fixture_dir_name('')}.out.jsonl"
+    lines = [json.loads(ln) for ln in out.read_text(encoding="utf-8").splitlines()]
+    assert [ln.get("id") for ln in lines] == ["r-1", "r-2"]
+    assert "result" in lines[0] and "error" in lines[1]
+    assert process.stdin.write.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_runtime_records_the_responses_and_errors_it_writes(monkeypatch, tmp_path):
+    """Same contract on the shared runtime's response and error writers."""
+    monkeypatch.setenv(_frame_record.ENV_RECORD_FRAMES, str(tmp_path))
+    _frame_record.start_recorder()
+    async with _LiveRuntime("kas") as live:
+        await live.rt.send_response(
+            "r-1", {"outcome": {"outcome": "selected", "optionId": "allow"}}
+        )
+        await live.rt.send_error("r-2", -32601, "Method not found")
+        await _frame_record.flush_for_tests()
+    out = tmp_path / f"{_frame_record.fixture_dir_name('kas')}.out.jsonl"
+    lines = [json.loads(ln) for ln in out.read_text(encoding="utf-8").splitlines()]
+    assert [ln.get("id") for ln in lines] == ["r-1", "r-2"]
+    assert "result" in lines[0] and "error" in lines[1]
 
 
 # ── 1. OFF: the default state of every real deployment ──────────────────────

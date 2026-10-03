@@ -21,6 +21,7 @@ from typing import Any, Awaitable, Callable, NamedTuple  # noqa: F401
 from kiro_crew import (  # noqa: F401
     mcp_apps_render,
     model_registry,
+    prompt_trace,
     resource_status,
     runtime_death,
     session_directive,
@@ -10144,6 +10145,13 @@ async def _run_chat(
                         "prefixes (shift=%d); falling back to reconstruction",
                         _shift,
                     )
+            # The developer view's scan of this prompt carves the same span, so a
+            # marker the user typed is credited to the user there too. Announced
+            # here, against the FINAL prompt, and picked up by the provider's
+            # record of the transport write a moment later on this task. The turn
+            # number rides along: it is the number ``context/composed`` is stamped
+            # with below, so the tab joins the usage row and the prompt by id.
+            prompt_trace.announce_user_span(full_message, _span_arg, turn=_crew_log_turn_no)
             slot_ctx_blocks = split_blocks(
                 full_message,
                 user_chars=attributable_user_chars(user_typed_len, prompt_expanded=prompt_expanded),

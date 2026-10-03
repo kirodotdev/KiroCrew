@@ -17,11 +17,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import aclosing
 from pathlib import Path
 from typing import Any
 
+from kiro_crew import prompt_trace
 from kiro_crew.acp.client import (
     DEFAULT_MODEL,
     AcpAuthRequired,
@@ -54,6 +55,7 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_MEMBER_CAPABILITIES,
     ACP_BACKENDS_SESSION_EVICTION,
     STOP_REASON_END_TURN,
+    AcpEvent,
 )
 from kiro_crew.agent_sdk import host_auth
 from kiro_crew.config.paths import kiro_sessions_dir
@@ -572,8 +574,28 @@ class AcpSessionProvider(LLMProvider):
 
         return self.backend == ACP_BACKEND_KAS
 
-    async def stream(self, message: str) -> AsyncIterator[LLMEvent]:
-        """Send a prompt and yield LLMEvent objects until the turn completes."""
+    def _trace_outbound_prompt(self, text: str, assembled_chars: int) -> None:
+        """After the transport accepted the prompt: keep its text for the developer view (persistent sessions only).
+
+        Same gate as the wire recorder: an incognito or temporary session leaves
+        no prompt text behind, in memory or anywhere else.
+        """
+        try:
+            if self.memory_mode != "persistent":
+                return
+            prompt_trace.record(self._session_key, text, assembled_chars=assembled_chars)
+        except Exception:  # noqa: BLE001 - bookkeeping must never cost a turn
+            logger.debug("prompt trace skipped", exc_info=True)
+
+    async def stream(
+        self, message: str, *, on_sent: Callable[[], None] | None = None
+    ) -> AsyncIterator[LLMEvent]:
+        """Send a prompt and yield LLMEvent objects until the turn completes.
+
+        ``on_sent`` (the outer ``AcpProvider``'s delivery, on the shared-runtime
+        backend) is told the moment the handle's write returned, alongside this
+        provider's own delivery — one write, both deliveries accept at it.
+        """
         # Re-establish this session's gateway claim before the turn can call a
         # tool. The shared identity publisher does the same at every surface that
         # drives a USER turn, and this is the boundary the sessions it cannot see
@@ -594,10 +616,23 @@ class AcpSessionProvider(LLMProvider):
         except Exception:
             logger.debug("stream: stub re-claim failed", exc_info=True)
         claim = self._claim_shared_turn()
+
+        def _send(text: str, *, on_sent: Callable[[], None]) -> AsyncIterator[AcpEvent]:
+            def _both() -> None:
+                on_sent()
+                if outer_on_sent is not None:
+                    outer_on_sent()
+
+            return self._handle.prompt(text, on_sent=_both)
+
+        outer_on_sent = on_sent
         try:
             async with aclosing(
                 self.essential_delivery.stream(
-                    message, self._handle.prompt, lambda: self.context_incarnation
+                    message,
+                    _send,
+                    lambda: self.context_incarnation,
+                    on_accepted=self._trace_outbound_prompt,
                 )
             ) as events:
                 async for event in events:
@@ -1329,7 +1364,9 @@ class AcpSessionProvider(LLMProvider):
 
     # ── Streaming (AcpClient-compatible method name) ──
 
-    def stream_events(self, message: str) -> AsyncIterator[LLMEvent]:
+    def stream_events(
+        self, message: str, *, on_sent: Callable[[], None] | None = None
+    ) -> AsyncIterator[LLMEvent]:
         """Send a prompt and yield events. AcpClient-compatible name for stream().
 
         Delegates to stream() (NOT self._handle.prompt() directly) so it
@@ -1338,7 +1375,7 @@ class AcpSessionProvider(LLMProvider):
         AcpRuntimeError, not an AcpError) escape chat_runner's handlers on a
         runtime death at prompt start -> unhandled crash instead of retry/login.
         """
-        return self.stream(message)
+        return self.stream(message, on_sent=on_sent)
 
     @property
     def resumed(self) -> bool:

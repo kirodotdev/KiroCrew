@@ -25,7 +25,7 @@ const API_KEY_ORDER = [
   'status', 'tunnelStatus', 'system', 'leakedRuntimes', 'reclaimLeakedRuntimes', 'sessionStorage',
   'sessionStorageCleanup', 'sessionStorageRestore', 'sessionStorageEmpty', 'sessionStorageEmptyStatus',
   'sessionInventory', 'sessionInventoryDetail', 'sessionInventoryTrash', 'sessionCrewLogProjections', 'sessionWorkProjection',
-  'telemetryStartup', 'telemetryContextTrace', 'usageTurns', 'wakatimeStats',
+  'telemetryStartup', 'telemetryContextTrace', 'telemetryPromptTrace', 'usageTurns', 'wakatimeStats',
   'wakatimeExportUrl', 'crewBoard', 'crewBoardAction', 'wakatimeExportDownload',
   'sessionSummary', 'dashboardCard', 'generateSessionSummary',
   'beaconStatus', 'collectionStatus', 'kiroPrerequisite', 'repairKiroPrerequisiteSpecs',
@@ -199,7 +199,7 @@ const NESTED_KEY_ORDER: Record<string, string[]> = {
 
 const NO_SESSION_KEY = [
   'status', 'tunnelStatus', 'system', 'sessionCrewLogProjections',
-  'telemetryStartup', 'telemetryContextTrace', 'usageTurns', 'wakatimeStats',
+  'telemetryStartup', 'telemetryContextTrace', 'telemetryPromptTrace', 'usageTurns', 'wakatimeStats',
   'sessionSummary', 'dashboardCard', 'generateSessionSummary', 'beaconStatus', 'collectionStatus',
   'suggestions', 'branding', 'memoryPreferences', 'memoryProjects',
   'memoryHistory', 'memorySettings', 'memoryStores', 'memoryRetired',

@@ -12,7 +12,7 @@ from contextlib import aclosing
 from pathlib import Path
 from typing import Any, AsyncContextManager
 
-from kiro_crew import model_scope
+from kiro_crew import model_scope, prompt_trace
 from kiro_crew.acp.client import (
     DEFAULT_MODEL,
     AcpAuthRequired,
@@ -2418,14 +2418,54 @@ class AcpProvider(LLMProvider):
         # the fallback keeps those guides reachable without a false capability.
         return self._client.backend == ACP_BACKEND_KAS
 
+    def _announce_outbound_prompt(self, message: str) -> None:
+        """Before the send: hand the arrival length to the inner recorder, if there is one.
+
+        On the shared-runtime backend ``_client`` is an AcpSessionProvider whose
+        own delivery records the turn once the transport accepts it; but THIS
+        provider's delivery is the one that substitutes the receipt, so the inner
+        recorder sees the substituted text and would measure the assembled
+        length as the sent one. Announce the length of the message as it stands
+        here, before the delivery touches it, so the inner record carries it.
+        """
+        try:
+            if getattr(self, "memory_mode", "") != "persistent":
+                return
+            if isinstance(self._client, AcpSessionProvider):
+                prompt_trace.announce_assembled_chars(len(message))
+        except Exception:  # noqa: BLE001 - bookkeeping must never cost a turn
+            logger.debug("prompt trace announce skipped", exc_info=True)
+
+    def _trace_outbound_prompt(self, text: str, assembled_chars: int) -> None:
+        """After the transport accepted the prompt: keep its text for the developer view.
+
+        Persistent sessions only — the same gate as the wire recorder, so an
+        incognito or temporary session leaves no prompt text behind, in memory
+        or anywhere else. Skipped on the shared-runtime backend, whose inner
+        AcpSessionProvider records the same turn; recording here too would log
+        every prompt twice under the same session key.
+        """
+        try:
+            if getattr(self, "memory_mode", "") != "persistent":
+                return
+            if isinstance(self._client, AcpSessionProvider):
+                return
+            prompt_trace.record(self._owning_session_key(), text, assembled_chars=assembled_chars)
+        except Exception:  # noqa: BLE001 - bookkeeping must never cost a turn
+            logger.debug("prompt trace skipped", exc_info=True)
+
     async def stream(self, message: str) -> AsyncIterator[LLMEvent]:
         # The direct client can respawn in ensure_ready; resolve that BEFORE
         # comparing receipts so a recycled conversation receives the full text.
         if isinstance(self._client, AcpClient):
             await self._client.ensure_ready()
+        self._announce_outbound_prompt(message)
         async with aclosing(
             self.essential_delivery.stream(
-                message, self._client.stream_events, lambda: self.context_incarnation
+                message,
+                self._client.stream_events,
+                lambda: self.context_incarnation,
+                on_accepted=self._trace_outbound_prompt,
             )
         ) as events:
             async for e in events:

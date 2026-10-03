@@ -1,9 +1,15 @@
-"""Opt-in recorder for raw inbound ACP frames — a no-op unless switched on.
+"""Opt-in recorder for raw ACP frames, both directions — a no-op unless switched on.
 
 Set ``KIROCREW_ACP_RECORD_FRAMES`` to a directory and every agent->client
 JSON-RPC frame the two transports read is appended, one JSON object per line, to
-``<dir>/<backend>.jsonl``. Unset — which is every ordinary run, and every CI run
-— :func:`record_frame` returns after one environment lookup and touches nothing.
+``<dir>/<backend>.jsonl``, and every client->agent frame the two transports
+WRITE (``session/prompt``, ``session/new``, ``session/cancel``, permission
+answers) is appended to ``<dir>/<backend>.out.jsonl``. The two directions are
+two files on purpose: the inbound file is the replay corpus's raw material
+(below) and must stay exactly what the backend's stdout carried, while the
+outbound file is a debugging aid — "what did we actually send this turn" — that
+the replay test never reads. Unset — which is every ordinary run, and every CI
+run — :func:`record_frame` returns after one environment lookup and touches nothing.
 
 Why it exists: the replay corpus under ``test/fixtures/acp_frames/`` is the
 behavioural gate that stops a refactor of the dispatch layer silently changing
@@ -110,6 +116,7 @@ import stat
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 from kiro_crew import pinned_fs, platform_compat
 from kiro_crew.acp._dispatch import redact_text
@@ -119,6 +126,15 @@ logger = logging.getLogger(__name__)
 
 #: Directory to append recordings to. Absent or blank disables recording.
 ENV_RECORD_FRAMES = "KIROCREW_ACP_RECORD_FRAMES"
+
+#: The two frame directions. ``DIRECTION_IN`` is agent->client (what a reader
+#: loop parsed off the backend's stdout); ``DIRECTION_OUT`` is client->agent
+#: (what a transport is about to write to the backend's stdin). Each lands in
+#: its own file so the inbound corpus material is never interleaved with our
+#: own requests.
+DIRECTION_IN = "in"
+DIRECTION_OUT = "out"
+_FILE_SUFFIX_BY_DIRECTION = {DIRECTION_IN: ".jsonl", DIRECTION_OUT: ".out.jsonl"}
 
 #: Frames that may wait for the writer before the recorder gives up. A frame is
 #: normally a few KB and the writer keeps up with any disk that is not failing,
@@ -763,8 +779,10 @@ def _open_private_append(directory: Path, name: str):
     return os.fdopen(fd, "a", encoding="utf-8")
 
 
-def write_frame(backend: str, frame: dict, dest: str) -> None:
-    """Append one scrubbed frame to ``<dest>/<backend>.jsonl``.
+def write_frame(backend: str, frame: dict, dest: str, direction: str = DIRECTION_IN) -> None:
+    """Append one scrubbed frame to ``<dest>/<backend>.jsonl`` (inbound) or
+    ``<dest>/<backend>.out.jsonl`` (outbound). An unknown *direction* is a
+    programming error and stands recording down like any other recorder fault.
 
     Runs on a worker thread, never on the event loop. Swallows every failure:
     the caller is a transport reader whose job is the session, not the
@@ -778,7 +796,8 @@ def write_frame(backend: str, frame: dict, dest: str) -> None:
     try:
         directory = Path(dest).expanduser()
         line = scrub_frame(frame)
-        with _open_private_append(directory, f"{fixture_dir_name(backend)}.jsonl") as handle:
+        suffix = _FILE_SUFFIX_BY_DIRECTION[direction]
+        with _open_private_append(directory, f"{fixture_dir_name(backend)}{suffix}") as handle:
             handle.write(line + "\n")
     except Exception as exc:  # noqa: BLE001 - a recorder must never take down a reader
         _stand_down(exc)
@@ -808,10 +827,10 @@ def _drain(writer: _Writer) -> None:
         with writer.lock:
             writer.queued -= 1
             writer.in_flight += 1
-        backend, frame, dest, size = item
+        backend, frame, dest, size, direction = item
         try:
             if not _stood_down and not writer.stop.is_set():
-                write_frame(backend, frame, dest)
+                write_frame(backend, frame, dest, direction)
         except Exception as exc:  # noqa: BLE001 - the writer must outlive any one fault
             _stand_down(exc)
         finally:
@@ -880,7 +899,9 @@ class _Overflow(RuntimeError):
     """The backlog is full (by count, by bytes, or its lock was busy)."""
 
 
-def _enqueue(writer: _Writer, backend: str, frame: dict, dest: str, wire_bytes: int) -> None:
+def _enqueue(
+    writer: _Writer, backend: str, frame: dict, dest: str, wire_bytes: int, direction: str
+) -> None:
     """Hand a frame to *writer*, never blocking the caller.
 
     Thread-safe and loop-independent: both transports, on whichever threads
@@ -914,13 +935,63 @@ def _enqueue(writer: _Writer, backend: str, frame: dict, dest: str, wire_bytes: 
             )
         writer.queued += 1
         writer.queued_bytes += wire_bytes
-        writer.items.append((backend, frame, dest, wire_bytes))
+        writer.items.append((backend, frame, dest, wire_bytes, direction))
     finally:
         writer.lock.release()
 
 
-async def record_frame(backend: str, frame: dict, wire_bytes: int = 0) -> None:
-    """Record one inbound frame, if a recording directory is set.
+async def record_frame(
+    backend: str, frame: dict, wire_bytes: int = 0, direction: str = DIRECTION_IN
+) -> None:
+    """Record one frame, if a recording directory is set (see :func:`record_frame_now`).
+
+    The ``async`` spelling is the reader loop's: it awaits nothing, so the call
+    runs to completion without a suspension point, exactly like the sync form.
+    """
+    record_frame_now(backend, frame, wire_bytes, direction)
+
+
+def transport_refused(stdin: Any) -> bool:
+    """Whether *stdin*'s transport is closing — the pipe refused the write just made.
+
+    An asyncio pipe transport never raises from ``write()``: a write the OS
+    refused (``EPIPE``, a closed peer) is swallowed, the transport is marked
+    closing, and only the later ``drain()`` raises. So a writer that records at
+    write time asks this right after ``write()`` returned, and a refused frame
+    stays out of the capture. Answered on the transport's own ``is_closing()``
+    and only when that answer is a real ``bool`` — a test double's mock
+    ``is_closing`` is not a refusal.
+    """
+    transport = getattr(stdin, "transport", None)
+    is_closing = getattr(transport, "is_closing", None)
+    if not callable(is_closing):
+        return False
+    return is_closing() is True
+
+
+def record_written_frame(backend: str, frame: dict, wire_bytes: int, stdin: Any) -> None:
+    """Record an outbound frame right after its ``stdin.write()`` returned.
+
+    Called by every stdin writer at the point the bytes were handed to the
+    transport — synchronously after ``write()``, BEFORE the ``drain()`` — so the
+    outbound file holds frames in the order they hit the pipe. Recording after
+    the drain instead, as the writers once did, inverted the capture whenever a
+    drain stalled: a ``session/cancel`` the lock did not admit is appended
+    unlocked and would be recorded ahead of the prompt whose drain it was
+    appended behind, exactly in the stall an operator runs this recorder to see.
+    A frame the transport refused at the write (:func:`transport_refused`) is not
+    recorded, and a ``write()`` that raised never reaches here; the capture says
+    what was sent.
+    """
+    if transport_refused(stdin):
+        return
+    record_frame_now(backend, frame, wire_bytes, DIRECTION_OUT)
+
+
+def record_frame_now(
+    backend: str, frame: dict, wire_bytes: int = 0, direction: str = DIRECTION_IN
+) -> None:
+    """Record one frame, if a recording directory is set.
 
     Returns after one environment lookup when ``KIROCREW_ACP_RECORD_FRAMES`` is
     unset, which is the state of every ordinary run. When it is set the frame is
@@ -933,10 +1004,22 @@ async def record_frame(backend: str, frame: dict, wire_bytes: int = 0) -> None:
     called, recording stands down with a line saying so rather than starting a
     thread from the loop.
 
-    *wire_bytes* is the length of the line *frame* was parsed from. The reader
-    loops already hold it, and it is what the byte bound counts — serializing
-    the frame here to measure it would put a ``json.dumps`` of up to 10 MiB on
-    the reader loop, which is the cost this module exists to avoid.
+    *wire_bytes* is the length of the line *frame* was parsed from (inbound) or
+    was written as (outbound — every stdin writer records through
+    :func:`record_written_frame` right after its ``write()`` call returned and
+    before its drain, so the file holds wire order and a frame the pipe refused
+    never appears in the capture as sent). The outbound writers pass ``len(data)`` of the ``str`` they
+    ``.encode()``, and that IS the byte count: they serialize with
+    ``json.dumps`` at its default ``ensure_ascii=True``, which escapes every
+    non-ASCII code point, so the line is pure ASCII and one code point is one
+    byte. The callers already hold it, and it is
+    what the byte bound counts — serializing the frame here to measure it would
+    put a ``json.dumps`` of up to 10 MiB on the reader loop, which is the cost
+    this module exists to avoid.
+
+    *direction* is :data:`DIRECTION_IN` (the default; every reader-loop call)
+    or :data:`DIRECTION_OUT` (the transports' stdin writers), and selects the
+    file the frame lands in.
     """
     dest = recording_destination()
     if not dest:
@@ -955,7 +1038,7 @@ async def record_frame(backend: str, frame: dict, wire_bytes: int = 0) -> None:
         )
         return
     try:
-        _enqueue(writer, backend, frame, dest, wire_bytes)
+        _enqueue(writer, backend, frame, dest, wire_bytes, direction)
     except Exception as exc:  # noqa: BLE001 - a full queue must not reach a reader
         _stand_down(exc, from_reader_loop=True)
 

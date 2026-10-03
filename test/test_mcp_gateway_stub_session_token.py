@@ -1642,7 +1642,7 @@ async def test_a_subagents_own_turn_re_establishes_its_claim(
         stub_session_token = TOKEN_B
         session_id = "subagent-test-session"
 
-        async def prompt(self, _message: str) -> Any:
+        async def prompt(self, _message: str, *, on_sent: Any = None) -> Any:
             assert pushed == [(_PID, SUB_KEY, TOKEN_B)]
             for event in ():
                 yield event
