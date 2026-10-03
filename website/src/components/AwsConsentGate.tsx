@@ -35,6 +35,7 @@ export default function AwsConsentGate({
   onConsentChange,
   compact = false,
   askAgent = false,
+  target,
 }: {
   service: string
   /** Invalidate caller-owned queries whose content depends on this grant. */
@@ -60,11 +61,25 @@ export default function AwsConsentGate({
    * navigation would destroy one. A host with nothing to lose opts in.
    */
   askAgent?: boolean
+  /**
+   * Explicit (profile, region) to confirm — bedrock-kb only, where the target
+   * lives in the add-source form until the source is saved. The backend probes
+   * this target fresh and 409s on any echo mismatch, and a grant only ever
+   * authorizes calls whose (profile, region) match it exactly.
+   */
+  target?: { profile: string; region: string }
 }) {
   const qc = useQueryClient()
   const consentQ = useQuery<AwsConsentStatus>({
-    queryKey: ['awsConsent', service],
-    queryFn: () => api.awsConsent(service),
+    // The plain key stays exactly ['awsConsent', service] — hosts seed and
+    // invalidate it by that shape. Only a targeted (bedrock-kb) mount keys
+    // the target in, so per-target probes do not share cache entries.
+    queryKey: target
+      ? ['awsConsent', service, target.profile, target.region]
+      : ['awsConsent', service],
+    // Two-arg call only when a target exists: every non-bedrock mount keeps
+    // the plain single-arg shape (pinned by the gate's own tests).
+    queryFn: () => (target ? api.awsConsent(service, target) : api.awsConsent(service)),
   })
 
   const invalidate = () => {
@@ -76,12 +91,16 @@ export default function AwsConsentGate({
     // Send the values this render DISPLAYED, not whatever the server reads at
     // POST time: the backend 409s on a mismatch, so a confirmation cannot land
     // on an account the operator never saw.
-    mutationFn: () =>
-      api.grantAwsConsent(service, {
+    mutationFn: () => {
+      const shown = {
         profile: consentQ.data?.profile ?? '',
         region: consentQ.data?.region ?? '',
         account: consentQ.data?.account ?? '',
-      }),
+      }
+      return target
+        ? api.grantAwsConsent(service, shown, target)
+        : api.grantAwsConsent(service, shown)
+    },
     onSettled: invalidate,
   })
   const revokeMut = useMutation({

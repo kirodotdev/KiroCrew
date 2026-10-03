@@ -255,6 +255,23 @@ def is_auto_registered(props: dict) -> bool:
 # by type here for the same structural reason.)
 _WALKING_SOURCE_TYPES = ("local_folder", "obsidian_vault")
 
+# The source type that names a LIVE ACCOUNT BINDING rather than documents: a
+# ``bedrock_kb`` row is queried on the owner's AWS credentials against the
+# owner's consent grant and holds no items. A bundle is portable knowledge
+# and untrusted input, so it never carries such a row in either direction:
+# ``export_all`` leaves them out (nothing local to carry, and the row names
+# the owner's account and profile) and ``import_bundle`` refuses them, because
+# registering one is an owner action that runs validation and the target
+# check on the gated add-source path -- a bundle would register a KB against
+# whatever grant already exists without any of that. One type today, so every
+# consumer compares equality; a second account-bound type widens this to a set.
+_ACCOUNT_BOUND_SOURCE_TYPE = "bedrock_kb"
+
+# The uri the gated add-source path derives for an account-bound row. A bundle
+# row under ANY type that carries it would take the UNIQUE handle the owner's
+# later add dedupes on, so ``import_bundle`` refuses it like the type itself.
+_ACCOUNT_BOUND_URI_PREFIX = "bedrock-kb://"
+
 # Every query in this module funnels through the ``db`` property, so one check
 # there covers every caller at any stack depth -- including the ones a lexical
 # ``async def`` scan cannot see, which is why this guard exists.
@@ -320,6 +337,23 @@ class KnowledgeBundleError(ValueError):
     the writer, so any future caller (an MCP tool, a CLI import, an app
     backend) is safe by construction instead of depending on one HTTP path's
     pre-validation.
+    """
+
+
+class LiveSourceHoldsNoItems(ValueError):
+    """An item would come to name an account-bound source.
+
+    Raised by :meth:`KnowledgeStore.add_item` and
+    :meth:`KnowledgeStore.add_source_location_in_txn` before the write. A
+    ``bedrock_kb`` row is queried live and holds no items, and ``export_all``
+    relies on that when it leaves the row out of a bundle: an item naming a
+    source the bundle does not carry is refused by ``import_bundle`` as a
+    malformed bundle, and the whole bundle rolls back.
+    The rule lives here, with the writer, because every path that lands an
+    item under a source funnels through these two methods -- the agent's
+    ingest-text route, a folder or upload ingest, and the dedup path that
+    attaches an existing item to a second holder -- and a source id is
+    readable by any authenticated caller off the sources list.
     """
 
 
@@ -1365,10 +1399,14 @@ class KnowledgeStore:
         # artifact aggregate sources are containers of the same kind: each is
         # created empty ('active', no items, no state rows) the moment its
         # feature first needs it and filled by a later write, so an empty one
-        # is a feature waiting for its first document, not garbage.
+        # is a feature waiting for its first document, not garbage. bedrock_kb
+        # is excluded for a stronger reason: a live-retrieval source never has
+        # items (queried at search time; add_item and add_source_location_in_txn
+        # refuse one that names it), so without the exemption every gateway
+        # restart would silently delete it.
         orphan_pred = (
             "id NOT IN (SELECT DISTINCT source_id FROM items WHERE source_id IS NOT NULL) "
-            "AND source_type NOT IN ('local_folder', 'obsidian_vault', 'quip', 'agent', 'artifact') "
+            "AND source_type NOT IN ('local_folder', 'obsidian_vault', 'quip', 'agent', 'artifact', 'bedrock_kb') "
             "AND id NOT IN (SELECT source_id FROM ingestion_jobs WHERE status IN ('pending', 'processing')) "
             # Only a source whose ingest has run to an end state is reclaimable.
             # Every other status is a claim on the row: 'pending' (the column
@@ -1580,6 +1618,18 @@ class KnowledgeStore:
             # True over a half-rebuilt graph.
             self._graph_loaded = True
 
+    def _refuse_live_source(self, source_id) -> None:
+        """Raise :class:`LiveSourceHoldsNoItems` if *source_id* names an
+        account-bound source; a ``None`` source and an unknown id pass (the
+        latter is the foreign key's business). One primary-key read."""
+        if source_id is None:
+            return
+        row = self.db.execute(
+            "SELECT source_type FROM sources WHERE id = ?", (source_id,)).fetchone()
+        if row is not None and row["source_type"] == _ACCOUNT_BOUND_SOURCE_TYPE:
+            raise LiveSourceHoldsNoItems(
+                f"source {source_id} is a live-retrieval source and holds no items")
+
     def add_item(self, title, content, item_type, source_id=None, chunk_index=0,
                  summary=None, tags=None, embedding=None, namespace="default",
                  content_hash=None) -> str:
@@ -1588,6 +1638,9 @@ class KnowledgeStore:
         tags_json = json.dumps(tags or [])
         self.db.execute("BEGIN IMMEDIATE")
         try:
+            # Inside the write transaction, so the type read and the insert
+            # are one unit under the same lock.
+            self._refuse_live_source(source_id)
             self.db.execute(
                 "INSERT INTO items (id, title, content, item_type, source_id, chunk_index, namespace, summary, tags, embedding, content_hash, created_at, updated_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -1842,8 +1895,7 @@ class KnowledgeStore:
         """
         for item_id in item_ids:
             if owner_source_id:
-                others = self.sources_holding_item(
-                    item_id, exclude_source_id=owner_source_id)
+                others = self._reassignment_candidates(item_id, owner_source_id)
                 if others:
                     self.reassign_item_source(item_id, others[0])
                     self._adopt_reassigned_item(item_id, others[0])
@@ -1943,7 +1995,7 @@ class KnowledgeStore:
                 "SELECT id FROM items WHERE source_id = ?", (source_id,)).fetchall()]
             doomed: list[str] = []
             for item_id in owned:
-                others = self.sources_holding_item(item_id, exclude_source_id=source_id)
+                others = self._reassignment_candidates(item_id, source_id)
                 if others:
                     self.reassign_item_source(item_id, others[0])
                     # Same obligation as the item-level path: a recipient must never
@@ -2588,6 +2640,10 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
         explicit ``BEGIN IMMEDIATE`` would END that transaction early and hand a
         concurrent writer the very gap the caller took the lock to close.
         """
+        # A location is the other way an item comes to name a source: the
+        # dedup path attaches an existing item to the ingesting source here
+        # instead of inserting a copy.
+        self._refuse_live_source(source_id)
         lid = str(uuid4())
         now = datetime.now().isoformat()
         self.db.execute(
@@ -2599,8 +2655,10 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
     def sources_holding_item(self, item_id: str, exclude_source_id: str | None = None) -> list[str]:
         """Ids of EXISTING sources that hold *item_id*, optionally excluding one.
 
-        The reference count deletion consults: an item is destroyed only when this
-        comes back empty. Joins ``sources`` so a location row left pointing at an
+        The holder count dedup reads. The deletion paths consult
+        :meth:`_reassignment_candidates` instead, which narrows this to the holders
+        that may take ownership; an item is destroyed only when that comes back
+        empty. Joins ``sources`` so a location row left pointing at an
         already-deleted source cannot keep a dead item alive.
         """
         sql = ("SELECT sl.source_id FROM source_locations sl "
@@ -2610,6 +2668,28 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
             sql += " AND sl.source_id != ?"
             params.append(exclude_source_id)
         return [r["source_id"] for r in self.db.execute(sql, params).fetchall()]
+
+    def _reassignment_candidates(self, item_id: str, losing_source_id: str) -> list[str]:
+        """The holders of *item_id* that may take ownership when *losing_source_id*
+        is deleted: :meth:`sources_holding_item` minus the account-bound types.
+
+        A live-retrieval source never holds items (:meth:`_refuse_live_source`
+        guards every writer), so a location row naming one under a local item can
+        only come from a direct write to ``knowledge.db``. Reassigning the item to
+        that row's source would file a local document under a source that
+        :meth:`export_all` leaves out of every bundle, along with everything that
+        names it -- the document would survive in the live store and vanish from
+        the backup. An item whose only other holders are account-bound therefore
+        goes with its owner, as if no other holder existed; the planted location
+        row goes with it.
+        """
+        rows = self.db.execute(
+            "SELECT sl.source_id FROM source_locations sl "
+            "JOIN sources s ON s.id = sl.source_id "
+            "WHERE sl.item_id = ? AND sl.source_id != ? AND s.source_type <> ?",
+            (item_id, losing_source_id, _ACCOUNT_BOUND_SOURCE_TYPE),
+        ).fetchall()
+        return [r["source_id"] for r in rows]
 
     def reassign_item_source(self, item_id: str, new_source_id: str) -> None:
         """Re-point which source OWNS *item_id*.
@@ -2843,6 +2923,42 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
             relations = [dict(r) for r in self.db.execute("SELECT * FROM entity_relations")]
             source_locations = [dict(r) for r in self.db.execute("SELECT * FROM source_locations")]
             mentions = [dict(r) for r in self.db.execute("SELECT * FROM mentions")]
+        # An account-bound source is not knowledge and does not travel; see
+        # _ACCOUNT_BOUND_SOURCE_TYPE. Nothing that names one travels either.
+        # The gateway's own writers cannot put an item under such a row
+        # (add_item and add_source_location_in_txn raise LiveSourceHoldsNoItems),
+        # but knowledge.db is agent-writable in-sandbox, so a row planted by a
+        # direct write would otherwise ride out under a source this export
+        # drops, and a clean store's import would refuse the whole bundle as
+        # naming a source it does not carry. The set left out here is the set
+        # import_bundle refuses, compared as text like it does. It is filtered
+        # BEFORE the ownership rows below are pruned to the items carried, so
+        # no row can go on naming an item this export left out.
+        bound_source_ids = {
+            str(row[0]) for row in self.db.execute(
+                "SELECT id FROM sources WHERE source_type = ?",
+                (_ACCOUNT_BOUND_SOURCE_TYPE,))
+        }
+        if bound_source_ids:
+            def _names_bound_source(source_id: object) -> bool:
+                return source_id is not None and str(source_id) in bound_source_ids
+
+            dropped_item_ids = {
+                str(i["id"]) for i in items
+                if _names_bound_source(i.get("source_id")) and i.get("id") is not None
+            }
+
+            def _names_dropped_item(item_id: object) -> bool:
+                return item_id is not None and str(item_id) in dropped_item_ids
+
+            items = [i for i in items if not _names_bound_source(i.get("source_id"))]
+            relations = [r for r in relations if not _names_dropped_item(r.get("source_item_id"))]
+            source_locations = [
+                loc for loc in source_locations
+                if not (_names_bound_source(loc.get("source_id"))
+                        or _names_dropped_item(loc.get("item_id")))
+            ]
+            mentions = [m for m in mentions if not _names_dropped_item(m.get("item_id"))]
         # Ownership a bundle cannot back is worse than shipping none: the accepting pass
         # keeps only the ids the import wrote, so an id this export does not carry is
         # named on every restore in the account of what arrived owned by nothing, and the
@@ -2876,7 +2992,9 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
             "items": items,
             "entities": [dict(r) for r in self.db.execute("SELECT * FROM entities")],
             "relations": relations,
-            "sources": [dict(r) for r in self.db.execute("SELECT * FROM sources")],
+            "sources": [dict(r) for r in self.db.execute(
+                "SELECT * FROM sources WHERE source_type <> ?",
+                (_ACCOUNT_BOUND_SOURCE_TYPE,))],
             "source_locations": source_locations,
             "mentions": mentions,
             # Ownership travels with the content. These rows are what make an
@@ -2886,9 +3004,13 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
 
     def import_bundle(self, bundle: dict) -> dict:
         items_imported = 0
+        items_refused = 0
         entities_created = 0
         relations_rebuilt = 0
         state_rows_imported = 0
+        sources_refused = 0
+        refused_source_ids: set[str] = set()
+        refused_item_ids: set[str] = set()
         now = datetime.now().isoformat()
         # A bundle names its sources by the ids the EXPORTING store minted, and
         # ``sources.uri`` carries the UNIQUE constraint, so the same logical source
@@ -2938,6 +3060,28 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
         try:
             claimed_uris: dict[str, str] = {}
             for src in bundle.get("sources", []):
+                # An account-bound source (a Bedrock KB queried on the owner's
+                # credentials) is never registered by a bundle: the bundle
+                # carries no consent, runs no validation and no target check,
+                # and the import route is open to every authenticated caller
+                # while registering such a source is an owner action. The row
+                # is refused and counted; the owner adds it through the gated
+                # add-source path. Its id is remembered so the items below that
+                # name it are refused with it rather than failing the whole
+                # bundle as naming a source it does not carry. A row of any other
+                # type that carries the account-bound uri is refused the same
+                # way: it would squat the handle the owner's add derives.
+                if src.get("source_type") == _ACCOUNT_BOUND_SOURCE_TYPE or str(
+                    src.get("uri") or ""
+                ).startswith(_ACCOUNT_BOUND_URI_PREFIX):
+                    sources_refused += 1
+                    # Only a row that carries an id can be named by an item; an
+                    # id-less refused row adds nothing to the set (``str(None)``
+                    # would otherwise land "None" in it and refuse the items of
+                    # a local source that happens to be called "None").
+                    if src.get("id") is not None:
+                        refused_source_ids.add(str(src["id"]))
+                    continue
                 # Restore the status from the COLUMN, which ``export_all`` ships
                 # (it serializes SELECT * FROM sources). Reading the blob copy
                 # instead would land every bundle exported from a fixed store at
@@ -3088,7 +3232,45 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
             inserted_entities: set[str] = set()
             bundle_entity_refs: set[str] = set()
             live_entity_refs: set[str] = set()
+            # An account-bound source holds no items: it is queried live and
+            # nothing local is ever stored under it. A bundle item filed under
+            # one -- a row this import just refused, or, through the uri map, a
+            # row the owner already registered -- would land local content under
+            # a live-only source, so it is refused and counted like the row.
+            local_bound_ids = {
+                str(row[0]) for row in self.db.execute(
+                    "SELECT id FROM sources WHERE source_type = ?",
+                    (_ACCOUNT_BOUND_SOURCE_TYPE,))
+            }
+
+            def _names_bound_source(source_id: object) -> bool:
+                # A refused row is compared as text: the columns are TEXT and a
+                # bundle is untrusted input that may carry a number where the
+                # exporter wrote a string. Every other id is judged by the local
+                # row the uri map files it under.
+                if source_id is None:
+                    return False
+                if str(source_id) in refused_source_ids:
+                    return True
+                mapped = (source_id_map.get(source_id)
+                          if isinstance(source_id, str) else None)
+                return mapped is not None and mapped in local_bound_ids
+
+            def _names_refused_item(item_id: object) -> bool:
+                # Same text comparison, and the same None guard: ``str(None)``
+                # is the text "None", which a bundle can also spell as an item
+                # id, so a dependent with NO item id must not be dropped just
+                # because a refused item was called "None".
+                return item_id is not None and str(item_id) in refused_item_ids
             for item in bundle.get("items", []):
+                if _names_bound_source(item.get("source_id")):
+                    items_refused += 1
+                    # Only an item that carries an id can be named by a
+                    # dependent; an id-less refused item adds nothing to the
+                    # set (``str(None)`` would otherwise land "None" in it).
+                    if item.get("id") is not None:
+                        refused_item_ids.add(str(item["id"]))
+                    continue
                 if item.get("id") in blocked_items:
                     continue
                 raw_emb = item.get("embedding")
@@ -3141,12 +3323,17 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
             # refuse the write and the whole import is lost over a document this store
             # already has its own copy of.
             for rel in bundle.get("relations", []):
+                # A relation evidenced by a withheld or refused item is evidence of
+                # nothing this store holds; its FK would fail the whole bundle. One
+                # with no evidencing item names nothing refused and is kept.
+                skipped = (rel.get("source_item_id") in blocked_items
+                           or _names_refused_item(rel.get("source_item_id")))
                 for endpoint in (rel.get("source_id"), rel.get("target_id")):
                     if isinstance(endpoint, str):
                         bundle_entity_refs.add(endpoint)
-                        if rel.get("source_item_id") not in blocked_items:
+                        if not skipped:
                             live_entity_refs.add(endpoint)
-                if rel.get("source_item_id") in blocked_items:
+                if skipped:
                     continue
                 cursor = self.db.execute(
                     "INSERT OR IGNORE INTO entity_relations (id, source_id, target_id, relation_type, description, weight, source_item_id, created_at) "
@@ -3157,7 +3344,9 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                 if cursor.rowcount > 0:
                     relations_rebuilt += 1
             for loc in bundle.get("source_locations", []):
-                if loc.get("item_id") in blocked_items:
+                if (loc.get("item_id") in blocked_items
+                        or _names_bound_source(loc["source_id"])
+                        or _names_refused_item(loc["item_id"])):
                     continue
                 self.db.execute(
                     "INSERT OR IGNORE INTO source_locations (id, item_id, source_id, chunk_range, section_title, anchor, created_at) "
@@ -3167,12 +3356,14 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                      loc.get("chunk_range"),
                      loc.get("section_title"), loc.get("anchor"), loc.get("created_at", now)))
             for m in bundle.get("mentions", []):
+                skipped = (m.get("item_id") in blocked_items
+                           or _names_refused_item(m.get("item_id")))
                 entity_ref = m.get("entity_id")
                 if isinstance(entity_ref, str):
                     bundle_entity_refs.add(entity_ref)
-                    if m.get("item_id") not in blocked_items:
+                    if not skipped:
                         live_entity_refs.add(entity_ref)
-                if m.get("item_id") in blocked_items:
+                if skipped:
                     continue
                 self.db.execute(
                     "INSERT OR IGNORE INTO mentions (item_id, entity_id, context, created_at) "
@@ -3206,8 +3397,10 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
             self.db.execute("ROLLBACK")
             raise
         self._load_graph()
-        return {"items_imported": items_imported, "entities_created": entities_created,
+        return {"items_imported": items_imported, "items_refused": items_refused,
+                "entities_created": entities_created,
                 "relations_rebuilt": relations_rebuilt,
+                "sources_refused": sources_refused,
                 "ownership_rows_imported": state_rows_imported,
                 # Withheld items are the one silent outcome here: a document this store
                 # already holds under the same key contributes nothing and lowers

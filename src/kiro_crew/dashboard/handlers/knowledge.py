@@ -15,6 +15,7 @@ import zipfile
 from datetime import datetime
 from functools import partial
 from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import TYPE_CHECKING, cast
 
 from aiohttp import web
 
@@ -65,6 +66,7 @@ from kiro_crew.knowledge.readers import FileReader
 from kiro_crew.knowledge.retrieval import HybridRetriever, vector_leg
 from kiro_crew.knowledge.spend import source_spend
 from kiro_crew.knowledge.store import (
+    _ACCOUNT_BOUND_SOURCE_TYPE,
     AUTO_REGISTRATION_RETIRED_PROP,
     BUNDLE_STATE_KEY_COL,
     KnowledgeBundleError,
@@ -74,6 +76,11 @@ from kiro_crew.knowledge.watcher import KnowledgeWatcher
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.sel import sel
 from kiro_crew.zip_vet import ZipInventoryRejected, vet_zip_inventory
+
+if TYPE_CHECKING:
+    # Type-only: importing the module at runtime would load boto3 at gateway
+    # boot, which the lazy connector proxy below exists to avoid.
+    from kiro_crew.knowledge.connectors.bedrock_kb import BedrockKBConnector
 
 logger = logging.getLogger(__name__)
 
@@ -1047,6 +1054,27 @@ def _source_row(store, source_id: str):
     return store.db.execute("SELECT * FROM sources WHERE id = ?", (source_id,)).fetchone()
 
 
+def _reclaim_rowless_attestations(store, consent_mod, recorded) -> int:
+    """Revoke each Bedrock attestation whose ``sources`` row is gone; the count.
+
+    Called by the add route when the attested population is full. The delete
+    route answers 404 for a missing row, so an attestation whose row was
+    removed outside the dashboard routes has no other way out and would hold
+    one of the registration slots for good. A row minted under that id later
+    is unattested, as after a delete through the route. Sync (sqlite and the
+    consent store's file lock); the caller holds ``target_change_lock`` on a
+    worker thread.
+    """
+    reclaimed = 0
+    for sid in recorded:
+        if _source_row(store, sid) is not None:
+            continue
+        if consent_mod.revoke_source_attestation(sid):
+            _sel_log("source.attestation_reclaim", source_id=sid, reason="row_missing")
+            reclaimed += 1
+    return reclaimed
+
+
 def _set_sync_status(store, source_id: str, status: str) -> None:
     """Stamp a source's ``sync_status``, in one off-loop take.
 
@@ -1170,6 +1198,29 @@ def _create_source_audited(store, source_type: str, **kwargs) -> tuple[str, bool
     if created:
         _sel_log("source.add", source_id=sid, source_type=source_type)
     return sid, created
+
+
+def _source_exists_response(source_type: str, source_id: str) -> web.Response:
+    """The 409 for a uri that already has a row: same code and id for every type.
+
+    A ``bedrock_kb`` row can exist and still be dark: a grant confirmed for
+    another account leaves its attestation outside ``attested_sources``, and
+    re-adding the same knowledge base lands here, where only a row the add
+    CREATES is attested. So that type's text names the recovery that does
+    work -- the owner-only delete revokes the attestation with the row, and a
+    fresh add validates, inserts and attests -- rather than a re-add that
+    can never re-attest. Every other type keeps the plain text.
+    """
+    error = "source already exists"
+    if source_type == "bedrock_kb":
+        error = (
+            "A source for these knowledge bases is already registered. If it "
+            "stopped returning results after the AWS account changed, remove "
+            "it and add it again."
+        )
+    return web.json_response(
+        {"error": error, "id": source_id, "code": "source_exists"}, status=409
+    )
 
 
 def _set_file_state(store, source_id: str, file_path: str, status: str) -> None:
@@ -1309,6 +1360,38 @@ async def pick_folder(request: web.Request) -> web.Response:
     return web.json_response({"path": path})
 
 
+# Every top-level field ``add_source`` reads as text. Absent or ``null`` is
+# fine (each has a default); any other non-string is refused.
+_ADD_SOURCE_TEXT_FIELDS = ("name", "source_type", "uri", "namespace")
+
+# What a ``bedrock_kb`` row retains in ``properties`` is the connector's
+# business: ``bedrock_kb.retained_properties`` returns the validated triple
+# (``kb_ids``, ``region``, ``profile``) the insert below stores verbatim.
+
+
+def _add_source_shape_error(body: dict) -> str | None:
+    """First shape violation in a POST /api/knowledge/sources body, else None.
+
+    The ONE gate for the body's types, run before any field is read: a
+    wrong-typed field stops here as a 400, so no line downstream
+    dereferences one. Per-field checks at each first use leave one gap per
+    field: a connector's ``validate_config`` may ignore ``url``, so a JSON
+    object in ``uri`` would reach ``str.startswith`` and surface as a 500.
+    """
+    for key in _ADD_SOURCE_TEXT_FIELDS:
+        value = body.get(key)
+        if value is not None and not isinstance(value, str):
+            return f"{key} must be a string"
+    properties = body.get("properties")
+    if properties is not None and not isinstance(properties, dict):
+        return "properties must be an object"
+    if isinstance(properties, dict):
+        nested = properties.get("namespace")
+        if nested is not None and not isinstance(nested, str):
+            return "namespace must be a string"
+    return None
+
+
 async def add_source(request: web.Request) -> web.Response:
     """POST /api/knowledge/sources -- add a remote source."""
     owner_denied = await _require_knowledge_owner(request, "knowledge.source.add")
@@ -1319,28 +1402,54 @@ async def add_source(request: web.Request) -> web.Response:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
-    name = body.get("name", "")
-    source_type = body.get("source_type", "")
-    uri = body.get("uri", "")
-    properties = body.get("properties", {})
-    if not isinstance(properties, dict):
+    shape_error = _add_source_shape_error(body)
+    if shape_error is not None:
+        return web.json_response({"error": shape_error}, status=400)
+    name = body.get("name") or ""
+    # The same ceiling the rename endpoint enforces: a name is a column every
+    # source type retains and every source-list response carries, so the add
+    # path must not admit what the rename path refuses.
+    if len(name) > _MAX_SOURCE_NAME_LEN:
         return web.json_response(
-            {"error": "properties must be an object"}, status=400
+            {
+                "error": f"name must be {_MAX_SOURCE_NAME_LEN} characters or fewer",
+                "code": "name_too_long",
+            },
+            status=400,
         )
-    namespace = body.get("namespace", "")
-
-    # Validate namespace if provided at top level or in properties
-    if not namespace:
-        namespace = properties.get("namespace", "")
+    source_type = body.get("source_type") or ""
+    uri = body.get("uri") or ""
+    properties = body.get("properties") or {}
+    namespace = body.get("namespace") or properties.get("namespace") or ""
     if namespace:
-        if not isinstance(namespace, str):
-            return web.json_response(
-                {"error": "namespace must be a string"}, status=400
-            )
         namespace = namespace.strip()[:64]
 
     if not source_type:
         return web.json_response({"error": "source_type required"}, status=400)
+
+    if source_type == "bedrock_kb":
+        # Owner action, like the consent grant it rides: validation below
+        # probes the KB with the owner's AWS credentials and the insert
+        # registers a KB the gateway then queries on the owner's account.
+        # ``_require_knowledge_owner`` above gates dashboard users only; an
+        # app token and an internal-secret caller pass it, which is fine for
+        # a local folder but would let them expose an unapproved KB against
+        # the owner's grant. This gate refuses every caller but the owner.
+        owner_denied = await require_owner_dashboard_request(
+            request, "knowledge.add_source.bedrock_kb"
+        )
+        if owner_denied is not None:
+            return owner_denied
+        # The account validation below proves the KB access in. The locked
+        # insert requires the grant's account to still be this one, because the
+        # attestation pins the account the grant confirms AT INSERT, and a grant
+        # confirmed for another account in between would attest a KB never
+        # validated there. It comes from validation itself, never from a grant
+        # read before it: the grant can move to another account and back while
+        # the probes run, and then a read taken first matches the final grant
+        # while the KB was proven in the other account. Empty until a
+        # validation succeeds, which the insert refuses.
+        validated_account = ""
 
     # Refuse UNC ("\\host\share") and Win32 extended-length ("\\?\") prefixes
     # BEFORE anything filesystem-adjacent runs — connector.validate_config()
@@ -1353,12 +1462,7 @@ async def add_source(request: web.Request) -> web.Response:
     # prefix — Path("\\/?\\C:\\...") normalizes to the same extended path as
     # \\?\ — so match on "first two chars are any slash", not literal "\\" /
     # "//" alone.
-    if (
-        isinstance(uri, str)
-        and len(uri) >= 2
-        and uri[0] in ("\\", "/")
-        and uri[1] in ("\\", "/")
-    ):
+    if len(uri) >= 2 and uri[0] in ("\\", "/") and uri[1] in ("\\", "/"):
         _sel_log("source.add_denied", reason="unsupported_prefix", uri=uri)
         return web.json_response(
             {
@@ -1373,15 +1477,48 @@ async def add_source(request: web.Request) -> web.Response:
     if sync_scheduler:
         connector = sync_scheduler.get_connector(source_type)
         if connector:
-            valid, err = connector.validate_config({**properties, "url": uri})
+            # Off the loop: bedrock_kb validation issues live network probes
+            # (boto session + one Retrieve per KB, ~seconds worst case), and
+            # even folder validation touches the filesystem. Same discipline
+            # as the discovery walk below.
+            config = {**properties, "url": uri}
+            if source_type == "bedrock_kb":
+                bedrock = cast("BedrockKBConnector", connector)
+                valid, err, validated_account = await asyncio.to_thread(
+                    bedrock.validate_registration, config
+                )
+            else:
+                valid, err = await asyncio.to_thread(connector.validate_config, config)
             if not valid:
                 return web.json_response({"error": err}, status=400)
+
+    retained: dict[str, str] | None = None
+    if source_type == "bedrock_kb":
+        from kiro_crew.knowledge.connectors.bedrock_kb import (
+            canonical_source_uri,
+            retained_properties,
+        )
+
+        # The row's identity and config come from what validation judged,
+        # never from the caller's spelling: ``uri`` is the UNIQUE dedup handle,
+        # so a caller-chosen one could mint a row per request for the same
+        # knowledge base. Derived once here; the locked insert below stores
+        # exactly these values and runs its checks on them. The connector's
+        # own bounds on every retained field apply here too, so a value no
+        # grant could name is refused even when no sync scheduler validated.
+        try:
+            retained = retained_properties(properties)
+        except ValueError as e:
+            return web.json_response(
+                {"error": str(e), "code": "bedrock_kb_config_invalid"}, status=400
+            )
+        uri = canonical_source_uri(retained)
 
     if not uri:
         return web.json_response({"error": "uri required"}, status=400)
 
     # Sandbox guard: reject sensitive paths for any local source
-    if not uri.startswith(("https://", "http://", "upload://", "code://")):
+    if not uri.startswith(("https://", "http://", "upload://", "code://", "bedrock-kb://")):
         resolved_uri = str(Path(uri).resolve())
         if is_sensitive_path(resolved_uri):
             _sel_log("source.add_denied", reason="sensitive_path", uri=uri)
@@ -1425,9 +1562,17 @@ async def add_source(request: web.Request) -> web.Response:
     # Check for existing source with same URI
     existing = await asyncio.to_thread(store.get_source_by_uri, uri)
     if existing:
-        return web.json_response(
-            {"error": "source already exists", "id": existing["id"],
-             "code": "source_exists"}, status=409)
+        return _source_exists_response(source_type, existing["id"])
+
+    # The name every insert below stores, resolved once the uri is final. A
+    # blank name falls back to the uri, whose own ceilings are larger (2048
+    # for a web uri, a whole filesystem path for a local one), so the
+    # fallback is cut to the ceiling the explicit name was checked against:
+    # the rename endpoint refuses a longer name, and every source-list
+    # response carries the column. The explicit name was refused rather than
+    # cut because the caller chose it; the derived one is cut rather than
+    # refused because the caller did not.
+    stored_name = (name or uri)[:_MAX_SOURCE_NAME_LEN]
 
     # Folder sources: discovery walk + pending_confirmation (no auto-scan)
     if source_type in ("local_folder", "obsidian_vault"):
@@ -1465,7 +1610,7 @@ async def add_source(request: web.Request) -> web.Response:
             if namespace and "namespace" not in properties:
                 properties["namespace"] = namespace
         sid, created = await asyncio.to_thread(
-            _create_source_audited, store, source_type, name=name or uri, uri=uri,
+            _create_source_audited, store, source_type, name=stored_name, uri=uri,
             properties=properties)
         if not created:
             return web.json_response(
@@ -1488,13 +1633,194 @@ async def add_source(request: web.Request) -> web.Response:
             status=201,
         )
 
-    sid, created = await asyncio.to_thread(
-        _create_source_audited, store, source_type, name=name or uri, uri=uri,
-        properties=properties)
+    if source_type == "bedrock_kb":
+        # Recheck-and-insert under the connector's target-change lock — the
+        # same lock the consent POST holds across its check + grant write —
+        # so a grant confirmed between this handler's earlier check and this
+        # insert cannot interleave. The slow validation
+        # above stayed outside the lock; this section is sqlite-only.
+        from kiro_crew.knowledge.connectors.bedrock_kb import (
+            MAX_BEDROCK_KB_SOURCES,
+            TargetLookupError,
+            registered_target_mismatch,
+            target_change_lock,
+        )
+
+        def _locked_insert():
+            from kiro_crew import aws_consent as consent_mod
+
+            # ``retained`` and ``uri`` were derived from the validated config
+            # above; the checks under the lock compare these same values, so
+            # the row can only ever hold what the grant equality matched.
+            assert retained is not None  # set on the bedrock_kb path above
+            new_profile = retained["profile"]
+            new_region = retained["region"]
+            with target_change_lock:
+                # Recheck the UNIQUE uri inside the lock before the count gate.
+                # The earlier fast-path check can race another add; an existing
+                # registration remains a duplicate even when the population is
+                # full, and no consent-store read or write is needed to say so.
+                try:
+                    existing = store.get_source_by_uri(uri)
+                except Exception as e:
+                    raise TargetLookupError(
+                        f"bedrock_kb source duplicate lookup failed: {e}"
+                    ) from e
+                if existing is not None:
+                    return (existing["id"], False), None, None
+
+                # Count every sealed registration, including one recorded under
+                # an older account. Those dark rows still occupy a registration
+                # and must be removed before their slot can be reused. A full
+                # population first reclaims attestations whose row is gone,
+                # which no route can remove. Read strictly, before either the
+                # database row or attestation is written, so an unreadable
+                # consent store fails closed.
+                try:
+                    registered = consent_mod.recorded_source_attestations()
+                    held_slots = len(registered)
+                    if held_slots >= MAX_BEDROCK_KB_SOURCES:
+                        held_slots -= _reclaim_rowless_attestations(
+                            store, consent_mod, registered
+                        )
+                except Exception as e:
+                    raise TargetLookupError(
+                        f"bedrock_kb source attestation lookup failed: {e}"
+                    ) from e
+                if held_slots >= MAX_BEDROCK_KB_SOURCES:
+                    return None, "source_limit", None
+
+                held = registered_target_mismatch(store, new_profile, new_region)
+                if held is not None:
+                    return None, "conflict", held
+                # The grant this source depends on must match ITS target AT
+                # INSERT TIME, under the same lock the consent write holds:
+                # validation ran seconds ago against the then-current grant,
+                # and a target-B confirmation landing in between would leave
+                # this source registered but grantless — dark while its row
+                # says Live. Same-target re-confirmation
+                # (fresh grant_id, same target) passes: retrieval demands
+                # target equality, not grant identity.
+                granted, _reason = consent_mod.is_granted(
+                    consent_mod.SERVICE_BEDROCK_KB, profile=new_profile, region=new_region
+                )
+                if not granted:
+                    return None, "grant_changed", None
+                # Same target is not the same account: a profile can be
+                # re-pointed and re-confirmed for the same (profile, region)
+                # while validation was probing the KB in the account before.
+                # The attestation pins the account the grant confirms now, so
+                # it must be the one validation ran under, else the row would
+                # authorize paid retrieval of a KB never validated there. A
+                # same-target, same-account re-confirmation (a fresh
+                # grant_id) still passes.
+                live = consent_mod.read_grant(consent_mod.SERVICE_BEDROCK_KB)
+                if live is None or live.account != validated_account:
+                    return None, "grant_changed", None
+                sid, created = _create_source_audited(
+                    store, source_type, name=stored_name, uri=uri,
+                    properties=retained)
+                if created:
+                    # The row is proof of nothing on its own: knowledge.db is
+                    # agent-writable in-sandbox. The sealed consent store
+                    # records that THIS gateway insert, owner-gated and
+                    # consent-checked above, registered exactly this row, and
+                    # the paid enumeration searches only rows so attested. The
+                    # two writes are not one transaction, so a failed
+                    # attestation undoes the insert: a row nothing attests is
+                    # dark for good, and an add that reports success must
+                    # have produced a row the enumeration will search.
+                    try:
+                        consent_mod.record_source_attestation(
+                            sid, uri, retained, expected_account=validated_account
+                        )
+                    except Exception:
+                        store.delete_source_cascade(sid)
+                        _sel_log(
+                            "source.delete",
+                            source_id=sid,
+                            source_type=source_type,
+                            reason="attestation_failed",
+                        )
+                        raise
+                return (sid, created), None, None
+
+        try:
+            inserted, refusal, held = await asyncio.to_thread(_locked_insert)
+        except TargetLookupError as e:
+            # Fail CLOSED: an unreadable sources table must refuse the add,
+            # not wave it through as "no conflict". The exception text goes to
+            # the log, never to the form: it can carry a filesystem path.
+            logger.warning("bedrock_kb one-account check failed: %s", e)
+            return web.json_response(
+                {
+                    "error": (
+                        "could not check the existing Bedrock Knowledge Base "
+                        "source, so nothing was added; try again"
+                    ),
+                    "code": "bedrock_kb_conflict_check_failed",
+                },
+                status=503,
+            )
+        except Exception:
+            # The insert was undone above (or never happened). Same log/form
+            # split as the conflict check: the text can carry a path.
+            logger.exception("bedrock_kb source registration failed")
+            return web.json_response(
+                {
+                    "error": (
+                        "the source could not be registered with the account "
+                        "confirmation, so nothing was added; try again"
+                    ),
+                    "code": "bedrock_kb_attestation_failed",
+                },
+                status=500,
+            )
+        if refusal == "source_limit":
+            return web.json_response(
+                {
+                    "error": (
+                        "Bedrock Knowledge Base sources are limited to "
+                        f"{MAX_BEDROCK_KB_SOURCES}; remove a source before adding another."
+                    ),
+                    "code": "bedrock_kb_source_limit",
+                },
+                status=409,
+            )
+        if refusal == "conflict":
+            # 409 like the consent POST's refusal under the same code: the
+            # request is well formed and the conflict is with registered
+            # state, which the owner can change by removing that source.
+            return web.json_response(
+                {
+                    "error": (
+                        f"{held} already uses a different AWS profile or "
+                        "region. Only one is supported for Bedrock Knowledge "
+                        "Base sources right now; remove that source first."
+                    ),
+                    "code": "bedrock_kb_target_conflict",
+                },
+                status=409,
+            )
+        if refusal == "grant_changed":
+            return web.json_response(
+                {
+                    "error": (
+                        "the AWS account confirmation changed while this source was "
+                        "being validated — confirm the account for this exact "
+                        "profile and region, then add again"
+                    ),
+                    "code": "bedrock_kb_grant_changed",
+                },
+                status=409,
+            )
+        sid, created = inserted
+    else:
+        sid, created = await asyncio.to_thread(
+            _create_source_audited, store, source_type, name=stored_name, uri=uri,
+            properties=properties)
     if not created:
-        return web.json_response(
-            {"error": "source already exists", "id": sid,
-             "code": "source_exists"}, status=409)
+        return _source_exists_response(source_type, sid)
 
     # Trigger immediate ingestion for local_file sources. The task claims
     # 'syncing' itself, so nothing is written here that a disconnect could
@@ -1799,6 +2125,55 @@ async def delete_source(request: web.Request) -> web.Response:
     row = await asyncio.to_thread(_source_row, store, source_id)
     if not row:
         return web.json_response({"error": "not found"}, status=404)
+    # The registration is the sealed attestation under this id, not the row's
+    # ``source_type``: that column lives in the agent-writable knowledge.db,
+    # so an agent can re-label a registered row, and a delete that trusted
+    # the label would skip the owner gate and the revoke below, leaving the
+    # attestation for a row re-minted under the same id and values to
+    # inherit. Read strictly (an unreadable store refuses every delete, a
+    # re-labelled row being indistinguishable from a local one without it);
+    # sync file I/O under the consent lock, so off the loop.
+    from kiro_crew import aws_consent as consent_mod
+
+    try:
+        registered = await asyncio.to_thread(consent_mod.has_source_attestation, source_id)
+    except Exception:
+        logger.exception("bedrock_kb attestation read failed at delete: source_id=%s", source_id)
+        return web.json_response(
+            {
+                "error": "Couldn't remove this source. Nothing was deleted. Try again.",
+                "code": "bedrock_kb_attestation_revoke_failed",
+            },
+            status=500,
+        )
+    if registered or row["source_type"] == "bedrock_kb":
+        # Owner action, the mirror of the owner-gated insert: the knowledge
+        # owner gate above admits an app token and an internal-secret caller,
+        # and removing a registration the owner made (and the approval
+        # recorded with it) is the owner's call, like making it was.
+        owner_denied = await require_owner_dashboard_request(
+            request, "knowledge.delete_source.bedrock_kb"
+        )
+        if owner_denied is not None:
+            return owner_denied
+        # The attestation goes FIRST. The two writes are not one transaction,
+        # and the safe direction is a row nothing attests (skipped, audited)
+        # rather than an attestation with no row, which a later row minted
+        # under the same id and values would inherit. A failed revoke leaves
+        # both in place and reports; a failed row delete after it leaves a
+        # dark row the retry removes. Sync file I/O under the consent lock,
+        # so off the loop like the row delete below.
+        try:
+            await asyncio.to_thread(consent_mod.revoke_source_attestation, source_id)
+        except Exception:
+            logger.exception("bedrock_kb attestation revoke failed: source_id=%s", source_id)
+            return web.json_response(
+                {
+                    "error": "Couldn't remove this source. Nothing was deleted. Try again.",
+                    "code": "bedrock_kb_attestation_revoke_failed",
+                },
+                status=500,
+            )
     try:
         # BEGIN IMMEDIATE takes the write lock eagerly and the connection's
         # busy_timeout is 10s, so a concurrent ingestion writer could park this
@@ -2089,6 +2464,17 @@ async def ingest_text(request: web.Request) -> web.Response:
         source = await asyncio.to_thread(_source_row, store, source_id)
         if not source:
             return web.json_response({"error": "source not found"}, status=404)
+        # A live-retrieval source holds no items: the store refuses the write
+        # (LiveSourceHoldsNoItems), and refusing here, before the body is read
+        # and extraction runs, turns that into a coded 409 instead of a 500 at
+        # the end of the pipeline. Any authenticated caller can read a
+        # bedrock_kb id off the sources list, so the target is checked, not
+        # the caller.
+        if source["source_type"] == _ACCOUNT_BOUND_SOURCE_TYPE:
+            return web.json_response(
+                {"error": "a live-retrieval source holds no items; it is queried at search time",
+                 "code": "live_source_holds_no_items"},
+                status=409)
         body, body_err = await read_bounded_json(request, max_bytes=None)
         if body_err is not None:
             return body_err
@@ -2958,6 +3344,19 @@ async def search_for_context(request: web.Request) -> web.Response:
     # the shared model.
     results = await run_in_embed_pool(retriever.search, q, limit=limit)
 
+    # Remote bedrock_kb sources are queried live under a hard timeout and
+    # fail OPEN (empty on any failure), then interleaved by rank inside the
+    # shared helper. to_thread keeps the boto round trips off the event
+    # loop; the bound lives inside the helper. The deferred import ALSO runs
+    # inside the thread: importing boto3 on first use takes long enough to
+    # stall every gateway task if it ran on the loop.
+    def _augment_in_thread():
+        from kiro_crew.knowledge.connectors import bedrock_kb
+
+        return bedrock_kb.augment_with_remote(store, q, limit, results)
+
+    results = await asyncio.to_thread(_augment_in_thread)
+
     cards = []
     total_tokens = 0
     for r in results:
@@ -3039,6 +3438,83 @@ async def _shutdown_knowledge_pools(app: web.Application) -> None:
             logger.exception("Knowledge pool shutdown failed: %s", key)
 
 
+async def remote_search(request: web.Request) -> web.Response:
+    """POST /api/knowledge/remote-search — raw bedrock_kb results (INTERNAL).
+
+    Exists for exactly one caller: the sandboxed MCP server's remote leg.
+    The sandbox seals ``aws_service_consent.json`` with a file-level
+    self-bind, which PINS THE INODE — a host-side withdrawal replaces the
+    file by atomic rename, so a sandboxed process keeps reading the old,
+    still-granted bytes. Consent must therefore be evaluated in THIS
+    process, which reads the live keystone store; the MCP process receives
+    results, never a consent verdict of its own. Loopback +
+    X-Internal-Secret via the mixed-internal registry, and STRICT-internal
+    on top: the mixed registry also admits cookie-authenticated browsers,
+    but these results are RAW connector output (un-redacted content), so a
+    browser session is refused — the dashboard's own surfaces get remote
+    results through search-for-context, which redacts.
+    """
+    if request.get("internal_auth") is not True:
+        # Best-effort SEL denial, mirroring every peer internal-auth handler:
+        # an ordinary cookie session CAN reach this refusal through the
+        # mixed-path middleware, and an unaudited denial is invisible to
+        # `kirocrew security events`. Late-binding sel() is the package's
+        # standing circular-import exception.
+        try:
+            import kiro_crew.dashboard.handlers as _pkg
+
+            _pkg.sel().log_api_access(
+                caller=request.get("user", "dashboard"),
+                operation="knowledge_remote_search",
+                outcome="denied",
+                source="dashboard",
+                resources=request.path,
+                error="internal secret required",
+            )
+        except Exception:
+            pass
+        return web.json_response(
+            {"error": "internal callers only", "code": "internal_only"}, status=403
+        )
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    if not isinstance(body, dict):
+        # ``[]`` or a bare scalar is valid JSON but reaches ``.get`` otherwise.
+        return web.json_response(
+            {"error": "body must be a JSON object", "code": "invalid_json"}, status=400
+        )
+    query = str(body.get("query") or "").strip()
+    try:
+        limit = max(1, min(int(body.get("limit") or 5), 20))
+    except (TypeError, ValueError):
+        limit = 5
+    source_id = body.get("source_id")
+    if not query:
+        return web.json_response({"results": []})
+    store = _store(request)
+
+    def _run() -> list[dict]:
+        from kiro_crew.knowledge.connectors import bedrock_kb
+
+        # The BOUNDED variant: the connector's admission semaphore caps
+        # concurrent remote legs and its wall-clock budget cancels laggards —
+        # calling the raw search here bypassed both, so repeated MCP searches
+        # could queue unbounded threads that keep issuing paid calls after
+        # their caller timed out.
+        return bedrock_kb.search_remote_sources_bounded(
+            store, query, limit, source_id=str(source_id) if source_id else None
+        )
+
+    try:
+        results = await asyncio.to_thread(_run)
+    except Exception as e:
+        logger.info("remote-search leg failed open: %s", e.__class__.__name__)
+        results = []
+    return web.json_response({"results": results})
+
+
 def setup_knowledge_routes(app: web.Application) -> None:
     # The detached-task registries are created here, while the app is still
     # mutable: aiohttp freezes the application when its runner starts, and a
@@ -3074,6 +3550,40 @@ def setup_knowledge_routes(app: web.Application) -> None:
         # Local folder connector (always available)
         connectors["local_folder"] = LocalFolderConnector()
         connectors["obsidian_vault"] = LocalFolderConnector()
+
+        # Amazon Bedrock KB: live-retrieval source with no local items. The
+        # proxy keeps the optional subsystem OFF the gateway boot path
+        # (no-new-work-on-gateway-boot-path): constructing it does no work,
+        # and the bedrock_kb module (and, inside it, boto3) loads on the
+        # first validate/sync call. The connector reports the missing
+        # [bedrock] extra itself when boto3 is absent.
+        class _LazyBedrockKBConnector(BaseConnector):
+            def _real(self) -> "BaseConnector":
+                from kiro_crew.knowledge.connectors import bedrock_kb
+
+                return bedrock_kb.BedrockKBConnector()
+
+            def source_type(self) -> str:
+                return "bedrock_kb"
+
+            def validate_config(self, config: dict) -> tuple[bool, str]:
+                return self._real().validate_config(config)
+
+            def validate_registration(self, config: dict) -> tuple[bool, str, str]:
+                from kiro_crew.knowledge.connectors import bedrock_kb
+
+                return bedrock_kb.BedrockKBConnector().validate_registration(config)
+
+            async def detect_changes(self, source: dict) -> bool:
+                # Mirrors the real connector: a live-retrieval source never
+                # syncs, and answering False here avoids loading the module
+                # from SyncScheduler.sync_all sweeps.
+                return False
+
+            async def fetch(self, source: dict) -> tuple[str, dict]:
+                return await self._real().fetch(source)
+
+        connectors["bedrock_kb"] = _LazyBedrockKBConnector()
         # Edition-contributed connectors (CPP KnowledgeProvider seam). Built-ins
         # are set FIRST so an edition can both ADD a new source_type and, if it
         # ever needs to, override a built-in. The Default returns {} → standalone
@@ -3145,6 +3655,7 @@ def setup_knowledge_routes(app: web.Application) -> None:
     app.router.add_get("/api/knowledge/embedding/status", get_embedding_status)
     app.router.add_post("/api/knowledge/embedding/generate", batch_embed_items)
     app.router.add_get("/api/knowledge/search-for-context", search_for_context)
+    app.router.add_post("/api/knowledge/remote-search", remote_search)
 
     # Pool lifecycle: lazy start on first request, shutdown on app exit
     app.on_cleanup.append(_shutdown_knowledge_pools)

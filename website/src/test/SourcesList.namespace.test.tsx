@@ -37,7 +37,7 @@ describe('SourcesList — namespace in handleAdd', () => {
     const addBtn = await screen.findByText('+ Add Source')
     fireEvent.click(addBtn)
     fireEvent.click(screen.getByText('Local Folder'))
-    const input = screen.getByPlaceholderText(/Folder path/)
+    const input = screen.getByLabelText('Folder path')
     fireEvent.change(input, { target: { value: '/tmp/docs' } })
     fireEvent.click(screen.getByText('Add Folder'))
 
@@ -67,7 +67,7 @@ describe('SourcesList — namespace in handleAdd', () => {
     const addBtn = await screen.findByText('+ Add Source')
     fireEvent.click(addBtn)
     fireEvent.click(screen.getByText('Local Folder'))
-    const input = screen.getByPlaceholderText(/Folder path/)
+    const input = screen.getByLabelText('Folder path')
     fireEvent.change(input, { target: { value: '/tmp/docs' } })
     fireEvent.click(screen.getByText('Add Folder'))
 
