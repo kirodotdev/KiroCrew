@@ -14,10 +14,24 @@ from typing import Any
 
 import pytest
 from aiohttp.test_utils import make_mocked_request
+from dashboard_owner_helpers import NoConfiguredOwner
 
 from kiro_crew.apps.builtins.mochi import activity_log as al
 from kiro_crew.apps.builtins.mochi import hooks
 from kiro_crew.apps.builtins.mochi.backend import routes
+
+
+def _owner_request(*args, **kwargs):
+    """A mocked request that reads as the dashboard owner.
+
+    The mutating routes are owner-gated, and the gate reads
+    ``request.app["state"]`` plus the claims the token middleware sets.
+    """
+    req = make_mocked_request(*args, **kwargs)
+    req.app["state"] = NoConfiguredOwner()
+    req["user"] = "local-app"
+    req["app"] = ""
+    return req
 
 
 class _Ctx:
@@ -60,7 +74,7 @@ def _store(tmp_path, name: str) -> dict:
 def _json_request(method: str, path: str, body: dict):
     """A mocked request whose ``json()`` returns ``body`` — the settings handler
     reads its payload that way."""
-    req = make_mocked_request(method, path, headers={"Content-Type": "application/json"})
+    req = _owner_request(method, path, headers={"Content-Type": "application/json"})
 
     async def _json():
         return body
@@ -198,7 +212,7 @@ class TestDashboardRoutes:
     @pytest.mark.asyncio
     async def test_plan_reports_empty_when_no_queue_file(self, tmp_path):
         async with _live_runtime(tmp_path):
-            resp = await routes._handle_plan_get(make_mocked_request("GET", "/api/apps/mochi/plan"))
+            resp = await routes._handle_plan_get(_owner_request("GET", "/api/apps/mochi/plan"))
             assert resp.status == 200
             assert json.loads(resp.body) == {"tasks": [], "note": "no plan yet"}
 
@@ -220,7 +234,7 @@ class TestDashboardRoutes:
                     "planned_until": "2026-07-30T12:00:00Z",
                 },
             )
-            resp = await routes._handle_plan_get(make_mocked_request("GET", "/api/apps/mochi/plan"))
+            resp = await routes._handle_plan_get(_owner_request("GET", "/api/apps/mochi/plan"))
             body = json.loads(resp.body)
             # narrative/mood are what the page's header and Plan card render — a
             # tasks-only payload would blank both.
@@ -254,7 +268,7 @@ class TestDashboardRoutes:
                 },
             )
             resp = await routes._handle_plan_get(
-                make_mocked_request("GET", "/api/apps/mochi/plan")
+                _owner_request("GET", "/api/apps/mochi/plan")
             )
             raw = resp.body.decode()
             # Redacted both at the top level (narrative) AND nested (task.summary).
@@ -270,7 +284,7 @@ class TestDashboardRoutes:
         async with _live_runtime(tmp_path):
             al.log_activity(tmp_path, "notification", "hello")
             resp = await routes._handle_activity_get(
-                make_mocked_request("GET", "/api/apps/mochi/activity")
+                _owner_request("GET", "/api/apps/mochi/activity")
             )
             assert resp.status == 200
             assert [e["content"] for e in json.loads(resp.body)["entries"]] == ["hello"]
@@ -282,7 +296,7 @@ class TestDashboardRoutes:
         monkeypatch.setattr(routes, "is_app_enabled", lambda name: False)
         for handler in (routes._handle_plan_get, routes._handle_activity_get):
             gated = routes._require_enabled(handler)
-            resp = await gated(make_mocked_request("GET", "/api/apps/mochi/x"))
+            resp = await gated(_owner_request("GET", "/api/apps/mochi/x"))
             assert resp.status == 403
 
     @pytest.mark.asyncio

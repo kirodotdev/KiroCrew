@@ -89,6 +89,7 @@ from kiro_crew.apps.builtins.mochi.watchlist_file import watchlist_mutation
 from kiro_crew.apps.builtins.mochi.watchlist_service import _ARCHIVE_FILE, _WATCHLIST_FILE
 from kiro_crew.apps.manager import is_app_enabled
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.hooks import safe_read_file
 from kiro_crew.mcp_discovery import list_servers, probe_server
 from kiro_crew.mcp_utils import mcp_server_alias
@@ -147,6 +148,19 @@ def _require_enabled(handler: Handler) -> Handler:
     return _wrapped
 
 
+async def _owner_denied(request: web.Request, operation: str) -> web.Response | None:
+    """Owner gate for the mutating routes.
+
+    A dashboard subject (an empty or missing ``app`` claim) must be the owner
+    and otherwise gets the shared 403 ``owner_only``. An app token reaches this
+    handler only inside the scope ``token_auth`` already granted it (mochi's own
+    token, or a foreign app with a manifest grant), so it passes unchanged.
+    """
+    if not request.get("app"):
+        return await require_owner_dashboard_request(request, operation)
+    return None
+
+
 # ── Watchlist ───────────────────────────────────────────────────────────────
 
 
@@ -160,6 +174,9 @@ async def _handle_watchlist_get(request: web.Request) -> web.Response:
 
 
 async def _handle_watchlist_update(request: web.Request) -> web.Response:
+    denied = await _owner_denied(request, "mochi.watchlist_update")
+    if denied is not None:
+        return denied
     try:
         params = await request.json()
     except Exception:  # noqa: BLE001 — malformed body is a client error
@@ -208,6 +225,9 @@ async def _handle_watchlist_clear_completed(request: web.Request) -> web.Respons
     ``watchlist:clear-completed`` IPC handler: archive written FIRST, then the
     active file, so a crash duplicates (dedup on next merge) rather than
     loses. Serialized via enqueue_write like every watchlist mutation."""
+    denied = await _owner_denied(request, "mochi.watchlist_clear_completed")
+    if denied is not None:
+        return denied
     rt = _rt()
     cleared_box = {"cleared": 0}
 
@@ -251,6 +271,9 @@ async def _handle_presence(request: web.Request) -> web.Response:
     ``visible`` means the pet is on screen (gates companion time). A hidden
     pet beats with visible=false; a closed shell stops beating entirely.
     """
+    denied = await _owner_denied(request, "mochi.presence")
+    if denied is not None:
+        return denied
     visible = True
     try:
         body = await request.json()
@@ -319,6 +342,9 @@ async def _handle_pinned_get(request: web.Request) -> web.Response:
 
 
 async def _handle_pinned_unpin(request: web.Request) -> web.Response:
+    denied = await _owner_denied(request, "mochi.pinned_unpin")
+    if denied is not None:
+        return denied
     try:
         body = await request.json()
         path = body["path"]
@@ -339,6 +365,9 @@ async def _handle_pinned_unpin(request: web.Request) -> web.Response:
 
 
 async def _handle_pinned_mark_seen(request: web.Request) -> web.Response:
+    denied = await _owner_denied(request, "mochi.pinned_mark_seen")
+    if denied is not None:
+        return denied
     try:
         body = await request.json()
         path = body["path"]
@@ -401,6 +430,9 @@ async def _handle_quiet(request: web.Request) -> web.Response:
     client cannot silence the pet for a year — the menu offers one hour, and
     anything above a day is more plausibly a bug than an intent.
     """
+    denied = await _owner_denied(request, "mochi.quiet")
+    if denied is not None:
+        return denied
     try:
         body = await request.json()
     except Exception:  # noqa: BLE001 — malformed body is a client error
@@ -455,6 +487,9 @@ async def _handle_pet_event(request: web.Request) -> web.Response:
     Unknown or non-chat events are refused rather than ignored, so a typo in a
     caller surfaces as a 400 instead of a pet that quietly never animates again.
     """
+    denied = await _owner_denied(request, "mochi.pet_event")
+    if denied is not None:
+        return denied
     try:
         body = await request.json()
     except Exception:  # noqa: BLE001 — malformed body is a client error
@@ -549,6 +584,9 @@ _LIVE_KEYS = (
 @_require_enabled
 async def _handle_settings_update(request: web.Request) -> web.Response:
 
+    denied = await _owner_denied(request, "mochi.settings_update")
+    if denied is not None:
+        return denied
     try:
         body = await request.json()
     except Exception:
@@ -771,6 +809,9 @@ async def _handle_mcp_tools_probe(request: web.Request) -> web.Response:
     ``probe_server`` writes through to the same cache ``GET /api/mcp`` reads, so
     a discover here also freshens the core view.
     """
+    denied = await _owner_denied(request, "mochi.mcp_tools_probe")
+    if denied is not None:
+        return denied
     name = (request.match_info.get("name") or "").strip()
     if not name:
         return web.json_response(
@@ -896,6 +937,9 @@ async def _handle_pack_file(request: web.Request) -> web.Response:
 @_require_enabled
 async def _handle_pack_save(request: web.Request) -> web.Response:
 
+    denied = await _owner_denied(request, "mochi.pack_save")
+    if denied is not None:
+        return denied
     try:
         body = await request.json()
     except Exception:
@@ -917,6 +961,9 @@ async def _handle_pack_save(request: web.Request) -> web.Response:
 @_require_enabled
 async def _handle_pack_delete(request: web.Request) -> web.Response:
 
+    denied = await _owner_denied(request, "mochi.pack_delete")
+    if denied is not None:
+        return denied
     pack_id = request.match_info["pack_id"]
     try:
         removed = await asyncio.to_thread(delete_pack, _rt().data_dir, pack_id)
@@ -953,6 +1000,9 @@ async def _handle_petdex_import(request: web.Request) -> web.Response:
     only ever sends the slug.
     """
 
+    denied = await _owner_denied(request, "mochi.petdex_import")
+    if denied is not None:
+        return denied
     try:
         body = await request.json()
     except Exception:
@@ -1042,12 +1092,18 @@ def _now() -> int:
     return int(time.time() * 1000)
 
 
-async def _handle_walk_done(_request: web.Request) -> web.Response:
+async def _handle_walk_done(request: web.Request) -> web.Response:
+    denied = await _owner_denied(request, "mochi.walk_done")
+    if denied is not None:
+        return denied
     _rt().state_manager.finish_walking(_now())
     return web.json_response({"ok": True})
 
 
 async def _handle_walk_distance(request: web.Request) -> web.Response:
+    denied = await _owner_denied(request, "mochi.walk_distance")
+    if denied is not None:
+        return denied
     try:
         body = await request.json()
     except ValueError:
@@ -1079,6 +1135,9 @@ async def _handle_stat(request: web.Request) -> web.Response:
     only the counters the backend happened to own (walks, peeks, time) and
     read as broken.
     """
+    denied = await _owner_denied(request, "mochi.stat")
+    if denied is not None:
+        return denied
     try:
         body = await request.json()
     except ValueError:
@@ -1106,6 +1165,9 @@ async def _handle_stat(request: web.Request) -> web.Response:
 
 
 async def _handle_peeking(request: web.Request) -> web.Response:
+    denied = await _owner_denied(request, "mochi.peeking")
+    if denied is not None:
+        return denied
     try:
         body = await request.json()
     except ValueError:
@@ -1135,6 +1197,9 @@ async def _handle_displays(request: web.Request) -> web.Response:
     window posts its display list on every displays-info event, so the answer is
     at most one display change old.
     """
+    denied = await _owner_denied(request, "mochi.displays")
+    if denied is not None:
+        return denied
     try:
         body = await request.json()
     except ValueError:
@@ -1217,6 +1282,9 @@ async def _handle_pack_export(request: web.Request) -> web.Response:
 
 async def _handle_pack_import(request: web.Request) -> web.Response:
 
+    denied = await _owner_denied(request, "mochi.pack_import")
+    if denied is not None:
+        return denied
     # Read with a ceiling rather than `await request.read()`: an unbounded read of
     # an untrusted upload is the one failure the store's own guards cannot catch,
     # because it happens before they run.
@@ -1269,7 +1337,7 @@ def _reset_files() -> tuple[str, ...]:
     )
 
 
-async def _handle_reset(_request: web.Request) -> web.Response:
+async def _handle_reset(request: web.Request) -> web.Response:
     """Return Mochi to a fresh state: defaults, no memory, the cat again.
 
     The chat SLOT is not cleared here — that is core's
@@ -1277,6 +1345,9 @@ async def _handle_reset(_request: web.Request) -> web.Response:
     it from the app would mean reaching into another subsystem's storage.
     """
 
+    denied = await _owner_denied(request, "mochi.reset")
+    if denied is not None:
+        return denied
     rt = _rt()
     defaults = _base_defaults()
 
@@ -1387,6 +1458,9 @@ async def _handle_pack_save_content(request: web.Request) -> web.Response:
     flows had nowhere to save to.
     """
 
+    denied = await _owner_denied(request, "mochi.pack_save_content")
+    if denied is not None:
+        return denied
     try:
         body = await request.json()
     except ValueError:
