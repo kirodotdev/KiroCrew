@@ -21,7 +21,7 @@ from urllib.parse import quote
 
 from aiohttp import web
 
-from kiro_crew import platform_compat, port_resolution, shutdown_event
+from kiro_crew import platform_compat, port_resolution, shutdown_event, standing_approval
 from kiro_crew.apps.backend import start_deferred_app_backends, start_enabled_app_backends
 from kiro_crew.apps.hook_reconcile import init_hook_reconciler, stop_hook_reconciler
 from kiro_crew.apps.hooks_integration import (
@@ -2982,19 +2982,30 @@ def _take_prior_dropped_grant() -> Any:
 def _apply_startup_yolo(state: DashboardState, cfg: Any) -> None:
     """Enable the safety override at startup if the operator declared it.
 
-    ``agent.dangerouslySkipPermissions`` is a STANDING operator instruction, so the grant it creates
-    does not expire — a lapse after 24h would silently drop the user back to
-    prompt-for-everything, which breaks flows driven from Slack/Discord and from
-    cron where nobody is watching the dashboard to re-enable it.
+    The declaration is read from the operator-owned keystone
+    (``standing-approval/grant.json``), never from ``config.json``. A standing skip of
+    every tool approval is the widest authorization this product grants, and
+    ``config.json`` is a document a sandboxed process can reach: sealed read-only, but
+    readable, which leaves the inode behind the sealed name a ``link(2)`` source. The
+    keystone is bind-masked instead, so no sandboxed process can open it at all, and it
+    is a directory, which has no ``link(2)`` source even in principle.
 
-    State is in-memory, so the grant is re-established and re-audited on every
-    startup rather than persisted. An enterprise policy can forbid a
-    never-expiring grant (the ``yolo_duration`` governance scope), in which case
-    it falls back to the ad-hoc duration. Picking another approval mode still
-    clears it immediately.
+    The grant it creates does not expire -- a lapse after 24h would silently drop the
+    user back to prompt-for-everything, which breaks flows driven from Slack/Discord and
+    from cron where nobody is watching the dashboard to re-enable it.
 
-    Ad-hoc grants are untouched: Slack, the dashboard picker and the API all
-    expire on the single ``agent.yolo_duration`` value (default 6h).
+    State is in-memory, so the grant is re-established and re-audited on every startup
+    rather than persisted. An enterprise policy can forbid a never-expiring grant (the
+    ``yolo_duration`` governance scope), in which case it falls back to the ad-hoc
+    duration. Picking another approval mode still clears it immediately.
+
+    ``agent.dangerously_skip_permissions`` in ``config.json`` is RETIRED and grants
+    nothing. When it is still set and the keystone is absent, the operator is told once,
+    at WARNING, and no grant is made: honouring the old location silently would keep
+    exactly the agent-writable declaration this keystone exists to retire.
+
+    Ad-hoc grants are untouched: Slack, the dashboard picker and the API all expire on
+    the single ``agent.yolo_duration`` value (default 6h).
     """
     # Seed the ad-hoc TTL even when yolo is off, so a later dashboard/Slack
     # activation uses the configured duration rather than the built-in default.
@@ -3003,18 +3014,37 @@ def _apply_startup_yolo(state: DashboardState, cfg: Any) -> None:
     except Exception:
         logger.warning("Could not apply the configured YOLO duration", exc_info=True)
 
-    if not cfg.agent.dangerously_skip_permissions:
+    # Resolve the sandbox mode from the config in force NOW, immediately before
+    # activation -- never the boot copy. The keystone grant is honoured only where
+    # Kiro Crew's own sandbox masks the leaf away from the agent; if the operator
+    # flipped sandbox OFF (or down to an unmasked tier) between boot and this
+    # activation, the cached ``cfg.agent.sandbox`` would still read "masked" and
+    # activate a grant the live host does not protect. ``live.current`` returns the
+    # watcher snapshot (else a disk reload, else the boot copy) so a mid-flight unmask
+    # leaves the grant suspended rather than activated under a stale mode.
+    from kiro_crew.config import live as _live
+
+    sandbox_mode = _live.current(cfg, log_prefix="dashboard-yolo").agent.sandbox
+    # Draw this gateway's first trusted-init boundary (idempotent) BEFORE reading the
+    # grant: the boundary is the trust root that tells a fresh post-init operator grant
+    # apart from a pre-upgrade plant, and it is drawn here only where the live mode
+    # masks the leaf, so an in-sandbox agent cannot forge it. Any grant present when
+    # the boundary is first drawn is quarantined inside this call.
+    standing_approval.establish_trusted_init(sandbox_mode)
+    if not standing_approval.is_declared(sandbox_mode):
+        if cfg.agent.dangerously_skip_permissions:
+            logger.warning("%s", standing_approval.migration_notice(sandbox_mode))
         return
     try:
         result = grant_declared_yolo()
     except Exception:
-        logger.error("Failed to activate safety override from config", exc_info=True)
+        logger.error("Failed to activate safety override from the keystone", exc_info=True)
         return
     if not result.active:
         logger.error("Safety override activation refused (SEL audit failure?)")
         return
     logger.info(
-        "Safety override enabled at startup (dangerouslySkipPermissions=true, %s)",
+        "Safety override enabled at startup (standing-approval keystone, %s)",
         "no expiry" if result.ttl == 0 else f"expires in {result.ttl}s per policy",
     )
 
@@ -5311,6 +5341,13 @@ def _register_config_watch(
     # The workflow-run ceiling and the channel caps are not registered here:
     # WorkflowService and ChannelManager bind their own setters in their
     # constructors (``live.bind``), the rule for an applier a long-lived object owns.
+    #
+    # The standing-override revalidation on a live ``agent.sandbox`` change is NOT
+    # registered here either: it must fire in EVERY gateway mode, including a
+    # headless ``--slack-only`` gateway that never builds this dashboard app, so it
+    # lives on the always-constructed GatewayOrchestrator
+    # (``_register_config_appliers``), whose watcher subscription is the process's
+    # single trusted revalidation point. See ``safety_override.revalidate_standing_override``.
     subs = [
         live.subscribe("agent.provider", callback=_apply_provider, name="agent.provider"),
         live.subscribe(

@@ -158,6 +158,13 @@ class SafetyOverride:
         self._activated_at: float = 0.0
         self._expires_at: float = 0.0
         self._activation_count: int = 0
+        # Bumps on every OPERATOR-sourced ``deactivate`` (dashboard/slack/…), even a
+        # no-op one, so the standing-override revalidation can tell that the operator
+        # explicitly revoked DURING its suspend window -- a revoke of an
+        # already-suspended grant clears nothing and moves no other counter, yet it must
+        # not be silently re-armed by the finish step. Distinguished from the internal
+        # suspend/finish deactivations by source (those use ``_DECLARED_SOURCE``).
+        self._explicit_revocation_gen: int = 0
         self._last_renewed_at: float = 0.0
         self._last_renewed_by: str = ""
         self._on_expired: Optional[Callable[[str], None]] = None
@@ -228,6 +235,9 @@ class SafetyOverride:
         if name == "_adhoc_until_shutdown":
             object.__setattr__(self, "_adhoc_until_shutdown", False)
             return False
+        if name == "_explicit_revocation_gen":
+            object.__setattr__(self, "_explicit_revocation_gen", 0)
+            return 0
         if name in (
             "_duration_resolver",
             "_on_expired",
@@ -704,8 +714,14 @@ class SafetyOverride:
         self._sync_breadcrumb()
         return RenewResult(renewed=True, ttl=ttl, source=source)
 
-    def deactivate(self, source: str) -> None:
+    def deactivate(self, source: str) -> bool:
         """Deactivate the override immediately.
+
+        Returns ``True`` when a grant was actually torn down and ``False`` when there
+        was nothing to tear down (no grant ever, or already revoked). The explicit
+        revocation-generation bump for an operator source happens BEFORE the no-op
+        return either way, so a revoke recorded during a declared grant's suspension
+        window is seen by the suspend/finish step regardless of the return value.
 
         Emits a ``safety_override:deactivate`` SEL event whenever a grant
         exists in ANY form — live, or already lapsed via lazy expiry. Lazy
@@ -725,8 +741,16 @@ class SafetyOverride:
         """
         now_mono = time.monotonic()
         with self._lock:
+            # An OPERATOR revocation (any source other than the internal declared source
+            # used by the suspend/finish revalidation) bumps the explicit-revocation
+            # generation BEFORE the early return, so a revoke of an already-suspended
+            # grant -- which clears nothing and would otherwise return silently -- still
+            # records that the operator revoked, and the standing-override finish step
+            # will not re-arm it.
+            if source != self._DECLARED_SOURCE:
+                self._explicit_revocation_gen += 1
             if not self._active and self._expires_at <= 0.0:
-                return
+                return False
             # _active alone can overstate liveness: a lapsed TTL is only
             # reconciled when is_active() polls, so derive liveness the same
             # way renew() does — permanence or an unexpired deadline.
@@ -763,6 +787,7 @@ class SafetyOverride:
                 f"prior_source:{prior_source}"
             ),
         )
+        return True
 
     # ── Task-scoped grants ───────────────────────────────────────────────────
 
@@ -1029,6 +1054,20 @@ class SafetyOverride:
         with self._lock:
             live = (1 if self._active else 0) | (2 if self._scoped else 0)
             return (self._activation_count << 2) | live
+
+    def explicit_revocation_gen(self) -> int:
+        """A token that increments on each OPERATOR-sourced ``deactivate``.
+
+        Distinct from ``grant_epoch``: it bumps even on a NO-OP revoke (deactivating an
+        already-inactive grant), because the standing-override revalidation suspends the
+        declared grant before an off-loop read, and an operator who revokes in that window
+        is clearing an already-down grant -- a change ``grant_epoch`` cannot see. The
+        finish step captures this at suspend time and re-activates only when it is
+        unchanged, so an explicit revocation is never silently re-armed. Read under
+        ``_lock``.
+        """
+        with self._lock:
+            return self._explicit_revocation_gen
 
     def has_any_grant(self) -> bool:
         """Whether ANY grant exists -- session-wide or scoped -- ignoring policy.
@@ -2222,6 +2261,216 @@ def grant_declared_yolo() -> ActivationResult:
         "the declared grant falls back to the ad-hoc duration"
     )
     return so.activate(SafetyOverride._DECLARED_SOURCE)
+
+
+#: A suspended standing-override revalidation in flight. ``grant_epoch`` is the epoch
+#: observed BEFORE the grant was taken down; ``restore_trust`` puts the inherited
+#: slot/channel trust back; ``was_declared_active`` records that the GLOBAL declared
+#: grant flag was active and must be re-activated on a permitting recheck;
+#: ``revocation_gen`` is the explicit-revocation generation at suspend time, so the finish
+#: step refuses to re-arm a grant the operator revoked DURING the suspend window (a
+#: revoke that clears an already-suspended grant moves no other counter). ``None`` for the
+#: whole token means there was nothing to suspend.
+StandingOverrideSuspension = Optional[tuple[int, Optional[Callable[[], None]], bool, int]]
+
+
+def suspend_standing_override_trust() -> StandingOverrideSuspension:
+    """Take the declared grant DOWN -- global flag AND inherited trust -- SYNCHRONOUSLY.
+
+    The first half of the standing-override revalidation, split so the gateway live-config
+    applier can call it on the reload-dispatch thread BEFORE it yields to the worker
+    thread that reads the mask. The second half is
+    :func:`_finish_standing_override_revalidation`. There is deliberately no whole-call
+    wrapper: a single composed call would run on one thread, and the whole point of the
+    split is that the suspend runs before the applier's ``to_thread`` yield and the mask
+    read runs after it. ``agent.sandbox`` is a LIVE field (a change applies to sessions
+    started after it, with no restart), and the declared grant is honoured only where the
+    mask covers the keystone, so a live flip to an unmasked mode removes the precondition
+    the grant rests on -- and a now-UNMASKED session would otherwise inherit permanent
+    auto-approval. Two things come down here, not after the read:
+
+    * the inherited slot/channel trust, through ``on_policy_suspend`` -- this is what
+      ``subagent_manager.admission.parent_trusted`` reads directly (never
+      ``is_active()``), so leaving it live would auto-approve a spawn admitted while the
+      worker thread reads the mask, under a mode about to lose the mask;
+    * the GLOBAL declared grant flag itself, through :meth:`SafetyOverride.deactivate` --
+      so a reader that consults ``is_active()``/``is_declared`` during the off-loop read
+      does not see a live standing grant under a mode that may be losing its mask. The
+      flag is re-activated by the finish step only after a permitting recheck AND only if
+      the operator did not revoke it in the window.
+
+    Returns the suspension token the finish step needs, or ``None`` when there is nothing
+    mask-derived to suspend (no declared grant, or an ad-hoc grant the operator set
+    explicitly -- an ad-hoc grant is a timed decision, not mask-derived). A raised
+    ``on_policy_suspend`` is treated as "suspended" (fail closed): the token carries no
+    restore callable, so the finish step cannot put inherited trust back and will revoke
+    rather than restore. Import of ``standing_approval`` is deferred in the finish step to
+    keep this module free of an import cycle.
+    """
+    so = safety_override()
+    if not so.is_declared:
+        return None
+    # Epoch and explicit-revocation generation BEFORE we take anything down, so the finish
+    # step restores only into the same grant and refuses to re-arm one the operator
+    # revoked during the window. The grant is declared+active here (``is_declared`` above).
+    epoch = so.grant_epoch()
+    revocation_gen = so.explicit_revocation_gen()
+    suspend = so.on_policy_suspend
+    restore: Optional[Callable[[], None]] = None
+    if suspend is not None:
+        try:
+            restore = suspend()
+        except Exception:
+            logger.warning(
+                "on_policy_suspend raised while revalidating the standing override; "
+                "treating inherited trust as SUSPENDED and revoking rather than leaving "
+                "it live",
+                exc_info=True,
+            )
+            restore = None
+    # Take the GLOBAL flag down now, before the yield. This deactivate uses the internal
+    # declared source, so it does NOT bump the explicit-revocation generation -- only an
+    # operator-sourced revoke does. A permitting recheck re-activates the flag; a denying
+    # one, or an operator revoke in the window, leaves it down.
+    so.deactivate(source=SafetyOverride._DECLARED_SOURCE)
+    return (epoch, restore, True, revocation_gen)
+
+
+def _finish_standing_override_revalidation(
+    new_mode: str, suspension: StandingOverrideSuspension
+) -> bool:
+    """Second half: read the mask, then RESTORE on permit or finish REVOKE on deny.
+
+    Runs after :func:`suspend_standing_override_trust` has already taken BOTH the global
+    declared grant flag AND the inherited trust down. Reads
+    :func:`standing_approval.is_declared` against *new_mode*:
+
+    * still masked -> the declaration remains an authorization; RE-ACTIVATE the global
+      declared grant and put the inherited trust back. Both are restored only when the
+      operator did not establish a different grant during the off-loop read (``is_active``
+      is False, i.e. nothing was re-activated in the window), so a grant the operator set
+      meanwhile is never clobbered and a revoked grant is never resurrected.
+    * unmasked under the new mode (or the read raised) -> finish the REVOKE: the grant flag
+      is already down from the suspend, so run the durable teardown hook to make the drop
+      permanent. The suspension already removed the inherited ``"auto"`` AND the global
+      flag, so even a teardown that raises leaves NO authority live -- the applier re-raises
+      and the trusted ConfigWatch retries, and the retry finds nothing left to suspend.
+
+    Returns ``True`` iff a declared override was revoked by this call.
+    """
+    so = safety_override()
+    if suspension is None:
+        # Nothing was declared when we suspended: nothing mask-derived to revoke.
+        return False
+    suspended_epoch, restore, was_declared_active, suspended_revocation_gen = suspension
+    from kiro_crew import standing_approval
+
+    try:
+        still_masked = standing_approval.is_declared(new_mode)
+    except Exception:
+        # A read failure is not evidence the mask holds. Fail CLOSED: fall through to
+        # revocation, which is the safe answer while the grant is suspended.
+        logger.warning(
+            "standing-override mask re-check raised for agent.sandbox=%r; failing "
+            "closed to revocation",
+            new_mode,
+            exc_info=True,
+        )
+        still_masked = False
+
+    if still_masked:
+        # The new mode still masks the keystone: the declaration is still an
+        # authorization. Restore the grant -- but through the POLICY gate, and only after
+        # a successful re-activation, and only if the suspension token is still current.
+        #
+        #  * current-token validation: ``suspend`` deactivated the grant, so a live grant
+        #    now means the operator established a NEW one during the read; leave it alone.
+        #    Nothing to restore for a token that does not own the live state.
+        #  * explicit-revocation generation: ``suspend`` took the grant DOWN, so an
+        #    operator who selects Normal in the window revokes an already-inactive grant --
+        #    a no-op that moves no ``is_active`` and no epoch, which the ``not is_active``
+        #    guard alone cannot see. The explicit-revocation generation bumps on that
+        #    operator revoke, so a changed generation means "the operator revoked meanwhile"
+        #    and the grant must NOT be re-armed.
+        #  * policy gate: a bare ``activate_declared()`` would restore a NEVER-EXPIRING
+        #    grant without consulting the enterprise ceiling, so a policy that denied YOLO
+        #    between suspend and here would have its denial IGNORED. Route through
+        #    ``grant_declared_yolo``, which permits the permanent grant only where
+        #    ``declared_grant_permitted`` holds and otherwise falls back to the ad-hoc
+        #    duration -- and if the ceiling forbids YOLO outright, re-activation yields no
+        #    live grant at all.
+        #  * restore-after-activation: inherited slot/channel trust is put back ONLY once
+        #    re-activation produced a live grant. If policy denied it (no live grant), the
+        #    inherited ``"auto"`` stays suspended and the revoke teardown below runs, so a
+        #    denial can never be undone by a stale restore.
+        operator_revoked = so.explicit_revocation_gen() != suspended_revocation_gen
+        if was_declared_active and not so.is_active() and not operator_revoked:
+            grant_declared_yolo()
+            if so.is_active():
+                if restore is not None:
+                    try:
+                        restore()
+                    except Exception:
+                        logger.warning(
+                            "restoring suspended standing-override trust after a "
+                            "permitting re-check raised; the grant is re-activated but "
+                            "its inherited slot trust may need a session restart to "
+                            "re-establish",
+                            exc_info=True,
+                        )
+                return False
+            # Policy now forbids the grant: it was NOT re-activated. Fall through to the
+            # revocation teardown so the suspended inherited trust is torn down for good
+            # rather than left dangling, and report the revocation.
+            logger.warning(
+                "standing auto-approve grant was NOT restored after the agent.sandbox "
+                "re-check: enterprise policy now forbids YOLO. Tearing down the "
+                "suspended inherited trust."
+            )
+        elif so.is_active():
+            # A DIFFERENT grant is live now -- the operator established a new one during
+            # the read. Leave it, and its own trust, untouched.
+            return False
+        else:
+            # The grant is down and nothing new is live. Either the operator revoked it in
+            # the window (explicit-revocation generation moved) or there was nothing ours
+            # to restore. Fall through to the teardown so the suspended inherited trust is
+            # cleared for good rather than left dangling.
+            if operator_revoked:
+                logger.warning(
+                    "standing auto-approve grant was explicitly revoked by the operator "
+                    "during the agent.sandbox re-check; not re-arming it. Tearing down "
+                    "the suspended inherited trust."
+                )
+
+    if not still_masked:
+        logger.warning(
+            "agent.sandbox changed to %r, which no longer masks the standing-approval "
+            "keystone away from agent subprocesses; REVOKING the operator's standing "
+            "auto-approve grant. Approvals are now REQUIRED for sessions started under "
+            "this mode. Re-establish a masked mode (and restart) to restore it, or "
+            "enable auto-approve ad hoc.",
+            new_mode,
+        )
+    # The global grant flag AND the inherited slot/channel trust are ALREADY down from the
+    # suspend, so the window the old grant-first ordering opened -- ``is_active()``
+    # reporting no grant while the slots still carry ``"auto"``, or the flag reporting a
+    # live grant across the read -- cannot exist here. ``on_policy_revoked`` is the
+    # durable, thread-safe, idempotent teardown the gateway installs
+    # (``_clear_override_derived_trust`` -> slot policy reset + ``clear_trusted_sessions``):
+    # run it to make the drop permanent. The deactivate in the ``finally`` is a
+    # belt-and-suspenders repeat of the suspend's drop -- idempotent, and it guarantees
+    # that even if some path re-activated the flag between suspend and here, a teardown
+    # that RAISES still cannot leave a live global grant: the drop runs regardless, then
+    # the failure re-raises so the trusted ConfigWatch records the subscriber stale and
+    # retries it (the retry finds the grant gone and nothing left to suspend).
+    sync_cb = so.on_policy_revoked
+    try:
+        if sync_cb is not None:
+            sync_cb(POLICY_REVOKED_SOURCE)
+    finally:
+        so.deactivate(source=SafetyOverride._DECLARED_SOURCE)
+    return True
 
 
 # ── User-facing grant-lifetime text (channel-neutral) ──

@@ -1579,23 +1579,38 @@ def is_owner(user_id: str) -> bool:
     return user_id.replace("W", "U", 1) == _owner_id or user_id.replace("U", "W", 1) == _owner_id
 
 
-def disable_yolo() -> None:
+def disable_yolo() -> bool:
     """Disable YOLO mode (global auto-approve).
 
-    Gated on ``has_grant()``, NOT ``is_active()``. The latter is policy-filtered and
-    reports False while the governance verdict is momentarily unknown, so gating an
-    explicit off on it skipped the teardown and let the grant resume once the refresh
-    settled -- the operator's revocation silently undone.
+    Always routes through ``deactivate("slack")`` -- it does NOT pre-gate on
+    ``has_grant()`` / ``is_active()``. Both of those read ``_active``, which is False
+    while a declared grant is SUSPENDED for an ``agent.sandbox`` re-check. Gating the
+    off on either one skips ``deactivate`` entirely during that window, so the
+    explicit-revocation generation (bumped inside ``deactivate`` before its own no-op
+    return) never moves -- and the suspend/finish step then re-arms the grant the
+    operator just revoked. ``deactivate`` itself stays silent when there was genuinely
+    nothing to tear down (no grant ever, already revoked), so an unconditional call is
+    correct and idempotent; the generation bump it records is what makes a revocation
+    during suspension stick.
+
+    Returns ``True`` when it actually tore live trust down, ``False`` when there was
+    nothing live to clear (the generation bump is recorded either way). The caller uses
+    this to tell "revoked" from "already off" without pre-gating on ``has_grant()``.
     """
-    if not safety_override().has_grant():
-        return
-    safety_override().deactivate("slack")
+    tore_down = safety_override().deactivate("slack")
+    if not tore_down:
+        # Nothing was actually torn down (no grant ever, or already revoked). The
+        # deactivate above still recorded the explicit-revocation generation bump that
+        # a revoke-during-suspension needs, but there is no live trust to clear and no
+        # off to announce -- leave inherited per-session trust untouched.
+        return False
     # Through the shared revoke, which undoes BOTH halves of each grant. Dropping
     # only the in-memory mapping leaves every granted session's approval_policy at
     # "auto", and a subagent reads that policy rather than the mapping, so a later
     # spawn would inherit a trust this call just revoked.
     clear_trusted_sessions()
     logger.info("YOLO mode OFF")
+    return True
 
 
 def enable_yolo_with_ttl(ttl_secs: int) -> None:
@@ -1746,17 +1761,17 @@ async def _handle_slash_command(
         parts = cmd_text.split()
         yolo_active = is_yolo_mode()
         if len(parts) >= 2 and parts[1].lower() == "off":
-            # ``has_grant()``, NOT ``yolo_active``. The two ask different questions
-            # and only one of them belongs here: ``is_yolo_mode`` is policy-filtered
-            # ("may a tool be auto-approved"), while an explicit off asks "is there
-            # something to tear down". While the governance verdict is momentarily
-            # unknown the filtered answer is False, so this branch reported "already
-            # off" and never called ``disable_yolo()`` -- and the retained grant then
-            # resumed once the refresh settled, silently undoing the operator's
-            # revocation. ``disable_yolo`` was already corrected to read
-            # ``has_grant``; this is its CALLER, which was still gating it out.
-            if safety_override().has_grant():
-                disable_yolo()
+            # Call ``disable_yolo()`` unconditionally. An explicit off asks "is there
+            # something to tear down", and that must be answered even while the
+            # governance verdict is momentarily unknown: during an ``agent.sandbox``
+            # re-check a declared grant is SUSPENDED, so ``has_grant()`` /
+            # ``is_yolo_mode()`` (both policy-filtered on ``_active``) read False, yet
+            # the operator's revoke still has to record its generation bump or the
+            # finish step re-arms the grant once the refresh settles. ``disable_yolo``
+            # returns whether it tore live trust down, so the message distinguishes a
+            # real revoke from an already-off no-op without pre-gating.
+            tore_down = disable_yolo()
+            if tore_down:
                 sel().log_api_access(
                     caller=user_id,
                     operation="slack.yolo_mode",

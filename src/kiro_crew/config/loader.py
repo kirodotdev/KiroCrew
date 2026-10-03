@@ -930,6 +930,78 @@ def ssh_auth_sock_consent_path() -> Path:
     return config_dir() / "ssh_auth_sock_consent.json"
 
 
+#: The crew-home leaf holding the standing auto-approve declaration. A DIRECTORY,
+#: not a bare file, and that is the load-bearing part of this keystone rather than a
+#: layout preference -- see :func:`standing_approval_path`.
+STANDING_APPROVAL_DIRNAME: str = "standing-approval"
+
+#: The document inside that directory. Named separately so the sandbox lists can
+#: carry the DIRECTORY while the reader opens the FILE, with neither re-spelling the
+#: other's name.
+STANDING_APPROVAL_FILENAME: str = "grant.json"
+
+
+def standing_approval_path() -> Path:
+    """Return path to standing-approval/grant.json -- the standing auto-approve grant.
+
+    Same KEYSTONE reasoning as :func:`ssh_auth_sock_consent_path`, and the leaf is
+    on ``security._CREW_SECRET_LEAVES`` for the same reason: skipping EVERY tool
+    approval for every future session is the widest authorization this product
+    grants, so it is an authorization and not a preference. It is deliberately NOT a
+    key in ``config.json``: any auto-approved agent shell can write that document, so
+    a session-scoped elevation there writes itself a standing one that the next
+    startup re-establishes with no expiry.
+
+    Holds ``{"dangerously_skip_permissions": bool}``; every read fails soft to NO
+    GRANT (see ``standing_approval.is_declared``). There is deliberately no dashboard
+    writer and no CLI verb -- the operator hand-edits the document out-of-band,
+    exactly as for :func:`oauth_endpoints_path`, because a surface that records this
+    grant on request is a grant an automated caller can take. Respects
+    ``KIROCREW_HOME``.
+
+    Two facts make this leaf's protection stronger than the read-only seal
+    ``config.json`` itself carries, and they are why the switch moved rather than
+    being sealed in place:
+
+    * The leaf is bind-MASKED, not sealed read-only (``sandbox._CREW_HIDDEN_LEAVES``),
+      so an in-sandbox process cannot open it at all. A sealed-but-readable document
+      is still a ``link(2)`` source: the caller owns the inode, ``link(2)`` needs no
+      write permission on the file, and a bind mount seals a MOUNT rather than an
+      inode -- the refusal ``sandbox`` already raises for a governance ceiling with
+      ``st_nlink > 1`` states the same fact.
+    * The keystone is a DIRECTORY, so there is no ``link(2)`` source even in
+      principle: Linux refuses ``link(2)`` on a directory outright, and a directory
+      bind covers every child name including a temp a writer publishes through.
+
+    ``config.json`` cannot take this treatment itself -- in-sandbox readers resolve
+    the subagent cap, the quarantine threshold and the browser preference from it per
+    call -- which is why five sibling controls (``computer_use.json``,
+    ``browser-mode-enabled``, ``ops_mission_control_secrets.json``,
+    ``ops_mission_control_policy.json``, ``aws_service_consent.json``) were moved out
+    of it rather than protected inside it.
+    """
+    return config_dir() / STANDING_APPROVAL_DIRNAME / STANDING_APPROVAL_FILENAME
+
+
+#: The gateway's FIRST-TRUSTED-INIT marker, inside the same masked keystone directory.
+#: The gateway writes it once, under the mask, on the first startup that runs this
+#: masked version; its presence (and mtime) is the trust root that tells a
+#: gateway-established grant apart from one planted on a prior, unmasked release. It
+#: lives beside ``grant.json`` precisely because the whole ``standing-approval``
+#: DIRECTORY is bind-masked (``sandbox._CREW_HIDDEN_LEAVES``) on this version, so an
+#: in-sandbox agent can neither forge nor backdate it. Respects ``KIROCREW_HOME``.
+STANDING_APPROVAL_INIT_MARKER: str = ".trusted-init"
+
+
+def standing_approval_init_marker_path() -> Path:
+    """Return path to standing-approval/.trusted-init -- the first-trusted-init marker.
+
+    See :data:`STANDING_APPROVAL_INIT_MARKER`. Same directory, same mask, same
+    ``KIROCREW_HOME`` resolution as :func:`standing_approval_path`.
+    """
+    return config_dir() / STANDING_APPROVAL_DIRNAME / STANDING_APPROVAL_INIT_MARKER
+
+
 def read_local_secret(port: int, dial_host: str | None = None) -> str:
     """Read the internal-API credential for the gateway on *port*.
 

@@ -386,7 +386,9 @@ def test_startup_yolo_survives_a_failing_duration_seed(monkeypatch) -> None:
     )
     granted = MagicMock()
     monkeypatch.setattr(srv, "grant_declared_yolo", granted)
-    cfg = SimpleNamespace(agent=SimpleNamespace(dangerously_skip_permissions=False))
+    cfg = SimpleNamespace(
+        agent=SimpleNamespace(dangerously_skip_permissions=False, sandbox="auto")
+    )
 
     srv._apply_startup_yolo(_state(), cfg)
 

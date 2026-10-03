@@ -153,12 +153,18 @@ def _url_payload_command(n: int) -> str:
 #: Windows file too large to hash on the gate is never served, so a dotless target
 #: there is pending, and the ssh self-target refusal note says so.
 #:
+#: Raised again for the standing auto-approve keystone's first-trusted-init trust
+#: root in ``standing_approval.py``: ``establish_trusted_init`` writes a marker under
+#: the mask and ``is_declared`` quarantines a ``grant.json`` that predates it, closing
+#: the pre-upgrade plant window. The added reader helpers and their reasoning are
+#: control rationale the reviewer must see, not machinery; no pass widened.
+#:
 #: The number IS the package's measured total, carrying no spare room: a ratchet with
 #: headroom admits exactly the unreviewed growth it exists to catch, so the next line
 #: added here fails this gate and has to be re-pinned deliberately, with its reason
 #: written above. The guards that detect a monolith growing back are the per-file cap
 #: and the facade's share below, and both must stay untouched.
-_PACKAGE_LINE_BUDGET = 28_399
+_PACKAGE_LINE_BUDGET = 28_423
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
