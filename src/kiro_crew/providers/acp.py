@@ -56,6 +56,7 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_KIRO_SLASH_COMMANDS,
     ACP_BACKENDS_KNOWN,
     ACP_BACKENDS_MEMBER_CAPABILITIES,
+    ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
     ACP_BACKENDS_SESSION_SHARING,
     ACP_BACKENDS_TOOL_SEARCH_OVERLAY,
     EVENT_COMPACTION_STATUS,
@@ -91,6 +92,7 @@ from kiro_crew.effort import (
 )
 from kiro_crew.mcp_hot_reload import mcp_hot_reload_supported, parse_kiro_cli_version
 from kiro_crew.messaging.link import telemetry_channel_of
+from kiro_crew.model_registry import split_effort_suffix
 from kiro_crew.providers.base import (
     CancelOutcome,
     LLMEvent,
@@ -1722,19 +1724,122 @@ class AcpProvider(LLMProvider):
         intended precedence -- an explicit pick of one advertised row is more
         specific than a per-model default -- and not an aliasing gap to close.
         ``change_effort`` writes the override under the same recorded spelling
-        this reads, so the override path matches by construction.
+        this reads, so the override path matches by construction. The explicit
+        slot override is the one exception, explained at the lookup below.
         """
         # The fold the WRITE path takes, handed in so it runs BEFORE the
         # advertised-list check rather than after it. ``change_effort`` admits any
         # level the dynamic validation set knows, so a stored ``max`` on a harness
         # whose ceiling is ``xhigh`` is this harness's ``xhigh`` -- and a filter
         # that ran first would drop the very level the live push applied.
+        model = self._client._model
+        overrides = self._effort_per_model
+        # The explicit slot override crosses a pair-id spelling fold. Workspace
+        # defaults do not, preserving an explicitly selected row's precedence.
+        slot_override = self._slot_override_for(model)
+        if model not in overrides and slot_override is not None:
+            overrides = {**overrides, model: slot_override}
         return resolve_effort_for_model(
-            self._client._model,
-            slot_overrides=self._effort_per_model,
+            model,
+            slot_overrides=overrides,
             defaults=self._effort_defaults,
             levels=self._advertised_effort_levels(),
             normalize=functools.partial(effort_config_option_value, self._client.backend),
+        )
+
+    def _slot_override_for(self, model: str | None) -> str | None:
+        """Return the slot override for a recorded model spelling."""
+        if not model:
+            return None
+        override = self._effort_per_model.get(model)
+        if override is not None:
+            return override
+        base = self._pair_id_base(model)
+        return self._effort_per_model.get(base) if base else None
+
+    def _pair_id_base(self, model: str | None) -> str:
+        """The bare model of a recorded ``<model>[<effort>]`` id, or ``""``.
+
+        Only on a harness that advertises pair ids
+        (``ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS``): anywhere else a bracket is part
+        of the id (claude's ``[1m]`` window, a provider's own spelling) and is
+        never peeled. ``split_effort_suffix`` already declines a window suffix.
+        """
+        if not model or self._client.backend not in ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS:
+            return ""
+        base, effort = split_effort_suffix(model)
+        return base if effort else ""
+
+    def _record_pushed_effort(self, level: str) -> None:
+        """Re-record a startup-folded pair id as the advertised row for *level*.
+
+        Runs from ``_apply_initial_effort`` only, once per session start (cold
+        start or resume), right after the slot effort is pushed over the effort
+        option. The invariant it serves: once a session has started, the recorded
+        model id (``_client._model`` / ``_resolved_model_id``) changes only on a
+        model push, and every id this provider records is one
+        ``available_models()`` advertises. The fallback marker, the sticky slot
+        state and the pick epoch are all published around model pushes, so an id
+        that moves with nothing else cannot drift away from them; a live
+        ``change_effort`` or ``set_model`` therefore never reaches this method.
+
+        On a pair-id harness the startup fold can record a bare pin as a row whose
+        bracket names a level the slot override then replaces
+        (``gpt-6.1-sol[low]`` running ``medium``). ``served_model`` is what reply
+        attribution and the slot backfill read, so the id is re-recorded as the
+        ADVERTISED row for the pushed level (``gpt-6.1-sol[medium]``, in the
+        list's own spelling). When the list advertises no such row the recorded
+        id stays as the fold left it: the footer then names the folded row, which
+        two exact-string consumers (the throttle-fallback restore via
+        ``model_is_unusable`` and the strict one-liner canary) still accept,
+        where a bare id would fail both. *level* arrives in the harness's option
+        vocabulary, so the row is built from that value.
+
+        Only when the id is re-recorded does an override stored under the old
+        pair move to the BARE key, so ``_resolve_effort`` (exact key first, bare
+        key for any pair recording via ``_slot_override_for``) answers the stored
+        slot override under the new spelling. An untouched id keeps its map untouched.
+
+        A no-op when the bracket already names *level*, so a row picked on
+        purpose with a matching (or no) slot level keeps its advertised spelling.
+        """
+        model = self._client._model
+        base = self._pair_id_base(model)
+        if not base:
+            return
+        backend = self._client.backend
+        _, suffix = split_effort_suffix(model)
+        if effort_config_option_value(backend, suffix) == effort_config_option_value(
+            backend, level
+        ):
+            return
+        wanted = f"{base}[{level}]".casefold()
+        recorded = next(
+            (
+                cid
+                for cid in advertised_model_ids(self.available_models())
+                if cid.casefold() == wanted
+            ),
+            model,
+        )
+        if recorded == model:
+            logger.info(
+                "ACP effort %s replaced the effort of %s; no advertised row for it, "
+                "session stays recorded as the folded row",
+                level,
+                model,
+            )
+            return
+        if model in self._effort_per_model:
+            self._effort_per_model[base] = self._effort_per_model.pop(model)
+        self._client._model = recorded
+        if getattr(self._client, "_resolved_model_id", None) == model:
+            self._client._resolved_model_id = recorded
+        logger.info(
+            "ACP effort %s replaced the effort of %s; session recorded as %s",
+            level,
+            model,
+            recorded,
         )
 
     def _apply_effort_overlay(self, *, timeout: float = CLI_SETTINGS_LOCK_TIMEOUT_SECS) -> bool:
@@ -1823,7 +1928,7 @@ class AcpProvider(LLMProvider):
         except Exception:
             logger.warning("ACP tool-search overlay write failed", exc_info=True)
 
-    async def _set_effort_config_option(self, level: str) -> None:
+    async def _set_effort_config_option(self, level: str) -> str:
         """Push an effort level over ``session/set_config_option``, stepping down
         on reject.
 
@@ -1867,7 +1972,7 @@ class AcpProvider(LLMProvider):
         effort_option = effort_config_option_id(self._client.backend)
         if not self._client.supports_config_option(effort_option):
             logger.debug("adapter exposes no %r config option; skipping effort push", effort_option)
-            return
+            return ""
         # The harness's own spelling of the level, resolved BEFORE the write for
         # the reason ``effort_config_option_value`` gives: a vocabulary that omits
         # one of Crew's levels is a declared fact, and the descent below can only
@@ -1886,7 +1991,7 @@ class AcpProvider(LLMProvider):
             start = EFFORT_LEVELS.index(target)
         except ValueError:
             await self._client.set_config_option(effort_option, target)
-            return
+            return target
         ladder = [lvl for lvl in reversed(EFFORT_LEVELS[: start + 1])]
         last_exc: Exception | None = None
         for candidate in ladder:
@@ -1899,13 +2004,13 @@ class AcpProvider(LLMProvider):
                         self._client._model,
                         candidate,
                     )
-                return
+                return candidate
             except AcpError as exc:
                 if "unknown config option" in str(exc).lower():
                     # Adapter has no effort option at all (older build) —
                     # nothing to set; skip silently rather than reset.
                     logger.debug("adapter rejected %r as unknown; skipping", effort_option)
-                    return
+                    return ""
                 if not _is_config_value_rejection(exc, effort_option):
                     raise  # not a value-rejection — a real failure
                 last_exc = exc
@@ -1913,6 +2018,7 @@ class AcpProvider(LLMProvider):
         # Every candidate rejected (unexpected) — surface the last error.
         if last_exc is not None:
             raise last_exc
+        return ""
 
     async def change_effort(self, level: str) -> bool:
         """Change effort live for the current model. Returns True on success.
@@ -1988,6 +2094,8 @@ class AcpProvider(LLMProvider):
             )
         try:
             if via_config_option:
+                # The applied level is not re-recorded here: the recorded id
+                # moves only on a model push (see ``_record_pushed_effort``).
                 await self._set_effort_config_option(level)
             else:
                 await self._client.send_command("/effort", args={"level": level})
@@ -2063,15 +2171,18 @@ class AcpProvider(LLMProvider):
         level. The target's own override applies as ``reapply_live_effort`` does;
         without one, the level of the model left is pushed live but never stored.
         """
-        overrides = self._effort_per_model
-        carried = overrides.get(self._client._model, "")
+        carried = self._slot_override_for(self._client._model) or ""
         await self._client.set_model(model)
         try:
-            own = overrides.get(self._client._model) or overrides.get(model, "")
+            own = (
+                self._slot_override_for(self._client._model) or self._slot_override_for(model) or ""
+            )
             if own or not carried:
                 await self.reapply_live_effort(own)
             elif self.supports_effort():
-                # Live only: persisting it would overwrite the target's stored state.
+                # Live only: persisting it would overwrite the target's stored
+                # state, and the id ``_client.set_model`` just recorded stands
+                # (it is the one the fallback machinery publishes).
                 if self._client.backend in ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION:
                     await self._set_effort_config_option(carried)
                 elif self._client.backend in ACP_BACKENDS_KIRO_SLASH_COMMANDS:
@@ -2105,6 +2216,8 @@ class AcpProvider(LLMProvider):
         if not self.supports_effort():
             return False
         cleared = self._effort_per_model.pop(model, None)
+        base = self._pair_id_base(model)
+        cleared_base = self._effort_per_model.pop(base, None) if base else None
         if self._client.backend not in ACP_BACKENDS_KIRO_SLASH_COMMANDS:
             # No live "reset to default" — caller must reset the session. Scoped
             # by membership so a harness that reads neither the overlay nor the
@@ -2126,6 +2239,8 @@ class AcpProvider(LLMProvider):
             ):
                 if cleared is not None:
                     self._effort_per_model[model] = cleared
+                if cleared_base is not None:
+                    self._effort_per_model[base] = cleared_base
                 logger.warning(
                     "ACP effort NOT cleared to workspace default %s (model=%s): the "
                     "workspace overlay was busy, so nothing was pushed live; clear "
@@ -2148,6 +2263,8 @@ class AcpProvider(LLMProvider):
             # third outcome, which the handler answers with a retryable 409.
             if cleared is not None:
                 self._effort_per_model[model] = cleared
+            if cleared_base is not None:
+                self._effort_per_model[base] = cleared_base
             logger.warning(
                 "ACP effort NOT cleared (model=%s): the workspace overlay was busy or "
                 "unreadable, so the file still holds it and the running session keeps "
@@ -2221,7 +2338,9 @@ class AcpProvider(LLMProvider):
         if not level:
             return
         try:
-            await self._set_effort_config_option(level)
+            applied = await self._set_effort_config_option(level)
+            if applied:
+                self._record_pushed_effort(applied)
             logger.info(
                 "ACP initial effort applied: backend=%s model=%s effort=%s",
                 self._client.backend,

@@ -322,7 +322,20 @@ its own once the cache refreshes with a list that carries it.
   fallback. The pair shape alone is never sufficient. Existing pair pins display
   as their base model; an unset effort control remains Default until the user
   chooses an override. Picking a model stores the base ID; the backend's existing
-  effort reapply path keeps a slot override in force. Other backends' model IDs,
+  effort reapply path keeps a slot override in force. On a cold start or resume the
+  startup fold can record a stored base ID as an advertised pair row whose bracket
+  names a different level; the slot override stored under the base ID still
+  resolves for that row and is pushed after the model. Once, after that startup
+  effort push, the session is re-recorded as the advertised row for the pushed
+  level, so reply attribution does not name the folded level and the recorded ID
+  stays one the advertised list carries. When no such row is advertised the
+  recorded ID stays as the fold left it, and the footer then names the folded row:
+  an accepted residual, and strictly better than an unadvertised ID, which the
+  exact-string comparisons against the pair-only list (the throttle-fallback
+  restore, the strict one-liner canary) refuse. A live effort change or a model
+  switch never rewrites the recorded ID; after startup it changes only on a model
+  push.
+  Other backends' model IDs,
   including Claude window suffixes such as `[1m]`, remain intact.
 - `dashboard.model_picker_hidden_models` is a presentation preference over that
   advertised set. It filters only the interactive ChatPage and ChatPane pickers;

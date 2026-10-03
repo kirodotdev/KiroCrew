@@ -1208,6 +1208,22 @@ class AcpSessionProvider(LLMProvider):
         return self._handle.model_pin_refused
 
     @property
+    def _resolved_model_id(self) -> str:
+        """Backend-resolved model id (AcpClient-compatible attribute).
+
+        Delegates to the handle's field, the one ``served_model`` falls back
+        to and the context-window backfill reads, so a caller that re-records
+        the id through this provider (``AcpProvider._record_pushed_effort``)
+        reaches the same field an ``AcpClient`` would.
+        """
+        return self._handle._resolved_model_id
+
+    @_resolved_model_id.setter
+    def _resolved_model_id(self, value: str) -> None:
+        """Set the backend-resolved model id (AcpClient-compatible attribute)."""
+        self._handle._resolved_model_id = value
+
+    @property
     def model_pin_partial(self) -> str:
         """The bare model a pair pin landed as — see the handle's field."""
         return self._handle.model_pin_partial
