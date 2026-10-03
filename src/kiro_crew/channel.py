@@ -32,7 +32,14 @@ from kiro_crew.constants import (
     DENY_CAUSE_POLICY,
     DENY_CAUSE_SURFACE_POLICY,
 )
-from kiro_crew.llm_helpers import _steer_host_deny, is_prompt_busy
+from kiro_crew.llm_helpers import (
+    SESSION_NOT_FOUND_GIVE_UP_TEXT,
+    SESSION_NOT_FOUND_NOT_REPLAYED_TEXT,
+    SESSION_NOT_FOUND_RETRY_NOTICE,
+    _steer_host_deny,
+    acp_error_is_session_not_found,
+    is_prompt_busy,
+)
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.trust_patterns import extract_bash_command
 
@@ -1016,15 +1023,16 @@ async def run_channel_agent(
                     agent.state = "failed"
                     break
                 client = replacement
-            busy = await _stream_task(
+            fault = await _stream_task(
                 agent, channel, client, prompt, thread_id=tid, is_yolo=is_yolo
             )
-            if busy:
+            if fault:
                 # This loop owns the SessionManager, so it is the only place that
-                # can clear a wedge: replace the session and replay the message
-                # once on a cold one, then rebind the now-dead client.
+                # can clear a wedge or a lost session: replace the session and
+                # replay the message once on a cold one, then rebind the
+                # now-dead client.
                 replacement = await _recover_busy_agent(
-                    agent, channel, sessions, prompt, thread_id=tid, is_yolo=is_yolo
+                    agent, channel, sessions, prompt, thread_id=tid, is_yolo=is_yolo, cause=fault
                 )
                 if replacement is None:
                     # Report the dead end EXACTLY ONCE and stop consuming the
@@ -1035,8 +1043,12 @@ async def run_channel_agent(
                     # abandoned replacement out of the session registry.
                     await channel.post(
                         agent.id,
-                        "❌ This agent's session is stuck and could not be recovered. "
-                        "Clear its context or wake it to try again.",
+                        (
+                            "❌ This agent's session is stuck and could not be recovered. "
+                            if fault == _STREAM_BUSY
+                            else f"❌ {SESSION_NOT_FOUND_GIVE_UP_TEXT} "
+                        )
+                        + "Clear its context or wake it to try again.",
                         from_role=agent.role,
                         msg_type="system",
                         thread_id=tid,
@@ -1099,6 +1111,21 @@ async def _reacquire_cleared_session(sessions: Any, agent: ChannelAgent) -> Any:
     return client
 
 
+#: ``_stream_task`` verdicts. Each non-empty one names a session fault that only
+#: the caller, which owns the ``SessionManager``, can clear by replacing the session.
+_STREAM_OK = ""
+#: The backend still holds an in-flight prompt and rejects every new one.
+_STREAM_BUSY = "busy"
+#: A live backend holds no session under the mapped id. The replacement re-loads
+#: the same id on a fresh runtime, so the message is replayed once on it.
+_STREAM_LOST = "lost"
+#: The same loss after a tool ran this turn: the session is replaced, but the
+#: message is not replayed, since that could repeat the tool's side effect.
+_STREAM_LOST_AFTER_TOOL = "lost_after_tool"
+
+_LOST_AFTER_TOOL_TEXT = f"⟳ {SESSION_NOT_FOUND_NOT_REPLAYED_TEXT}"
+
+
 async def _reset_busy_session(sessions: Any, agent: ChannelAgent) -> Any | None:
     """Replace *agent*'s wedged session and return a lease on a cold one.
 
@@ -1149,8 +1176,13 @@ async def _recover_busy_agent(
     message: str,
     thread_id: str | None = None,
     is_yolo: Any = None,  # callable returning bool
+    cause: str = _STREAM_BUSY,
 ) -> Any | None:
-    """Replace a prompt-busy session and replay *message* once on a cold one.
+    """Replace a prompt-busy or lost session and replay *message* once on a cold one.
+
+    *cause* is the ``_stream_task`` verdict that asked for the replacement. A
+    lost session posts a short reconnect notice before the replay; a loss after
+    a tool ran replaces the session without replaying.
 
     Returns the replacement client, or ``None`` when the agent cannot be used
     again: the replacement lease was unobtainable, or the wedge survived it. In
@@ -1163,22 +1195,41 @@ async def _recover_busy_agent(
     and re-wedge instantly.
     """
     logger.warning(
-        "Channel agent %s (%s) session is prompt-busy — replacing it",
+        "Channel agent %s (%s) session is %s — replacing it",
         agent.id,
         agent.role,
+        "prompt-busy" if cause == _STREAM_BUSY else "lost by its backend",
     )
     client = await _reset_busy_session(sessions, agent)
     if client is None:
         return None
-    still_busy = await _stream_task(
+    if cause == _STREAM_LOST_AFTER_TOOL:
+        await channel.post(
+            agent.id,
+            _LOST_AFTER_TOOL_TEXT,
+            from_role=agent.role,
+            msg_type="system",
+            thread_id=thread_id,
+        )
+        return client
+    if cause == _STREAM_LOST:
+        await channel.post(
+            agent.id,
+            SESSION_NOT_FOUND_RETRY_NOTICE,
+            from_role=agent.role,
+            msg_type="system",
+            thread_id=thread_id,
+        )
+    still_failing = await _stream_task(
         agent, channel, client, message, thread_id=thread_id, is_yolo=is_yolo
     )
-    if not still_busy:
+    if not still_failing:
         return client
     logger.error(
-        "Channel agent %s (%s) still prompt-busy after a session reset",
+        "Channel agent %s (%s) still %s after a session reset",
         agent.id,
         agent.role,
+        "prompt-busy" if still_failing == _STREAM_BUSY else "without a session",
     )
     try:
         await sessions.reset(
@@ -1199,12 +1250,13 @@ async def _stream_task(
     message: str,
     thread_id: str | None = None,
     is_yolo: Any = None,  # callable returning bool
-) -> bool:
+) -> str:
     """Stream an LLM task, posting output as channel messages.
 
-    Returns True when the provider reported a prompt-busy wedge, which only the
-    caller can clear (it owns the ``SessionManager``); False on success and on
-    every other error, which a session reset cannot fix.
+    Returns a non-empty verdict (``_STREAM_BUSY``, ``_STREAM_LOST``,
+    ``_STREAM_LOST_AFTER_TOOL``) when the provider reported a session fault that
+    only the caller can clear (it owns the ``SessionManager``); ``_STREAM_OK`` on
+    success and on every other error, which a session reset cannot fix.
     """
     from kiro_crew.providers.base import (
         EVENT_COMPLETE,
@@ -1216,6 +1268,9 @@ async def _stream_task(
     from kiro_crew.sel import sel
 
     chunks: list[str] = []
+    # Set once a tool call or a permission request arrived: a session lost after
+    # that point is not replayed, because the tool may already have run.
+    tool_seen = False
 
     try:
         async for event in client.stream(message):
@@ -1223,6 +1278,7 @@ async def _stream_task(
                 chunks.append(event.text)
 
             elif event.kind == EVENT_TOOL_CALL:
+                tool_seen = True
                 # Don't post messages — broadcast status like chat page footer
                 tool_name = event.text or ""
                 tool_name, _ = redact_exfiltration_urls(tool_name)
@@ -1238,6 +1294,7 @@ async def _stream_task(
                 )
 
             elif event.kind == EVENT_PERMISSION_REQUEST:
+                tool_seen = True
                 # Block direct-to-user messaging tools — channel agents
                 # communicate via channel posts only. send_notification is
                 # functionally equivalent for reaching the user (feed
@@ -1660,7 +1717,14 @@ async def _stream_task(
             # rejected identically until the session is replaced — and only the
             # caller can do that. Report the wedge upward instead.
             logger.warning("Prompt busy for channel agent %s (%s): %s", agent.id, agent.role, exc)
-            return True
+            return _STREAM_BUSY
+        if acp_error_is_session_not_found(exc):
+            # Same dead end as the wedge: every later prompt on this binding
+            # draws the same answer until the session is replaced.
+            logger.warning(
+                "Backend lost the session of channel agent %s (%s): %s", agent.id, agent.role, exc
+            )
+            return _STREAM_LOST_AFTER_TOOL if tool_seen else _STREAM_LOST
         logger.exception("LLM stream error for agent %s (%s)", agent.id, agent.role)
         await channel.post(
             agent.id,
@@ -1669,11 +1733,11 @@ async def _stream_task(
             msg_type="system",
             thread_id=thread_id,
         )
-        return False
+        return _STREAM_OK
 
     full_text = "".join(chunks).strip()
     if not full_text:
-        return False
+        return _STREAM_OK
     # Sanitize LLM output before posting
     full_text, _ = redact_exfiltration_urls(full_text)
     full_text, _ = redact_credentials(full_text)
@@ -1689,4 +1753,4 @@ async def _stream_task(
         thread_id=thread_id,
         mention=mention_ids or None,
     )
-    return False
+    return _STREAM_OK

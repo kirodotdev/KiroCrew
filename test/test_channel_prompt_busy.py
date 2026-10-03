@@ -204,7 +204,7 @@ def test_unrelated_errors_are_not_prompt_busy(exc):
 async def test_stream_task_reports_busy_and_posts_no_card(exc):
     agent, ch = _make_agent(), _make_channel()
     busy = await _stream_task(agent, ch, _raising_client(exc), "hi")
-    assert busy is True
+    assert busy == channel_mod._STREAM_BUSY
     ch.post.assert_not_awaited()
 
 
@@ -212,7 +212,7 @@ async def test_stream_task_reports_busy_and_posts_no_card(exc):
 async def test_stream_task_still_posts_a_card_for_an_unrelated_error():
     agent, ch = _make_agent(), _make_channel()
     busy = await _stream_task(agent, ch, _raising_client(AcpError("InternalServerError")), "hi")
-    assert busy is False
+    assert busy == channel_mod._STREAM_OK
     ch.post.assert_awaited_once()
     assert "error occurred" in ch.post.await_args.args[1]
 
@@ -221,7 +221,7 @@ async def test_stream_task_still_posts_a_card_for_an_unrelated_error():
 async def test_stream_task_returns_false_on_success():
     agent, ch = _make_agent(), _make_channel()
     busy = await _stream_task(agent, ch, _text_client("done"), "hi")
-    assert busy is False
+    assert busy == channel_mod._STREAM_OK
     ch.post.assert_awaited_once()
     assert ch.post.await_args.args[1] == "done"
 
@@ -482,7 +482,7 @@ async def test_a_cleared_member_serves_its_next_message():
         "dead session"
     )
     assert (
-        await _stream_task(agent, _make_channel(), replacement, "hi") is False
+        await _stream_task(agent, _make_channel(), replacement, "hi") == channel_mod._STREAM_OK
     ), "the re-acquired provider did not serve the message"
     assert served == ["hi"], f"the message never reached the fresh provider; saw {served!r}"
     assert sessions.lifecycle_marked, (

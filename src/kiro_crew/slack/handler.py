@@ -95,6 +95,10 @@ from kiro_crew.hooks import (
     safe_read_file_bytes,
 )
 from kiro_crew.llm_helpers import (
+    SESSION_NOT_FOUND_GIVE_UP_TEXT,
+    SESSION_NOT_FOUND_NOT_REPLAYED_TEXT,
+    SESSION_NOT_FOUND_RETRY_NOTICE,
+    acp_error_is_session_not_found,
     record_interaction_event,
     save_conversation_turn_off_loop,
 )
@@ -784,7 +788,7 @@ _COMPACTION_RETRY_NOTICE = "⟳ Compaction failed — retrying…"
 class _CompactionReplay:
     """Why a ``handle_message`` call is running: it is replay ``attempt`` of a
     message whose previous attempt was abandoned after a transient compaction
-    failure.
+    failure, or after a live backend lost the session (``session_reloaded``).
 
     ``stop_gen_at_entry`` is the session manager's user-Stop count when the
     FIRST attempt acquired its session, carried unchanged across attempts. The
@@ -797,6 +801,9 @@ class _CompactionReplay:
 
     attempt: int
     stop_gen_at_entry: int
+    # Set on the one replay that follows a lost backend session; a second loss
+    # inside it ends on a clear error instead of replaying again.
+    session_reloaded: bool = False
 
 
 # The privacy-mode machinery lives in ``messaging.privacy_mode`` so a second
@@ -3883,6 +3890,84 @@ async def handle_message(
     _turn_landed = False
     # This turn's thread-replies read; its watermark moves in the finally.
     _thread_replies: ThreadReplies | None = None
+
+    async def _replay_abandoned(notice: str, replay: _CompactionReplay) -> None:
+        """Re-run this message on the successor of the session just reset.
+
+        The caller opened the replay gap and reset the session; this closes the
+        gap once the replay has settled. The replay is a nested call of this
+        function with every argument unchanged, which is what makes it Slack's
+        own replay: it resolves the same session, keeps the same activation and
+        pinning, runs while this task still owns the attachment temp files, and
+        needs no queue drain from whoever dispatched the original -- the
+        interaction paths dispatch ``handle_message`` without one.
+        """
+        nonlocal _acquired, _replayed, _needs_reinjection, _working_ts, thinking_ts
+        # This attempt's permit died with the session the reset popped; the
+        # successor's belongs to the replay, whose own ``finally`` releases it,
+        # so this frame must not release again.
+        _acquired = False
+        _replayed = True
+        # The reset popped the session, so the replay cold-starts a NEW one whose
+        # first prompt carries the full session-start context anyway; re-arming
+        # the one-shot flag for this abandoned prompt would only make the turn
+        # after the replay inject it twice.
+        _needs_reinjection = False
+        # This attempt is over: stop its reaction ladder and stall watchdog now
+        # (idempotent, so the ``finally`` re-call is a no-op), and take down what
+        # it posted -- the Working block and a reasoning placeholder that a
+        # thinking-only attempt left above where the answer would have gone. The
+        # nested call posts its own.
+        status_ctrl.finalize(error=False)
+        for _ts in (_working_ts, thinking_ts):
+            if _ts:
+                try:
+                    await slack.delete_message(channel, _ts)
+                except Exception:
+                    pass
+        _working_ts = None
+        thinking_ts = None
+        # Visible, not persisted: the abandoned attempt records nothing, so the
+        # conversation log carries this message exactly once, with the reply the
+        # replay produces.
+        try:
+            await slack.post_message(channel, notice, reply_ts)
+        except Exception:
+            logger.debug("Failed to post the replay notice", exc_info=True)
+        try:
+            await handle_message(
+                slack,
+                sessions,
+                channel,
+                _user_text,
+                thread_ts,
+                msg_ts,
+                user_id,
+                team_id=team_id,
+                approval_mode=approval_mode,
+                context_builder=context_builder,
+                cron_service=cron_service,
+                conversation_log=conversation_log,
+                consolidator=consolidator,
+                subagent_manager=subagent_manager,
+                task_runner=task_runner,
+                channel_agent=channel_agent,
+                user_display_name=user_display_name,
+                action_context=action_context,
+                target_slot_name=target_slot_name,
+                route_pinned=route_pinned,
+                asker_key=asker_key,
+                from_trusted_bot=from_trusted_bot,
+                channel_activation=channel_activation,
+                had_voice_input=had_voice_input,
+                _compaction_replay=replay,
+                start_priority=start_priority,
+            )
+        finally:
+            # The replay has settled and released its permit (or never got
+            # there); a waiter admitted now finds an idle session.
+            sessions.close_replay_gap(session_key)
+
     try:
         task.start()
         while True:
@@ -4778,81 +4863,16 @@ async def handle_message(
                     _attempt + 1,
                     _COMPACTION_FAILED_RETRIES,
                 )
-                # The replay is a nested call of this function with every
-                # argument unchanged, which is what makes it Slack's own
-                # replay: it resolves the same session, keeps the same
-                # activation and pinning, runs while this task still owns the
-                # attachment temp files, and needs no queue drain from whoever
-                # dispatched the original -- the interaction paths dispatch
-                # ``handle_message`` without one.
-                #
-                # This attempt's permit died with the session the reset popped;
-                # the successor's belongs to the replay, whose own ``finally``
-                # releases it, so this frame must not release again.
-                _acquired = False
-                _replayed = True
-                # The reset popped the session, so the replay cold-starts a NEW
-                # one whose first prompt carries the full session-start context
-                # anyway; re-arming the one-shot flag for this abandoned prompt
-                # would only make the turn after the replay inject it twice.
-                _needs_reinjection = False
-                # This attempt is over: stop its reaction ladder and stall
-                # watchdog now (idempotent, so the ``finally`` re-call is a
-                # no-op), and take down what it posted -- the Working block and
-                # a reasoning placeholder that a thinking-only attempt left
-                # above where the answer would have gone. The nested call posts
-                # its own.
-                status_ctrl.finalize(error=False)
-                for _ts in (_working_ts, thinking_ts):
-                    if _ts:
-                        try:
-                            await slack.delete_message(channel, _ts)
-                        except Exception:
-                            pass
-                _working_ts = None
-                thinking_ts = None
-                # Visible, not persisted: the abandoned attempt records nothing,
-                # so the conversation log carries this message exactly once,
-                # with the reply the replay produces.
-                try:
-                    await slack.post_message(channel, _COMPACTION_RETRY_NOTICE, reply_ts)
-                except Exception:
-                    logger.debug("Failed to post the compaction retry notice", exc_info=True)
-                try:
-                    await handle_message(
-                        slack,
-                        sessions,
-                        channel,
-                        _user_text,
-                        thread_ts,
-                        msg_ts,
-                        user_id,
-                        team_id=team_id,
-                        approval_mode=approval_mode,
-                        context_builder=context_builder,
-                        cron_service=cron_service,
-                        conversation_log=conversation_log,
-                        consolidator=consolidator,
-                        subagent_manager=subagent_manager,
-                        task_runner=task_runner,
-                        channel_agent=channel_agent,
-                        user_display_name=user_display_name,
-                        action_context=action_context,
-                        target_slot_name=target_slot_name,
-                        route_pinned=route_pinned,
-                        asker_key=asker_key,
-                        from_trusted_bot=from_trusted_bot,
-                        channel_activation=channel_activation,
-                        had_voice_input=had_voice_input,
-                        _compaction_replay=_CompactionReplay(
-                            attempt=_attempt + 1, stop_gen_at_entry=_stop_gen_at_entry
+                await _replay_abandoned(
+                    _COMPACTION_RETRY_NOTICE,
+                    _CompactionReplay(
+                        attempt=_attempt + 1,
+                        stop_gen_at_entry=_stop_gen_at_entry,
+                        session_reloaded=(
+                            _compaction_replay is not None and _compaction_replay.session_reloaded
                         ),
-                        start_priority=start_priority,
-                    )
-                finally:
-                    # The replay has settled and released its permit (or never
-                    # got there); a waiter admitted now finds an idle session.
-                    sessions.close_replay_gap(session_key)
+                    ),
+                )
             else:
                 sessions.close_replay_gap(session_key)
         else:
@@ -4958,10 +4978,66 @@ async def handle_message(
         Stats().inc_message_failed()
     except AcpError as e:
         _had_error = True
-        accumulated = f"❌ {e}"
-        task.fail(str(e))
-        await sessions.record_failure(session_key)
-        Stats().inc_message_failed()
+        # Only once this attempt holds a claim: the binding to reset is the one
+        # it claimed, and the Stop count the replay checks was read with it.
+        _session_lost = acp_error_is_session_not_found(e) and _acquired
+        _reset_ok = False
+        if _session_lost:
+            # A live backend holds no session under the mapped id, so every later
+            # message on this binding would draw the same answer. The reset keeps
+            # the session-map entry: the next claim spawns a fresh runtime that
+            # session/loads the SAME id. The gap is opened first for the same
+            # reason as the compaction replay above.
+            sessions.open_replay_gap(session_key)
+            _reset_ok = True
+            try:
+                await sessions.reset(session_key)
+            except Exception:
+                _reset_ok = False
+                logger.debug(
+                    "Failed to reset session %s after the backend lost it",
+                    session_key,
+                    exc_info=True,
+                )
+        _already_reloaded = _compaction_replay is not None and _compaction_replay.session_reloaded
+        if (
+            _session_lost
+            and _reset_ok
+            and not _already_reloaded
+            # Verbatim replay only before anything landed in the thread, the
+            # same bar the compaction replay holds: a tool may have run.
+            and not accumulated
+            and _task_counter == 0
+        ):
+            logger.warning(
+                "Backend lost the session for %s — re-loading it and replaying the message once",
+                session_key,
+            )
+            _had_error = False
+            task.complete()
+            await _replay_abandoned(
+                SESSION_NOT_FOUND_RETRY_NOTICE,
+                _CompactionReplay(
+                    attempt=_compaction_replay.attempt if _compaction_replay is not None else 0,
+                    stop_gen_at_entry=_stop_gen_at_entry,
+                    session_reloaded=True,
+                ),
+            )
+        else:
+            if _session_lost:
+                sessions.close_replay_gap(session_key)
+            if _session_lost and (accumulated or _task_counter):
+                accumulated = f"⟳ {SESSION_NOT_FOUND_NOT_REPLAYED_TEXT}"
+            elif _session_lost:
+                accumulated = (
+                    f"❌ {SESSION_NOT_FOUND_GIVE_UP_TEXT} Send your message again, "
+                    "or start a new thread if this keeps happening."
+                )
+            else:
+                accumulated = f"❌ {e}"
+            task.fail(str(e))
+            await sessions.record_failure(session_key)
+            Stats().inc_message_failed()
     except UnknownMemoryStore as exc:
         _had_error = True
         accumulated = redact_local_paths(redact(str(exc)))[0][:1000]
