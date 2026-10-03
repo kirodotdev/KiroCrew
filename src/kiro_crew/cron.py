@@ -927,6 +927,7 @@ class CronService:
                         count_failure=taken.started_monotonic is not None
                         and not job.failure_recorded
                         and not job.run_never_started,
+                        paused_at_run_start=job.paused_at_run_start,
                     )
                 except Exception:
                     logger.exception("Reaper: failed to persist state for cron %s", job_id)
@@ -1725,6 +1726,7 @@ class CronService:
         minimal_context: bool = False,
         timeout: int = 0,
         timeout_secs: int = 0,
+        auto_pause_after_failures: int | None = None,
     ) -> CronJob:
         """Add a new job. Provide one of ``every_secs``, ``at_ts``, or ``cron_expr``.
 
@@ -1786,6 +1788,7 @@ class CronService:
             minimal_context=minimal_context,
             timeout=timeout,
             timeout_secs=timeout_secs,
+            auto_pause_after_failures=auto_pause_after_failures,
         )
         self._persist_add_locked(job)
         self._arm_timer()
@@ -1939,6 +1942,7 @@ class CronService:
         minimal_context: bool = False,
         timeout: int = 0,
         timeout_secs: int = 0,
+        auto_pause_after_failures: int | None = None,
         source_preset: str = "",
         source_template_prompt: str = "",
     ) -> CronJob:
@@ -1990,6 +1994,7 @@ class CronService:
             minimal_context=minimal_context,
             timeout=timeout,
             timeout_secs=timeout_secs,
+            auto_pause_after_failures=auto_pause_after_failures,
         )
         # Dashboard-only template provenance. Set on the freshly-built job
         # BEFORE the off-loop persist -- the object has no other reference yet,
@@ -2011,7 +2016,8 @@ class CronService:
 
         Accepted kwargs: name, message, every_secs, cron_expr, agent_id, channel,
         approval_mode, silent, skip_dates, timezone, thread_ts, model,
-        timeout_secs (per-wake execution budget, 1..86400).
+        timeout_secs (per-wake execution budget, 1..86400),
+        auto_pause_after_failures (0..10000; 0 = never auto-pause).
 
         Raises :class:`CronStoreBusy` if the store lock is contended past the
         timeout; see :meth:`update_job_async` for the event-loop-safe variant.
@@ -3728,6 +3734,11 @@ class CronService:
         # scheduled fire and every manual run in between is skipped or refused
         # with 409.
         try:
+            # Fresh run: no failure counted and no pause tripped yet. Reset
+            # before the jitter sleep, because a run cancelled during jitter
+            # still merges its record in the finally, and that merge re-judges
+            # the pause from these flags.
+            job.begin_run()
             # Stamped here rather than derived from claimed_at: the two clocks
             # share no epoch, so the reaper's deadline is only meaningful
             # against a stamp taken on its own clock.
@@ -3975,7 +3986,11 @@ class CronService:
         # Fresh run: no failure counted yet. The timeout handler below reads
         # this to avoid double-counting a run that already recorded its
         # failure and then overran the deadline during cleanup.
-        job.failure_recorded = False
+        # _run_job_isolated already reset these flags before its jitter sleep;
+        # nothing records a failure in between, so resetting again here only
+        # re-reads the pause state (a resume during jitter makes this a fresh
+        # run) and keeps direct callers correct.
+        job.begin_run()
         try:
             await asyncio.wait_for(self._execute(job, claim), timeout=deadline)
         except asyncio.TimeoutError:
@@ -4260,6 +4275,7 @@ class CronService:
         run_generation: int,
         result_produced: bool = False,
         count_failure: bool = False,
+        paused_at_run_start: bool = False,
     ) -> None:
         """Persist a job's terminal runtime state under the store lock.
 
@@ -4315,7 +4331,10 @@ class CronService:
             # Counted on the disk copy under the lock, so the failure count and
             # any auto-pause it triggers persist with the terminal record.
             counted = (target.enabled, target.auto_paused, target.consecutive_failures)
-            if count_failure:
+            # A run of an auto-paused job whose stored copy is now unpaused was
+            # resumed while it ran; the resume reset the counter for a fresh set
+            # of attempts, and this run's failure predates it.
+            if count_failure and not (paused_at_run_start and not target.auto_paused):
                 target.record_failure()
             # A command/script run that produced nothing must not show the
             # previous run's result beside this error. The caller passes the

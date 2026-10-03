@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew import platform_compat
-from kiro_crew.cron_service.model import CronJob, CronSchedule
+from kiro_crew.cron_service.model import _AUTO_PAUSE_THRESHOLD, CronJob, CronSchedule
 
 logger = logging.getLogger("kiro_crew.cron")
 
@@ -401,6 +401,10 @@ def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> Cro
         agent_sequence=_str_list("agent_sequence"),
         env=j.get("env", {}),
         timeout_secs=_guard_num("timeout_secs", seams._JOB_TIMEOUT_SECS),
+        # Absent on every record written before the field existed: those jobs
+        # keep the default limit. A malformed value is left for
+        # CronJob.auto_pause_limit() to read back as the default.
+        auto_pause_after_failures=_guard_num("auto_pause_after_failures", _AUTO_PAUSE_THRESHOLD),
         strict_schedule=j.get("strict_schedule", False),
         script=_selector_str("script"),
         command=_selector_str("command"),
@@ -544,7 +548,7 @@ def store_digest(raw: bytes) -> bytes:
 
 def job_record(j: CronJob) -> dict[str, Any]:
     """One job's ``crons.json`` entry. The key order IS the stored byte order."""
-    return {
+    record = {
         "id": j.id,
         "name": j.name,
         "message": j.message,
@@ -594,6 +598,7 @@ def job_record(j: CronJob) -> dict[str, Any]:
         "agent_sequence": j.agent_sequence,
         "env": j.env,
         "timeout_secs": j.timeout_secs,
+        "auto_pause_after_failures": j.auto_pause_after_failures,
         "strict_schedule": j.strict_schedule,
         "script": j.script,
         "command": j.command,
@@ -604,6 +609,12 @@ def job_record(j: CronJob) -> dict[str, Any]:
         "secret_env_pending_pin": j.secret_env_pending_pin,
         "secret_env_pending_ts": j.secret_env_pending_ts,
     }
+    # Written only when it differs from the default, so a store holding no
+    # custom limit saves to the same bytes it did before the field existed and
+    # an older build reading it back sees nothing new.
+    if j.auto_pause_after_failures == _AUTO_PAUSE_THRESHOLD:
+        del record["auto_pause_after_failures"]
+    return record
 
 
 def encode_store(jobs: Iterable[CronJob]) -> str:

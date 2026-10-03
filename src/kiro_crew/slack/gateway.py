@@ -5635,10 +5635,10 @@ class GatewayOrchestrator:
                 # Unattributable, or a runtime this job was alone on: counted
                 # exactly as before.
                 _job_owns_failure = runtime_death.caused_by_this_session(_run_provider)
-                # Set only when the substitute bound reaches its limit below, and
-                # consumed only beside record_failure(), so the three steps of the
-                # hand-over stay contiguous.
-                _hand_over_streak = False
+                # The limit the substitute bound reached, set only when it reaches
+                # it below and consumed only beside record_failure(), so the three
+                # steps of the hand-over stay contiguous.
+                _hand_over_at: int | None = None
 
                 def _charge_failure() -> None:
                     """Charge this run's failure, performing any pending hand-over first.
@@ -5653,9 +5653,10 @@ class GatewayOrchestrator:
                     counter and the streak disagreeing with no writer left to
                     reconcile them.
                     """
-                    if _hand_over_streak:
+                    if _hand_over_at is not None:
                         job.consecutive_failures = max(
-                            job.consecutive_failures, _AUTO_PAUSE_THRESHOLD - 1
+                            job.consecutive_failures,
+                            _hand_over_at - 1,
                         )
                         runtime_death.clear_shared_deaths(f"cron:{job.id}")
                     job.record_failure()
@@ -5677,7 +5678,10 @@ class GatewayOrchestrator:
                     # need it. A substitute bound is keyed to whatever owns the
                     # counter it replaces.
                     _shared_streak = runtime_death.note_shared_death(f"cron:{job.id}")
-                    if _shared_streak >= _AUTO_PAUSE_THRESHOLD:
+                    # The job's own limit, so a job set to never auto-pause is
+                    # never handed a streak that would pause it.
+                    _pause_limit = job.auto_pause_limit()
+                    if _pause_limit is not None and _shared_streak >= _pause_limit:
                         # At the limit the substitute bound HANDS OVER its
                         # accumulated value to the counter it stood in for,
                         # instead of adding a single charge to a counter still at
@@ -5705,7 +5709,7 @@ class GatewayOrchestrator:
                         # threshold. So the decision is recorded now and the move
                         # happens beside record_failure(), where the three steps
                         # are contiguous and cannot be torn apart.
-                        _hand_over_streak = True
+                        _hand_over_at = _pause_limit
                         logger.warning(
                             "Cron '%s': the runtime it shares has died %d times running — "
                             "handing the streak to the job's own counter so it pauses now",

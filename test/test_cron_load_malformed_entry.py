@@ -613,6 +613,7 @@ _NUMERIC_FIELD_DEFAULTS = {
     "consecutive_failures": 0,
     "last_retry_count": 0,
     "timeout_secs": 1800,  # _JOB_TIMEOUT_SECS
+    "auto_pause_after_failures": 5,  # _AUTO_PAUSE_THRESHOLD
     "timeout": 0,
 }
 

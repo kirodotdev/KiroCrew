@@ -1959,6 +1959,7 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
             minimal_context=minimal_context,
             timeout=int(timeout) if timeout else 0,
             timeout_secs=int(timeout_secs) if timeout_secs else 0,
+            auto_pause_after_failures=getattr(args, "auto_pause_after_failures", None),
         )
     except CronStoreBusy:
         # The store lock stayed contended past its timeout (another writer --
@@ -2146,7 +2147,15 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
 
     elif action == "update":
         kwargs: dict = {}
-        for field in ("name", "message", "every_secs", "cron_expr", "channel", "timeout_secs"):
+        for field in (
+            "name",
+            "message",
+            "every_secs",
+            "cron_expr",
+            "channel",
+            "timeout_secs",
+            "auto_pause_after_failures",
+        ):
             val = getattr(args, field, None)
             if val is not None:
                 if field == "channel":

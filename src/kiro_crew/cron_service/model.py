@@ -23,7 +23,33 @@ from kiro_crew.cron_service.schedule import _job_tz
 logger = logging.getLogger("kiro_crew.cron")
 
 _JOB_TIMEOUT_SECS = 1800  # 30 min per job
-_AUTO_PAUSE_THRESHOLD = 5  # consecutive failures before a script/command cron auto-pauses
+_AUTO_PAUSE_THRESHOLD = 5  # default consecutive failures before a cron auto-pauses
+# Upper bound on a per-job ``auto_pause_after_failures``. 0 (never pause) is the
+# way to ask for "unlimited"; the cap only keeps a typo from reading as intent.
+_AUTO_PAUSE_MAX = 10000
+
+
+def validate_auto_pause_after_failures(value: Any) -> int:
+    """Return *value* as a per-job auto-pause limit, or raise ``ValueError``.
+
+    ``0`` means the job never auto-pauses; ``1.._AUTO_PAUSE_MAX`` pauses it after
+    that many consecutive failed runs. ``bool`` is refused even though it is an
+    ``int`` subclass, so ``true`` cannot silently mean "pause after one failure".
+    """
+    if isinstance(value, bool):
+        raise ValueError(f"auto_pause_after_failures must be an integer, got {value!r}")
+    try:
+        limit = int(value)
+    except (TypeError, ValueError, OverflowError) as e:
+        raise ValueError(f"auto_pause_after_failures must be an integer, got {value!r}") from e
+    if isinstance(value, float) and value != limit:
+        raise ValueError(f"auto_pause_after_failures must be an integer, got {value!r}")
+    if not 0 <= limit <= _AUTO_PAUSE_MAX:
+        raise ValueError(
+            f"auto_pause_after_failures must be within 0..{_AUTO_PAUSE_MAX} "
+            f"(0 = never auto-pause), got {limit}"
+        )
+    return limit
 
 
 @dataclass
@@ -123,6 +149,17 @@ class CronJob:
     # (e.g. a delivery-path exception) and then overran its deadline during
     # cleanup is counted once, not twice.
     failure_recorded: bool = False
+    # Runtime-only, reset with failure_recorded: True when THIS run's
+    # record_failure() crossed the auto-pause limit. The run judged that limit
+    # from its own copy of the job, which a concurrent update may have changed,
+    # so apply_run_record re-derives the pause against the stored limit and
+    # needs to tell a pause this run caused from one that predates it.
+    auto_pause_tripped: bool = False
+    # Runtime-only, set by begin_run: whether the job was auto-paused when THIS
+    # run started. A manual run of an auto-paused job can share the store's
+    # live object, so an in-process resume clears ``auto_paused`` on the run's
+    # own record too; the merge reads this flag to recognise that resume.
+    paused_at_run_start: bool = False
     context_enabled: bool = False
     agent_id: str = ""
     # Member identity is distinct from the provider template in agent_id.
@@ -167,6 +204,11 @@ class CronJob:
     last_failure_hash: str = ""  # hash of last failure notification (dedup crashes)
     last_failure_at: float = 0.0  # epoch of last failure Slack alert (dedup reminder)
     consecutive_failures: int = 0  # consecutive failed runs (any error); drives auto-pause
+    # How many consecutive failed runs auto-pause this job. 0 = never auto-pause
+    # (the job keeps firing on schedule however often it fails). Read it through
+    # :meth:`auto_pause_limit`, never directly, so every threshold comparison
+    # shares one meaning of 0.
+    auto_pause_after_failures: int = _AUTO_PAUSE_THRESHOLD
     skip_dates: list[str] = field(default_factory=list)  # ISO dates to skip ["YYYY-MM-DD"]
     timezone: str = ""  # IANA timezone for skip evaluation
     persistent_session: bool = True  # False → fresh ephemeral session per run
@@ -342,6 +384,27 @@ class CronJob:
         except Exception:
             logger.debug("SEL logging failed in cron auto-pause transition", exc_info=True)
 
+    def auto_pause_limit(self) -> int | None:
+        """Consecutive failures that auto-pause this job, or ``None`` for never.
+
+        A value no writer can produce (out of range, non-integer) falls back to
+        the default rather than disabling the safety net.
+        """
+        limit = self.auto_pause_after_failures
+        if (
+            isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 0 <= limit <= _AUTO_PAUSE_MAX
+        ):
+            return _AUTO_PAUSE_THRESHOLD
+        return limit or None
+
+    def begin_run(self) -> None:
+        """Reset the per-run fields a run's merge reads, at the start of a run."""
+        self.failure_recorded = False
+        self.auto_pause_tripped = False
+        self.paused_at_run_start = self.auto_paused
+
     def record_failure(self) -> None:
         """Count one consecutive failure and auto-pause once the threshold is hit.
 
@@ -353,9 +416,11 @@ class CronJob:
         """
         self.consecutive_failures += 1
         self.failure_recorded = True
-        if self.consecutive_failures >= _AUTO_PAUSE_THRESHOLD and not self.auto_paused:
+        limit = self.auto_pause_limit()
+        if limit is not None and self.consecutive_failures >= limit and not self.auto_paused:
             self.enabled = False
             self.auto_paused = True
+            self.auto_pause_tripped = True
             self._audit_pause_change("auto_paused")
 
     def record_success(self) -> None:

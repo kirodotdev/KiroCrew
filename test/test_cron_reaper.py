@@ -325,6 +325,39 @@ class TestCronReaper:
         assert job.enabled is False
 
     @pytest.mark.asyncio
+    async def test_a_reaped_run_does_not_count_against_a_resume_made_during_it(
+        self, tmp_path: object
+    ) -> None:
+        """A resume that lands while a run of an auto-paused job hangs governs that run.
+
+        The reaper counts the timeout on the stored copy, which already holds the
+        resume's reset; the run started paused, so its failure predates the resume.
+        """
+        svc = CronService(base_dir=None, on_job=AsyncMock())
+        svc._history = CronHistoryStore(base_dir=tmp_path)
+        svc._sessions = _mock_sessions()
+        job = _make_job("resumed1")
+        job.auto_pause_after_failures = 1
+        job.auto_paused = True
+        job.enabled = False
+        job.consecutive_failures = 3
+        svc._jobs = [job]
+        job.begin_run()
+        job.auto_paused = False
+        job.enabled = True
+        job.consecutive_failures = 0
+        claim = svc._claims["resumed1"] = _RunClaim(
+            trigger="manual",
+            claimed_at=time.time() - _JOB_TIMEOUT_SECS - 10,
+            task=_live_task(),
+            started_monotonic=time.monotonic() - _JOB_TIMEOUT_SECS - 10,
+        )
+        with patch("kiro_crew.sel.sel"), patch.object(svc, "_save"):
+            await svc._force_reap("resumed1", _JOB_TIMEOUT_SECS + 10, claim=claim)
+
+        assert (job.enabled, job.auto_paused, job.consecutive_failures) == (True, False, 0)
+
+    @pytest.mark.asyncio
     async def test_a_reaped_run_that_never_started_is_not_counted(self, tmp_path: object) -> None:
         svc = CronService(base_dir=None, on_job=AsyncMock())
         svc._history = CronHistoryStore(base_dir=tmp_path)

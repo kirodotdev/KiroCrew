@@ -194,6 +194,56 @@ def close_run(
     return terminal, status, run_result
 
 
+def _resumed_during_run(target: CronJob, run: CronJob) -> bool:
+    """Whether the user lifted this run's pre-existing auto-pause while it ran.
+
+    A manually triggered run of an auto-paused job started with
+    ``paused_at_run_start``. A resume that commits during the run clears
+    ``auto_paused`` and resets ``consecutive_failures``, so merging the run's
+    pause and counter would undo the resume with no audit line. The resume may
+    land on the stored copy only, or on the live object the run shares, before
+    or after the run's ``record_failure()``; the run's own ``auto_paused`` is
+    therefore not evidence of the starting state. Changing the limit never
+    clears a pause, so a run that started paused and either now finds the
+    stored copy unpaused or tripped a fresh pause itself (which record_failure
+    only does on an unpaused job) saw a resume.
+    """
+    return run.paused_at_run_start and (run.auto_pause_tripped or not target.auto_paused)
+
+
+def _merged_auto_paused(target: CronJob, run: CronJob) -> bool:
+    """The auto-pause state a completed run's record leaves on the stored job.
+
+    A failed run decided whether to pause against the limit on its OWN copy of
+    the job, taken when it started. An update that commits while the run is in
+    flight changes only the stored copy, so the failure is re-judged here
+    against ``target``'s current limit: a job raised to 0 (never pause) is not
+    paused by a run that started under the old limit, and a lowered limit
+    applies to the failure that lands next. A pause that predates this run is
+    kept either way; changing the limit never resumes a paused job.
+
+    An explicit resume while the run was in flight wins instead: see
+    :func:`_resumed_during_run`.
+    """
+    if _resumed_during_run(target, run):
+        if run.auto_pause_tripped:
+            # The resume landed on the shared object before this run's
+            # failure, which then logged a fresh pause; record that it lifts.
+            target._audit_pause_change("auto_pause_cleared")
+        return False
+    if not run.failure_recorded:
+        return run.auto_paused
+    paused_before_run = run.auto_paused and not run.auto_pause_tripped
+    limit = target.auto_pause_limit()
+    merged = paused_before_run or (limit is not None and run.consecutive_failures >= limit)
+    if merged != run.auto_paused:
+        # The run's own audit line recorded the stale decision; record the
+        # one that actually lands on the store.
+        target.consecutive_failures = run.consecutive_failures
+        target._audit_pause_change("auto_paused" if merged else "auto_pause_cleared")
+    return merged
+
+
 def apply_run_record(target: CronJob, run: CronJob) -> None:
     """Copy the fields a completed run persists from its record ``run`` onto ``target``.
 
@@ -201,6 +251,7 @@ def apply_run_record(target: CronJob, run: CronJob) -> None:
     a different object than the run's, so every field the run produces is
     copied explicitly. The caller has already checked the record's generation.
     """
+    resumed = _resumed_during_run(target, run)
     target.run_generation = run.run_generation
     target.last_run_ts = run.last_run_ts
     target.last_status = run.last_status
@@ -219,9 +270,23 @@ def apply_run_record(target: CronJob, run: CronJob) -> None:
     # `enabled`, which must not be clobbered for recurring jobs. Also
     # reflect it into the disk copy's derived `enabled` so the next
     # reader sees the pause before a reload re-derives it.
-    target.auto_paused = run.auto_paused
-    if run.auto_paused and not target.user_paused:
+    target.auto_paused = _merged_auto_paused(target, run)
+    if target.auto_paused and not target.user_paused:
         target.enabled = False
+    elif (
+        run.schedule.kind != "at"
+        and run.auto_pause_tripped
+        and not target.auto_paused
+        and not target.user_paused
+    ):
+        # The run's record_failure() wrote enabled=False alongside the pause
+        # the merge just overruled. Usually `target` is that very object (the
+        # merge's _sync() reloads only on an external change), so the disable
+        # would otherwise persist under auto_paused=False: stopped in memory,
+        # enabled on disk once reloaded. record_success pairs its clear with
+        # the same re-enable. Recurring jobs only: the at-job branch above
+        # owns `enabled` for a fired or parked one-shot.
+        target.enabled = True
     target.last_result = run.last_result
     # Both stamp fields travel WITH last_result. The merge's _sync()
     # replaced the job list with the disk copies, so target is a
@@ -237,7 +302,13 @@ def apply_run_record(target: CronJob, run: CronJob) -> None:
     target.last_posted_at = run.last_posted_at
     target.last_failure_hash = run.last_failure_hash
     target.last_failure_at = run.last_failure_at
-    target.consecutive_failures = run.consecutive_failures
+    if resumed:
+        # A resume during the run reset the counter for a fresh set of
+        # attempts; the run's count predates it. On a shared object the
+        # run's record_failure() may already have counted past the reset.
+        target.consecutive_failures = 0
+    else:
+        target.consecutive_failures = run.consecutive_failures
     # Same shape as the other runtime->disk copies on this call: a
     # field `_execute` sets on the in-memory `run` is invisible after
     # reload unless copied here explicitly. A cancelled run never
