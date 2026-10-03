@@ -87,6 +87,7 @@ import {
 // Not mocked: the gate reads real localStorage, so the fixture that turns crew
 // on is the same write the Settings > Developer > Feature Previews toggle performs.
 import { PREVIEW_CREW, PREVIEW_REMOTE_CREW_CHAT } from '../utils/previewFlags'
+import enManual from '../i18n/locales/en.manual.json'
 
 /** Where the router is: the "Crew Members" entry navigates rather than creates,
  *  so its tests read the destination back instead of a create call. */
@@ -406,5 +407,41 @@ describe('create-button caret menu', () => {
     fireEvent.click(await findCreateMenuItem('New chat'))
     await waitFor(() => expect(mocks.createChatSlot).toHaveBeenCalled())
     expect(mocks.createChatSlot.mock.calls.at(-1)?.[1]).toBe('planner')
+  })
+
+  // A crew create takes seconds (the peer's session opens before the local one),
+  // so the picked row must show the pending window: a spinner and a label naming
+  // the crew, both gone once the create settles either way.
+  it.each([
+    ['succeeds', true],
+    ['fails', false],
+  ])('shows a pending crew create until it %s', async (_outcome, ok) => {
+    let settle: (v: unknown) => void = () => {}
+    let fail: (e: unknown) => void = () => {}
+    mocks.createChatSlot.mockReturnValue(new Promise((resolve, reject) => { settle = resolve; fail = reject }))
+    localStorage.setItem(PREVIEW_REMOTE_CREW_CHAT, '1')
+    renderSidebar({ warm: { 'i-nobita': { local_port: 7879, token: 't' } } })
+    openCreateMenu()
+    fireEvent.keyDown(await screen.findByTestId('new-chat-on-crew'), { key: 'ArrowRight' })
+    // Wait for the crew NAME, not the id fallback: the pending label reads it.
+    await waitFor(() => expect(screen.getByTestId('new-chat-on-crew-i-nobita').textContent).toContain('nobita'))
+    expect(screen.queryByTestId('new-chat-on-crew-spinner-i-nobita')).toBeNull()
+    const pendingText = enManual.pages.chatSidebar.creating_on_crew.replace('{{name}}', 'nobita')
+
+    fireEvent.click(screen.getByTestId('new-chat-on-crew-i-nobita'))
+    await screen.findByTestId('new-chat-on-crew-spinner-i-nobita')
+    expect(screen.getByTestId('new-chat-on-crew-i-nobita').textContent?.trim()).toBe(pendingText)
+    expect(screen.getByTestId('new-chat-on-crew-i-nobita')).toHaveAttribute('aria-busy', 'true')
+    // Not disabled (so not faded): it is the progress cue. A second pick is
+    // refused by the guard, not by the disabled state.
+    expect(screen.getByTestId('new-chat-on-crew-i-nobita')).not.toHaveAttribute('data-disabled')
+    fireEvent.click(screen.getByTestId('new-chat-on-crew-i-nobita'))
+    expect(mocks.createChatSlot).toHaveBeenCalledTimes(1)
+
+    if (ok) settle({ key: 'chat-new-1' })
+    else fail(new Error('peer version mismatch'))
+    await waitFor(() => expect(screen.queryByTestId('new-chat-on-crew-spinner-i-nobita')).toBeNull())
+    expect(screen.queryByText(pendingText)).toBeNull()
+    if (!ok) expect(await screen.findByTestId('new-chat-on-crew-error')).toBeTruthy()
   })
 })

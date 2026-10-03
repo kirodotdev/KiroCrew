@@ -11510,6 +11510,7 @@
       "new_chat": "नई चैट",
       "new_chat_in_folder": "फ़ोल्डर में नई चैट",
       "new_chat_on_crew": "Crew पर नई चैट",
+      "creating_on_crew": "{{name}} पर चैट शुरू हो रही है…",
       "runs_on_crew": "{{name}} पर चलता है — एक कनेक्टेड Crew, इस मशीन पर नहीं",
       "new_chat_in_name": "{{name}} में नई चैट",
       "new_chat_session": "नया चैट सत्र",

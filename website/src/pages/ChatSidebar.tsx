@@ -4721,13 +4721,32 @@ function ChatSidebar({
                  *  does not yet show live remote sessions. Toggle lives in
                  *  Settings > Remote Crew. */}
                 {remoteCrewChatPreview && warmCrews.length > 0 && (() => {
-                  const crewRows = warmCrews.map(c => (
-                    <DropdownMenuItem key={c.id} data-testid={`new-chat-on-crew-${c.id}`}
-                      disabled={createRemoteChatMutation.isPending}
-                      onSelect={e => { e.preventDefault(); createRemoteChatMutation.mutate(c.id) }}>
-                      <Server size={14} className="text-info" /> {c.name}
-                    </DropdownMenuItem>
-                  ))
+                  // The picked row swaps its icon for a spinner and its label for
+                  // "Starting chat on <crew>…": the create opens a session on the peer
+                  // before the local one exists, so it takes seconds, and the menu
+                  // stays open (onSelect preventDefault) the whole time, so the row
+                  // is where the eye already is.
+                  const crewRows = warmCrews.map(c => {
+                    const pendingHere = createRemoteChatMutation.isPending && createRemoteChatMutation.variables === c.id
+                    return (
+                      <DropdownMenuItem key={c.id} data-testid={`new-chat-on-crew-${c.id}`}
+                        // The picked row is the progress cue, so it is not disabled
+                        // (a disabled row is drawn faded); the guard in onSelect is
+                        // what refuses a second pick while the create runs.
+                        disabled={createRemoteChatMutation.isPending && !pendingHere}
+                        aria-busy={pendingHere || undefined}
+                        onSelect={e => {
+                          e.preventDefault()
+                          if (createRemoteChatMutation.isPending) return
+                          createRemoteChatMutation.mutate(c.id)
+                        }}>
+                        {pendingHere
+                          ? <Loader2 size={14} className="text-info animate-spin" aria-hidden="true" data-testid={`new-chat-on-crew-spinner-${c.id}`} />
+                          : <Server size={14} className="text-info" />}{' '}
+                        {pendingHere ? i18nT('pages.chatSidebar.creating_on_crew', { name: c.name }) : c.name}
+                      </DropdownMenuItem>
+                    )
+                  })
                   // Inline failure reason (version mismatch, tunnel down), shown
                   // through the shared ErrorNotice (website AGENTS.md forbids a
                   // hand-written text-danger div for a rejected mutation). Kept in

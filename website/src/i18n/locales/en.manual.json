@@ -5066,6 +5066,7 @@
       "new": "New",
       "new_chat": "New chat",
       "new_chat_on_crew": "New chat on crew",
+      "creating_on_crew": "Starting chat on {{name}}…",
       "no_inactive_sessions_to_archive": "No inactive sessions to archive.",
       "older": "Older",
       "show": "Show",
