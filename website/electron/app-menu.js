@@ -47,14 +47,23 @@ function buildMenuTemplate(deps) {
   // sees it and a CJK user cannot type a comma at all. `isMac` is the single
   // "this platform can hold Ctrl+," predicate shared by both surfaces; the
   // caption is what tells a user reaching for Ctrl+, where the chord now lives.
+  // Ids are load-bearing for the LOCAL_ONLY_ITEM_IDS fence in
+  // windows-menu-model.js: both items' click handlers use
+  // `focusedDashboardWindow()` and mutate its OS state (restore/show/focus),
+  // then navigate its SPA — so a remote sender must never reach them.
   const settingsItem = {
     label: "Settings…",
+    id: "settings",
     ...(isMac
       ? { accelerator: "CmdOrCtrl+," }
       : { accelerator: "Alt+,", registerAccelerator: false }),
     click: openSettings,
   };
-  const aboutItem = { label: `About ${appName}`, click: openAbout };
+  const aboutItem = {
+    label: `About ${appName}`,
+    id: "about",
+    click: openAbout,
+  };
 
   return [
     ...(isMac
@@ -92,13 +101,22 @@ function buildMenuTemplate(deps) {
       label: "View",
       submenu: [
         // Explicit handlers, not { role: ... }: the roles target the focused
-        // window's own webContents, which BaseWindow doesn't have.
-        { label: "Reload", accelerator: "CmdOrCtrl+R", click: reload },
-        { label: "Force Reload", accelerator: "CmdOrCtrl+Shift+R", click: forceReload },
+        // window's own webContents, which BaseWindow doesn't have. Ids are
+        // load-bearing for LOCAL_ONLY_ITEM_IDS in windows-menu-model.js —
+        // their custom-click handlers resolve to `focusedDashboardWebContents()`
+        // which returns the LOCAL user's focused dashboard regardless of who
+        // fired the IPC, so a remote sender in an unfocused connection window
+        // could otherwise reach the LOCAL dashboard through them. Fenced at
+        // the IPC boundary; the physical accelerator (Ctrl+R, Ctrl+=, etc.)
+        // still fires through Electron's own native dispatch. The drift-pin
+        // test walks this template and asserts every reachable leaf is
+        // classified in exactly one direction.
+        { label: "Reload", id: "reload", accelerator: "CmdOrCtrl+R", click: reload },
+        { label: "Force Reload", id: "force-reload", accelerator: "CmdOrCtrl+Shift+R", click: forceReload },
         { type: "separator" },
-        { label: "Actual Size", accelerator: "CmdOrCtrl+0", click: zoomActualSize },
-        { label: "Zoom In", accelerator: "CmdOrCtrl+=", click: zoomIn },
-        { label: "Zoom Out", accelerator: "CmdOrCtrl+-", click: zoomOut },
+        { label: "Actual Size", id: "zoom-actual", accelerator: "CmdOrCtrl+0", click: zoomActualSize },
+        { label: "Zoom In", id: "zoom-in", accelerator: "CmdOrCtrl+=", click: zoomIn },
+        { label: "Zoom Out", id: "zoom-out", accelerator: "CmdOrCtrl+-", click: zoomOut },
         { type: "separator" },
         { role: "togglefullscreen" },
         // Checkable, no accelerator: there is no cross-platform convention for

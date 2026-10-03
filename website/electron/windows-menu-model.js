@@ -17,6 +17,38 @@
 //      or `webContentsMethod(focusedWebContents)`. The third argument MUST be a
 //      real WebContents; passing anything else (an IpcMainEvent, say) makes
 //      undo/redo/cut/copy/paste/delete/selectAll throw instead of run.
+//
+// Why this file — and its enforcement partner in `ipc-registrar.js` — is
+// Windows-only, and why Linux/macOS need no parallel gate:
+//
+//   - The `app-menu:*` IPC channel (which lets a renderer enumerate and invoke
+//     menu items) is Windows-only. It exists to back the React custom titlebar
+//     (`WindowsTitlebarMenu.tsx`, mounted only when `isWinElectron`). On Linux
+//     and macOS the menu is the OS-native menu drawn via
+//     `Menu.setApplicationMenu(...)`; there is NO renderer API that reaches it,
+//     so a remote gateway page loaded in a connection window has no path to
+//     invoke it programmatically.
+//   - Custom click handlers (reload, toggleDevTools, zoom) resolve their target
+//     WebContents through `focusedDashboardWebContents()` in
+//     `window-lifecycle.js`, which walks the focused window's contentView
+//     children to find the DASHBOARD view — never the remote view. So even a
+//     physical menu click / accelerator inside a connection window operates on
+//     the local dashboard, not on remote content.
+//   - Role items (paste/copy/cut/etc.) triggered by a physical accelerator
+//     route through Electron's own dispatch to the focused WebContents, which
+//     IS a legitimate user-initiated OS-integration (a user pressing Ctrl+V is
+//     the user pasting into the surface they see).
+//
+// Corollary: the LOCAL_ONLY_ROLES / LOCAL_ONLY_MENU_IDS / LOCAL_ONLY_ITEM_IDS
+// sets below are the GLOBAL policy for menu-item sensitivity — every
+// reachable leaf is LOCAL_ONLY-classified in one of them, so there is no
+// separate "remote-safe" allowlist to keep in sync (First Principles Review
+// removed the empty `REMOTE_SAFE_ITEM_IDS` set as speculative surface).
+// The enforcement point is single (the Windows IPC boundary)
+// because that is the only place a remote sender can reach the menu today —
+// if a second renderer-invocable path is ever added (a Linux frameless custom
+// titlebar menu, an in-page menu popup), it plugs into `executeMenuItem` with
+// `senderIsLocal` and inherits these same sets without a duplicate list.
 
 // Menu items are activated by pointer here, never by an accelerator, so no
 // modifier is held. Shape matches Electron's menu KeyboardEvent.
@@ -45,6 +77,112 @@ const WINDOWS_ROLE_ACCELERATORS = Object.freeze({
   togglefullscreen: "F11",
 });
 
+// Roles that a REMOTE-origin sender must NEVER be able to invoke through
+// `app-menu:execute`. They reach state OUTSIDE the sender's own WebContents:
+//   - paste, pasteandmatchstyle: read the local OS clipboard into the DOM
+//   - copy, cut: WRITE the sender's selection into the shared OS clipboard,
+//     bypassing Chromium's `navigator.clipboard.writeText` permission model —
+//     a remote can set its own selection to arbitrary content, invoke copy
+//     through this channel, and the user's next paste anywhere else (a
+//     terminal, another app) pastes the attacker-chosen text. Symmetric with
+//     the paste threat.
+//   - quit: terminate the local app
+//   - close / minimize / zoom: mutate the OS-level state of the window the
+//     remote is rendered in (the window is a local OS object, not a sender-
+//     scoped one — closing it destroys the user's window)
+//   - togglefullscreen: cover the whole desktop, hide the taskbar
+// See the per-action gate wired in ipc-registrar.js's `app-menu:execute`
+// handler and the `senderIsLocal` argument threaded through `executeMenu` /
+// `executeMenuItem`.
+const LOCAL_ONLY_ROLES = new Set([
+  "paste",
+  "pasteandmatchstyle",
+  "copy",
+  "cut",
+  "quit",
+  "close",
+  "minimize",
+  "zoom",
+  "togglefullscreen",
+]);
+
+// Top-level menu ids whose entire submenu is fenced. Every child under these
+// ids uses a custom click handler that reaches local state (config file, SSH
+// auth, spawning windows) — none carry an Electron role, so the role-based
+// fence would miss them. Cheaper and safer than tagging each child.
+const LOCAL_ONLY_MENU_IDS = new Set([
+  "connection-menu",
+]);
+
+// Per-item ids under a submenu that is otherwise remote-safe. The View
+// submenu holds custom-click items that were once thought to be page-level
+// (reload, zoom) but actually resolve their target through
+// `focusedDashboardWebContents()`, which returns the LOCAL user's focused
+// window regardless of who fired the IPC — so a remote sender in an
+// unfocused connection window can reach the LOCAL user's dashboard through
+// them. They are fenced here alongside the OS-level outliers.
+//
+// About the "focus-scoped" custom-click distinction: Electron ROLE items are
+// dispatched with the ARGUMENTS this module passes to `item.click(...)` — the
+// sender's own WebContents — so a role naturally scopes to the sender.
+// Custom click handlers in app-menu.js do NOT read those arguments; they
+// resolve their target through `focusedDashboardWebContents()` /
+// `focusedDashboardWindow()`, which return the LOCAL user's focused window.
+// So a custom-click item invoked by a remote sender in an unfocused
+// connection window can reach the LOCAL user's window. The fence:
+//   - keep-on-top: `setAlwaysOnTop` mutates OS compositor Z-order across
+//     every window and persists to `config.json`.
+//   - devtools-toggle: DevTools on the local user's focused document is
+//     full code execution over the local dashboard's origin.
+//   - settings, about: `openSettingsPage` calls `win.restore()`, `win.show()`
+//     and `win.focus()` on the operator's window and navigates its SPA.
+//   - reload, force-reload, zoom-actual, zoom-in, zoom-out: focus-scoped
+//     custom-click handlers that reach the LOCAL user's dashboard via
+//     `focusedDashboardWebContents()`. Menu invocation is fenced here; the
+//     PHYSICAL keyboard accelerator (Ctrl+R, Ctrl+=, Ctrl+-) still works
+//     through Electron's native dispatch path, which bypasses this IPC.
+//     The renderer paints a small keyboard glyph on greyed rows whose
+//     accelerator remains live, so the user sees "row off, shortcut on."
+const LOCAL_ONLY_ITEM_IDS = new Set([
+  "keep-on-top",
+  "devtools-toggle",
+  "settings",
+  "about",
+  "reload",
+  "force-reload",
+  "zoom-actual",
+  "zoom-in",
+  "zoom-out",
+]);
+
+// Chromium-native clipboard roles. Electron marks their MenuItems
+// `registerAccelerator: false` because Chromium handles the chords
+// natively in the focused renderer — the chord never routes through
+// Electron's accelerator system. From the USER's perspective the chord
+// DOES still work in the window (Ctrl+C copies whatever's selected, in
+// any window), so from the "does pressing this chord invoke this row's
+// action" perspective these accelerators ARE effectively registered.
+// Only the mechanism differs. `acceleratorIsRegistered` returns `true`
+// for these roles regardless of `item.registerAccelerator`, so the
+// renderer's keyboard glyph — the "row off, shortcut on" cue — paints
+// on greyed Cut/Copy/Paste rows and the pixels match the user-facing
+// truth. Fixes the UX Review "clipboard false negative" watch on c2d85562b.
+const CHROMIUM_NATIVE_CLIPBOARD_ROLES = new Set([
+  "cut", "copy", "paste", "pasteandmatchstyle",
+]);
+
+function acceleratorIsRegistered(item) {
+  const role = String(item.role || "").toLowerCase();
+  if (CHROMIUM_NATIVE_CLIPBOARD_ROLES.has(role)) return true;
+  return item.registerAccelerator !== false;
+}
+
+function isLocalOnlyItem(topLevelItem, item) {
+  return LOCAL_ONLY_ROLES.has(String(item.role || "").toLowerCase())
+      || LOCAL_ONLY_MENU_IDS.has(topLevelItem && topLevelItem.id)
+      || LOCAL_ONLY_ITEM_IDS.has(item.id);
+}
+
 function acceleratorFor(item) {
   if (item.accelerator) return item.accelerator;
   const roleAccelerator = WINDOWS_ROLE_ACCELERATORS[String(item.role || "").toLowerCase()];
@@ -57,25 +195,69 @@ function acceleratorFor(item) {
   }
 }
 
-function serializeMenuItems(submenu) {
+// senderIsLocal has the same strict-`true` semantics as executeMenuItem
+// (below). Anything else is REMOTE and LOCAL_ONLY leaves are advertised as
+// `enabled: false` so the renderer paints a greyed row rather than a
+// silently-refused click. Labels, accelerators, checked state, and safe
+// items remain unchanged: the row still exists so a connection window's
+// menu keeps shape parity with a local one.
+//
+// `gated` is exposed on every leaf so the renderer can distinguish a row
+// that was disabled BY THIS GATE (`gated: true`) from a row that Electron
+// itself flagged disabled for its own reasons (e.g. an `undo` role with an
+// empty history). The renderer's "unavailable from this window — shortcut
+// still works here" affordance is scoped to the former; a natively-disabled
+// row is opaque about its cause, and pretending it can be recovered by
+// keyboard would be false.
+//
+// `acceleratorRegistered` is exposed alongside so the renderer knows whether
+// the accelerator STRING is a live OS registration or a display-only caption.
+// Electron's `registerAccelerator: false` (Linux/Windows option, see the
+// Settings item in app-menu.js) shows an accelerator label but does NOT
+// register it with the OS — used when the same key chord belongs to the
+// renderer's own shortcut registry and must reach the page unclaimed. On a
+// display-only accelerator the "shortcut still fires through Electron's
+// native dispatch" claim is FALSE — the OS never routes the chord to the
+// menu, so a remote gateway page in a connection window can freely intercept
+// it (its SPA owns the keystroke). The renderer's keyboard glyph — the
+// "row off, shortcut on" cue — must therefore stay OFF for these rows.
+function serializeMenuItems(topLevelItem, senderIsLocal = false) {
+  const submenu = topLevelItem && topLevelItem.submenu;
   if (!submenu || !Array.isArray(submenu.items)) return [];
   return submenu.items.flatMap((item, index) => {
     if (!item.visible) return [];
     if (item.type === "separator") return [{ type: "separator", index }];
+    const gated = senderIsLocal !== true && isLocalOnlyItem(topLevelItem, item);
     return [{
       type: item.type || "normal",
       index,
       label: item.label,
       accelerator: acceleratorFor(item),
-      enabled: item.enabled,
+      // Electron's default is `true` (registered). Explicit `false` means the
+      // caption is display-only; anything else (undefined / any other value)
+      // is treated as registered, so a caller that drops the field keeps the
+      // legacy behaviour. Clipboard roles special-case to `true` — Electron
+      // marks them `registerAccelerator: false` internally because Chromium
+      // handles the chords natively, but the user-facing truth is that the
+      // chord DOES still invoke the row's action (via Chromium's native
+      // clipboard handling, not Electron's accelerator system).
+      acceleratorRegistered: acceleratorIsRegistered(item),
+      enabled: gated ? false : item.enabled,
+      gated,
       checked: item.checked,
     }];
   });
 }
 
-function executeMenuItem(topLevelItem, index, win, targetWebContents) {
+// senderIsLocal is a positive, strict flag. Anything other than `true` — the
+// default when a caller forgets it, an unexpected non-boolean, a truthy proxy
+// — is treated as REMOTE, so a caller that drops the argument fails closed on
+// LOCAL_ONLY items and safe items still dispatch. The gate itself lives in
+// isLocalOnlyItem so tests can drive its policy independently of dispatch.
+function executeMenuItem(topLevelItem, index, win, targetWebContents, senderIsLocal = false) {
   const item = topLevelItem && topLevelItem.submenu && topLevelItem.submenu.items[index];
   if (!item || !item.visible || !item.enabled || typeof item.click !== "function") return false;
+  if (senderIsLocal !== true && isLocalOnlyItem(topLevelItem, item)) return false;
   item.click(MENU_KEYBOARD_EVENT, win, targetWebContents);
   return true;
 }
@@ -85,4 +267,7 @@ module.exports = {
   executeMenuItem,
   MENU_KEYBOARD_EVENT,
   WINDOWS_ROLE_ACCELERATORS,
+  LOCAL_ONLY_ROLES,
+  LOCAL_ONLY_MENU_IDS,
+  LOCAL_ONLY_ITEM_IDS,
 };

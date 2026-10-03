@@ -361,7 +361,9 @@
     "kiro_credit_usage_no_reading": "Utilizzo crediti Kiro — nessuna lettura del saldo per ora; apri per aggiornare",
     "kiro_credit_usage_config_unreadable": "Utilizzo crediti Kiro — impossibile leggere l’impostazione del backend; apri per riprovare",
     "metrics_card_old_data": "Ultimo aggiornamento oltre 90 secondi fa",
-    "metrics_card_fetch_failed": "L'ultimo aggiornamento delle metriche non è riuscito"
+    "metrics_card_fetch_failed": "L'ultimo aggiornamento delle metriche non è riuscito",
+    "titlebar_menu_disabled_footer": "Alcuni elementi non sono disponibili nelle finestre di connessione — usa la finestra principale. Un'icona della tastiera indica le scorciatoie che funzionano ancora qui; una scorciatoia barrata no.",
+    "titlebar_menu_shortcut_still_available": "Scorciatoia ancora disponibile"
   },
   "appSdk": {
     "chatEmbed": {

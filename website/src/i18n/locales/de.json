@@ -357,7 +357,9 @@
     "kiro_credit_usage_no_reading": "Kiro-Credit-Verbrauch — noch keine Guthabenanzeige; öffnen zum Aktualisieren",
     "kiro_credit_usage_config_unreadable": "Kiro-Credit-Verbrauch — Backend-Einstellung konnte nicht gelesen werden; öffnen zum erneuten Versuch",
     "metrics_card_old_data": "Zuletzt vor mehr als 90 Sekunden aktualisiert",
-    "metrics_card_fetch_failed": "Die letzte Aktualisierung der Metriken ist fehlgeschlagen"
+    "metrics_card_fetch_failed": "Die letzte Aktualisierung der Metriken ist fehlgeschlagen",
+    "titlebar_menu_disabled_footer": "Einige Einträge sind in Verbindungsfenstern nicht verfügbar — bitte das Hauptfenster verwenden. Ein Tastatur-Symbol markiert Tastenkürzel, die hier weiterhin funktionieren; ein durchgestrichenes Tastenkürzel nicht.",
+    "titlebar_menu_shortcut_still_available": "Kürzel weiterhin verfügbar"
   },
   "appSdk": {
     "chatEmbed": {

@@ -31,6 +31,8 @@
     "open_inbox": "Open inbox",
     "open_menu": "Open menu",
     "open_the_full_inbox": "Open the full inbox",
+    "titlebar_menu_disabled_footer": "Some items are unavailable in connection windows — use the main window. A keyboard icon marks shortcuts that still work here; a struck-out shortcut does not.",
+    "titlebar_menu_shortcut_still_available": "Shortcut still available",
     "overage_rate": "Overage rate",
     "overage_used": "Overage used",
     "page_will_reconnect_when_ready": "Page will reconnect when ready…",
