@@ -983,6 +983,14 @@ _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
     "other harnesses already carry identity through their own projections.",
     (
         "src/kiro_crew/acp/runtime.py",
+        "_with_declined_home_servers",
+    ): "Kiro alone mounts only what its --agent spec declares, so a refused shared spec "
+    "leaves it missing the mcp.json server itself. KAS mounts mcp.json on its own and "
+    "lacks only the tools grant, which its harness adds; a delivered copy would shadow "
+    "that native mount. Every other host composes its own array. Fails closed: a new "
+    "backend gets nothing.",
+    (
+        "src/kiro_crew/acp/runtime.py",
         "load_session",
     ): "KAS alone must have its custom agents re-attached on resume, and no harness "
     "property means 'this host needs its agent re-sent'. Adding one would cost the "

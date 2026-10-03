@@ -66,6 +66,7 @@ from __future__ import annotations
 import copy
 import logging
 import os
+from collections.abc import Collection
 from pathlib import Path
 from typing import Any
 
@@ -727,6 +728,7 @@ def to_client_custom_agent(
     crew_panel: bool = False,
     session_key: str = "",
     pre_tool_hook_matchers: tuple[str, ...] = (),
+    extra_tool_refs: Collection[str] = (),
 ) -> dict[str, Any]:
     """Project one Crew agent spec onto a KAS ``ClientCustomAgent`` descriptor.
 
@@ -831,6 +833,14 @@ def to_client_custom_agent(
         merged = list(base_allowed)
         merged.extend(g for g in _MEMBER_PANEL_GRANTS if g not in merged)
         allowed_tools_input = merged
+
+    if extra_tool_refs:
+        # Visibility only, like the two blocks above minus their approvals: the
+        # refs reveal servers KAS already mounts, and ``allowedTools`` is not
+        # touched, so each call still resolves to a prompt. ``"*"`` covers them.
+        tools = out["tools"]
+        if isinstance(tools, list):
+            out["tools"] = [*tools, *(r for r in extra_tool_refs if r not in tools)]
 
     # Two inputs, one of them governed twice. The derivation is `allowedTools`
     # and nothing else; the spec's own `permissions` block is then folded in by
@@ -1130,6 +1140,7 @@ def build_kas_custom_agents(
     member_dispatch: bool = False,
     crew_panel: bool = False,
     session_key: str = "",
+    extra_tool_refs: Collection[str] = (),
 ) -> list[dict[str, Any]]:
     """Build the ``_meta.kiro.customAgents`` batch that binds *agent_id* on KAS.
 
@@ -1167,6 +1178,7 @@ def build_kas_custom_agents(
             crew_panel=crew_panel,
             session_key=session_key,
             pre_tool_hook_matchers=pre_tool_hook_matchers(agent_id, spec),
+            extra_tool_refs=extra_tool_refs,
         )
     ]
 

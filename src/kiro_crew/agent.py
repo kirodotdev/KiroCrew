@@ -2951,8 +2951,11 @@ def _decline_shared_agent_home(*, audit: bool = True) -> Path | None:
                 "data home (KIROCREW_HOME=%s%s): the specs would pin this "
                 "instance's home into every managed MCP server entry and break "
                 "strict session identity for the default-home gateway (#9690). "
-                "This instance will use the existing specs instead. If no "
-                "default-home install exists anymore (the data home was "
+                "This instance will use the existing specs instead; on the kiro "
+                "and KAS backends its own mcp.json stdio servers still reach its "
+                "sessions (delivered at session level on kiro, granted in tools "
+                "on KAS), without auto-approve. "
+                "If no default-home install exists anymore (the data home was "
                 "permanently relocated), the existing specs are stale leftovers: "
                 "remove the kirocrew*.json files under %s and restart, and this "
                 "instance will write its own.",
@@ -3183,6 +3186,68 @@ def reproject_for_ceiling_change() -> None:
     _projected_ceiling_generation = generation
 
 
+def _resolve_mcp_command(cmd: str, env: dict | None) -> tuple[str | None, str]:
+    """Resolve an MCP command to an absolute path, plus the path searched.
+
+    Returns ``(resolved_or_None, search_path)``. The second element is what
+    lets the drop warning name the directories actually consulted; it is ""
+    when no PATH search happened (empty command, or an absolute command
+    accepted directly).
+
+    Accepts an absolute path directly when the file exists and is
+    executable — shutil.which can fail inside user-namespace sandboxes
+    even when the file is fine.
+
+    Searches the server's own env.PATH first, then the contributed MCP
+    directories, then the same augmented PATH the MCP probe uses — all via
+    :func:`mcp_search_path`, so resolution, the probe and the rewriter all
+    agree. A divergence would let a server probe healthy
+    on the dashboard while being silently dropped from the generated agent
+    config ("command not found: kirocrew"). The value EMITTED into the spec
+    is :func:`spec_env_path` instead, which omits the contributed
+    directories: an emitted PATH is persisted and read back as an authored
+    entry, so a contributed directory written there could never be removed
+    again. augmented_path
+    covers the contributed MCP install directories and appends the running
+    interpreter's console-scripts dir
+    (venv ``Scripts\\`` on Windows, ``bin/`` on POSIX) as a last-resort
+    fallback for pip-generated wrappers like ``kirocrew``.
+    """
+    if not cmd:
+        return None, ""
+    if os.path.isabs(cmd) and os.path.isfile(cmd) and os.access(cmd, os.X_OK):
+        return cmd, ""
+    # Case-insensitive PATH key: a Windows-authored spec says "Path", and
+    # resolving against a DIFFERENT path than the emitted spec carries would
+    # reopen the probe/session split from the other side.
+    _env = env or {}
+    _key = spec_path_key(_env)
+    _declared = _env.get(_key, "") if _key else ""
+    _search = mcp_search_path(_declared if isinstance(_declared, str) else "")
+    # A command carrying a directory component is not PATH-searched:
+    # ``shutil.which`` returns before it reads ``path=`` when
+    # ``os.path.dirname(cmd)`` is truthy, checking exactly the one location
+    # the command names. Reporting ``_search`` for it would send the reader
+    # to audit directories that were never consulted, which is the opposite
+    # of the not-installed/installed-elsewhere distinction this path draws --
+    # so return "" as the searched path even though the lookup still runs.
+    #
+    # Both lookups pass through ``resolved_command_casing``: the value
+    # returned here is PERSISTED as the spec's absolute ``command``, and an
+    # absolute path is accepted verbatim on the next pass, so a PATHEXT-
+    # synthesized ``.EXE`` written once would be indistinguishable from an
+    # operator's own spelling from then on. Repairing at the resolver, not
+    # at the persist site, also keeps the provenance record's ``emitted``
+    # value repaired, so ``command_is_ours`` still recognises the entry.
+    if os.path.dirname(cmd):
+        return resolved_command_casing(shutil.which(cmd, path=_search)) or None, ""
+    # The search path is returned, not recomputed by the caller: a candidate
+    # that declares its own ``env.PATH`` is searched against a DIFFERENT path
+    # than one that does not, so a caller reporting ``mcp_search_path("")``
+    # would name directories that were never searched.
+    return resolved_command_casing(shutil.which(cmd, path=_search)) or None, _search
+
+
 def rebuild_agent_config(
     *,
     clean: bool = False,
@@ -3225,11 +3290,21 @@ def rebuild_agent_config(
             the shared-home guard refused. Pass a FRESH empty list: the
             reader consumes the first element, so a reused list misreports.
     """
+    from kiro_crew import mcp_declined_home  # circular at module scope
+
     declined = _decline_shared_agent_home()
     if declined is not None:
+        # The shared spec is not ours, but this instance's own mcp.json servers
+        # still have to reach its sessions: compute what a written spec would
+        # have mounted, in memory, for the session-level channel to deliver.
+        try:
+            mcp_declined_home.refresh_projection()
+        except Exception:
+            logger.warning("could not project mcp.json servers for session delivery", exc_info=True)
         if _wrote_out is not None:
             _wrote_out.append(False)
         return declined
+    mcp_declined_home.clear_projection()
 
     kiro_agents_dir_path().mkdir(parents=True, exist_ok=True)
     path = kiro_agents_dir_path() / AGENT_FILENAME
@@ -3291,68 +3366,7 @@ def rebuild_agent_config(
     # spec from the other sources before dropping it, in priority order
     # (kirocrew > kiro-global > provider-global).  This prevents one source's
     # unresolvable command from killing a server another source can resolve.
-    def _resolve_command(cmd: str, env: dict | None) -> tuple[str | None, str]:
-        """Resolve an MCP command to an absolute path, plus the path searched.
-
-        Returns ``(resolved_or_None, search_path)``. The second element is what
-        lets the drop warning name the directories actually consulted; it is ""
-        when no PATH search happened (empty command, or an absolute command
-        accepted directly).
-
-        Accepts an absolute path directly when the file exists and is
-        executable — shutil.which can fail inside user-namespace sandboxes
-        even when the file is fine.
-
-        Searches the server's own env.PATH first, then the contributed MCP
-        directories, then the same augmented PATH the MCP probe uses — all via
-        :func:`mcp_search_path`, so resolution, the probe and the rewriter all
-        agree. A divergence would let a server probe healthy
-        on the dashboard while being silently dropped from the generated agent
-        config ("command not found: kirocrew"). The value EMITTED into the spec
-        is :func:`spec_env_path` instead, which omits the contributed
-        directories: an emitted PATH is persisted and read back as an authored
-        entry, so a contributed directory written there could never be removed
-        again. augmented_path
-        covers ~/.aim/mcp-servers and ~/.toolbox/bin and appends the running
-        interpreter's console-scripts dir
-        (venv ``Scripts\\`` on Windows, ``bin/`` on POSIX) as a last-resort
-        fallback for pip-generated wrappers like ``kirocrew``.
-        """
-        if not cmd:
-            return None, ""
-        if os.path.isabs(cmd) and os.path.isfile(cmd) and os.access(cmd, os.X_OK):
-            return cmd, ""
-        # Case-insensitive PATH key: a Windows-authored spec says "Path", and
-        # resolving against a DIFFERENT path than the emitted spec carries would
-        # reopen the probe/session split from the other side.
-        _env = env or {}
-        _key = spec_path_key(_env)
-        _declared = _env.get(_key, "") if _key else ""
-        _search = mcp_search_path(_declared if isinstance(_declared, str) else "")
-        # A command carrying a directory component is not PATH-searched:
-        # ``shutil.which`` returns before it reads ``path=`` when
-        # ``os.path.dirname(cmd)`` is truthy, checking exactly the one location
-        # the command names. Reporting ``_search`` for it would send the reader
-        # to audit directories that were never consulted, which is the opposite
-        # of the not-installed/installed-elsewhere distinction this path draws --
-        # so return "" as the searched path even though the lookup still runs.
-        #
-        # Both lookups pass through ``resolved_command_casing``: the value
-        # returned here is PERSISTED as the spec's absolute ``command``, and an
-        # absolute path is accepted verbatim on the next pass, so a PATHEXT-
-        # synthesized ``.EXE`` written once would be indistinguishable from an
-        # operator's own spelling from then on. Repairing at the resolver, not
-        # at the persist site, also keeps the provenance record's ``emitted``
-        # value repaired, so ``command_is_ours`` still recognises the entry.
-        if os.path.dirname(cmd):
-            return resolved_command_casing(shutil.which(cmd, path=_search)) or None, ""
-        # The search path is returned, not recomputed by the caller: a candidate
-        # that declares its own ``env.PATH`` is searched against a DIFFERENT path
-        # than one that does not, so a caller reporting ``mcp_search_path("")``
-        # would name directories that were never searched.
-        return resolved_command_casing(shutil.which(cmd, path=_search)) or None, _search
-
-    resolved = mcp_sources.resolve_mcp_servers(config, sources, _resolve_command)
+    resolved = mcp_sources.resolve_mcp_servers(config, sources, _resolve_mcp_command)
     mounted = mcp_aliases.normalize_server_keys(config, resolved.unresolved)
 
     # Sync shared (user-installed) servers to tools/allowedTools.

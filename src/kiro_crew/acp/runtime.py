@@ -31,7 +31,13 @@ from pathlib import Path
 from types import ModuleType
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, NamedTuple, TypeVar
 
-from kiro_crew import acp_tool_gate, agent_scratch, platform_compat, runtime_death
+from kiro_crew import (
+    acp_tool_gate,
+    agent_scratch,
+    mcp_declined_home,
+    platform_compat,
+    runtime_death,
+)
 from kiro_crew.acp import runtime_process_tree, runtime_start
 from kiro_crew.acp._dispatch import (
     agent_version_from_init,
@@ -6626,6 +6632,32 @@ class AcpRuntime:
             )
         return entries, token
 
+    async def _with_declined_home_servers(
+        self, entries: list[dict[str, Any]], agent: str | None, work_dir: str | Path
+    ) -> list[dict[str, Any]]:
+        """Append the ``mcp.json`` servers a refused shared spec cannot carry.
+
+        Empty unless this instance is refused the shared agent home (see
+        :mod:`kiro_crew.mcp_declined_home`). Called AFTER the stub session token is
+        attached, so a third-party server's environment never receives it, and with
+        every name already in the array, so nothing is registered twice.
+
+        Kiro only. KAS mounts ``~/.kiro/settings/mcp.json`` itself, each server
+        with its own environment, and lacks only the ``tools`` grant, which
+        ``KasHarness.session_extras`` adds (:func:`mcp_declined_home.kas_tool_grants`).
+        A delivered copy there would shadow that native mount with one the wire
+        carried, credentials included.
+        """
+        if self.acp_backend == ACP_BACKEND_KIRO:
+            extra = await asyncio.to_thread(
+                mcp_declined_home.session_servers,
+                agent or self._agent,
+                work_dir=work_dir,
+                present={str(entry.get("name")) for entry in entries},
+            )
+            return entries + extra if extra else entries
+        return entries
+
     async def _unpooled_control_planes(
         self, entries: list[dict[str, Any]], agent: str | None, work_dir: str | Path
     ) -> list[dict[str, Any]]:
@@ -6812,6 +6844,9 @@ class AcpRuntime:
                     pooled, agent or self._agent, session_work_dir
                 )
                 mcp_servers, stub_token = await self._own_stub_session(mcp_servers, session_key)
+                mcp_servers = await self._with_declined_home_servers(
+                    mcp_servers, agent or self._agent, session_work_dir
+                )
         else:
             # An explicit array is the caller's own composition (a mirror's
             # projection, a test double); it is not this method's to re-key, and it
@@ -7692,6 +7727,9 @@ class AcpRuntime:
                 pooled, active_agent, session_work_dir
             )
             mcp_servers, stub_token = await self._own_stub_session(mcp_servers, session_key)
+            mcp_servers = await self._with_declined_home_servers(
+                mcp_servers, active_agent, session_work_dir
+            )
         member_withheld = False
         # False for every non-member session, set without an awaited call so the
         # Kiro construction path is untouched by this capability (H13).
