@@ -3580,6 +3580,18 @@ SESSION_RELOAD_SCHEMA = ToolSchema(
     ],
 )
 
+SESSION_RENAME_SCHEMA = ToolSchema(
+    tool_name="session_rename",
+    fields=[
+        FieldSpec("target", str, required=True, max_len=MAX_SHORT_STRING),
+        # A transport bound only. The 200-character title rule is applied by the
+        # route AFTER surrounding whitespace is stripped
+        # (``session_control._clean_rename_title``), so a padded title that is
+        # short once stripped is not refused here.
+        FieldSpec("title", str, required=True, max_len=MAX_SHORT_STRING),
+    ],
+)
+
 SESSION_CLOSE_SCHEMA = ToolSchema(
     tool_name="session_close",
     fields=[
@@ -3920,6 +3932,7 @@ MCP_DASHBOARD_SCHEMAS: dict[str, ToolSchema] = {
     "session_end_wait": SESSION_END_WAIT_SCHEMA,
     "session_set_model": SESSION_SET_MODEL_SCHEMA,
     "session_reload": SESSION_RELOAD_SCHEMA,
+    "session_rename": SESSION_RENAME_SCHEMA,
     "session_close": SESSION_CLOSE_SCHEMA,
     "session_revive": SESSION_REVIVE_SCHEMA,
     "session_send": SESSION_SEND_SCHEMA,

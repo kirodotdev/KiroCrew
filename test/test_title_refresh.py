@@ -933,10 +933,12 @@ class TestRehydratedMarkRebase:
 class TestRenameIsFinal:
     @pytest.mark.asyncio
     async def test_rename_sets_user_origin_and_bumps_epoch(self, monkeypatch):
-        async def _noop(*_a, **_kw):
-            return None
+        async def _saved(*_a, **_kw):
+            # ``_persist_title`` returns True when the write landed. The sidebar
+            # route ignores the result (best-effort save, as on main).
+            return True
 
-        monkeypatch.setattr(chat_title, "_persist_title", _noop)
+        monkeypatch.setattr(chat_title, "_persist_title", _saved)
         monkeypatch.setattr(chat_title, "sel", MagicMock())
         slot = _ChatSlot("chat-1-1")
         state = _fake_state()
@@ -1272,14 +1274,17 @@ class TestPersistWriteOrdering:
 
         def _racing_update(key, fields, guard, **kwargs):
             writes.append(dict(fields))
+            result = real_update(key, fields, guard, **kwargs)
             if len(writes) == 1:
-                # Simulate the rename winning the race while this (stale)
-                # write is on the worker thread: by the time the awaiting
-                # coroutine resumes, the epoch has moved.
+                # Simulate the rename winning the race after this (stale)
+                # write's guard ran under the lock but before the awaiting
+                # coroutine resumes: the epoch has moved. (A rename landing
+                # BEFORE the guard runs is folded into this same write by the
+                # guard's re-snapshot and needs no second write.)
                 slot.title = "User chosen name"
                 slot._title_origin = _TITLE_ORIGIN_USER
                 slot._title_epoch += 1
-            return real_update(key, fields, guard, **kwargs)
+            return result
 
         log.update_metadata_if = _racing_update  # type: ignore[method-assign]
 

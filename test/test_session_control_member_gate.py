@@ -301,13 +301,13 @@ class TestCarriedFenceVerdict:
 
 
 class TestEveryRouteForwardsTheCarriedVerdict:
-    """The carry is held by five hand-written call sites; pin all of them.
+    """The carry is held by six hand-written call sites; pin all of them.
 
     The TOCTOU closure this gate exists for holds only if EVERY route that
     consults the fence hands ``_carried_fence(request)`` to ``session_control.py``
     as ``caller_fenced``. A route that forgets it silently reopens the window for
-    that one verb. So each of ``stop`` / ``close`` / ``send`` / ``read`` /
-    ``create`` is driven through its real handler with the core function replaced
+    that one verb. So each of ``stop`` / ``close`` / ``send`` / ``rename`` /
+    ``read`` / ``create`` is driven through its real handler with the core function replaced
     by a recorder, and the recorded ``caller_fenced`` must be ``True`` for an
     admitted member and ``None`` for an owner caller. ``create`` takes no target,
     so its verdict decides which memory store the new child may be bound to
@@ -322,6 +322,12 @@ class TestEveryRouteForwardsTheCarriedVerdict:
             "send_to_target",
             True,
             {"target": "chat-7", "message": "hello"},
+            None,
+        ),
+        "api_session_control_rename": (
+            "rename_target",
+            True,
+            {"target": "chat-7", "title": "renamed"},
             None,
         ),
         "api_session_control_read": ("read_messages", False, None, {"target": "chat-7"}),

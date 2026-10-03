@@ -66,7 +66,7 @@ from kiro_crew.dashboard.channel_folders import (
     folder_id_for_name,
     lookup_channel_folder,
 )
-from kiro_crew.dashboard.chat_title import _persist_title
+from kiro_crew.dashboard.chat_title import apply_manual_title
 from kiro_crew.dashboard.chat_utils import _sync_dashboard_slots, effective_session_key
 from kiro_crew.dashboard.state import (
     _normalize_slot_key,
@@ -263,34 +263,22 @@ async def rename_channel_title_live(
     Returns ``False`` when no live slot owns the session, so the channel can fall
     back to its conversation-log-only path. A live slot is authoritative once it
     exists: changing only transcript metadata lets its later save rewrite the old
-    in-memory title over the new one. Match the dashboard's own manual-rename
-    ordering instead — update the slot synchronously, bump its title epoch so a
-    background titler stands down, persist through the epoch-aware helper, then
-    broadcast the exact value every dashboard client must render.
+    in-memory title over the new one. So the live slot is renamed through
+    :func:`~kiro_crew.dashboard.chat_title.apply_manual_title`, the code the
+    sidebar rename and ``session_rename`` share: the slot is updated
+    synchronously, its title epoch bumped so a background titler stands down,
+    the title persisted through the epoch-aware helper, then broadcast.
 
-    ``_persist_title`` is best-effort by dashboard contract. A failed immediate
-    metadata write leaves the updated live slot authoritative and a later slot
-    save can recover it; the dashboard's own rename endpoint makes the same trade.
+    The save is best-effort by dashboard contract. A failed immediate metadata
+    write leaves the updated live slot authoritative, and a later slot save can
+    recover it; the dashboard's own rename endpoint makes the same trade.
     """
     slot = live_dashboard_slot(dashboard_state, session_key)
     if slot is None:
         return False
 
-    slot.title = title
-    slot._titled = True
-    slot._title_origin = "user"
-    slot._title_epoch = int(getattr(slot, "_title_epoch", 0)) + 1
-    persisted = await _persist_title(dashboard_state, slot)
-    if not persisted:
+    if not await apply_manual_title(dashboard_state, slot, title):
         logger.warning("channel title update is live but not yet durable for %s", session_key)
-
-    push_title = getattr(dashboard_state, "push_slot_title", None)
-    if callable(push_title):
-        push_title(slot.key, title)
-    else:
-        push_slots = getattr(dashboard_state, "push_slots_update", None)
-        if callable(push_slots):
-            push_slots()
     return True
 
 

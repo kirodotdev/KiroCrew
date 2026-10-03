@@ -155,6 +155,9 @@ CHANNEL_AGENT_BLOCKED_TOOLS: tuple[str, ...] = (
     # Reload relaunches another session's agent process; same containment
     # reason as stop.
     "session_reload",
+    # Renaming relabels a session in the person's sidebar, named from thread text
+    # other people wrote; same containment reason as the tree verbs below.
+    "session_rename",
     "session_send",
     "session_read_message",
     # A digest of the same transcript `session_read_message` returns, so it is

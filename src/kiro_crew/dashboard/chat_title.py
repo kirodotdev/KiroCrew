@@ -901,17 +901,28 @@ async def _persist_title(state: DashboardState, slot: _ChatSlot) -> bool:
                 slot.key,
             )
     while True:
-        epoch = slot._title_epoch
-        fields: dict[str, Any] = {"title": slot.title}
-        origin = slot._title_origin
-        if origin in _TITLE_ORIGINS:
-            fields["title_origin"] = origin
-        if slot._title_refresh_mark:
-            fields["title_refresh_mark"] = slot._title_refresh_mark
-        # Written unconditionally (unlike the mark, which only grows): the flag
-        # goes True -> False when the early refresh consumes it, and a stale
-        # True on disk would re-arm the early milestone on every restart.
-        fields["title_low_signal"] = slot._title_low_signal
+        # A one-element list so the lock-held fold can move the epoch this
+        # write is checked against when it re-snapshots the title.
+        epoch = [slot._title_epoch]
+        fields: dict[str, Any] = {}
+
+        def _snapshot_title_fields() -> None:
+            fields["title"] = slot.title
+            origin = slot._title_origin
+            if origin in _TITLE_ORIGINS:
+                fields["title_origin"] = origin
+            else:
+                fields.pop("title_origin", None)
+            if slot._title_refresh_mark:
+                fields["title_refresh_mark"] = slot._title_refresh_mark
+            else:
+                fields.pop("title_refresh_mark", None)
+            # Written unconditionally (unlike the mark, which only grows): the flag
+            # goes True -> False when the early refresh consumes it, and a stale
+            # True on disk would re-arm the early milestone on every restart.
+            fields["title_low_signal"] = slot._title_low_signal
+
+        _snapshot_title_fields()
         # An upsert can be the FIRST write of this session's line: the on-send
         # titling attempt runs before the turn-end save and before the periodic
         # flush. A restricted slot's line must never exist without its mode, and
@@ -920,6 +931,14 @@ async def _persist_title(state: DashboardState, slot: _ChatSlot) -> bool:
         # leaves an ordinary line's mode to the transcript save.
 
         def _fold_memory_mode(metadata: dict) -> bool:
+            # Runs under the transcript lock. If an explicit title landed after
+            # this write was snapshotted, write the CURRENT values instead: of
+            # two racing writes, the one the lock lets through last then always
+            # carries the newest title, so the disk is right even when the
+            # loop's corrective re-write below fails.
+            if slot._title_epoch != epoch[0]:
+                epoch[0] = slot._title_epoch
+                _snapshot_title_fields()
             retained_mode = stricter_memory_mode(
                 canonical_memory_mode(metadata.get("memory_mode")), slot_mode
             )
@@ -951,7 +970,7 @@ async def _persist_title(state: DashboardState, slot: _ChatSlot) -> bool:
                 state, slot.key, tightening, history_key
             )
             return False
-        if slot._title_epoch == epoch:
+        if slot._title_epoch == epoch[0]:
             return True
         logger.debug("Explicit title landed during persist for slot %s; re-persisting", slot.key)
 
@@ -1397,6 +1416,47 @@ async def api_chat_slot_generate_title(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "title": "" if fallback_is_placeholder else title})
 
 
+async def apply_manual_title(state: DashboardState, slot: Any, title: str) -> bool:
+    """Set *title* on *slot* as a final, manual name, persist it and broadcast it.
+
+    Shared by the sidebar rename route, the ``session_rename`` session-control
+    verb and a channel's ``/title`` on a live slot
+    (``channel_slots.rename_channel_title_live``), so every rename lands exactly
+    like a person's. The caller has already validated *title*.
+
+    Every field is assigned BEFORE the first await, so a caller that gates the
+    target synchronously and then awaits this coroutine has no suspension between
+    its gate and the write.
+
+    Returns whether the title reached the conversation history. Saving is
+    best-effort by dashboard contract: on
+    a failed write the slot keeps the new title and stays authoritative, it is
+    still broadcast, and the slot's next full save writes it to disk. Nothing is
+    rolled back, so a newer rename that overlaps this one never gets an older
+    title restored over it. A caller that reports the outcome to someone who
+    acts on it (``session_rename``) must say the title is live but not yet saved
+    rather than report plain success.
+    """
+    slot.title = title
+    slot._titled = True
+    # A manual rename is final: origin "user" locks the background refresh out
+    # permanently, and the synchronous epoch bump makes any in-flight
+    # background attempt stand down instead of clobbering this name.
+    slot._title_origin = _TITLE_ORIGIN_USER
+    slot._title_epoch += 1
+    saved = await _persist_title(state, slot)
+    if not saved:
+        logger.warning("Rename of slot %s is live but not yet saved", slot.key)
+    # ``slot_title`` keeps every consumer's title current; the patch carries the
+    # projected (redacted) title to patch-capable tabs in place of a full list.
+    # Published from the slot, not from *title*: a rename that overlapped this
+    # write has already replaced it, and a stale broadcast would undo that on
+    # screen.
+    state.push_slot_title(slot.key, slot.title, full=False)
+    state.push_slot_patch(slot.key, ("title",))
+    return saved
+
+
 async def api_chat_slot_rename(request: web.Request) -> web.Response:
     """PATCH /api/chat/slots/{slot}/title — rename a chat session."""
     state: DashboardState = request.app["state"]
@@ -1413,18 +1473,9 @@ async def api_chat_slot_rename(request: web.Request) -> web.Response:
     title = body.get("title", "").strip()[:200]
     if not title:
         return web.json_response({"error": "title required", "code": "title_required"}, status=400)
-    slot.title = title
-    slot._titled = True
-    # A manual rename is final: origin "user" locks the background refresh out
-    # permanently, and the synchronous epoch bump makes any in-flight
-    # background attempt stand down instead of clobbering this name.
-    slot._title_origin = _TITLE_ORIGIN_USER
-    slot._title_epoch += 1
-    await _persist_title(state, slot)
-    # ``slot_title`` keeps every consumer's title current; the patch carries the
-    # projected (redacted) title to patch-capable tabs in place of a full list.
-    state.push_slot_title(slot.key, title, full=False)
-    state.push_slot_patch(slot.key, ("title",))
+    # Best-effort save, as on main: the live slot stays authoritative and its
+    # next full save writes the title (see ``apply_manual_title``).
+    await apply_manual_title(state, slot, title)
     sel().log_api_access(
         caller="dashboard",
         operation="chat.slot_rename",

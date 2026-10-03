@@ -1,18 +1,19 @@
 # Session Control — driving another session
 
-One chat session can open, fork, seed, watch, stop, close and revive another one,
-change its model, reload its agent process, and take another one under itself in
+One chat session can open, fork, seed, watch, stop, rename, close and revive another
+one, change its model, reload its agent process, and take another one under itself in
 the sidebar. The tools come from the
 `kirocrew-dashboard` MCP server, so an agent that does not mount that server
 never has them — exactly like any other MCP server. This page is the reference
-for all 28 of its tools, written for the agent that is about to use them.
+for all 29 of its tools, written for the agent that is about to use them.
 
 The server is defined in `src/kiro_crew/mcp_dashboard.py`. Two halves:
 
 - **Session control** — `session_create`, `session_fork`, `session_send`,
   `session_read_message`, `session_summary`, `session_stop`, `session_end_wait`,
-  `session_set_model`, `session_reload`, `session_close`, `session_revive`, `session_broadcast`,
-  `session_status`, `session_adopt`, `session_release`. These reach another session.
+  `session_set_model`, `session_reload`, `session_rename`, `session_close`,
+  `session_revive`, `session_broadcast`, `session_status`, `session_adopt`,
+  `session_release`. These reach another session.
 - **Sidebar shape** — `chat_folder_tree`, `chat_folder_create`,
   `chat_folder_move`, `chat_folder_move_session`, `chat_folder_file_self`,
   `chat_tag_list`, `chat_tag_create`, `chat_tag_update`, `chat_tag_assign`,
@@ -510,6 +511,46 @@ predates it, since none of those leaves a lineage to check. The person's own ses
 unaffected. A revive also spends the caller's create budget and per-caller slot
 cap (the revived slot is charged to the reviver for the cap while keeping its own
 creator) and the global slot cap.
+
+### `session_rename`
+
+| Argument | Required | Meaning |
+|---|---|---|
+| `target` | yes | Session key, `dashboard:<slot>` key, or exact unique title |
+| `title` | yes | New sidebar title, 1 to 200 characters after surrounding whitespace is stripped |
+
+Sets the target's sidebar title through the same code as the sidebar's own
+rename. The rename is final: the automatic titler stops refreshing that session,
+exactly as after a person renames it by hand. Nothing else about the target
+changes, and a running turn keeps running.
+
+The caller may rename itself, or any session `session_stop` would let it act
+on. A crew member, a scheduled run, an owner-DM channel session and any
+agent-created session reach only the sessions they created, so a person's own
+tabs are refused to them (`not_creator`). Archived, scheduled-run, incognito,
+app-scoped, channel-linked and mirrored sessions are refused with the same codes
+the other session tools use. The scheduled-run refusal (`unattended_target`)
+covers the caller too: a cron run's own session is not renamable, even by itself.
+
+A title over 200 characters, an empty title, one made only of invisible
+characters, or one containing control characters, text-direction controls or
+any other invisible format character (such as a zero-width space, a word joiner
+or a soft hyphen), or the blank Braille pattern U+2800 anywhere, is refused
+rather than cut down (`invalid_title`). The
+zero-width joiner and non-joiner and the tag characters stay allowed, because
+emoji sequences, flag emoji and scripts such as Persian need them. The stored title
+passes through `_scrub_text`, the scrub the dashboard applies to stored fields.
+It redacts credentials and exfiltration URLs like a `session_create` title, and
+a secret split by an invisible character (such as a zero-width joiner) is still
+redacted. A title that redaction lengthens past 200 characters is refused
+(`invalid_title`) rather than cut, so a stored title never holds a torn
+`[REDACTED]` marker.
+
+If the new title cannot be written to the session's history right away, the call
+fails with `title_persist_failed`. The sidebar already shows the new title, and
+the session's next save writes it; until then a restart brings back the previous
+one. Renaming again with the same title is safe. A call that returns `ok` has
+been saved.
 
 ## Folders
 

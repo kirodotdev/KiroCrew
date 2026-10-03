@@ -125,6 +125,7 @@ from kiro_crew.validation import (
     SESSION_READ_MESSAGE_SCHEMA,
     SESSION_RELEASE_SCHEMA,
     SESSION_RELOAD_SCHEMA,
+    SESSION_RENAME_SCHEMA,
     SESSION_REVIVE_SCHEMA,
     SESSION_SEND_SCHEMA,
     SESSION_SET_MODEL_SCHEMA,
@@ -152,6 +153,7 @@ SESSION_CONTROL_TOOLS: tuple[str, ...] = (
     "session_end_wait",
     "session_set_model",
     "session_reload",
+    "session_rename",
     "session_close",
     "session_revive",
     "session_send",
@@ -769,6 +771,40 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     },
                 },
                 "required": ["target"],
+            },
+        },
+        {
+            "name": "session_rename",
+            "description": (
+                "Rename a live session's sidebar title: your own session, or one you "
+                "may control with session_stop. A conductor uses it to relabel the "
+                "workers it created as their work changes. The new title is final, the "
+                "same as a manual rename: the automatic titler stops refreshing that "
+                "session. Metadata only; the transcript, model and any running turn "
+                "are untouched. A crew member or an agent-created session may rename "
+                "only itself and sessions it created; a scheduled run may rename only "
+                "sessions it created, never its own session. ARCHIVED (history) "
+                "sessions are not addressable."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": (
+                            "Session key from list_sessions, 'dashboard:<slot>' key, or "
+                            "its exact unique title."
+                        ),
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": (
+                            "New title, 1-200 characters after surrounding whitespace is "
+                            "stripped; no control characters."
+                        ),
+                    },
+                },
+                "required": ["target", "title"],
             },
         },
         {
@@ -2543,6 +2579,17 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             f"\U0001f504 `{target}` is relaunching its agent process with the conversation "
             "kept. Its transcript shows the reload notice."
         )
+    if name == "session_rename":
+        args = validate_tool_args(args, SESSION_RENAME_SCHEMA)
+        resp = _post(
+            "/api/session-control/rename",
+            {"target": args["target"], "title": args["title"]},
+            session_key=caller_key,
+        )
+        if resp.get("error"):
+            return redact(f"Error: could not rename that session: {resp['error']}")
+        target = resp.get("target", args["target"])
+        return redact(f"Renamed `{target}` to {resp.get('title', args['title'])!r}.")
 
     if name == "session_close":
         args = validate_tool_args(args, SESSION_CLOSE_SCHEMA)
