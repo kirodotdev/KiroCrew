@@ -458,6 +458,63 @@ class TestPosixIsUnaffected:
         assert not called, "POSIX must never reach the Job object path"
 
 
+# A pid no OS hands out, so a stub that leaks to a real syscall cannot hit a live process.
+_UNALLOCATABLE_PID = 99_999_999_999
+
+
+class TestInertResourceLimitsWarning:
+    """Keys Windows cannot enforce are named once, never silently dropped.
+
+    Ungated: the platform is faked through ``platform_compat.IS_WINDOWS`` so the
+    Linux/macOS runners prove both arms.
+    """
+
+    @staticmethod
+    def _arm(monkeypatch, raw: dict) -> None:
+        monkeypatch.setattr(sandbox, "_WINDOWS_INERT_LIMITS_WARNED", False)
+        monkeypatch.setattr("kiro_crew.config.loader._raw_config", lambda: {"resource_limits": raw})
+        monkeypatch.setattr(sandbox, "_cgroup_limits_from_config", lambda: (7, 321, 100, 0))
+        monkeypatch.setattr(sandbox.platform_compat, "apply_job_limits", lambda *a, **k: True)
+
+    def test_windows_names_each_set_inert_key_once(self, monkeypatch, caplog) -> None:
+        self._arm(
+            monkeypatch, {"cpu_weight": 80, "max_total_memory_mb": 4096, "max_cpu_percent": 0}
+        )
+        monkeypatch.setattr(sandbox.platform_compat, "IS_WINDOWS", True)
+        caplog.set_level("WARNING", logger="kiro_crew.sandbox")
+
+        assert sandbox.apply_windows_resource_ceiling(_UNALLOCATABLE_PID) is True
+        assert sandbox.apply_windows_resource_ceiling(_UNALLOCATABLE_PID) is True
+
+        hits = [
+            r.getMessage() for r in caplog.records if "not enforced on Windows" in r.getMessage()
+        ]
+        assert len(hits) == 1
+        assert "resource_limits.cpu_weight" in hits[0]
+        assert "resource_limits.max_total_memory_mb" in hits[0]
+        # A zero value is "unset" for the opt-in quota, so it is not named.
+        assert "max_cpu_percent" not in hits[0]
+
+    def test_windows_without_inert_keys_logs_nothing(self, monkeypatch, caplog) -> None:
+        self._arm(monkeypatch, {"max_processes": 64, "max_memory_mb": 2048})
+        monkeypatch.setattr(sandbox.platform_compat, "IS_WINDOWS", True)
+        caplog.set_level("WARNING", logger="kiro_crew.sandbox")
+
+        assert sandbox.apply_windows_resource_ceiling(_UNALLOCATABLE_PID) is True
+        assert not [r for r in caplog.records if "not enforced on Windows" in r.getMessage()]
+
+    def test_linux_never_reaches_the_warning(self, monkeypatch) -> None:
+        self._arm(monkeypatch, {"cpu_weight": 80, "max_total_memory_mb": 4096})
+        monkeypatch.setattr(sandbox.platform_compat, "IS_WINDOWS", False)
+        calls: list[None] = []
+        monkeypatch.setattr(
+            sandbox, "_warn_windows_inert_resource_limits_once", lambda: calls.append(None)
+        )
+
+        assert sandbox.apply_windows_resource_ceiling(_UNALLOCATABLE_PID) is False
+        assert calls == []
+
+
 class TestPythonLauncherHops:
     """A venv's ``Scripts\\python.exe`` is a redirector, and a process ceiling has to count it.
 
