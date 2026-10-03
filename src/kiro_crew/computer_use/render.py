@@ -37,6 +37,7 @@ from kiro_crew.computer_use.types import (
     ElementRec,
     Snapshot,
 )
+from kiro_crew.imessage.plaintext import _grapheme_boundary
 
 # Bytes-per-unit ladder for the human-readable screenshot size. Kept local: it
 # is presentation, not business logic.
@@ -357,10 +358,21 @@ def _clip(text: str, limit: int) -> str:
     Newlines are collapsed because the tree's structure IS its indentation: a
     multi-line value would otherwise forge tree lines, letting page content
     masquerade as elements the model can address.
+
+    The cut is pulled back to a grapheme-cluster boundary so a ZWJ family,
+    flag, skin-tone, keycap or accented sequence is never split (this text is
+    the user's own desktop, so non-Latin is the normal case).
+
+    A leading cluster wider than the limit has no boundary below it, so the cut
+    is the limit itself: a cluster that long is hostile or malformed input, and
+    emitting it whole would let it defeat the cap this function exists to
+    enforce — and this text reaches the model's context unbounded, since the
+    accessibility fields it clips are never bounded anywhere else.
     """
     flat = " ".join(text.split())
     if limit > 0 and len(flat) > limit:
-        return flat[:limit] + "…"
+        cut = _grapheme_boundary(flat, limit) or limit
+        return flat[:cut] + "…"
     return flat
 
 
