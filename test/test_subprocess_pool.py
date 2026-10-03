@@ -858,12 +858,16 @@ class TestShutdownRefillWindow:
         executor = SubprocessPoolExecutor(workers=1)
         killed: list[object] = []
         real_kill = executor_mod._Child.kill
+        real_ensure_spawned = executor_mod._Child.ensure_spawned
 
         def kill(child):
-            killed.append(child)
+            if child in executor._children:
+                killed.append(child)
             real_kill(child)
 
         def ensure_spawned(child):
+            if child not in executor._children:
+                return real_ensure_spawned(child)
             # The stage: ``shutdown`` sets its flag while this tick is already past
             # its second check. The tick reports a spawn and must now reap it.
             executor._shutdown.set()

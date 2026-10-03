@@ -1885,6 +1885,9 @@ class SessionMetadataProjection:
         with self._log._locked(key):
             if require_existing and not self._log._path(key).exists():
                 return False
+            # Peer metadata writes can preserve mtime; CAS must read disk under
+            # the writer lock even when the local cache identity still matches.
+            self._log._meta_cache.pop(key, None)
             metadata, readable = self._log._read_metadata_status(key)
             if not readable:
                 if self._log.metadata_line_state(key) != METADATA_LINE_CORRUPT:
