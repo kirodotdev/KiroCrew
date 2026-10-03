@@ -77,7 +77,7 @@ function StatusIndicator({ label }: { label: string }) {
 export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
   const ime = useImeGuard()
   const { language, detected: detectedLanguage, setLanguage, syncFailed: langSyncFailed, catalogFailed: langCatalogFailed } = useLanguage()
-  const { zoom, zoomSupported, zoomIn, zoomOut, reset, family, setFontFamily, customFontFamily, setCustomFontFamily, customFontLigatures, setCustomFontLigatures } = useZoomCtx()
+  const { zoom, zoomSupported, zoomIn, zoomOut, setZoom, family, setFontFamily, customFontFamily, setCustomFontFamily, customFontLigatures, setCustomFontLigatures } = useZoomCtx()
   // Shortcut label for the zoom hint/description: ⌘ on macOS, Ctrl elsewhere.
   const modKey = /mac/i.test(navigator.platform) ? '⌘' : 'Ctrl'
   const {
@@ -548,7 +548,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
       <SettingsSection title={i18nT('pages.settings.displayPanel.zoom_font')}>
         <SettingsCard>
           {zoomSupported ? (
-            <SettingsStepper label={i18nT('pages.settings.displayPanel.zoom_level')} hint={i18nT('pages.settings.displayPanel.native_window_zoom_tip', { mod: modKey })} value={zoom} suffix="%" onIncrement={zoomIn} onDecrement={zoomOut} onReset={reset} />
+            <SettingsStepper label={i18nT('pages.settings.displayPanel.zoom_level')} hint={i18nT('pages.settings.displayPanel.native_window_zoom_tip', { mod: modKey })} value={zoom} suffix="%" onIncrement={zoomIn} onDecrement={zoomOut} onSet={setZoom} min={50} max={300} />
           ) : (
             <div className="flex items-center justify-between gap-4 py-1.5">
               <div className="flex flex-col gap-0.5">
