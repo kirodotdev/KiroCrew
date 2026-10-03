@@ -1526,6 +1526,18 @@ class TestExpiredApprovalRetiresTheCard:
         return [c for c in state.broadcast_ws.call_args_list if c[0][0] == "approval_resolved"]
 
     @staticmethod
+    def _raised_instance(state, request_id: str) -> str:
+        """The instance the ``approval`` frame announced for *request_id*; its
+        ``approval_resolved`` frame names the same one."""
+        raised = [
+            c[0][1]
+            for c in state.broadcast_ws.call_args_list
+            if c[0][0] == "approval" and c[0][1]["id"] == request_id
+        ]
+        assert len(raised) == 1
+        return raised[0]["instance"]
+
+    @staticmethod
     async def _register_request(state, request_id: str, slot_key: str) -> asyncio.Task:
         """Start a real (unexpired) approval wait and return once it registered.
 
@@ -1572,6 +1584,7 @@ class TestExpiredApprovalRetiresTheCard:
             "approved": False,
             "slot": slot.key,
             "decision": "expired",
+            "instance": self._raised_instance(state, "req-exp"),
         }
         mock_sel.log_tool_invocation.assert_called_once_with(
             session_key=slot.key,
@@ -1603,6 +1616,7 @@ class TestExpiredApprovalRetiresTheCard:
             "approved": False,
             "slot": slot_key,
             "decision": "expired",
+            "instance": self._raised_instance(state, "req-removed-slot"),
         }
 
     @pytest.mark.asyncio
@@ -1620,7 +1634,12 @@ class TestExpiredApprovalRetiresTheCard:
         resolved = self._resolved_broadcasts(state)
         assert len(resolved) == 1
         # Session key "state" carries no slot in the payload.
-        assert resolved[0][0][1] == {"id": "req-bg", "approved": False, "decision": "expired"}
+        assert resolved[0][0][1] == {
+            "id": "req-bg",
+            "approved": False,
+            "decision": "expired",
+            "instance": self._raised_instance(state, "req-bg"),
+        }
         assert "req-bg" not in state._pending_approvals
         assert "req-bg" not in state._approval_futures
 
@@ -1656,7 +1675,11 @@ class TestExpiredApprovalRetiresTheCard:
         assert len(resolved) == 1
         # A decided approval carries no decision key: the client derives it.
         # ``resolve_state`` keys the broadcast "state", so no slot rides along.
-        assert resolved[0][0][1] == {"id": "req-ok", "approved": True}
+        assert resolved[0][0][1] == {
+            "id": "req-ok",
+            "approved": True,
+            "instance": self._raised_instance(state, "req-ok"),
+        }
         cls = json.loads(slot.messages[-1]["cls"])
         assert "resolved" not in cls
         assert "req-ok" not in state._pending_approvals
@@ -1675,7 +1698,11 @@ class TestExpiredApprovalRetiresTheCard:
         assert result is False
         resolved = self._resolved_broadcasts(state)
         assert len(resolved) == 1
-        assert resolved[0][0][1] == {"id": "req-no", "approved": False}
+        assert resolved[0][0][1] == {
+            "id": "req-no",
+            "approved": False,
+            "instance": self._raised_instance(state, "req-no"),
+        }
         assert "req-no" not in state._pending_approvals
         assert "req-no" not in state._approval_futures
 

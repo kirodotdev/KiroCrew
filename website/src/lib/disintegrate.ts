@@ -29,6 +29,15 @@ interface DisintegrateOptions {
   particleColor?: string
 }
 
+/** Puts back an element `disintegrate` erased, for a removal that then failed
+ *  and left the item in place. Clears exactly the inline styles it set. */
+export function undoDisintegrate(el: HTMLElement | null): void {
+  if (!el) return
+  for (const prop of ['opacity', 'filter', 'mask-image', '-webkit-mask-image', 'will-change']) {
+    el.style.removeProperty(prop)
+  }
+}
+
 export function disintegrate(el: HTMLElement | null, opts: DisintegrateOptions = {}): Promise<void> {
   return new Promise<void>(resolve => {
     if (!el) { resolve(); return }

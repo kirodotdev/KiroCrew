@@ -1,9 +1,9 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { X, MailOpen, Check, MessageSquare, CheckCircle, Ban, Clock, ClipboardList, ArrowUpRight } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { useGuardedLeave } from '../NavigationLeaveGuard'
 import { useAppSelector, useAppDispatch } from '../../store'
-import { deleteNotification, ackNotification, unackNotification } from '../../store/notificationsSlice'
+import { deleteNotification, ackNotification, unackNotification, retireApprovalRow, settleDecidedApproval, approvalDecisionKey, approvalDecideTarget } from '../../store/notificationsSlice'
 import { switchSlot, resumeFromHistory } from '../../store/chatSlice'
 import { Badge } from '../ui'
 import MarkdownRenderer from '../MarkdownRenderer'
@@ -11,8 +11,9 @@ import MessageErrorBoundary from '../MessageErrorBoundary'
 import ErrorNotice from '../ErrorNotice'
 import { CronAckBar } from '../../pages/chat'
 import { api } from '../../api/client'
+import { ApiError, isTerminalApprovalRefusal } from '../../api/apiError'
 import type { Notification } from '../../types'
-import { KIND_META, DEFAULT_META, fmtFull, safeInternalUrl } from './notifMeta'
+import { KIND_META, DEFAULT_META, fmtFull, safeInternalUrl, refusedNotice } from './notifMeta'
 import { safeHttpUrl } from '../../lib/safeUrl'
 
 import { i18nT } from '../../i18n/t'
@@ -43,6 +44,75 @@ export default function NotificationDetailPanel({ n, onClose }: { n: Notificatio
   // `key`, unlike the page), so an unscoped error would follow the reader.
   const [handoffError, setHandoffError] = useState<string | null>(null)
   const handoffFailed = handoffError === n.ts
+  // A retryable decision failure (the approval may still be pending, so the
+  // buttons stay), scoped to the notification it belongs to for the same
+  // panel-reuse reason as `handoffError`. `reason` is the server's own refusal
+  // text ('' for a response-less transport failure, which gets the hedged
+  // copy), as in `ApprovalCard`.
+  const [decideFailure, setDecideFailure] = useState<{ ts: string; reason: string } | null>(null)
+  const failureHere = decideFailure?.ts === n.ts ? decideFailure : null
+  // A decision this panel sent is in flight, for the notification it was sent
+  // for (the panel is reused across rows). Only this panel's buttons wait on
+  // it: a second decision from another view is refused by the server, which
+  // accepts one per approval.
+  const decisionKey = approvalDecisionKey(n)
+  const [decidingTs, setDecidingTs] = useState<string | null>(null)
+  const decidingHere = decidingTs === n.ts
+  // A DELETE for this row was refused (this panel's Dismiss, or the cleanup
+  // after a decision landed): the row is still listed, and this says so.
+  const dismissRefused = useAppSelector(s => !!s.notifications.dismissFailed?.[n.ts])
+  // Everything else lives in the notifications slice, shared with the page
+  // feed and the bell popover: a landed decision or a terminal refusal only
+  // RETIRES the row (it stays until dismissed), so a remounted or reused
+  // panel reads the same state as every other view.
+  const retiredWhy = useAppSelector(s => s.notifications.retiredApprovals?.[n.ts])
+  const buttonsWithdrawn = retiredWhy !== undefined
+  // Withdrawing the buttons unmounts the one the user just pressed, which
+  // drops keyboard focus to <body>. Move it to the notice that replaced them,
+  // so a keyboard user continues from where they were. Only when focus was
+  // actually lost: a reader who has moved on keeps their place.
+  const refusalRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    if (!buttonsWithdrawn) return
+    const active = document.activeElement
+    if (active && active !== document.body) return
+    refusalRef.current?.focus()
+  }, [buttonsWithdrawn])
+  // The row leaves only when the server confirms; the panel closes with it.
+  // A second press while the DELETE is in flight sends nothing.
+  const [dismissing, setDismissing] = useState(false)
+  const dismiss = async () => {
+    if (dismissing) return
+    setDismissing(true)
+    const r = await dispatch(deleteNotification(n.ts))
+    setDismissing(false)
+    if (deleteNotification.fulfilled.match(r)) onClose()
+  }
+  const decide = async (action: 'approve' | 'reject') => {
+    if (decidingHere) return
+    setDecidingTs(n.ts)
+    setDecideFailure(null)
+    // Approve/Reject are disabled while the decision is in flight, so a slow
+    // press does not look dead or invite a second one.
+    try {
+      // Bound to the request this row showed (see the feed's decide).
+      await api.resolveApproval(decisionKey, action, approvalDecideTarget(n))
+    } catch (e) {
+      setDecidingTs(null)
+      if (isTerminalApprovalRefusal(e)) {
+        // `refused`: this request failed, so it renders as an error.
+        dispatch(retireApprovalRow(n.ts, 'refused'))
+        return
+      }
+      // eslint-disable-next-line no-console -- keep the raw failure for diagnosis
+      console.error(`Detail panel ${action} failed`, e)
+      setDecideFailure({ ts: n.ts, reason: e instanceof ApiError && e.message ? e.message : '' })
+      return
+    }
+    setDecidingTs(null)
+    const r = await dispatch(settleDecidedApproval(n.ts, action))
+    if (deleteNotification.fulfilled.match(r)) onClose()
+  }
   const km = KIND_META[n.kind] || DEFAULT_META
   const slots = useAppSelector(s => s.dashboard.slots)
 
@@ -183,10 +253,72 @@ export default function NotificationDetailPanel({ n, onClose }: { n: Notificatio
 
         {/* Kind-specific actions */}
         {n.kind === 'approval' && (
-          <div className="flex gap-3 mt-4">
-            <button className="px-4 py-2 rounded-lg bg-ok text-ok-fg text-[13px] font-semibold cursor-pointer border-none hover:brightness-110 transition-all" onClick={async () => { try { await api.resolveApproval(n.approval_id || n.ts, 'approve'); dispatch(deleteNotification(n.ts)); onClose() } catch (e) { logError('Approve failed', e) } }}><CheckCircle className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.approve')}</button>
-            <button className="px-4 py-2 rounded-lg bg-danger text-danger-fg text-[13px] font-semibold cursor-pointer border-none hover:brightness-110 transition-all" onClick={async () => { try { await api.resolveApproval(n.approval_id || n.ts, 'reject'); dispatch(deleteNotification(n.ts)); onClose() } catch (e) { logError('Reject failed', e) } }}><Ban className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.reject')}</button>
-          </div>
+          <>
+            {!buttonsWithdrawn && (
+              <div className="flex gap-3 mt-4">
+                <button disabled={decidingHere} aria-busy={decidingHere || undefined} className="px-4 py-2 rounded-lg bg-ok text-ok-fg text-[13px] font-semibold cursor-pointer border-none hover:brightness-110 transition-all disabled:opacity-60 disabled:cursor-default" onClick={() => decide('approve')}><CheckCircle className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.approve')}</button>
+                <button disabled={decidingHere} aria-busy={decidingHere || undefined} className="px-4 py-2 rounded-lg bg-danger text-danger-fg text-[13px] font-semibold cursor-pointer border-none hover:brightness-110 transition-all disabled:opacity-60 disabled:cursor-default" onClick={() => decide('reject')}><Ban className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.reject')}</button>
+              </div>
+            )}
+            {/* No hand-off: in the bell popover this panel is an OVERLAY
+                that stays open over the page beneath it, such as an unsaved
+                prompt edit in the Overview Prompts tab's editor. The hand-off
+                navigates to the chat without the `useGuardedLeave` gate, so it
+                would unmount that editor and discard the edit. */}
+            {/* Focusable (not tabbable) so focus can land here when the
+                pressed button is withdrawn; see `refusalRef`. */}
+            <div ref={refusalRef} tabIndex={-1} className="rounded-md outline-none focus-visible:ring-2 focus-visible:ring-accent" data-testid="notif-approval-refusal-focus">
+              {/* A refused decide failed, so it is an error; see the no
+                  hand-off note above. */}
+              <ErrorNotice
+                variant="inline"
+                className="mt-4"
+                testId="notif-approval-retired"
+                message={retiredWhy === 'refused' ? refusedNotice() : null}
+              />
+              {/* Neutral: the approval is settled, nothing failed. */}
+              {buttonsWithdrawn && retiredWhy !== 'refused' && (
+                <div className="mt-4 text-[13px] text-muted animate-rise" role="status" data-testid="notif-approval-retired">
+                  {retiredWhy === 'approve'
+                    ? <><CheckCircle className="lucide-inline" /> {i18nT('components.approvalCard.approved')}</>
+                    : retiredWhy === 'reject'
+                      ? <><Ban className="lucide-inline" /> {i18nT('components.approvalCard.rejected')}</>
+                      : i18nT('components.approvalCard.approval_no_longer_pending')}
+                </div>
+              )}
+              <ErrorNotice
+                variant="inline"
+                className="mt-2"
+                testId="notif-approval-refusal"
+                message={failureHere && !buttonsWithdrawn
+                    ? failureHere.reason
+                      ? i18nT('components.approvalCard.decision_not_recorded_error', { error: failureHere.reason })
+                      : i18nT('components.approvalCard.decision_failed')
+                    : null}
+              />
+              {/* A retired approval has nothing left to decide; Dismiss is
+                  this panel's only way to remove it, below the outcome line. */}
+              {buttonsWithdrawn && (
+                <div className="mt-2 animate-rise">
+                <button
+                  type="button"
+                  data-testid="notif-decided-dismiss"
+                  disabled={dismissing}
+                  className="px-3 py-1.5 rounded-md border border-border bg-transparent text-text text-[13px] cursor-pointer hover:bg-bg-hover transition-colors disabled:opacity-60 disabled:cursor-default"
+                  onClick={dismiss}
+                ><X className="lucide-inline" /> {i18nT('components.notifications.notificationFeed.dismiss_notification')}</button>
+                </div>
+              )}
+              {/* The DELETE failed, so the row and this panel stay: say so
+                  under the Dismiss that retries it. */}
+              <ErrorNotice
+                variant="inline"
+                className="mt-2"
+                testId="notif-dismiss-failed"
+                message={dismissRefused ? i18nT('components.notifications.notificationFeed.could_not_dismiss_try_again') : null}
+              />
+            </div>
+          </>
         )}
         {/* RFC Phase 4: generic actions -- rendered only with a validated
             dashboard-internal url (action identifiers, never executable

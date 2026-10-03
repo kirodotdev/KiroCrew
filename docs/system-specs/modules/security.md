@@ -2758,7 +2758,9 @@ Expiry notifications are delivered via Dashboard WebSocket and Slack DM to infor
 and request ID. The coordinator endpoint's optional
 `origin=coordinator&slot=…&instance=…` selector checks the exact inventory slot
 and the record's instance, and resolves only its live state future, without
-yielding between check and resolution. The instance is minted by the coordinator
+yielding between check and resolution. `slot` must be present but may be empty:
+a coordinator approval raised with no owning slot (a cron job's) is bound by its
+instance alone, and the record's own empty slot must still match. The instance is minted by the coordinator
 once per request and carried on the record; the request ID is the caller's and
 can recur in the same slot, so a card rendered from an expired record cannot
 resolve the request that replaced it. An earlier wait's exit removes only its own

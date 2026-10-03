@@ -5923,6 +5923,7 @@
     "approvalCard": {
       "actions_group": "Acciones de aprobación",
       "approval_no_longer_pending": "Esta aprobación expiró o ya fue decidida — el agente ya no la está esperando.",
+      "decision_refused_not_pending": "Tu decisión no se registró: esta aprobación ya había expirado o se había decidido, así que el agente ya no la está esperando.",
       "approve": "Aprobar",
       "approved": "Aprobado",
       "decision_failed": "Es posible que esta decisión no se haya registrado — la solicitud falló.",
@@ -7668,7 +7669,8 @@
         "search": "Buscar…",
         "show_less": "Mostrar menos",
         "show_muted_count": "Mostrar silenciadas ({{count}})",
-        "try_a_different_search": "Prueba con otra búsqueda"
+        "try_a_different_search": "Prueba con otra búsqueda",
+        "could_not_dismiss_try_again": "No se pudo descartar la notificación. Inténtalo de nuevo."
       },
       "notificationPermissionHint": {
         "get_alerted_when_you_re_away": "Recibe avisos cuando no estés",

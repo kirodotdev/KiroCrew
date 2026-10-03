@@ -1565,6 +1565,9 @@ export interface ContentBlock {
 export interface Notification {
   kind: string; title: string; body: string; ts: string
   acked?: boolean; job_id?: string; task_id?: string; approval_id?: string
+  /** A coordinator approval's server-issued instance: the id recurs, this
+   *  names the one request the row was raised for. */
+  approval_instance?: string
   slot?: string; session_key?: string; slack_link?: string
   // RFC Phase 3: schema-v2 routing + per-channel settings stamps
   source?: string; channel?: string; priority?: string; silenced?: boolean

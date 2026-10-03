@@ -1,21 +1,23 @@
 import { safeSetItem } from '../../utils/safeStorage'
 import { useState, useMemo, useCallback, useEffect, useRef, type ReactNode } from 'react'
-import { Bell, BellOff, Check, CheckCheck, Layers, Trash2, X } from 'lucide-react'
+import { Ban, Bell, BellOff, Check, CheckCheck, CheckCircle, Layers, Trash2, X } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { useGuardedLeave } from '../NavigationLeaveGuard'
 import { useAppSelector, useAppDispatch } from '../../store'
-import { deleteNotification, clearNotifications, ackAllNotifications } from '../../store/notificationsSlice'
+import { deleteNotification, clearNotifications, ackAllNotifications, retireApprovalRow, settleDecidedApproval, approvalDecisionKey, approvalDecideTarget, type RetiredApprovalReason } from '../../store/notificationsSlice'
 import { api } from '../../api/client'
+import { ApiError, isTerminalApprovalRefusal } from '../../api/apiError'
 import { EmptyState, SearchInput } from '../ui'
 import Clickable from '../Clickable'
 import Glass from '../Glass'
 import MarkdownRenderer from '../MarkdownRenderer'
 import MessageErrorBoundary from '../MessageErrorBoundary'
-import { disintegrate } from '../../lib/disintegrate'
+import ErrorNotice from '../ErrorNotice'
+import { disintegrate, undoDisintegrate } from '../../lib/disintegrate'
 import type { Notification } from '../../types'
 import {
   parseTs, dateGroup, KIND_META, DEFAULT_META, fmtTime, stripMd, notePriority, safeInternalUrl,
-  MAC_ACTION_BTN_CLASS,
+  MAC_ACTION_BTN_CLASS, refusedNotice,
 } from './notifMeta'
 import NotificationPermissionHint from './NotificationPermissionHint'
 import NotificationCard, { CARD_RADIUS, type NotificationCardAction } from './NotificationCard'
@@ -42,6 +44,12 @@ function loadSeenChannels(): Set<string> {
  * detail panel; deleting the selected row clears it naturally because the host
  * derives `selected` from the items list by ts.
  */
+const NO_RETIRED: Readonly<Record<string, RetiredApprovalReason>> = {}
+const NO_DISMISS_FAILED: Readonly<Record<string, true>> = {}
+
+const hasRetired = (map: Readonly<Record<string, RetiredApprovalReason>>, ts: string): boolean =>
+  Object.hasOwn(map, ts)
+
 export default function NotificationFeed({ selectedTs, onSelect, variant = 'panel', header, footer, revealTs = null }: {
   selectedTs: string | null
   onSelect: (n: Notification) => void
@@ -197,16 +205,86 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
       el.scrollIntoView?.({ block: 'center' })
     }
   }, [revealTs, items, expandedStacks])
-
-  // One-click approval resolution from the feed.
+  // One-click approval resolution from the feed. Nothing here removes a row
+  // on the decide's own answer: a decision that lands, or a terminal refusal
+  // (the approval expired or was decided elsewhere), only RETIRES it in the
+  // notifications slice. A retired row
+  // stays listed without Approve/Reject and says why, and leaves when a
+  // DELETE succeeds (sent here for a landed decision, else by its close X).
+  // The marks live in the slice, not here, because this feed mounts twice (the
+  // page and the bell popover, which remounts on every open) and both must
+  // agree. While a decision this view sent is in flight, that row's
+  // Approve/Reject are disabled here, so a slow press does not look dead or
+  // invite a second one. Another view deciding the same approval needs no
+  // lock: the server accepts one decision per approval and refuses the rest,
+  // which retires the row like any refusal. A retryable failure keeps the
+  // buttons and says so on that row; the value is
+  // the server's own refusal text ('' for a response-less transport failure,
+  // which gets the hedged copy), as in `ApprovalCard`. A retired row keeps
+  // its ordinary close X, which is how it leaves the feed.
+  const [deciding, setDeciding] = useState<ReadonlySet<string>>(() => new Set())
+  const dismissFailed = useAppSelector(s => s.notifications.dismissFailed) ?? NO_DISMISS_FAILED
+  const [decideFailed, setDecideFailed] = useState<Readonly<Record<string, string>>>({})
+  const retiredApprovals = useAppSelector(s => s.notifications.retiredApprovals) ?? NO_RETIRED
+  // Retiring a row takes the pressed Approve/Reject away, which drops keyboard
+  // focus to <body>. This holds the ts of that approval until its buttons are
+  // gone, and the effect below then moves focus to the row's own open control,
+  // or to the list once the row has left. Only if focus was actually lost: a
+  // reader who has moved on keeps their place.
+  const focusRescueRef = useRef<string | null>(null)
   const resolveApprovalNote = useCallback((n: Notification, action: 'approve' | 'reject') => {
-    api.resolveApproval(n.approval_id || n.ts, action)
-      .then(() => { dispatch(deleteNotification(n.ts)) })
-      // Intentional failure diagnostic; the row stays in the feed and remains
-      // retryable (detail panel too).
-      // eslint-disable-next-line no-console
-      .catch(err => { console.error(`Inline ${action} failed`, err) })
+    const key = approvalDecisionKey(n)
+    const without = <T,>(m: Readonly<Record<string, T>>) => {
+      const { [n.ts]: _drop, ...rest } = m
+      return rest
+    }
+    setDecideFailed(without)
+    setDeciding(s => new Set(s).add(n.ts))
+    // Bound to the request this row showed, when the row names it: the id
+    // recurs, and a bare-id decide resolves whichever request holds it now.
+    api.resolveApproval(key, action, approvalDecideTarget(n))
+      .then(() => {
+        focusRescueRef.current = n.ts
+        dispatch(settleDecidedApproval(n.ts, action))
+      }, err => {
+        if (isTerminalApprovalRefusal(err)) {
+          focusRescueRef.current = n.ts
+          // `refused`, not `gone`: this request failed, so the row shows it
+          // as an error rather than as the neutral settled line.
+          dispatch(retireApprovalRow(n.ts, 'refused'))
+          return
+        }
+        // eslint-disable-next-line no-console -- keep the raw failure for diagnosis
+        console.error(`Inline ${action} failed`, err)
+        const reason = err instanceof ApiError && err.message ? err.message : ''
+        setDecideFailed(m => ({ ...m, [n.ts]: reason }))
+      })
+      .finally(() => {
+        setDeciding(s => {
+          const next = new Set(s)
+          next.delete(n.ts)
+          return next
+        })
+      })
   }, [dispatch])
+  useEffect(() => {
+    const ts = focusRescueRef.current
+    if (ts === null) return
+    if (items.some(i => i.ts === ts) && !hasRetired(retiredApprovals, ts)) return
+    const active = document.activeElement
+    const lost = !active || active === document.body
+    const row = listRef.current?.querySelector<HTMLElement>(`[data-ts="${CSS.escape(ts)}"]`)
+    if (!row) {
+      focusRescueRef.current = null
+      if (lost) listRef.current?.focus()
+      return
+    }
+    // A landed decision's row leaves once its DELETE confirms, so the rescue
+    // stays armed to move focus on to the list then; a refused row stays.
+    const why = retiredApprovals[ts]
+    if (why !== 'approve' && why !== 'reject') focusRescueRef.current = null
+    if (lost) row.querySelector<HTMLElement>('[data-notif-open]')?.focus()
+  }, [items, retiredApprovals])
 
   const unread = items.filter(n => !n.acked).length
   const mac = variant === 'mac'
@@ -309,7 +387,7 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
           composed into the mac variant is material or background by decision
           (shell/notifications/notificationSheet.tsx, the sheet's invariant); a new
           child needs one or the other. */}
-      <div ref={listRef} data-testid="notification-feed-list" className={`flex-1 overflow-y-auto ${mac ? 'px-4 -mx-4 pb-2' : 'scroll-shadow'}`}>
+      <div ref={listRef} tabIndex={-1} data-testid="notification-feed-list" className={`flex-1 overflow-y-auto focus:outline-none ${mac ? 'px-4 -mx-4 pb-2' : 'scroll-shadow'}`}>
         {filtered.length === 0 ? (
           <EmptyState testId="notification-feed-empty" icon={<Bell className="lucide-inline" />} title={i18nT('components.notifications.notificationFeed.no_notifications')} subtitle={filter ? i18nT('components.notifications.notificationFeed.try_a_different_search') : i18nT('components.notifications.notificationFeed.activity_will_appear_here')} />
         ) : (
@@ -329,14 +407,18 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                 // (`active`). The shared card carries `notif-material`:
                 // index.css solidifies these surfaces to var(--card) where
                 // backdrop-filter is unsupported (#1817).
-                const panelBorder = silenced ? 'border-l-muted' : prio === 'critical' ? 'border-l-danger' : km.borderColor
+                // A retired approval asks for nothing, so it drops the
+                // critical border and the unread dot and recedes like a read
+                // row, whatever its ack flag says while the ack is in flight.
+                const settled = hasRetired(retiredApprovals, n.ts)
+                const panelBorder = silenced || settled ? 'border-l-muted' : prio === 'critical' ? 'border-l-danger' : km.borderColor
                 const promptChannel = promptTs === n.ts && n.channel && n.source
                   ? { channel: n.channel, label: `${n.source} / ${n.channel.startsWith(`${n.source}.`) ? n.channel.slice(n.source.length + 1) : n.channel}` }
                   : null
                 // Inline actions: approval approve/reject, plus generic
                 // actions that render only with a safe dashboard-internal url
                 // (never executable content).
-                const isApproval = n.kind === 'approval' && !n.acked
+                const isApproval = n.kind === 'approval' && !n.acked && !hasRetired(retiredApprovals, n.ts)
                 // A persisted row is untrusted: a truthy non-string body must
                 // not reach the renderer, its raw fallback, or the flattener.
                 const bodyText = typeof n.body === 'string' ? n.body : ''
@@ -348,14 +430,21 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                   .filter(a => typeof a?.id === 'string' && typeof a?.label === 'string' && typeof a?.url === 'string')
                   .map(a => ({ ...a, safeUrl: safeInternalUrl(a.url) }))
                   .filter(a => a.safeUrl)
+                const retired = hasRetired(retiredApprovals, n.ts)
+                const retiredWhy = retiredApprovals[n.ts]
+                const decidingHere = deciding.has(n.ts)
+                const approveLabel = i18nT('components.notifications.notificationFeed.approve')
+                const rejectLabel = i18nT('components.notifications.notificationFeed.reject')
+                const dismissRefused = Object.hasOwn(dismissFailed, n.ts)
+                const decideReason = Object.hasOwn(decideFailed, n.ts) && !retired ? decideFailed[n.ts] : null
                 const hasActions = isApproval || urlActions.length > 0
                 // A row whose controls authorize a command shows the whole
                 // command: a clamped excerpt turns `echo safe` + `rm -rf target`
                 // into one harmless-looking line. Gated on the KIND, not on
                 // unread: reading the row acks it, and a pending command must
                 // not collapse back into that line while the detail panel
-                // still offers Approve/Reject. A resolved approval leaves the
-                // feed, so an approval row here is undecided. Same renderer
+                // still offers Approve/Reject. A settled approval stays listed
+                // only as a retired row, until it is dismissed. Same renderer
                 // and boundary as the detail panel; the producer's fence tag
                 // makes the lines wrap, so nothing is clipped, clamped or
                 // hidden. One definition for both variants: the mac card's
@@ -367,6 +456,56 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                     </MessageErrorBoundary>
                   </div>
                 ) : undefined
+                // Outside the row's Clickable in both variants: that control is
+                // role="button", whose descendants are presentational, so a
+                // notice inside it would never reach a screen reader. The
+                // retired line is neutral when the approval settled with
+                // nothing failing (a decision that landed, an expiry the
+                // server reported); a refused decide or a failed decision
+                // renders an error, on the row it failed for. Below the row's
+                // controls, as in the detail panel and the chat card, so a
+                // retry finds Approve/Reject where they were. No hand-off: the
+                // feed also renders in the topbar bell popover, an overlay over
+                // the page beneath it, and the hand-off navigates without the
+                // `useGuardedLeave` gate.
+                const rowNotice = retired || decideReason !== null || dismissRefused ? (
+                  <div className={mac ? 'pl-[36px]' : 'pl-6'}>
+                    <ErrorNotice
+                      variant="inline"
+                      className="mt-1"
+                      testId="notif-approval-notice"
+                      message={decideReason === null ? null
+                        : decideReason
+                          ? i18nT('components.approvalCard.decision_not_recorded_error', { error: decideReason })
+                          : i18nT('components.approvalCard.decision_failed')}
+                    />
+                    {/* A decide this tab sent was refused (404/410): that request
+                        failed, so it renders through the shared ErrorNotice. */}
+                    <ErrorNotice
+                      variant="inline"
+                      className="mt-1"
+                      testId="notif-approval-retired"
+                      message={retiredWhy === 'refused' ? refusedNotice() : null}
+                    />
+                    {retired && retiredWhy !== 'refused' && (
+                      <div className="mt-1 text-[12px] text-muted" role="status" data-testid="notif-approval-retired">
+                        {retiredWhy === 'approve'
+                          ? <><CheckCircle className="lucide-inline" /> {i18nT('components.approvalCard.approved')}</>
+                          : retiredWhy === 'reject'
+                            ? <><Ban className="lucide-inline" /> {i18nT('components.approvalCard.rejected')}</>
+                            : i18nT('components.approvalCard.approval_no_longer_pending')}
+                      </div>
+                    )}
+                    {/* A DELETE that failed leaves the row listed: say so on
+                        it, whichever view sent the DELETE. */}
+                    <ErrorNotice
+                      variant="inline"
+                      className="mt-1"
+                      testId="notif-dismiss-failed"
+                      message={dismissRefused ? i18nT('components.notifications.notificationFeed.could_not_dismiss_try_again') : null}
+                    />
+                  </div>
+                ) : null
                 const collapsedStack = !!(stackKey && stackCount && stackCount > 1 && !stackExpanded)
                 const actionBtn = MAC_ACTION_BTN_CLASS
                 // The mac row IS the shared card (one rendering with the
@@ -375,8 +514,8 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                 // controls and the ghost/selected material.
                 const macActions: NotificationCardAction[] = [
                   ...(isApproval ? [
-                    { id: 'approve', label: i18nT('components.notifications.notificationFeed.approve'), tone: 'ok' as const, onClick: () => resolveApprovalNote(n, 'approve') },
-                    { id: 'reject', label: i18nT('components.notifications.notificationFeed.reject'), tone: 'danger' as const, onClick: () => resolveApprovalNote(n, 'reject') },
+                    { id: 'approve', label: approveLabel, tone: 'ok' as const, disabled: decidingHere, onClick: () => resolveApprovalNote(n, 'approve') },
+                    { id: 'reject', label: rejectLabel, tone: 'danger' as const, disabled: decidingHere, onClick: () => resolveApprovalNote(n, 'reject') },
                   ] : []),
                   ...urlActions.map(a => ({ id: a.id, label: a.label, tone: 'text' as const, onClick: () => leave(() => navigate(a.safeUrl!), a.safeUrl!) })),
                   // Only the quiet "Show less" when expanded; collapse-by-click
@@ -388,7 +527,10 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                 const dismissRow = async (e?: React.MouseEvent | React.KeyboardEvent) => {
                   const row = (e?.currentTarget as HTMLElement | undefined)?.closest('[data-notif-row]') as HTMLElement | null
                   await disintegrate(row)
-                  dispatch(deleteNotification(n.ts))
+                  const r = await dispatch(deleteNotification(n.ts))
+                  // Refused: the row stays listed, so bring it back into view
+                  // with the notice that says why.
+                  if (deleteNotification.rejected.match(r)) undoDisintegrate(row)
                 }
                 return (
                   <div key={n.ts} className={isStackChild && !mac ? 'ml-4' : ''}>
@@ -401,6 +543,8 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                         className={`${collapsedStack ? 'mb-0' : promptChannel ? 'mb-1' : 'mb-2'} ${collapsedStack ? 'relative z-[2] cursor-pointer' : ''}`}
                         active={active}
                         muted={silenced}
+                        settled={settled}
+                        dismissVisible={settled}
                         onOpen={() => { if (collapsedStack && stackKey) toggleStack(stackKey); else onSelect(n) }}
                         openLabel={collapsedStack
                           ? i18nT('components.notifications.notificationFeed.expand_grouped_notifications', { count: stackCount, title: n.title })
@@ -409,6 +553,7 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                         dismissLabel={i18nT('components.notifications.notificationFeed.dismiss_notification')}
                         actions={macActions}
                         body={approvalBody}
+                        footer={rowNotice ?? undefined}
                         trailing={silenced ? (
                           <span className="text-[10px] text-muted italic flex items-center gap-1"><BellOff className="lucide-inline" /> {i18nT('components.notifications.notificationFeed.muted_2')}</span>
                         ) : collapsedStack ? (
@@ -417,10 +562,11 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                       />
                     ) : (
                     <div data-notif-row data-ts={n.ts}
-                      className={`group flex flex-col px-2.5 py-2 rounded-md ${promptChannel ? 'rounded-b-none mb-0' : 'mb-1'} transition-all border-l-[3px] ${panelBorder} ${silenced ? 'border border-dashed border-border bg-transparent' : active ? 'bg-accent-subtle border border-accent' : 'border border-transparent hover:bg-bg-hover hover:border-border'} ${(n.acked || prio === 'passive') && !active && !silenced ? 'opacity-50' : ''} ${silenced ? 'opacity-60' : ''}`}
+                      className={`group flex flex-col px-2.5 py-2 rounded-md ${promptChannel ? 'rounded-b-none mb-0' : 'mb-1'} transition-all border-l-[3px] ${panelBorder} ${silenced ? 'border border-dashed border-border bg-transparent' : active ? 'bg-accent-subtle border border-accent' : 'border border-transparent hover:bg-bg-hover hover:border-border'} ${(n.acked || settled || prio === 'passive') && !active && !silenced ? 'opacity-50' : ''} ${silenced ? 'opacity-60' : ''}`}
                     >
                       <div className="flex items-center gap-2.5">
                       <Clickable
+                        data-notif-open
                         onClick={() => onSelect(n)}
                         aria-label={i18nT('components.notifications.notificationFeed.open_notification', { title: n.title })}
                         className="flex items-center gap-2 flex-1 min-w-0 text-left cursor-pointer"
@@ -436,14 +582,14 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                           <span className="text-[11px] text-muted font-mono">{fmtTime(n.ts)}</span>
                           {silenced ? (
                             <span className="text-[10px] text-muted italic flex items-center gap-1"><BellOff className="lucide-inline" /> {i18nT('components.notifications.notificationFeed.muted_2')}</span>
-                          ) : !n.acked ? (
+                          ) : !n.acked && !settled ? (
                             <span className={`w-1.5 h-1.5 rounded-full animate-dot-breathe ${prio === 'critical' ? 'bg-danger' : 'bg-accent'}`} data-priority={prio} />
                           ) : null}
                         </div>
                       </Clickable>
                       <Clickable
                         aria-label={i18nT('components.notifications.notificationFeed.dismiss_notification')}
-                        className="opacity-0 group-hover:opacity-40 [@media(hover:none)]:opacity-60 text-[11px] cursor-pointer hover:!opacity-100 hover:text-danger transition-opacity shrink-0"
+                        className={`${settled ? 'opacity-60' : 'opacity-0 group-hover:opacity-40 [@media(hover:none)]:opacity-60'} focus-visible:opacity-100 text-[11px] cursor-pointer hover:!opacity-100 hover:text-danger transition-opacity shrink-0`}
                         onClick={dismissRow}
                       ><X className="lucide-inline" /></Clickable>
                       </div>
@@ -453,14 +599,18 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                             <>
                               <button
                                 type="button"
+                                disabled={decidingHere}
+                                aria-busy={decidingHere || undefined}
                                 className={`${actionBtn} text-ok`}
                                 onClick={e => { e.stopPropagation(); resolveApprovalNote(n, 'approve') }}
-                              >{i18nT('components.notifications.notificationFeed.approve')}</button>
+                              >{approveLabel}</button>
                               <button
                                 type="button"
+                                disabled={decidingHere}
+                                aria-busy={decidingHere || undefined}
                                 className={`${actionBtn} text-danger`}
                                 onClick={e => { e.stopPropagation(); resolveApprovalNote(n, 'reject') }}
-                              >{i18nT('components.notifications.notificationFeed.reject')}</button>
+                              >{rejectLabel}</button>
                             </>
                           )}
                           {urlActions.map(a => (
@@ -483,6 +633,7 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                           )}
                         </div>
                       )}
+                      {rowNotice}
                     </div>
                     )}
                     {/* macOS NC deck: two card edges peeking below a collapsed

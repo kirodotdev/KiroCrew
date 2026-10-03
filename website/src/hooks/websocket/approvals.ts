@@ -10,7 +10,7 @@ import { useMemo, useRef } from 'react'
 import type { QueryClient } from '@tanstack/react-query'
 import { store, type AppDispatch } from '../../store'
 import { markSlotUnread } from '../../store/dashboardSlice'
-import { addNotification, removeNotificationByTs } from '../../store/notificationsSlice'
+import { addNotification, retireApprovalRow, liveApprovalRows } from '../../store/notificationsSlice'
 import { resolveByApprovalId, sseActivityEvent, sseSubagentSpawn, sseSubagentDone } from '../../store/chatSlice'
 import { dispatchMcNotification, dispatchLiveNotification, APPROVAL_KIND } from '../notificationEvent'
 import { loadUnreadOnAttention } from '../unreadOnAttention'
@@ -43,6 +43,10 @@ export function useApprovalRegistry(dispatch: AppDispatch, queryClient: QueryCli
   // rows can share an id, so registry provenance is required before a
   // reconnect reconcile may retire a client-injected row.
   const coordinatorApprovalsRef = useRef<Map<string, string>>(new Map())
+  // The server-issued instance of the request each entry above names. The id
+  // is the caller's and recurs; the instance tells this request's feed row
+  // apart from an earlier one's under the same id.
+  const coordinatorInstancesRef = useRef<Map<string, string>>(new Map())
   // Coordinator ids retired by live frames, keyed by monotonic sequence.
   // Reconnect snapshots consult this log so an authority response cannot
   // revive an entry retired while that response was in flight.
@@ -56,14 +60,17 @@ export function useApprovalRegistry(dispatch: AppDispatch, queryClient: QueryCli
       approved: boolean,
       decision?: string,
       slotlessResolution = false,
+      instance = '',
     ) => {
       if (!id) return
       const coordinatorSlot = coordinatorApprovalsRef.current.get(id)
+      const provenance = coordinatorApprovalsRef.current.has(id)
+        && (slotlessResolution || slot === coordinatorSlot)
       const targetSlot = slot || undefined
       const chatState = store.getState().chat
       const targetMessages = targetSlot === chatState.activeSlot
         ? chatState.messages
-        : targetSlot && Object.prototype.hasOwnProperty.call(chatState.slotMessages, targetSlot)
+        : targetSlot && Object.hasOwn(chatState.slotMessages, targetSlot)
           ? chatState.slotMessages[targetSlot] ?? []
           : []
       // Settled rows no longer compete for a resolution. A still-pending unmarked
@@ -73,18 +80,31 @@ export function useApprovalRegistry(dispatch: AppDispatch, queryClient: QueryCli
         message.role === 'permission'
         && message.meta?.approval_id === id
         && !message.meta?.resolved)
-      const ownsCoordinatorEntry = coordinatorApprovalsRef.current.has(id)
-        && (slotlessResolution || slot === coordinatorSlot)
-        && pendingMatches.some(message => message.meta?.registry === 'coordinator')
-        && !pendingMatches.some(message => message.meta?.registry == null)
+      const coordinatorRow = pendingMatches.some(message => message.meta?.registry === 'coordinator')
+      // A frame naming the instance this tab tracks under the id is the
+      // coordinator's own resolution: that is ownership outright, and a
+      // colliding chat-runner row in the same slot is not what it settled.
+      // A frame naming none keeps the collision check.
+      const tracked = !!instance && coordinatorInstancesRef.current.get(id) === instance
+      const ownsCoordinatorEntry = tracked || (provenance && coordinatorRow
+        && !pendingMatches.some(message => message.meta?.registry == null))
       queryClient.invalidateQueries({ queryKey: ['global-approvals'] })
-      if (ownsCoordinatorEntry) {
-        const items = store.getState().notifications.items
-        const match = items.find((n: Notification) => n.approval_id === id)
-        if (match) dispatch(removeNotificationByTs(match.ts))
-      }
+      // Only rows still live compete: the id recurs, so a retired row for an
+      // earlier request can share it. A row bound to an instance goes only
+      // with a frame naming that instance (an approval with no owning slot,
+      // such as a cron job's, has no chat row to check). A row that predates
+      // instances goes only on ownership as decided above.
+      const rows = liveApprovalRows(store.getState().notifications, id).filter((n: Notification) =>
+        n.approval_instance ? !!instance && n.approval_instance === instance : ownsCoordinatorEntry)
+      // Retired, not removed: the row stays until it is dismissed and only
+      // loses Approve/Reject, so the reader sees what happened. Retiring
+      // also marks it read, so it stops lighting the unread badge.
+      const why = decision === 'expired' || decision === 'stale' ? 'gone' : approved ? 'approve' : 'reject'
+      for (const row of rows) dispatch(retireApprovalRow(row.ts, why))
       const displayDecision = decision === 'expired' ? 'stale' : decision
-      dispatch(resolveByApprovalId({
+      // Tracked but with no coordinator row in the slot: the only pending row
+      // under the id is a chat runner's, which this resolution did not settle.
+      if (!tracked || coordinatorRow) dispatch(resolveByApprovalId({
         id,
         slot: targetSlot,
         decision: displayDecision ?? (approved ? 'approved' : 'rejected'),
@@ -135,6 +155,7 @@ export function useApprovalRegistry(dispatch: AppDispatch, queryClient: QueryCli
       recordInBoundedLog(retiredApprovalIdsRef.current, retiredApprovalSeqRef, id)
       if (ownsCoordinatorEntry) {
         coordinatorApprovalsRef.current.delete(id)
+        coordinatorInstancesRef.current.delete(id)
       }
     }
 
@@ -143,13 +164,26 @@ export function useApprovalRegistry(dispatch: AppDispatch, queryClient: QueryCli
         // Only approvals held before this authority read may be retired from its
         // answer. A live frame can inject another approval while the read is in
         // flight, and that approval is outside this snapshot's ordering boundary.
-        const before = new Map(coordinatorApprovalsRef.current)
+        // Each entry keeps the instance it held then: the id recurs, so a
+        // request that replaced it during the read must not be retired as it.
+        const instances = coordinatorInstancesRef.current
+        const before = [...coordinatorApprovalsRef.current].map(([id, slot]) => [id, slot, instances.get(id)] as const)
         const retiredSeen = retiredApprovalSeqRef.current
         const approvals = await api.approvals()
         const retiredDuringFetch = new Set(resolvedSince(retiredApprovalIdsRef.current, retiredSeen))
         const pendingIds = new Set(approvals.map(a => a.id))
-        for (const [id, slot] of before) {
-          if (!pendingIds.has(id)) retireApproval(id, slot, false, 'stale')
+        for (const [id, slot, instance] of before) {
+          if (pendingIds.has(id)) continue
+          // Replaced during the read: the new request owns the id, its chat
+          // row and its provenance, so only the earlier one's feed row goes.
+          if (coordinatorApprovalsRef.current.has(id)
+            && (coordinatorApprovalsRef.current.get(id) !== slot || instances.get(id) !== instance)) {
+            for (const row of liveApprovalRows(store.getState().notifications, id)) {
+              if (instance && row.approval_instance === instance) dispatch(retireApprovalRow(row.ts, 'gone'))
+            }
+            continue
+          }
+          retireApproval(id, slot, false, 'stale', false, instance)
         }
         const existing = store.getState().notifications.items
         const currentChat = store.getState().chat
@@ -158,19 +192,29 @@ export function useApprovalRegistry(dispatch: AppDispatch, queryClient: QueryCli
           const slot = a.slot || ''
           const slotMessages = slot === currentChat.activeSlot
             ? currentChat.messages
-            : slot && Object.prototype.hasOwnProperty.call(currentChat.slotMessages, slot)
+            : slot && Object.hasOwn(currentChat.slotMessages, slot)
               ? currentChat.slotMessages[slot] ?? []
               : []
-          if (existing.some((n: Notification) => n.approval_id === a.id)) continue
-          if (slotMessages.some(message =>
-            message.role === 'permission' && message.meta?.approval_id === a.id)) continue
+          // Already in the feed as THIS request: the same instance, or (for a
+          // listing without one) a live row under the id. A retired row for an
+          // earlier request under a recurring id is not this one.
+          if (a.instance
+            ? existing.some((n: Notification) => n.approval_id === a.id && n.approval_instance === a.instance)
+            : liveApprovalRows(store.getState().notifications, a.id).length > 0) continue
+          // A settled row under a recurring id is an earlier request's.
+          if (slotMessages.some(message => message.role === 'permission'
+            && message.meta?.approval_id === a.id && !message.meta?.resolved)) continue
           coordinatorApprovalsRef.current.set(a.id, slot)
+          if (a.instance) coordinatorInstancesRef.current.set(a.id, a.instance)
+          else coordinatorInstancesRef.current.delete(a.id)
           dispatch(addNotification({
             kind: 'approval',
             title: i18nT('hooks.useWebSocket.tool_approval', { name: a.tool || i18nT('hooks.useWebSocket.unknown') }),
             body: approvalNotificationBody(a.source, a.tool_input),
             ts: String(a.ts || Date.now() / 1000),
             approval_id: a.id,
+            ...(a.instance ? { approval_instance: a.instance } : {}),
+            ...(slot ? { slot } : {}),
           } as Notification))
           writeRow(a, slot)
         }
@@ -182,6 +226,11 @@ export function useApprovalRegistry(dispatch: AppDispatch, queryClient: QueryCli
             data.id,
             typeof data.slot === 'string' ? data.slot : '',
           )
+          if (typeof data.instance === 'string' && data.instance) {
+            coordinatorInstancesRef.current.set(data.id, data.instance)
+          } else {
+            coordinatorInstancesRef.current.delete(data.id)
+          }
         }
         // Approval-blocked chime: the agent is stuck until the user acts.
         // Suppressed during reconnect catch-up (same policy as turn-done).
@@ -204,12 +253,14 @@ export function useApprovalRegistry(dispatch: AppDispatch, queryClient: QueryCli
         // inline permission card already shows it there) from "the user is
         // on another surface" (the banner is the interrupt).
         const approvalSlot = typeof data.slot === 'string' && data.slot ? data.slot : ''
+        const approvalInstance = typeof data.instance === 'string' ? data.instance : ''
         const approvalNote = {
           kind: 'approval',
           title: i18nT('hooks.useWebSocket.tool_approval', { name: data.tool || i18nT('hooks.useWebSocket.unknown') }),
           body: approvalNotificationBody(data.source, data.tool_input, data.tool_purpose),
           ts: String(data.ts || Date.now() / 1000),
           approval_id: data.id,
+          ...(approvalInstance ? { approval_instance: approvalInstance } : {}),
           ...(approvalSlot ? { slot: approvalSlot } : {}),
         } as Notification
         dispatch(addNotification(approvalNote))
@@ -230,7 +281,8 @@ export function useApprovalRegistry(dispatch: AppDispatch, queryClient: QueryCli
         // from `approved`. An explicit expiry is a known auto-denial, but
         // retireApproval keeps its chat-row display token as `stale`.
         const decision = data.decision === 'expired' ? 'expired' : undefined
-        retireApproval(id, targetSlot, !!data.approved, decision, frameSlot === undefined)
+        const instance = typeof data.instance === 'string' ? data.instance : ''
+        retireApproval(id, targetSlot, !!data.approved, decision, frameSlot === undefined, instance)
       },
     }
   }, [dispatch, queryClient])

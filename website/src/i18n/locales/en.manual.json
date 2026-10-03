@@ -1812,6 +1812,7 @@
     },
     "approvalCard": {
       "approval_no_longer_pending": "This approval has expired or was already decided — the agent is no longer waiting on it.",
+      "decision_refused_not_pending": "Your decision wasn't recorded: this approval had already expired or been decided, so the agent is no longer waiting on it.",
       "decision_failed": "This decision may not have been recorded — the request failed.",
       "decision_not_recorded_error": "This decision wasn't recorded: {{error}}",
       "trusted_channel_all": "Trusted — all tools in this channel are auto-approved, persists across restarts",
@@ -2813,7 +2814,8 @@
         "open_notification": "Open notification: {{title}}",
         "show_less": "Show less",
         "show_muted_count": "Show muted ({{count}})",
-        "try_a_different_search": "Try a different search"
+        "try_a_different_search": "Try a different search",
+        "could_not_dismiss_try_again": "Could not dismiss this notification. Try again."
       },
       "notificationPermissionHint": {
         "get_alerted_when_you_re_away": "Get alerted when you're away",

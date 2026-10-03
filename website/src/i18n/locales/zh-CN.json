@@ -5741,6 +5741,7 @@
     "approvalCard": {
       "actions_group": "审批操作",
       "approval_no_longer_pending": "这条审批已过期或已被处理 — 代理不再等待它。",
+      "decision_refused_not_pending": "你的决定未被记录：这条审批已过期或已被处理，代理不再等待它。",
       "approve": "批准",
       "approved": "已批准",
       "decision_failed": "这次决定可能未被记录 — 请求失败。",
@@ -7446,7 +7447,8 @@
         "search": "搜索…",
         "show_less": "收起",
         "show_muted_count": "显示已静音（{{count}}）",
-        "try_a_different_search": "换个搜索词试试"
+        "try_a_different_search": "换个搜索词试试",
+        "could_not_dismiss_try_again": "无法忽略通知。请重试。"
       },
       "notificationPermissionHint": {
         "get_alerted_when_you_re_away": "离开时也能收到提醒",

@@ -5714,6 +5714,7 @@
     "approvalCard": {
       "actions_group": "승인 작업",
       "approval_no_longer_pending": "이 승인은 만료되었거나 이미 결정되었습니다 — 에이전트가 더 이상 기다리지 않습니다.",
+      "decision_refused_not_pending": "결정이 기록되지 않았습니다. 이 승인은 이미 만료되었거나 결정되어 에이전트가 더 이상 기다리지 않습니다.",
       "approve": "승인",
       "approved": "승인됨",
       "decision_failed": "이 결정이 기록되지 않았을 수 있습니다 — 요청이 실패했습니다.",
@@ -7446,7 +7447,8 @@
         "search": "검색…",
         "show_less": "간략히 보기",
         "show_muted_count": "음소거 표시 ({{count}})",
-        "try_a_different_search": "다른 검색어로 시도하세요"
+        "try_a_different_search": "다른 검색어로 시도하세요",
+        "could_not_dismiss_try_again": "알림을 닫을 수 없습니다. 다시 시도하세요."
       },
       "notificationPermissionHint": {
         "get_alerted_when_you_re_away": "자리에 없을 때도 알림 받기",

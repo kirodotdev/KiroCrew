@@ -5832,6 +5832,7 @@
     "approvalCard": {
       "actions_group": "Freigabeaktionen",
       "approval_no_longer_pending": "Diese Genehmigung ist abgelaufen oder wurde bereits entschieden — der Agent wartet nicht mehr darauf.",
+      "decision_refused_not_pending": "Deine Entscheidung wurde nicht erfasst: Diese Genehmigung war bereits abgelaufen oder entschieden, daher wartet der Agent nicht mehr darauf.",
       "approve": "Genehmigen",
       "approved": "Genehmigt",
       "decision_failed": "Diese Entscheidung wurde möglicherweise nicht gespeichert — die Anfrage ist fehlgeschlagen.",
@@ -7557,7 +7558,8 @@
         "search": "Suchen…",
         "show_less": "Weniger anzeigen",
         "show_muted_count": "Stummgeschaltete anzeigen ({{count}})",
-        "try_a_different_search": "Versuche eine andere Suche"
+        "try_a_different_search": "Versuche eine andere Suche",
+        "could_not_dismiss_try_again": "Die Benachrichtigung konnte nicht geschlossen werden. Versuche es erneut."
       },
       "notificationPermissionHint": {
         "get_alerted_when_you_re_away": "Lass dich benachrichtigen, wenn du weg bist",

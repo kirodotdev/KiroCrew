@@ -1,4 +1,4 @@
-import { createSlice, createAsyncThunk, type PayloadAction } from '@reduxjs/toolkit'
+import { createSlice, createAsyncThunk, createSelector, type PayloadAction } from '@reduxjs/toolkit'
 import { api } from '../api/client'
 import type { Notification } from '../types'
 
@@ -25,9 +25,35 @@ interface NotificationsState {
    *  bounded by the same cap and cannot retain stamps for rows the list no
    *  longer holds. */
   ackSeqByTs?: Record<string, number>
+  /** ts → why an approval row can no longer be decided although it is still
+   *  listed: `gone` (the server reported it expired or
+   *  stale), `refused` (a decide from this tab was refused with a 404/410, so
+   *  the request FAILED and the row says so as an error) or the recorded
+   *  outcome (`approve`/`reject`). A retired row is also read: it no longer
+   *  asks for anything, so `retireApprovalRow` acks it and it leaves the unread
+   *  badge. A retired row is never removed on that signal: it stays, its
+   *  Approve/Reject are withdrawn, and only a dismiss that succeeds removes it.
+   *  An approval row is this tab's copy of a pending request (the `approval`
+   *  frame and the reconnect reconcile add it; the notification store holds
+   *  none), so a reload drops every one and the reconcile adds back only
+   *  what `/api/approvals` still lists as pending.
+   *  Held here rather than in a component so the page feed, the bell popover
+   *  (which remounts on every open) and the detail panel agree. */
+  retiredApprovals?: Record<string, RetiredApprovalReason>
+  /** ts → the last DELETE for that row was refused, so the row is still
+   *  listed and every view that shows it says the dismiss failed. Set by a
+   *  rejected `deleteNotification`, cleared when the next one starts. Held
+   *  here for the same reason as `retiredApprovals`: the press can come from
+   *  one view (a landed decision's cleanup, the detail panel's Dismiss) while
+   *  the row is read in another. */
+  dismissFailed?: Record<string, true>
 }
 
-const initialState: NotificationsState = { items: [], clearSeq: 0, ackSeq: 0, ackSeqByTs: {} }
+export type RetiredApprovalReason = 'gone' | 'refused' | 'approve' | 'reject'
+
+const initialState: NotificationsState = {
+  items: [], clearSeq: 0, ackSeq: 0, ackSeqByTs: {}, retiredApprovals: {}, dismissFailed: {},
+}
 
 /** Ring-buffer cap on the notifications list. Without it, `items` grows
  *  monotonically for the tab's lifetime (ack only flips a flag) — part of
@@ -79,12 +105,22 @@ const markAck = (state: NotificationsState, ts: string) => {
  *  is unreachable state that would accumulate for the tab's lifetime, which is
  *  the retention class `NOTIFICATIONS_RING_CAP` exists to close. */
 const pruneAckStamps = (state: NotificationsState) => {
-  const stamps = state.ackSeqByTs
-  if (!stamps) return
   const live = new Set(state.items.map(n => n.ts))
-  for (const ts of Object.keys(stamps)) {
-    if (!live.has(ts)) delete stamps[ts]
+  // The per-row marks go with their row, so a refetch that no longer lists a
+  // row drops its retired mark with it.
+  for (const map of [state.ackSeqByTs, state.retiredApprovals, state.dismissFailed]) {
+    if (!map) continue
+    for (const ts of Object.keys(map)) {
+      if (!live.has(ts)) delete map[ts]
+    }
   }
+}
+
+/** Empties every per-row mark, for the paths that empty the list. */
+const resetRowMarks = (state: NotificationsState) => {
+  state.ackSeqByTs = {}
+  state.retiredApprovals = {}
+  state.dismissFailed = {}
 }
 
 /**
@@ -273,6 +309,23 @@ const notificationsSlice = createSlice({
         markAck(state, n.ts)
       }
     },
+    /** An approval that can no longer be decided: an `approval_resolved`
+     *  frame, a decision from the feed or detail panel that landed, or a 404/410 on
+     *  decide. Marks a listed row only and never removes it: the row stays
+     *  until a dismiss succeeds. A recorded
+     *  outcome is kept over a later `gone`/`refused` (the frame for this tab's
+     *  own decision can arrive after it), and the first of those two is kept
+     *  over the other. Dispatch `retireApprovalRow`, which also acks the row. */
+    retireApprovalNote(state, action: PayloadAction<{ ts: string; why: RetiredApprovalReason }>) {
+      const { ts, why } = action.payload
+      if (!state.items.some(n => n.ts === ts)) return
+      const marks = (state.retiredApprovals ??= {})
+      if ((why === 'gone' || why === 'refused') && marks[ts]) return
+      marks[ts] = why
+    },
+    /** A chat-card decision landed: its feed row goes with it. The row is the
+     *  tab's own copy of the approval (the server keeps no approval note), so
+     *  nothing is sent. */
     removeNotificationByTs(state, action: PayloadAction<string>) {
       state.items = state.items.filter(n => n.ts !== action.payload)
       pruneAckStamps(state)
@@ -284,7 +337,7 @@ const notificationsSlice = createSlice({
       state.items = []
       state.clearSeq += 1
       // No items left to protect, so the stamps only take space.
-      state.ackSeqByTs = {}
+      resetRowMarks(state)
     },
   },
   extraReducers: (builder) => {
@@ -321,7 +374,17 @@ const notificationsSlice = createSlice({
         if (action.payload.seq !== state.clearSeq) return
         state.items = []
         state.clearSeq += 1
-        state.ackSeqByTs = {}
+        resetRowMarks(state)
+      })
+      .addCase(deleteNotification.pending, (state, action) => {
+        if (state.dismissFailed) delete state.dismissFailed[action.meta.arg]
+      })
+      .addCase(deleteNotification.rejected, (state, action) => {
+        // Only for a row still listed: one a refetch dropped has nothing left
+        // to say the failure on.
+        if (state.items.some(n => n.ts === action.meta.arg)) {
+          ;(state.dismissFailed ??= {})[action.meta.arg] = true
+        }
       })
       .addCase(deleteNotification.fulfilled, (state, action) => {
         state.items = state.items.filter(n => n.ts !== action.payload)
@@ -401,5 +464,69 @@ const notificationsSlice = createSlice({
   },
 })
 
-export const { addNotification, ackNotificationByTs, unackNotificationByTs, removeNotificationByTs, clearAllNotifications } = notificationsSlice.actions
+export const { addNotification, ackNotificationByTs, unackNotificationByTs, retireApprovalNote, removeNotificationByTs, clearAllNotifications } = notificationsSlice.actions
 export default notificationsSlice.reducer
+
+/** Retire an approval row (see `retireApprovalNote`) and mark it read. A
+ *  retired row asks for nothing, so it must not keep the bell and dock badges
+ *  lit while it waits for its Dismiss. The ack goes through the ordinary
+ *  `ackNotification` write, so the server's read flag agrees and a later
+ *  fetch does not light the row again. No DELETE is sent: the row leaves only
+ *  when the reader dismisses it (or a landed decision removes it). */
+export const retireApprovalRow = (ts: string, why: RetiredApprovalReason) =>
+  (dispatch: (a: unknown) => unknown, getState: () => unknown) => {
+    dispatch(retireApprovalNote({ ts, why }))
+    const row = (getState() as { notifications: NotificationsState }).notifications.items.find(n => n.ts === ts)
+    if (row && !row.acked) void dispatch(ackNotification(ts))
+  }
+
+/** A decision that landed on an approval, from the feed or the detail
+ *  panel: retire its row with the recorded outcome, then remove it
+ *  once the server confirms. Resolves with the DELETE's settled action. */
+export const settleDecidedApproval = (ts: string, action: 'approve' | 'reject') =>
+  (dispatch: (a: unknown) => unknown, getState: () => unknown) => {
+    retireApprovalRow(ts, action)(dispatch, getState)
+    return dispatch(deleteNotification(ts)) as ReturnType<ReturnType<typeof deleteNotification>>
+  }
+
+/** The key a decide is sent under. */
+export const approvalDecisionKey = (n: Pick<Notification, 'approval_id' | 'ts'>): string => n.approval_id || n.ts
+
+/** Where a decide for this row is sent. A coordinator approval's id is the
+ *  caller's and recurs, so a row that carries the server-issued instance names
+ *  it, together with the owning slot ('' for a slotless approval, such as a
+ *  cron job's): the server then resolves only the request this row showed, and
+ *  refuses once another request holds the id. A row without one (a chat-runner
+ *  approval) keeps the bare-id path. */
+export const approvalDecideTarget = (
+  n: Pick<Notification, 'approval_instance' | 'slot'>,
+): { origin: 'coordinator'; slot: string; instance: string } | undefined =>
+  n.approval_instance ? { origin: 'coordinator', slot: n.slot || '', instance: n.approval_instance } : undefined
+
+/** The listed rows for approval *id* that can still be decided, i.e. are not
+ *  retired. The id recurs, so a retired row for an earlier request can share it
+ *  with the live one; a retirement or a settled decision must land on the live
+ *  row, never on that earlier one. */
+export const liveApprovalRows = (notifications: NotificationsState, id: string): Notification[] => {
+  const retired = notifications.retiredApprovals ?? {}
+  return notifications.items.filter(n =>
+    n.approval_id === id && !Object.hasOwn(retired, n.ts))
+}
+
+const NO_RETIRED_MARKS: Readonly<Record<string, RetiredApprovalReason>> = {}
+
+/** The rows every unread surface counts (the bell and dock badges, the tab
+ *  title, the native banner): not acked, not silenced or passive, and not a
+ *  retired approval. A retired row asks for nothing whatever its ack flag
+ *  says, and that flag goes back to unread when the ack `retireApprovalRow`
+ *  sends is refused. The row's own dot already ignores the flag, so the counts
+ *  must too, or a badge stays lit with no highlighted row to clear it. One
+ *  selector, so those surfaces cannot drift apart. */
+export const selectUnreadNotes = createSelector(
+  [
+    (s: { notifications: NotificationsState }) => s.notifications.items,
+    (s: { notifications: NotificationsState }) => s.notifications.retiredApprovals ?? NO_RETIRED_MARKS,
+  ],
+  (items, retired) => items.filter(n =>
+    !n.acked && !isSilencedNote(n) && !Object.hasOwn(retired, n.ts)),
+)

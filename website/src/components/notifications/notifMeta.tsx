@@ -22,6 +22,12 @@ import { fmtTime as fmtClockTime, fmtDateTime, fmtDateFields, fmtRelative as fmt
  * construction rather than managing it with a storage migration.
  */
 
+/** A decide this tab sent was refused as no longer pending, rendered
+ *  through the shared `ErrorNotice`. It opens on what happened to the press
+ *  (the decision was not recorded), which is what sets it apart from the
+ *  muted line a row shows when the approval went away without one. */
+export const refusedNotice = () => i18nT('components.approvalCard.decision_refused_not_pending')
+
 export function parseTs(ts: string | number): Date {
   // A numeric epoch (number, or an all-digits string) can arrive in any unit —
   // seconds, milliseconds, microseconds, or nanoseconds — depending on the
@@ -264,4 +270,4 @@ export function fmtRelativeMinute(ts: string): string {
  *  semantic tint on the LABEL (never a solid coloured fill). The `bg-[…]`
  *  token leads because the i18n lint recognises an arbitrary-value class
  *  cluster by its FIRST bracketed token carrying a comma or underscore. */
-export const MAC_ACTION_BTN_CLASS = 'bg-[color-mix(in_srgb,var(--bg-hover)_80%,transparent)] px-3 py-1 rounded-lg text-[12px] font-medium cursor-pointer font-body whitespace-nowrap transition-colors backdrop-blur border border-[color-mix(in_srgb,var(--border)_45%,transparent)] hover:bg-bg-hover'
+export const MAC_ACTION_BTN_CLASS = 'bg-[color-mix(in_srgb,var(--bg-hover)_80%,transparent)] px-3 py-1 rounded-lg text-[12px] font-medium cursor-pointer font-body whitespace-nowrap transition-colors backdrop-blur border border-[color-mix(in_srgb,var(--border)_45%,transparent)] hover:bg-bg-hover disabled:opacity-50 disabled:cursor-default'

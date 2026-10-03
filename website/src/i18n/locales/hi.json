@@ -5832,6 +5832,7 @@
     "approvalCard": {
       "actions_group": "अनुमोदन क्रियाएँ",
       "approval_no_longer_pending": "यह स्वीकृति समाप्त हो गई है या पहले ही तय हो चुकी है — एजेंट अब इसकी प्रतीक्षा नहीं कर रहा है।",
+      "decision_refused_not_pending": "तुम्हारा निर्णय दर्ज नहीं हुआ: यह स्वीकृति पहले ही समाप्त हो चुकी थी या तय हो चुकी थी, इसलिए एजेंट अब इसकी प्रतीक्षा नहीं कर रहा है।",
       "approve": "स्वीकृत करें",
       "approved": "स्वीकृत",
       "decision_failed": "यह निर्णय शायद दर्ज नहीं हुआ — अनुरोध विफल रहा।",
@@ -7557,7 +7558,8 @@
         "search": "खोजें…",
         "show_less": "कम दिखाएँ",
         "show_muted_count": "म्यूट दिखाओ ({{count}})",
-        "try_a_different_search": "कोई दूसरी खोज आज़माएँ"
+        "try_a_different_search": "कोई दूसरी खोज आज़माएँ",
+        "could_not_dismiss_try_again": "सूचना हटाई नहीं जा सकी। दोबारा कोशिश करो।"
       },
       "notificationPermissionHint": {
         "get_alerted_when_you_re_away": "दूर रहने पर भी अलर्ट पाओ",

@@ -601,6 +601,81 @@ async def test_dashboard_coordinator_target_without_an_instance_is_refused(state
     assert not coordinator.done()
 
 
+@pytest.mark.parametrize("sent", ["shown", "replacement"])
+@pytest.mark.asyncio
+async def test_a_slotless_coordinator_target_is_bound_by_its_instance(state, sent):
+    """A coordinator approval raised with no owning slot (a cron job's) names an
+    empty slot, which is present and must match the record's own empty slot; the
+    instance still decides which request under the recurring id is resolved."""
+    coordinator = asyncio.get_running_loop().create_future()
+    state._approval_futures["cron-id"] = coordinator
+    state._pending_approvals["cron-id"] = {"id": "cron-id", "slot": "", "instance": "shown"}
+    app = _make_mode_app(state)
+    app.router.add_post("/api/approvals/{id}/{action}", api_approval_resolve)
+    async with TestClient(TestServer(app)) as client:
+        response = await client.post(
+            "/api/approvals/cron-id/approve",
+            params={"origin": "coordinator", "slot": "", "instance": sent},
+            json={},
+        )
+    assert response.status == (200 if sent == "shown" else 404)
+    assert coordinator.done() is (sent == "shown")
+
+
+def test_a_coordinator_resolution_names_the_instance_it_resolved():
+    """Both coordinator exits -- a decision and an expiry -- broadcast the
+    instance of the record they resolved, so a client can tell it from an
+    earlier request's row under the same recurring id."""
+    from kiro_crew.dashboard.interaction_coordinator import ApprovalCoordinator
+
+    class _State:
+        _log = MagicMock()
+
+        def __init__(self) -> None:
+            self.frames: list[dict] = []
+            self._approval_futures: dict = {}
+            self._pending_approvals = {
+                "id": {"id": "id", "slot": "", "instance": "live"},
+                "exp": {"id": "exp", "slot": "cron:job", "instance": "gone"},
+            }
+
+        def broadcast_ws(self, kind: str, payload: dict) -> None:
+            self.frames.append({"kind": kind, **payload})
+
+        def _audit_and_broadcast_approval(
+            self, session_key, approval_id, approved, decision="", *, instance=""
+        ):
+            ApprovalCoordinator.audit_and_broadcast(
+                self,
+                session_key,
+                approval_id,
+                approved,
+                decision,
+                audit_provider=MagicMock(),
+                instance=instance,
+            )
+
+    fake = _State()
+    loop = asyncio.new_event_loop()
+    try:
+        fake._approval_futures["id"] = loop.create_future()
+        assert ApprovalCoordinator.resolve_state(fake, "id", True)
+    finally:
+        loop.close()
+    ApprovalCoordinator._retire_unresolved(fake, "exp", "cron:job")
+    assert fake.frames == [
+        {"kind": "approval_resolved", "id": "id", "approved": True, "instance": "live"},
+        {
+            "kind": "approval_resolved",
+            "id": "exp",
+            "approved": False,
+            "slot": "cron:job",
+            "decision": "expired",
+            "instance": "gone",
+        },
+    ]
+
+
 def test_coordinator_records_carry_a_distinct_instance_per_request():
     """The request id is the caller's and can recur; the instance is minted here,
     once per request, so two requests sharing an id are told apart."""

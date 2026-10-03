@@ -278,8 +278,13 @@ export const messageReducers = {
       ? state.messages
       : state.slotMessages[safeKey(slot)]
     const matches = messages?.filter(message => message.meta?.approval_id === id)
+    // Within the named registry a still-pending row outranks a settled one:
+    // the id recurs, so an earlier request's settled row can sit ahead of
+    // the one being resolved. Only within it: a pending row of the other
+    // registry under the same id is a different request.
     const m = (registry
-      ? matches?.find(message => message.meta?.registry === registry)
+      ? matches?.filter(message => message.meta?.registry === registry)
+        .sort((a, b) => +!!a.meta?.resolved - +!!b.meta?.resolved)[0]
       : undefined) ?? matches?.[0]
     const decision = action.payload.decision || 'approved'
     // A 'stale' retirement carries no outcome (an expired wait, a 404, or a

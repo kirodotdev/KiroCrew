@@ -5714,6 +5714,7 @@
     "approvalCard": {
       "actions_group": "承認アクション",
       "approval_no_longer_pending": "この承認は期限切れか、すでに決定済みです — エージェントはもう待機していません。",
+      "decision_refused_not_pending": "決定は記録されませんでした。この承認はすでに期限切れか決定済みのため、エージェントはもう待機していません。",
       "approve": "承認",
       "approved": "承認済み",
       "decision_failed": "この決定は記録されていない可能性があります — リクエストが失敗しました。",
@@ -7446,7 +7447,8 @@
         "search": "検索…",
         "show_less": "少なく表示",
         "show_muted_count": "ミュート済みを表示（{{count}}）",
-        "try_a_different_search": "別の検索を試す"
+        "try_a_different_search": "別の検索を試す",
+        "could_not_dismiss_try_again": "通知を閉じられませんでした。もう一度お試しください。"
       },
       "notificationPermissionHint": {
         "get_alerted_when_you_re_away": "離席中も通知を受け取る",
