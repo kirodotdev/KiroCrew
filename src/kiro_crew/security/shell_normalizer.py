@@ -2759,7 +2759,12 @@ _CMD_SEPARATOR_RE = re.compile(r"&&|\|\||[;|\n]")
 _SHELL_SEGMENT_SEPARATORS = ("&&", "||", ";", "|")
 
 
-def _split_push_command_segments(text: str) -> list[str]:
+#: Constructs the quote walk does not model (heredoc, ``$(``, ``${``, backtick and
+#: process-substitution bodies). Pinned with the walk by a test that fails on drift.
+_QUOTE_WALK_UNMODELLED_RE = re.compile(r"<<|\$\(|\$\{|`|[<>]\(")
+
+
+def _split_push_command_segments(text: str, keep_quoted_newlines: bool = True) -> list[str]:
     """Split *text* into the shell's TRUE command segments, honouring quoting.
 
     A separator only separates where the SHELL reads one. Inside quotes, or
@@ -2771,14 +2776,14 @@ def _split_push_command_segments(text: str) -> list[str]:
     boundary, so an ordinary unprotected refname was denied by the protective
     fallback (and by its ungated sentinel, which no catalog row can switch off).
 
-    A NEWLINE always separates, escaped or not, and the backslash is KEPT in the
+    An UNQUOTED newline separates, escaped or not, and the backslash is KEPT in the
     segment it ends. That is not an inconsistency: a backslash-newline VANISHES
     in bash, fusing the words on either side into one that neither segment can
     reconstruct (``origin ma\\`` + newline + ``in`` publishes MAIN), and the
     retained trailing escape is exactly the signal the cumulative-open-state
     check ungates on. Every other escaped separator survives as a LITERAL
     character in the word, so the fused word necessarily contains it and can
-    never equal a protected branch name.
+    never equal a protected branch name. A newline INSIDE quotes is word data.
 
     Distinct from :func:`_split_shell_segments`, which serves the ``cd``-tracking
     pass: that one wants FEWER segments (a wrong split corrupts the tracked
@@ -2794,6 +2799,18 @@ def _split_push_command_segments(text: str) -> list[str]:
     """
     segments: list[str] = []
     rest = text
+    # A quoted newline is kept as word data only when the quote walk can be
+    # trusted across lines. It does not model comments, heredocs or substitution
+    # bodies, where bash ends or opens quoting differently at a newline, so any of
+    # those anywhere in the command keeps the conservative split at every newline.
+    keep_quoted_newlines = (
+        keep_quoted_newlines
+        and not _QUOTE_WALK_UNMODELLED_RE.search(text)
+        and not any(
+            step.active and step.char == "#" and _opens_comment(text, step.offset)
+            for step in _iter_shell_chars(text)
+        )
+    )
     while True:
         buf: list[str] = []
         resume_at: int | None = None
@@ -2802,12 +2819,12 @@ def _split_push_command_segments(text: str) -> list[str]:
                 buf.append(step.text)
                 break
             if step.char == "\n":
-                # A NEWLINE always separates. When it was ESCAPED the backslash
-                # is kept, because that is the splice signal: bash makes the
-                # backslash-newline vanish, fusing the words on either side into
-                # one that neither segment can reconstruct.
+                # A quoted newline is word data; an escaped one keeps "\" (see docstring).
                 if step.text.startswith("\\"):
                     buf.append("\\")
+                elif not step.active and keep_quoted_newlines:
+                    buf.append(step.text)
+                    continue
                 resume_at = step.offset + len(step.text)
                 break
             if step.active:

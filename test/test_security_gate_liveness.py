@@ -125,7 +125,6 @@ def _url_payload_command(n: int) -> str:
 #: partial table never opens the window. So does an NLMSG_DONE whose errno is not 0.
 #: Three incomplete dumps in a row log one warning, so a host whose table never
 #: reads can be told apart from a target that is really this machine.
-#:
 #: Re-pinned from 27,942 for the NUL blanking in ``inline_payload._lex``: one line
 #: that swaps each NUL for a space before tokenizing, plus the docstring saying why.
 #: CPython 3.12 raises ``SystemError`` for a NUL after an indented block, which
@@ -153,12 +152,21 @@ def _url_payload_command(n: int) -> str:
 #: Windows file too large to hash on the gate is never served, so a dotless target
 #: there is pending, and the ssh self-target refusal note says so.
 #:
+#: Raised again, from 28,399, for the quoted-newline rule in the push segment
+#: split: a literal newline inside quotes stays in its word, so the literal feature
+#: push after a multi-line commit message parses as the push it is. The walk that
+#: decides "inside quotes" does not model heredocs, substitution bodies or comments,
+#: so a command holding any of them keeps the split at every newline, and a phantom
+#: quote cannot hide a protected push. A merged segment that does not parse as a
+#: push is re-read line by line, so quoted text that merely mentions a push is
+#: judged exactly as the per-line split reads it.
+#:
 #: The number IS the package's measured total, carrying no spare room: a ratchet with
 #: headroom admits exactly the unreviewed growth it exists to catch, so the next line
 #: added here fails this gate and has to be re-pinned deliberately, with its reason
 #: written above. The guards that detect a monolith growing back are the per-file cap
 #: and the facade's share below, and both must stay untouched.
-_PACKAGE_LINE_BUDGET = 28_399
+_PACKAGE_LINE_BUDGET = 28_424
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

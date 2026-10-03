@@ -4350,12 +4350,20 @@ def _git_publish_floor_tags(text_lower: str) -> frozenset[str]:
     """
     tags: set[str] = set()
     saw_push = False
-    for command in _split_push_command_segments(text_lower):
+    pending = _split_push_command_segments(text_lower)
+    while pending:
+        command = pending.pop(0)
         # ``_is_git_publish`` (not ``_git_push_args``) gates the checks so that
         # glue-evasion forms — which do NOT tokenize to a clean ``git`` token —
         # are still recognized as pushes and cannot slip past the ambiguity /
         # fail-closed guards below.
         if not _is_git_publish(command):
+            continue
+        # A kept quoted newline that does not leave a parseable push behind (a
+        # multi-line ``echo``/``--body`` quoting a push line) is judged line by
+        # line, the conservative reading, rather than as one unparseable word.
+        if "\n" in command and _git_push_args(command) is None:
+            pending[:0] = _split_push_command_segments(command, keep_quoted_newlines=False)
             continue
         saw_push = True
         # Substitution / expansion glue anywhere in a push command makes it

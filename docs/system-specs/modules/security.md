@@ -1585,10 +1585,16 @@ grammar admits no quotes, so a quote can only sit in the target group;
 refusing the whole token for it had mislabelled the shape), while fragment
 tokens (open quote state) still poison the split protectively. Quoted operator characters are data and none of this fires. A segment
 whose CUMULATIVE quote/escape state is still open at its end continues into the
-next line — bash line continuation (`\<newline>` vanishes) and quoted newlines
-splice words across the newline segment boundary, so `origin ma\` + newline +
+next line — bash line continuation (`\<newline>` vanishes) splices words across
+the newline segment boundary, so `origin ma\` + newline +
 `in` pushes `main` while no scanned token spells it — and lands on the ungated
-sentinel (the `ma$in` posture); a mid-segment open whose quote closes before
+sentinel (the `ma$in` posture). A literal newline INSIDE quotes is word data
+and does not end the segment, but only while the quote walk can be trusted
+across lines: a command holding a heredoc, a command, parameter or process
+substitution, a backtick, or a real `#` comment keeps the split at every
+newline, because the walk models none of their bodies. A merged segment that
+does not parse as a push (quoted text that merely mentions one) is read line by
+line instead; a mid-segment open whose quote closes before
 segment end stays on the disableable fallback, because in-segment joining can
 only fuse whitespace into a word (never a valid refname) and the pieces stay
 visible to the superset scan. The invariant

@@ -1559,6 +1559,82 @@ class TestTokenizerContractBetweenTheLayers:
         for cmd in ("git push origin ma\\\nin", 'git push origin "ma\\\nin"'):
             assert security._GIT_PUBLISH_UNGATED in security._git_publish_floor_tags(cmd), cmd
 
+    def test_a_newline_inside_quotes_stays_in_its_word(self):
+        # A multi-line commit message must not split the command mid-string: the
+        # next segment's walk would restart unquoted, read the message's CLOSING
+        # quote as an opener that swallows ``&&``, and turn a literal feature push
+        # into one unparseable word refused as target-unverifiable.
+        from kiro_crew.security import _split_push_command_segments
+
+        assert _split_push_command_segments('git commit -m "a\n\nb" && git push origin f') == [
+            'git commit -m "a\n\nb" ',
+            " git push origin f",
+        ]
+        for cmd in (
+            'git commit -q -m "subject\n\nbody" && git push -q origin feat-x',
+            "git commit -m 'a\nb'; git push -u fork fix/x",
+        ):
+            assert is_denied(cmd) is None, cmd
+        # The protected check SEES the target behind a multi-line message, and an
+        # unquoted newline still separates.
+        for cmd in (
+            'git commit -q -m "subject\n\nbody" && git push -q origin main',
+            "echo 'a\nb'\ngit push origin main",
+        ):
+            assert "git-publish-push-protected-branch-name" in security._git_publish_floor_tags(
+                cmd
+            ), cmd
+
+    def test_a_quote_the_walk_cannot_model_keeps_the_split_at_every_newline(self):
+        # The quote walk knows no comments, heredocs or substitution bodies, so a
+        # quote opened inside one is a PHANTOM that bash never sees. Kept across a
+        # newline it would swallow the next line, and a protected push there would
+        # go unjudged. Any such construct keeps the conservative per-line split.
+        for cmd in (
+            "git push origin feat # it's ready\ngit push origin main",
+            "git push origin feat <<EOF\ngit push origin feat '\nEOF\ngit push origin main\necho '",
+            'echo "$(cat <<EOF\n"\nEOF\n)"\ngit push origin feat \'\ngit push origin main\n\'',
+            'echo `echo "`\ngit push origin feat "\ngit push origin main\n"',
+        ):
+            assert security._git_publish_floor_tags(cmd), cmd
+        # A ``#`` inside the quoted message is data, so the message still stays whole.
+        assert is_denied('git commit -m "a\n\nFixes #1" && git push origin feat-x') is None
+
+    def test_the_unmodelled_construct_list_is_pinned_to_the_quote_walk(self):
+        # Keeping a quoted newline is safe only while the unmodelled-construct list
+        # is COMPLETE for the walk as written: a construct the walk mishandles but
+        # the list misses lets a phantom quote hide the next line, and nothing else
+        # fails. Both sides are pinned here, so changing either one fails this test
+        # until the other has been revisited and the pins are updated together.
+        import hashlib
+        import inspect
+
+        from kiro_crew.security import shell_normalizer as sn
+
+        assert sn._QUOTE_WALK_UNMODELLED_RE.pattern == r"<<|\$\(|\$\{|`|[<>]\("
+        walk_source = inspect.getsource(sn._iter_shell_chars).encode()
+        assert (
+            hashlib.sha256(walk_source).hexdigest()
+            == "c6ee186c73a9b0b7eb0e63dd6a2fdfc41791f40fa4a491ce3d3fc6e196d88d7e"
+        ), "the quote walk changed: revisit _QUOTE_WALK_UNMODELLED_RE, then re-pin"
+        # Every listed opener turns the trust off, so its quoted newline splits.
+        for opener in ("<<", "$(", "${", "`", "<(", ">("):
+            assert len(sn._split_push_command_segments(f"echo {opener} 'a\nb'")) == 2, opener
+
+    def test_quoted_text_that_quotes_a_push_line_is_judged_line_by_line(self):
+        # Multi-line quoted DATA that mentions a push (printed instructions, a PR
+        # comment, a commit message quoting a retired command) is one word that
+        # does not parse as a push. It is read line by line, as before, so a quoted
+        # feature push stays allowed and a quoted protected one stays denied.
+        for cmd in (
+            'echo "To publish, run:\ngit push origin my-feature\nthen open a PR"',
+            "printf 'Next:\ngit push origin my-feature\nopen a PR\n'",
+            'gh pr comment 1 --body "rebase, then\ngit push --force-with-lease origin fix/t\nok"',
+            'git commit -m "docs: retire\nwas:\ngit push origin release-notes\ndone"',
+        ):
+            assert is_denied(cmd) is None, cmd
+        assert security._git_publish_floor_tags('echo "run:\ngit push origin main\n"')
+
     def test_a_wrapped_payload_is_one_word_not_a_bare_git_token(self):
         # ``str.split`` tore a wrapper's quoted payload into fragments, so the
         # OUTER line — which is not itself a push — parsed as one and its
