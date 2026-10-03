@@ -726,8 +726,15 @@ def restore_open_slots(state: DashboardState) -> int:
     use :func:`restore_open_slots_async` instead — see the note there.
     """
     restored = 0
-    for restored in _restore_open_slots_steps(state):
-        pass
+    try:
+        for restored in _restore_open_slots_steps(state):
+            pass
+    finally:
+        # The open-tab restore has run this boot (even for a missing/empty
+        # file): an empty ``_slots`` from here on is authoritative, so the
+        # periodic flush may snapshot open_slots.json again — see
+        # DashboardState._persist_open_slots.
+        state.open_slots_restored = True
     return restored
 
 
@@ -764,11 +771,15 @@ async def restore_open_slots_async(state: DashboardState) -> int:
     can interleave — so ``restoring_open_slots`` is held for the duration to stop
     it snapshotting a half-restored slot set over open_slots.json.
     """
-    if not state.conversation_log:
-        return 0
     restored = 0
     state.restoring_open_slots = True
     try:
+        # No conversation log means persistence is a no-op this process, but the
+        # restore has still "run": fall through to the finally so the latch
+        # flips and the persist writers resume pruning instead of staying in the
+        # permanent pre-restore merge mode.
+        if not state.conversation_log:
+            return 0
         keys = await asyncio.to_thread(_read_open_slots_keys)
         if not keys:
             return 0
@@ -829,6 +840,11 @@ async def restore_open_slots_async(state: DashboardState) -> int:
         # Always clear, even if a rehydrate raises — a stuck flag would silently
         # disable open-tab persistence for the rest of the process's life.
         state.restoring_open_slots = False
+        # The open-tab restore has run this boot (even on an early return or a
+        # raise): an empty ``_slots`` is authoritative from here, so a periodic
+        # flush may snapshot open_slots.json again — see
+        # DashboardState._persist_open_slots.
+        state.open_slots_restored = True
     return restored
 
 

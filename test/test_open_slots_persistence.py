@@ -61,6 +61,7 @@ def test_persist_writes_open_slots_json(tmp_path, monkeypatch):
     """_persist_open_slots writes the live slot keys to <config_dir>/open_slots.json."""
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     state = _make_state(tmp_path / "sessions")
+    state.open_slots_restored = True  # steady state: the boot restore has run
     state.get_or_create_slot("chat-1-foo")
     state.get_or_create_slot("chat-2-bar")
 
@@ -86,6 +87,7 @@ def test_persist_overwrites_atomically(tmp_path, monkeypatch):
     """
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     state = _make_state(tmp_path / "sessions")
+    state.open_slots_restored = True  # steady state: the boot restore has run
     state.get_or_create_slot("chat-1-foo")
     state._persist_open_slots()
     # Add another slot and re-persist
@@ -106,6 +108,7 @@ def test_persist_honors_kirocrew_home_env(tmp_path, monkeypatch):
     custom_home = tmp_path / "custom-kirocrew-home"
     monkeypatch.setenv("KIROCREW_HOME", str(custom_home))
     state = _make_state(tmp_path / "sessions")
+    state.open_slots_restored = True  # steady state: the boot restore has run
     state.get_or_create_slot("chat-1-foo")
     state._persist_open_slots()
     assert (custom_home / "open_slots.json").exists()
@@ -494,6 +497,7 @@ def test_persist_open_slots_excludes_incognito_and_temporary(tmp_path, monkeypat
     """
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     state = _make_state(tmp_path / "sessions")
+    state.open_slots_restored = True  # steady state: the boot restore has run
     state.get_or_create_slot("chat-persistent-1")
     state.get_or_create_slot("chat-incognito-1", memory_mode="incognito")
     state.get_or_create_slot("chat-temporary-1", memory_mode="temporary")
@@ -1409,6 +1413,292 @@ def test_restoring_flag_cleared_even_if_restore_raises(tmp_path, monkeypatch):
             asyncio.run(restore_open_slots_async(state2))
 
     assert state2.restoring_open_slots is False
+
+
+# ── A flush BEFORE restore has run must not wipe the reopen seed ──
+#
+# start_flush_loop() arms the 5s periodic flush BEFORE the startup open-tab
+# restore runs (several awaits — yolo apply, dropped-grant read, channel
+# transcript migration, the cautious-boot pause — separate the two). In that
+# gap ``_slots`` is empty and ``restoring_open_slots`` is still False, so a
+# flush landing there snapshots ``{"keys": []}`` over a good open_slots.json.
+# The NEXT restart then finds no tabs and every session lands in "older
+# sessions". ``open_slots_restored`` gates the empty write until the restore
+# has actually run this boot.
+
+
+def test_flush_before_restore_does_not_wipe_seed(tmp_path, monkeypatch):
+    """An empty-slots flush before restore must leave open_slots.json intact."""
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    seed = {"keys": ["chat-1-idle", "chat-2-idle", "chat-3-idle"], "ts": 123.0}
+    (tmp_path / "open_slots.json").write_text(json.dumps(seed))
+
+    # Fresh gateway boot: _slots is empty and the open-tab restore has NOT run.
+    state = _make_state(tmp_path / "sessions")
+    assert state.open_slots_restored is False
+    assert state._slots == {}
+
+    # The periodic flush fires in the pre-restore gap.
+    state._persist_open_slots()
+
+    # The good seed must survive untouched — not be overwritten with [].
+    persisted = json.loads((tmp_path / "open_slots.json").read_text())
+    assert set(persisted["keys"]) == {"chat-1-idle", "chat-2-idle", "chat-3-idle"}, (
+        "a flush before restore wiped the reopen seed; the next restart would "
+        "send every session into 'older sessions'"
+    )
+
+
+def test_pre_restore_flush_does_not_clobber_seed_with_a_boot_time_slot(tmp_path, monkeypatch):
+    """A non-empty pre-restore flush must NOT shrink the seed either.
+
+    The HTTP listener binds before restore, so a user can create a new chat
+    while the gateway is still booting. That makes ``_slots`` non-empty — but it
+    holds ONLY the boot-time tab, not the seeded ones the restore has yet to
+    read. Pruning the seed down to it would lose every other tab across the next
+    restart. Before restore the writer MERGES instead of pruning: it folds the
+    existing on-disk seed in, so the write is the union of the seed and the
+    boot-time tab. A crash in this window keeps both, and the restore (which
+    reads open_slots.json) still finds every seeded tab.
+    """
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    seed = {"keys": ["chat-1-idle", "chat-2-idle"], "ts": 123.0}
+    (tmp_path / "open_slots.json").write_text(json.dumps(seed))
+
+    state = _make_state(tmp_path / "sessions")
+    assert state.open_slots_restored is False
+    # A chat created during boot, before restore ran.
+    state.get_or_create_slot("chat-9-newtab")
+
+    state._persist_open_slots()
+
+    # The seed is preserved AND the boot-time tab is added — the union, not a
+    # replacement that drops the seeded tabs.
+    persisted = json.loads((tmp_path / "open_slots.json").read_text())
+    assert set(persisted["keys"]) == {"chat-1-idle", "chat-2-idle", "chat-9-newtab"}, (
+        "a non-empty pre-restore flush did not merge the seed; the restore "
+        "would then lose the seeded tabs"
+    )
+
+
+def test_post_restore_empty_flush_still_clears_the_file(tmp_path, monkeypatch):
+    """After restore, an empty set is authoritative (user closed every tab).
+
+    The guard must not pin a stale seed once restore has run — otherwise closing
+    the last tab would never take effect across a restart.
+    """
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    (tmp_path / "open_slots.json").write_text(json.dumps({"keys": ["chat-1-old"], "ts": 0.0}))
+    state = _make_state(tmp_path / "sessions")
+    # Restore ran this boot and found nothing to restore.
+    assert restore_open_slots(state) == 0
+    assert state.open_slots_restored is True
+    assert state._slots == {}
+
+    state._persist_open_slots()
+
+    persisted = json.loads((tmp_path / "open_slots.json").read_text())
+    assert persisted["keys"] == [], (
+        "a genuinely-empty slot set after restore must still persist — closing "
+        "the last tab should not be undone by a restart"
+    )
+
+
+def test_restore_sets_open_slots_restored_flag(tmp_path, monkeypatch):
+    """Both drivers mark the restore as having run, even on a missing file."""
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+
+    sync_state = _make_state(tmp_path / "sessions")
+    assert sync_state.open_slots_restored is False
+    restore_open_slots(sync_state)  # missing file -> no-op
+    assert sync_state.open_slots_restored is True
+
+    async_state = _make_state(tmp_path / "sessions")
+    assert async_state.open_slots_restored is False
+    asyncio.run(restore_open_slots_async(async_state))
+    assert async_state.open_slots_restored is True
+
+
+def test_two_boot_restart_keeps_idle_sessions_active(tmp_path, monkeypatch):
+    """End-to-end: a flush in the pre-restore gap of boot #1 does not strand
+    idle sessions in "older" after boot #2.
+
+    Boot #1: a good seed exists, the flush loop fires before restore (empty
+    _slots), THEN restore runs. Boot #2: the seed must still list every idle
+    session so restore_open_slots rehydrates them as active sidebar slots.
+    """
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    base = _make_state(tmp_path / "sessions")
+    keys = ["chat-1-idle", "chat-2-idle", "chat-3-idle"]
+    for k in keys:
+        _seed_session(base, k)
+    (tmp_path / "open_slots.json").write_text(json.dumps({"keys": keys, "ts": 0.0}))
+
+    # ── Boot #1 ──
+    boot1 = _make_state(tmp_path / "sessions")
+    # The HTTP listener is up before restore, so the user creates a NEW chat in
+    # the gap — making _slots non-empty with a tab that is NOT in the seed.
+    boot1.get_or_create_slot("chat-9-newtab")
+    # The periodic flush fires in that gap.
+    boot1._persist_open_slots()
+    # Then the startup restore runs (reads the still-intact seed).
+    assert restore_open_slots(boot1) == 3
+    # And a normal post-restore flush snapshots the live set (seed + boot tab).
+    boot1._persist_open_slots()
+
+    # ── Boot #2 (the next restart) ──
+    boot2 = _make_state(tmp_path / "sessions")
+    restored = restore_open_slots(boot2)
+    assert restored == 3, (
+        f"boot #1's pre-restore flush wiped the seed; boot #2 restored "
+        f"{restored}/3 idle sessions, the rest fell into 'older sessions'"
+    )
+    assert set(boot2._slots) == set(keys)
+
+
+def test_crash_before_restore_keeps_seed_and_boot_time_tab(tmp_path, monkeypatch):
+    """A crash in the pre-restore window must lose neither the seed nor a new tab.
+
+    The HTTP listener binds before restore, so a chat opened during boot (C) is
+    live while the seed (A, B) has not been read yet. If the gateway dies after
+    a flush but before restore, the next boot restores from whatever that flush
+    left on disk. The pre-restore merge means that flush wrote A ∪ B ∪ C, so the
+    next boot rehydrates all three — the boot-time tab is NOT lost, and it did
+    NOT replace the seed.
+    """
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    base = _make_state(tmp_path / "sessions")
+    for k in ("chat-A-idle", "chat-B-idle", "chat-C-boot"):
+        _seed_session(base, k)
+    (tmp_path / "open_slots.json").write_text(
+        json.dumps({"keys": ["chat-A-idle", "chat-B-idle"], "ts": 0.0})
+    )
+
+    # ── Boot #1: listener up, user opens chat C, flush fires, THEN crash ──
+    boot1 = _make_state(tmp_path / "sessions")
+    boot1.get_or_create_slot("chat-C-boot")
+    assert boot1.open_slots_restored is False
+    boot1._persist_open_slots()  # the only write before the simulated crash
+    # (restore never runs — the process dies here)
+
+    # ── Boot #2: restore from the crash-time file ──
+    boot2 = _make_state(tmp_path / "sessions")
+    restored = restore_open_slots(boot2)
+    assert restored == 3, (
+        f"a pre-restore crash lost tabs: boot #2 restored {restored}/3 "
+        f"(seed A/B plus boot-time C must all survive)"
+    )
+    assert set(boot2._slots) == {"chat-A-idle", "chat-B-idle", "chat-C-boot"}
+
+
+def test_pre_restore_transient_seed_read_failure_preserves_seed(tmp_path, monkeypatch):
+    """A transient seed read failure pre-restore must skip the write, not shrink.
+
+    If ``_read_persisted_open_slot_keys`` cannot read an existing seed (e.g. a
+    Windows sharing violation from a foreign handle), merging an empty read
+    would write the live keys alone and shrink the file — losing the seeded
+    tabs the restore has yet to read. The writer must skip the whole write and
+    leave the on-disk seed intact for the next flush to retry.
+    """
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    seed = {"keys": ["chat-A-idle", "chat-B-idle"], "ts": 0.0}
+    (tmp_path / "open_slots.json").write_text(json.dumps(seed))
+
+    state = _make_state(tmp_path / "sessions")
+    state.get_or_create_slot("chat-C-boot")  # a boot-time live tab
+    assert state.open_slots_restored is False
+
+    # Simulate a transient read failure (seed exists but is momentarily
+    # unreadable) distinct from a genuinely-absent file.
+    from kiro_crew.dashboard.state import _persistence_for
+
+    monkeypatch.setattr(
+        _persistence_for(state),
+        "_read_persisted_open_slot_keys",
+        lambda path: None,
+    )
+
+    state._persist_open_slots()
+
+    # The write was skipped: the on-disk seed is byte-for-byte intact (the
+    # boot-time tab did NOT replace A/B).
+    assert json.loads((tmp_path / "open_slots.json").read_text()) == seed, (
+        "a transient pre-restore seed read failure shrank/overwrote the seed "
+        "instead of skipping the write"
+    )
+
+
+def test_persist_without_restore_is_not_permanently_suppressed(tmp_path, monkeypatch):
+    """A surface that never runs a restore (e.g. headless) still persists.
+
+    The pre-restore path merges rather than skipping, so the open-slot write is
+    never a permanent off-switch on a surface whose live set is authoritative
+    from construction and that never calls a restore driver.
+    """
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    state = _make_state(tmp_path / "sessions")
+    assert state.open_slots_restored is False  # no restore on this surface
+    state.get_or_create_slot("chat-live")
+
+    state._persist_open_slots()
+
+    persisted = json.loads((tmp_path / "open_slots.json").read_text())
+    assert "chat-live" in persisted["keys"], (
+        "a surface that never restores must still seed its live slots — the "
+        "pre-restore guard must not be a permanent off-switch"
+    )
+
+
+def test_context_snapshot_prune_skipped_before_restore(tmp_path, monkeypatch):
+    """The sibling writer must not prune context snapshots pre-restore either.
+
+    _persist_context_snapshots prunes the snapshot map down to ``set(_slots)``.
+    Armed before restore (empty _slots), a prune would delete every restored
+    tab's context reading. Before restore the writer skips the prune and writes
+    the union of disk and live readings, so the restored tabs' readings and the
+    boot-time reading both survive. Same gap, same cause as _persist_open_slots.
+    """
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    snap_path = tmp_path / "context_snapshots.json"
+    snap_path.write_text(json.dumps({"chat-1-idle": {"pct": 42}, "chat-2-idle": {"pct": 7}}))
+
+    state = _make_state(tmp_path / "sessions")
+    assert state.open_slots_restored is False
+    # A boot-time dirty reading for a tab not yet restored.
+    with state._context_snapshots_lock:
+        state._context_snapshots["chat-9-newtab"] = {"pct": 1}
+        state._context_snapshots_dirty = True
+
+    state._persist_context_snapshots()
+
+    # The restored tabs' readings survive (no prune) AND the boot-time reading
+    # is written — the union, not a prune that would erase the disk readings.
+    persisted = json.loads(snap_path.read_text())
+    assert set(persisted) == {
+        "chat-1-idle",
+        "chat-2-idle",
+        "chat-9-newtab",
+    }, "a pre-restore context-snapshot prune erased restored tabs' readings"
+
+
+def test_context_snapshot_prune_runs_after_restore(tmp_path, monkeypatch):
+    """After restore the prune is authoritative again (dead keys drop)."""
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    snap_path = tmp_path / "context_snapshots.json"
+
+    state = _make_state(tmp_path / "sessions")
+    restore_open_slots(state)  # marks open_slots_restored
+    assert state.open_slots_restored is True
+    state.get_or_create_slot("chat-1-live")
+    with state._context_snapshots_lock:
+        state._context_snapshots["chat-1-live"] = {"pct": 50}
+        state._context_snapshots["chat-2-gone"] = {"pct": 9}
+        state._context_snapshots_dirty = True
+
+    state._persist_context_snapshots()
+
+    persisted = json.loads(snap_path.read_text())
+    assert set(persisted) == {"chat-1-live"}, "a dead key survived the post-restore prune"
 
 
 def test_push_slots_update_survives_a_partially_constructed_state():

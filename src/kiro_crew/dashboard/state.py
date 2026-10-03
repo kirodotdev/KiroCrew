@@ -5800,6 +5800,18 @@ class DashboardState:
     _slots_push_pending: bool = False
     _slots_push_overlapped: bool = False
     restoring_open_slots: bool = False
+    # False until the startup open-tab restore has run once. The periodic flush
+    # loop is armed BEFORE that restore, so a flush firing in the gap sees a
+    # ``_slots`` the restore has not populated yet — empty, or holding only a
+    # tab created during boot — and pruning open_slots.json down to it loses the
+    # seeded tabs the restore has yet to read, sending every session into
+    # "older sessions" after the next restart. While this is False,
+    # _persist_open_slots MERGES the live keys into the existing on-disk seed
+    # (never shrinking it) and _persist_context_snapshots writes without
+    # pruning; both resume pruning once this flips True. A surface that runs no
+    # restore stays in merge mode, so its writes are never suppressed — see
+    # _persist_open_slots / _persist_context_snapshots.
+    open_slots_restored: bool = False
     # push_slots_update() coalescing state, on that same read path. The lock
     # defaults to None rather than to a shared Lock(): a None lock means "no
     # coalescing", so a __new__-built state broadcasts straight through instead
@@ -6056,6 +6068,9 @@ class DashboardState:
         # being restored from with a half-populated slot set — see
         # _persist_open_slots.
         self.restoring_open_slots = False
+        # Cleared until the open-tab restore has run once this boot; see the
+        # class-level default and _persist_open_slots.
+        self.open_slots_restored = False
         # Per-instance (see the class-level frozenset baseline for why).
         self.unrestored_slot_keys: set[str] = set()
         self._notification_log: list[dict[str, Any]] = _load_notifications()

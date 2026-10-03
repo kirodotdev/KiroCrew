@@ -141,6 +141,7 @@ async def test_snapshot_survives_a_gateway_restart(tmp_path):
     # reads back. A state that has never touched the map must load it from disk
     # rather than starting empty.
     before = _make_state(tmp_path)
+    before.open_slots_restored = True
     slot = before.get_or_create_slot("s1")
     slot.model = "claude-opus-5"
     before.broadcast_ws = MagicMock()
@@ -300,6 +301,7 @@ def test_repeating_the_same_reading_leaves_nothing_to_flush(tmp_path, monkeypatc
     # has no write to do. Asserted on the writer itself rather than on file
     # mtime, which is a proxy a coarse filesystem clock can satisfy vacuously.
     state = _make_state(tmp_path)
+    state.open_slots_restored = True
     slot = state.get_or_create_slot("s1")
     slot.model = "claude-opus-5"
     state.broadcast_ws = MagicMock()
@@ -336,6 +338,7 @@ def test_deleted_slots_are_evicted_from_the_file(tmp_path):
     # The map must stay bounded by the open-slot set: a deleted session cannot
     # leave its usage behind to be served to whatever reuses its key.
     state = _make_state(tmp_path)
+    state.open_slots_restored = True
     for name in ("s1", "s2"):
         state.get_or_create_slot(name).model = "claude-opus-5"
     state.broadcast_ws = MagicMock()
@@ -360,6 +363,7 @@ def test_failed_write_is_retried_on_the_next_flush(tmp_path, monkeypatch):
     # the reading's claim on persistence — the next flush must retry it, and
     # the failure must not escape (a raising flush callee kills the loop).
     state = _make_state(tmp_path)
+    state.open_slots_restored = True
     state.get_or_create_slot("s1").model = "claude-opus-5"
     state.broadcast_ws = MagicMock()
     state.broadcast_context_usage("s1", {"slot": "s1", "pct": 11.4})
@@ -388,6 +392,7 @@ def test_flush_preserves_prior_process_readings_it_has_not_served_yet(tmp_path):
         json.dumps({"s2": {"pct": 33.0, "model": "claude-opus-5"}})
     )
     state = _make_state(tmp_path)
+    state.open_slots_restored = True
     for name in ("s1", "s2"):
         state.get_or_create_slot(name).model = "claude-opus-5"
     state.broadcast_ws = MagicMock()
@@ -410,6 +415,7 @@ def test_overlapping_flushes_cannot_roll_the_file_back(tmp_path, monkeypatch):
     from kiro_crew.dashboard.state import atomic_write as real_write
 
     state = _make_state(tmp_path)
+    state.open_slots_restored = True
     state.get_or_create_slot("s1").model = "claude-opus-5"
     state.broadcast_ws = MagicMock()
     state.broadcast_context_usage("s1", {"slot": "s1", "pct": 10.0})
@@ -482,6 +488,7 @@ def test_flush_during_startup_restore_cannot_evict_unrestored_tabs(tmp_path):
     # completes (s2 now present) writes the new reading without evicting s2.
     state.get_or_create_slot("s2").model = "claude-opus-5"
     state.restoring_open_slots = False
+    state.open_slots_restored = True  # restore has completed this boot
     _flush(state)
 
     on_disk = json.loads((tmp_path / "context_snapshots.json").read_text())
