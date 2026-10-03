@@ -441,6 +441,12 @@ jobs:
           # not pin.
           sandbox_mode = "read-only"
 
+          # web_search is "disabled" because an absent key resolves to "cached",
+          # which offers the model a web-search tool this job's Bedrock identity
+          # is not allowed to call. The refused call ends the stream, and the
+          # pass fails closed with no verdict.
+          web_search = "disabled"
+
           # Keep the inherited AWS credentials OUT of the environment the model's
           # own shell tool inherits. `codex exec` gives the model a shell (the
           # Opus lane instead runs with `--allowedTools "Read,Grep,Glob"`, so it
