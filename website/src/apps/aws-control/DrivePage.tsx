@@ -150,6 +150,29 @@ function nightlySessionsBlockedNextText(code: string): string | null {
   return i18nT(BACKUP_NEXT_KEYS.generic)
 }
 
+/* The snapshot sibling of the two maps above, one catalogued string per backend
+   CODE (`scheduled_snapshot_blocked_code`) so every locale reads it in its own
+   language instead of the backend's English prose. Named property access keeps
+   each key findable by the i18n gate. The copy leads with the EFFECT (nightly
+   snapshots are paused / can't run here) and ends with the fix, as UX asked --
+   never the backend sentence's "the staging directory is not masked by the
+   sandbox" implementation wording. */
+const SNAPSHOT_BLOCKED_KEYS = {
+  maskOff: 'apps.awsControl.console.backup_nightly_blocked_mask_off',
+  hostUnsupported: 'apps.awsControl.console.backup_nightly_blocked_host',
+} as const
+
+function nightlySnapshotBlockedText(code: string): string {
+  switch (code) {
+    case 'snapshot_mask_off': return i18nT(SNAPSHOT_BLOCKED_KEYS.maskOff)
+    case 'snapshot_host_unsupported': return i18nT(SNAPSHOT_BLOCKED_KEYS.hostUnsupported)
+    // An unknown future code still gets a true, non-misleading line rather than a
+    // raw token: the host one says the least and claims nothing a new code could
+    // contradict.
+    default: return i18nT(SNAPSHOT_BLOCKED_KEYS.hostUnsupported)
+  }
+}
+
 const KIND_LABEL_KEY: Record<ArtifactKind, string> = {
   widget: 'apps.awsControl.console.kind_widget',
   markdown: 'apps.awsControl.console.kind_markdown',
@@ -4181,6 +4204,22 @@ export function BackupSection({ account }: { account: string }) {
             </div>
             <Toggle checked={data.nightly} onChange={(v) => nightlyMut.mutate(v)} label={i18nT('apps.awsControl.console.backup_nightly')} />
           </div>
+          {/* Granted, and not running -- the snapshot sibling of the sessions
+              notice below. Shown only in that combination: with the grant off
+              nothing is being withheld. The switch stays interactive and reads
+              back as the owner set it, while this says the schedule produces
+              nothing on this host, which is the part they cannot otherwise see
+              until the host is gone -- the event the backup exists to survive.
+              `nightlyBlocked` is a stable CODE from the backend, mapped to a
+              localized sentence here so every locale reads it in its own language
+              (the backend prose would be English in all 13), and the copy leads
+              with the effect and ends with the fix rather than quoting the
+              sandbox-mask implementation wording. */}
+          {data.nightly === true && data.nightlyBlocked ? (
+            <div className="px-3 pb-2 text-[12px] text-warn" data-testid="backup-nightly-blocked">
+              {nightlySnapshotBlockedText(data.nightlyBlocked)}
+            </div>
+          ) : null}
           {/* The toggle snaps back on a failed write; without a line under it the
               snap-back reads as a flaky control rather than a refused request.
               Directly under the row it explains, so the snap-back and its reason

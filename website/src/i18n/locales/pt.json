@@ -5288,6 +5288,8 @@
         "backup_start_no_drive": "Esta conta ainda não tem drive. Crie um e inicie o backup.",
         "backup_nightly": "Fazer backup toda noite",
         "backup_nightly_hint": "Executa um snapshot de memória e espaço de trabalho uma vez por dia.",
+        "backup_nightly_blocked_mask_off": "Os instantâneos noturnos estão pausados. Reative o sandbox do agente nas Configurações para retomá-los.",
+        "backup_nightly_blocked_host": "Os instantâneos noturnos não podem ser executados neste computador.",
         "backup_nightly_sessions": "Fazer backup das sessões todas as noites",
         "backup_nightly_sessions_hint": "Envia o arquivo de sessões para o drive desta conta uma vez por dia. Ele contém suas conversas como estão, sem remover nada.",
         "backup_nightly_sessions_destination": "Esse drive é armazenamento S3 nesta conta da AWS, e {{button}} envia o arquivo para o mesmo lugar.",

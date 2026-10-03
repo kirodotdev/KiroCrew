@@ -13,8 +13,12 @@ import os
 import stat
 import tarfile
 
+from kiro_crew.apps.builtins.aws_control.backend import storage
 from kiro_crew.apps.builtins.aws_control.backend.backup_parts import _FACADE_MODULE
-from kiro_crew.apps.builtins.aws_control.backend.backup_parts.identity import KIND_SESSIONS
+from kiro_crew.apps.builtins.aws_control.backend.backup_parts.identity import (
+    KIND_SESSIONS,
+    KIND_SNAPSHOT,
+)
 
 logger = logging.getLogger(_FACADE_MODULE)
 
@@ -68,6 +72,50 @@ _NO_PINNING_REASON = (
     "this platform does not provide. Walking these agent-writable directories by "
     "name would leave a window in which a directory swapped for a link could be "
     "archived and uploaded, so the backup is refused instead."
+)
+
+#: Why the snapshot backup is unavailable where its payload cannot be held from
+#: creation. Quoted verbatim to the owner by :func:`kind_unavailable_reason`, so the
+#: answer they get before pressing the button is the same one a failed run would give.
+_NO_HELD_PAYLOAD_REASON = (
+    "snapshot backups are unavailable on this platform: the snapshot payload is"
+    " written by the snapshot builder before this app can hold it open, and"
+    " without that hold another process running as the same user could replace"
+    " the file between the build and the upload without being detected"
+)
+
+#: The mask is absent on a host that COULD otherwise run snapshots (any POSIX host --
+#: Linux, or macOS under sandbox-exec), so the cause is the sandbox being off or a live
+#: agent unconfined -- a settings fix, not a platform limit. Naming it separately stops
+#: a POSIX operator being pointed at the wrong fix ("unavailable on this platform") when
+#: re-enabling the sandbox or restarting the unconfined agent is what restores the backup.
+_NO_MASK_PAYLOAD_REASON = (
+    "snapshot backups are paused: the staging directory is not masked by the"
+    " sandbox, so another process running as the same user could replace the"
+    " snapshot payload between the build and the upload without being detected."
+    " This host could otherwise run snapshots -- re-enable the agent sandbox"
+    " (agent.sandbox) or restart any agent currently running unconfined to restore"
+    " them."
+)
+
+#: Why the sessions (archive) backup is unavailable where the upload body cannot be
+#: held unrewritable from creation. The archive path builds its own body, but the
+#: hold that makes those bytes safe -- a Linux memfd sealed F_SEAL_WRITE, which the
+#: kernel refuses to let any writer change, through the descriptor or through a
+#: /proc alias -- cannot be expressed on macOS, a BSD, Windows, or a Linux without
+#: memfd_create/file seals, where a same-UID process could still rewrite the body.
+#: Refused up front here, quoted verbatim, so the owner learns it before a run rather
+#: than from a failed run record. Restoring those platforms with a producer-owned
+#: sealed handle is tracked as a follow-up.
+_NO_HOLDABLE_BODY_REASON = (
+    "sessions backup is unavailable on this platform: the upload body cannot be"
+    " held unrewritable from creation here. On a Linux host the body is an anonymous"
+    " memfd sealed against every write -- through the descriptor and through any"
+    " /proc alias -- for the whole transfer; macOS, the BSDs, Windows and a Linux"
+    " without memfd/file seals have no equivalent, so a process running as the same"
+    " user could replace the bytes between build and upload without being detected."
+    " The backup is refused rather than upload bytes whose provenance cannot be"
+    " established."
 )
 
 
@@ -151,7 +199,51 @@ def kind_unavailable_reason(kind: str) -> str | None:
     Returns the prose reason so every surface quotes ONE explanation. Callers
     must treat a non-``None`` result as "offer this as unavailable", not as an
     error to log.
+
+    Both kinds are answered here, and each for its own reason: the sessions kind
+    needs descriptor-pinned traversal AND an upload body it can hold unrewritable
+    from creation, and the snapshot kind needs to hold its payload from creation. A
+    kind is unavailable when ITS OWN capability is missing, so one being refused here
+    says nothing about the other.
     """
     if kind == KIND_SESSIONS and not _CAN_PIN_TRAVERSAL:
         return _NO_PINNING_REASON
+    if kind == KIND_SESSIONS and not storage.can_hold_upload_body_from_creation():
+        return _NO_HOLDABLE_BODY_REASON
+    if kind == KIND_SNAPSHOT and not storage._staging_leaf_is_masked():
+        # On a POSIX host the mask being absent is a settings cause (sandbox off, or a
+        # live agent unconfined), not a platform limit -- name it so the operator is
+        # told the actual fix. The mask can only ever be present on POSIX: it reads a
+        # Seatbelt/sandbox membership that a non-POSIX host has no equivalent of, and
+        # `_staging_leaf_is_masked` itself gates on `IS_POSIX`. So POSIX gets the
+        # settings message (a macOS operator with `agent.sandbox` off, or an unconfined
+        # agent, can bring snapshots back), and a non-POSIX host gets the platform one.
+        if storage.platform_compat.IS_POSIX:
+            return _NO_MASK_PAYLOAD_REASON
+        return _NO_HELD_PAYLOAD_REASON
     return None
+
+
+#: Stable tokens for the two conditions that stop the nightly SNAPSHOT grant and reach a
+#: console. A code rather than a sentence for the same reason the sessions kind uses one
+#: (:func:`scheduled_sessions_blocked_code`): the surface that shows this to a person has
+#: to word it in their language, and a sentence chosen in the backend can only ever be
+#: English. The two reason constants above are the backend/log wording of these codes.
+SNAPSHOT_BLOCK_MASK_OFF = "snapshot_mask_off"
+SNAPSHOT_BLOCK_HOST_UNSUPPORTED = "snapshot_host_unsupported"
+
+
+def snapshot_block_code() -> str | None:
+    """Which condition stops a nightly snapshot here, or ``None`` when it can run.
+
+    Decides WHICH of the two conditions holds exactly as :func:`kind_unavailable_reason`
+    does for the snapshot kind, so the console (which localizes the code) and the log
+    (which quotes the prose constant) always agree on the cause. ``SNAPSHOT_BLOCK_MASK_OFF``
+    is the settings cause a POSIX operator can fix; ``SNAPSHOT_BLOCK_HOST_UNSUPPORTED`` is
+    the platform limit on a non-POSIX host.
+    """
+    if storage._staging_leaf_is_masked():
+        return None
+    if storage.platform_compat.IS_POSIX:
+        return SNAPSHOT_BLOCK_MASK_OFF
+    return SNAPSHOT_BLOCK_HOST_UNSUPPORTED

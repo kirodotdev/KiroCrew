@@ -24,6 +24,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 import tarfile
 import time
 from pathlib import Path
@@ -36,6 +37,54 @@ from kiro_crew import pinned_fs
 from kiro_crew.apps.builtins.aws_control.backend import backup
 
 ACCOUNT = "111122223333"
+
+
+def _stage_on_o_tmpfile_fs(tmp_path, monkeypatch):
+    """Point ``storage.staging_root`` at a directory the backup can stage under.
+
+    A sessions backup that mocks the mask present produces the archive body into an
+    anonymous **memfd** (RAM-backed), so the staging directory's filesystem no
+    longer has to honour ``O_TMPFILE`` -- memfd works on any Linux filesystem,
+    pytest's tmpfs/overlay basetemp included. The staging directory only needs to
+    exist; the fail-closed behaviour is pinned elsewhere.
+    """
+    root = tmp_path / "kc-aws-staging"
+    root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(backup.storage, "staging_root", lambda: root)
+
+
+def _stub_sealed_upload_body(tmp_path, monkeypatch):
+    """Make ``build_sealed_upload_body`` produce the body on ANY platform.
+
+    The real path builds the archive inside a non-dumpable sealing helper that needs
+    ``memfd_create`` + file seals, so it is Linux-only and FAILS CLOSED off Linux --
+    the deliberate product shape (the sessions kind is withdrawn where the bytes
+    cannot be held unrewritable), pinned by its own availability tests. These
+    skip/change tests are about the unchanged-tree fingerprint logic, which is
+    platform-independent, so stub the sealing step with a plain on-disk producer
+    (run the same ``write_body`` into a real file and return a descriptor to it) so
+    the full tar build + skip/upload logic runs on every CI platform. The seal's own
+    correctness lives in test_aws_control_sealed_body.py.
+    """
+    counter = {"n": 0}
+
+    def _produce(write_body, name):
+        counter["n"] += 1
+        path = tmp_path / f"kc-stub-body-{counter['n']}-{name}"
+        wfd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            write_body(wfd)
+        finally:
+            os.close(wfd)
+        return os.open(str(path), os.O_RDONLY)
+
+    # ``run_sessions_backup`` refuses up front where the body cannot be held from
+    # creation (``can_hold_upload_body_from_creation`` -> ``_NO_HOLDABLE_BODY_REASON``),
+    # which is false off Linux/memfd. These tests are not about that platform refusal
+    # (pinned by its own tests), so report the hold available and let the stubbed
+    # producer stand in for the real memfd.
+    monkeypatch.setattr(backup.storage, "can_hold_upload_body_from_creation", lambda: True)
+    monkeypatch.setattr(backup.storage, "build_sealed_upload_body", _produce)
 
 
 def _pack(path: Path, entries: dict[str, bytes], *, dirs: tuple[str, ...] = ()) -> Path:
@@ -907,6 +956,21 @@ def _fake_snapshot(body: bytes):
 
 
 class TestRunSnapshotBackupSkip:
+
+    @pytest.fixture(autouse=True)
+    def _snapshot_payload_can_be_held(self, monkeypatch):
+        """These tests are about the snapshot LOGIC, not the platform gate.
+
+        ``run_snapshot_backup`` refuses outright where the staging leaf has no
+        sandbox mask, because the payload is produced by another module and cannot be
+        held from creation there. That refusal has its own tests. Everything in this
+        class is about what the snapshot path DOES once it runs -- retention, skips,
+        fingerprints, records -- so it asserts the capability rather than inheriting
+        whichever platform the suite happens to run on. Without this the same tests
+        would measure behaviour on POSIX and measure the refusal on Windows.
+        """
+        monkeypatch.setattr(backup.storage, "_staging_leaf_is_masked", lambda: True)
+
     @pytest.fixture(autouse=True)
     def _isolated_state(self, tmp_path, monkeypatch):
         monkeypatch.setattr(backup, "_state_path", lambda: tmp_path / "backup.json")
@@ -1090,6 +1154,11 @@ class TestRunSessionsBackupSkip:
         # the archive's fingerprint across runs, so it must not depend on whatever
         # live terminal store the test host happens to have.
         monkeypatch.setattr(backup, "_kiro_cli_conversation_db", lambda: (None, ""))
+        # The archive body is held from creation only on a confined host; set the
+        # mask present so these skip/change cases run rather than refuse up front.
+        monkeypatch.setattr(backup.storage, "_staging_leaf_is_masked", lambda: True)
+        _stage_on_o_tmpfile_fs(tmp_path, monkeypatch)
+        _stub_sealed_upload_body(tmp_path, monkeypatch)
         self.crew = crew
         yield
 
@@ -1264,6 +1333,20 @@ class TestRetentionComposition:
     delete the recorded key, and whether a run of skips can walk the keep window
     down to it.
     """
+
+    @pytest.fixture(autouse=True)
+    def _snapshot_payload_can_be_held(self, monkeypatch):
+        """These tests are about the snapshot LOGIC, not the platform gate.
+
+        ``run_snapshot_backup`` refuses outright where the staging leaf has no
+        sandbox mask, because the payload is produced by another module and cannot be
+        held from creation there. That refusal has its own tests. Everything in this
+        class is about what the snapshot path DOES once it runs -- retention, skips,
+        fingerprints, records -- so it asserts the capability rather than inheriting
+        whichever platform the suite happens to run on. Without this the same tests
+        would measure behaviour on POSIX and measure the refusal on Windows.
+        """
+        monkeypatch.setattr(backup.storage, "_staging_leaf_is_masked", lambda: True)
 
     @pytest.fixture(autouse=True)
     def _wiring(self, tmp_path, monkeypatch):

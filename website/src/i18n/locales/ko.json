@@ -5128,6 +5128,8 @@
         "backup_start_no_drive": "이 계정에는 아직 드라이브가 없습니다. 드라이브를 만든 후 백업을 시작하세요.",
         "backup_nightly": "매일 밤 백업",
         "backup_nightly_hint": "메모리 및 워크스페이스 스냅샷을 하루에 한 번 실행합니다.",
+        "backup_nightly_blocked_mask_off": "야간 스냅샷이 일시 중지되었습니다. 설정에서 에이전트 샌드박스를 다시 켜면 재개됩니다.",
+        "backup_nightly_blocked_host": "이 컴퓨터에서는 야간 스냅샷을 실행할 수 없습니다.",
         "backup_nightly_sessions": "매일 밤 세션 백업",
         "backup_nightly_sessions_hint": "세션 아카이브를 이 계정의 드라이브에 하루에 한 번 업로드합니다. 대화가 그대로 들어가며 삭제되는 것은 없습니다.",
         "backup_nightly_sessions_destination": "그 드라이브는 이 AWS 계정의 S3 스토리지이며, {{button}}도 같은 곳으로 아카이브를 보냅니다.",

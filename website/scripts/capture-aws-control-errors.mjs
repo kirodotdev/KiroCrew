@@ -21,6 +21,7 @@ import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { json, stubDashboardApi, logPageProblems } from './lib/stub-dashboard-api.mjs'
+import { ACC, B, ACCOUNTS, DRIVE, CONSENT } from './lib/aws-control-fixtures.mjs'
 
 const BASE_URL = process.argv[2]
 if (!BASE_URL) {
@@ -31,41 +32,6 @@ const OUT = process.argv[3] || '/tmp/aws-control-error-notices'
 const LANG = process.argv[4] || 'en'
 const THEME = process.argv[5] || 'dark'
 mkdirSync(OUT, { recursive: true })
-
-const ACC = '111122223333'
-const B = '/api/apps/aws-control'
-const nullSummary = { storage: null, sites: null, tasks: null, costMonthToDate: null }
-
-const ACCOUNTS = {
-  accounts: [{
-    account: ACC, name: 'prod-main', health: 'ok', summary: nullSummary,
-    profiles: [
-      { name: 'prod-main', region: 'us-west-2', kind: 'sso', identityOk: true, account: ACC, arn: `arn:aws:sts::${ACC}:assumed-role/Admin/dev`, detail: '', default: true },
-    ],
-  }],
-  totals: { accounts: 1, profiles: 1, profilesHealthy: 1 },
-  generatedAt: '2026-09-03T22:00:00Z',
-}
-const GiB = 1024 ** 3
-const DRIVE = {
-  exists: true, bucket: `kirocrew-drive-${ACC}-usw2`, region: 'us-west-2',
-  usage: {
-    bytes: 3.2 * GiB, objects: 128,
-    sections: {
-      drive: { objects: 97, bytes: 1.9 * GiB },
-      library: { objects: 23, bytes: 0.4 * GiB },
-      backup: { objects: 8, bytes: 0.9 * GiB },
-    },
-  },
-}
-const CONSENT = (svc) => ({
-  service: svc, serviceLabel: svc === 's3' ? 'Amazon S3' : 'AWS Cost Explorer',
-  profile: 'prod-main', credentialSource: 'profile prod-main', region: 'us-west-2',
-  account: ACC, arn: `arn:aws:sts::${ACC}:assumed-role/Admin/dev`,
-  identityResolved: true, identityDetail: '', granted: true, reason: '',
-  revokedOnAccountChange: false,
-  grant: { account: ACC, region: 'us-west-2', profile: 'prod-main', granted_at: '2026-08-20T09:00:00Z' },
-})
 
 /** The refusal shape the backend actually sends: prose for the agent, a code for the UI. */
 const DENIED = { error: 'AccessDenied: User is not authorized to perform s3:ListBucket on kirocrew-drive-111122223333-usw2', code: 'aws_call_failed' }

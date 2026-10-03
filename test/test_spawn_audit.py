@@ -1819,6 +1819,18 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # which a scrubbed-env/filesystem-scoped wrapper would move or forbid.
         "apps/builtins/aws_control/crew/packaging/tests/test_producer.py"
         "::test_cli_subprocess_leaves_no_pycache_in_the_source_tree",
+        # The sealing helper launcher. A FIXED argv -- `sys.executable -c
+        # <module-constant bootstrap> <label> <data_fd> <result_fd>` -- spawned so a
+        # fresh interpreter (no inherited glibc/allocator lock) creates+fills+seals a
+        # memfd off the gateway's own process and hands back only the sealed fd. The
+        # binary is this interpreter, the program is a module-level constant string,
+        # and the three arguments are a debugging label plus two internal fd numbers;
+        # none of the argv, cwd, or resolved binary is agent-influenced, and no shell
+        # is used. It is NOT routed through the agent sandbox on purpose: the whole
+        # point is a NON-dumpable helper the gateway launches for itself, not an
+        # agent-facing command. See GPT 5.6 finding sealed_body.py:182 (exec, not a
+        # bare fork, to avoid the multi-threaded-fork deadlock).
+        "apps/builtins/aws_control/backend/sealed_body.py::build_sealed_body",
     }
 )
 

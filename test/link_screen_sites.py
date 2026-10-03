@@ -70,7 +70,7 @@ DECLARED_SITES = frozenset(
         ("apps/builtins/aws_control/backend/backup.py", "_conversation_scratch_parent"),
         ("apps/builtins/aws_control/backend/backup.py", "_kiro_cli_conversation_db"),
         ("apps/builtins/aws_control/backend/backup.py", "restore_download"),
-        ("apps/builtins/aws_control/backend/storage.py", "_preview_staging_parent"),
+        ("apps/builtins/aws_control/backend/storage.py", "staging_root"),
         ("apps/builtins/code_review_sage/sage_lib/followup.py", "followup_dir"),
         ("apps/builtins/design_critique/backend/routes.py", "_served_signature"),
         ("apps/builtins/design_tweak/backend/preview_files.py", "scan_html.walk"),

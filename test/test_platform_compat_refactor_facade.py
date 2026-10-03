@@ -66,6 +66,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         "current_user_sid",
         "make_owner_only_dir",
         "local_user_id",
+        "stat_owned_by_current_user",
         "stat_writable_by_current_user",
         "path_writable_by_current_user",
         "restrict_to_owner",
@@ -99,6 +100,7 @@ _SEAM_IMPORTS: dict[tuple[str, str], tuple[str, tuple[str, ...]]] = {
     (_OWNER, "process_owner_sid"): (_PC, ("IS_POSIX",)),
     (_OWNER, "restrict_dir_to_owner"): (_PC, ("IS_POSIX",)),
     (_OWNER, "restrict_to_owner"): (_PC, ("IS_POSIX",)),
+    (_OWNER, "stat_owned_by_current_user"): (_PC, ("IS_POSIX",)),
     (_OWNER, "stat_writable_by_current_user"): (_PC, ("IS_POSIX",)),
 }
 

@@ -5128,6 +5128,8 @@
         "backup_start_no_drive": "此账户还没有云盘。请先创建，然后启动备份。",
         "backup_nightly": "每晚备份",
         "backup_nightly_hint": "每天进行一次记忆与工作区快照。",
+        "backup_nightly_blocked_mask_off": "每晚快照已暂停。在设置中重新启用代理沙箱即可恢复。",
+        "backup_nightly_blocked_host": "此计算机无法运行每晚快照。",
         "backup_nightly_sessions": "每晚备份会话",
         "backup_nightly_sessions_hint": "每天将会话存档上传到此账户的云盘一次。其中原样包含你的对话，不会删除任何内容。",
         "backup_nightly_sessions_destination": "该云盘是此 AWS 账户中的 S3 存储，{{button}} 也会把存档发送到同一位置。",
