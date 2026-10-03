@@ -1379,7 +1379,9 @@ consumer matching on text misdiagnoses one as the other. It also names both side
 fingerprint (a short SHA-256 prefix plus length, never the value), so a
 cross-generation mismatch is distinguishable from a forged header and from a caller
 that had no credential at all; without it a real desync is unattributable from the
-log.
+log. An empty provided value also carries its own code (`internal_secret_missing`),
+because a process that could read no credential has a provisioning problem on its
+own side, not a pairing one.
 
 ### Why `run/` is on the sensitive-path floor
 

@@ -1658,6 +1658,15 @@ def _http_error_body(exc: urllib.error.HTTPError) -> dict:
             "the instance you meant) and retry; the gateway's security event log "
             "records both credential fingerprints for the mismatch."
         )
+    elif code == "internal_secret_missing":
+        message = (
+            "this client sent no internal credential: the process could not read "
+            "its credential file (usually a sandbox mask fencing the read), which "
+            "is a provisioning problem on this side — not a second-gateway "
+            "mix-up. Restart the session or backend so the credential is "
+            "provisioned, then retry; the gateway's security event log marks "
+            "these denials as received=absent."
+        )
     elif code == "caller_record_missing":
         message = (
             "this session's cron or subagent record no longer exists; start a new "

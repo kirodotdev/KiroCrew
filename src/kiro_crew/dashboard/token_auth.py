@@ -3054,7 +3054,12 @@ def token_auth_middleware(
                         _log_auth(request, "internal", "denied", "delegated record missing")
                         return _deny(request, "Forbidden", "caller_record_missing")
                     return await handler(request)  # type: ignore[operator]
-                # Wrong secret → deny (don't fall through)
+                # Wrong secret → deny (don't fall through). An empty provided
+                # value means this caller read no credential at all — a
+                # provisioning or fencing defect on the caller's side, not the
+                # instance mix-up a held-but-stale credential would be — so it
+                # carries its own code and the client-facing decoder can say so.
+                _detail = f"wrong secret ({_credential_mismatch_detail(internal_secret, _provided_secret)})"
                 _sel = _sel_fn()
                 _sel.log_api_access(
                     caller=_caller,
@@ -3062,14 +3067,11 @@ def token_auth_middleware(
                     outcome="denied",
                     source="token_auth",
                     resources=path,
-                    error=f"wrong secret ({_credential_mismatch_detail(internal_secret, _provided_secret)})",
+                    error=_detail,
                 )
-                _log_auth(
-                    request,
-                    "internal",
-                    "denied",
-                    f"wrong secret ({_credential_mismatch_detail(internal_secret, _provided_secret)})",
-                )
+                _log_auth(request, "internal", "denied", _detail)
+                if not _provided_secret:
+                    return _deny(request, "Forbidden", "internal_secret_missing")
                 return _deny(request, "Forbidden", "internal_auth_mismatch")
             # No secret header (browser request) → verify cookie/query-param auth
             # inline to satisfy deny-by-default: positively confirm auth
@@ -3168,6 +3170,8 @@ def token_auth_middleware(
                             error=_detail,
                         )
                         _log_auth(request, "internal", "denied", _detail)
+                        if not request.headers["X-Internal-Secret"]:
+                            return _deny(request, "Forbidden", "internal_secret_missing")
                         return _deny(request, "Forbidden", "internal_auth_mismatch")
                 _valid, _uid, _reason, _app, _tok = _extract_and_validate_token(request, port)
                 if not _valid:

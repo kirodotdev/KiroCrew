@@ -935,6 +935,25 @@ class TestEveryToolGetsTheExplanation:
         assert "wrong Kiro Crew instance" in out
         assert out.strip() != "Error: Forbidden"
 
+    def test_secret_missing_gets_its_own_code_and_honest_message(self) -> None:
+        # The auth layer can tell an unreadable credential (received=absent)
+        # from a stale one; the decoder must not fold the first case into the
+        # second-gateway explanation.
+        out = self._body(b'{"error": "Forbidden", "code": "internal_secret_missing"}')
+        assert "wrong Kiro Crew instance" not in out["error"]
+        assert "no internal credential" in out["error"]
+
+    def test_both_internal_deny_arms_name_the_absent_case(self) -> None:
+        # The loopback arm and the non-loopback mixed arm each see an empty
+        # provided secret; each must emit the absent-specific code there
+        # instead of the instance-mismatch one.
+        import inspect
+
+        from kiro_crew.dashboard import token_auth
+
+        source = inspect.getsource(token_auth)
+        assert source.count('"internal_secret_missing"') >= 2
+
 
 class TestTheSharedHelperOwnsThePairing:
     """The invariant lives at one chokepoint, and the dial target is never inferred.

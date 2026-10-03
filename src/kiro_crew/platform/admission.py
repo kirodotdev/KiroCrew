@@ -611,14 +611,39 @@ def read_policy_trust_root() -> "AdmissionPolicy":
     """
     path = policy_trust_root_path()
     try:
-        return AdmissionPolicy.from_dict(json.loads(path.read_text(encoding="utf-8")))
+        data = path.read_bytes()
     except FileNotFoundError:
         logger.debug("no admission trust root at %s", path)
         return AdmissionPolicy()
+    except OSError:
+        logger.warning(
+            "admission trust root at %s is unreadable (the read itself failed; "
+            "on a sandboxed host the credential mask is the usual cause); "
+            "treating the policy-signature requirement as unset (kirocrew "
+            "doctor reports this)",
+            path,
+            exc_info=True,
+        )
+        return AdmissionPolicy()
+    if not data.strip():
+        logger.warning(
+            "admission trust root at %s is empty (0 bytes read — a sandboxed "
+            "host's credential mask fences the file to empty, which is not a "
+            "corrupt file); treating the policy-signature requirement as "
+            "unset (kirocrew doctor reports this)",
+            path,
+        )
+        return AdmissionPolicy()
+    try:
+        # Decoding happens in here on purpose: an undecodable file is a
+        # malformed-content case and must keep the never-raises contract, not
+        # escape this function the way a read-stage decode would.
+        return AdmissionPolicy.from_dict(json.loads(data))
     except Exception:
         logger.warning(
-            "admission trust root at %s is unreadable or malformed; treating the "
-            "policy-signature requirement as unset (kirocrew doctor reports this)",
+            "admission trust root at %s is malformed (not valid JSON or not a "
+            "policy object); treating the policy-signature requirement as "
+            "unset (kirocrew doctor reports this)",
             path,
             exc_info=True,
         )

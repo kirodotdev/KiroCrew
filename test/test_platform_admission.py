@@ -671,6 +671,59 @@ class TestReadPolicyTrustRoot:
         assert policy.require_policy_signature is False
         assert policy.trust_keys == {}
 
+    def test_an_empty_trust_root_is_logged_as_fenced_not_malformed(
+        self, monkeypatch, tmp_path, caplog
+    ):
+        # A 0-byte read is the sandbox-fenced shape (a namespace credential
+        # mask serves the file as empty); the warning must let a reader tell
+        # that apart from real corruption.
+        import logging
+
+        from kiro_crew.platform.admission import read_policy_trust_root
+
+        adm = tmp_path / "admission_policy.json"
+        adm.write_text("", encoding="utf-8")
+        monkeypatch.setenv("KIROCREW_ADMISSION_POLICY", str(adm))
+        with caplog.at_level(logging.WARNING):
+            read_policy_trust_root()
+        joined = " ".join(record.getMessage() for record in caplog.records)
+        assert "empty" in joined and "0 bytes" in joined
+        assert "malformed" not in joined
+
+    def test_a_malformed_trust_root_is_logged_as_json_not_fenced(
+        self, monkeypatch, tmp_path, caplog
+    ):
+        import logging
+
+        from kiro_crew.platform.admission import read_policy_trust_root
+
+        adm = tmp_path / "admission_policy.json"
+        adm.write_text("{ not json", encoding="utf-8")
+        monkeypatch.setenv("KIROCREW_ADMISSION_POLICY", str(adm))
+        with caplog.at_level(logging.WARNING):
+            read_policy_trust_root()
+        joined = " ".join(record.getMessage() for record in caplog.records)
+        assert "malformed" in joined and "0 bytes" not in joined
+
+    def test_an_undecodable_trust_root_still_does_not_raise(
+        self, monkeypatch, tmp_path, caplog
+    ):
+        # Invalid UTF-8 must land in the malformed arm, not escape the
+        # reader: a read-stage decode would break the never-raises contract
+        # the old single-except shape happened to provide.
+        import logging
+
+        from kiro_crew.platform.admission import read_policy_trust_root
+
+        adm = tmp_path / "admission_policy.json"
+        adm.write_bytes(b'{"require_policy_signature": true, \xff\xfe}')
+        monkeypatch.setenv("KIROCREW_ADMISSION_POLICY", str(adm))
+        with caplog.at_level(logging.WARNING):
+            policy = read_policy_trust_root()
+        assert policy.require_policy_signature is False
+        joined = " ".join(record.getMessage() for record in caplog.records)
+        assert "malformed" in joined
+
     def test_does_not_record_posture_or_incident(self, monkeypatch, tmp_path):
         # The whole reason this function exists: load_admission_policy records the
         # dashboard posture + a critical SEL, which is wrong on a repeating path.
