@@ -9526,7 +9526,7 @@
       "group_panel_navigation": "Navigazione tra i pannelli",
       "group_remote_crews": "Crew remote",
       "jump_to_chat": "Vai alla chat {{n}}",
-      "jump_to_chat_letters": "Vai alla chat 10 e oltre (le lettere seguono il badge mostrato su ogni riga)",
+      "jump_to_chat_letters": "Vai alla chat 10 e oltre (tieni premuto il modificatore per vedere la lettera di ogni chat; su macOS, non mentre un campo di testo ha il focus)",
       "last_visited_chat_mru": "Ultima chat visitata (MRU)",
       "next_chat": "Chat successiva",
       "notifications_panel": "Pannello delle notifiche",

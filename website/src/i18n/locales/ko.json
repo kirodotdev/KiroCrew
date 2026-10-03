@@ -9274,7 +9274,7 @@
       "group_panel_navigation": "패널 탐색",
       "group_remote_crews": "원격 크루",
       "jump_to_chat": "채팅 {{n}}(으)로 이동",
-      "jump_to_chat_letters": "채팅 10 이후로 이동 (문자는 각 행에 표시된 배지를 따름)",
+      "jump_to_chat_letters": "채팅 10 이후로 이동 (수정자 키를 누르고 있으면 각 채팅의 문자가 표시됨, macOS에서는 텍스트 필드에 포커스가 있을 때 작동하지 않음)",
       "last_visited_chat_mru": "마지막으로 방문한 채팅(MRU)",
       "next_chat": "다음 채팅",
       "notifications_panel": "알림 패널",
