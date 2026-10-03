@@ -130,8 +130,8 @@ class ChannelNameResolver:
                 merged = dict(self._names)
                 merged.update(new_names)
                 self._names = merged
-                self._fetched_at = time.time()
-                self._save_to_disk()
+            self._fetched_at = time.time()
+            self._save_to_disk()
         except Exception as exc:
             logger.warning("Failed to refresh channel name cache: %s", exc)
         finally:
