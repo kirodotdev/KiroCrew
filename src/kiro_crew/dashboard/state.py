@@ -345,6 +345,13 @@ _SLOT_PATCH_FIELDS = frozenset({"pinned", "title", "folder_id"})
 #: entry point that creates on some OTHER caller's behalf; a person's own new tab
 #: and a fork are attributed to nobody and so are bounded by the global ceiling
 #: alone.
+
+#: How long a request that writes to a newborn slot waits for the create that
+#: minted it to commit or roll back (:meth:`DashboardState.slot_create_settled`)
+#: before it is refused with 409 ``slot_create_pending``, so a create that
+#: stalls (a member-store pin or a metadata save that does not return) cannot
+#: hold those requests indefinitely.
+SLOT_CREATE_SETTLE_TIMEOUT_SECS = 30.0
 MAX_SLOTS_PER_CREATOR = 50
 
 # Structured monitor wakeups are automation, not user speech. The controller
@@ -6119,6 +6126,9 @@ class DashboardState:
         # ``len(_slots)`` alone undercounts by however many imports are in flight,
         # and each concurrent import would then be waved past a full-slot cap.
         self._slots_under_construction: set[str] = set()
+        # Creates whose transaction has not settled, by slot key: the newborn
+        # and the event a same-name re-open waits on (``begin_slot_create``).
+        self._slot_creates_settling: dict[str, tuple[_ChatSlot, asyncio.Event]] = {}
         self._slack_to_slot: dict[str, str] = {}  # Slack session_key → slot name
         # Live OPTIONS controls, keyed by the SESSION KEY that owns them.
         #
@@ -7975,6 +7985,39 @@ class DashboardState:
     def end_slot_construction(self, key: str) -> None:
         """Release an allocated-but-unpublished slot marker."""
         _registry_for(self).end_slot_construction(self, key)
+
+    def begin_slot_create(self, slot: _ChatSlot) -> asyncio.Event:
+        """Mark a just-minted slot's create transaction as not yet settled."""
+        settled = asyncio.Event()
+        _registry_for(self).begin_slot_create(self, slot, settled)
+        return settled
+
+    def end_slot_create(self, slot: _ChatSlot, settled: asyncio.Event) -> None:
+        """Settle the create :meth:`begin_slot_create` marked."""
+        _registry_for(self).end_slot_create(self, slot, settled)
+
+    def unsettled_slot_create(self, slot: _ChatSlot) -> asyncio.Event | None:
+        """The settle event of *slot*'s create while it is still in flight."""
+        return _registry_for(self).unsettled_slot_create(self, slot)
+
+    async def slot_create_settled(self, slot: _ChatSlot) -> bool:
+        """Wait, bounded, until the create that minted *slot* settles.
+
+        For a request that writes to a slot it looked up: a newborn whose create
+        later rolls back takes the write with it, so the writer waits, then
+        re-checks that the same slot object is still registered. Returns False
+        when the create has not settled within
+        :data:`SLOT_CREATE_SETTLE_TIMEOUT_SECS`; the caller refuses then, with
+        409 ``slot_create_pending``, rather than wait on a stalled create.
+        """
+        settled = self.unsettled_slot_create(slot)
+        if settled is None:
+            return True
+        try:
+            await asyncio.wait_for(settled.wait(), SLOT_CREATE_SETTLE_TIMEOUT_SECS)
+        except asyncio.TimeoutError:
+            return False
+        return True
 
     def reseed_slot_counter(self) -> None:
         """Advance the mint counter past every parseable current slot key."""

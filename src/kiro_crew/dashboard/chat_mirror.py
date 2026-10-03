@@ -40,7 +40,10 @@ from kiro_crew.dashboard.chat_runner import (
     _resolve_mirror_target,
 )
 from kiro_crew.dashboard.chat_slack import api_chat_slot_slack_unlink, list_slack_channels
-from kiro_crew.dashboard.chat_utils import effective_session_key
+from kiro_crew.dashboard.chat_utils import (
+    effective_session_key,
+    refuse_write_to_unsettled_create,
+)
 from kiro_crew.dashboard.state import (
     DashboardState,
     _expected_binding,
@@ -160,6 +163,11 @@ async def api_chat_slot_mirror_link(request: web.Request) -> web.Response:
     slot = state.get_slot(name)
     if not slot:
         return web.json_response({"error": "not found"}, status=404)
+    # A newborn's create settles before it is mirrored (see
+    # refuse_write_to_unsettled_create): a create that rolls back would take
+    # the link away with the slot.
+    if (refusal := await refuse_write_to_unsettled_create(state, name, slot)) is not None:
+        return refusal
 
     # Read the ACTUAL payload rather than branching on Content-Length: a chunked
     # request carries a body with ``content_length is None``, so a Content-Length

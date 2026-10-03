@@ -18,7 +18,12 @@ from aiohttp import web
 from kiro_crew import pinned_fs
 from kiro_crew.dashboard.chat_persistence import _coerce_requested_mode, save_slot_off_loop
 from kiro_crew.dashboard.chat_tags import tags_write_lock, validate_folder_tag_ids
-from kiro_crew.dashboard.chat_utils import effective_session_key, slot_history_key
+from kiro_crew.dashboard.chat_utils import (
+    effective_session_key,
+    refuse_write_to_unsettled_create,
+    run_to_completion,
+    slot_history_key,
+)
 from kiro_crew.dashboard.create_rate_limit import FOLDER_CREATE, allow_create
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
 from kiro_crew.dashboard.state import DashboardState
@@ -456,27 +461,49 @@ async def _unhide_folder(
 
     ``claim_for_person`` is set when the PERSON filed the session: the folder is
     then theirs, so its :data:`CREATED_BY_SESSION` mark is removed in the same
-    locked step.
+    locked step (see :func:`claim_filed_folder`, which this delegates to).
+    """
+    return await claim_filed_folder(
+        state, folder_id, claim_for_person=claim_for_person, unhide=True
+    )
+
+
+async def claim_filed_folder(
+    state: DashboardState,
+    folder_id: str,
+    *,
+    claim_for_person: bool,
+    unhide: bool,
+) -> bool:
+    """Confirm *folder_id* exists, in one locked step that may also claim and un-hide it.
+
+    The one place a filing claims a folder. Returns whether the folder EXISTS,
+    reported from inside the store lock. With *claim_for_person* the folder's
+    :data:`CREATED_BY_SESSION` mark is removed, for good; with *unhide* its
+    ``hidden`` flag is cleared. The write is drained (``run_to_completion``): a
+    cancelled caller never releases the store lock with its writer still
+    running. A failed write raises.
     """
     if not folder_id:
         return True
 
-    def _clear(folders: list[dict[str, Any]]) -> tuple[bool, bool]:
+    def _file(folders: list[dict[str, Any]]) -> tuple[bool, bool]:
         for f in folders:
             if f["id"] == folder_id:
-                claimed = bool(claim_for_person and f.pop(CREATED_BY_SESSION, None))
-                if f.get("hidden"):
+                changed = False
+                if claim_for_person and f.get(CREATED_BY_SESSION):
+                    del f[CREATED_BY_SESSION]
+                    changed = True
+                if unhide and f.get("hidden"):
                     f["hidden"] = False
-                    return True, True
-                if claimed:
-                    return True, True
-                # Present and already visible: report no change so the store is
-                # not rewritten. This runs on every session move, so a needless
+                    changed = True
+                # Present and unchanged: report no change so the store is not
+                # rewritten. This runs on every session move, so a needless
                 # write here would be a write per move.
-                return False, True
+                return changed, True
         return False, False
 
-    return await state.mutate_folders(_clear)
+    return await run_to_completion(state.mutate_folders(_file))
 
 
 # The internal callers this module recognizes on ``X-Internal-Caller`` — the
@@ -2620,6 +2647,10 @@ async def api_chat_slot_folder(request: web.Request) -> web.Response:
     # full slots frame carries; only a placement that left the tree alone can
     # travel as a one-row patch.
     folders_generation_before = state.folders_generation()
+    # A newborn's create settles before it is filed (see
+    # refuse_write_to_unsettled_create); the lock below re-checks after it.
+    if (refusal := await refuse_write_to_unsettled_create(state, name, slot)) is not None:
+        return refusal
     # Serialize the whole re-check/mutate/persist/rollback span under the
     # state-wide metadata txn lock (rebind-stable; see _slot_meta_txn_lock):
     # with awaits inside the span, a second concurrent request would capture
@@ -2778,6 +2809,8 @@ async def api_chat_slot_pin(request: web.Request) -> web.Response:
     # different conversation before this PATCH arrives. Echoing the resolved
     # ``created`` back proves the slot being pinned is the one resolved.
     expected_created = str(body.get("expected_created") or "")
+    if (refusal := await refuse_write_to_unsettled_create(state, name, slot)) is not None:
+        return refusal
     # Serialize the re-check/mutate/persist/rollback span under the
     # state-wide metadata txn lock — same rationale as api_chat_slot_folder.
     async with _slot_meta_txn_lock(state):
@@ -2950,6 +2983,8 @@ async def api_chat_slot_mode(request: web.Request) -> web.Response:
     # concurrent metadata save can take long enough for a turn to start, so a
     # guard evaluated before the acquisition would be stale by the time the
     # mutation runs (review-caught).
+    if (refusal := await refuse_write_to_unsettled_create(state, name, slot)) is not None:
+        return refusal
     async with _slot_meta_txn_lock(state):
         # Re-authorize after the awaits above (body parse, lock acquisition):
         # same slot OBJECT still registered under the name, routing still on

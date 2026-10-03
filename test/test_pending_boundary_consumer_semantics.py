@@ -228,6 +228,9 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
             for site in {
                 ("chat_folders.py", "api_chat_slot_mode"),
                 ("chat_handlers.py", "_switch_target_busy"),
+                # A rolled-back create keeps a reserved newborn, the same
+                # rule `create_session` applies to a failed birth write.
+                ("chat_handlers.py", "_newborn_held_elsewhere"),
                 ("chat_handlers.py", "api_chat_slot_agent"),
                 ("chat_handlers.py", "api_chat_slot_continue"),
                 ("chat_handlers.py", "api_chat_slot_detail"),

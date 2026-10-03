@@ -95,6 +95,77 @@ history-cache owners are listed in
 sub-agent and MCP App state in [side](side.md), [subagent](subagent.md) and
 [mcp-apps](mcp-apps.md).
 
+## Dashboard chat-slot create transaction
+
+`POST /api/chat/slots` (`api_chat_slot_create` in `dashboard/chat_handlers.py`)
+runs inside a `SlotCreateTransaction` (`dashboard/slot_create_transaction.py`), so
+a refused or failed create leaves nothing behind: no registered ghost slot, no
+published member binding, no transcript stub, no un-hidden folder and no
+user-session count.
+
+| Step | Journaled undo | Kept by a rollback when |
+|---|---|---|
+| reserve: the mint registers the newborn | the fence takes the newborn out of the registry and marks its key under construction, then the undo publishes the retraction | the newborn was replaced, a turn started on it, or it holds messages |
+| assign: the member pin and the selection record publish the binding | `restore_session_binding` on the `snapshot_session_binding` taken first: the raw binding fields go back under a compare-and-set, and a transcript the assignment created is removed if it holds no messages | as for reserve |
+
+A person's create (no internal secret) claims the folder it files into, removing
+its `created_by_session` mark in the same locked step that confirms the folder
+exists (`chat_folders.claim_filed_folder`, the one claim step, which the folder
+PATCH reaches through `_unhide_folder`). The claim is not journaled: as for every
+claim, it is for good, so a rolled-back create leaves the folder the person's.
+
+Publish steps run only after commit: the new-chat tab's user-session count
+(`_count_user_session_if_kept`, USER origin only) and the folder un-hide. A
+refused undo stops the rollback and keeps that step and every older one. The
+rollback runs to completion (`chat_utils.run_to_completion`): a cancellation that
+arrives while an undo is in flight is raised once the rollback finishes, so an
+undo whose restore already ran is never read as refused.
+
+The newborn is registered at the mint, before the assignment that can refuse it,
+because `DashboardState.get_or_create_slot` is the one slot constructor: it
+registers what it returns, its callers across the dashboard, channels, crons,
+apps and Slack share that, and the create's authorization, folder,
+project and metadata steps all run on that registered object. Registering only at
+commit would change that shared contract for every caller, so this create instead
+takes its own registration back.
+
+Which steps are kept is decided once, synchronously, before the first undo, and
+the newborn that will be undone leaves the registry in that same step. While it
+is detached its key refuses mints with 409 "still being built", so a same-name
+create cannot write into the stub the undo is removing. Every newborn holds its
+slot lock and a settle mark (`DashboardState.unsettled_slot_create`, kept beside
+the construction mark) until the transaction settles. A same-name re-open waits
+on the settle mark alone, not on the slot lock, which switches also take, and it
+waits before it enters the create's slot-push suspension, so a stalled create
+delays that request and no other slot broadcast. It then
+answers for the committed slot, or with 409 `slot_create_refused` (404
+`slot_not_found` for an app token) when the create rolled back. Every slot
+PATCH/PUT that writes metadata (folder, pin, mode, title, tags, colour), and every
+slot POST that does (autocompact, project, Slack link, channel mirror link), goes
+through one shared step, `chat_utils.refuse_write_to_unsettled_create`, which
+waits the same way (`DashboardState.slot_create_settled`) and then re-checks that
+the same slot object is still registered, so an edit to a newborn whose create
+then rolls back is refused with 409 `session_gone` rather than acknowledged and
+deleted with the slot. The project POST takes the step after the slot lock, which
+the create holds. A source sweep in `test_slot_create_default_agent.py`
+fails a slot PATCH/PUT route, or one of those POSTs, that skips the step; checklist and queue edits
+are exempt because a newborn has neither. Every one of these waits is bounded
+by `SLOT_CREATE_SETTLE_TIMEOUT_SECS` (30 s); past it the request is refused with
+409 `slot_create_pending`, so a stalled create cannot hold them indefinitely.
+
+When the newborn is replaced or rebound while the assignment runs, the create
+undoes only the assignment, hands the reservation over and answers 409
+`session_rebound`. The key's transcript is handed over too (`owns_stub` cleared),
+because the replacement may already have written its own metadata-only line
+there.
+
+`restore_session_binding` is the one binding restore. Callers that took no
+snapshot (an owner switch, a provider agent switch, a cancelled explicit
+selection) restore through it with `snapshot_from_selection_change`, which builds
+the snapshot from the write's own `(prior, published)` change. Both durable parts
+go through `ConversationLog.restore_binding_fields`, the history module's own
+writer for the metadata line.
+
 ## Implementation Boundaries
 
 `SessionManager` remains the compatibility facade in `session.py`; callers keep

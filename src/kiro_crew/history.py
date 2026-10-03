@@ -965,6 +965,11 @@ def carry_provenance(dest: dict, src: dict) -> None:
 #: simply does not count, which keeps the next machine caller harmless by default.
 HUMAN_TURN_META_KEY = "human"
 
+#: The metadata fields a session's binding publication writes:
+#: ``bind_session_execution`` sets exactly these three on its durable branch,
+#: and :meth:`ConversationLog.restore_binding_fields` puts back exactly these.
+BINDING_FIELDS = ("execution_context", "memory_store", "memory_mode")
+
 
 def _safe_mtime(path: Path) -> float | None:
     """Return a file's mtime, or None if it can't be stat'd."""
@@ -3661,6 +3666,53 @@ class ConversationLog:
             require_existing=require_existing,
             after_commit_under_lock=after_commit_under_lock,
         )
+
+    def restore_binding_fields(
+        self,
+        key: str,
+        values: dict[str, Any],
+        *,
+        published: Sequence[dict[str, Any]],
+        remove_empty_stub: bool = False,
+    ) -> bool:
+        """Roll binding writes back: put :data:`BINDING_FIELDS` back to *values*. Blocking.
+
+        One transcript hold covers both parts. While the line is readable and
+        its ``execution_context`` is one of *published* (the records the
+        writes being rolled back committed), every binding field is replaced
+        by its entry in *values*, and one absent from *values* is removed, so a
+        legacy line gets back exactly the fields it had; any other line is left
+        alone, which makes the restore a compare-and-set. An empty *published*
+        skips that part. The line is ASCII-escaped like every metadata write (a
+        literal U+2028 would split it for ``str.splitlines`` readers), the
+        file's mtime is kept (housekeeping, not activity) and the read cache is
+        dropped. With *remove_empty_stub*, a transcript that then holds no
+        messages is deleted; a refused delete raises ``OSError``. Returns
+        whether the fields were replaced.
+        """
+        replaced = False
+        with self._locked(key):
+            if published:
+                metadata, readable = self._read_metadata_status(key)
+                if readable and metadata.get("execution_context") in published:
+                    restored = {k: v for k, v in metadata.items() if k not in BINDING_FIELDS}
+                    restored.update({k: values[k] for k in BINDING_FIELDS if k in values})
+                    path = self._path(key)
+                    previous_mtime = _safe_mtime(path)
+                    rows = path.read_text(encoding="utf-8").splitlines(keepends=True)
+                    rows[0] = json.dumps(restored) + "\n"
+                    atomic_write(path, "".join(rows))
+                    _restore_mtime(path, previous_mtime)
+                    self._invalidate_cache(key)
+                    replaced = True
+            if (
+                remove_empty_stub
+                and self.has_log(key)
+                and not self.has_messages(key)
+                and not self.delete_session(key)
+            ):
+                raise OSError(f"could not remove the transcript stub for {key}")
+        return replaced
 
     def _update_metadata_locked(self, key: str, fields: dict) -> None:
         self._metadata_projection._update_metadata_locked(key, fields)

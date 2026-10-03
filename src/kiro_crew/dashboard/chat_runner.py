@@ -549,8 +549,9 @@ from kiro_crew.session_agent_selection import (  # noqa: F401
     record_agent_selection,
     record_provider_agent_switch,
     resolve_session_agent_bindings,
-    restore_agent_selection,
+    restore_session_binding,
     session_agent_selection_kind,
+    snapshot_from_selection_change,
 )
 from kiro_crew.session_capabilities import CapabilityStartupError
 from kiro_crew.slack.handler import post_linked_approval, resolve_linked_approval
@@ -13816,7 +13817,10 @@ async def _run_chat(
                             raise switch_cancelled
                         _require_current_binding()
                     except (Exception, asyncio.CancelledError):
-                        await drained_to_thread(restore_agent_selection, session_key, switch_change)
+                        await drained_to_thread(
+                            restore_session_binding,
+                            snapshot_from_selection_change(session_key, switch_change),
+                        )
                         raise
                     slot.agent = new_agent
                     # The rest of this turn runs as the new agent, so its tool

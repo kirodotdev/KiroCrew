@@ -510,11 +510,15 @@ class TestSlotCreateFolderAssignment:
         slot.folder_id = "home"
 
         # The target is deleted between the handler's unlocked check and the store
-        # lock, which is what _unhide_folder reports from inside that lock.
-        async def _gone(state_: Any, folder_id: str, **_kw: Any) -> bool:
-            return folder_id != "target"
+        # lock, which is what the locked exists-and-claim step reports.
+        real_mutate = state.mutate_folders
 
-        monkeypatch.setattr(chat_handlers, "_unhide_folder", _gone)
+        async def _target_gone(fn: Any, *args: Any, **kwargs: Any) -> Any:
+            return await real_mutate(
+                lambda folders: fn([f for f in folders if f["id"] != "target"]), *args, **kwargs
+            )
+
+        monkeypatch.setattr(state, "mutate_folders", _target_gone)
 
         app = web.Application()
         app["state"] = state

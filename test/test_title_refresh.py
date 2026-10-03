@@ -23,7 +23,7 @@ import asyncio
 import json
 import threading
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -48,6 +48,8 @@ def _fake_state():
     # The title write looks up ``state._slots`` for the live holder of the key; a
     # bare MagicMock there poses as a slot at every key. No slot is registered here.
     state._slots = {}
+    # No create is in flight for any slot here, so a rename does not wait.
+    state.slot_create_settled = AsyncMock(return_value=True)
     return state
 
 

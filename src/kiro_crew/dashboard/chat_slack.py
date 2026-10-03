@@ -21,6 +21,7 @@ from kiro_crew.dashboard.chat_utils import (
     effective_session_key,
     expire_slack_options,
     mint_options_token,
+    refuse_write_to_unsettled_create,
     remember_slack_options,
     slack_options_owner_keys_snapshot,
 )
@@ -341,6 +342,11 @@ async def api_chat_slot_slack_link(request: web.Request) -> web.Response:
     owner_id = getattr(state, "owner_id", None)
     if not owner_id:
         return web.json_response({"error": "owner not configured"}, status=500)
+    # A newborn's create settles before it is linked (see
+    # refuse_write_to_unsettled_create): a create that rolls back would take
+    # the link, and the thread it opened, away with the slot.
+    if (refusal := await refuse_write_to_unsettled_create(state, name, slot)) is not None:
+        return refusal
 
     # The slot's OWN session key: a channel-born slot's turns run on the
     # channel session, so the link has to live there for the turn path and the
