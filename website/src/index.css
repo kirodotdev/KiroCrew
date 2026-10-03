@@ -1880,6 +1880,11 @@ file-tree-container{
 
 /* ── Auto-hiding scrollbar for code/diff blocks ── */
 .scroll-fade::-webkit-scrollbar{height:6px}
+/* Horizontal edge fade by MASK, not by a painted gradient, so it works on glass
+   as on solid surfaces. A clipped side fades its own content over 24px. */
+.edge-fade-x[data-fade-left]{-webkit-mask-image:linear-gradient(to right,transparent,#000 24px);mask-image:linear-gradient(to right,transparent,#000 24px)}
+.edge-fade-x[data-fade-right]{-webkit-mask-image:linear-gradient(to left,transparent,#000 24px);mask-image:linear-gradient(to left,transparent,#000 24px)}
+.edge-fade-x[data-fade-left][data-fade-right]{-webkit-mask-image:linear-gradient(to right,transparent,#000 24px,#000 calc(100% - 24px),transparent);mask-image:linear-gradient(to right,transparent,#000 24px,#000 calc(100% - 24px),transparent)}
 .scroll-fade::-webkit-scrollbar-thumb{background:transparent;border-radius:3px;transition:background .2s}
 .scroll-fade:hover::-webkit-scrollbar-thumb{background:var(--muted)}
 .scroll-fade{scrollbar-width:thin;scrollbar-color:transparent transparent}

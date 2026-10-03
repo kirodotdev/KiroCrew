@@ -1031,7 +1031,7 @@ function ChatInput({
                 also owns the flex sizing so the scroller keeps filling the
                 row. */}
             <div className="relative min-w-0 flex-1">
-              <div ref={attachControlRow} data-testid="composer-control-row" className="flex items-center gap-0.5 overflow-x-auto">
+              <div ref={attachControlRow} data-testid="composer-control-row" data-fade-left={controlRowEdges.left ? 'true' : undefined} data-fade-right={controlRowEdges.right ? 'true' : undefined} className="edge-fade-x flex items-center gap-0.5 overflow-x-auto">
 
               {onAutomationClick && (
                 <Suspense fallback={null}>
@@ -1055,22 +1055,10 @@ function ChatInput({
                 <ApprovalModePicker mode={approvalMode} slotKey={activeSlot || ''} openSignal={approvalPickerSignal} nudge={approvalNudgeActive} onNudgeDismiss={dismissApprovalNudge} onNudgeHide={hideApprovalNudge} />
               )}
               </div>
-              {/* Edge cues, same treatment as the sibling strips that already
-                  ship it (FollowUpBar's scroll row, SidePanelLayout's tab
-                  strip): at narrow widths the loop chip and approval picker
-                  clip silently, and the overlay scrollbar on macOS/iOS leaves
-                  no idle trace. from-bg-elevated matches the composer surface.
-                  Deliberately NO z-index: positioned elements already paint
-                  above the row's in-flow buttons, and an explicit z-10 would
-                  win the tree-order tiebreak against the optimizing dim
-                  overlay (also z-10, earlier in the tree), punching an
-                  undimmed wedge through it. */}
-              {controlRowEdges.left && (
-                <div aria-hidden="true" data-testid="control-row-cue-left" className="pointer-events-none absolute left-0 top-0 bottom-0 w-6 bg-gradient-to-r from-bg-elevated to-transparent" />
-              )}
-              {controlRowEdges.right && (
-                <div aria-hidden="true" data-testid="control-row-cue-right" className="pointer-events-none absolute right-0 top-0 bottom-0 w-6 bg-gradient-to-l from-bg-elevated to-transparent" />
-              )}
+              {/* Edge cues: the row itself fades out at a clipped edge (`edge-fade-x`,
+                  driven by data-fade-left/right). A mask fades the buttons on any
+                  surface; a painted from-bg-elevated gradient drew an opaque block
+                  over the translucent composer. */}
             </div>
             {isMobile && approvalMode && (
               <ApprovalModePicker mode={approvalMode} slotKey={activeSlot || ''} compact openSignal={approvalPickerSignal} nudge={approvalNudgeActive} onNudgeDismiss={dismissApprovalNudge} onNudgeHide={hideApprovalNudge} />

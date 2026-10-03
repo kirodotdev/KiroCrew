@@ -40,8 +40,10 @@ const defaultProps = {
   onSend: vi.fn(),
 }
 
-const leftCue = () => screen.queryByTestId('control-row-cue-left')
-const rightCue = () => screen.queryByTestId('control-row-cue-right')
+// The cue is a mask on the row (edge-fade-x), driven by data attributes, so it
+// fades the buttons on glass instead of painting an opaque block over them.
+const leftCue = () => (controlRow().hasAttribute('data-fade-left') ? controlRow() : null)
+const rightCue = () => (controlRow().hasAttribute('data-fade-right') ? controlRow() : null)
 const controlRow = () => screen.getByTestId('composer-control-row')
 
 describe('ChatInput control-row scroll-edge cues', () => {
@@ -67,11 +69,10 @@ describe('ChatInput control-row scroll-edge cues', () => {
     stubGeometry({ hidden: 240 })
     renderWithProviders(<ChatInput {...defaultProps} />)
     expect(rightCue()).toBeTruthy()
-    // The cue is paint, not surface: it sits over the edge controls, so
-    // letting it catch clicks would put a dead zone on the picker underneath,
-    // and it must stay silent to assistive tech.
-    expect(rightCue()).toHaveClass('pointer-events-none')
-    expect(rightCue()).toHaveAttribute('aria-hidden', 'true')
+    // The cue is a mask on the row itself: no overlay element exists to catch
+    // clicks over the edge controls or to reach assistive tech.
+    expect(rightCue()).toHaveClass('edge-fade-x')
+    expect(screen.queryByTestId('control-row-cue-right')).toBeNull()
     // Nothing is hidden to the left at offset 0; a cue there would point at
     // content that does not exist.
     expect(leftCue()).toBeNull()
