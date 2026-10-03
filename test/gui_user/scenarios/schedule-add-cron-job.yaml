@@ -1,0 +1,47 @@
+# Nightly: the Schedule page's create path -- read the seeded jobs, add one and
+# then remove it. It is nightly, not smoke, because the create-and-restore flow
+# is more than the handful of actions a smoke row is capped at. The `rich`
+# fixture ships two jobs (`daily rich fixture ping`, enabled; `paused weekly
+# recap`, disabled) so the list assertion is deterministic, and the gateway
+# runs with --no-crons so nothing ever fires: the create only writes a row into
+# the throwaway home. Cron expressions are rendered as clock times in the
+# Schedule column (`0 9 * * *` reads "9:00 AM"), so the expectations name the
+# rendered form, not the expression.
+#
+# One home serves every scenario in the run and a failed attempt is retried
+# against that same home with nothing re-seeded (docs/build/gui-user-test.md,
+# "Seeds"). A schedule scenario that only ever ADDED a row would leave the
+# throwaway home with a third job that its own retry double-creates and that the
+# later `schedule-list-calendar-executions-views` scenario -- which asserts the
+# table has exactly two rows -- would then see. So this scenario restores the
+# pre-change state before it ends: it deletes the job it created, and it is
+# worded so a retry from a half-finished attempt converges (it adds "gui smoke
+# digest" only if that row is not already present, and ends with the two seeded
+# rows either way).
+name: schedule-add-cron-job
+tier: nightly
+feature: schedule
+user_story: >-
+  As a user, I want to see my scheduled jobs with their status and add a new
+  cron job from the Schedule page, so that routine work runs on time without
+  me remembering to start it.
+docs_url: docs/system-specs/modules/learn-cron-dashboard.md
+summary: Read the two seeded jobs, create a third with a cron expression and then delete it so two remain
+preconditions:
+  seed: rich
+  members: [nova-sky]
+  start_url: /schedule
+steps:
+  - You are on the Schedule page. It has a List / Calendar / Executions switcher in the header and a table of jobs. Make sure the List view is showing and read the rows already there ("daily rich fixture ping" and "paused weekly recap" are always present; a "gui smoke digest" row may also be present from an earlier attempt).
+  - If a row named "gui smoke digest" is already in the table, skip this step and the next one. Otherwise click the "Add Job" button (it has a plus icon) above the table so a dialog titled "New Job" opens.
+  - In the dialog's Name field type exactly "gui smoke digest" and in the Message box type exactly "summarize open pull requests". Leave Agent, Model, Channel ID, Approval and every toggle as they are.
+  - Still in the dialog, under Schedule change the dropdown from "Every interval" to "Cron expression" and type exactly "30 8 * * 1-5" into the cron field (placeholder "0 9 * * 1-5"). Click "Create" and wait a second for the list to refresh.
+  - Confirm the table now lists a "gui smoke digest" row whose status reads "Ready" and whose schedule reads 8:30 AM on Mon-Fri (rendered as a time, not the raw cron expression).
+  - Now delete the "gui smoke digest" job to leave the list as you found it. On its row open the row actions (a "..." or trash control at the right end of the row) and choose the delete/remove option; if a confirmation dialog appears, confirm it. Wait a second for the list to refresh.
+expectations:
+  - No red error message was shown at any point, and no "New Job" dialog is left open.
+  - While the "gui smoke digest" job existed it showed the status "Ready" and a schedule of 8:30 AM on Mon-Fri (a rendered time, not the raw cron expression).
+  - After the delete, the table lists exactly the two seeded jobs -- "daily rich fixture ping" and "paused weekly recap" -- and no "gui smoke digest" row remains.
+  - The "paused weekly recap" row still shows the status "Paused".
+max_steps: 18
+max_seconds: 420
