@@ -416,7 +416,7 @@ def lifecycle(monkeypatch):
     )
     cfg = SimpleNamespace(
         agent=SimpleNamespace(resolve_model=lambda role: "auto"),
-        dashboard=SimpleNamespace(dynamic_dashboard_cards=True),
+        dashboard=SimpleNamespace(dynamic_dashboard_cards=True, language=""),
     )
     monkeypatch.setattr(card_lifecycle.KiroCrewConfig, "load", lambda: cfg)
     service = card_lifecycle.CardLifecycle(state, enabled=True)
@@ -1966,3 +1966,74 @@ def test_card_prompt_leaves_pending_questions_to_the_host():
     assert "Do not restate questions, choices or decisions waiting for the user" in prompt
     assert "Questions tab is the one place they appear" in prompt
     assert "return replacement html without it" in prompt
+
+
+async def _card_context(service, slot, monkeypatch):
+    """The JSON evidence the card model is given for *slot*'s next card."""
+    from kiro_crew.dashboard import card_lifecycle
+
+    prompts = []
+
+    async def generate(_sessions, prompt, **kwargs):
+        prompts.append(prompt)
+        return json.dumps({"html": '<p data-dashboard-field="lede"></p>', "data": {"lede": "x"}})
+
+    monkeypatch.setattr(card_lifecycle, "run_bg_oneliner", generate)
+    service.notify(slot, "done")
+    await asyncio.wait_for(service.worker, 2)
+    assert len(prompts) == 1
+    return json.loads(prompts[0][len(card_lifecycle._ROOT_PROMPT) :])
+
+
+@pytest.mark.asyncio
+async def test_card_language_follows_what_a_chinese_user_typed(lifecycle, monkeypatch):
+    service, slot, _state = lifecycle
+    slot.messages = [
+        {
+            "role": "user",
+            "content": "\u5e2e\u6211\u770b\u4e0b `make build` \u4e3a\u4ec0\u4e48\u5931\u8d25 https://ci.example/run/7",
+        },
+        {"role": "assistant", "content": "The build failed on a missing dependency."},
+    ]
+    context = await _card_context(service, slot, monkeypatch)
+    assert context["language"] == {
+        "user_wrote": "\u5e2e\u6211\u770b\u4e0b \u4e3a\u4ec0\u4e48\u5931\u8d25"
+    }
+
+
+@pytest.mark.asyncio
+async def test_card_language_ignores_a_previous_card_in_another_language(lifecycle, monkeypatch):
+    service, slot, _state = lifecycle
+    slot.messages = [
+        {"role": "user", "content": "Rebase the branch onto main"},
+        {"role": "assistant", "content": "\u5df2\u7ecf\u53d8\u57fa\u5b8c\u6210"},
+        {"role": "inject", "content": "[Cron notification] \u5b9a\u65f6\u4efb\u52a1\u5b8c\u6210"},
+    ]
+    context = await _card_context(service, slot, monkeypatch)
+    assert context["language"] == {"user_wrote": "Rebase the branch onto main"}
+
+
+@pytest.mark.asyncio
+async def test_configured_ui_language_wins_over_the_user_text(lifecycle, monkeypatch):
+    from kiro_crew.dashboard import card_lifecycle
+
+    service, slot, _state = lifecycle
+    card_lifecycle.KiroCrewConfig.load().dashboard.language = "zh-CN"
+    context = await _card_context(service, slot, monkeypatch)
+    assert context["language"] == {"tag": "zh-CN"}
+
+
+@pytest.mark.asyncio
+async def test_no_language_signal_sends_no_language(lifecycle, monkeypatch):
+    service, slot, _state = lifecycle
+    slot.messages = [{"role": "assistant", "content": "Working on it"}]
+    context = await _card_context(service, slot, monkeypatch)
+    assert "language" not in context
+
+
+def test_root_prompt_names_the_language_rule():
+    from kiro_crew.dashboard import card_lifecycle
+
+    prompt = card_lifecycle._ROOT_PROMPT
+    assert '"language"' in prompt and '"tag"' in prompt and '"user_wrote"' in prompt
+    assert "Never take the\nlanguage from facts, previous" in prompt

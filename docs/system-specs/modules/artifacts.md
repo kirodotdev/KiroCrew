@@ -78,6 +78,14 @@ layout leaves any fact unbound (`_layout_hides_a_fact`), since a layout of three
 sentences would publish a card with no numbers. Digits in CSS are layout and pass. Only then does `merge_crew_main`, which names every field, put
 the folded values beside the three sentences.
 
+The three sentences are written in one language, which the host names under
+`language` in the evidence (`_card_language`): the configured dashboard UI language
+(`context.ui_language_tag`) when there is one, as for the session title, otherwise a
+short sample of the newest text the user typed, with pasted code and links cut out.
+The facts, the previous card, assistant replies and automation rows each carry a
+language of their own, so the prompt tells the model never to take the language from
+them.
+
 The session folds are read from the crew log UNIT the slot writes now
 (`crew_log.emit.slot_previous_store`), never from the slot's session key: a fold of a
 name no unit carries is an empty record whose counts read as zero. No unit of the slot
