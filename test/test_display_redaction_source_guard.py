@@ -419,4 +419,4 @@ def test_display_battery_never_touches_the_operator_file(monkeypatch: pytest.Mon
     )
     for text in (consent, "key AKIAIOSFODNN7EXAMPLE here", "plain prose with no url"):
         chat_utils._redact_for_display(text)
-    assert seen["n"] >= 3, "the cache key and the battery both read the exempt set"
+    assert seen["n"] == 3, "one snapshot read per call feeds both the cache key and the battery"

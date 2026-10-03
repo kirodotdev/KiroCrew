@@ -70,7 +70,7 @@ from kiro_crew.quick_prompts import QUICK_PROMPTS
 from kiro_crew.security import (
     CREDENTIAL_REDACTION_TAGS,
     EXFILTRATION_REDACTION_TAG_PREFIX,
-    _exempt_exact_hosts,
+    _exfil_exempt_hosts,
     bounded_blocked_links,
     oauth_url_contains_credential,
     redact_credentials,
@@ -2283,14 +2283,22 @@ def _redact_meta_for_role(role: str, meta: dict) -> dict:
 # nothing else, and never the raw credential-bearing key material.
 #
 # The digest covers every input the battery's OUTPUT depends on, not just the
-# text: ``redact_exfiltration_urls`` also reads the active PlatformContext's
-# exempt-host set, which changes mid-process (a companion loads after boot, a
-# policy tightens). Keyed on content alone, a hot entry computed under the old set
+# text: ``redact_exfiltration_urls`` also judges under the exempt-host set -- the
+# active PlatformContext's, which changes mid-process (a companion loads after
+# boot, a policy tightens), plus the hosts ``scoped_exempt_hosts`` relaxes for
+# this render. Keyed on content alone, a hot entry computed under the old set
 # kept being served -- a tenant link stayed ``[REDACTED]`` after its host was
 # exempted, or a URL the tightened policy now redacts kept displaying in plaintext
 # until eviction. The host set is folded INTO the digest rather than carried as a
 # key component: a container per entry would sit outside the byte cap, and with
 # a large tenant list it would dwarf the payload the cap is declared to bound.
+#
+# The set is read ONCE per call and that snapshot feeds both the key and the
+# battery. Two independent reads -- one for the key, one inside the battery --
+# can see different sets: the platform read can move between them, and it
+# degrades every failure to the empty set, so a transient failure on the
+# battery's read alone would store maximally-redacted output under the full
+# set's key, and every later hit would serve it until eviction.
 #
 # The entry cap counts individual STRINGS, and a rendered row costs several --
 # ``_prepare_messages`` redacts the content plus every meta string (a row's
@@ -2322,20 +2330,23 @@ _display_redaction_cache_bytes = 0
 _display_redaction_cache_lock = RLock()
 
 
-def _display_redaction_cache_key(text: str) -> tuple[_DisplayRedactionKey, int]:
-    """Digest the exact string entering the battery together with the exempt-host set it reads.
+def _display_redaction_cache_key(
+    text: str, exempt_hosts: frozenset[str]
+) -> tuple[_DisplayRedactionKey, int]:
+    """Digest the exact string entering the battery together with the exempt-host set it judges under.
 
-    The key is fixed-size: a 32-byte digest and the input byte length. The host set
-    is sorted and folded into the MAC input behind a NUL separator (a host never
-    contains NUL), so a changed set yields a different key while no per-entry
-    container is retained. The length component constrains a digest collision.
-    The digest is an HMAC under the per-process ``_DISPLAY_REDACTION_SALT``: one
-    hash per lookup, so the cache stays cheaper than the battery it fronts.
+    ``exempt_hosts`` is the caller's one snapshot of that set -- the same object it
+    hands the battery -- so the key names the set the stored output is computed
+    under; this function reads no host set of its own. The key is fixed-size: a
+    32-byte digest and the input byte length. The host set is sorted and folded
+    into the MAC input behind a NUL separator (a host never contains NUL), so a
+    changed set yields a different key while no per-entry container is retained.
+    The length component constrains a digest collision. The digest is an HMAC
+    under the per-process ``_DISPLAY_REDACTION_SALT``: one hash per lookup, so the
+    cache stays cheaper than the battery it fronts.
     """
     raw = text.encode("utf-8", errors="surrogatepass")
-    hosts = "\0".join(sorted(_exempt_exact_hosts() | current_scoped_exempt_hosts())).encode(
-        "utf-8", errors="surrogatepass"
-    )
+    hosts = "\0".join(sorted(exempt_hosts)).encode("utf-8", errors="surrogatepass")
     digest = hmac.new(_DISPLAY_REDACTION_SALT, raw + b"\0" + hosts, hashlib.sha256).digest()
     return (digest, len(raw)), len(raw)
 
@@ -2355,16 +2366,25 @@ def _display_redaction_cache_info() -> tuple[int, int]:
 
 
 def _redact_for_display(text: str) -> str:
-    """Apply all display redactors, reusing only an exact content-hash match."""
+    """Apply all display redactors, reusing only an exact content-hash match.
+
+    The exempt-host set is read ONCE here -- through ``_exfil_exempt_hosts``, the
+    accessor the battery itself reads, joined with the scoped override in effect
+    -- and that one snapshot is both folded into the key and handed to the
+    battery. A second read inside the battery could see a different set (the
+    platform read moves mid-process and degrades every failure to the empty set)
+    and would store one set's output under another set's key.
+    """
     global _display_redaction_cache_bytes
-    key, input_bytes = _display_redaction_cache_key(text)
+    hosts = _exfil_exempt_hosts() | current_scoped_exempt_hosts()
+    key, input_bytes = _display_redaction_cache_key(text, hosts)
     with _display_redaction_cache_lock:
         cached = _display_redaction_cache.get(key)
         if cached is not None:
             _display_redaction_cache.move_to_end(key)
             return cached[0]
 
-    redacted, _ = redact_exfiltration_urls(text)
+    redacted, _ = redact_exfiltration_urls(text, exempt_hosts=hosts)
     redacted, _ = redact_credentials(redacted)
     entry_bytes = len(key[0]) + input_bytes + len(redacted.encode("utf-8", errors="surrogatepass"))
     if entry_bytes > _DISPLAY_REDACTION_CACHE_MAX_BYTES:

@@ -1355,6 +1355,7 @@ def redact_exfiltration_urls_with_records(
     text: str,
     *,
     extra_exempt_hosts: frozenset[str] = frozenset(),
+    exempt_hosts: frozenset[str] | None = None,
 ) -> tuple[str, list[str], list[dict]]:
     """Redact suspicious URLs and, in the SAME pass, describe each one.
 
@@ -1362,6 +1363,16 @@ def redact_exfiltration_urls_with_records(
     call: the hosts a reader allowed for one workspace from the dashboard
     (``security.redaction_allow``). Like the platform's set, it relaxes only
     the query-length and base64 heuristics; every credential check still runs.
+
+    ``exempt_hosts`` is a SNAPSHOT of the exempt-host set, standing in for both
+    the live platform read (``_exfil_exempt_hosts``) and the scoped override
+    (``scoped_exempt_hosts``) this call would otherwise take itself. A caller
+    that keys a cache on the host set passes the set it keyed on, so the stored
+    entry is computed under exactly that set; the platform read can move between
+    two reads (a companion loads, a policy tightens, one read fails and degrades
+    to the empty set), and two independent reads would store one set's output
+    under another set's key. ``None``, the default, is the live read.
+    ``extra_exempt_hosts`` joins either way.
 
     Returns ``(cleaned_text, warnings, records)``. The redaction and the records
     come out of one loop on purpose: two independent scans can disagree, and a
@@ -1386,12 +1397,14 @@ def redact_exfiltration_urls_with_records(
     a position could pair one link's path with another's.
     """
     # The warnings come from the same loop, under the same exempt hosts, so a
-    # link on a host the reader allowed is neither redacted nor reported.
-    exempt_hosts = (
-        _exfil_exempt_hosts()
-        | frozenset(h.lower() for h in extra_exempt_hosts)
-        | _SCOPED_EXEMPT_HOSTS.get()
-    )
+    # link on a host the reader allowed is neither redacted nor reported. A
+    # supplied snapshot is the whole set -- platform and scope -- so neither is
+    # read again here; hosts compare lowercase either way (RFC 4343).
+    if exempt_hosts is None:
+        exempt_hosts = _exfil_exempt_hosts() | _SCOPED_EXEMPT_HOSTS.get()
+    else:
+        exempt_hosts = frozenset(h.lower() for h in exempt_hosts)
+    exempt_hosts = exempt_hosts | frozenset(h.lower() for h in extra_exempt_hosts)
     warnings: list[str] = []
     result = text
     records: list[dict] = []
@@ -1467,12 +1480,16 @@ def redact_exfiltration_urls_with_records(
     return result, warnings, records
 
 
-def redact_exfiltration_urls(text: str) -> tuple[str, list[str]]:
+def redact_exfiltration_urls(
+    text: str, *, exempt_hosts: frozenset[str] | None = None
+) -> tuple[str, list[str]]:
     """Scan and redact suspicious exfiltration URLs from text.
 
+    ``exempt_hosts`` is the host-set snapshot described on
+    :func:`redact_exfiltration_urls_with_records`; ``None`` is the live read.
     Returns (cleaned_text, list_of_warnings).
     """
-    cleaned, warnings, _ = redact_exfiltration_urls_with_records(text)
+    cleaned, warnings, _ = redact_exfiltration_urls_with_records(text, exempt_hosts=exempt_hosts)
     return cleaned, warnings
 
 

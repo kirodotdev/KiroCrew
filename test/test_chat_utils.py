@@ -236,13 +236,13 @@ class TestRedactForDisplay:
         calls = {"n": 0}
         real = chat_utils.redact_exfiltration_urls
 
-        def counted(value):
+        def counted(value, **kwargs):
             calls["n"] += 1
-            return real(value)
+            return real(value, **kwargs)
 
         monkeypatch.setattr(chat_utils, "redact_exfiltration_urls", counted)
         exempt = {"hosts": frozenset()}
-        monkeypatch.setattr(chat_utils, "_exempt_exact_hosts", lambda: exempt["hosts"])
+        monkeypatch.setattr(chat_utils, "_exfil_exempt_hosts", lambda: exempt["hosts"])
 
         text = (
             "see https://docs.contoso.sharepoint.com/x?token=abcdefghijklmnopqrstuvwxyz0123456789"
@@ -263,9 +263,9 @@ class TestRedactForDisplay:
         real_credentials = chat_utils.redact_credentials
         calls = {"exfiltration": 0, "credentials": 0}
 
-        def counted_exfiltration(value):
+        def counted_exfiltration(value, **kwargs):
             calls["exfiltration"] += 1
-            return real_exfiltration(value)
+            return real_exfiltration(value, **kwargs)
 
         def counted_credentials(value):
             calls["credentials"] += 1
@@ -313,7 +313,7 @@ class TestRedactForDisplay:
 
         def key_footprint(hosts: frozenset[str]) -> int:
             chat_utils._clear_display_redaction_cache()
-            monkeypatch.setattr(chat_utils, "_exempt_exact_hosts", lambda: hosts)
+            monkeypatch.setattr(chat_utils, "_exfil_exempt_hosts", lambda: hosts)
             for text in texts:
                 chat_utils._redact_for_display(text)
             entries, accounted_bytes = chat_utils._display_redaction_cache_info()
@@ -350,9 +350,9 @@ class TestRedactForDisplay:
         real_credentials = chat_utils.redact_credentials
         calls = {"exfiltration": 0, "credentials": 0}
 
-        def counted_exfiltration(value):
+        def counted_exfiltration(value, **kwargs):
             calls["exfiltration"] += 1
-            return real_exfiltration(value)
+            return real_exfiltration(value, **kwargs)
 
         def counted_credentials(value):
             calls["credentials"] += 1
@@ -401,11 +401,17 @@ class TestRedactForDisplay:
         the MAC input.
         """
         hosts = frozenset({"docs.contoso.sharepoint.com"})
-        monkeypatch.setattr(chat_utils, "_exempt_exact_hosts", lambda: hosts)
+        # The key function takes the caller's snapshot and reads no host set of
+        # its own: a live read here would be a second read beside the battery's.
+        monkeypatch.setattr(
+            chat_utils,
+            "_exfil_exempt_hosts",
+            lambda: pytest.fail("the key must digest the snapshot it is handed, not a live read"),
+        )
         text = "key AKIAIOSFODNN7EXAMPLE here"
         raw = text.encode("utf-8")
         hosts_bytes = "\0".join(sorted(hosts)).encode("utf-8")
-        (digest, length), input_bytes = chat_utils._display_redaction_cache_key(text)
+        (digest, length), input_bytes = chat_utils._display_redaction_cache_key(text, hosts)
         assert len(digest) == 32 and length == len(raw) == input_bytes
         assert digest != hashlib.sha256(raw + b"\0" + hosts_bytes).digest()
         assert (
@@ -418,7 +424,7 @@ class TestRedactForDisplay:
         assert len(chat_utils._DISPLAY_REDACTION_SALT) == 32
 
         monkeypatch.setattr(chat_utils, "_DISPLAY_REDACTION_SALT", b"\x01" * 32)
-        (rekeyed, relength), _ = chat_utils._display_redaction_cache_key(text)
+        (rekeyed, relength), _ = chat_utils._display_redaction_cache_key(text, hosts)
         assert rekeyed != digest, "a different process key yields a different digest"
         assert relength == length
 

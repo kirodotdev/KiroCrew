@@ -153,12 +153,21 @@ def _url_payload_command(n: int) -> str:
 #: Windows file too large to hash on the gate is never served, so a dotless target
 #: there is pending, and the ssh self-target refusal note says so.
 #:
+#: Re-pinned from 28,399 for the host-set snapshot on
+#: ``exfil.redact_exfiltration_urls_with_records`` and its two-tuple wrapper:
+#: one optional ``exempt_hosts`` keyword that REPLACES the live platform read and
+#: the scoped override when a caller supplies the set it keyed a cache on, so the
+#: display cache stores output computed under exactly the set its key names.
+#: Seventeen lines: the keyword on both signatures, a two-branch read, and the
+#: docstrings saying why. No rule widened or narrowed; the default path is the
+#: live read.
+#:
 #: The number IS the package's measured total, carrying no spare room: a ratchet with
 #: headroom admits exactly the unreviewed growth it exists to catch, so the next line
 #: added here fails this gate and has to be re-pinned deliberately, with its reason
 #: written above. The guards that detect a monolith growing back are the per-file cap
 #: and the facade's share below, and both must stay untouched.
-_PACKAGE_LINE_BUDGET = 28_399
+_PACKAGE_LINE_BUDGET = 28_416
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
