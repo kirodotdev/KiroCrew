@@ -844,13 +844,18 @@ cancelled (releasing their permits neutral), charges are dropped -- then
 proceeds with the existing teardown.
 
 **Wire.** The `registered` reply carries the daemon's `code_fingerprint`.
-A stub targeting one of Kiro Crew's own MCP servers also puts its
-`stub_code_fingerprint` on the Register frame and requires the two values to
-match exactly before it keeps the broker connection. A missing value identifies
+A stub whose `--server` names one of Kiro Crew's own MCP servers and whose
+target argv names its managed subcommand also puts its `stub_code_fingerprint`
+on the Register frame and requires the two values to match exactly before it
+keeps the broker connection. A missing value identifies
 a pre-fingerprint daemon; a different value identifies another installed code
-generation. Either condition closes that connection and takes the stub's normal
-per-session `fallback_exec`, so a package upgrade cannot leave current MCP
-servers consuming stale caller-identity or directive frames. This is a protocol
+generation. Either condition closes that connection. At cold start the stub
+takes its normal per-session `fallback_exec`, so a package upgrade cannot leave
+current MCP servers consuming stale caller-identity or directive frames. On a
+mid-session reconnect no exec remains (`initialize` is long consumed), so the
+stub refuses that generation terminally -- the same exit as the `poolable_ack`
+and `tenant_nonce` refusals -- rather than retrying a daemon that is up and will
+keep answering the same way for the whole reconnect budget. This is a protocol
 compatibility check, not an authorization proof. Third-party targets send no
 `stub_code_fingerprint` and retain their existing binary-version pooling and
 old-daemon compatibility.

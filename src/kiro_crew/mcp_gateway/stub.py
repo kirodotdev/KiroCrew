@@ -536,18 +536,35 @@ def _binary_version(command: str) -> str:
 #: folded in for exactly these, and only these: a third-party MCP binary is
 #: what its bytes say it is, and re-partitioning its pool on every Kiro Crew
 #: commit would cold-start it for no reason.
+#:
+#: Spelled out rather than imported from ``mcp_discovery``, whose module-level
+#: cost the stub's timed cold-start path must not pay; a ratchet test pins this
+#: set equal to ``mcp_discovery._MANAGED_SERVER_SUBCOMMANDS``'s values. The set
+#: also decides which stubs run the daemon-generation check in
+#: :func:`handshake`, so a managed server missing here keeps attaching to a
+#: pre-fingerprint daemon after an upgrade -- and the caller-aware ones then
+#: refuse every call as ``identity_unattested``.
 _KIROCREW_MCP_SUBCOMMANDS = frozenset(
-    {"mcp-core", "mcp-cron", "mcp-work", "mcp-computer", "mcp-dashboard", "mcp-crew-log"}
+    {
+        "mcp-core",
+        "mcp-cron",
+        "mcp-work",
+        "mcp-computer",
+        "mcp-dashboard",
+        "mcp-crew-log",
+        "mcp-debug",
+        "mcp-panel",
+    }
 )
 
 
 def _pool_binary_identity(command: str, target_args: list[str]) -> tuple[str, str]:
-    """Return ``(pool version, Crew code generation)`` for one target.
+    """Return ``(pool version, argv-selected Crew generation)`` for one target.
 
-    The second value is empty for a third-party target. Keeping both values from
-    one calculation lets the Register frame bind the stub/daemon protocol
-    generation without parsing the pool token back apart or hashing the source
-    tree twice.
+    The second value is empty unless the target argv names a managed Crew
+    subcommand. :func:`build_register_payload` separately validates ``--server``
+    before putting that value on the wire; the pool version deliberately keeps
+    its existing argv-based identity.
     """
     base = _binary_version(command)
     if not any(a in _KIROCREW_MCP_SUBCOMMANDS for a in target_args):
@@ -733,7 +750,7 @@ def build_register_payload(args: argparse.Namespace) -> dict:
         "session_type": caller["session_type"],
         "principal_id": caller["principal_id"],
     }
-    if stub_code_fingerprint:
+    if stub_code_fingerprint and args.server in KIROCREW_BIN_MCP_SERVERS:
         # Compatibility attestation, not a PoolKey dimension. The daemon answers
         # with its own fingerprint in ``registered``; an absent or different
         # value means an adopted pre-upgrade daemon cannot safely carry this
@@ -882,6 +899,18 @@ class FallbackRequestedError(Exception):
         self.reason = reason
 
 
+class StaleGenerationError(FallbackRequestedError):
+    """The daemon answered the Register with no code fingerprint, or another one.
+
+    A :class:`FallbackRequestedError`, so the cold-start caller degrades to its
+    per-session ``fallback_exec`` exactly as for any other handshake failure.
+    Distinguished so the reconnect path can tell it from an outage: a daemon that
+    is absent or still starting is retried, but one that is UP and of a different
+    generation will answer the next attempt the same way, so retrying it only
+    spends the whole reconnect budget on registers the stub then closes.
+    """
+
+
 async def handshake(
     socket_path: str, payload: dict
 ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter, str, dict]:
@@ -924,12 +953,12 @@ async def handshake(
             daemon_generation = resp.get("fingerprint")
             if not isinstance(daemon_generation, str) or not daemon_generation:
                 await _safe_close(writer)
-                raise FallbackRequestedError(
+                raise StaleGenerationError(
                     "gateway did not report its code fingerprint; using direct execution"
                 )
             if daemon_generation != expected_generation:
                 await _safe_close(writer)
-                raise FallbackRequestedError(
+                raise StaleGenerationError(
                     "gateway code fingerprint does not match this stub; using direct execution"
                 )
         return reader, writer, payload["stub_uuid"], resp
@@ -2103,6 +2132,25 @@ async def _reconnect(
             reader, writer, _uuid, registered = await asyncio.wait_for(
                 handshake(socket_path, payload), timeout=_HANDSHAKE_TIMEOUT_SECS
             )
+        except StaleGenerationError as exc:
+            # Caught BEFORE the transient arm below, which it would otherwise
+            # match as a plain FallbackRequestedError. The daemon that answered
+            # is up and of another code generation -- the endpoint a reconnect
+            # binds to need not be the one this stub first registered with --
+            # and it will answer every later attempt the same way, so this is
+            # the refusal the docstring names, not an outage. Cold start
+            # degrades to a per-session exec; here ``initialize`` is long
+            # consumed, so the honest move is the terminal exit, exactly as for
+            # the two capability refusals below. ``handshake`` already closed
+            # the connection.
+            logger.warning(
+                "stub reconnect: handshake refused the new gateway generation "
+                "(%s); terminal, not retried -- a daemon of another generation "
+                "keeps answering that way pool=%s",
+                exc.reason,
+                pool_label,
+            )
+            return None
         except (asyncio.TimeoutError, FallbackRequestedError) as exc:
             now = _reconnect_now()
             logger.info(

@@ -888,6 +888,95 @@ async def test_reconnect_accepts_that_daemon_when_sharing_was_requested(
     assert attached is not None
 
 
+@pytest.mark.asyncio
+async def test_reconnect_refuses_a_daemon_of_another_code_generation_at_once(
+    monkeypatch,
+) -> None:
+    """A generation refusal is terminal on the reconnect path, not an outage.
+
+    The handshake raises its refusal for a daemon whose ``registered`` reply names
+    no code fingerprint, or another one. Were that caught by the transient arm it
+    would be retried for the whole reconnect budget -- each attempt a fully
+    accepted register the stub then closes -- against a daemon that is UP and
+    will keep answering the same way, before reaching the same terminal exit.
+    """
+    from kiro_crew.mcp_gateway import stub as stub_mod
+
+    # Small enough that the OLD behaviour (retry until the budget is spent)
+    # finishes within the test instead of running for ten minutes, large
+    # enough that it visibly makes more than one attempt.
+    monkeypatch.setattr(stub_mod, "_RECONNECT_TOTAL_BUDGET_SECS", 0.4)
+    monkeypatch.setattr(stub_mod, "_RECONNECT_BACKOFF_START_SECS", 0.01)
+    monkeypatch.setattr(stub_mod, "_RECONNECT_BACKOFF_MAX_SECS", 0.02)
+    attempts: list[int] = []
+
+    async def _hs(_socket_path: str, _payload: dict):
+        attempts.append(1)
+        raise stub_mod.StaleGenerationError(
+            "gateway code fingerprint does not match this stub; using direct execution"
+        )
+
+    monkeypatch.setattr(stub_mod, "handshake", _hs)
+    session = _session_with_captured_init(_SERVER_RESULT)
+    attached = await stub_mod._reconnect(
+        "unused",
+        {
+            "stub_uuid": "u",
+            "session_key": "dashboard:x",
+            "stub_code_fingerprint": "this-stubs-generation",
+        },
+        session,  # type: ignore[arg-type]
+        asyncio.Event(),
+        poolable=True,
+        pool_label="probe:fake",
+    )
+    assert attached is None
+    assert len(attempts) == 1, (
+        f"the reconnect made {len(attempts)} handshake attempts against a daemon "
+        "of another code generation, so the refusal was retried as if the "
+        "gateway were merely not back yet"
+    )
+
+
+@pytest.mark.asyncio
+async def test_reconnect_still_retries_a_gateway_that_is_not_back_yet(
+    monkeypatch,
+) -> None:
+    """The terminal arm must not swallow the outage class it sits beside.
+
+    A connect failure is the shape of a daemon still being respawned, and that
+    is exactly what the budget is bought for.
+    """
+    from kiro_crew.mcp_gateway import stub as stub_mod
+
+    monkeypatch.setattr(stub_mod, "_RECONNECT_BACKOFF_START_SECS", 0.01)
+    attempts: list[int] = []
+
+    async def _hs(_socket_path: str, _payload: dict):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise stub_mod.FallbackRequestedError("connect failed: not bound yet")
+        return (
+            _reader_with({"jsonrpc": "2.0", "id": 7, "result": dict(_SERVER_RESULT)}),
+            _CaptureWriter(),
+            "stub-uuid",
+            {"type": "registered", "capabilities": ["poolable_ack"]},
+        )
+
+    monkeypatch.setattr(stub_mod, "handshake", _hs)
+    session = _session_with_captured_init(_SERVER_RESULT)
+    attached = await stub_mod._reconnect(
+        "unused",
+        {"stub_uuid": "u", "session_key": "dashboard:x"},
+        session,  # type: ignore[arg-type]
+        asyncio.Event(),
+        poolable=True,
+        pool_label="probe:fake",
+    )
+    assert attached is not None
+    assert len(attempts) == 2
+
+
 def test_the_reconnect_budget_covers_the_supervisor_s_own_recovery() -> None:
     """The budget has to outlast the recovery it is waiting for.
 

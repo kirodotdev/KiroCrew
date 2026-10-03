@@ -220,6 +220,86 @@ def test_an_owned_control_plane_register_names_the_stubs_code_generation(
     assert "stub_code_fingerprint" not in stub_mod.build_register_payload(_stub_args())
 
 
+def test_register_generation_attestation_requires_managed_server_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A third-party name cannot opt into the Crew daemon-generation gate by argv."""
+    from kiro_crew import code_fingerprint as fingerprint_mod
+
+    monkeypatch.setattr(fingerprint_mod, "code_fingerprint", lambda: "stub-generation")
+    common_args = [
+        "--agent",
+        "cp-agent",
+        "--target-command",
+        "kirocrew",
+        "--target-args",
+        "mcp-core",
+        "--work-dir",
+        ".",
+        "--poolable",
+    ]
+    owned = stub_mod.build_register_payload(
+        stub_mod._parse_args(["--server", "kirocrew-core", *common_args])
+    )
+    third_party = stub_mod.build_register_payload(
+        stub_mod._parse_args(["--server", "third-party", *common_args])
+    )
+
+    assert owned["stub_code_fingerprint"] == "stub-generation"
+    assert "stub_code_fingerprint" not in third_party
+    assert third_party["binary_version"] == owned["binary_version"]
+
+
+def test_the_stubs_owned_subcommand_set_is_the_managed_server_table() -> None:
+    """``_KIROCREW_MCP_SUBCOMMANDS`` is spelled out in ``stub.py`` so the stub's
+    timed cold-start path never imports ``mcp_discovery``; this is the ratchet
+    that keeps the copy honest.
+
+    The set decides which stubs fold the code fingerprint into their pool key AND
+    which run the daemon-generation check, so a managed server missing from it
+    keeps attaching to a pre-fingerprint daemon after an upgrade. ``mcp-debug``
+    and ``mcp-panel`` were missing when the check landed.
+    """
+    from kiro_crew import mcp_discovery
+
+    assert stub_mod._KIROCREW_MCP_SUBCOMMANDS == frozenset(
+        mcp_discovery._MANAGED_SERVER_SUBCOMMANDS.values()
+    )
+
+
+@pytest.mark.parametrize(
+    ("server", "subcommand"),
+    [("kirocrew-debug", "mcp-debug"), ("kirocrew-panel", "mcp-panel")],
+)
+def test_the_caller_aware_opt_in_servers_name_the_stubs_code_generation(
+    monkeypatch: pytest.MonkeyPatch, server: str, subcommand: str
+) -> None:
+    """Exactly the servers whose mounts refuse every call as ``identity_unattested``
+    without the per-session attestation must run the generation check, or a
+    pre-fingerprint daemon keeps serving them after an upgrade."""
+    from kiro_crew import code_fingerprint as fingerprint_mod
+
+    monkeypatch.setattr(fingerprint_mod, "code_fingerprint", lambda: "stub-generation")
+    owned = stub_mod._parse_args(
+        [
+            "--server",
+            server,
+            "--agent",
+            "cp-agent",
+            "--target-command",
+            "kirocrew",
+            "--target-args",
+            subcommand,
+            "--work-dir",
+            "/tmp",
+            "--poolable",
+        ]
+    )
+    payload = stub_mod.build_register_payload(owned)
+    assert payload["stub_code_fingerprint"] == "stub-generation"
+    assert payload["binary_version"].endswith("+stub-generation")
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("registered", "reason"),
@@ -258,8 +338,12 @@ async def test_an_owned_control_plane_falls_back_from_a_stale_daemon(
         "stub_uuid": "generation-probe",
         "stub_code_fingerprint": "current-stub-generation",
     }
-    with pytest.raises(stub_mod.FallbackRequestedError, match=reason):
+    with pytest.raises(stub_mod.StaleGenerationError, match=reason) as excinfo:
         await stub_mod.handshake("ignored.sock", payload)
+    # Still a FallbackRequestedError, so the cold-start caller degrades to its
+    # per-session exec unchanged; the subclass exists so the reconnect path can
+    # refuse it terminally instead of retrying it as an outage.
+    assert isinstance(excinfo.value, stub_mod.FallbackRequestedError)
 
 
 @pytest.mark.asyncio
