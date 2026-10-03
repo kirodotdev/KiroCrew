@@ -1,11 +1,11 @@
 ---
 title: Remote crews in the chat sidebar — per-machine groups and session ownership
-status: draft
+status: accepted
 author: zejiangg
 created: 2026-10-03
 last-audited: 2026-10-03
-audited-at: e698e8ca7a
-doc-pr:
+audited-at: f31e2f7091
+doc-pr: 16489
 implementation-prs: []
 tracking-issues: [6180, 7445, 10618, 10826, 14585]
 supersedes: []
@@ -14,7 +14,9 @@ superseded-by: []
 
 # RFC: Remote crews in the chat sidebar — per-machine groups and session ownership
 
-**Status:** draft. Nothing here is built. Measured against main `e698e8ca7a`.
+**Status:** `accepted` on 2026-10-03 by maintainer iamwhatever (see Open
+questions). Nothing here is built. Measured against main `e698e8ca7a` and
+re-read at `f31e2f7091`, where every symbol it cites is unchanged.
 
 ## Summary
 
@@ -215,3 +217,9 @@ adds the one new peer read and must stay GET-only.
    but read by no frontend code. Proposed under (b): the peer decides, and the
    window shows the peer's project and workspace read-only, with no local
    directory picker.
+
+**Decided 2026-10-03 by iamwhatever (maintainer): this design is accepted.**
+Option (b) is adopted with the per-machine sidebar: the peer owns a crew
+session, and the local dashboard is only a window onto it. The migration
+waves above are the plan. Open questions 1 to 5 are not decided here; each
+is settled in the wave PR that meets it.
