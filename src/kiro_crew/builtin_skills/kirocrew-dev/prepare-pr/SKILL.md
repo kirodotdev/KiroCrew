@@ -779,8 +779,13 @@ declarations even though they close nothing. That is a wider reading than the
 whole-line, closing-verbs-only trailer this section describes and the `NOTICE:`
 below classifies with -- so a body can pass the gate and still earn a `NOTICE:`
 (`Fixes #123 (the Windows half)`, or `Part of #123` alone). Write the trailer as
-a whole line of its own and both are satisfied. Open the issue and let triage
-reach it BEFORE Phase 1. There is no body-side opt-out: an issue-less PR is red
+a whole line of its own and both are satisfied. Open the issue BEFORE Phase 1
+and declare it in the body, but do not wait for triage. A red `Issue Gate` whose
+only reason is `still carries needs-triage` is a wait state, not a defect: keep
+fixing every other red, and do not push or edit the body to clear it.
+`issue-gate-retrigger.yml` re-runs the gate when the verdict label lands. If that
+is the last red, report it and stop, as for `readiness: maintainer review`.
+There is no body-side opt-out: an issue-less PR is red
 until a maintainer applies the `issue-gate: waived` label (production fire,
 release PR), and `pr_status.py` prints its `NOTICE:` for the missing link every
 round rather than accepting a line the gate rejects.

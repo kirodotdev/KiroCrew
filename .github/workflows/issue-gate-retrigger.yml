@@ -1,0 +1,122 @@
+name: Issue Gate Retrigger
+
+# When triage gives an issue its verdict, re-run `Issue Gate` on every open PR
+# that declares that issue.
+#
+# WHY: `issue-gate.yml` runs only on pull_request events. A PR opened before
+# triage reached its issue goes red ("still carries `needs-triage`") and stays
+# red after the verdict lands, because a label on the ISSUE is not an event on
+# the PR. Before this file the only ways out were a no-op edit of the PR body
+# (which also re-fires every `edited`-triggered lane) or a maintainer waiver.
+#
+# WHAT IT COSTS: the job-level `if:` drops every label event that is not one of
+# the three verdict labels before a runner starts, so ordinary labelling costs
+# nothing. A verdict event costs one GraphQL read, then one runs read and at most
+# one re-run per open PR that cross-references the issue -- usually none or one.
+# MAX_PRS caps it, since anyone can mention an issue from a PR body.
+#
+# WHAT IT RE-RUNS: only the failed jobs of the Issue Gate run for the PR's
+# CURRENT head (`gh run rerun --failed`), never a whole run and never a body
+# edit. The gate reads the body and the issue labels from the API at run time,
+# so the re-run judges today's state; its completion reaches `PR Readiness`
+# through the existing `workflow_run` trigger. A PR whose gate is green, still
+# running, or has no run for its head is left alone. Re-running a PR that
+# merely MENTIONS the issue is harmless: the gate judges it the same way.
+#
+# Nothing here checks out or executes repository code, and no event text other
+# than the issue number reaches the script.
+
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  actions: write # re-run the Issue Gate job
+  issues: read # the issue's cross-reference timeline
+  pull-requests: read # the referencing PRs' state and head
+
+concurrency:
+  group: issue-gate-retrigger-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  retrigger:
+    name: Re-run Issue Gate
+    # Keep in step with TRIAGE_VERDICT_LABELS in issue-gate.yml.
+    if: contains(fromJSON('["auto-fixable", "needs-investigation", "needs-human"]'), github.event.label.name)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Re-run Issue Gate on open PRs that declare this issue
+        id: retrigger
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          ISSUE: ${{ github.event.issue.number }}
+          MAX_PRS: "20"
+        run: |
+          set -uo pipefail
+
+          owner="${REPO%%/*}"
+          name="${REPO#*/}"
+
+          # Open PRs of THIS repository that cross-reference the issue, one per
+          # line as "<number> <head sha>".
+          if ! prs="$(gh api graphql \
+            -f query='query($owner: String!, $name: String!, $n: Int!) {
+              repository(owner: $owner, name: $name) {
+                issue(number: $n) {
+                  timelineItems(itemTypes: [CROSS_REFERENCED_EVENT], last: 100) {
+                    nodes { ... on CrossReferencedEvent { source { ... on PullRequest {
+                      number state headRefOid repository { nameWithOwner }
+                    } } } }
+                  }
+                }
+              }
+            }' \
+            -F owner="$owner" -F name="$name" -F n="$ISSUE" \
+            --jq '.data.repository.issue.timelineItems.nodes[].source
+                  | select(.number != null and .state == "OPEN" and .repository.nameWithOwner == env.REPO)
+                  | "\(.number) \(.headRefOid)"')"; then
+            echo "::error::Could not read the PRs that reference #$ISSUE."
+            exit 1
+          fi
+          prs="$(printf '%s\n' "$prs" | sed '/^$/d' | sort -u)"
+
+          if [ -z "$prs" ]; then
+            echo "No open PR references #$ISSUE; nothing to re-run."
+            exit 0
+          fi
+
+          count="$(printf '%s\n' "$prs" | wc -l | tr -d ' ')"
+          if [ "$count" -gt "$MAX_PRS" ]; then
+            echo "::warning::$count open PRs reference #$ISSUE; re-running only the first $MAX_PRS."
+            prs="$(printf '%s\n' "$prs" | head -n "$MAX_PRS")"
+          fi
+
+          failed=0
+          while read -r pr sha; do
+            if ! run="$(gh api "repos/$REPO/actions/workflows/issue-gate.yml/runs?head_sha=$sha&event=pull_request&per_page=1" \
+              --jq '.workflow_runs[0] // empty | "\(.id) \(.status) \(.conclusion)"')"; then
+              echo "::warning::PR #$pr: could not read its Issue Gate runs."
+              failed=1
+              continue
+            fi
+            if [ -z "$run" ]; then
+              echo "PR #$pr: no Issue Gate run for head $sha; left alone."
+              continue
+            fi
+            read -r run_id status conclusion <<< "$run"
+            if [ "$status" != "completed" ] || [ "$conclusion" != "failure" ]; then
+              echo "PR #$pr: Issue Gate run $run_id is $status/$conclusion; left alone."
+              continue
+            fi
+            if gh run rerun "$run_id" --failed -R "$REPO"; then
+              echo "PR #$pr: re-ran Issue Gate run $run_id."
+            else
+              echo "::warning::PR #$pr: re-running Issue Gate run $run_id failed."
+              failed=1
+            fi
+          done <<< "$prs"
+
+          exit "$failed"

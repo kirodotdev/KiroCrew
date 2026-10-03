@@ -92,8 +92,8 @@ name: Issue Gate
 #
 # `edited` and `labeled` are in the trigger list so adding `Closes #N` to the
 # description, or the waiver label, turns this check green WITHOUT a no-op
-# push; once triage reaches the issue, any body edit re-runs the check too,
-# which matters for a fork author who cannot re-run jobs. The body is read from
+# push; once triage reaches the issue, `issue-gate-retrigger.yml` re-runs the
+# failed job by itself, and any body edit re-runs the check too. The body is read from
 # the API at run time, not from the event payload, so an edit is always judged
 # on the current text.
 #
@@ -349,8 +349,8 @@ jobs:
               echo "as not planned, and already carry a triage verdict label. If triage has not"
               echo "reached the issue yet, wait for it: triage is expected within 24h, and longer"
               echo "is a defect in the triage pipeline to report. Once the verdict label lands,"
-              echo "any edit to this PR's description re-runs the check (no push, no re-run"
-              echo "button needed -- this is how a fork author goes green). A maintainer may"
+              echo "\`issue-gate-retrigger.yml\` re-runs this check by itself (no push, no edit,"
+              echo "no re-run button needed). Editing the description also re-runs it. A maintainer may"
               echo "apply the \`issue-gate: waived\` label for a production fire or a release PR."
             } >> "$GITHUB_STEP_SUMMARY"
             exit 1

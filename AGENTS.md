@@ -241,6 +241,13 @@ verbatim and fill in the `**Goal:**` line. PR Hygiene fails a body missing the
 required sections; check it before opening with
 `out="$(mktemp)"; PR_BODY="$(cat <file>)" GITHUB_OUTPUT="$out" bash .github/scripts/pr-description-check.sh; cat "$out"`.
 
+### Issue first
+
+Every PR must trace to an issue (the `Issue Gate` lane). Open the issue before
+the PR, then put `Closes #N` (or `Part of #N` for partial work) on a line of its
+own in the PR description. You do not have to wait for triage: the gate re-runs
+by itself once the issue gets its verdict label.
+
 ### PR goal is frozen
 
 The `**Goal:**` line, `## Why it matters` and `## Not a goal` are written once,
