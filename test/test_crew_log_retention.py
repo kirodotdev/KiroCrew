@@ -22,6 +22,7 @@ from pathlib import Path
 
 import pytest
 from crew_log_type_helpers import minimal_data
+from off_loop_helpers import off_loop
 
 from kiro_crew import crew_log as lg
 from kiro_crew.crew_log import CrewLog, store
@@ -1182,7 +1183,12 @@ async def test_a_destroyed_sessions_log_is_then_collectable_by_the_sweep(monkeyp
         # entry has landed the lease is already free and the ordinary sweep can
         # claim it. That is the same release the delete funnel's flush waits for,
         # observed from the other caller.
-        assert store.sweep_expired(30) == (1, 0)
+        #
+        # Off the loop, as ``history`` calls it. Landing the close also wakes the eager
+        # folder, which reads this unit on its own thread; the removal waits for that
+        # batch only off the event-loop thread, and on Windows an unlink of the segment
+        # the fold holds open is refused and the unit reported not removed.
+        assert off_loop(store.sweep_expired, 30) == (1, 0)
         assert not CrewLog.exists(lg.KIND_SESSION, "acp-aged")
     finally:
         emit.reset_caches()
@@ -1387,7 +1393,7 @@ async def test_a_destroy_that_leaves_another_mapping_writes_a_NON_terminal_reaso
 
         assert _newest_close_reason("acp-shared") == "destroyed_sid_retained"
         _age_close_entry("acp-shared", days=400)
-        assert store.sweep_expired(30) == (0, 0)
+        assert off_loop(store.sweep_expired, 30) == (0, 0)
         assert CrewLog.exists(lg.KIND_SESSION, "acp-shared")
     finally:
         emit.reset_caches()
@@ -1453,7 +1459,7 @@ async def test_a_session_opened_after_a_destroy_makes_the_unit_uncollectable_aga
         assert emit.flush(timeout=5.0)
         emit.reset_caches()
 
-        assert store.sweep_expired(30) == (0, 0)
+        assert off_loop(store.sweep_expired, 30) == (0, 0)
         assert CrewLog.exists(lg.KIND_SESSION, "acp-revived")
     finally:
         emit.reset_caches()
