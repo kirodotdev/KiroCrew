@@ -19,6 +19,7 @@ tiers depend on the reader, never the reverse.
 from __future__ import annotations
 
 import bisect
+import functools
 import os
 import re
 import shlex
@@ -122,23 +123,25 @@ def _substitution_program(token: str) -> str:
     return token.rsplit(None, 1)[-1] if token.split() else token
 
 
-def _program_basename(token: str) -> str:
-    """The program name a token invokes, with shell wrappers stripped.
+#: Longest token the memoized peel will CACHE. A program word is short in every
+#: real command; a very long token is almost always adversarial padding or
+#: pasted data, and caching it would let one call pin an unbounded number of
+#: bytes in the LRU for the process's life (the ``maxsize`` bounds the ENTRY
+#: COUNT, not their size; GPT 5.6 security-class). A token past this length is
+#: peeled uncached — correctness is unchanged, only the retention is bounded.
+_PROGRAM_BASENAME_CACHE_MAX_LEN = 256
 
-    Strips quoting, command-substitution wrappers and any attached redirection
-    before taking the basename, so an expansion-produced program name
-    (``$(which pkill)``, ``"$(command -v bash)"``) or a redirect-glued one
-    (``kirocrew>/tmp/out``) is compared as the program it resolves to rather than as
-    literal punctuation.  Every program check goes through this -- comparing a raw
-    ``os.path.basename`` lets ``$(which pkill) -f <name>`` past the kill rule.
 
-    The layers are peeled to a FIXED POINT rather than once in a fixed order.
-    A wrapper and a redirect interleave freely, and any single ordering leaves a
-    hole for the interleavings it does not match: ``$(which kirocrew)>/tmp/out`` needs
-    the redirect gone before its closing paren reaches the end of the word, while
-    ``kirocrew)`` needs the paren gone with no redirect in play at all.  Looping until
-    nothing changes makes the peel order-independent, which closes the class
-    instead of whichever spelling a fixed order happened to cover.
+@functools.lru_cache(maxsize=4096)
+def _program_basename_cached(token: str) -> str:
+    """Memoized core of :func:`_program_basename` — see it for the contract.
+
+    Pure in its argument (reads only module-level patterns/constants, mutates
+    nothing), so it is safe to memoize. Only SHORT tokens reach here: the public
+    wrapper peels a long token uncached, so no single call can pin unbounded bytes
+    in the cache (GPT 5.6 security-class). The cache collapses an adversarial
+    command that repeats one short token to one peel each, keeping the floor
+    near-linear in distinct tokens.
     """
     if not token:
         return ""
@@ -169,6 +172,36 @@ def _program_basename(token: str) -> str:
     if segments:
         token = segments[-1]
     return os.path.basename(token.rstrip("/"))
+
+
+def _program_basename(token: str) -> str:
+    """The program name a token invokes, with shell wrappers stripped.
+
+    Strips quoting, command-substitution wrappers and any attached redirection
+    before taking the basename, so an expansion-produced program name
+    (``$(which pkill)``, ``"$(command -v bash)"``) or a redirect-glued one
+    (``kirocrew>/tmp/out``) is compared as the program it resolves to rather than
+    as literal punctuation.  Every program check goes through this -- comparing a
+    raw ``os.path.basename`` lets ``$(which pkill) -f <name>`` past the kill rule.
+
+    The layers are peeled to a FIXED POINT rather than once in a fixed order.  A
+    wrapper and a redirect interleave freely, and any single ordering leaves a
+    hole for the interleavings it does not match: ``$(which kirocrew)>/tmp/out``
+    needs the redirect gone before its closing paren reaches the end of the word,
+    while ``kirocrew)`` needs the paren gone with no redirect in play at all.
+    Looping until nothing changes makes the peel order-independent, which closes
+    the class instead of whichever spelling a fixed order happened to cover.
+
+    The result is MEMOIZED, but only for a token at or under
+    :data:`_PROGRAM_BASENAME_CACHE_MAX_LEN`: a program word is always short, and
+    caching a very long token (adversarial padding, pasted data) would pin
+    unbounded bytes in the LRU for the process's life, since ``maxsize`` bounds
+    the entry COUNT not their size (GPT 5.6 security-class). A long token is
+    peeled directly, uncached — same answer, bounded retention.
+    """
+    if len(token) <= _PROGRAM_BASENAME_CACHE_MAX_LEN:
+        return _program_basename_cached(token)
+    return _program_basename_cached.__wrapped__(token)
 
 
 def _glob_could_expand_to(base: str, names: "tuple[str, ...] | frozenset[str]") -> bool:
@@ -3574,8 +3607,13 @@ _SHELL_ASSIGN_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)(\+?)=(.*)$", re.DOTALL
 # vanish (e.g. g""it -> git, ca''t -> cat).
 _EMPTY_QUOTE_RE = re.compile(r'""|\'\'')
 
-# Regex for $HOME or ${HOME} variable expansion.
-_HOME_VAR_RE = re.compile(r"\$\{HOME\}|\$HOME", re.IGNORECASE)
+# Regex for $HOME or ${HOME} variable expansion. The bare ``$HOME`` form
+# requires a variable-name boundary after ``HOME`` (a following ``[A-Za-z0-9_]``
+# would make it a DIFFERENT variable), so ``$HOME_BACKUP`` is not mis-expanded to
+# the home path plus ``_BACKUP`` — which otherwise makes an unrelated variable
+# look like a home-directory target (issue review finding). ``${HOME}`` is
+# already delimited by its braces.
+_HOME_VAR_RE = re.compile(r"\$\{HOME\}|\$HOME(?![A-Za-z0-9_])", re.IGNORECASE)
 
 # ANSI-C (``$'…'``) and locale (``$"…"``) quoting.  Both are QUOTING forms whose
 # value the shell computes before the program sees it, so they are resolved as part

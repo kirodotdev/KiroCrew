@@ -189,7 +189,7 @@ class TestEveryOtherStringStillReachesTheScan:
         approved, provider, rows = await _resolve(ev)
         assert approved is False
         assert provider.rejected == ["r1"]
-        assert "rm -rf" in _error(rows)
+        assert "recursively force-deletes" in _error(rows)
         assert rows[0]["metadata"]["mechanism"] == "always_deny_input"
 
     @pytest.mark.asyncio
@@ -199,7 +199,7 @@ class TestEveryOtherStringStillReachesTheScan:
         ev = _event(params, kind="execute", title="Bash", is_shell=True, tool_name="execute_bash")
         approved, _p, rows = await _resolve(ev)
         assert approved is False
-        assert "rm -rf" in _error(rows)
+        assert "recursively force-deletes" in _error(rows)
 
     @pytest.mark.asyncio
     async def test_a_command_field_on_a_non_shell_tool_is_still_scanned(self) -> None:
@@ -208,7 +208,7 @@ class TestEveryOtherStringStillReachesTheScan:
         params = {"command": _QUOTED_COMMAND, "path": "/tmp/proj/a.md", "content": "ok\n"}
         approved, _p, rows = await _resolve(_event(params))
         assert approved is False
-        assert "rm -rf" in _error(rows)
+        assert "recursively force-deletes" in _error(rows)
 
     @pytest.mark.asyncio
     async def test_a_credential_path_field_on_a_non_shell_tool_is_still_denied(self) -> None:
@@ -257,7 +257,7 @@ class TestUnknownProvenanceKeepsTheFullScan:
         approved, provider, rows = await _resolve(ev)
         assert approved is False
         assert provider.rejected == ["r1"]
-        assert "rm -rf" in _error(rows)
+        assert "recursively force-deletes" in _error(rows)
 
     @pytest.mark.asyncio
     async def test_unresolved_identity_keeps_the_document_scan(self) -> None:
@@ -266,7 +266,7 @@ class TestUnknownProvenanceKeepsTheFullScan:
         params = {"path": "/tmp/proj/a.md", "content": _PROSE}
         approved, _p, rows = await _resolve(_event(params, identity=False))
         assert approved is False
-        assert "rm -rf" in _error(rows)
+        assert "recursively force-deletes" in _error(rows)
 
     @pytest.mark.asyncio
     async def test_inline_params_without_cache_provenance_keep_the_document_scan(self) -> None:
@@ -275,7 +275,7 @@ class TestUnknownProvenanceKeepsTheFullScan:
         ev.raw_params_trusted = False
         approved, _p, rows = await _resolve(ev)
         assert approved is False
-        assert "rm -rf" in _error(rows)
+        assert "recursively force-deletes" in _error(rows)
 
     @pytest.mark.asyncio
     async def test_unclassified_shell_state_keeps_the_document_scan(self) -> None:
@@ -284,7 +284,7 @@ class TestUnknownProvenanceKeepsTheFullScan:
         ev.shell_classified = False
         approved, _p, rows = await _resolve(ev)
         assert approved is False
-        assert "rm -rf" in _error(rows)
+        assert "recursively force-deletes" in _error(rows)
 
     @pytest.mark.asyncio
     async def test_no_params_keeps_the_document_scan(self) -> None:
@@ -292,7 +292,7 @@ class TestUnknownProvenanceKeepsTheFullScan:
         ev.tool_input = json.dumps({"content": _PROSE})
         approved, _p, rows = await _resolve(ev)
         assert approved is False
-        assert "rm -rf" in _error(rows)
+        assert "recursively force-deletes" in _error(rows)
 
 
 class TestCommandShapedStringsUnit:
