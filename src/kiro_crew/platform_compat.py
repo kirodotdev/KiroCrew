@@ -37,7 +37,7 @@ import types
 from asyncio import subprocess as aio_subprocess
 from ctypes import wintypes  # type aliases only; imports cleanly on every platform
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Mapping, NamedTuple, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Coroutine, Mapping, NamedTuple, Optional, Sequence
 
 # Loaded with this module, so each owner is complete before the forwarding at the end of
 # this file is installed and before any reader can reach it (see ``_owner``).
@@ -6786,10 +6786,9 @@ async def kill_and_reap(proc: asyncio.subprocess.Process, *, timeout: float | No
     and the reap are best-effort, since the caller is already handling a
     timeout or a cancellation and must not have it masked by a cleanup error.
 
-    The whole sequence runs in a shielded inner task: a (repeat) cancellation
-    of the caller landing mid-cleanup must not abandon the kill or leave the
-    child un-reaped — the cancellation is absorbed until cleanup finishes and
-    then re-delivered once.
+    The whole sequence runs in a shielded inner task (see
+    :func:`_run_cleanup_shielded`). A child whose own TERM handling matters
+    uses :func:`terminate_and_reap` instead.
     """
 
     async def _cleanup() -> None:
@@ -6809,7 +6808,17 @@ async def kill_and_reap(proc: asyncio.subprocess.Process, *, timeout: float | No
                 timeout=REAP_TIMEOUT_SECS if timeout is None else timeout,
             )
 
-    cleanup = asyncio.ensure_future(_cleanup())
+    await _run_cleanup_shielded(_cleanup())
+
+
+async def _run_cleanup_shielded(coro: Coroutine[Any, Any, None]) -> None:
+    """Run a kill-and-reap *coro* to completion even if the caller is cancelled.
+
+    A (repeat) cancellation of the caller landing mid-cleanup must not abandon
+    the kill or leave the child un-reaped: the cancellation is absorbed until
+    the cleanup finishes and then re-delivered once.
+    """
+    cleanup = asyncio.ensure_future(coro)
     cancelled = False
     while True:
         try:
@@ -6824,6 +6833,150 @@ async def kill_and_reap(proc: asyncio.subprocess.Process, *, timeout: float | No
                 break
     if cancelled:
         raise asyncio.CancelledError
+
+
+def _isolated_group_of_live_child(pid: int, *, reaped: bool) -> int | None:
+    """The process group a child leads, or ``None`` when it cannot be signalled safely.
+
+    Read only while the caller still holds the child un-reaped (*reaped* is
+    False), so its pid cannot have been handed to another process yet, and
+    kept only for an isolated leader (``pgid == pid``, which is what
+    ``start_new_session=True`` makes it; a child is never init or the leader
+    of our own group, so that also rules both out).
+    """
+    if not IS_POSIX or type(pid) is not int or reaped:
+        return None
+    try:
+        pgid = pgroup_of(pid)
+    except (OverflowError, ValueError):
+        return None
+    return pgid if pgid == pid else None
+
+
+async def _discard_output_until_exit(proc: asyncio.subprocess.Process) -> None:
+    """Drain *proc*'s pipes to EOF, keeping nothing, then wait for it.
+
+    ``communicate()`` would buffer everything a still-running child writes in
+    this process's memory; a stopping installer can be chatty.
+    """
+
+    async def _discard(stream: asyncio.StreamReader | None) -> None:
+        if stream is None:
+            return
+        while await stream.read(65536):
+            pass
+
+    await asyncio.gather(_discard(proc.stdout), _discard(proc.stderr))
+    await proc.wait()
+
+
+async def terminate_and_reap(
+    proc: asyncio.subprocess.Process, *, grace: float, reap_timeout: float | None = None
+) -> None:
+    """Stop *proc*'s process group gracefully: SIGTERM, up to *grace*, then SIGKILL.
+
+    For a child whose own cleanup matters: an installer that moved the install
+    aside before rebuilding it restores it from a TERM trap, and the SIGKILL
+    :func:`kill_and_reap` sends first skips that trap and strands the install.
+
+    POSIX, for a live child that leads its own group (see
+    :func:`_isolated_group_of_live_child`): the group gets SIGTERM, its pipes
+    are drained (and discarded), and the GROUP is waited on until it empties or
+    *grace* runs out. Pipe EOF alone is not the end of the trap: a member that
+    holds neither pipe (``cmd >log 2>&1``, ``cmd | tee``) can still be rolling
+    back. Whatever is left then gets SIGKILL, addressed to the group id read
+    at the start, which cannot name another group while any member of this
+    one is alive. The leader is then reaped without resolving anything from
+    its pid again, bounded by *reap_timeout* (default
+    :data:`REAP_TIMEOUT_SECS`). A descendant that ``setsid()``-ed into a session
+    of its own is outside the group and is not signalled; the trap of the
+    process that started it is what stops it.
+
+    Otherwise (Windows, a child already reaped, or one that does not lead its
+    own group) this is :func:`kill_and_reap`. Shielded like it: a cancellation
+    of the caller is re-delivered after the stop has finished.
+    """
+    reap = REAP_TIMEOUT_SECS if reap_timeout is None else reap_timeout
+
+    async def _cleanup() -> None:
+        pgid = _isolated_group_of_live_child(proc.pid, reaped=proc.returncode is not None)
+        if pgid is None:
+            await kill_and_reap(proc, timeout=reap)
+            return
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + grace
+        with contextlib.suppress(Exception):
+            kill_process_group(pgid, SIGTERM)
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(_discard_output_until_exit(proc), timeout=grace)
+        while pgroup_exists(pgid) and loop.time() < deadline:
+            await asyncio.sleep(0.05)
+        if pgroup_exists(pgid):
+            with contextlib.suppress(Exception):
+                kill_process_group(pgid, SIGKILL)
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(_discard_output_until_exit(proc), timeout=reap)
+
+    await _run_cleanup_shielded(_cleanup())
+
+
+def terminate_and_reap_sync(
+    proc: subprocess.Popen, *, grace: float, reap_timeout: float | None = None
+) -> None:
+    """Blocking sibling of :func:`terminate_and_reap`, for a ``Popen`` child.
+
+    Same policy: on POSIX, for a live child that leads its own group
+    (``start_new_session=True``), SIGTERM the group, wait for the GROUP to
+    empty for up to *grace* seconds, SIGKILL whatever is left (the leader by
+    pid too, should the group signal be refused), then reap the leader within
+    *reap_timeout* (default :data:`REAP_TIMEOUT_SECS`). For a child with PIPE
+    stdio use the async helper, which drains them; this one is for a child
+    writing to the caller's own terminal. Otherwise (Windows, a child already
+    reaped, or one that does not lead its own group) it is killed outright the
+    way :func:`kill_and_reap` kills: its tree, unless it shares our group.
+
+    A Ctrl-C landing mid-stop does not abandon it: KeyboardInterrupt is held
+    until the stop has finished, then re-raised once.
+    """
+    reap = REAP_TIMEOUT_SECS if reap_timeout is None else reap_timeout
+    interrupted = False
+
+    def _wait(seconds: float) -> None:
+        nonlocal interrupted
+        deadline = time.monotonic() + seconds
+        while True:
+            try:
+                proc.wait(timeout=max(0.0, deadline - time.monotonic()))
+                return
+            except subprocess.TimeoutExpired:
+                return
+            except KeyboardInterrupt:
+                interrupted = True
+
+    pgid = _isolated_group_of_live_child(proc.pid, reaped=proc.poll() is not None)
+    if pgid is not None:
+        deadline = time.monotonic() + grace
+        with contextlib.suppress(Exception):
+            kill_process_group(pgid, SIGTERM)
+        _wait(grace)
+        while pgroup_exists(pgid) and time.monotonic() < deadline:
+            try:
+                time.sleep(0.05)
+            except KeyboardInterrupt:
+                interrupted = True
+        if pgroup_exists(pgid):
+            with contextlib.suppress(Exception):
+                kill_process_group(pgid, SIGKILL)
+    else:
+        if type(proc.pid) is int and not _shares_own_process_group(proc.pid):
+            with contextlib.suppress(Exception):
+                kill_process_tree(proc.pid, SIGKILL)
+    if proc.poll() is None:
+        with contextlib.suppress(Exception):
+            proc.kill()
+    _wait(reap)
+    if interrupted:
+        raise KeyboardInterrupt
 
 
 async def descendant_termination_handles_async(

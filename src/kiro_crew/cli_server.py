@@ -2421,23 +2421,37 @@ def _update_wheel(layout) -> None:
 
     # After the Windows refusal, so a host that cannot self-update never spends a copy.
     _snapshot_memory_or_exit()
+    # The installer moves the venv aside and restores it from its TERM trap,
+    # so it is never killed outright: it runs in its own session (one group to
+    # signal, not ours) and a timeout or Ctrl-C stops it with SIGTERM and a
+    # rollback grace before anything is SIGKILLed.
+    from kiro_crew.platform.update_provider import INSTALLER_TIMEOUT_TERM_GRACE_SECS
+
+    proc: subprocess.Popen | None = None
     try:
-        result = subprocess.run(
-            ["sh", "-c", cmd],
-            timeout=300,
-        )
+        proc = subprocess.Popen(["sh", "-c", cmd], start_new_session=True)
+        returncode = proc.wait(timeout=300)
     except FileNotFoundError:
         print("  ❌ 'sh' not found — cannot run the installer.")
         print("  To update manually, run:")
         print(f"    {cmd}")
         sys.exit(1)
     except subprocess.TimeoutExpired:
+        if proc is not None:
+            platform_compat.terminate_and_reap_sync(proc, grace=INSTALLER_TIMEOUT_TERM_GRACE_SECS)
         print("\n  ❌ Installer timed out (5 min)")
         print("  Try running manually:")
         print(f"    {cmd}")
         sys.exit(1)
-    if result.returncode != 0:
-        print(f"\n  ❌ Installer exited with code {result.returncode}")
+    except KeyboardInterrupt:
+        # The installer is outside the terminal's foreground group now, so
+        # Ctrl-C reaches only this process; pass the stop on gracefully.
+        if proc is not None:
+            print("\n  Stopping the installer (it restores the previous install)…")
+            platform_compat.terminate_and_reap_sync(proc, grace=INSTALLER_TIMEOUT_TERM_GRACE_SECS)
+        sys.exit(130)
+    if returncode != 0:
+        print(f"\n  ❌ Installer exited with code {returncode}")
         print("  Try running manually:")
         print(f"    {cmd}")
         sys.exit(1)

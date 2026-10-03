@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -403,10 +404,52 @@ async def test_update_admission_pause_blocks_and_resumes_turns(cfg):
     with pytest.raises(SessionClosingError):
         await mgr.get_or_create("s-new")
 
-    await mgr.resume_turn_admission_after_update()
+    assert await mgr.resume_turn_admission_after_update() is True
     assert mgr.admission_closed is False
     assert mgr.update_restart_fenced is False
     assert mgr.begin_turn("s1") is None
+
+
+@pytest.mark.asyncio
+async def test_update_pause_is_refused_once_a_stop_is_signalled(cfg, monkeypatch):
+    # Checked under the admission lock, so a stop that lands while the pause
+    # waits for that lock still refuses: no installer starts into a shutdown.
+    stopping = {"set": False}
+    monkeypatch.setattr(
+        session_mod, "shutdown_event", SimpleNamespace(is_set=lambda: stopping["set"])
+    )
+    mgr = SessionManager(cfg, provider_factory=lambda **k: _FakeProvider())
+
+    async with mgr._lock:
+        pause = asyncio.create_task(mgr.pause_turn_admission_for_update())
+        await asyncio.sleep(0)
+        stopping["set"] = True
+
+    assert await asyncio.wait_for(pause, timeout=5) is False
+    assert mgr.admission_closed is False
+
+
+@pytest.mark.asyncio
+async def test_update_pause_is_kept_once_a_stop_is_signalled(cfg, monkeypatch):
+    # The shutdown stops the update first, so the resume runs at its start.
+    # Reopening admission there would admit turns the teardown then cancels
+    # with no spool entry; the stop lands while the resume waits for the lock.
+    stopping = {"set": False}
+    monkeypatch.setattr(
+        session_mod, "shutdown_event", SimpleNamespace(is_set=lambda: stopping["set"])
+    )
+    mgr = SessionManager(cfg, provider_factory=lambda **k: _FakeProvider())
+    assert await mgr.pause_turn_admission_for_update() is True
+
+    async with mgr._lock:
+        resume = asyncio.create_task(mgr.resume_turn_admission_after_update())
+        await asyncio.sleep(0)
+        stopping["set"] = True
+    assert await asyncio.wait_for(resume, timeout=5) is False
+
+    assert mgr.admission_closed is True
+    with pytest.raises(SessionClosingError):
+        mgr.begin_turn("s1")
 
 
 @pytest.mark.asyncio

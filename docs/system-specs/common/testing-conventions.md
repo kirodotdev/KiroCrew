@@ -192,7 +192,8 @@ process table the lookup raises and the suppressed exception swallows the whole
 path, so the crash needs the full shard. The surface is every kill helper on
 `platform_compat`, not only the tree kill: `kill_pid`, `kill_pid_pinned`,
 `kill_pid_async`, `kill_process_group`, `kill_process_tree`,
-`kill_process_tree_pinned`, `kill_process_tree_async` and `kill_and_reap`. Pick
+`kill_process_tree_pinned`, `kill_process_tree_async`, `kill_and_reap`,
+`terminate_and_reap` and `terminate_and_reap_sync`. Pick
 one of the two spellings
 already in the tree rather than inventing a third: give the mock a pid above
 every supported platform's `pid_max`

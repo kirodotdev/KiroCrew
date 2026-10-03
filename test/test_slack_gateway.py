@@ -8744,6 +8744,39 @@ class TestCallbackSafeUpdateRestart:
         assert order == ["drain:30.0", "fence", "close", "drain:None", "exec"]
         assert orch._pending_update_respawn is None
 
+    @pytest.mark.asyncio
+    async def test_a_stop_signalled_during_the_restart_is_not_swallowed(
+        self, monkeypatch, tmp_path
+    ):
+        # The installer finished before the stop reached ``_shutdown``. Exec'ing
+        # now would bring the gateway straight back up on the new version.
+        stopping = {"set": False}
+        monkeypatch.setattr(gw, "shutdown_event", SimpleNamespace(is_set=lambda: stopping["set"]))
+        orch = _make_orchestrator()
+        orch.dashboard_state = None
+        orch.sessions = SimpleNamespace(
+            inbound_callback_count=0,
+            fence_update_restart=MagicMock(return_value=True),
+            close_all=AsyncMock(),
+        )
+
+        async def drain(*, timeout):
+            if timeout is None:
+                stopping["set"] = True
+            return True
+
+        orch._drain_update_callback_work = AsyncMock(side_effect=drain)
+        monkeypatch.setattr(gw, "flush_breadcrumb_writes", lambda _timeout: None)
+        reexec = MagicMock()
+        monkeypatch.setattr(gw.platform_compat, "reexec_python_module", reexec)
+        interpreter = tmp_path / "python.exe"
+        interpreter.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        gw.platform_compat.chmod_safe(interpreter, 0o700)
+
+        await orch._restart_after_update(lambda: str(interpreter))
+
+        reexec.assert_not_called()
+
 
 class TestUnreadyChannelBadge:
     """An ENABLED channel that cannot start owes the operator a reason.

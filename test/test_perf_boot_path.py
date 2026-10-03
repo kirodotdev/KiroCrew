@@ -104,7 +104,8 @@ class TestGatewayUpdateCheckIsBackgrounded:
             "garbage-collected mid-flight"
         )
         shutdown_src = inspect.getsource(GatewayOrchestrator._shutdown)
-        assert "self._update_check_task.cancel()" in shutdown_src
+        assert "update_task = self._update_check_task" in shutdown_src
+        assert "update_task.cancel()" in shutdown_src
         assert "_cancel_update_check()" in shutdown_src
 
 

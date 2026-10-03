@@ -29,6 +29,10 @@ from dataclasses import field as dataclass_field
 from typing import Protocol, runtime_checkable
 
 from kiro_crew import platform_compat
+from kiro_crew.gateway_shutdown_budget import (
+    UPDATE_INSTALLER_KILL_REAP_SECS,
+    UPDATE_INSTALLER_TERM_GRACE_SECS,
+)
 from kiro_crew.platform_compat import (
     IS_POSIX,
     trusted_system_bin,
@@ -95,6 +99,32 @@ async def _kill_and_reap(proc: asyncio.subprocess.Process) -> None:
 #: Mirrors the shared default so the updater's bound stays independently
 #: patchable without touching every other reap site.
 _REAP_TIMEOUT_SECS = 10
+
+
+#: How long an installer stopped by its route's TIMEOUT (not by shutdown) gets
+#: to roll back after SIGTERM. No shutdown cap applies there, and the rollback
+#: deletes the half-built tree before moving the old one back, which is slow on
+#: a network home directory; the shutdown arm keeps the shorter
+#: ``UPDATE_INSTALLER_TERM_GRACE_SECS``.
+INSTALLER_TIMEOUT_TERM_GRACE_SECS = 60.0
+
+
+async def _stop_installer(
+    proc: asyncio.subprocess.Process, *, grace: float = UPDATE_INSTALLER_TERM_GRACE_SECS
+) -> None:
+    """Stop an in-flight update installer so its own rollback can run.
+
+    An installer that replaces the install in place moves the old tree aside
+    first and restores it from a TERM trap if it is interrupted. SIGKILL skips
+    that trap and leaves no install at all, so the group gets SIGTERM and
+    *grace* seconds to finish, then SIGKILL. The cancellation (shutdown) arm of
+    every apply route uses the default; the timeout arm passes
+    :data:`INSTALLER_TIMEOUT_TERM_GRACE_SECS`. The check command keeps
+    :func:`_kill_and_reap`, since it changes nothing.
+    """
+    await platform_compat.terminate_and_reap(
+        proc, grace=grace, reap_timeout=UPDATE_INSTALLER_KILL_REAP_SECS
+    )
 
 
 @dataclass(frozen=True)
@@ -445,12 +475,12 @@ class CommandProvider:
             _stdout, stderr = await _read_bounded_output(proc, timeout=600, want_stdout=False)
         except asyncio.CancelledError:
             if proc is not None:
-                await _kill_and_reap(proc)
-            logger.warning("CommandProvider.apply: cancelled — update child killed")
+                await _stop_installer(proc)
+            logger.warning("CommandProvider.apply: cancelled — update child stopped")
             raise
         except asyncio.TimeoutError:
             if proc is not None:
-                await _kill_and_reap(proc)
+                await _stop_installer(proc, grace=INSTALLER_TIMEOUT_TERM_GRACE_SECS)
             logger.error("CommandProvider.apply: timed out (10 min)")
             return False
         except OSError:
