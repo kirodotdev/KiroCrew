@@ -2752,6 +2752,14 @@
         "fast_path": "Fast path",
         "fix_label": "Fix: {{fix}}",
         "hypothesis_agent_must_confirm_first": "hypothesis — agent must confirm first",
+        "incidentio_error_cut_short": "The roster read stopped at this app's own limit before incident.io finished, so no shifts are shown. It retries in a minute.",
+        "incidentio_error_key_refused": "incident.io refused the API key (HTTP {{status}}). Check the incident.io key in Settings.",
+        "incidentio_error_no_schedule_ids": "An incident.io user ID is set but schedule_ids is empty, so this instance counts as off shift on every check. Add the schedules you are on to schedule_ids in Settings.",
+        "incidentio_error_unreachable": "incident.io returned an error (HTTP {{status}}). It retries automatically.",
+        "incidentio_error_unreachable_no_status": "incident.io did not answer. It retries automatically.",
+        "incidentio_not_on_roster": "You have no shifts on the configured incident.io schedules in the next two weeks. If you expected one, check schedule_ids and your incident.io user ID in Settings.",
+        "incidentio_roster_partial": "Only the soonest shifts are listed; the rest were left out.",
+        "incidentio_roster_window": "incident.io · shifts over the next two weeks",
         "is_no_longer_in_the_ledger": "is no longer in the\n                                    ledger.",
         "knowledge_ledger": "Knowledge ledger",
         "known_patterns": "Known patterns",
@@ -2849,7 +2857,8 @@
         "waiting_awaiting_approval": "Approve to continue",
         "waiting_awaiting_diagnosis": "Stopped, no diagnosis",
         "waiting_awaiting_input": "Waiting on you",
-        "waiting_on_you": "Waiting on you"
+        "waiting_on_you": "Waiting on you",
+        "your_next_shift": "Your next shift: {{start}} – {{end}}"
       },
       "settingsPanel": {
         "a_pattern_is_required_there_is_no_wildcard_grant": "A pattern is required — there is no wildcard grant. Use * to match a prefix, e.g. prod-* covers every resource whose name starts with prod-.",
@@ -2973,7 +2982,8 @@
         "your_github_login": "Your GitHub login",
         "your_pagerduty_user_id": "Your PagerDuty user ID",
         "your_incident_io_user_id": "Your incident.io user ID",
-        "your_team_s_ledger_is_still_being_exchanged_sync": "Your team's ledger is still being exchanged — sync names"
+        "your_team_s_ledger_is_still_being_exchanged_sync": "Your team's ledger is still being exchanged — sync names",
+        "unknown_incidentio_user_refused": "incident.io has no user with that ID. Enter your incident.io user ID, not your name."
       },
       "signalsPanel": {
         "a_signal_that_is_absent_from_this_poll_can_be_re": "A signal that is absent from this poll can be read as recovered.",
