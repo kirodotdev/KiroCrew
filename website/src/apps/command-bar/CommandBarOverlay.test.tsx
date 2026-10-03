@@ -470,22 +470,24 @@ describe('CommandBarOverlay rows', () => {
     await waitFor(() => expect(sessionSearch.mock.calls.length).toBeGreaterThan(before))
   })
 
-  it('refuses a STALE Enter, so a fast typist never opens the wrong session', async () => {
+  const hit = (title: string, onActivate: () => void) => ({
+    id: `sessions:${title}`,
+    providerId: 'sessions',
+    title,
+    icon: null,
+    score: 1,
+    indices: [],
+    onActivate,
+  })
+
+  it('latches an Enter pressed in the debounce window and fires it on the live rows', async () => {
     // Every scoped view ranks from the DEBOUNCED query, so for one debounce interval
-    // after a keystroke its rows answer the previous query, and an Enter in that window
-    // acts on the row selected against it. Reported in the crewmates view; the guard is
-    // on the activation path all four views share, so each one pins it.
+    // after a keystroke its rows answer the previous query. An Enter in that window
+    // must never open the row selected against the OLD query, and must not be dropped:
+    // it is held and fired once the rows answer what the reader typed. Reported in the
+    // crewmates view; the latch is on the activation path all four views share.
     const openAlpha = vi.fn()
     const openBeta = vi.fn()
-    const hit = (title: string, onActivate: () => void) => ({
-      id: `sessions:${title}`,
-      providerId: 'sessions',
-      title,
-      icon: null,
-      score: 1,
-      indices: [],
-      onActivate,
-    })
     sessionSearch.mockResolvedValue([hit('Alpha planning', openAlpha)])
     mount()
     const input = screen.getByRole('combobox')
@@ -494,16 +496,221 @@ describe('CommandBarOverlay rows', () => {
     expect(await screen.findByText('Alpha planning')).toBeTruthy()
     sessionSearch.mockResolvedValue([hit('Beta review', openBeta)])
     fireEvent.change(input, { target: { value: 'beta' } })
-    // No debounce tick: the row on screen still answers `alpha`.
+    // No debounce tick yet: the row on screen still answers `alpha`.
     fireEvent.keyDown(input, { key: 'Enter' })
+    // The stale row is never opened, not even for the instant before the rows catch up.
     expect(openAlpha).not.toHaveBeenCalled()
-    // Once the rows catch up, the same Enter opens what was typed.
-    await waitFor(() => {
-      expect(screen.queryByText('Beta review')).not.toBeNull()
-      expect(screen.queryByText('Alpha planning')).toBeNull()
-    })
+    // Once the rows answer `beta`, the LATCHED Enter fires on its own — no second press.
+    await waitFor(() => expect(openBeta).toHaveBeenCalled())
+    expect(openAlpha).not.toHaveBeenCalled()
+  })
+
+  it('drops the latch on Escape rather than firing it late', async () => {
+    const openAlpha = vi.fn()
+    const openBeta = vi.fn()
+    sessionSearch.mockResolvedValue([hit('Alpha planning', openAlpha)])
+    mount()
+    const input = screen.getByRole('combobox')
+    fireEvent.mouseDown(rowByText('Search Sessions'))
+    fireEvent.change(input, { target: { value: 'alpha' } })
+    expect(await screen.findByText('Alpha planning')).toBeTruthy()
+    sessionSearch.mockResolvedValue([hit('Beta review', openBeta)])
+    fireEvent.change(input, { target: { value: 'beta' } })
     fireEvent.keyDown(input, { key: 'Enter' })
-    expect(openBeta).toHaveBeenCalled()
+    // Escape steps out of the scope and must take the pending Enter with it.
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
+    // Let the debounce and any refetch settle: a surviving latch would fire here.
+    await waitFor(() => expect(screen.queryByText('Alpha planning')).toBeNull())
+    expect(openBeta).not.toHaveBeenCalled()
+    expect(openAlpha).not.toHaveBeenCalled()
+  })
+
+  it('drops the latch when the reader leaves the scope', async () => {
+    const openAlpha = vi.fn()
+    const openBeta = vi.fn()
+    sessionSearch.mockResolvedValue([hit('Alpha planning', openAlpha)])
+    mount()
+    const input = screen.getByRole('combobox')
+    fireEvent.mouseDown(rowByText('Search Sessions'))
+    fireEvent.change(input, { target: { value: 'alpha' } })
+    expect(await screen.findByText('Alpha planning')).toBeTruthy()
+    sessionSearch.mockResolvedValue([hit('Beta review', openBeta)])
+    fireEvent.change(input, { target: { value: 'beta' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    // Empty the field, then Backspace leaves the scope — the latch must not survive it.
+    fireEvent.change(input, { target: { value: '' } })
+    fireEvent.keyDown(input, { key: 'Backspace' })
+    await waitFor(() => expect(screen.queryByText('Search Sessions')).not.toBeNull())
+    expect(openBeta).not.toHaveBeenCalled()
+    expect(openAlpha).not.toHaveBeenCalled()
+  })
+
+  it('drops the latch when the bar closes', async () => {
+    const openAlpha = vi.fn()
+    const openBeta = vi.fn()
+    sessionSearch.mockResolvedValue([hit('Alpha planning', openAlpha)])
+    const ctl = mountControllable()
+    const input = screen.getByRole('combobox')
+    fireEvent.mouseDown(rowByText('Search Sessions'))
+    fireEvent.change(input, { target: { value: 'alpha' } })
+    expect(await screen.findByText('Alpha planning')).toBeTruthy()
+    sessionSearch.mockResolvedValue([hit('Beta review', openBeta)])
+    fireEvent.change(input, { target: { value: 'beta' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    // The bar closes under the pending Enter — reopening must not replay it. The settle
+    // is a real elapse: React Query's debounce runs on real timers, so a scoped fake
+    // clock does not compose with the microtask flush, and this wait is the window in
+    // which a latch that survived the close would wrongly fire on reopen.
+    act(() => ctl.rerender(false))
+    act(() => ctl.rerender(true))
+    await new Promise(r => setTimeout(r, 200))
+    expect(openBeta).not.toHaveBeenCalled()
+    expect(openAlpha).not.toHaveBeenCalled()
+  })
+
+  it('drops the latch when the catch-up fetch fails onto a retry dead end', async () => {
+    // The query the Enter is pressed against resolves to an error with no cached rows,
+    // so slot 0 is the synthesized `retry` row, not a result. The latch must drop on
+    // that dead end rather than fire it: firing the retry row would re-run the search,
+    // so the test counts search invocations — a latch that wrongly fired the dead end
+    // would drive a THIRD call, which makes this able to fail (it does not just rely on
+    // there being nothing to open).
+    const openAlpha = vi.fn()
+    sessionSearch.mockResolvedValueOnce([hit('Alpha planning', openAlpha)])
+    mount()
+    const input = screen.getByRole('combobox')
+    fireEvent.mouseDown(rowByText('Search Sessions'))
+    fireEvent.change(input, { target: { value: 'alpha' } })
+    expect(await screen.findByText('Alpha planning')).toBeTruthy()
+    const callsBeforeEnter = sessionSearch.mock.calls.length
+    // The query the Enter is pressed against fails: the on-screen `alpha` row is stale,
+    // and the failing `beta` key has no cached rows, so slot 0 becomes the retry row.
+    sessionSearch.mockRejectedValue(new Error('gateway down'))
+    fireEvent.change(input, { target: { value: 'beta' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    // The failure row appears; the latch must drop rather than fire on the dead end.
+    await screen.findByText('Search failed')
+    await act(async () => {
+      await new Promise(r => setTimeout(r, 0))
+    })
+    // Never opened the stale `alpha` row, and never fired the retry row (which would
+    // have re-run the search beyond the renders the user's own typing drove).
+    expect(openAlpha).not.toHaveBeenCalled()
+    expect(sessionSearch.mock.calls.length).toBe(callsBeforeEnter + 1)
+  })
+
+  it('drops the latch when the reader keeps typing after the Enter', async () => {
+    // 'onc' settles, then 'once' + Enter in the window confirms `once`; a further
+    // keystroke to `oncex` means the reader never confirmed what the rows now answer.
+    // A latch that committed whatever was typed next would open a query never
+    // confirmed, so a further keystroke drops it.
+    const openOncex = vi.fn()
+    sessionSearch.mockResolvedValue([hit('Onc result', () => {})])
+    mount()
+    const input = screen.getByRole('combobox')
+    fireEvent.mouseDown(rowByText('Search Sessions'))
+    fireEvent.change(input, { target: { value: 'onc' } })
+    expect(await screen.findByText('Onc result')).toBeTruthy()
+    sessionSearch.mockResolvedValue([hit('Oncex result', openOncex)])
+    // Enter lands in the window (rows still answer `onc`); then the reader types on.
+    fireEvent.change(input, { target: { value: 'once' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    fireEvent.change(input, { target: { value: 'oncex' } })
+    // Rows settle on `oncex`; the never-confirmed `oncex` row is not opened.
+    expect(await screen.findByText('Oncex result')).toBeTruthy()
+    await new Promise(r => setTimeout(r, 50))
+    expect(openOncex).not.toHaveBeenCalled()
+  })
+
+  it('drops the latch when the selection moves after the Enter', async () => {
+    // ArrowDown after a latched Enter aims at a different row. Firing row 0 regardless
+    // would open something the reader just moved off of, so a moved selection drops it.
+    const openTop = vi.fn()
+    const openSecond = vi.fn()
+    sessionSearch.mockResolvedValue([hit('Top one', () => {}), hit('Top two', () => {})])
+    mount()
+    const input = screen.getByRole('combobox')
+    fireEvent.mouseDown(rowByText('Search Sessions'))
+    fireEvent.change(input, { target: { value: 'top' } })
+    expect(await screen.findByText('Top one')).toBeTruthy()
+    sessionSearch.mockResolvedValue([
+      hit('Fresh top', openTop),
+      hit('Fresh second', openSecond),
+    ])
+    fireEvent.change(input, { target: { value: 'fresh' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    // Move the selection off row 0 while the latch is armed.
+    fireEvent.keyDown(input, { key: 'ArrowDown' })
+    // Rows settle; the latch dropped, so neither row opens from the stale Enter.
+    expect(await screen.findByText('Fresh top')).toBeTruthy()
+    await new Promise(r => setTimeout(r, 50))
+    expect(openTop).not.toHaveBeenCalled()
+    expect(openSecond).not.toHaveBeenCalled()
+  })
+
+  it('drops the latch when a pointer activation keeps the bar open', async () => {
+    // A click acts on the row it is on, immediately. A latch left armed by a prior
+    // keyboard Enter would then fire a SECOND time once the rows caught up, so a
+    // pointer activation drops any pending Enter.
+    const openStale = vi.fn()
+    const openFresh = vi.fn()
+    sessionSearch.mockResolvedValue([hit('Stale row', openStale)])
+    mount()
+    const input = screen.getByRole('combobox')
+    fireEvent.mouseDown(rowByText('Search Sessions'))
+    fireEvent.change(input, { target: { value: 'stale' } })
+    expect(await screen.findByText('Stale row')).toBeTruthy()
+    sessionSearch.mockResolvedValue([hit('Fresh row', openFresh)])
+    fireEvent.change(input, { target: { value: 'fresh' } })
+    // Enter in the window arms the latch; then a click lands on the row still on
+    // screen, before the debounce settles.
+    fireEvent.keyDown(input, { key: 'Enter' })
+    fireEvent.mouseDown(rowByText('Stale row'))
+    // The click opened the row it was on, exactly once.
+    expect(openStale).toHaveBeenCalledTimes(1)
+    // Rows catch up to `fresh`: a surviving latch would fire openFresh here. The settle
+    // is a real elapse because React Query's debounce runs on real timers and a scoped
+    // fake clock does not compose with the `findBy*`/microtask flush this flow needs;
+    // the wait is the window in which a dropped-clear mutation would wrongly fire.
+    await new Promise(r => setTimeout(r, 200))
+    expect(openFresh).not.toHaveBeenCalled()
+    expect(openStale).toHaveBeenCalledTimes(1)
+  })
+
+  it('drops the latch when the row under the captured index is a different row', async () => {
+    // The reader arrows off row 0 onto a lower row, then presses Enter in the window.
+    // If the new query is already cached its rows swap in under the same indices with
+    // no empty frame, so the index still points somewhere — at a row the reader never
+    // had highlighted. Firing it opens a stranger, the wrong-row hazard this latch
+    // exists to close, so a changed row identity at that index drops the latch.
+    const openA1 = vi.fn()
+    const openA2 = vi.fn()
+    const openB1 = vi.fn()
+    const openB2 = vi.fn()
+    // Settle `beta` first so its rows are cached and swap in without a fetch frame.
+    sessionSearch.mockResolvedValue([hit('B one', openB1), hit('B two', openB2)])
+    mount()
+    const input = screen.getByRole('combobox')
+    fireEvent.mouseDown(rowByText('Search Sessions'))
+    fireEvent.change(input, { target: { value: 'beta' } })
+    expect(await screen.findByText('B two')).toBeTruthy()
+    // Now settle `alpha`: the on-screen list is [A one, A two].
+    sessionSearch.mockResolvedValue([hit('A one', openA1), hit('A two', openA2)])
+    fireEvent.change(input, { target: { value: 'alpha' } })
+    expect(await screen.findByText('A two')).toBeTruthy()
+    // Type `beta` (its key is cached) and arrow onto the stale `A two` at index 1,
+    // then press Enter while the list still shows the alpha rows.
+    fireEvent.change(input, { target: { value: 'beta' } })
+    fireEvent.keyDown(input, { key: 'ArrowDown' })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    // Rows swap to [B one, B two]; the row now at index 1 is `B two`, which the reader
+    // never selected. The latch must drop rather than open it.
+    expect(await screen.findByText('B two')).toBeTruthy()
+    await new Promise(r => setTimeout(r, 50))
+    expect(openB2).not.toHaveBeenCalled()
+    expect(openB1).not.toHaveBeenCalled()
+    expect(openA1).not.toHaveBeenCalled()
+    expect(openA2).not.toHaveBeenCalled()
   })
 
   it('leaves the sessions failure a row, with none of the artifacts scope notice', async () => {

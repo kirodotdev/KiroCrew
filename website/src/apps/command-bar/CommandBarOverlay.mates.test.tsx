@@ -441,10 +441,13 @@ describe('command bar — crewmates view, listing and search', () => {
   })
 
   it('does not navigate away on a STALE Enter at that empty row either', async () => {
-    // The guard covers every row a scoped view synthesizes, not only its results. This
-    // row leaves the bar: with the check inside `case 'result':`, a keystroke followed by
+    // The latch covers every row a scoped view synthesizes, not only its results. This
+    // row leaves the bar: without the guard above the switch, a keystroke followed by
     // Enter inside the debounce window navigated to `/members` and closed the bar off a
-    // row that answered the previous query.
+    // row that answered the previous query. The latch holds that Enter, and because the
+    // settled top is this synthesized empty-roster row rather than a result, it DROPS
+    // rather than firing it -- the gesture meant to open a crewmate does not navigate
+    // away on its own. A deliberate fresh Enter still goes where the row says.
     agentCatalog.mockResolvedValue({ agents: [], default_agent: '' })
     await openMatesView()
     await waitFor(() => expect(hasRow('No crewmates yet')).toBe(true))
@@ -452,7 +455,7 @@ describe('command bar — crewmates view, listing and search', () => {
     fireEvent.change(input, { target: { value: 'anyone' } })
     fireEvent.keyDown(input, { key: 'Enter' })
     expect(navigate).not.toHaveBeenCalled()
-    // And once the rows answer the query, the same Enter goes where the row says. Retried
+    // Once the rows answer the query, a fresh Enter goes where the row says. Retried
     // rather than waited on a condition: this row's text is the same for every query, so
     // there is nothing on screen that changes when the debounce settles.
     await waitFor(() => {
@@ -585,11 +588,12 @@ describe('command bar — crewmates view, selection', () => {
     expect(navigate).toHaveBeenCalledWith('/members?member=Review%20%26%20QA')
   })
 
-  it('refuses a STALE Enter, so a fast typist never opens the wrong crewmate', async () => {
+  it('latches a debounce-window Enter and opens the crewmate on the live rows', async () => {
     // The view ranks from the DEBOUNCED query, so for 150ms after a keystroke the rows
     // answer the previous one. Typing `onc` and pressing Enter immediately opened
-    // `accountant` -- the row selected against the older query. Enter must do nothing
-    // until the rows describe what was typed: a dropped keystroke, never the wrong chat.
+    // `accountant` -- the row selected against the older query. The Enter is held until
+    // the rows describe what was typed, then fires once: the typed crewmate, never the
+    // wrong chat, and never a dropped gesture.
     await openMatesView()
     await waitFor(() => expect(rowCount()).toBe(3))
     const input = screen.getByRole('combobox')
@@ -597,10 +601,8 @@ describe('command bar — crewmates view, selection', () => {
     // No debounce tick: the rows on screen are still the full roster.
     fireEvent.keyDown(input, { key: 'Enter' })
     expect(navigate).not.toHaveBeenCalled()
-    // Once the rows catch up, the same Enter opens the crewmate that was typed.
-    await waitFor(() => expect(rowCount()).toBe(1))
-    fireEvent.keyDown(input, { key: 'Enter' })
-    expect(navigate).toHaveBeenCalledWith('/members?member=oncall')
+    // The latched Enter opens the crewmate that was typed on its own.
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith('/members?member=oncall'))
   })
 
   it('drops the previous words\' rows rather than holding them while the new read runs', async () => {

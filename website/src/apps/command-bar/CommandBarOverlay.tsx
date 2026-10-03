@@ -603,6 +603,27 @@ export default function CommandBarOverlay({
   const [previewClipped, setPreviewClipped] = useState(false)
 
   const [selected, setSelected] = useState(0)
+  /**
+   * A keyboard Enter that landed in the debounce window, held until the rows answer
+   * the query it was pressed against -- and no later one.
+   *
+   * A scoped view ranks from the DEBOUNCED query, so for one interval after a
+   * keystroke its rows answer the previous one. An Enter then names a row built from
+   * the old query, and this latch is the launcher's primary gesture -- type a name,
+   * confirm it -- waiting for the rows to catch up rather than being eaten. The latch
+   * remembers the exact query the reader confirmed and the row they had selected: it
+   * fires once, on the live rows, only when the live query is still that query, the
+   * selection is still that row, and the top of the list is a settled result. Any
+   * further input, any selection move, a pointer activation, Escape, leaving the
+   * scope, or closing the bar drops it instead -- a latch that outlived the reader's
+   * confirmation would open a query they never confirmed, or a row they moved off of.
+   * A read that fails with no cached rows leaves a retry row at the top, which is not
+   * a result, so the latch drops on that dead end; a refetch that fails while the
+   * confirmed query's rows are still cached fires those rows -- they answer the query
+   * the reader confirmed, exactly as a fresh Enter would. `null` when no Enter is
+   * pending.
+   */
+  const [pendingEnter, setPendingEnter] = useState<{ query: string; index: number; key: string } | null>(null)
   const [usage, setUsage] = useState<UsageMap>(() => loadUsage())
   const [actionError, setActionError] = useState<string | null>(null)
   /**
@@ -1810,6 +1831,20 @@ export default function CommandBarOverlay({
       (scope === 'folders' && (foldersFetching || folderRows === undefined)) ||
       (scope === 'mates' && (matesFetching || mateRows === undefined)))
 
+  /**
+   * The scoped read for the LIVE query is still in flight.
+   *
+   * Distinct from {@link scopeLoading}, which is about an empty list: this is true even
+   * while rows for the previous query are still on screen, which is the one frame a
+   * latched Enter must not fire on — the debounced query may already match what was
+   * typed while the rows answering it have not landed yet.
+   */
+  const scopeFetching =
+    (scope === 'sessions' && isFetching) ||
+    (scope === 'artifacts' && artifactsFetching) ||
+    (scope === 'folders' && foldersFetching) ||
+    (scope === 'mates' && matesFetching)
+
   useEffect(() => {
     if (selected >= rowCount) setSelected(Math.max(0, rowCount - 1))
   }, [rowCount, selected])
@@ -1838,7 +1873,26 @@ export default function CommandBarOverlay({
       // and the stale row's own label still showed the old query, so nothing warned
       // them. The `root` has no scope, so this is inert there, which is correct: it
       // ranks from the live query and has nothing stale to act on.
-      if (via === 'key' && scope && !rowsAnswerTheQuery) return
+      //
+      // The window does not EAT the Enter, it holds it: a keyboard confirm in here is
+      // latched and fired once the rows answer the query it was pressed against (see
+      // `pendingEnter` and the effect that drains it). The confirmed query and the
+      // selected row are captured here, so a later keystroke or arrow does not ride
+      // the same latch into a row the reader never confirmed. An arrowed row's own
+      // stable key is captured alongside its index, because a cached new query can
+      // swap its rows in under the same index with no empty frame, and the drain fires
+      // a non-top row only while its key still matches rather than whatever now sits at
+      // that number.
+      // Type-then-Enter is the
+      // launcher's primary gesture, and dropping it left a fast typist pressing Enter
+      // at a silent bar. A POINTER is never latched -- a click names the row it is on,
+      // which opens what it says -- and it also drops any armed latch, so a click that
+      // enters a scope without closing the bar cannot leave a keyboard confirm behind.
+      if (via === 'pointer') setPendingEnter(null)
+      if (via === 'key' && scope && !rowsAnswerTheQuery) {
+        setPendingEnter({ query: query.trim(), index, key: slot.key })
+        return
+      }
       switch (slot.tag) {
         case 'root':
           activateRoot(slot.row)
@@ -1907,6 +1961,77 @@ export default function CommandBarOverlay({
     },
     [activateRoot, enterScope, navigate, onClose, pendingRow, query, refetchArtifacts, refetchFolders, refetchMates, refetchSessions, rowsAnswerTheQuery, scope, seedNewSession, slots],
   )
+
+  /**
+   * Fire a latched Enter once the rows answer the confirmed query, or drop it.
+   *
+   * The latch is set when a keyboard Enter lands in the debounce window (above), and
+   * it carries the query the reader confirmed and the row they had selected. It drains
+   * here rather than in the key handler because the thing it waits for -- the rows
+   * catching up -- is an async settle, not a keystroke.
+   *
+   * It fires only when all of these still hold; otherwise it is dropped:
+   *  - the reader has not typed on: the live query still equals the confirmed one.
+   *    Typing another character confirms a different query, which this latch never
+   *    stood for, so it is dropped rather than committed.
+   *  - the selection has not moved: an arrow or a hover that moved `selected` after
+   *    the Enter means the reader is aiming elsewhere, so the stale row is not fired.
+   *  - the row at that index is still the one the reader confirmed, for a NON-top
+   *    selection: row 0 is the primary gesture (open the best match for the typed
+   *    query) and fires the live top row, but an arrowed row carries the key it was
+   *    picked at, so a cached new query that swaps rows under the old indices drops
+   *    the latch rather than open a stranger at that number.
+   *  - the view has settled on rows that answer that query, and the selected row is a
+   *    RESULT. A no-match drop row, an empty-roster row, or a failed-read retry wipes
+   *    the query or navigates away, which is not what a reader who typed a name and
+   *    pressed Enter asked for; the latch drops. Visible-stable, per the one
+   *    constraint the reporter named.
+   */
+  useEffect(() => {
+    if (!pendingEnter) return
+    if (!scope) {
+      setPendingEnter(null)
+      return
+    }
+    // The reader typed on, or moved the selection: the live gesture differs from the
+    // one that was confirmed.
+    if (query.trim() !== pendingEnter.query || selected !== pendingEnter.index) {
+      setPendingEnter(null)
+      return
+    }
+    // Still settling, or the rows still answer an older query: hold.
+    if (scopeLoading || scopeFetching || !rowsAnswerTheQuery) return
+    const row = slots[pendingEnter.index]
+    if (row?.tag !== 'result') {
+      // Settled on a dead end: nothing the gesture meant to open.
+      setPendingEnter(null)
+      return
+    }
+    // Row 0 is the primary gesture — "open the best match for what I typed" — so it
+    // fires the live top row even though its content swapped to answer the new query.
+    // A NON-top index means the reader arrowed onto one specific row, so the row now
+    // at that index must still be the one they picked: a cached new query swaps rows
+    // under the old indices with no empty frame, and firing a changed row there opens
+    // a stranger, the wrong-row hazard this latch exists to close.
+    if (pendingEnter.index !== 0 && row.key !== pendingEnter.key) {
+      setPendingEnter(null)
+      return
+    }
+    setPendingEnter(null)
+    activateIndex(pendingEnter.index, 'key')
+  }, [pendingEnter, scope, query, selected, scopeLoading, scopeFetching, rowsAnswerTheQuery, slots, activateIndex])
+
+  /**
+   * Drop the latch the moment the reader leaves the window any other way.
+   *
+   * Escape out of the scope and Backspace out of it both land on `scope === null`;
+   * closing the bar flips `open`. The drain effect above already refuses to fire
+   * without a scope, but clearing here as well keeps a stale latch from riding a
+   * reopen into the next visit.
+   */
+  useEffect(() => {
+    if (!open || !scope) setPendingEnter(null)
+  }, [open, scope])
 
   /**
    * Put the selected row's address on the clipboard.

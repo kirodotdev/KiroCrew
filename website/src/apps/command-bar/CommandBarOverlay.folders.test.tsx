@@ -430,11 +430,12 @@ describe('command bar — folders view', () => {
     )
   })
 
-  it('refuses a STALE Enter, so a fast typist never reveals the wrong folder', async () => {
+  it('latches a debounce-window Enter and reveals the folder on the live rows', async () => {
     // This view ranks from the DEBOUNCED query like every other scoped one, so for one
-    // debounce interval after a keystroke its rows answer the previous query — and an
-    // Enter in that window acts on the row that was selected against it. Reported first
-    // in the crewmates view; the guard is on the activation path all four share.
+    // debounce interval after a keystroke its rows answer the previous query. An Enter
+    // in that window is held, never acting on the row selected against the old query,
+    // and fired once the rows answer what the reader typed. Reported first in the
+    // crewmates view; the latch is on the activation path all four share.
     await openFoldersView()
     type('sydney')
     await waitFor(() => expect(hasRow('Sydney Property')).toBe(true))
@@ -449,18 +450,11 @@ describe('command bar — folders view', () => {
       type: 'requestFolderReveal',
       folderId: 'f-syd',
     })
-    // Once the rows catch up, the same Enter reveals what was typed. BOTH halves are
-    // waited on: `Trading Desk` alone is in the unfiltered listing too, so it is already
-    // true before the debounce flushes, and `Sydney Property` alone is false during the
-    // blank frame while the new query fetches — where there is no row to press at all.
-    await waitFor(() => {
-      expect(hasRow('Trading Desk')).toBe(true)
-      expect(hasRow('Sydney Property')).toBe(false)
-    })
-    fireEvent.keyDown(input, { key: 'Enter' })
+    // The latched Enter reveals what was typed on its own, never the stale folder.
     await waitFor(() =>
       expect(dispatch).toHaveBeenCalledWith({ type: 'requestFolderReveal', folderId: 'f-trade' }),
     )
+    expect(dispatch).not.toHaveBeenCalledWith({ type: 'requestFolderReveal', folderId: 'f-syd' })
   })
 
   it('still opens the row a POINTER pressed inside that same window', async () => {

@@ -258,24 +258,48 @@ over a scattered subsequence on a daily one.
 The root ranks from the LIVE query, not a debounced copy, so a fast typist never sees rows
 that answer an older prefix.
 
-### Stale rows must not act
+### A stale Enter is latched, not acted on and not dropped
 
 Every SCOPED view ranks from the debounced query, because each one reaches the network, so for
 one debounce interval its rows answer the previous query. A keyboard Enter in that window names
 an INDEX, and that index means a different row once the rows move under it — which is how typing
-`onc` and pressing Enter opened `accountant`. So the activation path all four views share does
-nothing until the rows answer what has been typed: a dropped keystroke rather than the wrong
-session, artifact, folder or crewmate.
+`onc` and pressing Enter opened `accountant`. So the activation path all four views share never
+acts on the rows in that window. It does not drop the keystroke either: type-a-name-then-confirm
+is the launcher's primary gesture, and eating it left a fast typist pressing Enter at a bar that
+said nothing. The Enter is LATCHED — held, then fired once, on the rows that answer the query it
+was pressed against — so the gesture lands on the right session, artifact, folder or crewmate
+instead of the wrong one or none.
 
-Three details carry the rule. The comparison is between what the view WOULD ask for the live
-query and what it DID ask, not between the two query strings: sessions and artifacts only search
-above a floor, so below it every query asks for the same listing, and comparing strings would
-freeze Enter on rows that were the correct answer. It binds the KEYBOARD only — a pointer names
-its own target, so the row a reader pressed opens what it says. And it sits above the row-tag
-switch, not inside the results case: a view's SYNTHESIZED rows are built from the same debounced
-query its results are, and two of them do something worse than opening the wrong thing — the
-no-match row wipes the query, and the empty-crewmates row navigates and closes the bar. Both
-live at a zero-result dead end, which is exactly where a reader types another character.
+The latch remembers the query the reader confirmed and the row they had selected, and it fires
+only while both still hold. A further keystroke confirms a DIFFERENT query, which this Enter never
+stood for, so it drops rather than committing whatever the reader typed next; an arrow or a hover
+that moves the selection aims at another row, so the latch drops rather than opening the row that
+happened to be first. Row 0 is the primary gesture — open the best match for the typed query — so
+it fires the live top row even though its content swaps to answer the new query; an arrowed
+non-top row instead carries the identity it was picked at, and if the new query is already cached
+its rows swap under the old indices with no empty frame, so a changed row at that index drops the
+latch rather than opening a row the reader never highlighted. The latch fires only at a settled RESULT row. If the live query settles on a
+view's synthesized dead end — a no-match row, an empty-roster row, or the retry row a read that
+failed WITH NO CACHED ROWS leaves at the top — the latch
+DROPS instead: those rows wipe the query or navigate away, which is not what a reader who typed a
+name and pressed Enter asked for, and firing one would act on the live query's dead end. A refetch
+that fails while the confirmed query's rows are still cached is NOT a dead end — slot 0 stays a
+result that answers the confirmed query, and the latch fires it exactly as a fresh Enter would. The list
+must be visible-stable first: while it is still fetching, the latch keeps waiting rather than
+firing on a settling frame. Every other way out of the window drops the latch too — Escape,
+leaving the scope, closing the bar, and a pointer activation all cancel the pending Enter rather
+than firing it late.
+
+Three details carry the window test the latch rides on. The comparison is between what the view
+WOULD ask for the live query and what it DID ask, not between the two query strings: sessions and
+artifacts only search above a floor, so below it every query asks for the same listing, and
+comparing strings would freeze Enter on rows that were the correct answer. It binds the KEYBOARD
+only — a pointer names its own target, so the row a reader pressed opens what it says, with no
+latch, and a pointer activation also drops any latch a prior keyboard Enter left armed. And it
+sits above the row-tag switch, not inside the results case: a view's SYNTHESIZED rows are built
+from the same debounced query its results are, so a check that covered results alone would let a
+latched Enter act on a stale no-match or empty-crewmates row at the dead end where a reader types
+another character.
 
 The query matching is not on its own enough for the crewmates view, which holds its previous rows
 across a key change (see the running-set key above). That hold is scoped to the running set: rows
@@ -340,8 +364,9 @@ debounced query already matches the new ones.
 | the running set is part of the crewmates query key | a resolved query keeps a finished mate's busy dot for the rest of the stale window |
 | that query holds its previous rows across the key change | a slot finishing elsewhere blanks the list and resets the reader's keyboard selection to row 0 |
 | it holds them across the RUNNING SET only, never across the query | rows answering the previous words stay actionable for as long as the new read takes |
-| Enter does nothing in any scoped view until the rows answer the live query | the row selected against an older debounced query opens under the reader's hands |
-| that guard covers a view's SYNTHESIZED rows, not only its results | a stale no-match row discards the query just typed, and a stale empty-roster row navigates away |
+| a scoped-view Enter is latched and fired on the rows that answer the query it was pressed against | a dropped keystroke makes a fast typist confirm into silence, and acting now opens the row selected against an older query |
+| the latch drops on a further keystroke, a selection move, or a pointer activation | a latch outliving its confirmation commits a query the reader never confirmed, opens the row they moved off of, or re-fires after a click |
+| the latch fires only at a settled result row, and drops at a synthesized dead end | a latch firing a no-match row discards the query just typed, and one firing an empty-roster row navigates away |
 | that guard binds the keyboard, not the pointer | a row the reader can read and press stops responding |
 | the guard compares what the view WOULD ask against what it DID ask | a sub-floor query freezes Enter on a listing that is the correct answer to it |
 | a crewmate row says BUSY in the same word as a session row | two vocabularies for one state, one keystroke apart, that a reader cannot tell apart |

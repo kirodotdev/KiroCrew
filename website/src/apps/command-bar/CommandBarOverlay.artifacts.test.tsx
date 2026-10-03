@@ -241,10 +241,11 @@ describe('command bar — artifacts view', () => {
     await waitFor(() => expect(onClose).toHaveBeenCalled())
   })
 
-  it('refuses a STALE Enter, so a fast typist never opens the wrong artifact', async () => {
+  it('latches a debounce-window Enter and fires it on the live artifact rows', async () => {
     // Every scoped view ranks from the DEBOUNCED query, so for one debounce interval
-    // after a keystroke its rows answer the previous query, and an Enter in that window
-    // acts on the row selected against it. Reported in the crewmates view; the guard is
+    // after a keystroke its rows answer the previous query. An Enter in that window is
+    // held, never acting on the row selected against the old query, and fired once the
+    // rows answer what the reader typed. Reported in the crewmates view; the latch is
     // on the activation path all four views share, so each one pins it.
     // The narrowing happens server-side, so each query's result set is the mock's next
     // answer rather than a filter over one fixture.
@@ -264,12 +265,8 @@ describe('command bar — artifacts view', () => {
     // No debounce tick: the row on screen is still the runbook.
     fireEvent.keyDown(input, { key: 'Enter' })
     expect(navigate).not.toHaveBeenCalled()
-    await waitFor(() => {
-      expect(hasRow('Q3 Revenue Chart')).toBe(true)
-      expect(hasRow('Onboarding Runbook')).toBe(false)
-    })
-    fireEvent.keyDown(input, { key: 'Enter' })
-    expect(navigate).toHaveBeenCalledWith('/artifacts/q3-revenue-chart')
+    // The latched Enter fires on the revenue rows on its own, never on the runbook.
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith('/artifacts/q3-revenue-chart'))
   })
 
   it('still opens on Enter while a query sits BELOW the search floor', async () => {
