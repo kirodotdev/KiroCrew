@@ -232,6 +232,56 @@ describe('usePinnedPrompt (shared pinned-prompt geometry)', () => {
     expect(h.result.current.pinned).toBeNull()
   })
 
+  // The last turn's reply is taller than the viewport: once its top passes the
+  // fold no row is left below the line. The banner must keep the prompt that reply
+  // answers, not vanish while the reader is inside it.
+  it.each([false, true])('keeps the prompt pinned while reading a final reply taller than the viewport (requiresMountedHandoff=%s)', (requiresMountedHandoff) => {
+    const h = renderPin(requiresMountedHandoff)
+    const g = mountGeometry(2)
+    setRect(g.rows[0], -400, 380)
+    setRect(g.rows[1], 60, 1800)
+    wire(h, g, [single(0, 'user', 'long prompt'), single(1, 'assistant', 'long reply')])
+    expect(h.result.current.pinned?.idx).toBe(0)
+  })
+
+  // The last display row is a PROMPT taller than the space below the fold — just
+  // sent, no reply streamed yet. It must never become its own stand-in: the card
+  // would fold down to its head and the prompt's tail could not be read.
+  //
+  // With the final row treated as the straddling hand-off row, the candidate is
+  // the EARLIER prompt (idx 0) — and that card is then fully pushed out by the
+  // incoming prompt, whose top has already risen past the fold
+  // (`push >= pinPushTravel`), so nothing is pinned and the whole prompt stays
+  // on screen. The defect to pin here is the alternative: treating the index as
+  // one past the end makes the final row itself pinnable and reports idx 2.
+  it.each([false, true])('never pins a tall final prompt as its own stand-in (requiresMountedHandoff=%s)', (requiresMountedHandoff) => {
+    const h = renderPin(requiresMountedHandoff)
+    const g = mountGeometry(3)
+    setRect(g.rows[0], -900, 380)
+    setRect(g.rows[1], -500, 500)
+    setRect(g.rows[2], 40, 1200)
+    wire(h, g, [
+      single(0, 'user', 'first prompt'),
+      single(1, 'assistant', 'first reply'),
+      single(2, 'user', 'tall last prompt'),
+    ])
+    expect(h.result.current.pinned?.idx).not.toBe(2)
+    expect(h.result.current.pinned).toBeNull()
+  })
+
+  it('pins nothing when every mounted row is above the line but rows below are unmounted', () => {
+    const h = renderPin(true)
+    const g = mountGeometry(2)
+    setRect(g.rows[0], -400, 380)
+    setRect(g.rows[1], 60, 1800)
+    // Two more rows exist in the list but are not mounted: the boundary is unknown.
+    wire(h, g, [
+      single(0, 'user', 'long prompt'), single(1, 'assistant', 'long reply'),
+      single(2, 'user', 'later prompt'), single(3, 'assistant', 'later reply'),
+    ])
+    expect(h.result.current.pinned).toBeNull()
+  })
+
   it('glides the in-place jump to the target row minus the banner chrome, then converges', () => {
     const h = renderPin()
     const g = mountGeometry(5)

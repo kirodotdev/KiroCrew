@@ -108,19 +108,46 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
     // a mounted row above the boundary.
     let handoffIdx = -1
     let first = true
+    let lastMountedIdx = -1
     for (const item of items) {
       const htmlItem = item as HTMLElement
       const rect = htmlItem.getBoundingClientRect()
+      const rowIdx = parseInt(htmlItem.getAttribute('data-display-index') || '0', 10)
       if (rect.top > handoffY) {
         if (requiresMountedHandoff && first) { setPinned(null); return }
-        handoffIdx = parseInt(htmlItem.getAttribute('data-display-index') || '0', 10)
+        handoffIdx = rowIdx
         break
       }
+      lastMountedIdx = rowIdx
       first = false
+    }
+    const list = displayItemsRef.current
+    // Every mounted row has reached the line. When the last of them is the END of
+    // the list, the reader is inside the final row — typically a reply taller than
+    // the viewport — and no row is left below the line. Without a hand-off index
+    // the loop found nothing and the banner vanished exactly while the reader
+    // scrolled through the last answer, then reappeared the moment its top
+    // dropped back under the fold.
+    //
+    // The final row itself is treated as the row straddling the line: it stays
+    // readable and is never swapped for the banner, and the prompt BEFORE it is
+    // pinned. One PAST the end would make the final row pinnable, and a tall
+    // final prompt (just sent, reply not streamed yet) would then pin ITSELF —
+    // its row becomes the hidden stand-in and the folding card shows only its
+    // head, so the prompt's own tail could no longer be read. Naming the row
+    // before it instead costs nothing when the final row is a reply (that reply's
+    // prompt is exactly what the banner should hold — the point of this branch),
+    // and when the final row is a prompt it is also the INCOMING prompt, already
+    // past the fold, so the push below drops the card and the prompt has the band
+    // to itself.
+    //
+    // A last mounted row short of the list end means unmounted rows lie below, so
+    // the boundary is unknown and nothing is pinned, as before.
+    if (handoffIdx < 0 && lastMountedIdx >= 0 && lastMountedIdx === list.length - 1) {
+      handoffIdx = list.length - 1
     }
 
     if (!pinEnabledRef.current || handoffIdx < 0) { setPinned(null); return }
-    const list = displayItemsRef.current
     const pinIdx = findPinnedPromptIdx(list, handoffIdx)
     const pinItem = pinIdx >= 0 ? list[pinIdx] : undefined
     if (!pinItem || pinItem.kind !== 'single') { setPinned(null); return }
