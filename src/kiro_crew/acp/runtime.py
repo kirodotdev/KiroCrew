@@ -31,7 +31,13 @@ from pathlib import Path
 from types import ModuleType
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, NamedTuple, TypeVar
 
-from kiro_crew import acp_tool_gate, agent_scratch, platform_compat, runtime_death
+from kiro_crew import (
+    acp_tool_gate,
+    agent_scratch,
+    member_essential_context,
+    platform_compat,
+    runtime_death,
+)
 from kiro_crew.acp import runtime_process_tree, runtime_start
 from kiro_crew.acp._dispatch import (
     agent_version_from_init,
@@ -157,6 +163,7 @@ from kiro_crew.acp.types import (
     overlay_project_scope,
 )
 from kiro_crew.agent import ensure_agent_materialized, markdown_spec_for_agent
+from kiro_crew.agent_sdk.drivers import acp as acp_driver
 from kiro_crew.agent_sdk.tool_search import (
     ToolSearchSettings,
     kas_client_meta_settings,
@@ -177,12 +184,14 @@ from kiro_crew.constants import (
 from kiro_crew.dashboard.side_readonly_spec import unavailable_mode_explanation
 from kiro_crew.env import augmented_path, resolve_krb5_ccname
 from kiro_crew.executors import subprocess_executor
+from kiro_crew.hooks import FileTooLargeError
 from kiro_crew.mcp_gateway.claim import mint_stub_session_token, send_claim
 from kiro_crew.mcp_gateway.session_servers import (
     attach_stub_session_token,
     injection_server_names,
     pooled_session_servers,
 )
+from kiro_crew.member_essential_context import MemberEssentialContextError
 from kiro_crew.metrics.events import (
     CHILD_PERMISSION_DENIED,
     CHILD_PERMISSION_ROUTED,
@@ -1097,6 +1106,11 @@ class AcpRuntime:
             raise ValueError("Invalid session memory mode")
         self.recording_allowed = memory_mode == "persistent"
         self._native_launch_sources: dict[str, str] = {}
+        self._native_launch_source_stamps: dict[str, tuple[tuple[int, int, int, int, int], str]] = (
+            {}
+        )
+        self._native_launch_view_alias: str | None = None
+        self._native_launch_resources: list[Any] | None = None
         self._extra_env = extra_env or {}
         self._mcp_gateway_overlay = str(mcp_gateway_overlay) if mcp_gateway_overlay else None
         self._mcp_gateway_socket = str(mcp_gateway_socket) if mcp_gateway_socket else None
@@ -1804,6 +1818,9 @@ class AcpRuntime:
             raise AcpRuntimeError(str(exc)) from exc
         self._kas_host_auth = plan.host_auth
         self._native_launch_sources = dict(plan.native_context_documents)
+        self._native_launch_source_stamps = {}
+        self._native_launch_view_alias = None
+        self._native_launch_resources = None
         return plan
 
     async def _initialize_handshake(self, client_capabilities: dict[str, Any]) -> dict[str, Any]:
@@ -2002,23 +2019,23 @@ class AcpRuntime:
 
                 async with self._skill_projection_lock():
                     generation = self._issue_skill_projection_generation()
-                    spawned = await asyncio.to_thread(
+                    projection = await asyncio.to_thread(
                         prepare_native_skill_projection, self._work_dir
                     )
                     # Issued and adopted under the lock, so nothing newer exists.
-                    self._native_skill_projection = spawned
+                    self._native_skill_projection = projection
                     self._skill_projection_generation = generation
                 # Held for the process's life: the aliases kiro-cli listed at
                 # startup are ones it is guaranteed to have loaded, so later
                 # projections keep translating them in inbound frames
                 # (_activate_mode_bracketed), and holding the object keeps its
                 # lease -- and them -- out of the prune.
-                self._spawn_skill_projection = self._native_skill_projection
-                if self._native_skill_projection is not None:
+                self._spawn_skill_projection = projection
+                if projection is not None:
                     argv = list(argv)
                     agent_position = argv.index("--agent") + 1
                     try:
-                        argv[agent_position] = self._native_skill_projection.agent(self._agent)
+                        launch_view_alias = projection.agent(self._agent)
                     except ValueError as exc:
                         # The projection refused this agent's view -- a
                         # ``kirocrew-core`` restriction authored in its spec, a
@@ -2030,6 +2047,62 @@ class AcpRuntime:
                         # ``ValueError`` would leave ``spawn()`` as an internal
                         # failure with the actionable text unread.
                         raise AcpRuntimeError(str(exc)) from exc
+                    argv[agent_position] = launch_view_alias
+                    if not self._member_context and not self._native_launch_sources:
+                        if not await asyncio.to_thread(
+                            acp_driver.inherits_default_resources, self._work_dir
+                        ):
+                            projected_view = projection.specs.get(self._agent)
+                            if projected_view is not None:
+                                # A snapshot that cannot be taken degrades to an
+                                # empty one: the folder then carries every guide
+                                # itself, and the session still starts. The empty
+                                # snapshot lasts for the process's life, so the
+                                # reason is logged once here. The reader
+                                # translates only OSError/ValueError into its own
+                                # error; an oversize declared guide surfaces as
+                                # FileTooLargeError, an undeterminable home or a
+                                # pre-3.13 symlink loop as RuntimeError, and a
+                                # literal declaration under a directory that
+                                # denies search as a bare PermissionError from
+                                # ``Path.is_file()``.
+                                try:
+                                    projected_documents = await asyncio.to_thread(
+                                        member_essential_context._projected_resource_documents_stamped,
+                                        projected_view,
+                                        str(self._work_dir),
+                                    )
+                                except (
+                                    MemberEssentialContextError,
+                                    FileTooLargeError,
+                                    OSError,
+                                    RuntimeError,
+                                    RecursionError,
+                                ) as exc:
+                                    logger.warning(
+                                        "launch steering snapshot for agent %r skipped "
+                                        "(%r); the folder sends every guide itself, "
+                                        "so a guide kiro-cli loaded can arrive twice",
+                                        self._agent,
+                                        exc,
+                                    )
+                                    self._native_launch_sources = {}
+                                    self._native_launch_source_stamps = {}
+                                    self._native_launch_view_alias = None
+                                    self._native_launch_resources = None
+                                else:
+                                    self._native_launch_sources = {
+                                        source: document.body
+                                        for source, document in projected_documents.items()
+                                    }
+                                    self._native_launch_source_stamps = {
+                                        source: (document.stamp, document.root)
+                                        for source, document in projected_documents.items()
+                                    }
+                                    self._native_launch_view_alias = launch_view_alias
+                                    self._native_launch_resources = list(
+                                        projected_view.get("resources", [])
+                                    )
         except _KiroExecutableTrustError as exc:
             raise AcpRuntimeError(str(exc)) from exc
         # The handshake declaration is the harness's constant. A host that takes
@@ -5893,7 +5966,7 @@ class AcpRuntime:
         budget: float,
         payload_snapshot: Any,
         wire_registered: bool,
-    ) -> None:
+    ) -> str | None:
         """Send ``session/set_mode`` for *mode_agent* inside the derived-spec bracket.
 
         ONE body for both session-start paths (create and resume), because the bracket
@@ -6123,6 +6196,7 @@ class AcpRuntime:
         except DerivedSpecStale as exc:
             await self.terminate_session(session_id)
             raise AcpRuntimeError(str(exc)) from exc
+        return sent_alias
 
     async def _handshake_client_capabilities(self) -> dict[str, Any]:
         """The ``clientCapabilities`` this spawn sends, with the settings channel filled.
@@ -6703,6 +6777,98 @@ class AcpRuntime:
         if source != agent:
             logger.info("skill view %s maps back to agent %s", agent, source)
         return source
+
+    async def _copy_verified_native_launch_sources(
+        self,
+        handle: AcpSessionHandle,
+        *,
+        set_mode_ran: bool = False,
+        activated_alias: str | None = None,
+    ) -> None:
+        """Copy launch documents whose file version still matches."""
+        bodies = dict(self._native_launch_sources)
+        stamped = dict(self._native_launch_source_stamps)
+        recorded_alias = self._native_launch_view_alias
+        launch_resources = self._native_launch_resources
+        work_dir = str(self._work_dir)
+        handle.native_context_documents_fit = (
+            functools.partial(
+                member_essential_context._declared_files_fit,
+                {"resources": launch_resources},
+                work_dir,
+            )
+            if launch_resources is not None
+            else None
+        )
+
+        view_matches = True
+        if stamped and recorded_alias is not None:
+            if set_mode_ran:
+                view_matches = activated_alias is not None and activated_alias == recorded_alias
+            else:
+                projection = getattr(self, "_native_skill_projection", None)
+                try:
+                    current_alias = (
+                        projection.agent(self._agent) if projection is not None else None
+                    )
+                except ValueError:
+                    current_alias = None
+                view_matches = current_alias == recorded_alias
+
+        def reread() -> dict[str, Any] | None:
+            if launch_resources is not None and not member_essential_context._declared_files_fit(
+                {"resources": launch_resources}, work_dir
+            ):
+                # kiro-cli may now drop any declared file, so this session gets no
+                # recorded guide and the folder sends them all. The record itself
+                # stays untouched: a later session whose declared files fit again
+                # verifies it per source as usual, and the provider re-checks the
+                # size on every read for the sessions in between.
+                return None
+            documents: dict[str, Any] = {}
+            for source, (_expected_stamp, root) in stamped.items():
+                try:
+                    documents[source] = (
+                        member_essential_context._read_projected_resource_document_stamped(
+                            source, root
+                        )
+                    )
+                except (
+                    MemberEssentialContextError,
+                    FileTooLargeError,
+                    OSError,
+                    RuntimeError,
+                    RecursionError,
+                ):
+                    documents[source] = None
+            return documents
+
+        reread_documents = await asyncio.to_thread(reread) if stamped and view_matches else {}
+        deliver = {source: body for source, body in bodies.items() if source not in stamped}
+        if not view_matches or reread_documents is None:
+            handle.native_context_documents.update(deliver)
+            return
+        for source, (expected_stamp, root) in stamped.items():
+            expected_body = bodies.get(source)
+            document = reread_documents.get(source)
+            current_stamp = self._native_launch_source_stamps.get(source)
+            current_body = self._native_launch_sources.get(source)
+            still_current = (
+                current_stamp == (expected_stamp, root) and current_body == expected_body
+            )
+            if (
+                still_current
+                and expected_body is not None
+                and document is not None
+                and document.stamp == expected_stamp
+                and document.body == expected_body
+            ):
+                deliver[source] = expected_body
+                continue
+            if still_current:
+                self._native_launch_source_stamps.pop(source, None)
+                self._native_launch_sources.pop(source, None)
+        handle.native_context_documents.update(deliver)
 
     async def create_session(
         self,
@@ -7320,6 +7486,8 @@ class AcpRuntime:
 
         mode_switched = False
         staged_before_switch = 0
+        set_mode_ran = False
+        activated_alias: str | None = None
         # Set agent mode if specified. If set_mode raises, no handle is returned
         # to the caller, so terminate the session we just created above —
         # session/new already succeeded so the session exists in kiro-cli; a
@@ -7374,13 +7542,14 @@ class AcpRuntime:
             # then consumed without being recorded, leaving the panel at a false
             # "no report" for the rest of the session.
             staged_before_switch = handle.queued_frame_count()
-            await self._activate_mode_bracketed(
+            activated_alias = await self._activate_mode_bracketed(
                 session_id,
                 mode_agent,
                 budget=budget,
                 payload_snapshot=payload_snapshot,
                 wire_registered=kas_agents is not None,
             )
+            set_mode_ran = True
             handle.active_agent = mode_agent
             # Whether set_mode actually SWITCHED modes: the servers that
             # initialized during session/new belong to the mode kiro-cli
@@ -7427,8 +7596,17 @@ class AcpRuntime:
         else:
             await handle.drain_init(no_report_ceiling=0.0)
 
-        if active_agent == self._agent and str(session_work_dir) == str(self._work_dir):
-            handle.native_context_documents.update(self._native_launch_sources)
+        # Verification can suspend after session/new, so failure must tear it down.
+        try:
+            if active_agent == self._agent and str(session_work_dir) == str(self._work_dir):
+                await self._copy_verified_native_launch_sources(
+                    handle,
+                    set_mode_ran=set_mode_ran,
+                    activated_alias=activated_alias,
+                )
+        except BaseException:
+            await self.terminate_session(session_id)
+            raise
         handle.native_context_documents.update(projected_sources)
         # Inline prompt bytes and file resources come from the same activated
         # wire definition. Conditional and indexed resources remain native.
@@ -7900,6 +8078,8 @@ class AcpRuntime:
 
         mode_switched = False
         staged_before_switch = 0
+        set_mode_ran = False
+        activated_alias: str | None = None
         # Activate the agent (mirrors AcpClient step 4 — set_mode applies to a
         # resumed session too, not just fresh ones). If set_mode raises, the
         # caller falls back to create_session() (a fresh sid + its own queue),
@@ -7931,13 +8111,14 @@ class AcpRuntime:
             # then consumed without being recorded, leaving the panel at a false
             # "no report" for the rest of the session.
             staged_before_switch = handle.queued_frame_count()
-            await self._activate_mode_bracketed(
+            activated_alias = await self._activate_mode_bracketed(
                 resume_sid,
                 mode_agent,
                 budget=budget,
                 payload_snapshot=payload_snapshot,
                 wire_registered=kas_agents is not None,
             )
+            set_mode_ran = True
             handle.active_agent = mode_agent
             # See create_session: after a real mode switch, registration frames
             # staged during session/load describe the pre-switch roster.
@@ -7979,6 +8160,18 @@ class AcpRuntime:
             )
         else:
             await handle.drain_init(no_report_ceiling=0.0)
+
+        # Verification can suspend after session/load, so failure must tear it down.
+        try:
+            if active_agent == self._agent and str(session_work_dir) == str(self._work_dir):
+                await self._copy_verified_native_launch_sources(
+                    handle,
+                    set_mode_ran=set_mode_ran,
+                    activated_alias=activated_alias,
+                )
+        except BaseException:
+            await self.terminate_session(resume_sid)
+            raise
 
         # A resume re-initializes the MCP servers and forks the same agent
         # processes a fresh session does, so it needs the same scan; without it

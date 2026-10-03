@@ -5,7 +5,9 @@ from __future__ import annotations
 import fnmatch
 import logging
 import os
+import time
 from pathlib import Path
+from typing import NamedTuple
 
 from kiro_crew.agent_sdk.drivers import acp as acp_driver
 from kiro_crew.config import KiroCrewConfig, config_dir
@@ -21,6 +23,51 @@ ESSENTIAL_MAX_CHARS = 64_000
 _MAX_SOURCE_BYTES = ESSENTIAL_MAX_CHARS * 4
 _MAX_DIRECTORY_ENTRIES = 2048
 _MAX_DOCUMENTS = 64
+# FAT keeps modification times in 2-second steps (HFS+ in 1-second steps), the
+# coarsest step among common local filesystems; see ``_launch_stamp_settled``.
+_LAUNCH_STAMP_SETTLE_NS = 2_000_000_000
+# kiro-cli re-reads its declared resources for every request and drops whole
+# files once they total more than three bytes per token of the model's context
+# window: about 492,000 bytes for deepseek-3.2's 164,000 tokens, the smallest
+# window kiro-cli 2.27.0 lists. The model can change mid-session and a later
+# kiro-cli may list a smaller window, so the launch record is kept only while the
+# declared files total at most about a quarter of that, checked at launch and
+# again as each session starts; otherwise the folder sends every guide rather
+# than skip one kiro-cli may have dropped.
+_LAUNCH_RECORD_MAX_BYTES = 128_000
+
+_LaunchFileStamp = tuple[int, int, int, int, int]
+
+
+class _StampedProjectedDocument(NamedTuple):
+    body: str
+    stamp: _LaunchFileStamp
+    root: str
+
+
+def _launch_stamp_wall_time_ns() -> int:
+    return time.time_ns()
+
+
+def _launch_stamps_supported() -> bool:
+    # On POSIX every write updates st_ctime and no API sets it. On Windows
+    # st_ctime_ns is creation time and LastWriteTime is settable, so no os.stat
+    # field records a rewrite its writer cannot undo. Leaving every guide to the
+    # folder there can send one twice, as main does, but never zero times.
+    return os.name != "nt"
+
+
+def _launch_file_stamp(stat: os.stat_result) -> _LaunchFileStamp:
+    # st_ctime_ns is the POSIX write witness. _launch_stamps_supported is the
+    # single platform gate for systems where no os.stat field provides one.
+    return (
+        stat.st_dev,
+        stat.st_ino,
+        stat.st_size,
+        stat.st_mtime_ns,
+        stat.st_ctime_ns,
+    )
+
 
 # A resources entry is a URI string this reader may open, or an object whose
 # keys are kiro-cli's schema. The alias records the shape, not those keys.
@@ -629,7 +676,11 @@ def _resource_pattern(path: Path, root: Path) -> str:
 
 
 def _resource_paths(
-    resources: list[ResourceDeclaration], source_root: Path, absolute_root: Path
+    resources: list[ResourceDeclaration],
+    source_root: Path,
+    absolute_root: Path,
+    *,
+    markdown_only: bool = True,
 ) -> list[tuple[Path, Path]]:
     paths: list[tuple[Path, Path]] = []
     if _declared_document_count(resources) > _MAX_DOCUMENTS:
@@ -646,13 +697,133 @@ def _resource_paths(
         else:
             pattern = str(path)
         for match in _matches(root, pattern):
-            if match.suffix.lower() == ".md" and (match, root) not in paths:
+            wanted = not markdown_only or match.suffix.lower() == ".md"
+            if wanted and (match, root) not in paths:
                 paths.append((match, root))
-                if len(paths) > _MAX_DOCUMENTS:
+                if markdown_only and len(paths) > _MAX_DOCUMENTS:
                     raise MemberEssentialContextError(
                         "Essential resources exceed the document limit"
                     )
     return paths
+
+
+def _stat_launch_file(path: Path) -> _LaunchFileStamp:
+    admitted = validate_file_path(str(path))
+    if admitted is None:
+        raise MemberEssentialContextError(f"Essential source {path}: outside admitted path screen")
+    try:
+        return _launch_file_stamp(os.stat(admitted, follow_symlinks=False))
+    except OSError as exc:
+        raise MemberEssentialContextError(f"Essential source {path}: {exc}") from exc
+
+
+def _launch_stamp_settled(stamp: _LaunchFileStamp, stamped_at: int) -> bool:
+    # A full timestamp step must separate the last write from ``stamped_at``, a
+    # moment no later than the stamp was taken. This prevents same-step rewrites
+    # on coarse filesystems from keeping an equal stamp; a recent guide is safely
+    # duplicated by folder delivery. Called only where _launch_stamps_supported().
+    mtime_recent = stamped_at - stamp[3] < _LAUNCH_STAMP_SETTLE_NS
+    ctime_recent = stamped_at - stamp[4] < _LAUNCH_STAMP_SETTLE_NS
+    return not (mtime_recent or ctime_recent)
+
+
+def _read_projected_resource_document_stamped(
+    source: str, root: str
+) -> _StampedProjectedDocument | None:
+    """Read one launch document with the file version the read is bracketed by.
+
+    Each stat goes through the same path screen as the read immediately before
+    it touches the filesystem. A document is returned only when both stamps are
+    equal, so a file rewritten or replaced while it was read is left out rather
+    than recorded as a version it never had.
+    """
+    path = Path(source)
+    before = _stat_launch_file(path)
+    body = _read(path, Path(root))
+    if before != _stat_launch_file(path):
+        return None
+    return _StampedProjectedDocument(body=body, stamp=before, root=root)
+
+
+def _projected_resource_paths(
+    definition: dict, cwd: str, *, markdown_only: bool = True
+) -> list[tuple[Path, Path]]:
+    resources = definition.get("resources", [])
+    if not isinstance(resources, list) or any(not isinstance(r, (str, dict)) for r in resources):
+        raise MemberEssentialContextError("Projected resources must be a list of declarations")
+    return _resource_paths(resources, Path(cwd), Path.home(), markdown_only=markdown_only)
+
+
+def _declared_file_bytes(definition: dict, cwd: str) -> int:
+    """On-disk size of every file the definition's ``file://`` resources match.
+
+    kiro-cli budgets what it loads by these raw sizes, so every match counts,
+    whatever its extension or ``inclusion`` mode. A declared file that does not
+    exist adds nothing, since kiro-cli cannot load it either.
+    """
+    total = 0
+    for path, _root in _projected_resource_paths(definition, cwd, markdown_only=False):
+        try:
+            total += _stat_launch_file(path)[2]
+        except MemberEssentialContextError as exc:
+            if not isinstance(exc.__cause__, FileNotFoundError):
+                raise
+    return total
+
+
+def _declared_files_fit(definition: dict, cwd: str) -> bool:
+    """Whether the declared files still fit ``_LAUNCH_RECORD_MAX_BYTES`` today.
+
+    kiro-cli re-reads them for every request, so the launch check is repeated
+    when a session starts. A declared file that cannot be measured counts as
+    too large.
+    """
+    try:
+        return _declared_file_bytes(definition, cwd) <= _LAUNCH_RECORD_MAX_BYTES
+    except (MemberEssentialContextError, OSError, RuntimeError, RecursionError):
+        return False
+
+
+def _projected_resource_documents_stamped(
+    definition: dict, cwd: str
+) -> dict[str, _StampedProjectedDocument]:
+    """Read stable launch documents with their exact file versions.
+
+    Every candidate stat goes through the same path screen as the read before
+    :func:`projected_resource_documents` reads the bodies, and again afterwards.
+    A document is recorded only when its two stamps are equal and the settle rule
+    passes; a body whose file has no first stamp is left out. A launch whose
+    declared files total more than ``_LAUNCH_RECORD_MAX_BYTES`` on disk
+    (:func:`_declared_file_bytes`) records nothing, since kiro-cli may drop any
+    of them from its context.
+
+    Where :func:`_launch_stamps_supported` is false nothing is read or recorded,
+    so every declared guide is left to folder delivery.
+    """
+    if not _launch_stamps_supported():
+        return {}
+    if _declared_file_bytes(definition, cwd) > _LAUNCH_RECORD_MAX_BYTES:
+        return {}
+
+    stamping_started_at = _launch_stamp_wall_time_ns()
+    stamps_before: dict[str, tuple[_LaunchFileStamp, str]] = {}
+    for path, root in _projected_resource_paths(definition, cwd):
+        source = str(path)
+        if source not in stamps_before:
+            stamps_before[source] = (_stat_launch_file(path), str(root))
+    bodies = projected_resource_documents(definition, cwd)
+    documents: dict[str, _StampedProjectedDocument] = {}
+    for source, body in bodies.items():
+        recorded = stamps_before.get(source)
+        if recorded is None:
+            continue
+        stamp, stamped_root = recorded
+        if stamp != _stat_launch_file(Path(source)):
+            continue
+        if not _launch_stamp_settled(stamp, stamping_started_at):
+            continue
+        documents[source] = _StampedProjectedDocument(body=body, stamp=stamp, root=stamped_root)
+    return documents
 
 
 def projected_resource_documents(definition: dict, cwd: str) -> dict[str, str]:
@@ -664,11 +835,8 @@ def projected_resource_documents(definition: dict, cwd: str) -> dict[str, str]:
     and object-form ``knowledgeBase`` declarations keep their on-demand
     behavior and are never treated as full text.
     """
-    resources = definition.get("resources", [])
-    if not isinstance(resources, list) or any(not isinstance(r, (str, dict)) for r in resources):
-        raise MemberEssentialContextError("Projected resources must be a list of declarations")
     documents: dict[str, str] = {}
-    for path, root in _resource_paths(resources, Path(cwd), Path.home()):
+    for path, root in _projected_resource_paths(definition, cwd):
         if str(path) in documents:
             continue
         body = _read(path, root)

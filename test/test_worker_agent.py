@@ -2956,6 +2956,8 @@ def test_the_bracketed_helper_orders_gate_send_and_check_by_consumption_point():
         raise AssertionError(f"{target} not found")
 
     assert _at("wire_registered") < _at("METHOD_SET_MODE") < _at("require_unchanged_derived_spec")
+    assert isinstance(body[-1], ast.Return)
+    assert _names([body[-1]]) == {"sent_alias"}
 
 
 def test_a_revocation_between_the_payload_build_and_activation_is_caught(tmp_path, monkeypatch):

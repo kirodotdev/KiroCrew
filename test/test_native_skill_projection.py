@@ -149,6 +149,62 @@ def test_native_view_preserves_explicit_noninheritance_and_other_settings(native
     assert json.loads(settings_path.read_text(encoding="utf-8"))["toolSearch.enabled"] is False
 
 
+@pytest.mark.skipif(os.name == "nt", reason="launch stamps are POSIX-only")
+def test_launch_record_resources_match_the_alias_file_kiro_cli_loads(native_tree, monkeypatch):
+    """The runtime records the launch steering from the in-memory view while
+    kiro-cli loads the alias file, so a file holding fewer resources than the
+    view would make the folder skip a guide kiro-cli never loaded.
+    """
+    from kiro_crew import member_essential_context
+
+    _home, agents, project = native_tree
+    guides = {
+        ".kiro/steering/conventions.md": "# Conventions\n",
+        ".kiro/steering/nested/review.md": "# Review\n",
+        "notes/handbook.md": "# Handbook\n",
+        "AGENTS.md": "# Agents\n",
+    }
+    for relative, body in guides.items():
+        path = project / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding="utf-8")
+    settings = project / ".kiro" / "settings" / "cli.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_text(json.dumps({projection._INHERIT_SETTING: True}), encoding="utf-8")
+    (agents / "custom.json").write_text(
+        json.dumps(
+            {
+                "name": "custom",
+                "resources": [
+                    "file://.kiro/steering/**/*.md",
+                    "file://notes/handbook.md",
+                    "file://AGENTS.md",
+                    "skill://skills/a/SKILL.md",
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    # The guides were written moments ago; read them as the runtime does once
+    # the launch settle window has passed, or every one of them is left out.
+    monkeypatch.setattr(member_essential_context, "_launch_stamp_wall_time_ns", lambda: 2**63 - 1)
+
+    prepared = projection.prepare_native_skill_projection(project)
+    assert projection.inherits_default_resources(project) is False
+    spec = prepared.specs["custom"]
+    published = json.loads(
+        (agents / f"{prepared.agent('custom')}.json").read_text(encoding="utf-8")
+    )
+    assert published["resources"] == spec["resources"]
+
+    recorded = member_essential_context._projected_resource_documents_stamped(spec, str(project))
+    loaded = member_essential_context._projected_resource_documents_stamped(published, str(project))
+    assert {s: d.body for s, d in recorded.items()} == {s: d.body for s, d in loaded.items()}
+    root = Path(os.path.realpath(project))
+    assert recorded.keys() == {str(root / relative) for relative in guides}
+    assert [recorded[str(root / relative)].body for relative in guides] == list(guides.values())
+
+
 def test_transport_keeps_original_agent_identity_and_rejects_unprepared_modes():
     prepared = projection.NativeSkillProjection({"custom": "native-alias"})
     request = {"sessionId": "s", "modeId": "custom"}
@@ -3751,9 +3807,12 @@ async def test_set_mode_sends_the_fresh_alias_never_a_changed_spawn_one(
         assert sent == [] and terminated == ["sid"]
         assert stub._native_skill_projection is spawn
         return
-    await activate("sid", "crew", budget=5.0, payload_snapshot=None, wire_registered=False)
+    activated_alias = await activate(
+        "sid", "crew", budget=5.0, payload_snapshot=None, wire_registered=False
+    )
 
     assert not terminated
+    assert activated_alias == fresh.aliases["crew"]
     assert sent[0]["modeId"] == fresh.aliases["crew"]
     assert stub._native_skill_projection is fresh
     listed = fresh.frame({"availableModes": [{"id": SPAWN_ALIAS}]})
