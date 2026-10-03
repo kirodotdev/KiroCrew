@@ -11531,6 +11531,8 @@
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 saltata — attualmente selezionata)",
+      "collapse_all_folders": "Comprimi tutte le cartelle",
+      "expand_all_folders": "Espandi tutte le cartelle",
       "no_sessions_match_folders": "Nessuna sessione corrisponde — solo il nome di una cartella",
       "add_column_after_this_one": "Aggiungi colonna dopo questa",
       "agent_finished_your_turn": "Agente ha finito — tocca a te",

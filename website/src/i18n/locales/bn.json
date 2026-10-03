@@ -11374,6 +11374,8 @@
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1টি এড়িয়ে যাওয়া হয়েছে — এখন বেছে নেওয়া আছে)",
+      "collapse_all_folders": "সব ফোল্ডার সংকুচিত করো",
+      "expand_all_folders": "সব ফোল্ডার প্রসারিত করো",
       "no_sessions_match_folders": "কোনও সেশন মেলেনি — কেবল একটি ফোল্ডারের নাম মিলেছে",
       "add_column_after_this_one": "এটির পরে কলাম যোগ করুন",
       "agent_finished_your_turn": "এজেন্ট শেষ করেছে — এখন আপনার পালা",
