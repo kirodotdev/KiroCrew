@@ -1,7 +1,7 @@
 ---
 name: debug-gateway
 description: Load this before concluding a change did not land, and to read what the kirocrew-debug tools actually answered - which question to ask first, the fields that mean the opposite of how they look, and what a 400 / 403 / 404 / 501 from these tools means.
-triggers: fix not landed, fix did not land, gateway_predates_head, not_derivable, unverifiable_path, everything is slow, GIL, gil contention, orphan process, orphaned processes, faulthandler dump, loop stall, what happened at, debug_gateway, debug_refusals, debug_threads, debug_processes, debug_snapshots
+triggers: fix not landed, fix did not land, mcp server not working, new mcp tools missing, agent config change not applied, stale config, session_config_status, gateway_predates_head, not_derivable, unverifiable_path, everything is slow, GIL, gil contention, orphan process, orphaned processes, faulthandler dump, loop stall, what happened at, debug_gateway, debug_refusals, debug_threads, debug_processes, debug_snapshots
 ---
 
 # Reading the kirocrew-debug tools
@@ -31,6 +31,14 @@ or at `docs/reference/debug/README.md` in a checkout:
 3. **Before calling a refused path protected, read that class.** Only
    `sensitive_path_match` means the path is protected. `unverifiable_path` means the
    path was never judged, and the row's own `action` line says what to do.
+4. **After you add or change an MCP server or an agent spec for a chat, call
+   `session_config_status` on that chat** before telling the user the server or
+   tool is broken. A running chat reads its MCP servers, agent spec and
+   `mcp.json` once, when its process starts. If the reply says it has a stale
+   config, the edit landed but has not reached that chat yet: tell the user to
+   press **Reload session** in that chat's session menu (the chat shows a
+   "stale config" badge), then check again. `stale: null` means a config file
+   could not be read; fix that first. The tool is read-only and never reloads.
 
 ## Fields that read as the opposite of what they mean
 

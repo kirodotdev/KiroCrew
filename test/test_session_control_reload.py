@@ -128,6 +128,31 @@ def test_the_agent_model_and_workspace_are_kept(tmp_path, eager):
     assert (target.agent, target.model, target.workspace) == before
 
 
+def test_a_reload_clears_the_stale_config_badge(tmp_path, eager):
+    """The verb shares the tab menu's teardown, so the relaunched process reads
+    current config and the badge clears exactly as it does for Reload session."""
+    state, caller, target = _world(tmp_path)
+    target.config_stale = True
+    target.config_stale_inputs = "MCP servers"
+
+    _reload(state, caller)
+
+    assert target.config_stale is False
+    assert target.config_stale_inputs == ""
+
+
+def test_a_refused_reload_keeps_the_stale_config_badge(tmp_path, eager):
+    """Nothing was relaunched, so the badge still describes the running process."""
+    state, caller, target = _world(tmp_path, created=False)
+    target.config_stale = True
+    target.config_stale_inputs = "MCP servers"
+
+    _refused(state, caller)
+
+    assert target.config_stale is True
+    assert target.config_stale_inputs == "MCP servers"
+
+
 # ── Scope ────────────────────────────────────────────────────────────────────
 
 

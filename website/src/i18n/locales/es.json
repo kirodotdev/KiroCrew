@@ -8232,6 +8232,13 @@
       "reload_blocked_subagents": "subagentes trabajando",
       "reload_session": "Recargar sesión",
       "reload_session_tooltip": "Reinicia el proceso del agente para aplicar cambios de MCP/configuración. La conversación se conserva.",
+      "reload_press_needed": "configuración obsoleta · elige Recargar sesión para aplicarla",
+      "reload_stale_inputs": "configuración obsoleta ({{inputs}})",
+      "reload_clause_press_needed": "· elige Recargar sesión para aplicarla",
+      "reload_clause_after_subagents": "— recarga cuando terminen los subagentes",
+      "reload_clause_after_turn": "— recarga cuando termine el turno",
+      "reload_stale_after_subagents": "configuración obsoleta — recarga cuando terminen los subagentes",
+      "reload_stale_after_turn": "configuración obsoleta — recarga cuando termine el turno",
       "rename": "Cambiar el nombre",
       "reveal_in_sidebar": "Mostrar en la barra lateral",
       "tags": "Etiquetas…",
@@ -8241,6 +8248,13 @@
       "custom_color": "Color personalizado",
       "hex_color_code": "Código de color hexadecimal",
       "no_color": "Sin color"
+    },
+    "staleConfigBadge": {
+      "label": "configuración obsoleta",
+      "tooltip": "Configuración obsoleta: {{inputs}} cambió después de que empezara esta sesión. Haz clic para abrir el menú de la sesión y elige Recargar sesión.",
+      "tooltip_compact": "Configuración obsoleta: {{inputs}} cambió después de que empezara esta sesión. Recarga la sesión para aplicar el cambio.",
+      "tooltip_compact_generic": "Configuración obsoleta: la configuración de esta sesión cambió desde que empezó. Recarga la sesión para aplicar el cambio.",
+      "tooltip_generic": "Configuración obsoleta: la configuración de esta sesión cambió desde que empezó. Haz clic para abrir el menú de la sesión y elige Recargar sesión."
     },
     "sessionGridView": {
       "close_cell": "Cerrar la celda",

@@ -119,6 +119,7 @@ from kiro_crew.validation import (
     SESSION_ADOPT_SCHEMA,
     SESSION_BROADCAST_SCHEMA,
     SESSION_CLOSE_SCHEMA,
+    SESSION_CONFIG_STATUS_SCHEMA,
     SESSION_CREATE_SCHEMA,
     SESSION_END_WAIT_SCHEMA,
     SESSION_FORK_SCHEMA,
@@ -161,6 +162,7 @@ SESSION_CONTROL_TOOLS: tuple[str, ...] = (
     "session_release",
     "session_read_message",
     "session_summary",
+    "session_config_status",
 )
 
 # The folder endpoints store ``name[:100]``. Mirroring the number here is what
@@ -1075,6 +1077,29 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "(older than the latest turns). Fall back to session_read_message for "
                 "anything newer or more exact. Authorized exactly as session_read_message "
                 "is. READ-only."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": "Session key from list_sessions, or its exact title.",
+                    },
+                },
+                "required": ["target"],
+            },
+        },
+        {
+            "name": "session_config_status",
+            "description": (
+                "Report whether a session's agent process runs on OUTDATED config: an "
+                "MCP server, agent spec or mcp.json edited after the process started, "
+                "which it does not see until the session is reloaded. Returns 'stale' "
+                "(true, false, or null when a config file cannot be read) and which "
+                "files changed, the same answer the dashboard's stale-config badge "
+                "shows. An MCP edit a hot-reloading kiro-cli has already applied is not "
+                "stale. READ-only: it never reloads anything; applying a change is the "
+                "Reload session action in that tab. Authorized as session_summary is."
             ),
             "inputSchema": {
                 "type": "object",
@@ -2878,6 +2903,28 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         if resp.get("error"):
             return f"Error: could not read that session's summary: {resp['error']}"
         return _render_session_summary(resp)
+
+    if name == "session_config_status":
+        args = validate_tool_args(args, SESSION_CONFIG_STATUS_SCHEMA)
+        resp = _get(
+            f"/api/session-control/config-status?target={quote(str(args['target']))}", caller_key
+        )
+        if resp.get("error"):
+            return f"Error: could not check that session's config: {resp['error']}"
+        target = resp.get("target", args["target"])
+        if resp.get("stale") is None:
+            unreadable = ", ".join(resp.get("unreadable") or []) or "a config file"
+            return redact(
+                f"`{target}`: unknown -- {unreadable} could not be read, so whether its "
+                "config changed cannot be told."
+            )
+        if not resp.get("stale"):
+            return redact(f"`{target}` runs on its current config.")
+        changed = ", ".join(resp.get("changed") or []) or "its config"
+        return redact(
+            f"`{target}` has a stale config ({changed} changed since it started). "
+            "It needs a Reload of that session to apply."
+        )
 
     if name == "chat_folder_tree":
         validate_tool_args(args, CHAT_FOLDER_TREE_SCHEMA)

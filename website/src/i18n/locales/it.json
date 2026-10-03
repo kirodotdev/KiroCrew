@@ -8232,6 +8232,13 @@
       "reload_blocked_subagents": "sub-agenti al lavoro",
       "reload_session": "Ricarica la sessione",
       "reload_session_tooltip": "Riavvia il processo dell'agente per applicare le modifiche MCP/configurazione. La conversazione viene conservata.",
+      "reload_press_needed": "configurazione obsoleta · scegli Ricarica la sessione per applicarla",
+      "reload_stale_inputs": "configurazione obsoleta ({{inputs}})",
+      "reload_clause_press_needed": "· scegli Ricarica la sessione per applicarla",
+      "reload_clause_after_subagents": "— ricarica quando i sub-agenti hanno finito",
+      "reload_clause_after_turn": "— ricarica quando il turno finisce",
+      "reload_stale_after_subagents": "configurazione obsoleta — ricarica quando i sub-agenti hanno finito",
+      "reload_stale_after_turn": "configurazione obsoleta — ricarica quando il turno finisce",
       "rename": "Rinomina",
       "reveal_in_sidebar": "Mostra nella barra laterale",
       "tags": "Tag…",
@@ -8241,6 +8248,13 @@
       "custom_color": "Colore personalizzato",
       "hex_color_code": "Codice colore esadecimale",
       "no_color": "Nessun colore"
+    },
+    "staleConfigBadge": {
+      "label": "configurazione obsoleta",
+      "tooltip": "Configurazione obsoleta: {{inputs}} è cambiato dopo l’avvio di questa sessione. Fai clic per aprire il menu della sessione, poi scegli Ricarica la sessione.",
+      "tooltip_compact": "Configurazione obsoleta: {{inputs}} è cambiato dopo l’avvio di questa sessione. Ricarica la sessione per applicare la modifica.",
+      "tooltip_compact_generic": "Configurazione obsoleta: la configurazione di questa sessione è cambiata dal suo avvio. Ricarica la sessione per applicare la modifica.",
+      "tooltip_generic": "Configurazione obsoleta: la configurazione di questa sessione è cambiata dal suo avvio. Fai clic per aprire il menu della sessione, poi scegli Ricarica la sessione."
     },
     "sessionGridView": {
       "close_cell": "Chiudi cella",

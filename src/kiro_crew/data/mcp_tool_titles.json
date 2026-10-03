@@ -112,7 +112,8 @@
     "session_broadcast": "Broadcast to sessions",
     "session_release": "Release session",
     "session_read_message": "Read session message",
-    "session_summary": "Read session summary"
+    "session_summary": "Read session summary",
+    "session_config_status": "Read session config status"
   },
   "kirocrew-cron": {
     "cron_list": "List schedules",

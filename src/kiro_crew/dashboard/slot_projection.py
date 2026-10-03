@@ -487,6 +487,10 @@ class SlotProjection:
             "theme_consent": slot.theme_consent,
             "theme_consent_sha": slot.theme_consent_sha,
             "memory_mode": slot.memory_mode,
+            # The live session runs on config changed since it started (the
+            # stale-config badge), and what changed, display-safe labels only.
+            "config_stale": bool(getattr(slot, "config_stale", False)),
+            "config_stale_inputs": str(getattr(slot, "config_stale_inputs", "") or ""),
             "forked_from": slot.forked_from,
             "linked_session_key": slot.linked_session_key,
             "app": slot._app,

@@ -5,12 +5,12 @@ change its model, reload its agent process, and take another one under itself in
 the sidebar. The tools come from the
 `kirocrew-dashboard` MCP server, so an agent that does not mount that server
 never has them — exactly like any other MCP server. This page is the reference
-for all 28 of its tools, written for the agent that is about to use them.
+for all 29 of its tools, written for the agent that is about to use them.
 
 The server is defined in `src/kiro_crew/mcp_dashboard.py`. Two halves:
 
 - **Session control** — `session_create`, `session_fork`, `session_send`,
-  `session_read_message`, `session_summary`, `session_stop`, `session_end_wait`,
+  `session_read_message`, `session_summary`, `session_config_status`, `session_stop`, `session_end_wait`,
   `session_set_model`, `session_reload`, `session_close`, `session_revive`, `session_broadcast`,
   `session_status`, `session_adopt`, `session_release`. These reach another session.
 - **Sidebar shape** — `chat_folder_tree`, `chat_folder_create`,
@@ -331,6 +331,30 @@ rather than answered. An incognito session never has one. Read-only.
 Each goal carries the panel's state word (`in-progress`, `needs-you`, `done`,
 `dropped`), so work that finished without being verified reads `needs-you`
 rather than done.
+
+### `session_config_status`
+
+| Argument | Required | Meaning |
+|---|---|---|
+| `target` | yes | Session key, or its exact title |
+
+Reports whether the target's agent process has a stale config: an MCP
+server, agent spec or `mcp.json` setting it runs on that changed after the process started, which
+it does not see until the session is reloaded. The answer is the one the
+dashboard's stale-config badge shows, and the call refreshes that badge:
+
+```
+`chat-7` has a stale config (~/.kiro/agents/kirocrew.json changed since it started). It needs a Reload of that session to apply.
+```
+
+`stale` is `null` when a config file exists but cannot be read, and the reply
+names it. An MCP edit a hot-reloading kiro-cli already applied live is not
+stale. File names are display-safe: relative to the project, or under `~`.
+
+Read-only: nothing is relaunched. Applying the change is the **Reload session**
+action in the target's session menu. Authorized exactly as `session_summary`
+is; the check runs again after the config is read, so a target replaced in
+between is refused (`target_replaced`).
 
 ### `session_adopt` and `session_release`
 

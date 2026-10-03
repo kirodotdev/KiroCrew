@@ -1948,6 +1948,14 @@ class SessionManager:
         # different account than the live one even when no read ever observed
         # the interim (see ``flag_identity_stamp_mismatches``).
         self.spawn_identity_reader: "Callable[[], Awaitable[str]] | None" = None
+        # Installed by the gateway (``config_staleness.pool_spawn_config``); None
+        # means no config fingerprint is taken for a warm-pool process. When
+        # wired, ``_fill_warm_pool`` calls it with the pool's agent and cwd off
+        # the loop, BEFORE the process starts, and attaches the result to the
+        # provider as ``pool_spawn_config``, so the chat that later claims it
+        # compares against the config the process was started under rather
+        # than the config at claim time. Blocking file IO.
+        self.spawn_config_reader: "Callable[[str, str], Any] | None" = None
         # Installed by the gateway once it owns this manager (set_injection_probe);
         # None means "no gateway, so no completion injection can be in flight".
         self._injection_probe: "Callable[[str], bool] | None" = None

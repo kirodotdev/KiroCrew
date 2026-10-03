@@ -65,6 +65,13 @@ from kiro_crew.dashboard.chat_utils import (
     effective_session_key,
     wire_session_subagent_probe,
 )
+from kiro_crew.dashboard.config_staleness import (
+    config_write_refresh_middleware,
+    pool_spawn_config,
+    start_config_stale_sweep,
+    stop_config_stale_detection,
+    subscribe_backend_changes,
+)
 from kiro_crew.dashboard.crash_dump_store import (
     claim_dump_notification,
     dump_age_seconds,
@@ -564,6 +571,7 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         "/api/session-control/release",
         "/api/session-control/read",
         "/api/session-control/summary",
+        "/api/session-control/config-status",
         # MCP-only structured monitor inspection. The caller selects its
         # session identity through X-Session-Key, so cookie authentication can
         # never authorize this leaf.
@@ -1798,6 +1806,36 @@ def _deferred_work_ledger(handler_name: str) -> Callable:
     return _route
 
 
+def _arm_config_stale_sweep(app: web.Application, state: DashboardState) -> None:
+    """Start the stale-config badge's periodic sweep for edits made outside the gateway.
+
+    The write-triggered refresh is a middleware, placed in each entrypoint's
+    ordered ``app.middlewares[:] = [...]`` list so that assignment cannot drop it.
+    The cleanup hook registered here cancels and awaits the sweep and cancels
+    the ConfigWatch subscription, so neither outlives the app.
+    """
+    state._config_stale_sweep = start_config_stale_sweep(state)  # prevent GC
+    # A backend change in config.json reaches the badge through the one
+    # ConfigWatch rather than another stat of the file.
+    state._config_stale_backend_sub = subscribe_backend_changes(state)  # prevent GC
+
+    async def _config_stale_shutdown(app_: web.Application) -> None:
+        await stop_config_stale_detection(state)
+
+    app.on_cleanup.append(_config_stale_shutdown)
+
+
+def _config_write_refresh(state: DashboardState) -> Callable:
+    """The stale-config badge's write-triggered refresh middleware for *state*."""
+    return config_write_refresh_middleware(state)
+
+
+def _pool_spawn_config(agent: str, cwd: str) -> Any:
+    """``SessionManager.spawn_config_reader``: see ``config_staleness.pool_spawn_config``."""
+    # Called off the loop.
+    return pool_spawn_config(agent, cwd)
+
+
 def _register_mcp_routes(app: web.Application) -> None:
     """Register API routes used by MCP tools (spawn, lessons, crons, etc.)."""
     app.router.add_post("/api/spawn", handlers.api_spawn)
@@ -1957,6 +1995,10 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_get(
         "/api/session-control/summary",
         _deferred("session_control", "api_session_control_summary"),
+    )
+    app.router.add_get(
+        "/api/session-control/config-status",
+        _deferred("session_control", "api_session_control_config_status"),
     )
     app.router.add_get("/api/browser/install", handlers.api_browser_install_get)
     app.router.add_put("/api/browser/token", handlers.api_browser_token_put)
@@ -5704,6 +5746,12 @@ async def start_dashboard(
     # retired before reuse (see flag_identity_stamp_mismatches). Unwired (the
     # CLI, tests), spawns stay unstamped and keep the pre-stamping behavior.
     state.sessions.spawn_identity_reader = app["kiro_prerequisite_service"].read_spawn_identity
+    # Fingerprint each warm-pool process's config before it starts, so a chat
+    # that claims it compares against what that process read (stale-config badge).
+    state.sessions.spawn_config_reader = _pool_spawn_config
+    # Badge idle chats too: refresh every live chat right after the gateway's
+    # own config writes, and sweep for edits made outside it.
+    _arm_config_stale_sweep(app, state)
     # Probe Kiro readiness during boot rather than on the dashboard's first
     # status request: the cold probe spawns sandboxed CLI subprocesses and can
     # take seconds, which is what made the first-run setup chrome visible to
@@ -6238,6 +6286,10 @@ async def start_dashboard(
                 tailnet_trust=_tailnet_trust,
             ),
             sel_audit_middleware,
+            # Inner to auth and audit: it reads only the response status, and
+            # refreshes every live chat's stale-config badge after a successful
+            # config write.
+            _config_write_refresh(state),
             spa_fallback,
         ]
 
@@ -7195,6 +7247,12 @@ async def start_api_server(
     # retired before reuse (see flag_identity_stamp_mismatches). Unwired (the
     # CLI, tests), spawns stay unstamped and keep the pre-stamping behavior.
     state.sessions.spawn_identity_reader = app["kiro_prerequisite_service"].read_spawn_identity
+    # Fingerprint each warm-pool process's config before it starts, so a chat
+    # that claims it compares against what that process read (stale-config badge).
+    state.sessions.spawn_config_reader = _pool_spawn_config
+    # Badge idle chats too: refresh every live chat right after the gateway's
+    # own config writes, and sweep for edits made outside it.
+    _arm_config_stale_sweep(app, state)
     # Probe Kiro readiness during boot rather than on the dashboard's first
     # status request: the cold probe spawns sandboxed CLI subprocesses and can
     # take seconds, which is what made the first-run setup chrome visible to
@@ -7356,6 +7414,9 @@ async def start_api_server(
             tailnet_trust=_tailnet_trust,
         ),
         sel_audit_middleware,
+        # As in start_dashboard: refresh every live chat's stale-config badge
+        # after a successful config write.
+        _config_write_refresh(state),
     ]
 
     _register_mcp_routes(app)

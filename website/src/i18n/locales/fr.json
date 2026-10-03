@@ -8232,6 +8232,13 @@
       "reload_blocked_subagents": "sous-agents au travail",
       "reload_session": "Recharger la session",
       "reload_session_tooltip": "Redémarre le processus de l'agent pour prendre en compte les changements MCP/configuration. La conversation est conservée.",
+      "reload_press_needed": "configuration périmée · choisis Recharger la session pour l’appliquer",
+      "reload_stale_inputs": "configuration périmée ({{inputs}})",
+      "reload_clause_press_needed": "· choisis Recharger la session pour l’appliquer",
+      "reload_clause_after_subagents": "— recharge quand les sous-agents ont terminé",
+      "reload_clause_after_turn": "— recharge à la fin du tour",
+      "reload_stale_after_subagents": "configuration périmée — recharge quand les sous-agents ont terminé",
+      "reload_stale_after_turn": "configuration périmée — recharge à la fin du tour",
       "rename": "Renommer",
       "reveal_in_sidebar": "Afficher dans la barre latérale",
       "tags": "Étiquettes…",
@@ -8241,6 +8248,13 @@
       "custom_color": "Couleur personnalisée",
       "hex_color_code": "Code couleur hexadécimal",
       "no_color": "Aucune couleur"
+    },
+    "staleConfigBadge": {
+      "label": "configuration périmée",
+      "tooltip": "Configuration périmée : {{inputs}} a changé depuis le début de cette session. Clique pour ouvrir le menu de la session, puis choisis Recharger la session.",
+      "tooltip_compact": "Configuration périmée : {{inputs}} a changé depuis le début de cette session. Recharge la session pour appliquer le changement.",
+      "tooltip_compact_generic": "Configuration périmée : la configuration de cette session a changé depuis son démarrage. Recharge la session pour appliquer le changement.",
+      "tooltip_generic": "Configuration périmée : la configuration de cette session a changé depuis son démarrage. Clique pour ouvrir le menu de la session, puis choisis Recharger la session."
     },
     "sessionGridView": {
       "close_cell": "Fermer la cellule",

@@ -7994,6 +7994,13 @@
       "reload_blocked_subagents": "サブエージェント動作中",
       "reload_session": "セッションを再読み込み",
       "reload_session_tooltip": "エージェントプロセスを再起動して新しい MCP/設定の変更を反映します。会話は保持されます。",
+      "reload_press_needed": "構成が古い · 適用するには「セッションを再読み込み」を選択してください",
+      "reload_stale_inputs": "構成が古い ({{inputs}})",
+      "reload_clause_press_needed": "· 適用するには「セッションを再読み込み」を選択してください",
+      "reload_clause_after_subagents": "— サブエージェントが終わったら再読み込み",
+      "reload_clause_after_turn": "— ターンが終わったら再読み込み",
+      "reload_stale_after_subagents": "構成が古い — サブエージェントが終わったら再読み込み",
+      "reload_stale_after_turn": "構成が古い — ターンが終わったら再読み込み",
       "rename": "名前変更",
       "reveal_in_sidebar": "サイドバーに表示",
       "tags": "タグ…",
@@ -8003,6 +8010,13 @@
       "custom_color": "カスタムカラー",
       "hex_color_code": "16進カラーコード",
       "no_color": "色なし"
+    },
+    "staleConfigBadge": {
+      "label": "構成が古い",
+      "tooltip": "構成が古い: このセッションの開始後に {{inputs}} が変更されました。クリックしてセッションメニューを開き、「セッションを再読み込み」を選んでください。",
+      "tooltip_compact": "構成が古い: このセッションの開始後に {{inputs}} が変更されました。適用するにはセッションを再読み込みしてください。",
+      "tooltip_compact_generic": "構成が古い: このセッションの構成が開始後に変更されました。適用するにはセッションを再読み込みしてください。",
+      "tooltip_generic": "構成が古い: このセッションの構成が開始後に変更されました。クリックしてセッションメニューを開き、「セッションを再読み込み」を選んでください。"
     },
     "sessionGridView": {
       "close_cell": "セルを閉じる",

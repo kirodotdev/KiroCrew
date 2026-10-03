@@ -7278,12 +7278,34 @@ class PinnedDirectory:
                     return None
         return out
 
+    def scan(self) -> Any:
+        """``os.scandir`` of this directory, read through the pin.
+
+        A context manager yielding ``os.DirEntry`` objects, streamed rather than
+        collected, for a caller that must bound its own work over a directory of
+        any size. On POSIX the scan is of the descriptor, so a rename of the
+        directory's name after the pin is not followed.
+        """
+        return os.scandir(self._fd if IS_POSIX else self._path)
+
+    def stat_self(self) -> os.stat_result:
+        """The stat of the pinned directory itself, from its descriptor."""
+        return os.fstat(self._fd)
+
+    def lstat(self, name: str) -> os.stat_result:
+        """``lstat`` of *name* in this directory; a link is stat'ed, never followed.
+
+        Raises ``OSError`` (``FileNotFoundError`` for an absent name), so a
+        caller can tell an entry that is gone from one it cannot read.
+        """
+        if IS_POSIX:
+            return os.stat(name, dir_fd=self._fd, follow_symlinks=False)
+        return os.lstat(os.path.join(self._path, name))
+
     def _lstat(self, name: str) -> os.stat_result | None:
         """``lstat`` of *name* in this directory, or None if it cannot be read."""
         try:
-            if IS_POSIX:
-                return os.stat(name, dir_fd=self._fd, follow_symlinks=False)
-            return os.lstat(os.path.join(self._path, name))
+            return self.lstat(name)
         except OSError:
             return None
 
@@ -7465,6 +7487,15 @@ class PinnedDirectory:
         """
         text = self._read_bytes(name, max_bytes).decode(encoding)
         return text.replace("\r\n", "\n").replace("\r", "\n")
+
+    def read_bytes(self, name: str, max_bytes: int | None = None) -> bytes:
+        """The raw bytes of the regular file *name*, read through this pin.
+
+        :meth:`read_text` without the decode, for a caller that must digest the
+        exact bytes of a file it cannot parse. The same refusals: a link at the
+        name, a non-regular entry, a hardlink, and anything over *max_bytes*.
+        """
+        return self._read_bytes(name, max_bytes)
 
 
 def pinned_directory(path: str | os.PathLike) -> PinnedDirectory:

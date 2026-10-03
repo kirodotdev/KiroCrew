@@ -37,6 +37,7 @@ import { isChatPageSurface, slotChannelLabel, slotChannelNamespace } from '../ut
 import { toolStatusLabel, type ToolStatusDetail } from '../utils/toolStatusLabel'
 import { sessionRefBlockReason } from '../utils/sessionRefs'
 import { SearchInput, Input, Btn, IconButton, IconButtonGroup } from '../components/ui'
+import StaleConfigBadge from '../components/StaleConfigBadge'
 import SimpleSelect from '../components/SimpleSelect'
 import FolderConfigModal from '../components/FolderConfigModal'
 import ModelDropdownList from '../components/ModelDropdownList'
@@ -1984,6 +1985,11 @@ const SessionRow = memo(function SessionRow({
                 *  rare agent switch, and the repo's animation invariant is
                 *  framer-only (no new CSS @keyframes). */}
               <span key={agentName || 'empty'} title={agentDisplay || undefined} className={`truncate shrink-0 ${resolvedSlotTags.length > 0 || agentDiverged ? 'max-w-[50%]' : ''}`}>{agentDisplay || '\u00A0'}</span>
+              {/* Per-session metadata sits directly after the agent name, on the
+                *  meta line, rather than on a stacked line of its own (the
+                *  session-row-fixed-height rule). Renders nothing unless the
+                *  session's agent process runs on config changed since it started. */}
+              <StaleConfigBadge slot={s} compact />
               {/* Peer-OWNERSHIP badge: this session belongs to another machine.
                 *  The SAME component the `RemoteCrewChip` further down this row
                 *  uses, which says a LOCAL session dispatches its turns to a peer.

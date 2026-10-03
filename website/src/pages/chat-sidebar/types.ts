@@ -120,6 +120,10 @@ export interface Slot {
   color_index?: number | null
   color_hex?: string | null
   memory_mode?: 'persistent' | 'incognito' | 'temporary'
+  /** The live session runs on config changed since it started (stale-config badge). */
+  config_stale?: boolean
+  /** Display-safe labels of what changed, for the badge's tooltip. */
+  config_stale_inputs?: string
   folder_id?: string
   pinned?: boolean
   tags?: string[]

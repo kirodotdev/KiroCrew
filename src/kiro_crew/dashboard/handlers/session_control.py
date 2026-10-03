@@ -642,6 +642,33 @@ async def api_session_control_read(request: web.Request) -> web.Response:
     return web.json_response(result)
 
 
+async def api_session_control_config_status(request: web.Request) -> web.Response:
+    """GET /api/session-control/config-status — is another session's config stale?
+
+    Read-only: it reports, and never relaunches anything.
+    """
+    refused = await _require_internal(request)
+    if refused is not None:
+        return refused
+    # Same placement as `summary`: `read_config_status` runs its gate before its
+    # first await.
+    await sc.prewarm_enabled_check()
+    state: DashboardState = request.app["state"]
+    try:
+        target = (request.query.get("target") or "").strip()
+        if not target:
+            raise sc.SessionControlError("target is required", code="target_required")
+        result = await sc.read_config_status(
+            state,
+            caller_session_key=_read_session_key(request),
+            target=target,
+            caller_fenced=_carried_fence(request),
+        )
+    except sc.SessionControlError as exc:
+        return _refusal(exc)
+    return web.json_response(result)
+
+
 async def api_session_control_summary(request: web.Request) -> web.Response:
     """GET /api/session-control/summary — read another session's cached intent summary."""
     refused = await _require_internal(request)

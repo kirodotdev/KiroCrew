@@ -1,4 +1,4 @@
-import { screen, fireEvent } from '@testing-library/react'
+import { screen, fireEvent, cleanup } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from '../test/helpers'
 import SessionActionsMenu from './SessionActionsMenu'
 import { sseSlots, markSlotUnread } from '../store/dashboardSlice'
@@ -141,6 +141,83 @@ describe('SessionActionsMenu', () => {
     // The reason renders inline: a disabled Radix item is pointer-events-none,
     // so a hover title can never explain the grey state.
     expect(screen.getByText('sub-agents working')).toBeInTheDocument()
+  })
+
+  it('says a press applies a stale config change, or what the reload waits on', () => {
+    const { unmount } = setup({}, { config_stale: true })
+    expect(screen.getByTestId('reload-stale-note')).toHaveTextContent(/^stale config · choose Reload session to apply$/)
+    expect(screen.getByRole('button', { name: /Reload session/ })).toBeEnabled()
+    unmount()
+
+    const store = createTestStore()
+    store.dispatch(sseSlots([{ key: 'zzq-slot', messages: 0, running: false, config_stale: true } as ChatSlot]))
+    store.dispatch(sseSubagentSpawn({ slot: 'zzq-slot', id: 'sa-1', task: 't', agent: 'a' }))
+    renderWithProviders(<SessionActionsMenu variant="dropdown" slotKey="zzq-slot" />, { store })
+    const note = screen.getByTestId('reload-stale-note')
+    // Two separate facts, no "·" that reads as one causing the other.
+    expect(note).toHaveTextContent(/^stale config — reload when sub-agents finish$/)
+    expect(note.parentElement).not.toHaveTextContent('·')
+    cleanup()
+    // Same while a turn runs.
+    setup({}, { config_stale: true, running: true })
+    expect(screen.getByTestId('reload-stale-note')).toHaveTextContent(/^stale config — reload when the turn ends$/)
+  })
+
+  it('names what changed on the stale note, for a touch user with no tooltip', () => {
+    const { unmount } = setup({}, { config_stale: true, config_stale_inputs: '~/.kiro/agents/kirocrew.json' })
+    expect(screen.getByTestId('reload-stale-note')).toHaveTextContent(
+      /^stale config \(~\/\.kiro\/agents\/kirocrew\.json\) · choose Reload session to apply$/,
+    )
+    unmount()
+    setup({}, { config_stale: true, running: true, config_stale_inputs: 'agent.acp_backend' })
+    expect(screen.getByTestId('reload-stale-note')).toHaveTextContent(
+      /^stale config \(agent\.acp_backend\) — reload when the turn ends$/,
+    )
+  })
+
+  it('clamps only the changed-input list, never the remedy, and titles the whole sentence', () => {
+    const inputs = '~/.kiro/agents/kirocrew.json, ~/.kiro/settings/mcp.json, agent.acp_backend'
+    const { unmount } = setup({}, { config_stale: true, config_stale_inputs: inputs })
+    const note = screen.getByTestId('reload-stale-note')
+    expect(note).not.toHaveClass('truncate')
+    expect(note).toHaveClass('min-w-0')
+    expect(note).toHaveClass('max-w-[20rem]')
+    expect(note).toHaveAttribute('title', `stale config (${inputs}) · choose Reload session to apply`)
+    const list = screen.getByTestId('reload-stale-inputs')
+    expect(list).toHaveClass('truncate')
+    expect(list).toHaveClass('min-w-0')
+    expect(list).toHaveTextContent(`stale config (${inputs})`)
+    const clause = screen.getByTestId('reload-stale-clause')
+    expect(clause).not.toHaveClass('truncate')
+    expect(clause).toHaveClass('shrink-0')
+    expect(clause).toHaveTextContent(/^· choose Reload session to apply$/)
+    unmount()
+    setup({}, { config_stale: true, running: true, config_stale_inputs: inputs })
+    expect(screen.getByTestId('reload-stale-clause')).toHaveTextContent(/^— reload when the turn ends$/)
+    expect(screen.getByTestId('reload-stale-note')).toHaveAttribute(
+      'title',
+      `stale config (${inputs}) — reload when the turn ends`,
+    )
+  })
+
+  it('keeps the sub-agent wait clause whole beside a long input list', () => {
+    const inputs = '~/.kiro/agents/kirocrew.json, ~/.kiro/settings/mcp.json'
+    const store = createTestStore()
+    store.dispatch(sseSlots([
+      { key: 'zzq-slot', messages: 0, running: false, config_stale: true, config_stale_inputs: inputs } as ChatSlot,
+    ]))
+    store.dispatch(sseSubagentSpawn({ slot: 'zzq-slot', id: 'sa-1', task: 't', agent: 'a' }))
+    renderWithProviders(<SessionActionsMenu variant="dropdown" slotKey="zzq-slot" />, { store })
+    expect(screen.getByTestId('reload-stale-clause')).toHaveTextContent(/^— reload when sub-agents finish$/)
+    expect(screen.getByTestId('reload-stale-note')).toHaveAttribute(
+      'title',
+      `stale config (${inputs}) — reload when sub-agents finish`,
+    )
+  })
+
+  it('shows no stale note on a current config', () => {
+    setup()
+    expect(screen.queryByTestId('reload-stale-note')).toBeNull()
   })
 
   it('labels read/unread and pin/unpin from the live store state', () => {

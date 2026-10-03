@@ -7994,6 +7994,13 @@
       "reload_blocked_subagents": "子代理工作中",
       "reload_session": "重新加载会话",
       "reload_session_tooltip": "重启代理进程以加载新的 MCP/配置更改。对话会保留。",
+      "reload_press_needed": "配置已过期 · 选择“重新加载会话”以应用",
+      "reload_stale_inputs": "配置已过期 ({{inputs}})",
+      "reload_clause_press_needed": "· 选择“重新加载会话”以应用",
+      "reload_clause_after_subagents": "— 子代理完成后重新加载",
+      "reload_clause_after_turn": "— 轮次结束后重新加载",
+      "reload_stale_after_subagents": "配置已过期 — 子代理完成后重新加载",
+      "reload_stale_after_turn": "配置已过期 — 轮次结束后重新加载",
       "rename": "重命名",
       "reveal_in_sidebar": "在侧边栏中显示",
       "tags": "标签…",
@@ -8003,6 +8010,13 @@
       "custom_color": "自定义颜色",
       "hex_color_code": "十六进制颜色代码",
       "no_color": "无颜色"
+    },
+    "staleConfigBadge": {
+      "label": "配置已过期",
+      "tooltip": "配置已过期：{{inputs}} 在此会话启动后已更改。点击打开会话菜单，然后选择“重新加载会话”。",
+      "tooltip_compact": "配置已过期：{{inputs}} 在此会话启动后已更改。重新加载会话以应用更改。",
+      "tooltip_compact_generic": "配置已过期：此会话的配置在启动后已更改。重新加载会话以应用更改。",
+      "tooltip_generic": "配置已过期：此会话的配置在启动后已更改。点击打开会话菜单，然后选择“重新加载会话”。"
     },
     "sessionGridView": {
       "close_cell": "关闭单元",

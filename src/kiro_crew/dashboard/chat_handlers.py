@@ -11595,6 +11595,10 @@ async def reload_slot_session(
     # Respawn + session/load now rather than on the next message, so the fresh
     # process (and its rebuilt toolset) is ready when the user comes back.
     schedule_eager_spawn(state, slot, allow_resume=True)
+    # The relaunched process reads current config, so the stale-config badge
+    # clears here; the next turn's end re-checks it against the new process.
+    slot.config_stale = False
+    slot.config_stale_inputs = ""
     state.push_slots_update()
     if teardown_incomplete:
         return web.json_response({"ok": True, "warning": _TEARDOWN_INCOMPLETE_WARNING})

@@ -8232,6 +8232,13 @@
       "reload_blocked_subagents": "subagentes trabalhando",
       "reload_session": "Recarregar sessão",
       "reload_session_tooltip": "Reinicia o processo do agente para aplicar mudanças de MCP/configuração. A conversa é preservada.",
+      "reload_press_needed": "configuração desatualizada · escolha Recarregar sessão para aplicar",
+      "reload_stale_inputs": "configuração desatualizada ({{inputs}})",
+      "reload_clause_press_needed": "· escolha Recarregar sessão para aplicar",
+      "reload_clause_after_subagents": "— recarregue quando os subagentes terminarem",
+      "reload_clause_after_turn": "— recarregue quando o turno terminar",
+      "reload_stale_after_subagents": "configuração desatualizada — recarregue quando os subagentes terminarem",
+      "reload_stale_after_turn": "configuração desatualizada — recarregue quando o turno terminar",
       "rename": "Renomear",
       "reveal_in_sidebar": "Mostrar na barra lateral",
       "tags": "Etiquetas…",
@@ -8241,6 +8248,13 @@
       "custom_color": "Cor personalizada",
       "hex_color_code": "Código de cor hexadecimal",
       "no_color": "Sem cor"
+    },
+    "staleConfigBadge": {
+      "label": "configuração desatualizada",
+      "tooltip": "Configuração desatualizada: {{inputs}} mudou depois que esta sessão começou. Clique para abrir o menu da sessão e escolha Recarregar sessão.",
+      "tooltip_compact": "Configuração desatualizada: {{inputs}} mudou depois que esta sessão começou. Recarregue a sessão para aplicar a alteração.",
+      "tooltip_compact_generic": "Configuração desatualizada: a configuração desta sessão mudou desde que ela começou. Recarregue a sessão para aplicar a alteração.",
+      "tooltip_generic": "Configuração desatualizada: a configuração desta sessão mudou desde que ela começou. Clique para abrir o menu da sessão e escolha Recarregar sessão."
     },
     "sessionGridView": {
       "close_cell": "Fechar célula",

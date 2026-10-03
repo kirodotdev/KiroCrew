@@ -203,7 +203,11 @@ _EXPECTED_GATE_CALL_SITES: dict[str, int] = {
     # (``_read_agent_spec`` / ``read_agent_spec_strict``, each handing it the
     # ``Path.resolve(strict=True)`` result; the native skill projection reads
     # every spec under ``asyncio.to_thread``, and a stalled pool there dropped
-    # agents silently and surfaced as ``no prepared skill discovery view``).
+    # agents silently and surfaced as ``no prepared skill discovery view``),
+    # and ``agent._pinned_spec_documents``, handing it a name listed through a
+    # pin of the gate-admitted (canonical) agents directory, an entry no link
+    # can redirect (the per-turn stale-config fingerprint resolves its spec
+    # this way, off the event loop).
     # ``test_artifacts_pathres.py`` and ``test_agent_discovery_pathres.py`` pin
     # the canonical spelling and the thread split for each caller. The store's
     # root check and ``source_path`` pointers, and the reader module's project

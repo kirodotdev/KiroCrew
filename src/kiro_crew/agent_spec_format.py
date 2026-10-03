@@ -34,9 +34,10 @@ from __future__ import annotations
 
 import codecs
 import math
+import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Iterable
 
 import yaml  # type: ignore[import-untyped]
 
@@ -219,6 +220,42 @@ def iter_agent_spec_files(directory: Path, *, ordered: bool = True) -> list[Path
     live, _shadowed = _split_spec_files(directory)
     live = [path for path in live if not is_native_skill_alias_name(path.name)]
     return sorted(live) if ordered else live
+
+
+def live_agent_spec_names(
+    names: Iterable[str], *, entry_exists: Callable[[str], bool]
+) -> list[str]:
+    """:func:`iter_agent_spec_files` over a listing the caller already holds.
+
+    For a caller that lists a directory through a pinned handle and must never
+    reopen it by name: *names* are its entry names and *entry_exists* answers
+    whether a name is present in that same directory (the case-insensitive twin
+    probe of :func:`_has_json_twin`). The same rules otherwise: both forms, a
+    ``<stem>.md`` beside its ``<stem>.json`` twin dropped, skill-view aliases
+    left out, sorted by name. A suffix matches as ``Path.glob`` matches it: by
+    exact case on POSIX, ignoring case on Windows (``os.path.normcase``).
+    """
+
+    def _form(name: str) -> str | None:
+        folded = os.path.normcase(name)
+        for suffix in AGENT_SPEC_SUFFIXES:
+            if folded.endswith(suffix):
+                return suffix
+        return None
+
+    listed = [(name, _form(name)) for name in names]
+    json_stems = {n[: -len(JSON_SUFFIX)] for n, form in listed if form == JSON_SUFFIX}
+    live: list[str] = []
+    for name, form in listed:
+        if form is None:
+            continue
+        if form == MARKDOWN_SUFFIX:
+            stem = name[: -len(MARKDOWN_SUFFIX)]
+            if stem in json_stems or entry_exists(f"{stem}{JSON_SUFFIX}"):
+                continue
+        if not is_native_skill_alias_name(name):
+            live.append(name)
+    return sorted(live)
 
 
 def shadowed_markdown_specs(directory: Path) -> list[Path]:

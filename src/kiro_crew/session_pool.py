@@ -381,7 +381,17 @@ class WarmSessionPool:
                     pre_spawn = await pre_spawn_identity(
                         getattr(self._owner, "spawn_identity_reader", None)
                     )
+                    # The config this process is about to read, fingerprinted
+                    # immediately before it starts -- inside the start slot, so
+                    # an edit landing while the fill waited for the slot is
+                    # read by the child AND recorded -- and an edit between
+                    # this start and a chat's claim is a difference that
+                    # chat's next turn sees. Read outside the fill lock, like
+                    # the start itself.
+                    spawn_config = await self._pool_spawn_config()
                     await provider.start()
+                if spawn_config is not None:
+                    provider.pool_spawn_config = spawn_config
                 # Fill-time is authentication time for a pooled provider --
                 # a claim months of seconds later must compare against THIS
                 # account, not the claim-time one (first-stamp-wins in the
@@ -448,6 +458,21 @@ class WarmSessionPool:
             finally:
                 if provider is not None:
                     await self._owner._discard_pool_provider(provider, "Warm pool fill cleanup")
+
+    async def _pool_spawn_config(self) -> Any:
+        """The owner's ``spawn_config_reader`` answer for the pool's agent and cwd.
+
+        ``None`` when no reader is wired (the CLI, tests) or it fails: a claimed
+        process then gets the fingerprint its first turn takes, as before.
+        """
+        reader = getattr(self._owner, "spawn_config_reader", None)
+        if reader is None:
+            return None
+        try:
+            return await asyncio.to_thread(reader, self._pool_agent or "", self._pool_cwd or "")
+        except Exception:  # noqa: BLE001 - a change detector never fails a fill
+            self._deps.logger.warning("Warm pool: config fingerprint failed", exc_info=True)
+            return None
 
     def _dispatch_hard_kill(self, provider: LLMProvider) -> None:
         """Dispatch a blocking provider kill without blocking the event loop."""

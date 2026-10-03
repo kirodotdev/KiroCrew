@@ -8113,6 +8113,13 @@
       "reload_blocked_subagents": "Unteragenten arbeiten",
       "reload_session": "Sitzung neu laden",
       "reload_session_tooltip": "Startet den Agentenprozess neu, um MCP-/Konfigurationsänderungen zu übernehmen. Die Unterhaltung bleibt erhalten.",
+      "reload_press_needed": "veraltete Konfiguration · zum Übernehmen „Sitzung neu laden“ wählen",
+      "reload_stale_inputs": "veraltete Konfiguration ({{inputs}})",
+      "reload_clause_press_needed": "· zum Übernehmen „Sitzung neu laden“ wählen",
+      "reload_clause_after_subagents": "— neu laden, wenn die Unteragenten fertig sind",
+      "reload_clause_after_turn": "— neu laden, wenn der Zug endet",
+      "reload_stale_after_subagents": "veraltete Konfiguration — neu laden, wenn die Unteragenten fertig sind",
+      "reload_stale_after_turn": "veraltete Konfiguration — neu laden, wenn der Zug endet",
       "rename": "Umbenennen",
       "reveal_in_sidebar": "In der Seitenleiste anzeigen",
       "tags": "Tags…",
@@ -8122,6 +8129,13 @@
       "custom_color": "Benutzerdefinierte Farbe",
       "hex_color_code": "Hex-Farbcode",
       "no_color": "Keine Farbe"
+    },
+    "staleConfigBadge": {
+      "label": "veraltete Konfiguration",
+      "tooltip": "Veraltete Konfiguration: {{inputs}} wurde nach dem Start dieser Sitzung geändert. Klicke, um das Sitzungsmenü zu öffnen, und wähle dann „Sitzung neu laden“.",
+      "tooltip_compact": "Veraltete Konfiguration: {{inputs}} wurde nach dem Start dieser Sitzung geändert. Lade die Sitzung neu, um die Änderung zu übernehmen.",
+      "tooltip_compact_generic": "Veraltete Konfiguration: Die Konfiguration dieser Sitzung wurde seit ihrem Start geändert. Lade die Sitzung neu, um die Änderung zu übernehmen.",
+      "tooltip_generic": "Veraltete Konfiguration: Die Konfiguration dieser Sitzung wurde seit ihrem Start geändert. Klicke, um das Sitzungsmenü zu öffnen, und wähle dann „Sitzung neu laden“."
     },
     "sessionGridView": {
       "close_cell": "Zelle schließen",

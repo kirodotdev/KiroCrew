@@ -164,6 +164,19 @@ export default function SessionActionsMenu({
     a => a.status === 'pending' || a.status === 'running' || a.status === 'tool',
   )
   const reloadBlocked = isRunning || hasActiveSubagents
+  // The live session runs on config changed since it started (the stale-config
+  // badge): the Reload row says a press applies it, beside any reason it is
+  // blocked right now.
+  const configStale = !!slot?.config_stale
+  // What changed, by display-safe label, so a touch user with no tooltip to
+  // hover still sees it on the row.
+  const staleInputs = slot?.config_stale_inputs || ''
+  // The remedy, or what the reload waits on, worded for the row's state.
+  const reloadClause = i18nT(!reloadBlocked
+    ? 'components.sessionActionsMenu.reload_clause_press_needed'
+    : isRunning
+      ? 'components.sessionActionsMenu.reload_clause_after_turn'
+      : 'components.sessionActionsMenu.reload_clause_after_subagents')
   const currentFolderId = slot?.folder_id
   const colorIndex = slot?.color_index
   const colorHex = slot?.color_hex
@@ -351,7 +364,38 @@ export default function SessionActionsMenu({
         onSelect={() => reload(slotKey)}
       >
         <RotateCw size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.reload_session')}
-        {reloadBlocked && (
+        {configStale ? (
+          // One sentence, two facts: the config is stale, and the reload waits
+          // on what blocks it -- never "stale config · sub-agents working",
+          // which reads as one causing the other.
+          // Only the changed-input list is clamped: several paths would
+          // otherwise stretch the whole dropdown. The remedy clause after it is
+          // its own span and never truncates, so what to do is always visible;
+          // the title carries the whole sentence.
+          staleInputs ? (
+            <span
+              className="ml-auto flex min-w-0 max-w-[20rem] items-baseline gap-1 text-[10px] text-muted"
+              data-testid="reload-stale-note"
+              title={`${i18nT('components.sessionActionsMenu.reload_stale_inputs', { inputs: staleInputs })} ${reloadClause}`}
+            >
+              <span className="min-w-0 truncate" data-testid="reload-stale-inputs">
+                {i18nT('components.sessionActionsMenu.reload_stale_inputs', { inputs: staleInputs })}
+              </span>
+              {/* A real space, so the accessible text reads as one sentence; the
+               *  flex gap does the visual spacing. */}
+              {' '}
+              <span className="shrink-0 whitespace-nowrap" data-testid="reload-stale-clause">{reloadClause}</span>
+            </span>
+          ) : (
+            <span className="ml-auto text-[10px] text-muted" data-testid="reload-stale-note">
+              {i18nT(!reloadBlocked
+                ? 'components.sessionActionsMenu.reload_press_needed'
+                : isRunning
+                  ? 'components.sessionActionsMenu.reload_stale_after_turn'
+                  : 'components.sessionActionsMenu.reload_stale_after_subagents')}
+            </span>
+          )
+        ) : reloadBlocked && (
           <span className="ml-auto text-[10px] text-muted">
             {isRunning
               ? i18nT('components.sessionActionsMenu.reload_blocked_running')

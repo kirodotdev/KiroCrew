@@ -384,6 +384,8 @@ class TestWhatThisSetGrants:
         "session_release",
         "session_read_message",
         "session_summary",
+        # A read of the target's config state, the same reach as session_summary.
+        "session_config_status",
     }
     GRANTED_TOOLS = FOLDER_TOOLS | TAG_TOOLS | COLUMN_TOOLS | PIN_TOOLS | SESSION_TOOLS
 

@@ -2767,6 +2767,10 @@ class _ChatSlot:
         "_pending_reset_history_key",
         "_pending_discard_conversation_key",
         "_pending_model_pick",
+        "_spawn_config",
+        "config_stale",
+        "config_stale_inputs",
+        "_config_stat_sig",
         "_eager_spawn_task",
         "_eager_spawn_failures",
         "_eager_spawn_retry_at",
@@ -3442,6 +3446,19 @@ class _ChatSlot:
         # the caller's authorization and commits the model in one synchronous
         # step. Runtime only: a pick does not survive a gateway restart.
         self._pending_model_pick: Any = None
+        # The spawn-time config fingerprint of the provider this slot's turns
+        # ran on (stale_config.SpawnConfigRecord), recorded once per provider.
+        # Runtime only -- a restart starts a fresh process anyway.
+        self._spawn_config: Any = None
+        # The live session runs on config that changed after it started
+        # (config_staleness.refresh_config_stale), and the display-safe labels
+        # of what changed. Projected for the dashboard's stale-config badge.
+        self.config_stale: bool = False
+        self.config_stale_inputs: str = ""
+        # The stat signature of this chat's config inputs at its last stale
+        # check (stale_config.input_signature); the sweep re-fingerprints the
+        # chat only when it changed.
+        self._config_stat_sig: Any = None
         # Debounced speculative session-creation task (session.eager_spawn).
         # At most one per slot: scheduling a new one cancels the previous, so
         # rapid signals (create + project set) collapse into a single spawn.
@@ -6224,6 +6241,12 @@ class DashboardState:
         self._browser_install_job: Any = None
         self._browser_install_scope: Any = None
         self._terminal_title_poller: asyncio.Task | None = None  # type: ignore[type-arg]
+        # The stale-config badge's sweep (config_staleness.start_config_stale_sweep)
+        # and the coalescing flags of its write-triggered refresh-all.
+        self._config_stale_sweep: asyncio.Task | None = None  # type: ignore[type-arg]
+        self._config_stale_backend_sub: Any = None
+        self._config_stale_refresh_running: bool = False
+        self._config_stale_refresh_again: bool = False
         # Background reconciler that surfaces channel-originated sessions
         # (slack:<ts>, discord:…) as chat slots. Held to prevent GC.
         self._channel_slot_reconciler: asyncio.Task | None = None  # type: ignore[type-arg]

@@ -598,6 +598,50 @@ it.
 What you may safely hand-edit: a spec you authored yourself, and in an owned or
 app-generated one, nothing — change `~/.kiro/crew/agent.json` or the Template pane instead.
 
+## When a running chat shows "stale config"
+
+A chat's agent process reads its spec once, at spawn. When the spec changes
+afterwards, the dashboard marks the chat with a **stale config** badge (in the
+chat header and its sidebar row) until the session is reloaded, idle chats
+included: a change made through the dashboard shows at once, and one made by
+editing the file directly within about a minute; nothing is
+relaunched on its own (`src/kiro_crew/dashboard/stale_config.py`; this table is
+that module's classification). "Reconcilable" means kiro-cli 2.21 and later
+applies the change live (`mcp_hot_reload.py`), so the chat is stale for it only
+on another provider; "spawn-only" means no backend re-reads it, so the chat is
+stale for it on every provider. Agents read the same answer with the
+`session_config_status` tool.
+
+| Field | Half | Why |
+|---|---|---|
+| `mcpServers` (with each entry's `disabled` / `disabledTools`) | reconcilable | kiro-cli reconciles MCP servers live |
+| `@server` ref **added** to `tools` | reconcilable | the hot-reload contract names an added `tools` ref |
+| `@server` ref **removed** from `tools` | spawn-only | kiro-cli keeps a removed ref's server mounted; only the dashboard's own MCP sync also writes `disabled: true` |
+| built-in (non-`@server`) entries of `tools` | spawn-only | read at spawn only |
+| `allowedTools` (all of it) | spawn-only | the auto-approve list: a revoked grant stays live until a reload |
+| `prompt`, `hooks`, `resources`, `toolsSettings` and every other field | spawn-only | read at spawn only |
+| `model` | excluded | applied through its own path; a default-model rewrite must not flag every chat |
+| user `~/.kiro/settings/mcp.json` and project `.kiro/settings/mcp.json` `mcpServers` | reconcilable | as `mcpServers` above, when the spec mounts them (`includeMcpJson`; see below) |
+| `includeMcpJson` | spawn-only | read at spawn only; it decides which `mcp.json` servers are mounted |
+| a Kiro Crew server's entry in user or project `mcp.json` | spawn-only | Crew reads it at each session start to decide whether it mounts the session's identity element |
+
+A spec that does not mount the `mcp.json` servers — `includeMcpJson: false`
+on kiro-cli, anything but `true` on KAS, and every array-backed backend, which
+is handed the spec's own `mcpServers` alone — is not marked stale by adding or
+editing a server in those files. What Crew reads from them at every spawn
+regardless is still compared: each server's `disabled` / `disabledTools`, and
+the whole entry of a Kiro Crew server it mounts with the session's identity.
+
+The spec watched is the file the chat's backend loads. kiro-cli reads `*.json`
+only — the checkout's `.kiro/agents` first, then `~/.kiro/agents` — so editing
+a markdown spec beside a JSON one never marks a kiro-cli chat stale, and a JSON
+spec's `allowedTools` revocation does. KAS loads `~/.kiro/agents` alone, either
+form (a `.json` twin beats the `.md`), so a checkout's spec is not its file.
+Every other backend runs on the spec Crew reads for it, the checkout's first and
+then the user-level one, either form. A config file that exists but cannot be
+read (or an agents directory that cannot be listed) makes the answer unknown
+rather than "current".
+
 ## Markdown form and the Template pane
 
 Frontmatter keys map one-to-one onto the JSON fields above; nesting works

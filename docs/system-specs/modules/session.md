@@ -1826,6 +1826,83 @@ the four where `rewind` does not yet, so nobody reads them as already shared:
 
 After a hard kill, `_eager_respawn(key)` calls `get_or_create(key)` in a background task so the next user message finds a warm session. On failure, logs at debug and does nothing — the next message triggers `get_or_create` again via the normal path.
 
+### Stale-config detection
+
+A chat's agent process reads its MCP servers, agent spec and ACP backend once,
+at spawn; an edit made afterwards does not reach it until a person presses
+**Reload session**. The dashboard detects that and shows it, and never
+relaunches anything on its own.
+
+- **Fingerprint** (`dashboard/stale_config.py`). Each turn fingerprints those
+  inputs for the spawn selection it hands the factory (resolved agent +
+  project) BEFORE it acquires the provider, and records it against the provider
+  it acquired (`slot._spawn_config`, weakly keyed to that provider object, once
+  per provider). A prewarmed provider is recorded by the eager spawn that
+  created it (`_eager_spawn` → `_spawn_admitted_prefetch`), from a fingerprint
+  taken before its handshake; a warm-pool process by `session_pool._fill_warm_pool`
+  through `SessionManager.spawn_config_reader`
+  (`config_staleness.pool_spawn_config`, wired by the gateway), carried as
+  `provider.pool_spawn_config` and recorded by the chat that claims it when its
+  spawn selection matches. The fingerprint is built from FIELDS in two halves:
+  `reconcilable` (the `mcpServers` entries of the loaded spec and of the global
+  and workspace `mcp.json`, and `@server` refs ADDED to `tools`) and
+  `spawn_only` (every other spec field, all of `allowedTools`, a removed ref,
+  and the backend). The `mcp.json` files are compared whole only when the
+  loaded spec mounts their servers (`stale_config._mcp_json_mounted`): its
+  `includeMcpJson` as the backend reads it, an absent flag true on kiro-cli and
+  false on KAS, and never on an array-backed backend, which is handed the
+  spec's own servers alone. Otherwise only what Crew reads from them at every
+  spawn is compared: each server's `disabled` / `disabledTools` and the whole
+  entry of a server in `acp.session_mcp.IDENTITY_BOUND_SERVERS`. Toggling the
+  flag is a spawn-only spec edit. A spec's `model` field and the MCP gateway stub set are not
+  inputs. Every read goes through `hooks.safe_read_file_bytes` and reads the
+  whole file; a file over the 50 MB cap, one that exists but cannot be read, or
+  an agents directory that cannot be listed is `unreadable`, carried forward as
+  recorded rather than compared.
+- **Which spec file** (`stale_config._agent_spec_files`) is the one the chat's
+  backend loads: kiro-cli reads `*.json` only, the checkout's `.kiro/agents`
+  before `~/.kiro/agents`; KAS reads `~/.kiro/agents` alone, either form, a
+  `.json` twin beating the `.md`; every other backend runs on the spec
+  `acp/session_mcp` reads for it, the checkout's then the user-level one.
+- **Stale** (`stale_config.is_stale`): a spawn-only difference on any provider;
+  a reconcilable one only on a provider that does not apply MCP edits live
+  (`mcp_hot_reload.provider_hot_reloads`).
+- **Badge** (`dashboard/config_staleness.py`). `refresh_config_stale` compares
+  the record against the config the same inputs read now and publishes
+  `config_stale` and `config_stale_inputs` (display-safe labels: relative or
+  `~` paths) on the slot projection, broadcasting only on a change. It runs in
+  the background at each turn's end, on a `session_config_status` read, for
+  every live chat right after a successful gateway config write (a
+  middleware on the agent and MCP write routes, coalesced into
+  at most one extra pass during a burst, and pinned to the registered routes by
+  a test), when the process `ConfigWatch` reports a change to
+  `agent.acp_backend` or `agent.member_acp_backend` (`config.json` keeps its one
+  watcher; nothing here stats it), and on a sweep every
+  `CONFIG_STALE_SWEEP_SECS` (60 s) for edits made outside the gateway. The
+  sweep is stat-guarded (`stale_config.input_signature`: `lstat` of both
+  agents directories and their spec listings, streamed into at most
+  `SIGNATURE_MAX_SPEC_ENTRIES` kept entries each plus a fixed-size,
+  order-independent overflow digest, and both
+  `mcp.json` files, nothing opened), so it re-fingerprints a chat only when one
+  changed, off the loop and at most four at once; it skips a chat mid-turn
+  (its turn's end covers it), and clears the badge of one with no live,
+  recorded process (a session that expired idle). So an idle chat is badged
+  too. The record stores a sha256 digest per input part, not the field text,
+  and a digest per `@server` ref in `tools` (at most
+  `FINGERPRINT_MAX_TOOL_REFS`, the rest folded into one fixed-size,
+  order-independent overflow entry), so a large spec costs a slot or a warm
+  process a few fixed-size digests;
+  the selection metadata (`spec_path`, `spec_ws`, `user_spec_path`) stays
+  readable for labels and is carried forward with an unreadable spec. A
+  backend change is labelled with the `config.json` key it resolved from
+  (`agent.member_acp_backend` for a member DM, else `agent.acp_backend`). An
+  input unreadable at spawn is adopted on its first read and persisted into
+  the record, so a later edit to it is stale. An unknown reading leaves the badge as it was. The Reload action clears it, and
+  it clears on its own when the config returns to the spawned state.
+- **Agent surface**: the read-only `session_config_status` session-control
+  tool (`GET /api/session-control/config-status`), authorized as
+  `session_summary` is.
+
 ## Session Resume (SessionMap)
 
 Persistent mapping of `session_key → kiro_session_id` stored at
