@@ -198,6 +198,63 @@ class TestResolveGh:
 # ── prevalidated handoff (sandboxed children) ────────────────────────────────
 
 
+class TestValidateReturnsInvokedPath:
+    """Relaxed mode must exec the path it was ASKED for, not the resolved
+    target. Some environments install a provider CLI as a single multiplexer
+    binary reached through a per-tool symlink, and the multiplexer picks which
+    tool to run from argv[0]; canonicalising the symlink to the shared target
+    erases that name, leaving the multiplexer unable to dispatch the tool.
+    """
+
+    def test_relaxed_mode_returns_the_symlink_not_the_target(self, tmp_path):
+        # A shared dispatcher binary, reached via a per-tool symlink named `gh`.
+        dispatcher = _fake_gh(tmp_path / "libexec", name="multiplexer")
+        link = tmp_path / "bin" / "gh"
+        link.parent.mkdir(parents=True, exist_ok=True)
+        os.symlink(dispatcher, link)
+
+        returned = runner.validate_provider_executable(str(link))
+
+        # Exec the symlink (argv[0] == "gh"), never the resolved dispatcher.
+        assert returned == str(link)
+        assert returned != str(Path(dispatcher).resolve())
+
+    def test_strict_mode_returns_the_canonical_path(self, monkeypatch, tmp_path):
+        # Strict mode forbids symlinks entirely, so a direct binary is required;
+        # original and resolved coincide and the canonical form is returned.
+        binary = _fake_gh(tmp_path / "sysbin")
+        monkeypatch.setenv("KIROCREW_PROVIDER_BIN_STRICT", "1")
+
+        returned = runner.validate_provider_executable(binary)
+
+        assert returned == str(Path(binary).resolve())
+
+    def test_strict_mode_still_refuses_a_symlink(self, monkeypatch, tmp_path):
+        dispatcher = _fake_gh(tmp_path / "libexec", name="multiplexer")
+        link = tmp_path / "bin" / "gh"
+        link.parent.mkdir(parents=True, exist_ok=True)
+        os.symlink(dispatcher, link)
+        monkeypatch.setenv("KIROCREW_PROVIDER_BIN_STRICT", "1")
+
+        with pytest.raises(ValueError, match="canonical"):
+            runner.validate_provider_executable(str(link))
+
+    def test_symlink_inside_the_agent_tree_is_refused_by_its_own_path(
+        self, monkeypatch, tmp_path
+    ):
+        # A trusted target reached through a symlink the agent could plant in
+        # its own workspace must not become runnable by that in-tree name.
+        target = _fake_gh(tmp_path / "trusted")
+        agent_tree = tmp_path / "workspace"
+        link = agent_tree / "gh"
+        link.parent.mkdir(parents=True, exist_ok=True)
+        os.symlink(target, link)
+        monkeypatch.setattr(runner, "agent_writable_roots", lambda: (agent_tree,))
+
+        with pytest.raises(ValueError, match="agent-writable tree"):
+            runner.validate_provider_executable(str(link))
+
+
 def _prevalidated_value(path: str) -> str:
     st = os.stat(path)
     return f"{path}|{st.st_dev}:{st.st_ino}"
