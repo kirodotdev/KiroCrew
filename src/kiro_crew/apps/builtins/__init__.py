@@ -11,6 +11,11 @@ BUILTIN_NAMES: list[str] = [
     # gateway process (gateway_routes.py), so the package exports register_routes.
     "dev_fleet",
     "issue_radar",
+    # Spawned backend AND one in-gateway route: the state-file publish must run in
+    # the gateway process (gateway_routes.py), because the backend's sandbox binds
+    # each state leaf and the write-staging dir as separate mounts and the staged
+    # rename cannot cross a mount point. So the package exports register_routes.
+    "md_notebook",
     "meetings",
     "ops_mission_control",
     "papyrus",

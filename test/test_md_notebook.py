@@ -1145,6 +1145,11 @@ def test_vault_registry_commit_retries_windows_sharing_violation(fixtures, monke
     """
     server_mod, _remote, _seed = fixtures
     monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+    # Windows has no O_DIRECTORY, so pinned_parent_replace_supported() is False
+    # there and the publish takes the by-name replace_with_retry floor — which is
+    # the path that carries this Windows sharing-violation retry. Force it here so
+    # the POSIX test host exercises that same floor.
+    monkeypatch.setattr(server_mod, "pinned_parent_replace_supported", lambda: False)
     monkeypatch.setattr(atomic_write_mod, "_REPLACE_BACKOFF_SECONDS", 0)
     vaults = [{"id": "v1", "localPath": "vault-one"}]
 
@@ -1153,6 +1158,1094 @@ def test_vault_registry_commit_retries_windows_sharing_violation(fixtures, monke
 
     assert json.loads(server_mod._vaults_json().read_text(encoding="utf-8")) == vaults
     assert state["n"] == 2, "the transient rename must be retried exactly once"
+
+
+def test_state_write_routes_to_gateway_when_sandboxed(fixtures, monkeypatch) -> None:
+    """A sandboxed backend posts the publish to the gateway and writes NO local bytes.
+
+    Under the sandbox the state leaves and the staging dir are separate bind
+    mounts, so the in-process staged rename cannot complete and a temp beside the
+    target would expose the secret. When ``KIROCREW_GATEWAY_ORIGIN`` names a
+    gateway, the writer must hand the content to the gateway's publish route and
+    touch no local file in THIS process — so no secret byte ever reaches a name a
+    sandboxed sibling could read. The in-process writer must not run.
+    """
+    server_mod, _remote, _seed = fixtures
+    monkeypatch.setenv("KIROCREW_GATEWAY_ORIGIN", "http://127.0.0.1:5999")
+
+    posted: list[tuple[str, str, bool]] = []
+
+    def fake_publish(origin, leaf, content, *, fsync_file):
+        assert origin == "http://127.0.0.1:5999"
+        posted.append((leaf, content, fsync_file))
+
+    monkeypatch.setattr(server_mod, "_publish_state_via_gateway", fake_publish)
+
+    # The in-process writer must NOT run on the sandboxed path: fail loudly if it
+    # does, so a regression that writes bytes locally cannot pass silently.
+    def forbidden_in_process(*_a, **_k):
+        raise AssertionError("the sandboxed path must route to the gateway, not write locally")
+
+    monkeypatch.setattr(server_mod, "_write_state_in_process_sync", forbidden_in_process)
+
+    server_mod._write_vaults_sync([{"id": "v1", "localPath": "vault-one"}])
+    server_mod._write_pat_sync("ghp_exampletoken")
+    server_mod._write_settings_sync({"autoSync": False})
+
+    leaves = {leaf: (content, fsync) for leaf, content, fsync in posted}
+    assert set(leaves) == {"vaults.json", "pat", "settings.json"}
+    # The PAT and settings publishes carry fsync; the vault list does not —
+    # matching the backend's own durability policy, now enforced gateway-side.
+    assert leaves["pat"][1] is True
+    assert leaves["settings.json"][1] is True
+    assert leaves["vaults.json"][1] is False
+    assert leaves["pat"][0] == "ghp_exampletoken"
+
+    # Nothing was staged or published in this process: the staging dir holds no
+    # temp, and the real target files were never created locally.
+    staging = server_mod._staging_dir()
+    assert not staging.exists() or list(staging.glob("*.tmp")) == []
+    assert not server_mod._pat_file().exists()
+
+
+def test_unsandboxed_write_publishes_in_process(fixtures, monkeypatch) -> None:
+    """With no gateway to call, the publish runs in-process and lands the file.
+
+    This is both the foreground-gateway-before-site path and the gateway's own
+    publish path: one mount, one atomic staged rename. The gateway route calls
+    ``_write_state_in_process_sync`` directly for the same reason.
+    """
+    server_mod, _remote, _seed = fixtures
+    monkeypatch.delenv("KIROCREW_GATEWAY_ORIGIN", raising=False)
+    # The gateway client must never be reached when there is no origin.
+    monkeypatch.setattr(
+        server_mod,
+        "_publish_state_via_gateway",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("no gateway should be called")),
+    )
+
+    server_mod._write_pat_sync("ghp_localtoken")
+    assert server_mod._pat_file().read_text(encoding="utf-8") == "ghp_localtoken"
+    server_mod._write_vaults_sync([{"id": "v2", "localPath": "vault-two"}])
+    assert json.loads(server_mod._vaults_json().read_text(encoding="utf-8")) == [
+        {"id": "v2", "localPath": "vault-two"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_gateway_state_route_publishes_and_is_scoped(fixtures, monkeypatch) -> None:
+    """The gateway route publishes an allowed leaf, and refuses off-scope callers.
+
+    Runs ``handle_state_write`` behind a real aiohttp server (so the bounded JSON
+    read sees a real request body) with a tiny middleware that stamps the test's
+    chosen ``request["app"]`` principal — standing in for the token middleware,
+    whose own app-scope gate is covered by the token-auth suite. The app
+    principal lands the three leaves onto their real targets (the in-process
+    publish, correct in a non-sandboxed test); a non-app principal is refused
+    403; an unknown leaf is refused 400 and writes nothing.
+    """
+    server_mod, _remote, _seed = fixtures
+    from kiro_crew.apps.builtins.md_notebook import gateway_routes
+
+    monkeypatch.setattr(gateway_routes, "is_app_enabled", lambda _name: True)
+
+    # Capture every SEL audit so the denial branches can be asserted as audited.
+    audits: list[dict] = []
+
+    class _SelSpy:
+        def log_api_access(self, **kw):
+            audits.append(kw)
+
+    monkeypatch.setattr(gateway_routes, "sel", lambda: _SelSpy())
+
+    principal = {"app": "md-notebook"}
+
+    @web.middleware
+    async def stamp_principal(request, handler):
+        request["app"] = principal["app"]
+        return await handler(request)
+
+    app = web.Application(middlewares=[stamp_principal])
+    gateway_routes.register_routes(app)
+
+    async with TestClient(TestServer(app)) as client:
+        # App principal: each allowed leaf lands on its real target.
+        vault_abs = str(Path(server_mod._home()) / "vault-one")
+        for leaf, content in (
+            ("vaults.json", json.dumps([{"id": "v1", "localPath": vault_abs}])),
+            ("pat", "ghp_route_token"),
+            ("settings.json", json.dumps({"autoSync": False})),
+        ):
+            resp = await client.post(
+                "/api/apps/md-notebook/state", json={"leaf": leaf, "content": content}
+            )
+            assert resp.status == 200, (leaf, await resp.text())
+        assert server_mod._pat_file().read_text(encoding="utf-8") == "ghp_route_token"
+        assert json.loads(server_mod._vaults_json().read_text(encoding="utf-8")) == [
+            {"id": "v1", "localPath": vault_abs}
+        ]
+
+        # A non-app principal (a dashboard user: app == "") is refused.
+        principal["app"] = ""
+        denied = await client.post(
+            "/api/apps/md-notebook/state", json={"leaf": "pat", "content": "x"}
+        )
+        assert denied.status == 403
+
+        # An unknown leaf is refused and writes nothing new.
+        principal["app"] = "md-notebook"
+        before = server_mod._pat_file().read_text(encoding="utf-8")
+        bad = await client.post(
+            "/api/apps/md-notebook/state", json={"leaf": "../escape", "content": "x"}
+        )
+        assert bad.status == 400
+        assert server_mod._pat_file().read_text(encoding="utf-8") == before
+
+    # Both the off-scope (403) and the unknown-leaf (400) refusals are recorded
+    # as denied in SEL — the body-shape rejection is audited like every other
+    # refusal on the route, not dropped.
+    denied_outcomes = [a for a in audits if a.get("outcome") == "denied"]
+    assert any(
+        a.get("code") == "unknown_leaf" or "state file" in str(a.get("error", ""))
+        for a in denied_outcomes
+    )
+    assert len(denied_outcomes) >= 2
+
+
+class _NullSel:
+    """A no-op SEL stand-in: the refusal tests assert the HTTP response, not audits."""
+
+    def log_api_access(self, **_kw):
+        return None
+
+
+@pytest.mark.asyncio
+async def test_gateway_state_route_refuses_a_sensitive_vault_root(fixtures, monkeypatch) -> None:
+    """The gateway state route refuses a vaults.json whose content root is sensitive.
+
+    Opus's exfil finding: the gateway route is a SECOND write path onto the vault
+    registry (the first, api_vault_attach, refuses a ~/.ssh root). Without the
+    same refusal here, an app-token caller could persist a vault rooted at a
+    credential store with an attacker's remoteUrl, flip autoSync on, and the sync
+    loop would ``git add -A`` + push it. A ~/.ssh-rooted body must be refused 403
+    and NOT written; a benign body is still accepted.
+    """
+    server_mod, _remote, _seed = fixtures
+    from kiro_crew.apps.builtins.md_notebook import gateway_routes
+
+    monkeypatch.setattr(gateway_routes, "is_app_enabled", lambda _name: True)
+    monkeypatch.setattr(gateway_routes, "sel", lambda: _NullSel())
+
+    @web.middleware
+    async def stamp_app(request, handler):
+        request["app"] = "md-notebook"
+        return await handler(request)
+
+    app = web.Application(middlewares=[stamp_app])
+    gateway_routes.register_routes(app)
+
+    sensitive = str(Path.home() / ".ssh")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post(
+            "/api/apps/md-notebook/state",
+            json={
+                "leaf": "vaults.json",
+                "content": json.dumps(
+                    [{"id": "v1", "localPath": sensitive, "remoteUrl": "https://evil.example/x"}]
+                ),
+            },
+        )
+        assert resp.status == 403, await resp.text()
+        payload = await resp.json()
+        assert payload["code"] == "sensitive_state"
+        # NOT written: the registry file must not carry the poisoned entry.
+        assert not server_mod._vaults_json().exists() or sensitive not in (
+            server_mod._vaults_json().read_text(encoding="utf-8")
+        )
+
+        # A benign vault root is still accepted (the refusal is targeted).
+        benign = str(Path(server_mod._home()) / "benign-vault")
+        ok = await client.post(
+            "/api/apps/md-notebook/state",
+            json={
+                "leaf": "vaults.json",
+                "content": json.dumps([{"id": "v2", "localPath": benign}]),
+            },
+        )
+        assert ok.status == 200, await ok.text()
+
+
+@pytest.mark.asyncio
+async def test_gateway_state_route_refuses_a_relative_local_path(fixtures, monkeypatch) -> None:
+    """A vaults.json entry with a RELATIVE localPath is refused before validation.
+
+    ``content_root`` builds ``Path(localPath)`` and ``_sensitive_vault_root``
+    resolves it with ``Path.resolve()``, which anchors a relative value at the
+    resolving process's cwd. The gateway validates the registry from its own cwd,
+    but the proxied sync consumes the same ``localPath`` from the backend's ``src``
+    cwd — so a relative path validated as safe here can name a different, sensitive
+    tree there and carry the stored PAT into its push. The relative value must be
+    refused 403 and NOT written; an absolute benign root is still accepted.
+    """
+    server_mod, _remote, _seed = fixtures
+    from kiro_crew.apps.builtins.md_notebook import gateway_routes
+
+    monkeypatch.setattr(gateway_routes, "is_app_enabled", lambda _name: True)
+    monkeypatch.setattr(gateway_routes, "sel", lambda: _NullSel())
+
+    @web.middleware
+    async def stamp_app(request, handler):
+        request["app"] = "md-notebook"
+        return await handler(request)
+
+    app = web.Application(middlewares=[stamp_app])
+    gateway_routes.register_routes(app)
+
+    relative = "../../.kiro/crew/workspace/md-notebook"
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post(
+            "/api/apps/md-notebook/state",
+            json={
+                "leaf": "vaults.json",
+                "content": json.dumps(
+                    [{"id": "v1", "localPath": relative, "remoteUrl": "https://evil.example/x"}]
+                ),
+            },
+        )
+        assert resp.status == 403, await resp.text()
+        payload = await resp.json()
+        assert payload["code"] == "sensitive_state"
+        assert not server_mod._vaults_json().exists() or relative not in (
+            server_mod._vaults_json().read_text(encoding="utf-8")
+        )
+
+        # A missing/non-string localPath is treated as relative and refused too.
+        for bad in ({"id": "v2"}, {"id": "v3", "localPath": 42}):
+            bad_resp = await client.post(
+                "/api/apps/md-notebook/state",
+                json={"leaf": "vaults.json", "content": json.dumps([bad])},
+            )
+            assert bad_resp.status == 403, await bad_resp.text()
+
+        # An absolute benign root is still accepted (the refusal is targeted).
+        benign = str(Path(server_mod._home()) / "benign-vault")
+        ok = await client.post(
+            "/api/apps/md-notebook/state",
+            json={
+                "leaf": "vaults.json",
+                "content": json.dumps([{"id": "v4", "localPath": benign}]),
+            },
+        )
+        assert ok.status == 200, await ok.text()
+
+
+@pytest.mark.asyncio
+async def test_gateway_state_route_refuses_a_windows_drive_path_on_posix(
+    fixtures, monkeypatch
+) -> None:
+    """A ``C:/``-style localPath is refused on POSIX, where it is NOT natively absolute.
+
+    The validation must use the SAME predicate the backend resolves against
+    (``Path.is_absolute()``), not a both-conventions ``ntpath.isabs`` check. On
+    POSIX ``ntpath.isabs("C:/...")`` is ``True`` but ``Path("C:/...")`` is a
+    cwd-RELATIVE path, so a both-conventions check would ACCEPT the Windows form at
+    the gateway while the backend's ``content_root`` resolved it against a different
+    cwd — letting a crafted drive-letter path pass the sensitive-vault gate and the
+    sync commit/push the ``pat`` to an attacker tree. The drive-letter path must be
+    refused 403 and never persisted.
+    """
+    if os.name == "nt":
+        pytest.skip("C:/ is natively absolute on Windows; this smuggle only applies on POSIX")
+
+    server_mod, _remote, _seed = fixtures
+    from kiro_crew.apps.builtins.md_notebook import gateway_routes
+
+    monkeypatch.setattr(gateway_routes, "is_app_enabled", lambda _name: True)
+    monkeypatch.setattr(gateway_routes, "sel", lambda: _NullSel())
+
+    @web.middleware
+    async def stamp_app(request, handler):
+        request["app"] = "md-notebook"
+        return await handler(request)
+
+    app = web.Application(middlewares=[stamp_app])
+    gateway_routes.register_routes(app)
+
+    smuggle = "C:/../../../.kiro/crew/workspace/md-notebook"
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post(
+            "/api/apps/md-notebook/state",
+            json={
+                "leaf": "vaults.json",
+                "content": json.dumps(
+                    [{"id": "v1", "localPath": smuggle, "remoteUrl": "https://evil.example/x"}]
+                ),
+            },
+        )
+        assert resp.status == 403, await resp.text()
+        payload = await resp.json()
+        assert payload["code"] == "sensitive_state"
+        assert not server_mod._vaults_json().exists() or smuggle not in (
+            server_mod._vaults_json().read_text(encoding="utf-8")
+        )
+
+
+@pytest.mark.asyncio
+async def test_gateway_state_route_refuses_an_id_less_vault_entry(fixtures, monkeypatch) -> None:
+    """A vaults.json entry with no nonempty string ``id`` is refused before publishing.
+
+    ``require_vault`` and ``api_vault_forget`` index ``v["id"]`` without a presence
+    check, so an id-less entry persisted through the state route would raise
+    ``KeyError`` and turn every later Notes request into a 500 — and forgetting the
+    bad vault crashes too, leaving no recovery but hand-editing the file. The entry
+    must be refused 403 (``sensitive_state``) and NOT written; a non-string or empty
+    ``id`` is refused the same way, while a nonempty-``id`` entry is still accepted.
+    """
+    server_mod, _remote, _seed = fixtures
+    from kiro_crew.apps.builtins.md_notebook import gateway_routes
+
+    monkeypatch.setattr(gateway_routes, "is_app_enabled", lambda _name: True)
+    monkeypatch.setattr(gateway_routes, "sel", lambda: _NullSel())
+
+    @web.middleware
+    async def stamp_app(request, handler):
+        request["app"] = "md-notebook"
+        return await handler(request)
+
+    app = web.Application(middlewares=[stamp_app])
+    gateway_routes.register_routes(app)
+
+    abs_root = str(Path(server_mod._home()) / "a-vault")
+    async with TestClient(TestServer(app)) as client:
+        for bad in (
+            {"localPath": abs_root},  # no id at all
+            {"id": "", "localPath": abs_root},  # empty id
+            {"id": 7, "localPath": abs_root},  # non-string id
+        ):
+            resp = await client.post(
+                "/api/apps/md-notebook/state",
+                json={"leaf": "vaults.json", "content": json.dumps([bad])},
+            )
+            assert resp.status == 403, await resp.text()
+            payload = await resp.json()
+            assert payload["code"] == "sensitive_state"
+            assert not server_mod._vaults_json().exists() or abs_root not in (
+                server_mod._vaults_json().read_text(encoding="utf-8")
+            )
+
+        # A nonempty-id entry is still accepted (the refusal is targeted).
+        ok = await client.post(
+            "/api/apps/md-notebook/state",
+            json={
+                "leaf": "vaults.json",
+                "content": json.dumps([{"id": "v1", "localPath": abs_root}]),
+            },
+        )
+        assert ok.status == 200, await ok.text()
+
+
+@pytest.mark.asyncio
+async def test_gateway_state_route_refuses_a_traversing_subfolder_with_an_audit(
+    fixtures, monkeypatch
+) -> None:
+    """A traversing or non-string subfolder is DENIED (403 + audit), never a bare 500.
+
+    `_sensitive_vault_root` resolves each entry through `content_root` → `safe_join`,
+    which raises `ApiError` for an escaping subfolder (`../../.ssh`) and
+    `AttributeError` for a non-string one (`7`). The validator must fail CLOSED on
+    those (treat the entry as sensitive) AND the handler must answer through
+    `_deny` — a `403 sensitive_state` with a `denied` SEL audit — rather than
+    letting the exception escape the `asyncio.to_thread` as an unaudited 500. These
+    traversing entries are exactly what the fence exists to catch.
+    """
+    server_mod, _remote, _seed = fixtures
+    from kiro_crew.apps.builtins.md_notebook import gateway_routes
+
+    monkeypatch.setattr(gateway_routes, "is_app_enabled", lambda _name: True)
+
+    audits: list[dict] = []
+
+    class _SelSpy:
+        def log_api_access(self, **kw):
+            audits.append(kw)
+
+    monkeypatch.setattr(gateway_routes, "sel", lambda: _SelSpy())
+
+    @web.middleware
+    async def stamp_app(request, handler):
+        request["app"] = "md-notebook"
+        return await handler(request)
+
+    app = web.Application(middlewares=[stamp_app])
+    gateway_routes.register_routes(app)
+
+    async with TestClient(TestServer(app)) as client:
+        for subfolder in ("../../.ssh", 7):
+            resp = await client.post(
+                "/api/apps/md-notebook/state",
+                json={
+                    "leaf": "vaults.json",
+                    "content": json.dumps(
+                        [{"id": "v1", "localPath": "/tmp/v", "subfolder": subfolder}]
+                    ),
+                },
+            )
+            assert resp.status == 403, (subfolder, await resp.text())
+            assert (await resp.json())["code"] == "sensitive_state"
+            # NOT written: the poisoned registry never lands.
+            assert not server_mod._vaults_json().exists() or "ssh" not in (
+                server_mod._vaults_json().read_text(encoding="utf-8")
+            )
+
+    denied = [a for a in audits if a.get("outcome") == "denied"]
+    assert len(denied) >= 2, "both traversing/non-string entries must be audited as denied"
+
+
+@pytest.mark.asyncio
+async def test_gateway_state_route_validates_the_vault_registry_off_the_event_loop(
+    fixtures, monkeypatch
+) -> None:
+    """The sensitive-path validation runs in a worker thread, not on the loop.
+
+    `refuse_unsafe_state_write` resolves each vault content root with the
+    synchronous `Path.resolve()`, which on a stalled network-mounted vault would
+    otherwise freeze the whole gateway loop (every request + the heartbeat). The
+    handler must call it through `asyncio.to_thread`. We prove that structurally:
+    the validator records the thread it runs on, and it must NOT be the handler's
+    event-loop thread.
+    """
+    import threading
+
+    server_mod, _remote, _seed = fixtures
+    from kiro_crew.apps.builtins.md_notebook import gateway_routes
+
+    monkeypatch.setattr(gateway_routes, "is_app_enabled", lambda _name: True)
+    monkeypatch.setattr(gateway_routes, "sel", lambda: _NullSel())
+
+    loop_thread = threading.get_ident()
+    ran_on: dict[str, int] = {}
+
+    def spy_validate(leaf, content):
+        ran_on["thread"] = threading.get_ident()
+        return None  # allow the write
+
+    monkeypatch.setattr(server_mod, "refuse_unsafe_state_write", spy_validate)
+
+    @web.middleware
+    async def stamp_app(request, handler):
+        request["app"] = "md-notebook"
+        return await handler(request)
+
+    app = web.Application(middlewares=[stamp_app])
+    gateway_routes.register_routes(app)
+
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post(
+            "/api/apps/md-notebook/state",
+            json={"leaf": "vaults.json", "content": json.dumps([])},
+        )
+        assert resp.status == 200, await resp.text()
+    assert ran_on.get("thread") is not None, "the validator was never called"
+    assert ran_on["thread"] != loop_thread, "validation ran on the event loop, not a worker thread"
+
+
+@pytest.mark.asyncio
+async def test_gateway_state_route_imports_the_backend_off_the_event_loop(
+    fixtures, monkeypatch
+) -> None:
+    """The handler's cold `import server` runs in a worker thread, not on the loop.
+
+    The handler loads the backend module lazily via `importlib.import_module`; the
+    FIRST call executes `server`'s module body (which imports `git_ops`/`notes`
+    and does synchronous work), so running it on the gateway loop would block
+    every request + the heartbeat during a cold import. The handler must offload
+    it through `asyncio.to_thread`. We prove it structurally: a spy around
+    `importlib.import_module` records the thread it runs on, which must NOT be the
+    handler's event-loop thread.
+    """
+    import importlib as _importlib
+    import threading
+
+    _server_mod, _remote, _seed = fixtures
+    from kiro_crew.apps.builtins.md_notebook import gateway_routes
+
+    monkeypatch.setattr(gateway_routes, "is_app_enabled", lambda _name: True)
+    monkeypatch.setattr(gateway_routes, "sel", lambda: _NullSel())
+
+    loop_thread = threading.get_ident()
+    ran_on: dict[str, int] = {}
+    real_import = _importlib.import_module
+
+    def spy_import(name, *args, **kwargs):
+        if name.endswith("md_notebook.server"):
+            ran_on["thread"] = threading.get_ident()
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(gateway_routes.importlib, "import_module", spy_import)
+
+    @web.middleware
+    async def stamp_app(request, handler):
+        request["app"] = "md-notebook"
+        return await handler(request)
+
+    app = web.Application(middlewares=[stamp_app])
+    gateway_routes.register_routes(app)
+
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post(
+            "/api/apps/md-notebook/state",
+            json={"leaf": "pat", "content": "ghp_x"},
+        )
+        assert resp.status == 200, await resp.text()
+    assert ran_on.get("thread") is not None, "the backend import was never triggered"
+    assert ran_on["thread"] != loop_thread, "the backend import ran on the event loop thread"
+
+
+@pytest.mark.asyncio
+async def test_gateway_state_route_allows_enabling_auto_sync(fixtures, monkeypatch) -> None:
+    """The gateway state route lets the ORDINARY auto-sync toggle through.
+
+    The dashboard auto-sync toggle writes ``settings.json`` through this very
+    gateway route (a POSIX backend with a gateway origin has no other path), so a
+    blanket refusal of ``autoSync: true`` would break the common case. Enabling it
+    is safe: the exfil risk is a sensitive-rooted vault, and the ``vaults.json``
+    gate already blocks registering one — so auto-sync only ever pushes vaults
+    that cleared the sensitive-path floor. Both ``autoSync: true`` and
+    ``autoSync: false`` must publish (200) and land on disk.
+    """
+    server_mod, _remote, _seed = fixtures
+    from kiro_crew.apps.builtins.md_notebook import gateway_routes
+
+    monkeypatch.setattr(gateway_routes, "is_app_enabled", lambda _name: True)
+    monkeypatch.setattr(gateway_routes, "sel", lambda: _NullSel())
+
+    @web.middleware
+    async def stamp_app(request, handler):
+        request["app"] = "md-notebook"
+        return await handler(request)
+
+    app = web.Application(middlewares=[stamp_app])
+    gateway_routes.register_routes(app)
+
+    async with TestClient(TestServer(app)) as client:
+        enabled = await client.post(
+            "/api/apps/md-notebook/state",
+            json={"leaf": "settings.json", "content": json.dumps({"autoSync": True})},
+        )
+        assert enabled.status == 200, await enabled.text()
+        on_disk = json.loads(server_mod._settings_json().read_text(encoding="utf-8"))
+        assert on_disk.get("autoSync") is True
+
+        disabled = await client.post(
+            "/api/apps/md-notebook/state",
+            json={"leaf": "settings.json", "content": json.dumps({"autoSync": False})},
+        )
+        assert disabled.status == 200, await disabled.text()
+        assert (
+            json.loads(server_mod._settings_json().read_text(encoding="utf-8")).get("autoSync")
+            is False
+        )
+
+
+def test_publish_caches_the_app_token_and_re_exchanges_only_on_auth_refusal(
+    fixtures, monkeypatch
+) -> None:
+    """Opus token-churn fix: the exchanged app token is cached across publishes.
+
+    Each ``_exchange_app_token`` registers a nonce in the gateway's bounded
+    token-state manager, so minting one per publish evicts other apps' pending
+    nonces (the dashboard-login one). The publish must mint ONCE, reuse the
+    cached token for subsequent publishes, and re-mint ONLY when the gateway
+    refuses the token (401/403) — mirroring pointer_broker._ensure_token.
+    """
+    server_mod, _remote, _seed = fixtures
+
+    server_mod._reset_cached_app_token()  # start cold
+
+    import urllib.error
+
+    exchanges: list[int] = []
+
+    def fake_exchange(_origin, _secret, _sock):
+        exchanges.append(1)
+        return f"tok-{len(exchanges)}"
+
+    monkeypatch.setattr(server_mod, "_exchange_app_token", fake_exchange)
+    monkeypatch.setattr(server_mod, "_gateway_socket_path", lambda _o: Path("/unused.sock"))
+    monkeypatch.setattr(server_mod, "proxy_secret", lambda: "sek")
+    monkeypatch.setattr(server_mod, "_origin_is_attested", lambda _o, _s: True)
+
+    posts: list[str] = []
+    refuse_next = {"on": False}
+
+    def fake_post(_origin, token, _body, _sock):
+        posts.append(token)
+        if refuse_next["on"]:
+            refuse_next["on"] = False
+            raise urllib.error.HTTPError("u", 401, "unauthorized", {}, None)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(server_mod, "_post_state_via_gateway", fake_post)
+
+    # Three publishes with a healthy gateway -> ONE mint, token reused.
+    for _ in range(3):
+        server_mod._publish_state_via_gateway("http://o", "pat", "x", fsync_file=False)
+    assert len(exchanges) == 1, "token must be minted once, not per publish"
+    assert posts == ["tok-1", "tok-1", "tok-1"]
+
+    # The gateway now refuses the cached token once (401): re-mint exactly once,
+    # retry, and the publish succeeds on the fresh token.
+    refuse_next["on"] = True
+    server_mod._publish_state_via_gateway("http://o", "pat", "x", fsync_file=False)
+    assert len(exchanges) == 2, "a 401 must trigger exactly one re-exchange"
+    assert posts[-1] == "tok-2"
+
+
+def test_backend_client_reaches_gateway_route_over_unix_socket(
+    fixtures, monkeypatch, short_sock_dir
+) -> None:
+    """The backend's client reaches the gateway route over its OWN unix socket.
+
+    The publish carries this app's secret and token, so it must travel the
+    gateway's owner-only unix socket, never TCP (a port a squatter could hold).
+    This serves the REAL gateway route on a ``web.UnixSite`` and drives the REAL
+    backend client at it, exercising the REAL peer check: a PAT published through
+    that round trip lands on the target. The token exchange is stubbed (its own
+    auth is covered by the token-auth suite); everything else — the unix-socket
+    transport, the connect-time peer-pid check, the POST, the body shape, the
+    route's parse, allowlist and in-process publish — is exercised for real.
+    """
+    import threading
+
+    server_mod, _remote, _seed = fixtures
+    from aiohttp import web as _web
+
+    from kiro_crew.apps.builtins.md_notebook import gateway_routes
+
+    if not hasattr(__import__("socket"), "AF_UNIX"):
+        pytest.skip("AF_UNIX unavailable on this platform")
+
+    monkeypatch.setattr(gateway_routes, "is_app_enabled", lambda _name: True)
+    monkeypatch.setattr(server_mod, "_exchange_app_token", lambda _o, _s, _p: "test-token")
+    # The UnixSite runs in a background thread of THIS process, so the connected
+    # peer's pid IS this process — set the attested gateway pid AND start-time to
+    # it and exercise the REAL _verify_gateway_peer (no stub), proving the
+    # pid+start pin accepts the authentic listener.
+    monkeypatch.setenv("KIROCREW_GATEWAY_PID", str(os.getpid()))
+    _self_start = server_mod.platform_compat.get_process_start_id(os.getpid())
+    if _self_start is None:
+        pytest.skip("get_process_start_id unavailable on this platform")
+    monkeypatch.setenv("KIROCREW_GATEWAY_START", _self_start)
+
+    # A short-rooted socket dir (suite-cleaned): AF_UNIX sun_path is ~108 bytes
+    # and the pytest tmp home is far longer. Point the client's socket resolver
+    # at it; the real transport (unix_socket_urlopen) is still exercised.
+    sock_path = Path(short_sock_dir) / "gw.sock"
+    monkeypatch.setattr(server_mod, "_gateway_socket_path", lambda _origin: sock_path)
+
+    @_web.middleware
+    async def stamp_principal(request, handler):
+        request["app"] = "md-notebook"
+        return await handler(request)
+
+    app = _web.Application(middlewares=[stamp_principal])
+    gateway_routes.register_routes(app)
+
+    runner = _web.AppRunner(app)
+    ready = threading.Event()
+    loop_box: dict[str, Any] = {}
+    serve_err: dict[str, str] = {}
+
+    def serve() -> None:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop_box["loop"] = loop
+
+        async def _start() -> None:
+            await runner.setup()
+            await _web.UnixSite(runner, str(sock_path)).start()
+            ready.set()
+
+        try:
+            loop.run_until_complete(_start())
+            loop.run_forever()
+        except BaseException as exc:  # surface the real reason instead of a bare timeout
+            serve_err["e"] = repr(exc)
+            ready.set()
+
+    t = threading.Thread(target=serve, daemon=True)
+    t.start()
+    assert ready.wait(10), "route server did not start"
+    assert not serve_err, f"route server failed to start: {serve_err.get('e')}"
+    try:
+        origin = "http://127.0.0.1:54329"
+        monkeypatch.setenv("KIROCREW_GATEWAY_ORIGIN", origin)
+        # The gateway injects HMAC-SHA256(app_secret, origin) as the proof; set a
+        # matching one so the client's attestation check (defense in depth beside
+        # the unix-socket transport) passes, as it would for a gateway-planted origin.
+        import hashlib as _hashlib
+        import hmac as _hmac
+
+        monkeypatch.setenv(
+            "KIROCREW_GATEWAY_ORIGIN_PROOF",
+            _hmac.new(SECRET.encode("utf-8"), origin.encode("utf-8"), _hashlib.sha256).hexdigest(),
+        )
+        server_mod._write_pat_sync("ghp_over_socket")
+        assert server_mod._pat_file().read_text(encoding="utf-8") == "ghp_over_socket"
+    finally:
+        loop = loop_box["loop"]
+
+        async def _shutdown() -> None:
+            await runner.cleanup()
+            loop.stop()
+
+        asyncio.run_coroutine_threadsafe(_shutdown(), loop)
+        t.join(timeout=10)
+
+
+def test_verify_gateway_peer_requires_matching_pid_and_start_time(fixtures, monkeypatch) -> None:
+    """The peer check pins the pid to a process GENERATION via start-time.
+
+    A pid alone is reusable: a same-UID adversary can hard-kill the gateway, let
+    the OS recycle its pid onto an attacker process, and rebind the socket under
+    that reused pid — the pid compare alone would pass. ``_verify_gateway_peer``
+    therefore also requires the live peer's ``get_process_start_id`` to equal the
+    attested ``KIROCREW_GATEWAY_START``. Same pid + SAME start-identity is accepted;
+    same pid + DIFFERENT start-identity (the reuse case) is refused before any
+    credential is sent; a missing attested start-identity or an unreadable peer
+    start-identity fails closed.
+    """
+    server_mod, _remote, _seed = fixtures
+
+    monkeypatch.setenv("KIROCREW_GATEWAY_PID", "4242")
+    monkeypatch.setenv("KIROCREW_GATEWAY_START", "START-TOKEN-A")
+    monkeypatch.setattr(server_mod, "get_peer_pid", lambda _sock: 4242)
+
+    sentinel = object()  # stands in for the connected socket; never inspected
+
+    # Same pid + matching start-identity: accepted (returns None, no raise).
+    monkeypatch.setattr(
+        server_mod.platform_compat, "get_process_start_id", lambda _pid: "START-TOKEN-A"
+    )
+    assert server_mod._verify_gateway_peer(sentinel) is None
+
+    # Same pid + DIFFERENT start-identity (pid reuse): refused, no credential sent.
+    monkeypatch.setattr(
+        server_mod.platform_compat, "get_process_start_id", lambda _pid: "START-TOKEN-B"
+    )
+    with pytest.raises(OSError, match="start-time"):
+        server_mod._verify_gateway_peer(sentinel)
+
+    # Peer start-identity unreadable (None): fail closed.
+    monkeypatch.setattr(server_mod.platform_compat, "get_process_start_id", lambda _pid: None)
+    with pytest.raises(OSError, match="start-time"):
+        server_mod._verify_gateway_peer(sentinel)
+
+    # Missing attested start-identity: fail closed even with the pid matched.
+    monkeypatch.setattr(
+        server_mod.platform_compat, "get_process_start_id", lambda _pid: "START-TOKEN-A"
+    )
+    monkeypatch.delenv("KIROCREW_GATEWAY_START", raising=False)
+    with pytest.raises(OSError, match="start-time"):
+        server_mod._verify_gateway_peer(sentinel)
+
+
+def test_verify_gateway_peer_identity_is_timezone_stable(fixtures, monkeypatch) -> None:
+    """The authentic gateway verifies across a TZ/locale difference between spawn and read-back.
+
+    The spawn-time capture (``apps/backend.py``) and the connect-time compare
+    (``_verify_gateway_peer``) run in different processes whose environments can
+    differ: ``minimal_env`` does not forward ``TZ``/``LANG`` to the backend, so a
+    gateway launched under one timezone attested one value while the backend read
+    the SAME process back under another. With the old ``ps -o lstart=`` text that
+    formatting difference made the authentic gateway's own start-time compare
+    UNEQUAL — a mismatch that raised ``OSError`` and turned every state write into a
+    500. ``get_process_start_id`` returns a format-stable, integer-derived token
+    that does not depend on the reader's ``TZ`` or ``LANG``, so the same process
+    verifies regardless of the environment it is read under; a genuinely different
+    process generation (pid reuse) still mismatches and is refused.
+    """
+    server_mod, _remote, _seed = fixtures
+
+    # A stable identity token as get_process_start_id yields it — no locale/TZ text.
+    stable_id = "174523981"
+    monkeypatch.setenv("KIROCREW_GATEWAY_PID", "4242")
+    monkeypatch.setenv("KIROCREW_GATEWAY_START", stable_id)
+    monkeypatch.setattr(server_mod, "get_peer_pid", lambda _sock: 4242)
+
+    sentinel = object()
+
+    # Same process read back under a DIFFERENT TZ still yields the same identity:
+    # accepted, no OSError. (Pre-fix, ps-lstart text would have differed by TZ here
+    # and this same authentic process would have been refused.)
+    monkeypatch.setattr(server_mod.platform_compat, "get_process_start_id", lambda _pid: stable_id)
+    assert server_mod._verify_gateway_peer(sentinel) is None
+
+    # A different process generation (recycled pid) has a different identity: refused.
+    monkeypatch.setattr(
+        server_mod.platform_compat, "get_process_start_id", lambda _pid: "174524777"
+    )
+    with pytest.raises(OSError, match="start-time"):
+        server_mod._verify_gateway_peer(sentinel)
+
+
+def test_publish_never_goes_to_tcp_and_falls_back_in_process(
+    fixtures, monkeypatch, short_sock_dir
+) -> None:
+    """When no gateway socket answers, the credential never hits TCP and the write falls back.
+
+    The credential (app secret, scoped token) must only ever reach the gateway's
+    owner-only unix socket, never a TCP port a squatter could hold. With an
+    attested origin but NO listening unix socket, the unix transport (no TCP
+    handler) fails as route-unreachable, and the dispatcher FALLS BACK to the
+    in-process writer rather than stranding the write (Opus #1) — so on this
+    unsandboxed test home the PAT lands locally. A spy TCP listener on the origin
+    port asserts the secret never travelled TCP on the way.
+    """
+    import socket as _socket
+    import threading
+
+    server_mod, _remote, _seed = fixtures
+
+    if not hasattr(_socket, "AF_UNIX"):
+        pytest.skip("AF_UNIX unavailable on this platform")
+
+    # Bind a real TCP listener on a free port; a connection here would mean the
+    # secret leaked to TCP. Point the client's socket resolver at a short,
+    # NON-EXISTENT unix path so the transport fails cleanly as unreachable.
+    srv = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+    port = srv.getsockname()[1]
+    connected: list[str] = []
+
+    def accept_loop() -> None:
+        srv.settimeout(3.0)
+        try:
+            conn, _ = srv.accept()
+            connected.append("tcp")
+            conn.close()
+        except OSError:
+            pass
+
+    t = threading.Thread(target=accept_loop, daemon=True)
+    t.start()
+
+    # A NON-EXISTENT socket under the run-owned short root (no fixed /tmp name):
+    # the transport fails cleanly as route-unreachable.
+    missing_sock = Path(short_sock_dir) / "no-such-gw.sock"
+    with contextlib.suppress(OSError):
+        missing_sock.unlink()
+    monkeypatch.setattr(server_mod, "_gateway_socket_path", lambda _origin: missing_sock)
+
+    origin = f"http://127.0.0.1:{port}"
+    monkeypatch.setenv("KIROCREW_GATEWAY_ORIGIN", origin)
+    import hashlib as _hashlib
+    import hmac as _hmac
+
+    monkeypatch.setenv(
+        "KIROCREW_GATEWAY_ORIGIN_PROOF",
+        _hmac.new(SECRET.encode("utf-8"), origin.encode("utf-8"), _hashlib.sha256).hexdigest(),
+    )
+    # Attested origin, no unix socket -> route unreachable -> fall back in-process.
+    server_mod._write_pat_sync("ghp_secret")
+    t.join(timeout=4)
+    srv.close()
+    assert connected == [], "the publish connected over TCP — the secret must never go there"
+    # The fallback wrote the PAT in-process (this test home is unsandboxed).
+    assert server_mod._pat_file().read_text(encoding="utf-8") == "ghp_secret"
+
+
+def test_state_write_refuses_an_unattested_gateway_origin(fixtures, monkeypatch) -> None:
+    """A spoofed/inherited origin without a valid proof must send NO secret.
+
+    ``KIROCREW_GATEWAY_ORIGIN`` is attacker-influenceable (an inherited or spoofed
+    env value), and the publish carries the app secret + the PAT. The client must
+    recompute HMAC-SHA256(app_secret, origin) against KIROCREW_GATEWAY_ORIGIN_PROOF
+    and refuse to send anything when it does not match — otherwise the fix becomes
+    an exfiltration channel. Covers the missing-proof and wrong-proof cases, and
+    asserts the token exchange (the first thing that would leak the secret) is
+    never reached.
+    """
+    server_mod, _remote, _seed = fixtures
+    # proxy_secret() reads KIROCREW_PROXY_SECRET=SECRET, set by the fixture.
+
+    reached: list[str] = []
+    monkeypatch.setattr(
+        server_mod,
+        "_exchange_app_token",
+        lambda *a, **k: reached.append("exchanged") or "tok",
+    )
+
+    monkeypatch.setenv("KIROCREW_GATEWAY_ORIGIN", "http://evil.example:9")
+
+    # Missing proof: refuse.
+    monkeypatch.delenv("KIROCREW_GATEWAY_ORIGIN_PROOF", raising=False)
+    with pytest.raises(OSError):
+        server_mod._write_pat_sync("ghp_secret")
+    # Wrong proof: the right secret over a DIFFERENT origin, so it mismatches the
+    # origin actually in the env -> refuse.
+    import hashlib as _hashlib
+    import hmac as _hmac
+
+    monkeypatch.setenv(
+        "KIROCREW_GATEWAY_ORIGIN_PROOF",
+        _hmac.new(SECRET.encode("utf-8"), b"http://other.example:1", _hashlib.sha256).hexdigest(),
+    )
+    with pytest.raises(OSError):
+        server_mod._write_pat_sync("ghp_secret")
+
+    # In neither case did the client reach the token exchange — the secret and
+    # the PAT never left the process, and nothing was written locally either.
+    assert reached == []
+    assert not server_mod._pat_file().exists()
+
+
+def test_publish_pins_the_destination_dir_against_a_parent_swap(fixtures, monkeypatch) -> None:
+    """A destination-dir swap between the check and the publish is DETECTED and refused.
+
+    `workspace/md-notebook` is agent-writable (only the three leaves are
+    bind-masked), and `refuse_linked_parent` is an lstat LINK check — not an
+    identity check, and `O_NOFOLLOW` ACCEPTS a real directory an agent swapped in.
+    So the publish captures the destination parent's `(st_dev, st_ino)` right after
+    the link check and, before the rename, verifies the `O_NOFOLLOW`-pinned fd's
+    identity against it. Here we capture the real dir's identity, SWAP the dir for
+    a DIFFERENT real directory the "agent" created, and call
+    `_publish_onto_pinned_target` with the captured (now-stale) identity: the
+    pinned fd now names the agent's dir, its identity differs, so the publish is
+    REFUSED and nothing lands in the swapped-in dir.
+    """
+    import socket as _socket
+    import tempfile
+
+    server_mod, _remote, _seed = fixtures
+    if not hasattr(_socket, "AF_UNIX") or not hasattr(os, "O_DIRECTORY"):
+        pytest.skip("descriptor-relative rename unavailable on this platform")
+    from kiro_crew.atomic_write import pinned_parent_replace_supported
+
+    if not pinned_parent_replace_supported():
+        pytest.skip("pinned parent replace unsupported on this platform")
+
+    target = server_mod._pat_file()
+    real_dir = target.parent
+    real_dir.mkdir(parents=True, exist_ok=True)
+
+    # Capture the real destination dir's identity (as the writer does right after
+    # refuse_linked_parent), then stage the secret temp.
+    _st = os.stat(real_dir)
+    checked_identity = (_st.st_dev, _st.st_ino)
+    staging = server_mod._staging_dir()
+    staging.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=str(staging), suffix=".tmp")
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write("ghp_secret_pat")
+
+    # SWAP: the agent replaces the destination dir with a DIFFERENT real directory
+    # it created. O_NOFOLLOW accepts it (a real dir, not a symlink), but its
+    # (st_dev, st_ino) differs from checked_identity.
+    agent_dir = Path(str(real_dir) + "-agent-real")
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    os.rename(str(real_dir), str(real_dir) + "-moved")  # the real dir aside
+    os.rename(str(agent_dir), str(real_dir))  # agent's real dir now at the path
+
+    try:
+        with pytest.raises(OSError, match="identity changed"):
+            server_mod._publish_onto_pinned_target(Path(tmp_name), target, checked_identity)
+    finally:
+        with contextlib.suppress(OSError):
+            Path(tmp_name).unlink()
+
+    # The swapped-in (agent's) dir received NO PAT — the identity check refused.
+    assert not (real_dir / target.name).exists(), "the swap redirected the write"
+
+
+def test_sandboxed_no_origin_exdev_surfaces_its_cause(fixtures, monkeypatch) -> None:
+    """A sandboxed backend with no attested origin names the missing origin on EXDEV.
+
+    ``apps/backend.py`` withholds KIROCREW_GATEWAY_ORIGIN when the gateway is
+    bound to a SPECIFIC interface, so a sandboxed backend can reach the
+    in-process writer, where the cross-mount rename raises EXDEV — the defect
+    this PR fixes elsewhere. That residual can't be papered over from here, but
+    the error must name its cause so the operator can act, not surface a bare
+    [Errno 18].
+    """
+    import os as _os
+
+    server_mod, _remote, _seed = fixtures
+    monkeypatch.delenv("KIROCREW_GATEWAY_ORIGIN", raising=False)
+    monkeypatch.setenv("KIROCREW_SPAWNED", "1")
+
+    def exdev(*_a, **_k):
+        raise OSError(getattr(_os, "EXDEV", 18), "Invalid cross-device link")
+
+    monkeypatch.setattr(server_mod, "_write_state_in_process_sync", exdev)
+
+    with pytest.raises(OSError) as ei:
+        server_mod._write_pat_sync("ghp_x")
+    msg = str(ei.value)
+    assert "could not route the write to the gateway" in msg and "loopback" in msg
+
+    # An UNSANDBOXED caller (no KIROCREW_SPAWNED) keeps the raw EXDEV — the
+    # diagnostic is only meaningful inside the sandbox.
+    monkeypatch.delenv("KIROCREW_SPAWNED", raising=False)
+    with pytest.raises(OSError) as ei2:
+        server_mod._write_pat_sync("ghp_x")
+    assert "attested gateway origin" not in str(ei2.value)
+
+
+def test_gateway_route_registration_is_import_safe_with_bad_env() -> None:
+    """Registering the in-gateway route must not run the backend's env parsing.
+
+    The route is installed into the gateway at startup via the BUILTIN_NAMES
+    loop. The backend module parses the environment at import (PORT,
+    MDNB_GIT_TIMEOUT_SEC), so a module-scope `import server` in the route module
+    would let a bad env value raise at import and abort gateway startup before
+    the socket binds — the registration loop swallows only ModuleNotFoundError.
+    Run in a subprocess with poisoned env: importing the package and the route
+    module and calling register_routes must all succeed, and `server` must NOT
+    be imported as a side effect.
+    """
+    prog = (
+        "import os, sys\n"
+        "from aiohttp import web\n"
+        "import kiro_crew.apps.builtins.md_notebook as pkg\n"
+        "from kiro_crew.apps.builtins.md_notebook import gateway_routes\n"
+        "app = web.Application()\n"
+        "pkg.register_routes(app)\n"
+        "assert 'kiro_crew.apps.builtins.md_notebook.server' not in sys.modules, 'server was imported at registration'\n"
+        "print('OK')\n"
+    )
+    env = {
+        **os.environ,
+        "MDNB_GIT_TIMEOUT_SEC": "not-an-int",
+        "PORT": "also-bad",
+    }
+    proc = subprocess.run(
+        [sys.executable, "-c", prog],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=env,
+    )
+    assert proc.returncode == 0, f"stdout={proc.stdout!r} stderr={proc.stderr!r}"
+    assert "OK" in proc.stdout
+
+
+def test_state_paths_ignore_a_foreign_app_name_env(fixtures, monkeypatch) -> None:
+    """A foreign KIROCREW_APP_NAME must not move the state files off the masked path.
+
+    The OS sandbox mask and the sensitive-path fence are pinned to the literal
+    ``workspace/md-notebook/`` leaves. If the path helpers derived the app subdir
+    from the env ``KIROCREW_APP_NAME`` (as a gateway launched from a shell carrying
+    a foreign value would), the live PAT would be written to
+    ``workspace/<foreign>/pat`` — unmasked and same-uid-readable. The three state
+    targets must resolve under the literal ``md-notebook`` regardless of the env.
+    """
+    server_mod, _remote, _seed = fixtures
+    monkeypatch.setenv("KIROCREW_APP_NAME", "totally-different-app")
+    for target in (server_mod._pat_file(), server_mod._vaults_json(), server_mod._settings_json()):
+        parts = target.parts
+        assert "md-notebook" in parts, (target, "state file escaped the masked literal subdir")
+        assert "totally-different-app" not in parts, (target, "env APP_NAME redirected the path")
 
 
 # ---------------------------------------------------------------------------
@@ -4098,6 +5191,9 @@ async def test_the_vault_registry_write_also_retries(fixtures) -> None:
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(aw.platform_compat, "IS_WINDOWS", True)
+        # Windows lacks O_DIRECTORY, so the publish takes the by-name
+        # replace_with_retry floor (which carries this retry); force it on POSIX.
+        mp.setattr(server_mod, "pinned_parent_replace_supported", lambda: False)
         mp.setattr(aw, "_REPLACE_BACKOFF_SECONDS", 0.0)
         mp.setattr(aw.os, "replace", contended_once)
         await asyncio.to_thread(server_mod._write_vaults_sync, [{"id": "v1"}])

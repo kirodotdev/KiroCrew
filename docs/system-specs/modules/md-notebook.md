@@ -119,11 +119,91 @@ Two properties keep the mask meaningful now that the backend can create these fi
 The agent-side file-tool gate (`security.is_sensitive_path`) fences all four paths
 independently of the OS mask, so the agent's own reach through tool calls is unchanged.
 
+### The state-write publish runs in the gateway, not the sandboxed backend
+
+The three state leaves and the `md-notebook-staging` directory are each a SEPARATE bind
+mount in the backend's sandbox namespace (every leaf is bound over its own name; the staging
+dir is its own bind), so a staged rename between them crosses a mount point and raises
+`EXDEV` — and `os.link` crosses mount points too, so there is no in-namespace publish that is
+both masked and atomic (each leaf's mount is a lone file, with no directory on it to stage a
+masked sibling into). The publish therefore moves to the GATEWAY process, which has no bind
+namespace: there the staging dir and the targets are one mount and the staged rename is a
+plain atomic publish, and the in-flight bytes never exist anywhere a sandboxed process can
+read.
+
+`_write_state_staged_sync` is a DISPATCHER. When the backend has a gateway to call
+(`KIROCREW_GATEWAY_ORIGIN`, injected into every reachable-gateway spawn) it posts
+`{leaf, content}` to the in-gateway route `POST /api/apps/md-notebook/state`
+(`md_notebook/gateway_routes.py`), authenticated with the app's own App Kit token; the route
+allowlists the leaf to the three state files and performs the publish via
+`_write_state_in_process_sync`. Absent an origin, the dispatcher calls
+`_write_state_in_process_sync` directly. For an UNSANDBOXED caller (a foreground gateway before
+its site is up, the gateway process itself, or a test) that is correct — one mount, one atomic
+rename. One residual remains: `apps/backend.py` withholds `KIROCREW_GATEWAY_ORIGIN` when the
+gateway is bound to a SPECIFIC interface (an origin for that bind would fail the gateway's CSRF
+barrier), so a SANDBOXED backend on that host reaches the in-process writer and hits the same
+`EXDEV` this routing avoids. That cannot be fixed from here (the omission is the gateway's
+deliberate choice), so the in-process writer surfaces the `EXDEV` with its cause named (the
+missing attested origin, remedied by restarting the gateway on a loopback/wildcard bind) rather
+than a bare cross-device-link error.
+
+Before any secret leaves the backend, the client verifies `KIROCREW_GATEWAY_ORIGIN_PROOF`
+(`HMAC-SHA256(app_secret, origin)`, planted by the gateway at spawn) against a recomputation,
+and refuses to publish on a missing or mismatched proof — `KIROCREW_GATEWAY_ORIGIN` is an
+inherited/spoofable env value, and the publish carries the app secret and the PAT, so an
+unattested origin must never become an exfiltration channel. The route is app-token-scoped
+rather than owner-only (unlike Dev Fleet's live-target cutover) because the write returns
+nothing readable to the sandbox: a stolen token could only write what the Notes UI already
+can.
+
+Two further pins keep the credential and the target honest. TRANSPORT: the publish and the
+token exchange travel the gateway's OWNER-ONLY unix socket (`unix_socket_urlopen` over
+`dashboard_socket_path(port)`), never TCP. A loopback TCP port is ordinary — a hard-killed
+gateway frees it and a same-uid squatter can bind it, then the opt-in auto-sync writer would
+re-send the secret there — so the transport has NO TCP fallback (structural: that opener has no
+TCP handler), the socket file lives under the owner-only data home, and a connect-time peer
+check refuses an unidentifiable peer. That peer check pins the connection to the authentic
+listener's PROCESS GENERATION, not merely its pid: the gateway injects both its pid
+(`KIROCREW_GATEWAY_PID`, via `SO_PEERCRED`/`LOCAL_PEERPID`) and its process start-time
+(`KIROCREW_GATEWAY_START`, from `platform_compat.process_start_time`), and the backend requires
+the connected peer to match BOTH before any credential byte is sent. A pid alone is reusable — a
+same-uid adversary can hard-kill the gateway, let the OS recycle its pid onto an attacker
+process, and rebind the socket under that pid — but the recycled process has a different
+start-time and fails the second compare, and a missing attested start-time or an unreadable peer
+start-time fails closed. TARGET: the state files resolve under the LITERAL
+`md-notebook` subdir (`_STATE_APP_DIR`), never the env-derived `KIROCREW_APP_NAME`, so a gateway
+or backend carrying a foreign `KIROCREW_APP_NAME` cannot redirect the live PAT to an unmasked,
+same-uid-readable path — the path matches the sandbox mask and the `is_sensitive_path` fence,
+which are both pinned to that same literal. The app secret itself is read from the injected
+`KIROCREW_PROXY_SECRET` via `proxy_auth.proxy_secret()` (one provisioning seam, not a second
+disk reader).
+
+The route also RE-VALIDATES the vault registry, because it is a second write path to a file
+whose safety the backend's own handler enforces. For `vaults.json` it refuses the write when ANY
+entry's content root (resolved through `content_root`, honouring the subfolder scope) is or
+contains a sensitive path — the same `is_sensitive_path` / `path_contains_sensitive` pair
+`api_vault_attach` applies — so an app-token caller cannot persist a vault rooted at `~/.ssh`
+with an attacker's `remoteUrl` for the sync loop's `git add -A` + push to exfiltrate. The check
+runs OFF the event loop (`await asyncio.to_thread`): it calls `Path.resolve()` per root, which on
+a stalled network-mounted vault would otherwise freeze the whole gateway loop and its heartbeat —
+the same reason `vault_path` resolves off the loop.
+`settings.json` is deliberately NOT special-cased: the `autoSync` bit it carries only authorizes
+pushing the REGISTERED vaults, and the `vaults.json` gate already guarantees none of those has a
+sensitive root, so enabling auto-sync is safe once that gate holds — and the ordinary dashboard
+auto-sync toggle writes `settings.json` through this very route (a POSIX backend with a gateway
+origin has no other path), so refusing the enable here would break the common case. The scoped
+app token is exchanged ONCE and cached across publishes (`_get_app_token`); it is re-exchanged
+only when the gateway refuses it (401/403), the same pattern as
+`dev_fleet/pointer_broker._ensure_token` — minting per publish would churn the gateway's bounded
+token-state manager and evict other apps' pending nonces (a dashboard-login one the most
+visible).
+
 ### Why the state writers do not go through `atomic_write`
 
-`_write_state_staged_sync` stages its temp in the top-level staging directory and renames
-onto the target, rather than calling `atomic_write`. That is a deliberate fork of the
-secret-write chokepoint, recorded here so it stays a decision:
+`_write_state_in_process_sync` (the in-process half of the publish above) stages its temp in
+the top-level staging directory and renames onto the target, rather than calling
+`atomic_write`. That is a deliberate fork of the secret-write chokepoint, recorded here so it
+stays a decision:
 
 * `atomic_write` stages in the TARGET's parent (`mkstemp(dir=path.parent)`), and its
   pinned-parent path opens that temp through a directory descriptor precisely so the
@@ -138,6 +218,23 @@ secret-write chokepoint, recorded here so it stays a decision:
 * The cost is real and accepted: a future guard added inside `atomic_write` does not reach
   this writer. #8797 would remove the reason for the fork entirely by moving state into one
   masked directory, so `staging_dir=` is the right follow-up only if #8797 is declined.
+* `refuse_linked_parent` is an `lstat` walk and so is NOT race-free: `workspace/md-notebook`
+  is agent-writable (only the three leaves are bind-masked), so a same-uid agent could swap an
+  ancestor of the destination BETWEEN that check and a by-name rename and redirect the PAT. The
+  publish therefore does not re-resolve the destination path at rename time: it pins the
+  destination's parent with per-component `O_NOFOLLOW | O_DIRECTORY` descriptors
+  (`sandbox._open_dir_anchored`, the same descent that closes this window for the state-leaf
+  sweep) and renames RELATIVE to that descriptor (`os.rename(..., dst_dir_fd=)`). `O_NOFOLLOW`
+  only refuses a SYMLINK at a component, so it is not an identity check on its own: a same-uid
+  agent could rename the parent to a REAL directory it created and the walk would open that
+  decoy. So the writer captures the parent's `(st_dev, st_ino)` right after `refuse_linked_parent`
+  and, before the rename, `fstat`s the pinned fd and compares — a swap to a different real
+  directory between the check and the pin changes the identity and the publish is refused. When
+  the parent cannot be pinned (a component is absent or a link) OR its check-time identity was
+  unreadable, the secret publish is REFUSED rather than falling through to a redirectable
+  by-name rename; the by-name `replace_with_retry` floor is taken only where the platform lacks
+  descriptor-relative rename (Windows, which has no `O_DIRECTORY` and so no sandbox namespace
+  either), where it carries the Windows sharing-violation retry the pinned path does not need.
 
 ## Routes
 

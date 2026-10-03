@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
+import hmac
 import json
 import logging
 import ntpath
@@ -29,7 +31,11 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 import uuid
 from pathlib import Path, PurePosixPath
 from typing import Any, AsyncIterator, Callable, Optional
@@ -39,18 +45,46 @@ from aiohttp import web
 from kiro_crew import hooks, platform_compat, security
 from kiro_crew.apps.builtins.md_notebook import git_ops
 from kiro_crew.apps.builtins.md_notebook import notes as notes_mod
-from kiro_crew.apps.proxy_auth import raw_request_target, verify_proxy_request
-from kiro_crew.atomic_write import refuse_linked_parent, replace_with_retry
+from kiro_crew.apps.proxy_auth import proxy_secret, raw_request_target, verify_proxy_request
+from kiro_crew.atomic_write import (
+    pinned_parent_replace_supported,
+    refuse_linked_parent,
+    replace_with_retry,
+)
 from kiro_crew.config.paths import config_dir
-from kiro_crew.constants import WINDOWS_DEVICE_STEMS
+from kiro_crew.constants import (
+    KIROCREW_SPAWNED_ENV,
+    KIROCREW_SPAWNED_VALUE,
+    WINDOWS_DEVICE_STEMS,
+)
+from kiro_crew.dashboard.urls import dashboard_socket_path
 from kiro_crew.loop_lock import LoopBoundLock
+from kiro_crew.loopback_http import unix_socket_urlopen
+from kiro_crew.mcp_gateway.socketsec import get_peer_pid
 from kiro_crew.platform_compat import restrict_to_owner
+from kiro_crew.sandbox import _open_dir_anchored
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
 
 PORT = int(os.environ.get("PORT", 9137))
 APP_NAME = os.environ.get("KIROCREW_APP_NAME", "md-notebook")
+
+#: The LITERAL app directory under ``workspace/`` that holds the state files
+#: (``pat``/``vaults.json``/``settings.json``). Spelled literally — NOT derived
+#: from the env ``APP_NAME`` — because the OS sandbox mask
+#: (``sandbox._MD_NOTEBOOK_STATE_LEAVES``) and the ``is_sensitive_path`` fence are
+#: both pinned to the literal ``md-notebook``. A gateway (or backend) whose
+#: environment carries a foreign ``KIROCREW_APP_NAME`` would otherwise resolve
+#: these paths to ``workspace/<foreign>/pat`` — an UNMASKED, same-uid-readable
+#: name — and publish the live PAT there. Keeping the state subdir a literal makes
+#: the path match the mask/fence regardless of the inherited environment. Same
+#: reason ``_STAGING_LEAF`` below is a literal; a test pins both to sandbox.py.
+_STATE_APP_DIR = "md-notebook"
+
+#: The gateway-process route this backend posts a state publish to when it is
+#: sandboxed. Must stay in lockstep with ``gateway_routes.register_routes``.
+_STATE_ROUTE = f"/api/apps/{APP_NAME}/state"
 
 #: The state writers' staging directory, a TOP-LEVEL leaf in the crew data home. Must stay
 #: byte-identical to ``sandbox._MD_NOTEBOOK_STAGING_LEAF``, which is what masks it from the
@@ -101,7 +135,7 @@ def _crew_data_home() -> Path:
     except Exception:
         override = os.environ.get("KIROCREW_HOME")
         base = Path(override) if override else Path.home() / ".kiro" / "crew"
-    return base / "workspace" / APP_NAME
+    return base / "workspace" / _STATE_APP_DIR
 
 
 def _home() -> Path:
@@ -450,8 +484,510 @@ def _staging_dir() -> Path:
     return base / _STAGING_LEAF
 
 
+#: Map a resolved state target back to its wire leaf name — the inverse of the
+#: gateway route's allowlist. ``None`` for a path that is not one of the three
+#: state files, so the dispatcher falls back to the in-process write rather than
+#: posting an unroutable leaf (there is no such caller today; the guard keeps the
+#: two sides from drifting if one is added).
+def _leaf_name_for_target(target: Path) -> Optional[str]:
+    if target == _pat_file():
+        return "pat"
+    if target == _vaults_json():
+        return "vaults.json"
+    if target == _settings_json():
+        return "settings.json"
+    return None
+
+
+def _gateway_origin() -> str:
+    """This gateway's trusted callback base, or ``""`` when there is none.
+
+    ``KIROCREW_GATEWAY_ORIGIN`` is injected into every spawned backend that can
+    reach the gateway (``apps/backend.py``), derived only from the port the
+    gateway actually bound. Absent means this process is not a sandboxed backend
+    with a live gateway to call — a foreground gateway before its site is up, or
+    a test — and the caller publishes in-process instead.
+
+    The value is NOT trusted on its own: an inherited or spoofed env value would
+    name an attacker's origin, and this backend sends the app secret + PAT bytes
+    there. :func:`_origin_is_attested` must confirm the gateway minted it before
+    any secret is sent.
+    """
+    return os.environ.get("KIROCREW_GATEWAY_ORIGIN", "").strip()
+
+
+def _origin_is_attested(origin: str, secret: str) -> bool:
+    """Whether *origin* carries the gateway's spawn-time proof for this app.
+
+    ``apps/backend.py`` injects ``KIROCREW_GATEWAY_ORIGIN_PROOF =
+    HMAC-SHA256(app_secret, origin)`` alongside the origin, so a backend holding
+    the same secret can confirm the origin was planted by the gateway that holds
+    it — not inherited from a parent or spoofed into the environment. The App Kit
+    reference requires this check before trusting the origin as a callback base;
+    here it gates sending the PAT and the secret, so an unverified origin can
+    never become a credential-exfiltration channel.
+
+    A spawn-time attestation, not a freshness signal (the secret persists across
+    gateway generations), which is all this publish needs: it only has to know
+    the origin was not planted by a secret-less spawner before it hands over a
+    secret. Compared in constant time. Absent proof fails closed.
+    """
+    expected = os.environ.get("KIROCREW_GATEWAY_ORIGIN_PROOF", "").strip()
+    if not expected:
+        return False
+    computed = hmac.new(secret.encode("utf-8"), origin.encode("utf-8"), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(computed, expected)
+
+
+#: Loopback round trip to the local gateway: generous for a tiny JSON POST, tight
+#: enough that a wedged gateway surfaces as a failed write rather than a hang.
+_GATEWAY_PUBLISH_TIMEOUT_SECS = 10.0
+
+#: The exchanged app token, cached across publishes. ``_exchange_app_token``
+#: registers a nonce in the gateway's small (50-slot) token-state manager on
+#: EVERY call, so minting one per publish — an auto-syncing vault publishes on
+#: the order of once a minute — churns that OrderedDict and evicts a pending
+#: ``kirocrew token`` dashboard-login nonce, so the user's own login then fails
+#: "token superseded". Caching the token and re-minting only when the gateway
+#: refuses it (401/403) stops the churn — the same pattern dev_fleet's
+#: ``pointer_broker._ensure_token`` uses. Guarded by a lock because the three
+#: state writers run off the loop in worker threads.
+_app_token_lock = threading.Lock()
+_cached_app_token: "Optional[str]" = None
+
+
+def _reset_cached_app_token() -> None:
+    """Forget the cached app token so the next publish re-exchanges the secret."""
+    global _cached_app_token
+    with _app_token_lock:
+        _cached_app_token = None
+
+
+class _GatewayRouteUnreachable(OSError):
+    """The gateway's unix socket did not answer (absent/refused): route is unreachable.
+
+    Distinct from a gateway that answered with an error or a wrong peer — those
+    are real failures the caller must surface. This one means the gateway is not
+    there to route to (dead or replaced), so the dispatcher may fall back to the
+    in-process writer rather than stranding the write (e.g. a vault clone's
+    follow-up registry update).
+    """
+
+
+def _is_socket_unreachable(exc: "urllib.error.URLError") -> bool:
+    """Whether *exc* means the unix socket was absent or refused (not an HTTP error).
+
+    ``unix_socket_urlopen`` has no TCP fallback, so a dead/replaced gateway leaves
+    the socket file missing or refusing: urllib wraps the ``FileNotFoundError`` /
+    ``ConnectionRefusedError`` as ``URLError.reason``. An ``HTTPError`` (the
+    gateway answered) is NOT this case — it subclasses ``URLError`` but carries a
+    status, so it is excluded.
+    """
+    if isinstance(exc, urllib.error.HTTPError):
+        return False
+    return isinstance(getattr(exc, "reason", None), (FileNotFoundError, ConnectionRefusedError))
+
+
+def _gateway_socket_path(origin: str) -> "Optional[Path]":
+    """The gateway's internal-API unix socket for the port named in *origin*.
+
+    The dashboard binds a ``web.UnixSite`` at ``dashboard_socket_path(port)``
+    (``config_dir()/dashboard-<port>.sock``) serving the SAME app, so the
+    ``/api/apps/md-notebook/*`` routes are reachable over it. Deriving the path
+    from the attested origin's port — the same way ``mcp_core`` does — lets this
+    backend reach the gateway over a transport a port-squatter cannot answer.
+    ``None`` when the origin has no usable port.
+    """
+    try:
+        parsed = urllib.parse.urlparse(origin)
+        port = parsed.port
+    except ValueError:
+        return None
+    if not port:
+        return None
+    try:
+        return dashboard_socket_path(port)
+    except Exception:
+        return None
+
+
+def _verify_gateway_peer(sock: "Any") -> None:
+    """Refuse unless the socket peer IS the attested gateway process.
+
+    Called on the CONNECTED socket before any credential byte is written. The
+    socket file lives under the owner-writable crew data home, so a same-UID
+    process can unlink it and bind its OWN listener there — proving the peer is
+    the same USER is not enough. The gateway injects its pid as
+    ``KIROCREW_GATEWAY_PID`` at spawn (beside the origin), and the kernel reports
+    the connected listener's pid via ``SO_PEERCRED`` / ``LOCAL_PEERPID``; a
+    rebinder cannot forge that pid. Requiring the two to match is the one channel
+    that survives a socket-file swap. Deny by default: a missing attested pid, an
+    unreadable peer, or a mismatch all refuse before the secret is sent.
+
+    A pid ALONE is reusable, though: a same-UID adversary can hard-kill the
+    gateway, let the OS recycle its pid onto an attacker process, and rebind the
+    socket under that reused pid — the pid compare above would then pass. So the
+    pid is pinned to a PROCESS GENERATION by also comparing the peer's process
+    start identity (``platform_compat.get_process_start_id``, a format-stable
+    integer-derived token — Linux clock ticks, macOS libproc microseconds, Windows
+    FILETIME) against ``KIROCREW_GATEWAY_START`` injected beside the pid at spawn.
+    It is the SAME source the spawn captured, and it does not shift with the
+    reader's ``LANG`` or ``TZ`` — unlike ``ps -o lstart=`` text, whose locale/
+    timezone formatting made the authentic gateway's own start-time compare unequal
+    across an environment difference between spawn and read-back. The recycled
+    process has a different identity and fails this second check. Both the attested
+    value and the live peer's identity must be present and equal; a missing attested
+    value or an unreadable peer identity is "identity unconfirmed" and refuses —
+    fail closed, matching the pid guard.
+    """
+    expected = os.environ.get("KIROCREW_GATEWAY_PID", "").strip()
+    if not expected.isdigit():
+        raise OSError("no attested gateway pid; refusing to send over the unix socket")
+    peer = get_peer_pid(sock)
+    if peer is None or str(peer) != expected:
+        raise OSError(
+            "gateway unix-socket peer is not the attested gateway process; refusing to send"
+        )
+    expected_start = os.environ.get("KIROCREW_GATEWAY_START", "").strip()
+    if not expected_start:
+        raise OSError("no attested gateway start-time; refusing to send over the unix socket")
+    peer_start = platform_compat.get_process_start_id(peer)
+    # Compare the format-stable process start identity, the SAME source the gateway
+    # attested at spawn. ``get_process_start_id`` returns an ASCII, ``:``-free
+    # integer-derived token (Linux clock ticks, macOS libproc microseconds, Windows
+    # FILETIME), so it does not shift with the reader's ``LANG`` or ``TZ`` — unlike
+    # ``ps -o lstart=`` text, whose locale/timezone formatting made the authentic
+    # gateway's own start-time compare unequal across an environment difference
+    # between the spawn capture and this read-back. The value is not a secret, but a
+    # constant-time ``compare_digest`` on the ASCII bytes is harmless and keeps the
+    # pid-reuse guard: a recycled pid has a different start identity and is refused.
+    if peer_start is None or not hmac.compare_digest(
+        peer_start.encode("ascii", "surrogatepass"),
+        expected_start.encode("ascii", "surrogatepass"),
+    ):
+        raise OSError(
+            "gateway unix-socket peer's start-time does not match the attested "
+            "gateway process (possible pid reuse); refusing to send"
+        )
+
+
+def _publish_state_via_gateway(origin: str, leaf: str, content: str, *, fsync_file: bool) -> None:
+    """Hand one state publish to the gateway's own in-process route.
+
+    Exchanges this app's secret for a scoped token (``POST /api/apps/md-notebook/token``,
+    the App Kit exchange the backend already has the material for), then posts the
+    leaf's content to ``POST /api/apps/md-notebook/state``. The gateway performs the
+    staged rename in its own namespace, where staging dir and target share one mount.
+
+    TRANSPORT IS THE GATEWAY'S OWNER-ONLY UNIX SOCKET, never TCP. The request
+    carries this app's secret (token exchange) and the scoped token (publish), so
+    it must never reach a process other than the gateway. A loopback TCP port is
+    ordinary: if the gateway is hard-killed its port frees and a same-UID
+    port-squatter can bind it, then the opt-in auto-sync writer would re-send the
+    secret there. ``unix_socket_urlopen`` has NO TCP handler, so "no fallback" is
+    structural — a missing/stale/refusing socket (a dead gateway) raises and the
+    secret is sent nowhere — and the socket file lives under the owner-only crew
+    data home, so no other user can answer it; ``_verify_gateway_peer`` refuses an
+    unidentifiable peer on top. The HMAC origin attestation below is kept as
+    defense in depth (it still gates on a gateway-minted origin), but the unix
+    socket is what binds the credential to the authentic listening peer.
+
+    Synchronous ``urllib`` on purpose: the three state writers are sync and run off
+    the event loop via ``asyncio.to_thread``, so a sync client needs no loop coupling.
+    A non-2xx response or any transport failure raises ``OSError`` so the caller's
+    existing failure handling (the writers surface it as a 500 to the UI) is unchanged
+    — the publish is reported failed rather than silently lost. ``fsync_file`` is NOT
+    sent on the wire: the gateway derives it from the leaf, so a caller cannot ask the
+    gateway to skip the durability a secret write requires.
+    """
+    secret = proxy_secret()
+    if not secret:
+        raise OSError("md-notebook app secret is unavailable; cannot reach the gateway")
+    # Verify the origin was minted by the gateway that holds this secret BEFORE
+    # sending the secret (token exchange) or the PAT (publish) there. Defense in
+    # depth alongside the unix-socket transport below. Fail closed on a missing
+    # or mismatched proof.
+    if not _origin_is_attested(origin, secret):
+        raise OSError("gateway origin is not attested; refusing to send the state write there")
+    sock_path = _gateway_socket_path(origin)
+    if sock_path is None:
+        raise OSError("could not derive the gateway unix socket; refusing to send over TCP")
+    body = json.dumps({"leaf": leaf, "content": content}).encode("utf-8")
+    # Try the cached token first; a mint happens only on a cold cache or after a
+    # refusal, which is what keeps _exchange_app_token off the gateway's token-
+    # state manager on the auto-sync hot path. On a 401/403 the token has expired
+    # or the gateway restarted with a new signing key: forget it, re-exchange
+    # ONCE, and retry — mirroring pointer_broker._ensure_token's retry.
+    for attempt in (0, 1):
+        token = _get_app_token(origin, secret, sock_path)
+        try:
+            _post_state_via_gateway(origin, token, body, sock_path)
+            return
+        except urllib.error.HTTPError as exc:
+            if exc.code in (401, 403) and attempt == 0:
+                _reset_cached_app_token()
+                continue
+            raise OSError(f"gateway state publish returned HTTP {exc.code}") from exc
+        except urllib.error.URLError as exc:
+            if _is_socket_unreachable(exc):
+                raise _GatewayRouteUnreachable(f"gateway unix socket unreachable: {exc}") from exc
+            raise OSError(f"gateway state publish failed: {exc}") from exc
+
+
+def _post_state_via_gateway(origin: str, token: str, body: bytes, sock_path: Path) -> None:
+    """POST one state body over the gateway's unix socket. Raises on any non-2xx."""
+    # The dashboard token middleware reads the credential from the ``token``
+    # query parameter (or a cookie), not an Authorization header, so the scoped
+    # app token travels there. The URL host is preserved (the gateway's Host
+    # validation sees what it would on TCP); only the TRANSPORT is the socket.
+    url = f"{origin}{_STATE_ROUTE}?token={urllib.parse.quote(token, safe='')}"
+    req = urllib.request.Request(
+        url,
+        data=body,
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    with unix_socket_urlopen(
+        req,
+        timeout=_GATEWAY_PUBLISH_TIMEOUT_SECS,
+        socket_path=sock_path,
+        verify_peer=_verify_gateway_peer,
+    ) as resp:
+        if resp.status // 100 != 2:
+            raise OSError(f"gateway state publish returned HTTP {resp.status}")
+
+
+def _get_app_token(origin: str, secret: str, sock_path: Path) -> str:
+    """Return the cached app token, exchanging the secret only when there is none.
+
+    The cache is the whole point of Opus's token-churn fix: a mint registers a
+    nonce in the gateway's bounded token-state manager, so one per publish evicts
+    other apps' pending nonces (the dashboard-login one most visibly). Re-exchange
+    is driven by the publish's 401/403 handler calling ``_reset_cached_app_token``,
+    not by this function.
+    """
+    global _cached_app_token
+    with _app_token_lock:
+        if _cached_app_token:
+            return _cached_app_token
+    token = _exchange_app_token(origin, secret, sock_path)
+    with _app_token_lock:
+        _cached_app_token = token
+    return token
+
+
+def _exchange_app_token(origin: str, secret: str, sock_path: Path) -> str:
+    """Trade the app secret for a scoped token the gateway stamps as this app.
+
+    Sent over the gateway's owner-only unix socket (never TCP): the ``X-App-Secret``
+    header is the credential a port-squatter must never receive.
+    """
+    req = urllib.request.Request(
+        f"{origin}/api/apps/{APP_NAME}/token",
+        data=b"",
+        method="POST",
+        headers={"X-App-Secret": secret},
+    )
+    try:
+        with unix_socket_urlopen(
+            req,
+            timeout=_GATEWAY_PUBLISH_TIMEOUT_SECS,
+            socket_path=sock_path,
+            verify_peer=_verify_gateway_peer,
+        ) as resp:
+            if resp.status // 100 != 2:
+                raise OSError(f"app token exchange returned HTTP {resp.status}")
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.URLError as exc:
+        if _is_socket_unreachable(exc):
+            raise _GatewayRouteUnreachable(f"gateway unix socket unreachable: {exc}") from exc
+        raise OSError(f"app token exchange failed: {exc}") from exc
+    token = data.get("token") if isinstance(data, dict) else None
+    if not isinstance(token, str) or not token:
+        raise OSError("app token exchange returned no token")
+    return token
+
+
+def _sensitive_vault_root(vault: dict[str, Any]) -> bool:
+    """True if this vault entry's content root is (or contains) a protected path.
+
+    The whole-root check ``_sync_vault`` depends on. A vault's sync stages its
+    content root wholesale with ``git add -A`` and pushes it, so a root that IS a
+    protected location (``~/.ssh``) or CONTAINS one (``~`` above ``~/.ssh``) would
+    exfiltrate a credential store on the next push. ``api_vault_attach`` refuses
+    both directions at attach time; this is the same pair, resolved through
+    ``content_root`` so the subfolder scope is honoured, applied to a registry
+    entry however it arrived. A malformed entry — no ``localPath``, an
+    unresolvable path, a traversing or non-string ``subfolder`` that makes
+    ``content_root``/``safe_join`` raise (``ApiError``, ``AttributeError``, ...) —
+    is treated as sensitive: it cannot be proven safe, and the escaping entries
+    this fence exists to catch are exactly the ones whose resolution raises, so a
+    broad ``except`` that fails closed is the point, not an oversight.
+    """
+    try:
+        croot = str(content_root(vault).resolve())
+        return hooks.is_sensitive_path(croot) or security.path_contains_sensitive(croot)
+    except Exception:
+        return True
+
+
+def _relative_local_path(vault: dict[str, Any]) -> bool:
+    """True if this entry's ``localPath`` is anything but a NATIVELY absolute path.
+
+    ``content_root`` builds ``Path(vault["localPath"])`` and ``_sensitive_vault_root``
+    resolves it with ``Path.resolve()``, which anchors a value that is not absolute
+    under the RUNNING platform's rules at the resolving process's working directory.
+    The gateway validates the registry from its own cwd, but the proxied sync
+    consumes the same ``localPath`` from the backend's ``src`` cwd — so a value that
+    is not natively absolute can name a different, sensitive tree when the sync
+    resolves it in the other directory, and the stored PAT would ride that tree's
+    push. A path accepted here must mean the SAME location in both processes, which
+    only a natively-absolute path guarantees. The test is ``Path.is_absolute()`` —
+    the exact predicate ``content_root`` resolves against — not a both-conventions
+    check: on POSIX ``ntpath.isabs("C:/...")`` is ``True`` while ``Path("C:/...")``
+    is a cwd-RELATIVE path, so accepting the Windows form here would pass validation
+    yet let the backend resolve it somewhere else entirely. A missing or non-string
+    ``localPath`` is treated as relative so it is refused — it cannot be proven to
+    name one fixed location.
+    """
+    local_path = vault.get("localPath")
+    if not isinstance(local_path, str) or not local_path:
+        return True
+    return not Path(local_path).is_absolute()
+
+
+def refuse_unsafe_state_write(leaf: str, content: str) -> Optional[str]:
+    """Reason to REFUSE publishing *content* onto *leaf*, or ``None`` if it is safe.
+
+    ``api_vault_attach`` enforces the sensitive-path refusals on the backend's own
+    write path. The gateway state route is a SECOND write path to the vault
+    registry, so without re-validating here a caller of the gateway route could
+    persist a vault whose root is ``~/.ssh`` with an attacker's ``remoteUrl``; with
+    auto-sync on, the unattended loop would ``git add -A`` and push the credential
+    store. This re-applies that one refusal on the gateway write path:
+
+    * ``vaults.json``: a non-list, or ANY entry that lacks a nonempty string
+      ``id``, whose ``localPath`` is not absolute, or whose content root fails the
+      sensitive-path floor (either direction — IS a protected location, or
+      CONTAINS one), is refused. An id-less entry would persist and then make
+      ``require_vault``/``api_vault_forget`` raise ``KeyError`` on ``v["id"]``,
+      turning every later Notes request into a 500 that only hand-editing the file
+      clears. The registry is all-or-nothing, so one poisoned entry rejects the
+      whole write.
+
+    ``settings.json`` is deliberately NOT special-cased. The auto-sync bit it
+    carries only authorizes pushing the vaults that are REGISTERED, and the
+    ``vaults.json`` gate above already guarantees no registered vault has a
+    sensitive content root — so enabling auto-sync is safe once that gate holds.
+    Refusing the enable here instead would break the ordinary dashboard auto-sync
+    toggle, which routes its ``settings.json`` write through this very gateway
+    path with no fallback. ``pat`` likewise carries no path surface. Returns a
+    short, caller-safe reason string (no attacker-supplied value) or ``None`` when
+    the write is allowed.
+    """
+    if leaf == "vaults.json":
+        try:
+            entries = json.loads(content)
+        except (json.JSONDecodeError, ValueError):
+            return "vault registry is not valid JSON"
+        if not isinstance(entries, list):
+            return "vault registry must be a list"
+        for entry in entries:
+            if not isinstance(entry, dict):
+                return "a vault content root is a protected location"
+            vault_id = entry.get("id")
+            if not isinstance(vault_id, str) or not vault_id:
+                return "a vault entry has no id"
+            if _relative_local_path(entry):
+                return "a vault localPath is not absolute"
+            if _sensitive_vault_root(entry):
+                return "a vault content root is a protected location"
+        return None
+    return None
+
+
 def _write_state_staged_sync(target: Path, content: str, *, fsync_file: bool = False) -> None:
+    """Publish *content* onto a state *target*, through the gateway when sandboxed.
+
+    The staged rename this ultimately performs is a cross-mount operation inside
+    the backend's sandbox namespace: each state leaf and the ``md-notebook-staging``
+    directory are bound as SEPARATE mount points, so ``os.replace`` between them
+    raises ``EXDEV``, and a temp staged beside the target instead would hold the
+    real PAT bytes at a name the leaf masks do not cover. So when this backend has
+    a gateway to call (``KIROCREW_GATEWAY_ORIGIN``, injected for every spawned
+    backend that can reach the gateway), the publish is handed to the gateway's
+    own ``POST /api/apps/md-notebook/state`` route: the gateway has no bind
+    namespace, so there the staging dir and the target are one mount and the
+    rename is a plain atomic publish — and the content never lands anywhere a
+    sandboxed process can read.
+
+    Absent that origin the publish runs IN THIS PROCESS. For an UNSANDBOXED
+    writer — a foreground gateway before its site is up, the gateway process
+    itself, or a test — that is correct for the same reason it is correct in the
+    gateway: one mount, one atomic rename. But a SANDBOXED backend can also reach
+    here with no origin: ``apps/backend.py`` omits ``KIROCREW_GATEWAY_ORIGIN``
+    when the gateway is bound to a SPECIFIC interface (an origin for that bind
+    would fail the gateway's own CSRF barrier), and on that host the in-process
+    rename hits the very ``EXDEV`` this routing exists to avoid. That residual is
+    real; it cannot be papered over from here (the origin omission is the
+    gateway's deliberate choice), so the in-process writer surfaces the EXDEV
+    with its cause named rather than letting a bare ``[Errno 18]`` reach the UI.
+    """
+    origin = _gateway_origin()
+    # Route to the gateway ONLY when the unix transport actually exists: it is an
+    # AF_UNIX socket, so Windows (no AF_UNIX) always publishes in-process — correct
+    # there, since Windows has no sandbox namespace and no EXDEV. On POSIX with an
+    # origin, hand the write to the gateway; a transport failure that proves the
+    # route unreachable (socket missing/refused — NOT an HTTP error) falls back to
+    # the in-process writer rather than hard-failing, so a vault clone's follow-up
+    # registry write is not stranded. The in-process fallback is correct for an
+    # unsandboxed host and surfaces the diagnosable EXDEV in the sandbox.
+    if origin and not platform_compat.IS_WINDOWS:
+        leaf = _leaf_name_for_target(target)
+        if leaf is None:
+            # A gateway is present (so this is the sandboxed backend) but the
+            # target is not one of the three state leaves. Every caller passes an
+            # allowlisted target, so this is a wiring bug — a new state file added
+            # without a leaf name. Fail loudly: silently falling through to the
+            # in-process writer would re-raise EXDEV in the sandbox, the exact
+            # defect this routing exists to avoid.
+            raise ValueError(f"no state-leaf name for target {target!r}; cannot route to gateway")
+        try:
+            _publish_state_via_gateway(origin, leaf, content, fsync_file=fsync_file)
+            return
+        except _GatewayRouteUnreachable:
+            # The gateway's own socket does not answer (dead/replaced gateway).
+            # Fall through to the in-process writer: on an unsandboxed host it
+            # publishes; in the sandbox it surfaces the diagnosable EXDEV below.
+            pass
+    try:
+        _write_state_in_process_sync(target, content, fsync_file=fsync_file)
+    except OSError as exc:
+        # A SANDBOXED backend that reached the in-process writer cannot publish
+        # across its bind mounts — either no attested origin (specific-interface
+        # bind) or the gateway route was unreachable. Name the cause so the
+        # operator can act (restart the gateway on a loopback/wildcard bind)
+        # instead of reading a bare cross-device-link error. Unsandboxed callers
+        # keep the raw error.
+        if getattr(exc, "errno", None) == getattr(os, "EXDEV", 18) and (
+            os.environ.get(KIROCREW_SPAWNED_ENV) == KIROCREW_SPAWNED_VALUE
+        ):
+            raise OSError(
+                "cannot publish Notes state: this sandboxed backend could not route the "
+                "write to the gateway (no attested loopback origin, or the gateway's "
+                "unix socket did not answer). Restart the gateway on a loopback or "
+                "wildcard bind so state writes can route through it."
+            ) from exc
+        raise
+
+
+def _write_state_in_process_sync(target: Path, content: str, *, fsync_file: bool = False) -> None:
     """Stage *content* in the masked staging dir, then rename onto *target*.
+
+    Runs the publish in THIS process. Correct only where staging dir and target
+    share a mount — the gateway process, or an unsandboxed backend. The sandboxed
+    backend reaches this through :func:`_write_state_staged_sync`'s gateway route
+    instead, never directly.
 
     ``mkstemp`` opens the temp 0600 on POSIX before any payload byte;
     ``restrict_to_owner`` adds the owner-only DACL on Windows (chmod is a no-op
@@ -475,6 +1011,16 @@ def _write_state_staged_sync(target: Path, content: str, *, fsync_file: bool = F
     refuse_linked_parent(staging / ".chain-probe")
     staging.mkdir(parents=True, exist_ok=True)
     target.parent.mkdir(parents=True, exist_ok=True)
+    # Capture the destination parent's IDENTITY right after the link check, so the
+    # publish can prove the directory it renames into is still the one just
+    # validated — not a real directory an agent swapped in afterward (which the
+    # lstat link check and O_NOFOLLOW both accept). None when it cannot be read
+    # (the publish then takes the by-name floor / refuses as appropriate).
+    try:
+        _st = os.stat(target.parent)
+        checked_identity: "Optional[tuple[int, int]]" = (_st.st_dev, _st.st_ino)
+    except OSError:
+        checked_identity = None
     fd, tmp_name = tempfile.mkstemp(dir=str(staging), suffix=".tmp")
     tmp = Path(tmp_name)
     try:
@@ -488,7 +1034,7 @@ def _write_state_staged_sync(target: Path, content: str, *, fsync_file: bool = F
             if fsync_file:
                 fh.flush()
                 os.fsync(fh.fileno())
-        replace_with_retry(tmp, target)
+        _publish_onto_pinned_target(tmp, target, checked_identity)
     except BaseException:
         if fd >= 0:
             with contextlib.suppress(OSError):
@@ -496,6 +1042,109 @@ def _write_state_staged_sync(target: Path, content: str, *, fsync_file: bool = F
         with contextlib.suppress(OSError):
             tmp.unlink()
         raise
+
+
+def _pin_state_target_dir(target: Path) -> "Optional[int]":
+    """An ``O_NOFOLLOW``-descended directory descriptor for *target*'s parent, or ``None``.
+
+    Descends the destination's parent one component at a time with
+    ``O_NOFOLLOW | O_DIRECTORY`` (via ``sandbox._open_dir_anchored``), so the
+    rename can publish RELATIVE to the resulting descriptor and no ancestor is
+    re-walked from the root. ``O_NOFOLLOW`` refuses a SYMLINK at a component, but
+    it ACCEPTS a real directory an agent may have swapped in — so the caller also
+    verifies this fd's ``fstat`` identity against the identity captured when
+    ``refuse_linked_parent`` validated the path (see
+    :func:`_publish_onto_pinned_target`); the two together are the IDENTITY check
+    ``O_NOFOLLOW`` alone is not. The anchor is a trusted crew data home; under the
+    ``_HOME`` test hook the same per-component descent runs against that
+    directory's parent. ``None`` when a component is absent/not-a-directory/a link
+    or the platform lacks the descriptor-relative syscalls — the caller then takes
+    the by-name floor.
+    """
+    if not pinned_parent_replace_supported():
+        return None
+    parent = target.parent
+    if _HOME is not None:
+        # Test layout: the state dir IS _HOME; descend into it from its own parent
+        # with the same O_NOFOLLOW step the production path uses.
+        return _open_dir_anchored(str(parent.parent), (parent.name,))
+    # Production: anchor at the crew data home root, descend workspace/md-notebook.
+    try:
+        base = config_dir()
+    except Exception:
+        override = os.environ.get("KIROCREW_HOME")
+        base = Path(override) if override else Path.home() / ".kiro" / "crew"
+    return _open_dir_anchored(str(base), ("workspace", _STATE_APP_DIR))
+
+
+def _publish_onto_pinned_target(
+    tmp: Path, target: Path, checked_identity: "Optional[tuple[int, int]]"
+) -> None:
+    """Rename *tmp* onto *target* through an identity-verified, pinned destination.
+
+    Closes the check-then-rename window ``refuse_linked_parent``'s ``lstat`` walk
+    leaves open. The caller captured ``target.parent``'s ``(st_dev, st_ino)``
+    right after that link check (``checked_identity``); here the destination's
+    parent is re-opened by an ``O_NOFOLLOW`` descent (:func:`_pin_state_target_dir`)
+    and the pinned fd's ``fstat`` identity is compared to ``checked_identity``
+    before the rename, which publishes RELATIVE to that fd (``dst_dir_fd=``). A
+    same-uid agent that swapped the parent between the check and the pin — to a
+    symlink (``O_NOFOLLOW`` refuses it) OR to a real directory it created
+    (``O_NOFOLLOW`` ACCEPTS it, but the identity differs) — is caught and the
+    publish refused, never redirected. That identity compare is the check
+    ``O_NOFOLLOW`` alone is not. ``os.rename`` (not ``os.replace``) is used because
+    only it is in ``os.supports_dir_fd`` here, and on POSIX it already overwrites
+    the destination. When the parent cannot be pinned or its check-time identity
+    was unreadable, the secret publish is REFUSED rather than falling back to a
+    redirectable by-name write; the by-name :func:`replace_with_retry` floor (with
+    its Windows sharing-violation retry) is taken only where the platform lacks
+    descriptor-relative rename.
+    """
+    dst_fd = _pin_state_target_dir(target)
+    if dst_fd is None:
+        # No pinned descriptor. On a platform without dir_fd rename this is the
+        # only option and adds no exposure the by-name walk did not already carry.
+        # On a platform WITH it, None means a component is absent/a link — a secret
+        # publish must not then proceed by name (the swap would redirect it), so
+        # refuse unless this is the by-name-floor platform.
+        if pinned_parent_replace_supported():
+            raise OSError(
+                "refusing to publish Notes state: its destination directory could "
+                "not be pinned with no-follow descriptors (a parent is absent or a "
+                "symlink), so a by-name rename could be redirected"
+            )
+        replace_with_retry(tmp, target)
+        return
+    try:
+        # Identity check: the pinned fd must name the SAME directory the link
+        # check validated. A swap to a different real directory between the check
+        # and the pin changes (st_dev, st_ino); a missing captured identity means
+        # the check could not read it — both refuse before any byte is published.
+        if checked_identity is None:
+            raise OSError(
+                "refusing to publish Notes state: the destination directory's "
+                "identity could not be captured at the check, so the pin cannot be "
+                "verified against it"
+            )
+        now = os.fstat(dst_fd)
+        if not hmac.compare_digest(
+            f"{checked_identity[0]}:{checked_identity[1]}",
+            f"{now.st_dev}:{now.st_ino}",
+        ):
+            raise OSError(
+                "refusing to publish Notes state: the destination directory's "
+                "identity changed between the check and the write (possible swap); "
+                "the write would land somewhere it was not named"
+            )
+        # renameat: the destination name is resolved RELATIVE to the pinned,
+        # identity-verified fd, so no ancestor is re-walked from the root. The
+        # staging temp keeps its full path (its own top-level dir is bind-masked
+        # as a whole), so src stays by-name; only the attacker-reachable
+        # destination parent needs pinning.
+        os.rename(str(tmp), target.name, dst_dir_fd=dst_fd)
+    finally:
+        with contextlib.suppress(OSError):
+            os.close(dst_fd)
 
 
 def _write_vaults_sync(vaults: list[dict[str, Any]]) -> None:
