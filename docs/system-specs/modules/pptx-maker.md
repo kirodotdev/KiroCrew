@@ -46,7 +46,11 @@ instead of a reduced embed.
 
 All routes live under `/api/apps/pptx-maker/` and are registered by
 `apps/builtins/pptx_maker/backend/routes.py:register_routes`. Every handler is
-wrapped in `_require_enabled` (403 when the app is disabled).
+wrapped in `_require_enabled` (403 when the app is disabled). Every PUT, POST
+and DELETE handler is also owner only (`_refuse_non_owner`): a dashboard caller
+that is not the owner, or a request with no app claim, gets the shared 403
+`owner_only` before the body is read. An app token keeps its manifest-scoped
+access.
 
 | Method | Path | Purpose |
 |--------|------|---------|
@@ -727,6 +731,11 @@ sensitive-path check and the governance ceiling — would never be reached.
   the engine's analyzer.
 - **Deny-by-default.** All handlers wrapped in `_require_enabled`; the gate runs
   BEFORE the handler body, so a disabled app does not even walk the deck tree.
+- **Owner-only mutations.** `PUT /config`, the style and template
+  import/rename/pin/delete routes, and both provision routes call
+  `require_owner_dashboard_request` first unless an app token calls. A
+  non-owner could otherwise repoint the deck root and read files through
+  `/preview`, or pin a style the owner's next deck uses.
 - **SEL audit.** Every mutating action (engine/asset provisioning, deck-root
   writes, library import/rename/delete) and every refused artifact read emits an
   SEL `pptx_maker.*` event.
