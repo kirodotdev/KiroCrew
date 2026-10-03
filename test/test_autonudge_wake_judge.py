@@ -1474,6 +1474,28 @@ class TestCollectors:
         assert "newly failing" not in judge.DEFAULT_WAKE_WHEN
         assert "not whole" in judge.DEFAULT_WAKE_WHEN
 
+    def test_the_default_brief_wakes_on_a_settled_green_board(self) -> None:
+        """An owner who arms no criteria is most often waiting FOR the board going green.
+
+        The wake decision itself is the judge's at runtime, so what a test can pin is
+        the criterion the briefless loop runs under: the default names a settled,
+        all-passed board as a wake reason rather than leaving it to "a blocker" or "a
+        failing check", neither of which a green board answers. A briefless loop that
+        misses the settle stays quiet about the very state its owner watches for, so
+        the default names it and this test pins that.
+
+        A companion reading proves a fully-passed board renders as one the clause can
+        match -- the evidence a briefless loop judges against.
+        """
+        assert "a fully settled board whose every check has passed" in judge.DEFAULT_WAKE_WHEN
+
+        board = judge.render_pr_checks(
+            {"checks": {"passed": ["lint", "tests-2", "e2e"]}, "checks_complete": True}
+        )
+        assert "passed 3" in board and "passed 3 (" not in board
+        assert "failed" not in board
+        assert "INCOMPLETE" not in board
+
     def test_a_mistyped_key_is_skipped_rather_than_coerced(self) -> None:
         items = judge.pr_evidence(
             {"state": "open", "unresolved_review_threads": "three", "draft": "no"},

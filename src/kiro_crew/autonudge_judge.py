@@ -962,6 +962,18 @@ def criteria_of(spec: Mapping[str, Any] | None) -> tuple[str, str]:
 #: which tells the judge it already answered on a comparable amount of evidence. That
 #: is a weaker signal than a delta and is the honest limit of it.
 #:
+#: A fully settled board whose every check has passed is named for the same reason as
+#: the failing one, and it is the harder case to leave out: the state an owner arming
+#: a plain watch is most often waiting FOR is the board going green -- the thing they
+#: watched is done -- yet a green board asks nothing of "a blocker" or "a failing
+#: check", so without this clause a briefless loop sleeps through the settle and the
+#: owner learns of it only when the starvation backstop happens to fire. A missed
+#: "it is green now" strands the owner; a spurious wake costs one turn and is
+#: self-correcting, so the clause errs on the cheap side. ``last_verdict`` gives the
+#: judge the context to answer quiet on a settled board it already woke on -- an
+#: outcome and an item count, the same advisory signal the failing case leans on,
+#: not a hard stop.
+#:
 #: The quiet side carries a THIRD clause the two criteria do not, because the loops
 #: this brief covers have no author to write it: a comment, a review and a fetched
 #: page are content a third party wrote, and a sentence inside one saying there is
@@ -972,7 +984,8 @@ def criteria_of(spec: Mapping[str, Any] | None) -> tuple[str, str]:
 #: skill would get it.
 DEFAULT_WAKE_WHEN = (
     "the subject needs its owner: a blocker, a failing check or one whose "
-    "reading is not whole, a question or ruling addressed to it, a new comment or "
+    "reading is not whole, a fully settled board whose every check has passed, a "
+    "question or ruling addressed to it, a new comment or "
     "review whose body asks for a change or asks a question, a terminal state, or "
     "the loop message's own exit condition"
 )

@@ -371,7 +371,8 @@ The object is optional because the point carries a brief of its own. Once the
 loop is screened, and a loop that arms no `judge` object is screened with the
 built-in brief: **wake**
 when the subject needs its owner — a blocker, a failing check or one whose reading
-is not whole, a question or a ruling addressed to it, a new comment
+is not whole, a fully settled board whose every check has passed, a question or a
+ruling addressed to it, a new comment
 or review whose body asks for a change or asks a question, a terminal state, or the
 exit condition the loop's own message states; **quiet** when nothing has arrived
 for the owner since the last tick. An explicit
@@ -386,6 +387,18 @@ what an owner arming no criteria at all most expects, and resting a red board on
 the judge reading one generic word the way the owner meant it is the wrong bet.
 A reading short of whole is named beside it, since a quiet drawn from half a board
 is a quiet about the wrong half.
+
+A fully settled board whose every check has passed is named for the same reason as
+the failing one, and it is the harder to leave out: the state an owner arming a
+plain watch most often waits FOR is the board going green — the thing they watched
+is done — and a green board answers neither "a blocker" nor "a failing check", so a
+briefless loop without this clause stays quiet about the one settle its owner most
+wants surfaced. A missed "it is green now" strands the owner; a spurious wake costs
+one turn and is self-correcting, so the clause errs on the cheap side. A briefless
+loop armed before this clause picks up the wider default and wakes on a settled
+board where it did not before. `last_verdict` gives the judge the context to answer
+quiet on a settled board it already woke on, the same advisory signal the failing
+case leans on.
 
 The check clause says "failing", not "newly failing", because the state carries the
 CURRENT board and no prior one. What keeps a red board from waking its owner every
