@@ -30,6 +30,17 @@ All routes live under `/api/apps/auto-improvement/` and are registered by
 in-process on the gateway's own aiohttp app. Every handler is wrapped in
 `_require_enabled` (403 when the app is disabled).
 
+`_require_enabled` closes the API, not the work. `register_routes` therefore stands
+both in-process workers down on both ways the app can be switched off: `on_cleanup`
+hooks for gateway shutdown (`_stop_watchers`, `_stop_run`), and an `apps.teardown`
+`register_app_disable_hook` for the operator disabling the app. Without the second,
+a disable leaves the routes answering 403 while a watcher keeps running agent turns
+in per-PR clones and an in-flight run keeps the clone lock and keeps spending
+budget. The disable hook fires inside the disable request, before the `enabled` flag
+is written, so both are signalled at the click rather than at the next sweep, and
+each is error-contained separately — the shutdown path gets that from holding two
+hooks, the disable path has to spell it out.
+
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET | `/health` | liveness; echoes the app name |
