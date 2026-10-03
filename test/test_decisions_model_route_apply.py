@@ -21,6 +21,7 @@ model through their own tier, and none of them has an owner watching the price.
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -133,6 +134,17 @@ def _rows(tmp_path):
             if line.strip():
                 rows.append(json.loads(line))
     return rows
+
+
+def _outcome_rows(tmp_path):
+    """The routed turn's OUTCOME rows, picked out by the field only they carry.
+
+    Selected by shape, never by position. The gate's own call row for the same
+    decision is a best-effort append that the gate stops waiting for after its write
+    budget, so on a slow host it can commit after the outcome row the runner awaits:
+    "the last row" is whichever writer reached the file last.
+    """
+    return [row for row in _rows(tmp_path) if "model_chosen" in row]
 
 
 def _switched_to(client) -> list[str]:
@@ -754,10 +766,62 @@ class TestASwitchThatDoesNotTake:
         await _settle(slot)
 
         assert _switched_to(client) == ["model-c"], "the switch should still be attempted"
-        row = _rows(tmp_path)[-1]
+        outcomes_written = _outcome_rows(tmp_path)
+        assert len(outcomes_written) == 1, f"expected one outcome row, got {_rows(tmp_path)}"
+        row = outcomes_written[0]
         assert row["model_chosen"] == "model-c"
         assert row["applied"] is False
         assert row["model_used"] == "model-b"
+
+    @pytest.mark.asyncio
+    async def test_the_outcome_row_is_read_when_the_call_row_lands_after_it(
+        self, tmp_path, answers, monkeypatch
+    ):
+        """The order a slow host produces, arranged on events rather than timing.
+
+        The gate's call row is held until the outcome row has committed, and the
+        outcome append returns only once the held row is on disk too, so the file ends
+        with the call row. The gate gives up waiting on its own append after its write
+        budget, which is what lets the turn reach the outcome row while the call row is
+        still held. Each wait carries a 30 s backstop so a broken arrangement fails
+        here instead of hanging the worker.
+        """
+        real_append = log_mod.append
+        outcome_written = threading.Event()
+        call_landed = threading.Event()
+
+        def _ordered_append(row, **kwargs):
+            if row.get("point") == mr.POINT and "model_chosen" not in row and not row.get("error"):
+                assert outcome_written.wait(30), "the outcome row was never written"
+                try:
+                    return real_append(row, **kwargs)
+                finally:
+                    call_landed.set()
+            written = real_append(row, **kwargs)
+            if "model_chosen" in row:
+                outcome_written.set()
+                assert call_landed.wait(30), "the held call row never landed"
+            return written
+
+        monkeypatch.setattr(log_mod, "append", _ordered_append)
+        answers("complex")
+        state, client = _runner_state(tmp_path)
+        _turn_client(state, client)
+        slot = _routed_slot()
+        slot.served_model = "model-b"
+
+        with _quiet_sel():
+            await chat_runner._run_chat(
+                state, slot, "please redesign the scheduler", _directive_user_origin=True
+            )
+        await _settle(slot)
+
+        rows = _rows(tmp_path)
+        assert "model_chosen" not in rows[-1], f"the call row did not land last: {rows}"
+        outcomes_written = _outcome_rows(tmp_path)
+        assert len(outcomes_written) == 1, f"expected one outcome row, got {rows}"
+        assert outcomes_written[0]["model_chosen"] == "model-c"
+        assert outcomes_written[0]["applied"] is False
 
 
 # ---------------------------------------------------------------------------
