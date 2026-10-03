@@ -163,6 +163,8 @@ class _ConptyBackend(Protocol):
 
     def isalive(self) -> bool: ...
 
+    def exitstatus(self) -> int | None: ...
+
     def terminate(self, force: bool = True) -> None: ...
 
 
@@ -1157,8 +1159,8 @@ async def _child_exit_status(sess: _TerminalSession) -> int | None:
     """Wait, bounded, for the session's child to go; return its exit status.
 
     ``None`` when the status is unavailable: the child outlived
-    ``_CHILD_REAP_TIMEOUT_S``, or it ran under ConPTY, whose wrapper reports
-    liveness but no exit code. Callers tell those apart with ``_sess_alive``.
+    ``_CHILD_REAP_TIMEOUT_S``, or the binding could not report one. Callers
+    tell a child still running from an unavailable code with ``_sess_alive``.
     """
     wp = sess.winpty
     if wp is not None:
@@ -1170,7 +1172,7 @@ async def _child_exit_status(sess: _TerminalSession) -> int | None:
             if loop.time() >= deadline:
                 return None
             await asyncio.sleep(_CONPTY_STATUS_POLL_S)
-        return None
+        return wp.exitstatus()
     proc = sess.proc
     if proc is None:
         return None

@@ -6435,8 +6435,8 @@ class TestPtyChildEnvStripsPythonStartupVars:
 
 class TestChildExitStatus:
     """Exit status resolution on both backends. ``None`` means the status is
-    unavailable -- the child outlived the reap bound, or it ran under ConPTY,
-    whose wrapper reports liveness but no exit code."""
+    unavailable -- the child outlived the reap bound, or the binding could not
+    report one."""
 
     @pytest.mark.asyncio
     async def test_returns_recorded_status_without_waiting(self):
@@ -6481,25 +6481,36 @@ class TestChildExitStatus:
         )
 
     @pytest.mark.asyncio
-    async def test_conpty_reports_no_status_for_a_child_already_gone(self):
-        """ConPTY carries no exit code, so a dead ConPTY child resolves to
-        unavailable -- and the POSIX fields must not be read as a substitute,
-        since they belong to a process this session never spawned."""
+    async def test_reports_the_conpty_code_for_a_child_already_gone(self):
+        """A dead ConPTY child reports the wrapper's code, and the POSIX fields
+        are not read as a substitute, since they belong to a process this
+        session never spawned."""
         sess = _make_session(alive=False)
         sess.proc.returncode = 99  # must be ignored: winpty owns this session
         sess.winpty = MagicMock()
         sess.winpty.isalive.return_value = False
-        assert await terminal._child_exit_status(sess) is None
+        sess.winpty.exitstatus.return_value = 7
+        assert await terminal._child_exit_status(sess) == 7
         sess.proc.wait.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_waits_for_the_conpty_child_then_reports_unavailable(self):
+    async def test_unavailable_when_the_conpty_binding_reports_no_code(self):
+        """An older binding lacks the property; the wrapper answers ``None``."""
+        sess = _make_session(alive=False)
+        sess.winpty = MagicMock()
+        sess.winpty.isalive.return_value = False
+        sess.winpty.exitstatus.return_value = None
+        assert await terminal._child_exit_status(sess) is None
+
+    @pytest.mark.asyncio
+    async def test_waits_for_the_conpty_child_then_reports(self):
         """No child watcher to await on Windows, so liveness is polled: a child
-        still winding down is waited for, and answers unavailable once gone."""
+        still winding down is waited for, and its code read once it is gone."""
         sess = _make_session()
         sess.winpty = MagicMock()
         sess.winpty.isalive.side_effect = [True, True, False]
-        assert await terminal._child_exit_status(sess) is None
+        sess.winpty.exitstatus.return_value = 0
+        assert await terminal._child_exit_status(sess) == 0
         assert sess.winpty.isalive.call_count == 3
 
     @pytest.mark.asyncio
@@ -6872,13 +6883,14 @@ class TestAbnormalExitNotification:
 
     @pytest.mark.asyncio
     async def test_an_unavailable_status_publishes_nothing(self):
-        """Every ConPTY exit resolves to unavailable by design, so treating
-        unavailable as abnormal would ring the bell on each Windows close."""
+        """A binding that reports no code would ring the bell on every Windows
+        close if unavailable were treated as abnormal."""
         notes: list = []
         sess = _make_session(alive=False, ws=MagicMock())
         sess.proc = None  # ConPTY sessions carry no asyncio child process
         sess.winpty = MagicMock()
         sess.winpty.isalive.return_value = False
+        sess.winpty.exitstatus.return_value = None
         registry = {sess.session_id: sess}
         with (
             patch.object(
@@ -6889,6 +6901,26 @@ class TestAbnormalExitNotification:
         ):
             await terminal._handle_pty_reader_end(registry, sess, bus=self._bus(notes))
         assert notes == []
+
+    @pytest.mark.asyncio
+    async def test_a_failed_conpty_exit_publishes_its_code(self):
+        notes: list = []
+        sess = _make_session(alive=False, ws=MagicMock())
+        sess.proc = None
+        sess.winpty = MagicMock()
+        sess.winpty.isalive.return_value = False
+        sess.winpty.exitstatus.return_value = 5
+        registry = {sess.session_id: sess}
+        with (
+            patch.object(
+                terminal, "_send_owner_control_frame", AsyncMock(return_value=True)
+            ),
+            patch.object(terminal, "_close_terminal_ws_bounded", AsyncMock()),
+            patch.object(terminal, "_kill_session", AsyncMock()),
+        ):
+            await terminal._handle_pty_reader_end(registry, sess, bus=self._bus(notes))
+        assert len(notes) == 1
+        assert notes[0]["body"] == "The shell exited with code 5."
 
     @pytest.mark.asyncio
     async def test_publishes_even_when_no_socket_is_attached(self):
