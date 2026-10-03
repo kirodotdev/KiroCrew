@@ -62,6 +62,7 @@ const MOBILE_NAV_INSET = 8
 const mobileNavTravel = () =>
   MOBILE_NAV_WIDTH + MOBILE_NAV_INSET + 3 + safeAreaLeft()
 import { isMacElectron, isWinElectron, isLinuxFramelessElectron } from './lib/electron'
+import { useTopbarCollapse } from './lib/useTopbarCollapse'
 import { setNativeBadgeCount, subscribeNativeNavigate, useMacFullscreen } from './shell/platform/electronBridge'
 import { DndContext, closestCenter, DragOverlay } from '@dnd-kit/core'
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable'
@@ -1269,7 +1270,11 @@ export default function App() {
   })
 
   const { kiroUsageOpen, setKiroUsageOpen, kiroUsageState, kiroCreditSurface, kiroAccountEntry, refetchKirocrewCfg } = useKiroUsageReadout()
-  const metrics = useMetricsReadout(isMobile, updateAvailable)
+  // The desktop header's collapse ladder (`.topbar.tb-flow`, index.css). Its
+  // rungs are classes on the header, so a level change can hide the metric
+  // numbers without resizing the group the metrics probe observes.
+  const topbarLevel = useTopbarCollapse(topPeekSurface, !isMobile)
+  const metrics = useMetricsReadout(isMobile, updateAvailable, topbarLevel)
   const { capsuleCollapsed, setCapsuleCollapsed, capsuleLayoutPulse, pulseCapsuleLayout, sysMetrics, metricsProbeRef, metricsGroupRef } = metrics
 
   const { devMode, devPageSeen } = useDeveloperMode(location.pathname)
@@ -1382,11 +1387,12 @@ export default function App() {
     setRailWidth(focusActive ? 0 : railWidthFor({ isMobile, collapsed: effectiveCollapsed }))
   }, [isMobile, effectiveCollapsed, focusActive])
   // The header's three grid tracks (see `.topbar` in index.css) size themselves:
-  // the search width is a function of the window, the two side groups split the
-  // remainder, and each group re-lays-out its own contents with a container
-  // query. Nothing measures a cluster any more — the drag-region reporter
-  // addresses the header itself and the layout tests match the group classes, so
-  // the two cluster refs this used to keep are gone with the measurement.
+  // on a phone the search width is a function of the window, the two side groups
+  // split the remainder, and each group re-lays-out its own contents with a
+  // container query. On desktop (`tb-flow`) the side tracks take their content
+  // width and useTopbarCollapse measures whether the row still fits; the
+  // drag-region reporter addresses the header itself and the layout tests match
+  // the group classes, so no cluster ref is kept for either form.
   const closeMobileNav = isMobile ? closeMobileNavDrawer : undefined
   const { activePath, libraryNavActive, discoverNavActive, isChat, needsFixedHeight, navRowActive } =
     useRouteActiveModel(location.pathname, location.search, advertisedNavItems)
@@ -1761,7 +1767,13 @@ export default function App() {
         // container in an `auto` track has no content size to give, so it
         // collapses to its padding and clips whatever it holds
         // (test/topbarMenuButtonNarrow.test.ts records the measurement).
-        className={`topbar topbar-glass relative pl-2 pr-3${mobileSingle ? ' topbar-single' : ''}`}
+        //
+        // `tb-flow` is the desktop form: side tracks sized by their content, the
+        // search taking what is left, and a measured collapse ladder instead of
+        // the container one (useTopbarCollapse above). Desktop only, on purpose:
+        // below 768px the phone header's icon-only search and its own ladder
+        // already fit, so the flow rules are scoped to the desktop breakpoint.
+        className={`topbar topbar-glass relative pl-2 pr-3${mobileSingle ? ' topbar-single' : ''}${isMobile ? '' : ' tb-flow'}`}
         // Both z-indexes come from lib/themeDecorLayer.ts, which derives the
         // theme-overlay ceiling from them — the header must outrank pack
         // decoration in both layouts (#7377), and a literal here could drift.

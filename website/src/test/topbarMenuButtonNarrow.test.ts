@@ -7,6 +7,20 @@ const raw = () => readFile(join(__dirname, '..', 'index.css'), 'utf8')
 // quotes the very selectors being asserted, and a raw-text match hits the comment.
 const css = async () => (await raw()).replace(/\/\*[\s\S]*?\*\//g, '')
 
+/** Split a `grid-template-columns` value into its top-level tracks. */
+function tracks(cols: string): string[] {
+  const parts: string[] = []
+  let depth = 0
+  let cur = ''
+  for (const ch of cols.trim()) {
+    if (ch === '(') depth++
+    if (ch === ')') depth--
+    if (ch === ' ' && depth === 0) { if (cur) parts.push(cur); cur = '' } else cur += ch
+  }
+  if (cur) parts.push(cur)
+  return parts
+}
+
 // The mobile menu button is the ONLY route to the nav on a phone. It rendered
 // `display:block`, `visibility:visible`, 36x36 -- and was still invisible: its
 // group is an inline-size container, so an `auto` identity track could not read a
@@ -23,15 +37,7 @@ describe('topbar identity track at phone widths', () => {
     const lists = [...s.matchAll(/\.topbar\{[^}]*grid-template-columns:([^;}]+)/g)].map(m => m[1].trim())
     expect(lists.length, 'expected the base track list plus the narrow rung').toBeGreaterThan(1)
     for (const cols of lists) {
-      const parts: string[] = []
-      let depth = 0
-      let cur = ''
-      for (const ch of cols) {
-        if (ch === '(') depth++
-        if (ch === ')') depth--
-        if (ch === ' ' && depth === 0) { if (cur) parts.push(cur); cur = '' } else cur += ch
-      }
-      if (cur) parts.push(cur)
+      const parts = tracks(cols)
       expect(parts, `expected three tracks in "${cols}"`).toHaveLength(3)
       // Sides only. The centre track's item is a plain button, so `auto` is fine
       // there and is what keeps the icon-only trigger from reserving 240px.
@@ -43,9 +49,9 @@ describe('topbar identity track at phone widths', () => {
   it('keeps both side groups contained, since each one now has a collapse ladder', async () => {
     const s = await css()
     expect(s).toMatch(/\.tb-left,\.tb-right\{container-type:inline-size/)
-    // No rung may re-introduce a content-sized side track by turning containment
-    // off for one group instead.
-    expect(s).not.toMatch(/container-type:\s*normal/)
+    // Containment comes off in one place only, the desktop flow layout, which
+    // content-sizes both side tracks in the same block (next test).
+    expect(s.match(/container-type:\s*normal/g), 'containment comes off outside the flow layout').toHaveLength(1)
     // A rung targets a DESCENDANT of a group, never the group's own box: a
     // container cannot query itself, so such a rule would silently never apply.
     const rungs = s.match(/@container[^{]*\{[^}]*\}/g) || []
@@ -53,6 +59,22 @@ describe('topbar identity track at phone widths', () => {
     for (const r of rungs) {
       expect(r, `rung targets a group's own box: ${r}`).not.toMatch(/\{\s*\.tb-(left|right)\s*\{/)
     }
+  })
+
+  // The desktop flow layout (`.topbar.tb-flow`, lib/useTopbarCollapse.ts) is the
+  // one place a side track IS sized by its content. That is safe only because the
+  // same block turns the groups' containment off, so a group always has a content
+  // size to give its `max-content` track.
+  it('turns containment off exactly where the flow layout sizes the side tracks by content', async () => {
+    const s = await css()
+    const flow = s.match(
+      /\.topbar\.tb-flow\{grid-template-columns:([^;}]+)\}\s*\.topbar\.tb-flow > \.tb-left,\.topbar\.tb-flow > \.tb-right\{container-type:normal\}/,
+    )
+    expect(flow, 'expected the flow track list next to its containment override').not.toBeNull()
+    const parts = tracks(flow![1])
+    expect(parts, `expected three tracks in "${flow![1]}"`).toHaveLength(3)
+    expect(parts[0]).toMatch(/^minmax\(max-content,/)
+    expect(parts[2]).toMatch(/^minmax\(max-content,/)
   })
 
   // The identity group holds the nav button AND the crew switcher, whose dropdown

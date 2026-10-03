@@ -283,6 +283,28 @@ describe('InstanceTabBar', () => {
     expect(row.textContent).toMatch(/Cloud One/)
   })
 
+  it('marks every wrapper between the inline bar and the pinned row as growable', async () => {
+    // The desktop flow top bar sizes the identity track by its content, with the
+    // pinned row contributing none of its own; the row then grows into the track's
+    // spare room through these wrappers (index.css, `.topbar.tb-flow`). One wrapper
+    // without the hook caps the row at zero width, so every pin reads as cut.
+    vi.mocked(api.listInstances).mockResolvedValue(listResp([conn()]))
+    const store = createTestStore({
+      instances: { warm: { 'cd-1': { port: 7778, token: 't' } }, activeId: null, mru: ['cd-1'], unread: {} },
+    })
+    const u = userEvent.setup()
+    renderWithProviders(<InstanceTabBar variant="inline" />, { store })
+    await u.click(await screen.findByRole('button', { name: /Switch crew/i }))
+    await u.click(await screen.findByTestId('crew-pin-cd-1'))
+    const row = await screen.findByTestId('crew-chip-row')
+    const between: string[] = []
+    for (let e = row.parentElement; e && !e.classList.contains('instance-tab-bar-inline'); e = e.parentElement) {
+      between.push(e.className)
+    }
+    expect(between.length, 'expected the row inside the inline bar').toBeGreaterThan(0)
+    for (const cls of between) expect(cls).toMatch(/\btb-crew-grow\b/)
+  })
+
   it('toggles the pin without switching crews, and keeps the menu open', async () => {
     // The pin shares a row with the destination, so the two must stay separable:
     // pinning a crew the user is not on must not navigate there, and the menu has
@@ -476,6 +498,17 @@ describe('InstanceTabBar', () => {
     // No `break-all`: the span's own `overflow-wrap: anywhere` breaks the unbreakable
     // token AND prefers word boundaries, so prose does not get cut mid-word.
     expect(msg.className).not.toMatch(/break-all/)
+  })
+
+  it('marks the list-failure notice so the flow top bar gives it only spare room', async () => {
+    // The desktop flow top bar sizes the identity track by its content. The
+    // notice (up to 320px) would raise that floor and collapse the readouts to
+    // make room for it; index.css hooks this class to give it the track's spare
+    // room only, truncated.
+    vi.mocked(api.listInstances).mockRejectedValue(new Error('registry unavailable'))
+    renderWithProviders(<InstanceTabBar variant="inline" />)
+    const notice = await screen.findByTestId('instance-tab-bar-list-error')
+    expect(notice.className).toMatch(/\btb-crew-notice\b/)
   })
 
 })

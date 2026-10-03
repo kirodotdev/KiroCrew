@@ -59,7 +59,7 @@ describe('app shell composition', () => {
       'useRailBadges(approvalCount)',
       'useShellKeyboard({',
       'useKiroUsageReadout()',
-      'useMetricsReadout(isMobile, updateAvailable)',
+      'useMetricsReadout(isMobile, updateAvailable, topbarLevel)',
       'useDeveloperMode(location.pathname)',
       'subscribeNativeNavigate(',
       'dispatch(fetchSlots())',
