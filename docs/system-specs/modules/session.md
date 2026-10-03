@@ -30,6 +30,13 @@ unconditional WARNING naming the object's type.
 
 ## Dashboard app launch intents
 
+The split-session picker's recency tie-break and artifact companion selection
+compare `last_activity_ts` as an instant, preserving sub-millisecond transcript
+precision. Needs-input and running sessions retain their picker priority.
+Missing or unparseable activity sorts last. Legacy naive timestamps resolve in
+the viewer's timezone; a viewer in another zone cannot recover the writer's
+timezone from this payload.
+
 The App SDK's `slotKey` selects an existing dashboard slot through ordinary
 activation on both cold entry and navigation within an already-mounted chat.
 The session controller claims the target intent before URL synchronization and
