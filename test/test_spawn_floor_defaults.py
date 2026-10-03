@@ -18,7 +18,6 @@ from __future__ import annotations
 import asyncio
 import inspect
 import math
-import os
 import threading
 from unittest.mock import MagicMock
 
@@ -60,7 +59,8 @@ class _Host:
 
     def __init__(self, monkeypatch, tmp_path, gb: float) -> None:
         self.asked: list[float] = []
-        self._meminfo = tmp_path / "meminfo"
+        self._dir = tmp_path
+        self._readings = 0
         self.set(gb)
         real = subagent_mod.check_memory_available
 
@@ -75,11 +75,15 @@ class _Host:
     def set(self, gb: float) -> None:
         self.gb = gb
         # ceil: a GiB figure floored to whole kB reads a hair under itself.
-        # Replaced atomically: the top-up reads it from a worker thread, which
-        # must never see a truncated file.
-        staged = self._meminfo.with_suffix(".next")
-        staged.write_text(f"MemAvailable: {math.ceil(gb * _KIB_PER_GIB)} kB\n", encoding="utf-8")
-        os.replace(staged, self._meminfo)
+        # Each reading is a NEW file, published by rebinding the path once it is
+        # whole. The top-up reads it from a worker thread, and on Windows a file
+        # that thread holds open cannot be renamed over (WinError 5), while an
+        # open racing the rename fails and the parser reads that as "no reading",
+        # which admits. A reader that took the old path finishes the old file.
+        self._readings += 1
+        reading = self._dir / f"meminfo.{self._readings}"
+        reading.write_text(f"MemAvailable: {math.ceil(gb * _KIB_PER_GIB)} kB\n", encoding="utf-8")
+        self._meminfo = reading
 
     def gated(self) -> list[float]:
         # Host-sizing probes ask with min_gb=0.0; only floor checks count.
@@ -602,6 +606,15 @@ async def test_two_fallbacks_that_fit_one_at_a_time_both_start_in_turn(
         assert audit.return_value.log_tool_invocation.mock_calls == []
     finally:
         await _teardown(mgr)
+
+
+def test_a_new_reading_lands_while_the_poller_holds_the_last_one(monkeypatch, tmp_path):
+    """``_Host.set`` runs while the top-up's worker thread may be inside the read:
+    holding the current file open is that thread mid-read, on every host."""
+    host = _Host(monkeypatch, tmp_path, 2.9)
+    with open(host._meminfo, encoding="utf-8"):
+        host.set(3.6)
+    assert subagent_mod.check_memory_available(min_gb=3.5) == (True, 3.6)
 
 
 @pytest.mark.asyncio
