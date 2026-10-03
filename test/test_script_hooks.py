@@ -89,6 +89,26 @@ class TestScriptHook:
         assert hook.enabled is False
         assert hook.matcher == "fs_*"
 
+    def test_from_dict_coerces_enabled(self):
+        base = {"id": "e1", "command": "echo hi"}
+        assert ScriptHook.from_dict({**base, "enabled": "false"}).enabled is False
+        assert ScriptHook.from_dict({**base, "enabled": "0"}).enabled is False
+        assert ScriptHook.from_dict({**base, "enabled": ""}).enabled is True
+        assert ScriptHook.from_dict({**base, "enabled": None}).enabled is True
+
+    def test_update_keeps_enabled_on_junk(self, hook_store: ScriptHookStore):
+        hook = hook_store.create(
+            {
+                "name": "deny-keep",
+                "event": HOOK_EVENT_PRE_TOOL_USE,
+                "command": "echo hi",
+                "timeout": 30,
+            }
+        )
+        assert hook_store.update(hook.id, {"enabled": "false"}).enabled is False
+        assert hook_store.update(hook.id, {"enabled": ""}).enabled is False
+        assert hook_store.update(hook.id, {"enabled": "true"}).enabled is True
+
 
 class TestScriptHookStore:
     """Test ScriptHookStore CRUD operations."""
