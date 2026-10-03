@@ -102,6 +102,7 @@ from kiro_crew.config.paths import (  # noqa: F401, kiro_agents_dir
     data_home,
     ensure_data_home,
     kiro_agents_dir,
+    project_agents_dir,
 )
 from kiro_crew.config.resolution import (  # noqa: F401
     _KNOWN_CONFIG_SECTIONS,
@@ -6445,6 +6446,9 @@ def reset_dangling_default_agent() -> bool:
     template = _dangling_template(row.kiro_agent, names)
     if template is None or template not in removed or template in _edition_agent_names():
         return False
+    workspace_dir = _alias_workspace_dir(cfg.workspaces, row.workspace, cfg.default_workspace)
+    if _workspace_declares(template, workspace_dir):
+        return False
     reset = False
 
     def _reset(data: dict) -> dict | None:
@@ -6462,6 +6466,10 @@ def reset_dangling_default_agent() -> bool:
         if names_now is None or not complete_now or template not in removed_now:
             return None
         if _dangling_template(row.get("kiro_agent"), names_now) != template:
+            return None
+        # The workspace checked above must still be the one this row places in;
+        # a row repointed at another workspace in the window was not checked.
+        if _locked_workspace_dir(data, row) != workspace_dir:
             return None
         data["default_agent"] = "default"
         reset = True
@@ -6483,6 +6491,75 @@ def reset_dangling_default_agent() -> bool:
     )
     _log_default_agent_reset(current, template)
     return True
+
+
+def _alias_workspace_dir(
+    workspaces: Mapping[str, WorkspaceConfig], name: str, default_name: str
+) -> Path:
+    """The directory an alias's ``workspace`` places it in, as dispatch does.
+
+    The named entry, else the ``default_workspace`` entry, through
+    :func:`workspace_dir_from_entry`, the one placement rule.
+    """
+    return workspace_dir_from_entry(workspaces.get(name) or workspaces.get(default_name))
+
+
+def _locked_workspace_dir(data: dict, row: dict) -> Path | None:
+    """:func:`_alias_workspace_dir` for a raw ``config.json`` document and row.
+
+    ``None`` when the document's ``workspaces`` section is not the plain
+    name -> ``{"dir": ...}`` shape, so a caller comparing it declines.
+    """
+    raw = data.get("workspaces", {})
+    if not isinstance(raw, dict):
+        return None
+    entries: dict[str, WorkspaceConfig] = {}
+    for name, entry in raw.items():
+        if not isinstance(entry, dict) or not isinstance(entry.get("dir", ""), str):
+            return None
+        entries[name] = WorkspaceConfig(dir=entry.get("dir", ""))
+    name = row.get("workspace") or KiroCrewAgentConfig.__dataclass_fields__["workspace"].default
+    default_name = (
+        data.get("default_workspace")
+        or KiroCrewConfig.__dataclass_fields__["default_workspace"].default
+    )
+    if not isinstance(name, str) or not isinstance(default_name, str):
+        return None
+    return _alias_workspace_dir(entries, name, default_name)
+
+
+def _workspace_declares(template: str, workspace_dir: Path) -> bool:
+    """Whether the checkout at *workspace_dir* still declares *template*.
+
+    The removal evidence comes from the user-level agents directory only, but
+    kiro-cli resolves ``--agent`` against the session's project directory first,
+    so a global spec uninstalled while the alias's workspace still declares a
+    same-named spec leaves the default dispatching there. Read with the same
+    scan the user-level snapshot uses, over ``<workspace>/.kiro/agents`` (the
+    only project location the backend activates, both spec forms), so its
+    completeness is known. Answers ``True`` -- do not reset -- whenever it cannot
+    be sure: a sensitive workspace directory (never read), a listing that fails,
+    or a scan that skipped a spec it could not read or parse. A workspace with
+    no ``.kiro/agents`` directory, or none at all, declares nothing.
+    """
+    from kiro_crew.security import is_sensitive_path  # circular import
+
+    try:
+        if is_sensitive_path(str(workspace_dir)):
+            return True
+        agents_dir = project_agents_dir(workspace_dir)
+        if not agents_dir.exists():
+            return False
+        previous = getattr(_SCAN_STATE, "complete", True)
+        try:
+            names, _stems = _scan_materialized_index(agents_dir)
+            complete = bool(getattr(_SCAN_STATE, "complete", True))
+        finally:
+            _SCAN_STATE.complete = previous
+    except Exception:  # noqa: BLE001 — an unreadable checkout is not evidence of removal
+        logger.debug("default agent check: workspace agents unreadable", exc_info=True)
+        return True
+    return not complete or template in names
 
 
 def _edition_agent_names() -> frozenset[str]:
