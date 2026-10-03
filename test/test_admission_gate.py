@@ -267,19 +267,31 @@ class TestSpawnAdmissionGate:
             max_concurrent=3,
         )
 
-    def test_spawn_deferred_when_critical(self) -> None:
-        """spawn() keeps the accepted row queued (next_run_at set) instead of refusing.
+    @pytest.mark.parametrize("durable", [True, False], ids=["durable", "no-store"])
+    def test_a_critical_posture_does_not_gate_a_spawn(self, durable: bool) -> None:
+        """Spawns admit on the memory floor alone; the posture tier is cron's.
 
-        The durable task queue turns the posture gate from a verdict into a
-        scheduling fact: the caller gets a queued id, nothing is registered or
-        started, and the pump re-checks after the admit wait.
+        At defaults the floor equals ``resource_critical_gb``, so a host
+        admission has filled to the floor reads ``critical``: consulting the
+        posture as well deferred every start at the very line the floor
+        guarantees. The posture verdict is not read at all, durable or not:
+        the start goes on to the stagger, which queues it behind the start
+        that just went out -- a capacity wait, not a memory one.
         """
         mgr = self._mgr()
-        assert mgr._taskq is not None
+        if not durable:
+            mgr._taskq = None
+        mgr._last_spawn_ts = time.monotonic()
+        mgr._spawn_stagger_secs = 3600.0
+        posture = MagicMock(return_value=_refused())
         with (
             patch("kiro_crew.subagent.check_memory_available", return_value=(True, 8.0)),
             patch("kiro_crew.subagent.KiroCrewConfig") as mock_cfg,
-            patch("kiro_crew.subagent.cached_admission_check", return_value=_refused()),
+            patch("kiro_crew.resource_status.cached_admission_check", posture),
+            patch("kiro_crew.resource_status.admission_check", posture),
+            # A posture read through the subagent module counts too; create=True
+            # because the module does not define the name.
+            patch("kiro_crew.subagent.cached_admission_check", posture, create=True),
             patch("kiro_crew.subagent.sel") as mock_sel,
         ):
             mock_cfg.load.return_value.agent.spawn_min_memory_gb = 4.0
@@ -288,40 +300,13 @@ class TestSpawnAdmissionGate:
 
             info = mgr.spawn(task="test task", parent_session_key="sess-1")
 
-        assert info is not None
-        assert info.done is False and info.queued is True and info.error == ""
-        assert info.id not in mgr._agents and mgr._running_count == 0
-        row = mgr._taskq.get(info.id)
-        assert row is not None and row.state == "queued"
-        assert row.next_run_at is not None and row.next_run_at > mgr._taskq.now()
-        call_kwargs = mock_sel.return_value.log_tool_invocation.call_args[1]
-        assert call_kwargs["outcome"] == "deferred_memory_critical"
-        assert call_kwargs["metadata"]["posture"] == rs.POSTURE_CRITICAL
-
-    def test_spawn_refused_when_critical_without_durable_queue(self) -> None:
-        """Legacy path (agent.task_queue_enabled=false): still a done info with a
-        retry-later error, because there is nothing durable to park the row in."""
-        mgr = self._mgr()
-        mgr._taskq = None
-        with (
-            patch("kiro_crew.subagent.check_memory_available", return_value=(True, 8.0)),
-            patch("kiro_crew.subagent.KiroCrewConfig") as mock_cfg,
-            patch("kiro_crew.subagent.cached_admission_check", return_value=_refused()),
-            patch("kiro_crew.subagent.sel") as mock_sel,
-        ):
-            mock_cfg.load.return_value.agent.spawn_min_memory_gb = 4.0
-            mock_cfg.load.return_value.agent.subagent_cost_gb = 0.5
-            mock_sel.return_value.log_tool_invocation = MagicMock()
-
-            info = mgr.spawn(task="test task", parent_session_key="sess-1")
-
-        assert info is not None
-        assert info.done is True
-        assert "critical" in info.error
-        assert "retry" in info.error
-        call_kwargs = mock_sel.return_value.log_tool_invocation.call_args[1]
-        assert call_kwargs["outcome"] == "refused_memory_critical"
-        assert call_kwargs["metadata"]["posture"] == rs.POSTURE_CRITICAL
+        assert info is not None and info.done is False and info.error == ""
+        assert info.queued is True and info.queued_reason == "concurrency_limit"
+        posture.assert_not_called()
+        outcomes = [
+            c[1]["outcome"] for c in mock_sel.return_value.log_tool_invocation.call_args_list
+        ]
+        assert not [o for o in outcomes if "critical" in o], outcomes
 
     def test_spawn_proceeds_past_gate_when_admitted(self) -> None:
         """An admitted decision falls through to the next guard (cwd here)."""
@@ -329,7 +314,6 @@ class TestSpawnAdmissionGate:
         with (
             patch("kiro_crew.subagent.check_memory_available", return_value=(True, 8.0)),
             patch("kiro_crew.subagent.KiroCrewConfig") as mock_cfg,
-            patch("kiro_crew.subagent.cached_admission_check", return_value=_admitted()),
             patch("kiro_crew.subagent.validate_cwd", return_value=("", "not allowed")),
             patch("kiro_crew.subagent.sel") as mock_sel,
         ):
@@ -349,14 +333,16 @@ class TestSpawnAdmissionGate:
 
         The cwd gate runs BEFORE the memory guard here (a bad path is refused
         before a row is persisted), so the guard's fall-through is observed at
-        the next gate after it: the posture gate, which defers the row.
+        the next gate after it: the stagger, which queues the row behind the
+        start that just went out.
         """
         mgr = self._mgr()
+        mgr._last_spawn_ts = time.monotonic()
+        mgr._spawn_stagger_secs = 3600.0
         with (
             patch("kiro_crew.subagent.check_memory_available", return_value=(True, -1.0)),
             patch("kiro_crew.platform_compat.IS_LINUX", True),
             patch("kiro_crew.subagent.KiroCrewConfig") as mock_cfg,
-            patch("kiro_crew.subagent.cached_admission_check", return_value=_refused()),
             patch("kiro_crew.subagent.sel") as mock_sel,
         ):
             mock_cfg.load.return_value.agent.spawn_min_memory_gb = 4.0
@@ -365,21 +351,17 @@ class TestSpawnAdmissionGate:
 
             info = mgr.spawn(task="test task", parent_session_key="sess-1")
 
-        # The spawn proceeded past the memory guard (it reached the posture
-        # gate, which parked the row), so the fail-open contract held...
+        # The spawn proceeded past the memory guard (it reached the stagger,
+        # which queued the row), so the fail-open contract held...
         assert info is not None
         assert info.done is False and info.queued is True
+        assert info.queued_reason == "concurrency_limit"
         outcomes = [
             c[1]["outcome"] for c in mock_sel.return_value.log_tool_invocation.call_args_list
         ]
-        assert outcomes[-1] == "deferred_memory_critical"
         # ...and the guard-did-not-run case was made observable.
-        assert "memory_check_unavailable" in outcomes
-        unavailable = next(
-            c[1]
-            for c in mock_sel.return_value.log_tool_invocation.call_args_list
-            if c[1]["outcome"] == "memory_check_unavailable"
-        )
+        assert outcomes == ["memory_check_unavailable"]
+        unavailable = mock_sel.return_value.log_tool_invocation.call_args_list[0][1]
         assert unavailable["tool_name"] == "spawn_run"
         assert unavailable["metadata"]["min_gb"] == 5.0  # floor plus the pending process
         assert unavailable["metadata"]["task"] == "test task"
@@ -421,7 +403,6 @@ class TestSpawnAdmissionGate:
         with (
             patch("kiro_crew.subagent.check_memory_available", side_effect=memory_check),
             patch("kiro_crew.subagent.KiroCrewConfig") as mock_cfg,
-            patch("kiro_crew.subagent.cached_admission_check", return_value=_refused()),
             patch("kiro_crew.subagent.sel") as mock_sel,
         ):
             mock_cfg.load.return_value.agent.spawn_min_memory_gb = 4.0
@@ -439,7 +420,6 @@ class TestSpawnAdmissionGate:
         with (
             patch("kiro_crew.subagent.check_memory_available", return_value=(False, 3.0)),
             patch("kiro_crew.subagent.KiroCrewConfig") as mock_cfg,
-            patch("kiro_crew.subagent.cached_admission_check", return_value=_admitted()),
             patch("kiro_crew.subagent.sel") as mock_sel,
         ):
             mock_cfg.load.return_value.agent.spawn_min_memory_gb = 4.0
@@ -481,7 +461,6 @@ class TestSpawnAdmissionGate:
         mgr,
         *,
         memory: tuple[bool, float] | None = None,
-        admission: rs.AdmissionDecision | None = None,
         memory_mode: str | None = None,
         floor_gb: float = 4.0,
         parent_session_key: str = "sess-1",
@@ -490,8 +469,8 @@ class TestSpawnAdmissionGate:
         """Run ``spawn`` on a live loop; return the info, every ``subagent_queued``
         extra, and the SEL mock. A refused or started spawn is not waited on.
 
-        *memory* / *admission* left at None run the real floor reader and posture
-        verdict (a test that wants the real readers fakes what is under them)."""
+        *memory* left at None runs the real floor reader (a test that wants the
+        real reader fakes what is under it)."""
         events, on_event = self._queued_sink()
 
         async def run() -> tuple[Any, MagicMock]:
@@ -500,10 +479,6 @@ class TestSpawnAdmissionGate:
                 if memory is not None:
                     stack.enter_context(
                         patch("kiro_crew.subagent.check_memory_available", return_value=memory)
-                    )
-                if admission is not None:
-                    stack.enter_context(
-                        patch("kiro_crew.subagent.cached_admission_check", return_value=admission)
                     )
                 mock_cfg = stack.enter_context(patch("kiro_crew.subagent.KiroCrewConfig"))
                 mock_sel = stack.enter_context(patch("kiro_crew.subagent.sel"))
@@ -526,9 +501,7 @@ class TestSpawnAdmissionGate:
     def test_low_memory_deferral_names_its_reason_on_the_queued_event(self) -> None:
         mgr = self._mgr()
         assert mgr._taskq is not None
-        info, events, _sel = self._spawn_capturing_queued(
-            mgr, memory=(False, 3.2), admission=_admitted()
-        )
+        info, events, _sel = self._spawn_capturing_queued(mgr, memory=(False, 3.2))
         assert info is not None and info.queued is True and info.done is False
         assert info.queued_reason == "low_memory"
         assert "3.2 GB available" in info.queued_reason_detail
@@ -540,18 +513,19 @@ class TestSpawnAdmissionGate:
         # spawn_min_memory_gb 4.0 + one warming start at the configured 0.5.
         assert last["required_gb"] == pytest.approx(5.0)
 
-    def test_posture_critical_deferral_names_its_reason_on_the_queued_event(self) -> None:
+    def test_a_non_durable_low_memory_wait_names_its_reason_on_the_queued_event(
+        self,
+    ) -> None:
+        """No store row to defer: the in-memory wait carries the same label."""
         mgr = self._mgr()
-        assert mgr._taskq is not None
-        info, events, _sel = self._spawn_capturing_queued(
-            mgr, memory=(True, 8.0), admission=_refused()
-        )
-        assert info is not None and info.queued is True
-        assert info.queued_reason == "posture_critical"
-        assert info.queued_reason_detail == _refused().reason
-        assert events and events[-1]["reason"] == "posture_critical"
-        assert events[-1]["available_gb"] == pytest.approx(_refused().available_gb)
-        assert "required_gb" not in events[-1]
+        mgr._taskq = None
+        info, events, _sel = self._spawn_capturing_queued(mgr, memory=(False, 3.2))
+        assert info is not None and info.queued is True and info.done is False
+        assert info.queued_reason == "low_memory"
+        assert "3.2 GB available" in info.queued_reason_detail
+        assert events and events[-1]["reason"] == "low_memory"
+        assert events[-1]["available_gb"] == pytest.approx(3.2)
+        assert events[-1]["required_gb"] == pytest.approx(5.0)
 
     # ── macOS kernel memory pressure: a hold inside the memory floor ─────────
     #
@@ -599,9 +573,7 @@ class TestSpawnAdmissionGate:
         mgr = self._mgr()
         self._busy(mgr)
         self._level(monkeypatch, level)
-        info, events, mock_sel = self._spawn_capturing_queued(
-            mgr, memory=(True, 8.0), admission=_admitted()
-        )
+        info, events, mock_sel = self._spawn_capturing_queued(mgr, memory=(True, 8.0))
         assert info is not None and info.queued is True and info.done is False
         assert info.queued_reason == "memory_pressure"
         assert info.queued_reason_detail == MEMORY_PRESSURE_DETAIL
@@ -646,25 +618,52 @@ class TestSpawnAdmissionGate:
         info, _events, mock_sel = self._spawn_capturing_queued(
             mgr,
             memory=(True, 8.0),
-            admission=_admitted(),
             floor_gb=floor_gb,
             parent_session_key=parent,
         )
         assert info is not None and info.queued_reason != "memory_pressure"
         assert "deferred_memory_pressure" not in self._outcomes(mock_sel)
 
-    def test_a_critical_posture_wins_over_the_hold(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Both apply: the user still gets "free up memory" with the figure."""
+    @pytest.mark.parametrize("durable", [True, False], ids=["durable", "no-store"])
+    def test_a_low_memory_wait_wins_over_the_hold(
+        self, monkeypatch: pytest.MonkeyPatch, durable: bool
+    ) -> None:
+        """Both apply: the user still gets "free up memory" with the figure, and
+        the wait carries no pressure clock, so the hold's bound can never end
+        it "never started". A start with no row waits in the window, past the
+        point where the hold is decided, so it is the case that needs the rule."""
         mgr = self._mgr()
+        if not durable:
+            mgr._taskq = None
         self._busy(mgr)
         self._level(monkeypatch, 2)
-        info, events, mock_sel = self._spawn_capturing_queued(
-            mgr, memory=(True, 8.0), admission=_refused()
-        )
-        assert info is not None and info.queued_reason == "posture_critical"
-        assert events[-1]["reason"] == "posture_critical"
-        assert events[-1]["available_gb"] == pytest.approx(_refused().available_gb)
+        info, events, mock_sel = self._spawn_capturing_queued(mgr, memory=(False, 3.2))
+        assert info is not None and info.queued is True and info.done is False
+        assert info.queued_reason == "low_memory"
+        assert events[-1]["reason"] == "low_memory"
+        assert events[-1]["available_gb"] == pytest.approx(3.2)
         assert "deferred_memory_pressure" not in self._outcomes(mock_sel)
+        assert info.id not in mgr._pressure_holds
+
+    def test_a_floor_wait_drops_a_pressure_clock_an_earlier_hold_started(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Held by the kernel first, then below the floor when re-checked: the
+        floor wait carries no pressure clock, so the time it spends there never
+        counts toward the hold's bound."""
+        mgr = self._mgr()
+        mgr._taskq = None
+        self._busy(mgr)
+        self._level(monkeypatch, 2)
+        mgr._pressure_holds["pre-1"] = time.monotonic() - 10_000.0
+        mgr._pressure_hold_expired.add("pre-1")
+        info, _events, mock_sel = self._spawn_capturing_queued(
+            mgr, memory=(False, 3.2), _preassigned_id="pre-1"
+        )
+        assert info is not None and info.id == "pre-1" and info.queued_reason == "low_memory"
+        assert "pre-1" not in mgr._pressure_holds
+        assert "pre-1" not in mgr._pressure_hold_expired
+        assert "never_started_memory_pressure" not in self._outcomes(mock_sel)
 
     def test_an_unknown_agent_is_refused_before_the_hold(
         self, monkeypatch: pytest.MonkeyPatch
@@ -675,7 +674,7 @@ class TestSpawnAdmissionGate:
         self._busy(mgr)
         self._level(monkeypatch, 2)
         info, _events, mock_sel = self._spawn_capturing_queued(
-            mgr, memory=(True, 8.0), admission=_admitted(), agent="no-such-agent-xyz"
+            mgr, memory=(True, 8.0), agent="no-such-agent-xyz"
         )
         assert info is not None and info.done is True and info.queued is False
         assert info.error_code == AGENT_NOT_FOUND_CODE
@@ -691,7 +690,7 @@ class TestSpawnAdmissionGate:
         self._busy(mgr)
         self._level(monkeypatch, 2)
         info, events, _sel = self._spawn_capturing_queued(
-            mgr, memory=(True, 8.0), admission=_admitted(), memory_mode="temporary"
+            mgr, memory=(True, 8.0), memory_mode="temporary"
         )
         assert info is not None and info.queued is True and info.done is False
         assert info.queued_reason == "memory_pressure"
@@ -715,7 +714,7 @@ class TestSpawnAdmissionGate:
         self._busy(mgr)
         self._level(monkeypatch, 2)
         info, _events, _sel = self._spawn_capturing_queued(
-            mgr, memory=(True, 8.0), admission=_admitted(), _crew_log_asked=("sid-1", 7)
+            mgr, memory=(True, 8.0), _crew_log_asked=("sid-1", 7)
         )
         assert info is not None and info.queued_reason == "memory_pressure"
         assert pinned == [(info.id, "sid-1", 7)]
@@ -737,9 +736,7 @@ class TestSpawnAdmissionGate:
         monkeypatch.setattr(mgr, "_sharing_plan", plan)
         outcomes: list[str] = []
         for _ in range(3):
-            info, _events, mock_sel = self._spawn_capturing_queued(
-                mgr, memory=(True, 8.0), admission=_admitted()
-            )
+            info, _events, mock_sel = self._spawn_capturing_queued(mgr, memory=(True, 8.0))
             assert info is not None and info.queued_reason != "memory_pressure"
             outcomes += self._outcomes(mock_sel)
         live = [i for i in mgr._agents.values() if not i.done]
@@ -759,9 +756,7 @@ class TestSpawnAdmissionGate:
         self._level(monkeypatch, 2)
         plan = MagicMock(return_value=_SharingPlan(eff_model="", eff_effort="", shared=True))
         monkeypatch.setattr(mgr, "_sharing_plan", plan)
-        info, _events, mock_sel = self._spawn_capturing_queued(
-            mgr, memory=(True, 8.0), admission=_admitted()
-        )
+        info, _events, mock_sel = self._spawn_capturing_queued(mgr, memory=(True, 8.0))
         assert plan.called, "the floor must have priced this start through the sharing plan"
         assert info is not None and info.queued_reason == "memory_pressure"
         assert "deferred_memory_pressure" in self._outcomes(mock_sel)
@@ -783,16 +778,16 @@ class TestSpawnAdmissionGate:
         with caplog.at_level(logging.DEBUG, logger="kiro_crew.subagent"):
             self._level(monkeypatch, 2)
             for _ in range(3):
-                self._spawn_capturing_queued(mgr, memory=(True, 8.0), admission=_admitted())
+                self._spawn_capturing_queued(mgr, memory=(True, 8.0))
             assert warnings() == 1
             self._level(monkeypatch, 4)
-            self._spawn_capturing_queued(mgr, memory=(True, 8.0), admission=_admitted())
+            self._spawn_capturing_queued(mgr, memory=(True, 8.0))
             assert warnings() == 2
             # The episode ends (no reading held), so the next one warns again.
             self._level(monkeypatch, 1)
-            self._spawn_capturing_queued(mgr, memory=(True, 8.0), admission=_admitted())
+            self._spawn_capturing_queued(mgr, memory=(True, 8.0))
             self._level(monkeypatch, 4)
-            self._spawn_capturing_queued(mgr, memory=(True, 8.0), admission=_admitted())
+            self._spawn_capturing_queued(mgr, memory=(True, 8.0))
             assert warnings() == 3
 
     def test_a_held_start_expires_once_its_wait_runs_out(
@@ -827,9 +822,7 @@ class TestSpawnAdmissionGate:
         mgr = self._mgr()
         self._busy(mgr)
         self._level(monkeypatch, 2)
-        info, _events, _sel = self._spawn_capturing_queued(
-            mgr, memory=(True, 8.0), admission=_admitted()
-        )
+        info, _events, _sel = self._spawn_capturing_queued(mgr, memory=(True, 8.0))
         assert info is not None and info.queued_reason == "memory_pressure"
         mgr._pressure_holds[info.id] = time.monotonic() - _PRESSURE_HOLD_MAX_WAIT_SECS - 1
         mgr._spawn_stagger_secs = 0.0
@@ -881,7 +874,6 @@ class TestSpawnAdmissionGate:
         test that drives several spawns and pump passes on one loop."""
         with (
             patch("kiro_crew.subagent.check_memory_available", return_value=(True, 8.0)),
-            patch("kiro_crew.subagent.cached_admission_check", return_value=_admitted()),
             patch("kiro_crew.subagent.KiroCrewConfig") as mock_cfg,
             patch("kiro_crew.subagent.sel") as mock_sel,
         ):
@@ -938,9 +930,7 @@ class TestSpawnAdmissionGate:
             assert len(said) == 1
         caplog.clear()
         with caplog.at_level(logging.WARNING, logger="kiro_crew.subagent"):
-            info, _events, sel_mock = self._spawn_capturing_queued(
-                mgr, memory=(True, 8.0), admission=_admitted()
-            )
+            info, _events, sel_mock = self._spawn_capturing_queued(mgr, memory=(True, 8.0))
         assert info is not None and info.done is True and info.queued is False
         assert info.error == MEMORY_PRESSURE_NEVER_STARTED
         # Audited as what happened: the spent episode ended it, it waited nothing.
@@ -1148,9 +1138,7 @@ class TestSpawnAdmissionGate:
         mgr = self._mgr()
         self._busy(mgr)
         self._level(monkeypatch, 2)
-        info, _events, _sel = self._spawn_capturing_queued(
-            mgr, memory=(True, 8.0), admission=_admitted()
-        )
+        info, _events, _sel = self._spawn_capturing_queued(mgr, memory=(True, 8.0))
         assert mgr._queue_wait["sess-1"] == {"reason": "memory_pressure"}
         self._level(monkeypatch, 1)
         with self._gate_patches():
@@ -1166,9 +1154,7 @@ class TestSpawnAdmissionGate:
         self._busy(mgr)
         mgr._running_count = mgr._max_concurrent
         self._level(monkeypatch, 2)
-        info, _events, _sel = self._spawn_capturing_queued(
-            mgr, memory=(True, 8.0), admission=_admitted()
-        )
+        info, _events, _sel = self._spawn_capturing_queued(mgr, memory=(True, 8.0))
         assert info is not None and info.queued_reason == "memory_pressure"
 
     def test_a_paused_cap_keeps_its_own_label_under_pressure(
@@ -1181,9 +1167,7 @@ class TestSpawnAdmissionGate:
         self._busy(mgr)
         mgr._max_concurrent = 0
         self._level(monkeypatch, 2)
-        info, _events, _sel = self._spawn_capturing_queued(
-            mgr, memory=(True, 8.0), admission=_admitted()
-        )
+        info, _events, _sel = self._spawn_capturing_queued(mgr, memory=(True, 8.0))
         assert info is not None and info.queued_reason == "adaptive_cap_zero"
         assert "effective cap 0" in info.queued_reason_detail
         mgr._queue_wait["sess-1"] = {"reason": "memory_pressure"}
@@ -1304,7 +1288,7 @@ class TestSpawnAdmissionGate:
         self._busy(mgr)
         self._level(monkeypatch, 2)
         info, _events, _sel = self._spawn_capturing_queued(
-            mgr, memory=(True, 8.0), admission=_admitted(), approval_mode="auto"
+            mgr, memory=(True, 8.0), approval_mode="auto"
         )
         assert info is not None and info.queued_reason == "memory_pressure"
         mgr._queue.clear()  # spilled to store-only, as a full window does
@@ -1318,13 +1302,10 @@ class TestSpawnAdmissionGate:
         params = {k: v for k, v in entries[0].items() if k != "_lane"}
 
         async def drain() -> Any:
-            with patch(
-                "kiro_crew.subagent.check_memory_available", return_value=(True, 8.0)
-            ), patch(
-                "kiro_crew.subagent.cached_admission_check", return_value=_admitted()
-            ), patch(
-                "kiro_crew.subagent.sel"
-            ) as mock_sel:
+            with (
+                patch("kiro_crew.subagent.check_memory_available", return_value=(True, 8.0)),
+                patch("kiro_crew.subagent.sel") as mock_sel,
+            ):
                 started = mgr.spawn(**params, _from_queue=True)
                 await asyncio.sleep(0)
             return started, mock_sel
@@ -1352,7 +1333,7 @@ class TestSpawnAdmissionGate:
         mgr = self._mgr()
         self._busy(mgr)
         self._level(monkeypatch, 2)
-        info, _events, mock_sel = self._spawn_capturing_queued(mgr, admission=_admitted())
+        info, _events, mock_sel = self._spawn_capturing_queued(mgr)
         assert info is not None and info.queued_reason == "memory_pressure"
         assert "memory_check_unavailable" in self._outcomes(mock_sel)
         assert (
@@ -1376,7 +1357,7 @@ class TestSpawnAdmissionGate:
         self._level(monkeypatch, platform_compat.MEMORY_PRESSURE_WARN)
         mgr = self._mgr()
         self._busy(mgr)
-        info, events, _sel = self._spawn_capturing_queued(mgr, admission=_admitted())
+        info, events, _sel = self._spawn_capturing_queued(mgr)
         assert info is not None and info.queued is True
         assert info.queued_reason == "memory_pressure"
         assert events[-1]["reason"] == "memory_pressure"
@@ -1404,7 +1385,6 @@ class TestSpawnAdmissionGate:
             with (
                 patch("kiro_crew.subagent.check_memory_available", return_value=(True, 8.0)),
                 patch("kiro_crew.subagent.KiroCrewConfig") as mock_cfg,
-                patch("kiro_crew.subagent.cached_admission_check", return_value=_admitted()),
                 patch("kiro_crew.subagent.sel"),
                 patch.object(type(mgr._admission), "park_defer", park),
             ):
@@ -1763,8 +1743,8 @@ class TestCronExprPassthrough:
 
     @pytest.mark.asyncio
     async def test_queued_nonbatch_rejection_announced_exactly_once(self) -> None:
-        # A queued single spawn rejected at drain time (here: by the admission
-        # gate) must produce EXACTLY ONE completion announcement. The drain
+        # A queued single spawn rejected at drain time (here: by governance,
+        # re-checked before dispatch) must produce EXACTLY ONE completion announcement. The drain
         # loop announces it off the returned info; spawn's own
         # _announce_rejection must stay batch-only, or the requester gets a
         # duplicate completion injection and wave/orchestration counters
@@ -1800,7 +1780,7 @@ class TestCronExprPassthrough:
         with (
             patch("kiro_crew.subagent.check_memory_available", return_value=(True, 8.0)),
             patch("kiro_crew.subagent.KiroCrewConfig") as mock_cfg,
-            patch("kiro_crew.subagent.cached_admission_check", return_value=_refused()),
+            patch("kiro_crew.subagent._vet_spawn_governance", return_value="spawning is disabled"),
             patch("kiro_crew.subagent.sel") as mock_sel,
         ):
             mock_cfg.load.return_value.agent.spawn_min_memory_gb = 4.0
@@ -1817,7 +1797,7 @@ class TestCronExprPassthrough:
         assert [i.id for i in announced] == [
             "q1"
         ], f"expected exactly one announcement, got {len(announced)}"
-        assert "critical" in announced[0].error
+        assert "spawning is disabled" in announced[0].error
 
     @pytest.mark.asyncio
     async def test_interval_job_not_replayed_after_manual_run(self, tmp_path: Path) -> None:
@@ -1905,7 +1885,6 @@ class TestALearnedWholeTreePeakNeverPricesAStart:
         with (
             patch("kiro_crew.subagent.check_memory_available", side_effect=_check),
             patch("kiro_crew.subagent.KiroCrewConfig") as mock_cfg,
-            patch("kiro_crew.subagent.cached_admission_check", return_value=_admitted()),
             patch("kiro_crew.subagent.sel"),
         ):
             mock_cfg.load.return_value.agent.spawn_min_memory_gb = 4.0
@@ -2006,8 +1985,9 @@ def test_a_defer_write_outage_answers_still_queued_never_refused() -> None:
         raise taskq.TaskStoreUnavailable("disk gone")
 
     async def run() -> Any:
-        with patch.object(store, "run", _outage), patch.object(
-            mgr, "_announce_rejection", announce
+        with (
+            patch.object(store, "run", _outage),
+            patch.object(mgr, "_announce_rejection", announce),
         ):
             return await mgr._admission.finish_parked_defer(queued)
 
@@ -2052,7 +2032,10 @@ def test_the_user_docs_state_the_hold_bounds_the_code_uses() -> None:
     catalog = (Path(__file__).resolve().parents[1] / "website/src/i18n/locales/en.json").read_text(
         encoding="utf-8"
     )
-    assert f"give up once the pressure has lasted {int(_PRESSURE_HOLD_MAX_WAIT_SECS // 60)} minutes" in catalog
+    assert (
+        f"give up once the pressure has lasted {int(_PRESSURE_HOLD_MAX_WAIT_SECS // 60)} minutes"
+        in catalog
+    )
 
 
 def test_the_card_and_the_gate_agree_on_the_never_started_prefix() -> None:
@@ -2061,9 +2044,9 @@ def test_the_card_and_the_gate_agree_on_the_never_started_prefix() -> None:
     from kiro_crew.subagent_wait_reasons import MEMORY_PRESSURE_NEVER_STARTED
 
     phrases = json.loads(
-        (
-            Path(__file__).resolve().parents[1] / "website/src/lib/backendPhrases.json"
-        ).read_text(encoding="utf-8")
+        (Path(__file__).resolve().parents[1] / "website/src/lib/backendPhrases.json").read_text(
+            encoding="utf-8"
+        )
     )
     assert MEMORY_PRESSURE_NEVER_STARTED.startswith(phrases["neverStartedPrefix"])
 
@@ -2096,7 +2079,6 @@ def test_event_loop_spawns_validate_the_agent_off_the_loop(monkeypatch: pytest.M
         with (
             patch("kiro_crew.subagent.check_memory_available", return_value=(True, 8.0)),
             patch("kiro_crew.subagent.KiroCrewConfig") as mock_cfg,
-            patch("kiro_crew.subagent.cached_admission_check", return_value=_admitted()),
             patch("kiro_crew.subagent.sel"),
         ):
             mock_cfg.load.return_value.agent.spawn_min_memory_gb = 4.0
@@ -2146,7 +2128,6 @@ def test_an_app_spawn_proves_ownership_off_the_loop(monkeypatch: pytest.MonkeyPa
         with (
             patch("kiro_crew.subagent.check_memory_available", return_value=(True, 8.0)),
             patch("kiro_crew.subagent.KiroCrewConfig") as mock_cfg,
-            patch("kiro_crew.subagent.cached_admission_check", return_value=_admitted()),
             patch("kiro_crew.subagent.sel"),
         ):
             mock_cfg.load.return_value.agent.spawn_min_memory_gb = 4.0
@@ -2183,9 +2164,7 @@ def test_the_off_loop_check_keys_on_the_app_the_gate_settles_on(
         sessions=sessions, ctx_builder=MagicMock(), on_done=MagicMock(), max_concurrent=3
     )
     check = asyncio.run(
-        mgr._check_agent_off_loop(
-            "app__helper", "", app="", execution_context={"app": "the-app"}
-        )
+        mgr._check_agent_off_loop("app__helper", "", app="", execution_context={"app": "the-app"})
     )
     assert check is not None and check[2] == "the-app"
     assert asked == ["the-app"]
@@ -2223,7 +2202,6 @@ def test_the_off_loop_agent_check_keys_on_the_canonical_cwd(
         with (
             patch("kiro_crew.subagent.check_memory_available", return_value=(True, 8.0)),
             patch("kiro_crew.subagent.KiroCrewConfig") as mock_cfg,
-            patch("kiro_crew.subagent.cached_admission_check", return_value=_admitted()),
             patch("kiro_crew.subagent.sel"),
         ):
             mock_cfg.load.return_value.agent.spawn_min_memory_gb = 4.0

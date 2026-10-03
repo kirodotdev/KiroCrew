@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from .._component import ManagerComponent
-from .types import ClaimPoint, PreparedSpawn
+from .types import ClaimPoint, MemoryReadPoint, PreparedSpawn
 
 if TYPE_CHECKING:
     from typing import Any
@@ -17,6 +17,7 @@ if TYPE_CHECKING:
         _PRESSURE_HOLD_PRUNE_SECS,
         AGENT_NOT_AVAILABLE_CODE,
         MEMORY_CAUSE_CGROUP_USAGE_UNREADABLE,
+        MEMORY_CAUSE_READ_UNANSWERED,
         MEMORY_PRESSURE_DETAIL,
         MEMORY_PRESSURE_NEVER_STARTED,
         MEMORY_PRESSURE_RECHECK_SECS,
@@ -24,7 +25,6 @@ if TYPE_CHECKING:
         QUEUED_REASON_CONCURRENCY_LIMIT,
         QUEUED_REASON_LOW_MEMORY,
         QUEUED_REASON_MEMORY_PRESSURE,
-        QUEUED_REASON_POSTURE_CRITICAL,
         SEL_MEMORY_PRESSURE_NEVER_STARTED,
         AgentCheck,
         KiroCrewConfig,
@@ -42,7 +42,6 @@ if TYPE_CHECKING:
         _vet_spawn_governance,
         adaptive_pause_text,
         asyncio,
-        cached_admission_check,
         check_memory_available,
         logger,
         parent_spawn_policy,
@@ -74,6 +73,7 @@ class _GateMixin(ManagerComponent):
         CLAIM_RETAINED: str
 
         TASK_STORE_UNAVAILABLE_CODE: str
+        MEMORY_WAIT_UNTIL_KEY: str
 
     def resolve_spawn_execution(
         self,
@@ -241,7 +241,9 @@ class _GateMixin(ManagerComponent):
         _stage_boundary_owner: str = "",
         _parent_spawn_policy: "ParentSpawnPolicy | None" = None,
         _agent_check: "AgentCheck | None" = None,
-    ) -> "SubagentInfo | PreparedSpawn | ClaimPoint | None":
+        _stop_before_memory_read: bool = False,
+        _memory_reading: "tuple[float, str] | None" = None,
+    ) -> "SubagentInfo | PreparedSpawn | ClaimPoint | MemoryReadPoint | None":
         """Spawn a subagent for *task*.
 
         Approval priority (first match wins):
@@ -312,8 +314,10 @@ class _GateMixin(ManagerComponent):
         # ``spawn_async`` member re-enters with ``_store_accepted`` -- neither
         # is a new submission. The prepare pass IS the first entry, so a
         # member ``prepare_spawn`` refuses is counted like any other refusal,
-        # which is what makes ``/api/spawn``'s ``counted: true`` true.
-        if batch_id and not _from_queue and not _store_accepted:
+        # which is what makes ``/api/spawn``'s ``counted: true`` true. The
+        # second half of a memory read (``_memory_reading``) is a re-entry too.
+        _memory_reentry = _memory_reading is not None
+        if batch_id and not _from_queue and not _store_accepted and not _memory_reentry:
             _bs = self._manager._batch_submitted.setdefault(batch_id, [0, max(0, int(batch_total))])
             _bs[0] += 1
             self._manager._batch_progress_ts[batch_id] = time.time()
@@ -362,42 +366,58 @@ class _GateMixin(ManagerComponent):
         # SessionManager closes admission. MagicMock-based embedders only block
         # when they expose the literal boolean True.
         if getattr(self._manager._sessions, "admission_closed", False) is True:
-            return self._manager._announce_rejection(
-                SubagentInfo(
-                    id=agent_id,
-                    task=_redacted_task,
-                    agent=agent,
-                    parent_session_key=parent_session_key,
-                    done=True,
-                    error="spawn refused: gateway admission is closed",
-                    batch_id=batch_id,
-                    batch_total=max(0, int(batch_total)),
-                )
+            closed = SubagentInfo(
+                id=agent_id,
+                task=_redacted_task,
+                agent=agent,
+                parent_session_key=parent_session_key,
+                done=True,
+                error="spawn refused: gateway admission is closed",
+                batch_id=batch_id,
+                batch_total=max(0, int(batch_total)),
             )
+            if _store_accepted and _claimed is None:
+                # ``spawn_async`` committed this row before its awaits (the
+                # accept write, the window decision, the memory read), and
+                # admission closed during one of them. The caller is told it
+                # was refused, so the store is told the same: a row left
+                # queued would run once admission reopens.
+                self._manager._admission.taskq_fail(agent_id, closed.error)
+            return self._manager._announce_rejection(closed)
 
         def _refuse_row(info: SubagentInfo) -> SubagentInfo:
-            """A policy refusal of a spawn whose row ALREADY exists (a drained
-            row the pump re-checks) marks that row failed in the same step,
-            so the refusal the caller sees is also the store's verdict and
-            the pump can never dispatch work that was refused.
+            """A policy refusal of a spawn whose row ALREADY exists marks that
+            row failed in the same step, so the refusal the caller sees is
+            also the store's verdict and the pump can never dispatch work that
+            was refused. Two entries carry such a row: a drained row the pump
+            re-checks (``_from_queue``), and a row ``spawn_async`` committed
+            before its awaits (``_store_accepted``, not yet claimed).
 
-            The refused run is registered as a terminal record too: the
-            caller was told it was accepted, and its next ``GET
-            /api/spawn/{id}`` must read this failure, not a 404 for an id
-            that is neither queued nor started any more."""
-            if _from_queue and info.error:
+            A drained run is registered as a terminal record too: its caller
+            was told it was accepted, and its next ``GET /api/spawn/{id}``
+            must read this failure, not a 404 for an id that is neither
+            queued nor started any more. ``spawn_async``'s caller has not been
+            answered yet, and receives this refusal as its answer."""
+            if info.error and (_from_queue or (_store_accepted and _claimed is None)):
                 self._manager._admission.taskq_fail(agent_id, info.error)
-                self._manager._agents.setdefault(info.id, info)
+                if _from_queue:
+                    self._manager._agents.setdefault(info.id, info)
             return self._manager._announce_rejection(info)
 
-        # The mutable policy gates (memory identity, cwd allowlist,
-        # governance) run ONCE per submission: on the first entry, and again
-        # when the pump drains a stored row (the re-check before dispatch). An
-        # accepted ``spawn_async`` row re-entering with ``_store_accepted``
-        # passed them moments ago in ``prepare_spawn`` and must not be refused
-        # AFTER its row was committed -- a refusal here would leave executable
-        # work queued while the caller was told it was refused.
-        _gate = not _store_accepted and _claimed is None
+        # The mutable policy gates (cwd allowlist, governance, the parent
+        # spec's allowlist) run on the first entry, again when the pump drains
+        # a stored row (the re-check before dispatch), and again on the second
+        # half of a memory read (``MemoryReadPoint``) on every path, a row
+        # ``spawn_async`` already committed (``_store_accepted``) included: the
+        # read is an await of up to ``_HOST_READ_OFF_LOOP_SECS``, and a
+        # governance change made during it must hold. Only its batch count and
+        # row write are not repeated. A refusal of a row that already exists
+        # fails that row (``_refuse_row``), so a refused spawn never leaves
+        # executable work queued. The one entry that skips them is
+        # ``_store_accepted``'s first pass, right after ``prepare_spawn`` ran
+        # them: it never starts anything itself, it stops at the read (whose
+        # second half re-runs them) or leaves the row queued (whose drain does).
+        _gate = _claimed is None and (not _store_accepted or _memory_reentry)
         # ``_claimed`` is the second half of the event-loop dispatcher's split:
         # the first half stopped at ``_stop_before_claim`` with every gate
         # passed AND the slot reserved (running count + stagger token taken
@@ -678,7 +698,12 @@ class _GateMixin(ManagerComponent):
                     approval_mode=approval_mode,
                 ),
             )
-        if not _from_queue and not _store_accepted and _memory_mode == "persistent":
+        if (
+            not _from_queue
+            and not _store_accepted
+            and not _memory_reentry
+            and _memory_mode == "persistent"
+        ):
             store_err = self._manager._admission.taskq_accept(
                 agent_id,
                 queue_params,
@@ -873,8 +898,10 @@ class _GateMixin(ManagerComponent):
                 )
                 return self._manager._announce_rejection(info)
 
-        # --- Memory guard: defer (durable) or refuse (legacy) while host memory
-        # is critically low. ---
+        # --- Memory guard: a start that does not fit QUEUES, durable or not.
+        # A capacity verdict is a scheduling fact, never a refusal: the policy
+        # refusals above (memory identity, cwd, governance, the parent spec)
+        # are the only ones. ---
         agents_snapshot = list(self._manager._agents.values())
         loaded_cfg = None
         try:
@@ -948,22 +975,54 @@ class _GateMixin(ManagerComponent):
                 settled_gb=settled,
                 claim_prices=[price for price, _ in self._manager._claim_prices.values()],
             )
-        pop_memory_check_cause()  # drop a cause left by any earlier reading
-        mem_ok, avail_gb = (True, -1.0) if _dispatch_now else check_memory_available(min_gb=min_mem)
-        memory_cause = pop_memory_check_cause()
-        if not mem_ok:
-            # An unreadable cgroup usage file still defers; only the words change.
-            unknown_usage = memory_cause == MEMORY_CAUSE_CGROUP_USAGE_UNREADABLE
-            unknown_note = (
-                "memory headroom unknown: a finite cgroup memory limit is set but its "
-                "usage is unreadable; restore read access to memory.current / "
-                "memory.usage_in_bytes"
+        # A disabled floor (``agent.spawn_min_memory_gb`` <= 0) takes no reading
+        # at all, so an unanswered read can never hold back a start it does not
+        # gate. ``min_mem`` is still the raw floor here: the reserve above is
+        # only added to a positive one.
+        floor_off = min_mem <= 0
+        if _dispatch_now or floor_off:
+            mem_ok, avail_gb, memory_cause = True, -1.0, ""
+        elif _memory_reading is not None:
+            # The second half of an off-loop read (``MemoryReadPoint``): the
+            # reading is the worker's, the fit is decided HERE, on the loop,
+            # against the bar recomputed above, so a start admitted while the
+            # read ran is charged. -1 is the reader's "unmeasurable": fail open.
+            # A worker that never answered read nothing at all: it waits.
+            avail_gb, memory_cause = _memory_reading
+            mem_ok = memory_cause != MEMORY_CAUSE_READ_UNANSWERED and (
+                avail_gb < 0 or avail_gb >= min_mem
             )
+        elif _stop_before_memory_read:
+            # An event-loop caller: the reader walks cgroup files, so it is taken
+            # on a worker and this method re-entered with it. Nothing is reserved
+            # yet, so nothing leaks if the caller never comes back.
+            return MemoryReadPoint(min_gb=min_mem, params=dict(queue_params))
+        else:
+            pop_memory_check_cause()  # drop a cause left by any earlier reading
+            mem_ok, avail_gb = check_memory_available(min_gb=min_mem)
+            memory_cause = pop_memory_check_cause()
+        # A non-durable start that does not fit waits in the in-memory window
+        # (the capacity queue below), labelled and re-checked like a durable one.
+        memory_wait: dict[str, Any] | None = None
+        memory_detail = ""
+        if not mem_ok:
+            # An unreadable cgroup usage file, or an off-loop read that never
+            # answered, still defers; only the words change.
+            unknown_note = {
+                MEMORY_CAUSE_CGROUP_USAGE_UNREADABLE: (
+                    "memory headroom unknown: a finite cgroup memory limit is set but its "
+                    "usage is unreadable; restore read access to memory.current / "
+                    "memory.usage_in_bytes"
+                ),
+                MEMORY_CAUSE_READ_UNANSWERED: (
+                    "memory headroom unknown: the host memory reading did not answer in time"
+                ),
+            }.get(memory_cause, "")
+            unknown_usage = bool(unknown_note)
             logger.warning(
-                "Subagent spawn %s: %s, need %.2f GB (this start "
+                "Subagent spawn deferred: %s, need %.2f GB (this start "
                 "priced at %.2f GB, plus the starts still warming, with "
                 "agent.spawn_min_memory_gb left over).",
-                "deferred" if _durable else "refused",
                 unknown_note if unknown_usage else f"only {avail_gb:.2f} GB available",
                 min_mem,
                 candidate_price or 0.0,
@@ -972,9 +1031,14 @@ class _GateMixin(ManagerComponent):
                 session_key=parent_session_key or "",
                 source="subagent",
                 tool_name="spawn_run",
-                outcome="deferred_low_memory" if _durable else "refused_low_memory",
+                outcome="deferred_low_memory",
                 metadata={
-                    "available_gb": avail_gb,
+                    # No figure when nothing was read: -1 is not an amount.
+                    **(
+                        {}
+                        if memory_cause == MEMORY_CAUSE_READ_UNANSWERED
+                        else {"available_gb": avail_gb}
+                    ),
                     "min_gb": min_mem,
                     "startup_cost_gb": start_cost,
                     "start_price_gb": candidate_price,
@@ -982,42 +1046,56 @@ class _GateMixin(ManagerComponent):
                     **_task_audit,
                 },
             )
-            # Built ahead of the deferral, not after it: a parked defer whose
-            # write finds no row answers with this same refusal, off-loop.
-            info = SubagentInfo(
-                id=agent_id,
-                task=_redacted_task,
-                memory_mode=_memory_mode,
-                agent=agent,
-                parent_session_key=parent_session_key,
-                done=True,
-                error=(
-                    f"spawn refused: {unknown_note} (need {min_mem:.1f} GB)"
-                    if unknown_usage
-                    else f"spawn refused: only {avail_gb:.1f} GB memory available (need "
-                    f"{min_mem:.1f} GB; {candidate_price or 0.0:.2f} GB for this start)"
-                ),
-                batch_id=batch_id,
-                batch_total=max(0, int(batch_total)),
+            memory_detail = (
+                f"{unknown_note}; need {min_mem:.1f} GB"
+                if unknown_usage
+                else f"low memory: {avail_gb:.1f} GB available, need {min_mem:.1f} GB "
+                f"({candidate_price or 0.0:.2f} GB for this start)"
             )
-            return _defer_or_refuse(
-                (
-                    f"{unknown_note}; need {min_mem:.1f} GB"
-                    if unknown_usage
-                    else f"low memory: {avail_gb:.1f} GB available, need {min_mem:.1f} GB "
-                    f"({candidate_price or 0.0:.2f} GB for this start)"
-                ),
-                info,
-                wait={
-                    "reason": QUEUED_REASON_LOW_MEMORY,
-                    "available_gb": round(float(avail_gb), 2),
-                    "required_gb": round(float(min_mem), 2),
-                },
-            )
+            # A floor wait carries no pressure clock (the hold below is not
+            # evaluated for it): one an earlier hold started is dropped, so time
+            # spent below the floor never counts toward the hold's bound.
+            self._manager._pressure_holds.pop(agent_id, None)
+            self._manager._pressure_hold_expired.discard(agent_id)
+            memory_wait = {
+                "reason": QUEUED_REASON_LOW_MEMORY,
+                # No figure when nothing was read: -1 is not an amount.
+                **({"available_gb": round(float(avail_gb), 2)} if avail_gb >= 0 else {}),
+                "required_gb": round(float(min_mem), 2),
+            }
+            if _durable:
+                # Built ahead of the deferral, not after it: a durable defer the
+                # store could not write -- no row behind a ``_queue`` entry, or
+                # the store unavailable for the write -- answers with this
+                # refusal, since no pump could ever pick a wait nothing recorded.
+                # It is the STORE's verdict, so it says so and carries the
+                # store's retry code; the memory figures ride along as context.
+                info = SubagentInfo(
+                    id=agent_id,
+                    task=_redacted_task,
+                    memory_mode=_memory_mode,
+                    agent=agent,
+                    parent_session_key=parent_session_key,
+                    done=True,
+                    error=(
+                        "spawn refused: the task store could not record this start's "
+                        f"memory wait ({memory_detail})"
+                    ),
+                    error_code=self.TASK_STORE_UNAVAILABLE_CODE,
+                    batch_id=batch_id,
+                    batch_total=max(0, int(batch_total)),
+                )
+                # The row keeps only ``next_run_at``, so the refill that brings it
+                # back stamps it as a floor wait from this mark and the pick
+                # leaves it to this gate, floor first. A refusal below forgets it.
+                self._manager._floor_deferred_ids.add(agent_id)
+                return _defer_or_refuse(memory_detail, info, wait=memory_wait)
         if (
-            avail_gb < 0
+            mem_ok
+            and avail_gb < 0
             and (platform_compat.IS_LINUX or platform_compat.IS_MACOS)
             and not _dispatch_now
+            and not floor_off
         ):
             # A negative reading means the guard did not run: /proc/meminfo on
             # Linux, or the Mach reclaimable figure on macOS, is unreadable on a
@@ -1054,56 +1132,12 @@ class _GateMixin(ManagerComponent):
                 },
             )
 
-        # --- Admission gate: DEFER new spawns while host memory posture is
-        # critical (refuse only when no durable store backs the deferral).
-        # Complements the absolute spawn_min_memory_gb floor above with the
-        # posture tier (resource_critical_gb) and shares its off-switch
-        # (agent.admission_gate) with the cron scheduler's deferral gate. This
-        # method is sync and runs on the gateway event loop, so it reads the
-        # CACHED off-thread verdict -- never inline config/procfs I/O; bounded
-        # staleness is acceptable for pressure-shedding. In-flight subagents
-        # are untouched; direct user chat turns are not gated; fails open on
-        # an unknown posture. ---
-        admission = cached_admission_check()
-        if not admission.admitted and not _dispatch_now:
-            logger.warning(
-                "Subagent spawn %s: %s", "deferred" if _durable else "refused", admission.reason
-            )
-            sel().log_tool_invocation(
-                session_key=parent_session_key or "",
-                source="subagent",
-                tool_name="spawn_run",
-                outcome="deferred_memory_critical" if _durable else "refused_memory_critical",
-                metadata={
-                    "available_gb": admission.available_gb,
-                    "posture": admission.posture,
-                    **_task_audit,
-                },
-            )
-            info = SubagentInfo(
-                id=agent_id,
-                task=_redacted_task,
-                memory_mode=_memory_mode,
-                agent=agent,
-                parent_session_key=parent_session_key,
-                done=True,
-                error=f"spawn refused: {admission.reason}",
-                batch_id=batch_id,
-                batch_total=max(0, int(batch_total)),
-            )
-            return _defer_or_refuse(
-                str(admission.reason),
-                info,
-                wait={
-                    "reason": QUEUED_REASON_POSTURE_CRITICAL,
-                    "available_gb": round(float(admission.available_gb), 2),
-                },
-            )
-
         now = time.monotonic()
         should_queue, slot_free = self._manager._should_stagger_queue(now)
         if _dispatch_now:
             should_queue = False
+        if memory_wait is not None:
+            should_queue = True
         # Child reserve (RFC §6, Q3): a depth-0 start may not take the last
         # reserved slot(s) while nested work is pending or a parent waits on
         # its children; only children and resuming parents may. The gate
@@ -1118,10 +1152,13 @@ class _GateMixin(ManagerComponent):
         # The macOS kernel memory-pressure hold, the floor's second input: a root
         # start waits in the window below like a capacity wait, re-checked on
         # every slot release and pump pass. Every rule of it is stated once, in
-        # subagent.md (*macOS: the kernel memory-pressure hold*).
+        # subagent.md (*macOS: the kernel memory-pressure hold*). A start that
+        # did not fit the floor already waits as ``low_memory``: the floor's
+        # own verdict outranks the kernel's, and that wait carries no pressure
+        # clock, so it can never be ended as "never started".
         pressure_level = (
             None
-            if _dispatch_now or _is_child
+            if _dispatch_now or _is_child or memory_wait is not None
             else self._manager._memory_pressure_hold(floor_gb=floor_gb)
         )
         verdict = (
@@ -1189,6 +1226,11 @@ class _GateMixin(ManagerComponent):
             # spawn that hit the stagger gate re-joins the window directly --
             # it is already the oldest eligible row.
             # Restricted work has no stored row to refill; retain its only copy.
+            # One that did not fit the memory floor is not eligible again until
+            # the admit wait passes, as a durable row's ``next_run_at`` is not.
+            admit_wait = self._manager._admission.taskq_admit_wait_secs()
+            if memory_wait is not None:
+                queue_params[self.MEMORY_WAIT_UNTIL_KEY] = now + admit_wait
             if (
                 not _durable
                 or _from_queue
@@ -1215,15 +1257,17 @@ class _GateMixin(ManagerComponent):
             # The paused kind is answered to callers as a DEFERRAL, so it carries
             # the same human sentence the memory kinds do; the ordinary kind is
             # never surfaced as prose and stays bare.
+            # A memory wait keeps its own label and sentence, the same ones a
+            # durable deferral carries.
             adaptive_paused = self._manager._max_concurrent <= 0
-            capacity_wait = {
+            capacity_wait: dict[str, Any] = memory_wait or {
                 "reason": (
                     QUEUED_REASON_ADAPTIVE_CAP_ZERO
                     if adaptive_paused
                     else QUEUED_REASON_CONCURRENCY_LIMIT
                 )
             }
-            capacity_detail = (
+            capacity_detail = memory_detail or (
                 adaptive_pause_text(self._manager._user_max_concurrent) if adaptive_paused else ""
             )
             if pressure_level is not None and not adaptive_paused:
@@ -1239,8 +1283,11 @@ class _GateMixin(ManagerComponent):
             self._manager._emit_queue_depth(parent_session_key, batch_id, wait=capacity_wait)
             # If a slot is free, no running agent will trigger the drain on
             # completion — schedule the staggered pump at the interval boundary
-            # so the queued spawn still launches.
-            if slot_free:
+            # so the queued spawn still launches. A memory wait is re-checked
+            # when its admit wait passes instead.
+            if memory_wait is not None:
+                self._manager._admission.arm_memory_wait(queue_params[self.MEMORY_WAIT_UNTIL_KEY])
+            elif slot_free:
                 delay = max(
                     0.0, self._manager._spawn_stagger_secs - (now - self._manager._last_spawn_ts)
                 )

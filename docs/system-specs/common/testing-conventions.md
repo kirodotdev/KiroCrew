@@ -3943,14 +3943,13 @@ body = random.Random(20260803).randbytes(20_000)
 ```
 
 **Host MEMORY is the other one, and it fails with a misleading exception.**
-`SubagentManager.spawn` refuses — returning before it registers anything in
-`_tasks` — while the machine looks short of memory, and it does so twice: an
-absolute floor (`check_memory_available` against `agent.spawn_min_memory_gb`) and
-the posture tier (`cached_admission_check`, refusing while the cgroup-clamped
-reading is CRITICAL). What makes it expensive to diagnose is that a refusal IS a
-`SubagentInfo` — a done one carrying `error` — so `assert info is not None` still
-passes and the test dies on the NEXT line, at `await mgr._tasks[info.id]`, with a
-bare `KeyError` naming an id nothing else mentions. Measured on a CI runner with
+`SubagentManager.spawn` queues — returning before it registers anything in
+`_tasks` — while the machine looks short of memory: the absolute floor
+(`check_memory_available` against `agent.spawn_min_memory_gb`). What makes it
+expensive to diagnose is that a queued spawn IS a `SubagentInfo`, so
+`assert info is not None` still passes and the test dies on the NEXT line, at
+`await mgr._tasks[info.id]`, with a bare `KeyError` naming an id nothing else
+mentions. Measured on a CI runner with
 ~0.5 GB free.
 
 Fix: pin the reading with `healthy_host_memory` (`test/conftest.py`), which any
@@ -3963,8 +3962,18 @@ pytestmark = pytest.mark.usefixtures("healthy_host_memory")
 It pins only the HOST reading — a caller that names its own `path` is feeding the
 `/proc/meminfo` parser a fixture file rather than asking about this machine, so
 those tests still run the real function and a parser regression still goes red. A
-test that is actually ABOUT either guard patches it in its own body, which lands on
+test that is actually ABOUT the guard patches it in its own body, which lands on
 top of the fixture and reverts to it.
+
+The pinned host is healthy, not infinite: it reads 8 GB free and still compares
+the floor it is asked about against that figure, `(8.0 >= min_gb, 8.0)`, so a
+test whose wave of unsettled starts outgrows an 8 GB host is queued here exactly
+as it would be on one. Size such a test's concurrency to fit the pinned host (the
+floor plus one dedicated start per unsettled row), or patch the reading in its
+body; never widen the pin back to an unconditional admit. `overload_fakes`'s
+`ManagerHarness` pins the same 8 GB host the same way, so the synchronous gate
+(which reads the boolean) and the off-loop one (which compares the figure against
+its own bar) give a harness test the same answer.
 
 Opt-in rather than autouse, because the pin is not free of consequence: the tests
 that drive the probe with no `path` and stub `safe_read_file` underneath it —

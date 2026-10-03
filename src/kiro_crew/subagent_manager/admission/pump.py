@@ -39,6 +39,8 @@ class _PumpMixin(ManagerComponent):
 
     if TYPE_CHECKING:
         # Sibling-mixin methods this module reaches through ``self``; typing only.
+        MEMORY_WAIT_UNTIL_KEY: str
+
         def taskq_store(self) -> "_taskq.TaskStore | None": ...
 
         def taskq_admit_wait_secs(self) -> float: ...
@@ -373,13 +375,19 @@ class _PumpMixin(ManagerComponent):
             execution_context=params.get("_execution_context"),
             prevalidated=bool(params.get("_agent_prevalidated")),
         )
-        first: Any = self._manager.spawn(
-            **spawn_params,
+        # The memory floor is read on a worker: the gate stops at its read
+        # (``MemoryReadPoint``) and is re-entered with the reading and these
+        # same flags (``_spawn_after_memory_read``).
+        reentry: dict[str, Any] = dict(
             _parent_spawn_policy=policy,
             _agent_check=agent_check,
             _from_queue=True,
             _stop_before_claim=store is not None,
             _child_registration=store is None,
+        )
+        first: Any = await self._manager._spawn_after_memory_read(
+            self._manager.spawn(**spawn_params, **reentry, _stop_before_memory_read=True),
+            **reentry,
         )
         if not isinstance(first, ClaimPoint):
             # Not claimed: the gate re-queued, parked or refused the row, so
@@ -680,6 +688,10 @@ class _PumpMixin(ManagerComponent):
             return
         params = self._manager._queue.pop(index)
         params.pop("_lane", None)
+        params.pop(self.MEMORY_WAIT_UNTIL_KEY, None)
+        # The floor mark is one-shot: the gate re-checks the floor now and sets
+        # it again if the row is deferred on it again.
+        self._manager._floor_deferred_ids.discard(str(params.get("_preassigned_id") or ""))
         # A run can be cancelled WHILE it waits here — a user stop, or a session
         # deleted out from under it. Starting it anyway would execute tools for
         # work already reported as stopped, so skip it and drain the next one

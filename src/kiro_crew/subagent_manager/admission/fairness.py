@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Iterable, Mapping
 from .._component import ManagerComponent
 from .types import (
     FAIRNESS_SETTINGS_TTL_SECS,
+    MEMORY_WAIT_UNTIL_KEY,
     CapacityView,
     FairnessSettings,
 )
@@ -359,7 +360,8 @@ class _FairnessMixin(ManagerComponent):
 
         *root_held* answers, for a root entry that could otherwise start, whether
         the kernel memory-pressure hold keeps it waiting; a nested entry never
-        asks it.
+        asks it, and neither does a floor wait (``MEMORY_WAIT_UNTIL_KEY``),
+        which the gate re-checks against the floor before the hold.
         """
         queue = self._manager._queue
         if not queue:
@@ -373,16 +375,29 @@ class _FairnessMixin(ManagerComponent):
             ) and not self._manager._boundary_cancellation_pending(params):
                 return idx
         roots_ok = view.root_slot
+        now = _time.monotonic()
 
         def eligible(params: Mapping[str, Any]) -> bool:
             # A released start is never picked here: the pump's own phase
             # (``_release_admitted_start_impl``) meters it, ahead of this pick.
+            # Nor is a memory wait before its admit wait has passed.
             return (
                 not params.get("_startup_release")
+                and float(params.get(MEMORY_WAIT_UNTIL_KEY) or 0.0) <= now
                 and not self._manager._boundary_cancellation_pending(params)
                 and (
                     self.entry_is_child(params)
-                    or (roots_ok and (root_held is None or not root_held(params)))
+                    or (
+                        roots_ok
+                        and (
+                            root_held is None
+                            # A floor wait is re-checked against the floor
+                            # first; the hold is the gate's to decide after it,
+                            # so the pick never starts a pressure clock for it.
+                            or MEMORY_WAIT_UNTIL_KEY in params
+                            or not root_held(params)
+                        )
+                    )
                 )
             )
 
@@ -390,6 +405,33 @@ class _FairnessMixin(ManagerComponent):
             return self.lane_of_entry(params, lanes)
 
         return self.lane_scheduler().pick_index(queue, lane_of=lane_of, eligible=eligible)
+
+    def arm_memory_wait(self, until: float) -> None:
+        """Re-pump once a memory wait's not-before stamp (*until*,
+        ``MEMORY_WAIT_UNTIL_KEY``) has passed.
+
+        The stamp and :meth:`pick_window_index` read ``time.monotonic``, but a
+        loop timer may run its handle up to one clock tick EARLY (asyncio runs
+        whatever falls due within its clock resolution, 15.6 ms on Windows). A
+        pump woken before the stamp skips the entry and arms nothing, so the
+        wait would strand until some unrelated edge. The wake is armed one
+        tick past the stamp, and one that still finds the stamp ahead re-arms
+        for the rest instead of draining.
+        """
+        try:
+            loop = _asyncio.get_event_loop()
+        except RuntimeError:
+            return  # no running loop (sync/test context)
+        tick = _time.get_clock_info("monotonic").resolution
+
+        def _wake() -> None:
+            remaining = until - _time.monotonic()
+            if remaining > 0:
+                loop.call_later(remaining + tick, _wake)
+            else:
+                self._manager._drain_queue()
+
+        loop.call_later(max(0.0, until - _time.monotonic()) + tick, _wake)
 
     def lane_snapshot(self) -> dict[str, Any]:
         """Per-lane queue depth and running count with the scheduler's balance.

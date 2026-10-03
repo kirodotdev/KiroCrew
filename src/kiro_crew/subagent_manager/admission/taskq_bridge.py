@@ -17,6 +17,7 @@ from kiro_crew.subagent_wait_reasons import (
 
 from .._component import ManagerComponent
 from .types import (
+    MEMORY_WAIT_UNTIL_KEY,
     MIN_RECHECK_DELAY_SECS,
     DeferPoint,
     FairnessSettings,
@@ -1756,6 +1757,7 @@ class _TaskqBridgeMixin(ManagerComponent):
             return
         present = {p.get("_preassigned_id") for p in self._manager._queue}
         held_modes = getattr(self._manager, "_held_approval_modes", {})
+        floor_deferred = getattr(self._manager, "_floor_deferred_ids", ())
         for rec in rows:
             entry = self._window_entry(rec)
             if rec.id in held_modes:
@@ -1764,6 +1766,12 @@ class _TaskqBridgeMixin(ManagerComponent):
                 # (``spawn_impl`` records it; ``_window_entry`` says why the store
                 # never carries it).
                 entry["approval_mode"] = held_modes[rec.id]
+            if rec.id in floor_deferred:
+                # Its last defer was the memory floor's: a floor wait whose admit
+                # wait the store already metered (``next_run_at``), so the pick
+                # leaves it to the gate, which re-checks the floor before the
+                # pressure hold, and no pressure clock starts below the floor.
+                entry[MEMORY_WAIT_UNTIL_KEY] = 0.0
             if self._manager._boundary_cancellation_pending(entry):
                 continue
             if rec.id not in present:

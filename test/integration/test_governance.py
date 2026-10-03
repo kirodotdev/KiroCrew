@@ -7,7 +7,7 @@ patched inside the process: the memory bar is set through the operator's own
 
 * bug 20 -- a spawn the memory guard holds back was reported as ``queued behind
   concurrency limit``. The contract now: a deferral names its kind
-  (``low_memory``) and its figures; a refusal names the memory, never the cap.
+  (``low_memory``) and its figures, durable or not, and never the cap.
 * bug 14 -- the parent agent spec's spawn allow-list. kiro-cli's contract
   (``docs/reference/kiro-cli/chat/subagents.md``) puts it at
   ``toolsSettings.subagent.availableAgents`` (``trustedAgents`` beside it only
@@ -89,21 +89,22 @@ async def test_a_memory_deferral_is_named_as_one(gateway_boot, integration_home)
 
 
 @pytest.mark.asyncio
-async def test_a_memory_refusal_names_the_memory(gateway_boot, integration_home) -> None:
-    """An incognito parent has no durable row to park, so the guard REFUSES.
-    The refusal names the memory figures, never a queue (bug 20).
+async def test_a_non_durable_memory_wait_is_named_as_one(gateway_boot, integration_home) -> None:
+    """An incognito parent has no durable row to park, but a capacity verdict
+    is never a refusal: the start waits in the in-memory window, and the answer
+    names the memory kind and figures, never the capacity queue (bug 20).
     """
     _pin_memory_bar(integration_home)
     async with gateway_boot() as gw:
         session = await _slot_session(gw, "incognito")
         resp = await _spawn(gw, session)
         body = await resp.json()
-        assert resp.status == 400, body
-        assert body.get("counted") is True, body
-        error = body["error"]
-        assert error.startswith("spawn refused: only"), error
-        assert "GB memory available" in error, error
-        assert "queue" not in error.lower() and "concurrency" not in error.lower(), error
+        assert resp.status == 200, body
+        assert body["status"] == "queued", body
+        assert body["reason"] == QUEUED_REASON_LOW_MEMORY, body
+        detail = body["reason_detail"]
+        assert "low memory" in detail and "GB" in detail, detail
+        assert "concurrency" not in detail.lower(), detail
 
 
 # ---------------------------------------------------------------- bug 14 ---

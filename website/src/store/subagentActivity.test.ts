@@ -143,7 +143,7 @@ describe('sseSubagentQueued carries the wait reason', () => {
 
   it('replaces a stale reason when a later frame carries none', () => {
     const store = makeStore()
-    store.dispatch(sseSubagentQueued({ slot: 'a', queued: 1, reason: 'posture_critical', available_gb: 1.2 }))
+    store.dispatch(sseSubagentQueued({ slot: 'a', queued: 1, reason: 'low_memory', available_gb: 1.2 }))
     store.dispatch(sseSubagentQueued({ slot: 'a', queued: 1 }))
     expect(reasonFor(store, 'a')).toBeUndefined()
   })
@@ -159,6 +159,10 @@ describe('sseSubagentQueued carries the wait reason', () => {
   it('ignores a kind it cannot render and a non-numeric figure', () => {
     const store = makeStore()
     store.dispatch(sseSubagentQueued({ slot: 'a', queued: 1, reason: 'something_new' }))
+    expect(reasonFor(store, 'a')).toBeUndefined()
+    // Spawns no longer wait on the memory posture tier; an older gateway's
+    // label for it falls back to the default text like any unknown kind.
+    store.dispatch(sseSubagentQueued({ slot: 'a', queued: 1, reason: 'posture_critical', available_gb: 1.2 }))
     expect(reasonFor(store, 'a')).toBeUndefined()
     store.dispatch(sseSubagentQueued({ slot: 'a', queued: 1, reason: 'low_memory', available_gb: Number.NaN }))
     expect(reasonFor(store, 'a')).toEqual({ reason: 'low_memory' })

@@ -1187,10 +1187,11 @@ class AgentConfig:
             "until runs of that agent have been measured, then their learned size capped at "
             "2 GB, never below subagent_cost_gb); one that shares its parent's runtime at "
             "about 0.35 GB "
-            "less. A spawn that does not fit waits in the durable queue (one with no "
-            "durable queue is refused). On macOS a start also waits while the kernel "
-            "reports memory pressure and one of this gateway's dedicated subagents is "
-            "running. 0 disables the check, that wait included.",
+            "less. A spawn that does not fit waits in the queue and is re-checked after "
+            "admit_wait_secs; one in temporary or incognito memory mode, or with "
+            "task_queue_enabled off, is lost if the gateway restarts. On macOS a start also "
+            "waits while the kernel reports memory pressure and one of this gateway's "
+            "dedicated subagents is running. 0 disables the check, that wait included.",
         ),
     )
     resource_pressure_gb: float = field(
@@ -1221,12 +1222,11 @@ class AgentConfig:
         metadata=_meta(
             "Posture Admission Gate",
             "While available memory is at or below resource_critical_gb, defer "
-            "scheduled cron firings to the next tick and defer new subagent "
-            "spawns (they stay queued in the task store and are re-checked "
-            "after admit_wait_secs) until memory frees. Manually triggered cron "
-            "runs, in-flight subagents, and direct chat turns are never gated; "
-            "an unreadable probe admits (fail-open). Set false to make the "
-            "critical posture advisory-only.",
+            "scheduled cron firings to the next tick until memory frees. "
+            "Subagent spawns are not gated on this posture; they wait on "
+            "spawn_min_memory_gb instead. Manually triggered cron runs and "
+            "direct chat turns are never gated; an unreadable probe admits "
+            "(fail-open). Set false to make the critical posture advisory-only.",
         ),
     )
     task_queue_enabled: bool = field(

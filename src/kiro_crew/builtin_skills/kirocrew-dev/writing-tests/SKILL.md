@@ -304,17 +304,17 @@ of executing when it had not. If the code *probes* the PID, pin the probe; if th
 must never appear in real output, pick one no OS can allocate (`99999999999`).
 
 The host's free MEMORY is an input too, and the most-used probe of it is
-`SubagentManager.spawn`, which refuses — registering nothing in `_tasks` — on a
-pressured machine. A refusal is still a `SubagentInfo`, so the test dies a line
+`SubagentManager.spawn`, which queues — registering nothing in `_tasks` — on a
+pressured machine. A queued spawn is still a `SubagentInfo`, so the test dies a line
 later on a bare `KeyError`, not on the assert that would have named the cause. Any
 file driving `spawn` takes `pytestmark = pytest.mark.usefixtures("healthy_host_memory")`,
-and `test_subagent_spawn_host_pin.py` fails when a new one does not. The two guards it
+and `test_subagent_spawn_host_pin.py` fails when a new one does not. The guard it
 pins, and why it stays transparent for the parser's own tests, are in
 testing-conventions § Determinism 1. Both the fixture and its ratchet are
 `test/`-only — `healthy_host_memory` lives in `test/conftest.py`, and
 `test_subagent_spawn_host_pin.py` scans `test/*.py` non-recursively. An in-package
 app suite cannot request the fixture and is not swept, so a test there that drives
-`SubagentManager.spawn` must pin the two guards itself.
+`SubagentManager.spawn` must pin the floor reading itself.
 
 One more, for tests of a **single-flight or coalescing** path ("N concurrent readers
 share ONE scan"): the property only holds for readers that arrive WHILE the shared

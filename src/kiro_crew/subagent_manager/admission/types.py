@@ -21,6 +21,12 @@ TASK_STORE_UNAVAILABLE_CODE = "task_store_unavailable"
 #: pass cannot make progress.
 MIN_RECHECK_DELAY_SECS = 0.05
 
+#: A ``_queue`` entry's monotonic not-before time: a start with no durable row
+#: that did not fit the memory floor waits in the in-memory window, and the
+#: pump skips it until then -- the in-memory twin of a durable row's
+#: ``next_run_at``. Popped with ``_lane`` before the entry reaches ``spawn``.
+MEMORY_WAIT_UNTIL_KEY = "_memory_wait_until"
+
 
 def tombstone_terminal_state(cause: str) -> str | None:
     """The terminal task state a tombstone cause proves, loaded on first use."""
@@ -92,6 +98,25 @@ class PreparedSpawn:
     agent_id: str
     params: dict[str, Any]
     record: "_taskq.TaskRecord"
+
+
+@dataclass(frozen=True)
+class MemoryReadPoint:
+    """``spawn_impl(_stop_before_memory_read=True)``: every policy gate passed
+    and the memory floor's bar (*min_gb*: the floor plus this start's price
+    plus what warming starts still owe) is known, but the host has not been
+    read. The reading walks cgroup files, so an event-loop caller takes it on
+    a worker thread and re-enters ``spawn(**params, _memory_reading=...)``.
+    The re-entry recomputes the bar on the loop and decides against that, so a
+    start admitted while the read ran is charged. It re-runs the policy gates
+    (a governance change made during the read must hold), on a row
+    ``spawn_async`` already committed (``_store_accepted``) too, whose refusal
+    fails that row. NOTHING is reserved here: no slot
+    and no row write. A batch member's submission is counted by this pass, as
+    on any first entry, and the re-entry does not count it again."""
+
+    min_gb: float
+    params: dict[str, Any]
 
 
 @dataclass(frozen=True)

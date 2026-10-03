@@ -12,7 +12,7 @@ A plain module, imported explicitly (``from overload_fakes import Clock``) like
 * :func:`settle_store_writes` / :func:`settle_dependency_park` -- the two
   barriers: the store's writer thread, and a step reaching its dependency wait.
 * :func:`settle_depth_emits` -- wait out every in-flight queued-depth emit.
-* :func:`memory_critical` -- the posture gate's low-memory verdict, for deferring a spawn.
+* :func:`memory_below_floor` -- the memory floor's reading of a host short of memory, for deferring a spawn.
 * :class:`ManagerHarness` -- a real ``SubagentManager`` whose runs finish when
   the test says so, with the mocks it needs (:func:`mock_sessions`, :func:`mock_ctx`).
 """
@@ -28,7 +28,6 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from kiro_crew.recovery.policy import LayerPolicy, RecoveryPolicy
-from kiro_crew.resource_status import POSTURE_CRITICAL, AdmissionDecision
 from kiro_crew.subagent import SubagentInfo, SubagentManager
 from kiro_crew.subagent_manager.admission import FairnessSettings
 from kiro_crew.taskq import model
@@ -183,21 +182,16 @@ def mock_ctx() -> MagicMock:
     return ctx
 
 
-def memory_critical() -> AdmissionDecision:
-    """The posture gate's verdict on a host critically short of memory.
+def memory_below_floor(*_args: Any, **_kwargs: Any) -> tuple[bool, float]:
+    """The memory floor's reading of a host with 0.5 GB free: below any floor.
 
-    Patch ``kiro_crew.subagent.cached_admission_check`` with it inside
+    Patch ``kiro_crew.subagent.check_memory_available`` with it inside
     ``monkeypatch.context()`` (or ``patch.object``), never with a bare
     ``monkeypatch.setattr`` followed by ``monkeypatch.undo()``: the test and
     ``healthy_host_memory`` share ONE ``monkeypatch``, so a blanket undo also
     reverts the fixture's pins and later spawns read the runner's real memory.
     """
-    return AdmissionDecision(
-        admitted=False,
-        posture=POSTURE_CRITICAL,
-        available_gb=0.5,
-        reason="host memory critically low",
-    )
+    return False, 0.5
 
 
 class ManagerHarness:
@@ -239,21 +233,22 @@ class ManagerHarness:
 
         self._patch = patch.object(SubagentManager, "_run", new=_run)
         self._patch.start()
-        # Pin the host-memory readings ``SubagentManager.spawn`` consults, the
-        # same way conftest's ``healthy_host_memory`` fixture does: the
-        # harness is the fake host, so a memory-pressured runner must not turn
-        # a spawn into a refusal that surfaces as a bare KeyError one line on.
-        import kiro_crew.resource_status as resource_status
+        # Pin the host-memory reading ``SubagentManager.spawn`` consults, the
+        # same way conftest's ``healthy_host_memory`` fixture does: an 8 GB
+        # host that honours the floor it is asked about. The harness is the
+        # fake host, so a memory-pressured runner must not turn a spawn into a
+        # deferral that surfaces as a bare KeyError one line on; and it answers
+        # the sync gate (which reads the boolean) exactly as the off-loop one
+        # (which compares the figure against its own bar).
         import kiro_crew.subagent as subagent_mod
+        from kiro_crew.constants import DEFAULT_SPAWN_MIN_MEMORY_GB
 
-        def _admit() -> resource_status.AdmissionDecision:
-            return resource_status.AdmissionDecision(
-                admitted=True, posture=resource_status.POSTURE_AMPLE, available_gb=8.0
-            )
+        def _host(min_gb: float | None = None, **_kw: Any) -> tuple[bool, float]:
+            floor = DEFAULT_SPAWN_MIN_MEMORY_GB if min_gb is None else min_gb
+            return 8.0 >= floor, 8.0
 
         self._memory_patches = [
-            patch.object(subagent_mod, "check_memory_available", lambda *a, **k: (True, 8.0)),
-            patch.object(subagent_mod, "cached_admission_check", _admit),
+            patch.object(subagent_mod, "check_memory_available", _host),
         ]
         for mp in self._memory_patches:
             mp.start()

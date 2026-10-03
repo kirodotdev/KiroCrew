@@ -15,8 +15,9 @@ The advisory surfaces carry no enforcement, no lease, no cross-session
 coordination. Two sessions can both read "ample" and both launch heavy work —
 the tradeoff of a cheap, zero-tuning guard. One narrow enforcement point sits
 on top: :func:`admission_check` gates *background* work admission (scheduled
-cron firings, new subagent spawns) while posture is CRITICAL, so the scheduler
-stops piling work onto a host that is about to freeze. Direct user chat turns
+cron firings, task-runner steps) while posture is CRITICAL, so the scheduler
+stops piling work onto a host that is about to freeze. Subagent spawns are not
+gated here: they admit on their own memory floor (``agent.spawn_min_memory_gb``). Direct user chat turns
 and the gateway's own operation are never gated, and the gate fails open on an
 unknown posture. (A hard, cross-session admission lease is a separate, heavier
 design.)
@@ -918,8 +919,8 @@ def admission_check(cfg: object | None = None) -> AdmissionDecision:
 
     The single enforcement point layered on the advisory posture tier: a
     CRITICAL posture refuses; every other posture — ample, tight, and unknown —
-    admits. Callers on the two gated paths (scheduled cron firings, new
-    subagent spawns) consult this once per admission decision; it reuses the
+    admits. Callers on the gated paths (scheduled cron firings, task-runner
+    steps) consult this once per admission decision; it reuses the
     same cheap :func:`probe` the advisory surfaces use (fingerprint-cached
     config, one memory read, and a handful of single-value cgroup reads for the
     slice's task figure) and never scans processes. The task figure is reported,
@@ -1027,9 +1028,9 @@ def prewarm_allowance(available_gb: float | None = None, cfg: object | None = No
         return PREWARM_MAX_LIVE
 
 
-# Cached-verdict layer for callers that must never block: the sync spawn path
-# runs on the gateway event loop, so it reads the last off-thread verdict
-# instead of probing inline. Freshness window sized to the posture's own rate
+# Cached-verdict layer for callers that must never block: an admission decided
+# on the gateway event loop reads the last off-thread verdict instead of
+# probing inline. Freshness window sized to the posture's own rate
 # of change (memory exhaustion develops over tens of seconds, not millis).
 _CACHED_TTL_SECS = 5.0
 _cached_decision: AdmissionDecision | None = None
@@ -1053,7 +1054,7 @@ def cached_admission_check() -> AdmissionDecision:
     one background refresh (non-blocking dedupe) and returns the previous
     verdict — or a fail-open admit before the first refresh completes. The
     caller's thread never performs config or procfs I/O, which is what keeps
-    the sync spawn path safe to call from the gateway event loop. The
+    it safe to call from the gateway event loop. The
     trade-off is bounded staleness (:data:`_CACHED_TTL_SECS` plus one refresh
     latency), acceptable because the gate is advisory pressure-shedding, not
     a correctness barrier.

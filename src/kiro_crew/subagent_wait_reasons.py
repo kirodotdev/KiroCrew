@@ -12,11 +12,16 @@ The kinds themselves are a report of a verdict the gate already made; no gate
 reads them back. ``concurrency_limit`` is the ordinary wave shape -- a slot is
 taken, or the stagger tick has not elapsed -- and clears on its own within
 seconds. The others can wait for a long time, which is why the UI and every tool
-answer must not describe them as a capacity queue: ``low_memory`` and
-``posture_critical`` are store DEFERRALS re-checked after the admit wait for as
-long as the host stays below the bar, ``adaptive_cap_zero`` waits on the
-controller's probe, and ``memory_pressure`` waits in the capacity window, within
-a bound of its own (subagent.md, *macOS: the kernel memory-pressure hold*).
+answer must not describe them as a capacity queue: ``low_memory`` is re-checked
+after the admit wait for as long as the host stays below the bar (a store
+DEFERRAL for a durable row, a stamped window wait for one with no row),
+``adaptive_cap_zero`` waits on the controller's probe, and ``memory_pressure``
+waits in the capacity window, within a bound of its own (subagent.md, *macOS:
+the kernel memory-pressure hold*).
+
+The memory posture tier (``resource_critical_gb``) is not one of them: spawns
+are not gated on it, only on the floor (``low_memory``). Cron still defers its
+firings on posture, through its own gate.
 """
 
 from __future__ import annotations
@@ -26,7 +31,6 @@ from typing import Any
 
 QUEUED_REASON_CONCURRENCY_LIMIT = "concurrency_limit"
 QUEUED_REASON_LOW_MEMORY = "low_memory"
-QUEUED_REASON_POSTURE_CRITICAL = "posture_critical"
 QUEUED_REASON_ADAPTIVE_CAP_ZERO = "adaptive_cap_zero"
 #: The macOS kernel reports memory pressure (WARN or worse) while a dedicated
 #: child of this gateway is running or warming. Carries no GB figures: the
@@ -52,7 +56,6 @@ MEMORY_PRESSURE_DETAIL = (
 DEFERRED_QUEUED_REASONS: frozenset[str] = frozenset(
     {
         QUEUED_REASON_LOW_MEMORY,
-        QUEUED_REASON_POSTURE_CRITICAL,
         QUEUED_REASON_ADAPTIVE_CAP_ZERO,
         QUEUED_REASON_MEMORY_PRESSURE,
     }
@@ -78,7 +81,6 @@ __all__ = [
     "QUEUED_REASON_CONCURRENCY_LIMIT",
     "QUEUED_REASON_LOW_MEMORY",
     "QUEUED_REASON_MEMORY_PRESSURE",
-    "QUEUED_REASON_POSTURE_CRITICAL",
     "adaptive_pause_text",
 ]
 
@@ -102,7 +104,6 @@ def adaptive_pause_text(configured_cap: int) -> str:
 #: wait and not yet re-checked.
 QUEUED_KIND_TEXT: dict[str, str] = {
     QUEUED_REASON_LOW_MEMORY: "not enough free memory to start it",
-    QUEUED_REASON_POSTURE_CRITICAL: "host memory is critically low",
     QUEUED_REASON_ADAPTIVE_CAP_ZERO: (
         "starts are paused while the host is low on memory or overloaded"
     ),

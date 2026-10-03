@@ -22,9 +22,16 @@ even after its parent closes; it never reconstructs them from the current parent
 Incognito and temporary spawns retain queued work only in memory. They always
 keep their queue entry, including when the durable dispatch window is full, and
 refill never evicts that sole copy. Only persistent entries consume the durable
-window budget; the shared running cap, stagger, child reserve and host-pressure
-checks still apply. A restricted spawn refused under pressure has no durable row
-to defer, and a restricted start never claims a nonexistent row. Cancellation
+window budget; the shared running cap, stagger, child reserve and memory floor
+still apply. A restricted start that does not fit the floor waits in that
+in-memory window instead of a store deferral: its entry carries
+`MEMORY_WAIT_UNTIL_KEY` (monotonic, `now + admit_wait_secs`), the pump's pick
+skips it until then, and a timer re-pumps when it passes
+(`arm_memory_wait`). That timer is armed one clock tick past the stamp, and a
+wake that still finds the stamp ahead re-arms instead of draining: asyncio may
+run a handle up to its clock resolution early (15.6 ms on Windows), and a pass
+that skipped the entry would arm nothing. A restricted start never claims a
+nonexistent row. Cancellation
 removes its in-memory entry; a process restart cannot replay it. Restricted
 admission diagnostics retain identifiers and lifecycle outcomes, not task text
 or callback exception bodies.
@@ -187,12 +194,54 @@ only when neither host memory nor a finite cgroup limit is available.
 
 `agent.spawn_min_memory_gb` (default `DEFAULT_SPAWN_MIN_MEMORY_GB`, 2.0 GiB) is the
 memory that must remain available AFTER a start is admitted; `0` disables the
-floor and the reserve together. When enabled, the per-spawn guard adds
+floor, the reserve and the host reading together (no read is taken, so an
+unanswered one cannot hold a start back). When enabled, the per-spawn guard adds
 `_startup_memory_reserve_gb` to it, so a start is admitted only if
 `available − Σ outstanding start prices − price(this start) ≥ spawn_min_memory_gb`.
-Below that a durable spawn waits in the queue (`low_memory`); a capacity verdict
-never fails it. The governance, cwd and memory-identity checks that run earlier
-in the same gate are refusals and stay refusals.
+Below that a spawn waits in the queue (`low_memory`), durable or not; a capacity
+verdict never fails it. The governance, cwd and memory-identity checks that run
+earlier in the same gate are refusals and stay refusals. A non-durable
+`low_memory` wait (an incognito or temporary start, or any start with no store)
+lives only in the in-memory window, so a gateway restart drops it like any other
+in-memory queued entry: the id the parent was handed is gone after the restart,
+and no completion arrives for it.
+`test_spawn_admission_verdict_census.py` pins the complete set of verdicts the
+gate can give at defaults (its SEL outcomes and those written elsewhere on the
+spawn path, its wait labels, every refusal text `spawn_impl` can return, and
+what each capacity and policy condition returns), so a new gate or a new
+refusal goes red there first, whether or not it writes an SEL outcome. A durable
+deferral the store could not write (no row behind a `_queue` entry, or the store
+unavailable for the write) is the one memory-path refusal, and it is the
+store's verdict: `error_code="task_store_unavailable"`, worded as the store
+failing to record the wait, with the memory figures as context.
+
+**The floor is read off the event loop.** The reader walks cgroup files on
+Linux. The event-loop entries (`spawn_async`, so `/api/spawn`, channel and app
+spawns, and the coroutine pump re-checking a queued row) pass
+`_stop_before_memory_read`: the gate runs every policy check, computes the bar,
+and returns a `MemoryReadPoint` (bar + params) with nothing reserved. The caller
+reads the host on a worker (`_host_memory_reading_off_loop`, bounded by
+`_HOST_READ_OFF_LOOP_SECS`) and re-enters with `_memory_reading`. There is no
+on-loop fallback: a worker that misses the bound, or a pool that cannot start a
+thread, comes back as `MEMORY_CAUSE_READ_UNANSWERED`, and the start waits as
+`low_memory` ("memory headroom unknown"), re-checked after the admit wait. An
+unanswered read is never the reader's "unmeasurable" -1, which fails open. The
+re-entry re-runs the policy gates on every path, so a governance change made
+during the read still refuses it; only the batch count and the row write are not
+repeated. A refused spawn whose row already exists has that row failed in the
+same step (`_refuse_row` -> `taskq_fail`): a drained row, and a row `spawn_async`
+committed before the read (`_store_accepted`, the default persistent path). A
+committed row is failed the same way when gateway admission closes during the
+read, so a row the caller was told was refused never runs once admission
+reopens. `spawn_async` hands the re-entry the parent's declaration and the
+agent check it read off the loop (`_parent_spawn_policy`, `_agent_check`), so
+neither the allowlist vet nor agent validation scans the agents directory on the
+loop. A spawn with no row to write (non-persistent, or the task queue off) runs
+both passes with `_child_registration=False` and awaits
+`taskq_child_registered_async` itself, as the durable path does, so the W3
+registration's ledger reads never run on the loop. The fit is decided on the loop against the bar recomputed
+then, so a start admitted during the read is charged. Synchronous `spawn()` callers, and
+the inline pump used without a store, still read on the calling thread.
 
 **Prices.** Decided per start (`_spawn_memory_floor_and_cost` reads the floor and
 `subagent_cost_gb` for every caller) and carried on the row as `_start_price_gb`,
@@ -299,15 +348,17 @@ would otherwise hand the process's teardown to the shared arm. Only a row
 flagged `_start_priced_shared` is topped up; a dedicated admission whose bucket
 learned a higher figure since was checked at its own price and is not re-checked.
 Below the floor the start waits with its start clock frozen, re-reading every
-`_DEDICATED_TOPUP_POLL_SECS` off the loop (`_host_available_gb_off_loop`: one read
-waits at most `_HOST_READ_OFF_LOOP_SECS` for the executor, else it is taken on the
-loop as the gate takes it, so an unanswered read is never read as "below the
-floor"; the fit is decided on the loop against the need recomputed after the
-read), one such start at a time (`_dedicated_topup_lock`;
+`_DEDICATED_TOPUP_POLL_SECS` off the loop (`_host_memory_reading_off_loop`, the
+gate's own reader: one read waits at most `_HOST_READ_OFF_LOOP_SECS` for the
+executor, and an unanswered read is headroom unknown, so the start keeps waiting
+for the next poll; it is never read on the loop and never taken as the reader's
+fail-open -1; the fit is decided on the loop against the need recomputed after
+the read), one such start at a time (`_dedicated_topup_lock`;
 the one holding the turn does not count the ones queued behind it, which have
 launched nothing), for at most `_DEDICATED_TOPUP_WAIT_SECS`; then it starts anyway
-with a WARNING and a `dedicated_start_below_floor` SEL row. The start clock
-resumes when the wait ends, a cancel included: the wait is added to
+with a WARNING and a `dedicated_start_below_floor` SEL row (carrying the
+read's `cause` and no `available_gb` when the last read did not answer). The
+start clock resumes when the wait ends, a cancel included: the wait is added to
 `_start_queue_wait_ms`, like any start-queue wait.
 
 **What the floor guarantees, honestly.** Admission never takes the host below
@@ -315,8 +366,8 @@ the floor at the prices above, and the prices are projections. The floor is not
 above `resource_critical_gb` (both 2.0 at defaults, and posture counts equal as
 critical), so a host admission has filled to the floor reads `critical`: cron
 defers its firings and the adaptive controller cuts its cap until 4 GiB is free.
-That is the posture tier doing its job at the line; dropping posture for spawns
-and the adaptive memory rules is separate work. It does not shed
+Spawns do not read the posture (admission step 4), so the floor alone decides
+them; the adaptive memory rule is separate work. It does not shed
 running work: a settled child that runs builds or tests can still push the host
 below it. And a start admitted shared whose runtime then dies may, after its
 bounded wait, launch a dedicated process below the floor rather than fail.
@@ -403,9 +454,20 @@ shared-to-dedicated top-up is not a held start: it is an admitted run already
 starting, so past its own bound it starts and says so
 (`dedicated_start_under_memory_pressure`), as it does below the floor.
 
-The memory-figure exits run first: below the floor a start is deferred as
-`low_memory`, and a critical posture defers it as `posture_critical` with its
-figure, which wins over this hold. Agent validation runs before both, so an
+The floor's exit runs first: below the floor a start waits as `low_memory`
+(deferred when it has a row, stamped in the window when it has none), and that
+wins over this hold: such a start is not held, so it carries no pressure clock
+and is never ended "never started". A clock an earlier hold started for it is
+dropped when it goes back to waiting on the floor, and the pump's pick never
+asks the hold about a stamped floor wait (`MEMORY_WAIT_UNTIL_KEY`): the gate
+re-checks the floor first, so time spent below the floor never counts toward
+the hold's bound. A durable row deferred on the floor keeps only `next_run_at`
+in the store, so the manager remembers it (`_floor_deferred_ids`) and the
+window refill stamps it as a floor wait; the mark is one-shot (the pick drops
+it and a fresh floor defer sets it again) and process-local, like the hold's
+clocks: a restart refills the row unmarked, as one this process never
+checked. Spawns do not read the posture tier, so no posture verdict precedes
+the hold. Agent validation runs before both, so an
 unknown agent is refused `agent_not_found` instead of waiting.
 
 The level is the kernel's own verdict, and it lags. A 16 GB Mac has read NORMAL
@@ -700,15 +762,22 @@ Admission order (`subagent_manager/admission/gate.py::spawn_impl`):
    ownership and `_validate_agent`, on a worker thread and hand the gate the
    answer (`AgentCheck`, keyed by the agent, the cwd it runs in and the app the
    gate settles on, the captured execution's app winning over the caller's); a
-   synchronous caller validates inline.
-4. Memory floor (`spawn_min_memory_gb`, what must remain after the start's price;
-   see *Memory guard*) and posture gate (`admission_gate`,
-   `cached_admission_check`): with a persistent row, **defer** (row stays `queued`,
-   `next_run_at = now + admit_wait_secs`, pump wake-up armed, caller gets a
-   `queued` id); without one, refuse as before.
+   synchronous caller validates inline. The memory read's re-entry
+   (`MemoryReadPoint`) is handed the same answer.
+4. Memory floor (`spawn_min_memory_gb`, what must remain after the start's
+   price; see *Memory guard*): with a persistent row, **defer** (row stays
+   `queued`, `next_run_at = now + admit_wait_secs`, pump wake-up armed, caller
+   gets a `queued` id); without one, **queue** in the in-memory window, not
+   eligible until the same admit wait passes. The memory posture tier
+   (`resource_critical_gb`, `cached_admission_check`) is NOT consulted for
+   spawns: the floor equals it at defaults, so a host admission has filled to
+   the floor would read `critical` and hold every start at the line the floor
+   guarantees. Cron still defers its firings on posture (`agent.admission_gate`).
 5. Capacity / stagger gate, with the child reserve and the macOS kernel
    memory-pressure hold (see *Memory guard*): queue (persistent window/store-only
-   or restricted memory-only) or proceed. Then the **atomic
+   or restricted memory-only) or proceed. A start already waiting on the floor
+   (step 4, `low_memory`) is not also held: the floor's verdict outranks the
+   kernel's, and that wait carries no pressure clock. Then the **atomic
    claim** for persistent work (`admitted`, generation++). A row cancelled while it waited fails the
    claim here and is never started. A boundary-owned claim then revalidates its
    generation and cancellation authority. If that post-claim store step is
@@ -721,17 +790,17 @@ Admission order (`subagent_manager/admission/gate.py::spawn_impl`):
 `SubagentInfo.queued_reason` on the `queued` record they return — one of the
 kinds defined in the leaf module `kiro_crew.subagent_wait_reasons` (re-exported by
 `kiro_crew.subagent`; the channel command layer reads them from the leaf so it never
-imports `kiro_crew.subagent` at runtime): `QUEUED_REASON_LOW_MEMORY` /
-`QUEUED_REASON_POSTURE_CRITICAL` (step 4, with `queued_reason_detail` = the
-gate's own sentence, the same text the task store's `deferred` event records),
-`QUEUED_REASON_MEMORY_PRESSURE` (step 5 while the kernel pressure hold keeps the
-start, with its figure-free detail), `QUEUED_REASON_ADAPTIVE_CAP_ZERO` (step 5
-when the effective cap is 0) or `QUEUED_REASON_CONCURRENCY_LIMIT` (step 5
-otherwise: a taken slot or the stagger tick). The label is a report of a decision already
+imports `kiro_crew.subagent` at runtime): `QUEUED_REASON_LOW_MEMORY` (step 4,
+with `queued_reason_detail` = the gate's own sentence, the same text the task
+store's `deferred` event records), `QUEUED_REASON_MEMORY_PRESSURE` (step 5 while
+the kernel pressure hold keeps the start, with its figure-free detail),
+`QUEUED_REASON_ADAPTIVE_CAP_ZERO` (step 5 when the effective cap is 0) or
+`QUEUED_REASON_CONCURRENCY_LIMIT` (step 5 otherwise: a taken slot or the stagger
+tick). The label is a report of a decision already
 made; no gate reads it back. Two consumers:
 
 - The advisory `subagent_queued` lifecycle event (`_emit_queue_depth`) carries
-  `reason` and, for the low-memory and posture kinds, `available_gb` /
+  `reason` and, for the low-memory kind, `available_gb` /
   `required_gb` beside `queued`; the memory-pressure kind carries no figures.
   The label is remembered per parent (`_queue_wait`) so the drain's,
   the claim path's, the cancel paths' and the terminal reports' requests —
@@ -1956,13 +2025,20 @@ Specified in [taskq.md](taskq.md); this section is the manager's side of it.
   so a member `prepare_spawn` refuses is counted like any other refusal and
   `/api/spawn`'s `counted: true` is true for it; the `_store_accepted`
   re-entry and a drained row never count again. **The mutable policy gates
-  (memory identity, cwd allowlist, governance) run once per submission**: on
-  the first entry and again when the pump drains a stored row (the re-check
-  before dispatch). The `_store_accepted` re-entry skips them -- a refusal
-  AFTER the row was committed would leave executable work queued behind a
-  refusal the caller already saw. A drained row the pump refuses is marked
-  `failed` in the store in the same step (`_refuse_row` -> `taskq_fail`), so
-  the caller's verdict and the store's agree. Capacity is never a refusal for a
+  (cwd allowlist, governance, the parent spec's allowlist) run before
+  anything starts, after the commit and the memory read**: on the first
+  entry, on the second half of every memory read (the `_store_accepted`
+  row's included), and again when the pump drains a stored row (the re-check
+  before dispatch). Only the `_store_accepted` row's first pass skips them,
+  straight after `prepare_spawn` ran them: it never starts the run itself, it
+  stops at the memory read or leaves the row queued. The claim await
+  (`store.run(self.taskq_claim)`) is NOT re-vetted: its second half re-enters
+  with `_claimed` set, and the gates do not run again. That gap predates the
+  off-loop memory read. A refusal of a row that
+  already exists -- a committed `_store_accepted` row not yet claimed, or a
+  drained row -- marks it `failed` in the store in the same step
+  (`_refuse_row` -> `taskq_fail`), so the caller's verdict and the store's
+  agree and no refused work stays executable. Capacity is never a refusal for a
   committed row: a prevalidated app spawn (`_agent_prevalidated`, the SpawnSDK)
   that finds no slot queues like any other row, with the flag CLEARED in its
   queue entry so the drain re-validates the agent and re-proves app ownership
@@ -2168,9 +2244,9 @@ Specified in [taskq.md](taskq.md); this section is the manager's side of it.
   (tests, tools) pumps as soon as it can. The first refused pass logs one debug
   line naming the queue depth and store state, so a hold that is never released
   is visible instead of presenting as rows accepted but never claimed.
-- **Memory pressure defers.** See admission order step 4. SEL outcomes:
-  `deferred_low_memory` / `deferred_memory_critical` (store) vs the legacy
-  `refused_low_memory` / `refused_memory_critical`. The macOS kernel pressure
+- **Memory pressure defers.** See admission order step 4. SEL outcome:
+  `deferred_low_memory`, durable or not; no capacity outcome is a refusal
+  (`test_spawn_admission_verdict_census.py`). The macOS kernel pressure
   hold is a capacity-style wait (step 5), audited `deferred_memory_pressure`.
 - **Nested tree.** `taskq_accept` sets `parent_id` (and inherits `root_id`)
   when the spawning session is `subagent:<id>` and that id has a row, so the
@@ -2764,7 +2840,7 @@ awaiting-approval case it says to approve the run in the dashboard (Approvals) t
 start it rather than promising a transcript with the completion event.
 
 **An accepted spawn that has not started is `queued`, not "not found".** The gate
-may defer a spawn (memory floor, critical posture, adaptive cap at 0) or queue it
+may defer a spawn (memory floor, adaptive cap at 0) or queue it
 for a slot, and until the pump claims and registers it, its only record is a
 window entry or a task-store row. It has no `SubagentInfo` and no run folder.
 "Accepted, no run yet" has ONE definition, shared by the by-id read, the listing

@@ -20,7 +20,6 @@ from overload_fakes import Clock, mock_ctx, mock_sessions
 import kiro_crew.subagent as subagent_mod
 from kiro_crew.adaptive.controller import AdaptiveController, HostSample
 from kiro_crew.config.loader import KiroCrewConfig
-from kiro_crew.resource_status import POSTURE_AMPLE, AdmissionDecision
 from kiro_crew.subagent import (
     _UNLEARNED_DEDICATED_START_GB,
     SubagentInfo,
@@ -231,11 +230,6 @@ async def test_startup_cost_cannot_lower_enabled_floor_on_exhausted_cgroup(
         raising=False,
     )
     monkeypatch.setattr(subagent_mod, "_cgroup_available_gb", lambda: 0.0)
-    monkeypatch.setattr(
-        subagent_mod,
-        "cached_admission_check",
-        lambda: AdmissionDecision(admitted=True, posture=POSTURE_AMPLE, available_gb=32.0),
-    )
     mgr = SubagentManager(sessions=mock_sessions(), ctx_builder=mock_ctx(), max_concurrent=3)
     await asyncio.wait_for(mgr.wait_taskq_ready(), 5)
     mgr._spawn_stagger_secs = 0.0
@@ -319,13 +313,6 @@ async def test_delayed_dedicated_rss_does_not_spend_the_startup_reserve(
         return free >= min_gb, free
 
     monkeypatch.setattr(subagent_mod, "check_memory_available", memory_check)
-    # Keep the posture cache ample to exercise the absolute spawn guard even
-    # when the slower cached posture observation has not noticed the shock.
-    monkeypatch.setattr(
-        subagent_mod,
-        "cached_admission_check",
-        lambda: AdmissionDecision(admitted=True, posture=POSTURE_AMPLE, available_gb=24.0),
-    )
 
     async def worker(info: SubagentInfo) -> None:
         starts[info.id] = clock()

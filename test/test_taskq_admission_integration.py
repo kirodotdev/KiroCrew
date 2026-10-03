@@ -14,9 +14,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from overload_fakes import memory_critical, settle_store_writes
+from overload_fakes import settle_store_writes
 
-import kiro_crew.resource_status as resource_status
 import kiro_crew.subagent as subagent_mod
 from kiro_crew.dashboard import chat_utils
 from kiro_crew.subagent import SubagentInfo, SubagentManager
@@ -213,7 +212,7 @@ async def test_memory_pressure_defers_instead_of_refusing(
     # time and the STARTING assertion failed as ``'queued' == 'starting'``.
     # Leaving this block restores the fixture's healthy readings, not the host's.
     with monkeypatch.context() as pressure:
-        pressure.setattr(subagent_mod, "cached_admission_check", memory_critical)
+        pressure.setattr(subagent_mod, "check_memory_available", lambda *a, **k: (False, 0.5))
         with patch.object(SubagentManager, "_run", new=AsyncMock()):
             info = mgr.spawn("later", parent_session_key="dash:1")
         assert info is not None
@@ -248,7 +247,10 @@ async def test_low_memory_floor_defers_too(quiet, monkeypatch: pytest.MonkeyPatc
 
 
 @pytest.mark.asyncio
-async def test_without_store_pressure_still_refuses(quiet, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_without_store_pressure_queues_in_memory(
+    quiet, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No store to defer into is no reason to refuse: the window holds the start."""
     mgr = await _manager()
     mgr._taskq = None
     monkeypatch.setattr(
@@ -256,7 +258,10 @@ async def test_without_store_pressure_still_refuses(quiet, monkeypatch: pytest.M
     )
     with patch.object(SubagentManager, "_run", new=AsyncMock()):
         info = mgr.spawn("now", parent_session_key="dash:1")
-    assert info.done and "refused" in info.error
+    assert info.queued and not info.done and not info.error
+    assert info.queued_reason == "low_memory"
+    assert [p["_preassigned_id"] for p in mgr._queue] == [info.id]
+    assert info.id not in mgr._agents and mgr._running_count == 0
 
 
 # ── bounded window / drain from store ─────────────────────────────────────────
@@ -312,7 +317,11 @@ async def test_2000_submissions_all_complete_window_never_exceeds_64(quiet) -> N
     the Windows shard's ``--timeout=180`` would otherwise kill the worker, and
     with ``--max-worker-restart=0`` that is a lost run, not a named failure.
     """
-    mgr = await _manager(max_concurrent=8)
+    # Four slots, not eight: every start here is an unsettled dedicated one
+    # (the fake run is never sampled), so eight in flight would owe the floor
+    # plus eight unlearned starts -- more than the pinned 8 GB host has, and the
+    # burst would park behind the memory guard instead of draining. Four fit.
+    mgr = await _manager(max_concurrent=4)
     store: TaskStore = mgr._taskq
     assert store.window == 64
     peak_window = {"n": 0}
@@ -926,30 +935,18 @@ async def test_is_queued_follows_a_row_across_every_store_only_transition(quiet,
     assert mgr.is_queued(windowed.id) is True  # now named by _queue
 
 
-def _press_memory(pressure: pytest.MonkeyPatch, guard: str) -> None:
-    """Make the next admission defer: the posture guard or the low-memory floor."""
-    if guard == "posture":
-        pressure.setattr(
-            subagent_mod,
-            "cached_admission_check",
-            lambda: resource_status.AdmissionDecision(
-                admitted=False,
-                posture=resource_status.POSTURE_CRITICAL,
-                available_gb=0.5,
-                reason="host memory critically low",
-            ),
-        )
-    else:
-        pressure.setattr(
-            subagent_mod, "check_memory_available", lambda min_gb=None, path=None: (False, 0.2)
-        )
+def _press_memory(pressure: pytest.MonkeyPatch) -> None:
+    """Make the next admission defer: the low-memory floor. Spawns do not read
+    the posture tier, so the floor is the only memory guard that defers one."""
+    pressure.setattr(
+        subagent_mod, "check_memory_available", lambda min_gb=None, path=None: (False, 0.2)
+    )
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("guard", ["posture", "low_memory"])
 @pytest.mark.parametrize("via_async", [False, True])
 async def test_is_queued_holds_for_a_spawn_deferred_at_accept(
-    quiet, monkeypatch: pytest.MonkeyPatch, guard: str, via_async: bool
+    quiet, monkeypatch: pytest.MonkeyPatch, via_async: bool
 ) -> None:
     """A pressure deferral at accept (the gate's ``_deferred``) leaves the row
     QUEUED on disk with no window entry and no ``_agents`` row. That holds for
@@ -957,7 +954,7 @@ async def test_is_queued_holds_for_a_spawn_deferred_at_accept(
     done-probe must keep the caller's serial guard for it."""
     mgr = await _manager()
     with monkeypatch.context() as pressure:
-        _press_memory(pressure, guard)
+        _press_memory(pressure)
         with patch.object(SubagentManager, "_run", new=AsyncMock()):
             if via_async:
                 info = await mgr.spawn_async("later", parent_session_key="dash:1")
@@ -981,7 +978,7 @@ async def test_is_queued_holds_for_a_row_deferred_at_drain_time(
     assert [p["_preassigned_id"] for p in mgr._queue] == [waiting.id]
     mgr._running_count = 0  # the slot frees; the next pass picks the row
     with monkeypatch.context() as pressure:
-        _press_memory(pressure, "posture")
+        _press_memory(pressure)
         with patch.object(SubagentManager, "_run", new=AsyncMock()):
             await mgr._drain_queue_pass()
             await _settle(mgr._taskq)
