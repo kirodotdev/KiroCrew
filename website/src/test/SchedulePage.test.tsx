@@ -612,6 +612,39 @@ describe('SchedulePage job detail dialog', () => {
     expect(await screen.findByDisplayValue('Nightly report')).toBeInTheDocument()
   })
 
+  it('?job=<id> opens that job\'s detail once the list loads (the Crewmate Profile link)', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api).crons.mockResolvedValue({ jobs: [mkJob({ id: 'job-7', name: 'Linked job' })] })
+
+    renderWithProviders(<SchedulePage />, { route: '/schedule?job=job-7' })
+    expect(await screen.findByRole('dialog')).toBeInTheDocument()
+    expect(await screen.findByDisplayValue('Linked job')).toBeInTheDocument()
+  })
+
+  it('keeps ?job=<id> through a failed first load so Retry can still open it', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api).crons
+      .mockReset()
+      .mockRejectedValueOnce(new Error('first load failed'))
+      .mockResolvedValue({ jobs: [mkJob({ id: 'job-7', name: 'Linked job' })] })
+
+    renderWithProviders(<SchedulePage />, { route: '/schedule?job=job-7' })
+    expect(await screen.findByText('first load failed')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+
+    expect(await screen.findByRole('dialog')).toBeInTheDocument()
+    expect(await screen.findByDisplayValue('Linked job')).toBeInTheDocument()
+  })
+
+  it('?job=<unknown id> lands on the list with no dialog', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api).crons.mockResolvedValue({ jobs: [mkJob()] })
+
+    renderWithProviders(<SchedulePage />, { route: '/schedule?job=gone' })
+    await waitFor(() => expect(screen.getByText('Nightly report')).toBeInTheDocument())
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
   it('keeps the job selected after the dialog is dismissed, so the Executions filter survives', async () => {
     // The detail view was a side panel that could stay open beside the
     // Executions table; as a modal it cannot, so the job selection is held in

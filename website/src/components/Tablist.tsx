@@ -65,6 +65,11 @@ interface Props<T extends string = string> {
   /** Distinguishes this rail's sliding indicator from another one on the same
    *  page — two rails sharing an id animate into each other. */
   layoutId?: string
+  /** `active`: only the SELECTED tab shows its label; the others are their icon
+   *  alone (the label stays in the tooltip and the accessible name). For a rail
+   *  in a narrow column whose tabs all carry icons — the crewmate profile card.
+   *  Default `always`. */
+  labels?: 'always' | 'active'
 }
 
 /** Next enabled index in `dir`, wrapping. Disabled tabs are skipped rather than
@@ -100,6 +105,7 @@ export default function Tablist<T extends string = string>({
   onChange,
   ariaLabel,
   layoutId = 'tablist-indicator',
+  labels = 'always',
 }: Props<T>) {
   const reduceMotion = useReducedMotion()
   const refs = useRef<Array<HTMLButtonElement | null>>([])
@@ -165,7 +171,11 @@ export default function Tablist<T extends string = string>({
               />
             )}
             {tab.icon}
-            <span className="whitespace-nowrap">{tab.label}</span>
+            {labels === 'always' || isActive ? (
+              <span className="whitespace-nowrap">{tab.label}</span>
+            ) : (
+              <span className="sr-only">{tab.label}</span>
+            )}
             {(tab.count ?? 0) > 0 && (
               <span
                 className={`${TABS_COUNT_BASE_CLASS} ${isActive ? 'text-accent/60' : 'text-muted/40'}`}

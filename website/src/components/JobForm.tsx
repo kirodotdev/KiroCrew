@@ -31,12 +31,13 @@ const CRON_DOW_TO_GRID: Record<number, number> = { 1: 1, 2: 2, 3: 3, 4: 4, 5: 5,
  * greyed-out control asks to be re-enabled; a value does not. Shrink-wrapped
  * so it cannot read as an editable input among the real ones, and the hint
  * says WHY it is fixed, replacing the picker's own hint line. */
-function LockedAgentValue({ name, member }: { name: string; member?: boolean }) {
+function LockedAgentValue({ name, member, hint: hostHint }: { name: string; member?: boolean; hint?: string }) {
   // The hint names the thing the HOST calls it. A member surface says "member"
   // throughout, so a hint saying "crew" there made one binding read as two — the
   // blind reader could not tell whether member, crew and agent were one thing or
-  // three. Same sentence, the noun the reader already has.
-  const hint = i18nT(member
+  // three. Same sentence, the noun the reader already has. A host with a third
+  // noun (the crewmate Profile card) hands the whole sentence in.
+  const hint = hostHint || i18nT(member
     ? 'components.jobForm.member_pinned_hint'
     : 'components.jobForm.agent_pinned_hint')
   return (
@@ -220,6 +221,10 @@ interface Props {
    *  from `memberId`: every crew passes `memberId` for identity, so deriving
    *  flipped the crew editor's wording to "member" for plain agents. */
   memberNoun?: boolean
+  /** The pinned-value hint, written by the host, for a surface whose noun is
+   *  neither "crew" nor "member" — the crewmate Profile card's pushed New
+   *  schedule page says "crewmate" throughout. Wins over `memberNoun`. */
+  lockedAgentHint?: string
   providerAgent?: string
   onSaved: () => void
   /** Vertical layout for side panel, horizontal for inline create */
@@ -257,7 +262,7 @@ interface Props {
   onDirtyChange?: (dirty: boolean) => void
 }
 
-export default function JobForm({ job, prefill, agents, defaultAgent, rosterFailure, lockedAgent, memberId, memberNoun, providerAgent, onSaved, layout = 'horizontal', externalSubmit, submitRef, onSavingChange, onSubmitError, onDirtyChange }: Props) {
+export default function JobForm({ job, prefill, agents, defaultAgent, rosterFailure, lockedAgent, memberId, memberNoun, lockedAgentHint, providerAgent, onSaved, layout = 'horizontal', externalSubmit, submitRef, onSavingChange, onSubmitError, onDirtyChange }: Props) {
   // "" and undefined both mean unlocked, so render and submit share one truth.
   const boundMember = job?.member_id || memberId
   const privateMember = !!boundMember && boundMember !== 'default'
@@ -570,7 +575,7 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
           <Input placeholder={i18nT('components.jobForm.job_name')} value={name} onChange={e => setName(e.target.value)} />
           <Input placeholder={i18nT('components.jobForm.message_task')} style={{ flex: 2 }} value={msg} onChange={e => setMsg(e.target.value)} />
           {locked
-            ? <LockedAgentValue name={locked} member={memberNoun} />
+            ? <LockedAgentValue name={locked} member={memberNoun} hint={lockedAgentHint} />
             : <AgentSelector agents={agents} defaultAgent={defaultAgent} value={agent} onChange={(name) => setAgent(name)} rosterFailure={rosterFailure} groupByKind modal />}
           <SimpleSelect
             options={modelOptions.values}
@@ -668,7 +673,7 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
         <div className="flex flex-col gap-1">
           <span className="text-[12px] text-muted font-medium">{i18nT('components.jobForm.agent')}</span>
           {locked
-            ? <LockedAgentValue name={locked} member={memberNoun} />
+            ? <LockedAgentValue name={locked} member={memberNoun} hint={lockedAgentHint} />
             : (<>
               <span className="text-[11px] text-muted/70">{i18nT('components.jobForm.which_agent_handles_this_job_leave_default_for_t')}</span>
               <AgentSelector agents={agents} defaultAgent={defaultAgent} value={agent} onChange={(name) => setAgent(name)} rosterFailure={rosterFailure} groupByKind modal />

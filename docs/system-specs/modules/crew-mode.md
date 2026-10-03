@@ -836,9 +836,9 @@ store read, and a link to another session remains a conflict.
 
 The member's presence indicator includes active child runs even while its own
 turn is idle. Completion of the member's planning turn does not imply its
-delegated work has finished. When only child runs are active, the Work log
-tab's status line says "Delegated work running". Driving sessions still lists dashboard
-sessions created by the member; child runs do not become dashboard sessions.
+delegated work has finished. The roster presence indicator remains active while
+only child runs remain. Profile Sessions still lists dashboard sessions created
+by the member; child runs do not become dashboard sessions.
 
 Facts, rules and experiences all support correction and explicit forgetting.
 Experience correction keeps the same record identity and provenance. A store
@@ -854,7 +854,7 @@ the provider template. A legacy schedule carrying only `agent_id` stays in Globa
 Memory V1 even when that string matches a member alias. The editor lists private
 member jobs by exact `member_id`, and an existing job's member is immutable.
 Legacy jobs retain their previous template/sequence display attribution and show
-Global Memory V1 in the member's Schedules pane. Displaying an old schedule there
+Global Memory V1 in the member's Profile Schedules pane. Displaying an old schedule there
 does not migrate it or grant access to that member's member store.
 
 `resolve_effective_model` is the single source of truth for what model a new
@@ -867,324 +867,295 @@ The loader is defensive about hand-edited config: a non-string `model` or
 `triggers` collapses to `""`, an unknown `reasoning_effort` collapses to inherit,
 and a junk watchdog override collapses to `0`.
 
-### Crewmate panel: Dashboard, Work log, Notes, Schedules
+### Crewmate conversation layout: switcher, Profile, Dashboard, Files
 
-The Crewmates page's right panel has exactly four host tabs, in this order:
-**Dashboard**, **Work log**, **Notes**, **Schedules** (`CREW_PANEL_TAB_IDS`). The
-fourth is the section 06 amendment of 2026-09-29 (CREW-18721) in
-`docs/request-for-change/rfc-crewmates-launch.md`, which also records that create
-is available wherever a crewmate's schedules are shown, and it stays last for that
-amendment's own reason: it is the one tab that writes.
+When a crewmate conversation is open, the standing roster is hidden at every
+desktop width and the thread receives that space. `CrewmateSwitcher` replaces it
+in the thread header: the closed Glass chip stacks up to three faces plus the
+roster count; its popover searches every crewmate, marks the current one, switches
+the thread through the existing verified `openMember` path, and opens the same
+`NewCrewmateDialog` as the roster's create entry. The stacked faces are the OTHER
+crewmates' in roster order — the open crewmate's face is already the identity
+pill beside the chip, and a second copy there read as a duplicate rather than as
+the rest of the crew; it joins the stack only when it is the whole roster, so the
+chip never draws empty. Below `md`, the roster remains the first level and the
+thread's Back control returns to it.
 
-The FIRST of them is also the default focus -- `usePanelTabs` opens a strip with no
-stored focus on `leadingIds[0]` -- so the order and the landing are one fact rather
-than two settings that can disagree. The order is how much of each tab is
-addressed to the person reading it: Dashboard is what the crewmate publishes for
-them, Work log is what it did, Notes is the crewmate's own working memory. Notes
-led until 2026-09-30, which meant opening a crewmate showed first the one tab
-written by the agent for itself and the only one the dashboard cannot change (the
-RFC's amendment of that date carries the decision). It moved off the front rather
-than to the end, because Schedules already held the end on its own grounds. A
-STORED focus still wins: the default applies only to a bucket that has none, so
-someone who was reading a crewmate's notes comes back to them.
+The switcher lists crewmates only. Team headers (and the team view they open),
+**New team**, the per-crew star, the filters and the sort live on the roster
+column, and on desktop nothing else reaches them once a DM is open (the Back
+control is `md:hidden` and a bare `/members` reopens a crewmate). So the
+popover's footer carries a second action beside **New crewmate**: **Show the
+full roster** (`roster_show`) pins the roster column back beside the thread —
+page state (`rosterPinned`), not persisted, since the folded roster is the
+desktop norm and a pin is a detour from it. While pinned the aside is `hidden
+md:flex` (still folded below `md`, where Back is the way), it reserves its width
+again for `panelSitsBeside`, its resize handle returns, and the same footer
+action reads **Hide the roster** (`roster_hide`). Picking a row from the pinned
+roster switches the thread and keeps the pin, and the roster header carries its
+own close control (`member-roster-hide`, `md+` only, shown only while pinned
+beside a thread) that lifts it. A TEAM view is not folded: `TeamView` draws no
+switcher and its Back is `md:hidden`, so on desktop the roster column is the only
+way out of `/members?team=<id>`, and the aside is `hidden md:flex` there whether
+or not the pin is set (the pre-switcher behaviour); the pin's close is withheld in
+a team view because lifting the pin would change nothing on screen. A failed
+post-create roster re-read with no crewmate open also keeps the aside `hidden
+md:flex`: `rosterShown` reserves its desktop width, so hiding the aside there
+would leave a blank reserved column beside the retry notice. The roster column
+carries roster-read, patrol-registry, default-crewmate, team-read, and roster
+action failure notices. While a DM folds that column away, the visible main
+column repeats those notices above the thread; those copies withhold the agent
+hand-off because Profile may hold an unsaved schedule draft. Pinning the roster
+back hides the duplicate main-column copies at `md+`. The team pane separately
+repeats roster-read and team-read failures where the roster column is not on
+screen — below `md` — and the pane's copy is `md:hidden`, exactly the column's
+own hidden range.
 
-That default is resolved on READ and never written. `syncPinned` leaves a strip
-that has host leading tabs unfocused rather than persisting its own fallback,
-because a derived value in storage outlives its derivation: whichever tab led on
-the build that first opened a strip would otherwise stay that strip's focus for
-good, so changing which tab a surface opens on would reach only the strips nobody
-had ever opened.
+Because a bare `/members` reopens a crewmate, the folded roster is the desktop
+norm, so the switcher also carries the live per-crewmate signals the roster column
+used to. The page hands it the same `signalsOf` resolver its roster status filters
+read (`MemberSignals`: running / needsYou / unread / patrolling), so a cue here can
+never disagree with the filter that counts it. Each popover row shows the roster
+row's own cues — the `ok` presence dot on the face while working (named by the
+row's "Working" line), the accent unread dot on the right edge — plus a `warn`
+needs-you dot for a turn parked on an approval or a question; the two right-edge
+dots are named images, so the state is in the option's accessible name, and both
+labels reuse existing catalog keys (`filter_status_needs_you`, `unread_message`).
+Each right-edge dot also carries its state as a small muted word beside it
+(`team_needs_you` "Needs you", `switcher_unread` "Unread"): colour alone is not a
+state every reader can tell apart. The word is `aria-hidden`, because the named
+dot already puts the fuller sentence in the option's name and a spoken word
+would say it twice.
+The closed chip shows a small `warn` needs-you dot over the face stack, and adds
+that label to its accessible name, only while a crewmate OTHER than the open one
+needs you: the open crewmate's parked turn is already on screen in its thread.
+The dot is absolutely placed, so the chip's width is the same with and without it.
+Working and unread elsewhere never light the chip. With no resolver passed, a row
+shows only its own `running` flag and the chip stays quiet. The full roster's rows
+(`MemberRow`, shown while pinned or with no thread open) carry the same needs-you
+cue on their right edge, leading the unread dot — the same `warn` named dot plus
+the same `aria-hidden` word, read through the same `signalsOf` resolver
+(`isNeedsYou`) — so the full roster, the folded switcher and the status filter
+never disagree about who is parked on a question.
 
-A strip whose bucket an EARLIER build already gave a leading-tab focus keeps it,
-and that is deliberate. Once stored, such a focus is byte-identical whether the
-reconcile derived it or the person clicked that chip, so nothing in storage can
-tell the two apart, and clearing it on a guess would throw away a choice someone
-made. The consequence is stated rather than worked around: on a browser that had
-already opened a given crewmate before this change, that crewmate's panel still
-opens on Notes until the person selects another tab once, which stores their own
-choice. Every strip opened for the first time after this change gets the
-Dashboard default, and no strip acquires a derived focus again.
+The centred identity pill opens `CrewProfilePanel`, not the editor. It ends in a
+small `ChevronRight` (decorative, `aria-hidden`): the one visible sign that this
+Glass chip is a door, since the switcher chip beside it is another Glass chip
+with faces in it. The pill is a toggle, as its `aria-expanded` says: with Profile
+already open a press CLOSES it through the same schedule-draft guard as the
+card's own close control (`requestCloseProfile`). It must not re-open on the
+Profile tab: `profile.tab` is part of the card's React key, so a card opened on
+another tab (the quiet-chat Sessions link) would be remounted and a New schedule
+draft inside it destroyed with no question asked. Pointer users rarely reach the
+pill under the floating card's scrim; keyboard users reach it every time. The
+pill's title row is the display name plus the exact ID in mono when a label
+covers it; a label that differs from the ID only in case ("Kiro" over `kiro`)
+covers nothing, so the ID line is withheld and the ID rides the name's `title`
+(the agent-ID tooltip) instead. When
+the chat
+SidePanel is closed on a non-phone viewport, Profile takes a 34%-of-row in-flow
+column and narrows the thread. On phones it always floats over the thread: the
+composed column is wider than a 320px viewport and must never be added there. The
+pill unmounts in the non-phone column state and its `CrewStateAvatar` shares a Framer
+Motion `layoutId` with the card's head avatar: one face moves from the pill to the
+card rather than two faces cross-fading. Opening SidePanel collapses that Profile
+column and restores the pill. If SidePanel is already open, or the viewport is a
+phone, the pill opens Profile as a full-height, rounded hover card centred
+horizontally in the chat width the open SidePanel leaves; both surfaces remain
+visible. The card matches SidePanel's vertical bounds but is not a SidePanel tab
+or a second panel. Escape is handled on the card subtree, not the window, so it
+cannot close Profile from the roster switcher or another composer. While a
+pushed page is open, the covered tab subtree is both `aria-hidden` and `inert`,
+so keyboard focus cannot reach controls behind the pushed page. Pushing About or
+Notes moves focus to the back control (New schedule focuses its own form), so
+Escape still pops the page, and popping returns focus to the control that opened it.
 
-**Notes** renders the crewmate's self-maintained briefing
-(`members/<slug>/briefing.md`) read-only, as markdown, through
-`GET /api/members/{slug}/briefing?member=<name>`. The response carries `slug`,
-`member` (the exact name echoed back — the slug is lossy, so the frontend keys
-its cache by name), `supported`, `text`, `updated_ts` (the file's mtime in epoch
-seconds, `null` when there is no file), `redacted` and `truncated`. `text` is
-`""` and `updated_ts` is `null` for a crewmate that has not written notes yet;
-that is the normal state, never a 404. `supported` is
-`member_briefing_supported()`: on a platform without `O_NOFOLLOW` plus the
-pinned ancestor walk the read fails closed to `""` and the panel says the notes
-cannot be read on this computer instead of showing an empty briefing.
+Placement is decided when the card opens, and two things revisit it. A window
+that crosses below `md` while the card holds its column re-places it as the
+floating card — kept open, not dropped — so no fixed-width aside stands on a
+phone-width viewport; the two placements are different subtrees, so the move
+remounts the card body, and with a typed Schedules draft at stake the column is
+kept instead (the same call the cross-tab SidePanel reveal makes: a misplaced
+column beats a draft discarded with no question). And the card is about the open
+crewmate: whenever `activeName` changes — a crewmate switch, a team open, the
+phone's Back, a bare `/members` — `profile` is cleared, with no guard of its own,
+because every one of those exits already asked the Schedules draft question
+before changing the crewmate. Without that clear the card popped open by itself
+over the next crewmate, on the previous crewmate's tab (the card is keyed on
+name + requested tab + accepted-open nonce).
 
-A line above the body names whose notes these are and says the tab does not
-change them ("<name> writes these notes for itself as it works. You can read them
-here, but not change them."). It is rendered in EVERY state — loading, empty,
-refused, failed, content — because it describes the tab and not the read, so a
-reader never arrives at this text without knowing who wrote it. The empty state is
-one line for the same reason: the sentence that used to sit under it, saying a
-crewmate keeps its own notes here as it works, is now the always-present line
-above.
+Profile uses the shared `Tablist` component with `labels="active"`: all four tabs
+carry Lucide icons and accessible labels, while only the selected tab paints its
+word. The tabs are **Profile**, **Schedules**, **Sessions**, and **Goals**. No
+tab carries a count, and there is no placeholder tab for a view that does not
+exist yet.
 
-The panel offers NO editor for the file, and the response carries no file
-pointer. The file is agent-written; the dashboard's file viewer reads through
-`/api/file-read`, which redacts, and its Save writes the buffer back, so any
-in-dashboard edit could replace a secret the crewmate wrote in the meantime
-with its placeholder — and a read-time "safe to edit" verdict cannot close that
-window, because the viewer re-reads on open and on its live watch. The notes
-are changed where the crewmate keeps them, outside the dashboard.
+**Profile** shows only the face and name in its head. Its body carries the crew
+description (two lines with a pushed full-text page); when the registry read fails,
+the About section shows the shared actionable `ErrorNotice` above any retained
+description, and only omits the no-description claim when no cached description
+exists. Memory and
+Workspace sit side by side, but Memory is a flat readout — a solid `border-border`
+hairline, transparent background, no hover and no pointer; never dashed, which is
+this card's empty / coming-soon language (Sessions empty, Goals) and would make a
+set binding read as not set up — while Workspace keeps the filled clickable-card
+treatment with its hover. Notes, Permissions, and Model follow.
+The pencil, Permissions, and Model entries open the existing `CrewEditorDialog`;
+the card introduces no configuration writer. Memory is a non-interactive binding
+readout — it never opens the unrelated generated Dashboard. The Workspace tile's
+label is the crew record's `workspace` field shown as-is: that field is the
+configured workspace's NAME (a key into the workspaces list, `default` for most
+crewmates), not a directory, so no folder name is taken off it. Workspace opens
+SidePanel Files, and Files / Terminal are rooted in `projectDir` = the live DM
+slot's `project` — the directory the backend resolved that name to when it opened
+the member slot (`default_project_dir`) — never in the name itself, which rooted
+them in a folder literally called `default`. When Profile occupies its docked
+column, an accepted Workspace navigation closes that card before revealing
+Files; otherwise the card and side panel would both remain docked, and the
+schedule draft whose discard was just accepted would stay mounted. A floating
+Profile remains mounted because Files opens beside it, so Workspace from a
+floating card never asks the Schedules draft question: that question belongs
+only to an exit that unmounts the card, and asking it there let "keep my draft"
+block Files for a draft that was never at risk. The Notes row's sub-line says what
+tells it apart from the Memory tile beside it ("Its own working notes ·
+read-only"), since "Private to this crewmate" and "What it keeps in mind" read as
+one thing.
 
-The text is the bounded buffer of `read_member_briefing_bounded`, redacted
-through the same chain as the activity endpoint (`redact_exfiltration_urls`,
-then `redact_credentials`) because the file is agent-written, and only THEN cut
-at `MEMBER_BRIEFING_MAX_CHARS` with the visible marker (`cap_member_briefing`,
-`drop_split_tail=True`): a redaction over already-capped text cannot match a
-token the cap split in two, so the plaintext half would cross the wire
-unmatched, and the cut also drops a trailing split word so the shown text never
-ends in the first half of a token (the bounded read has an edge of its own).
-The cut is judged on the REDACTED length, so a briefing that only overflowed
-before its placeholders shrank it is shown whole, with no marker. The prompt
-path (`read_member_briefing`) composes the same two functions with the plain
-cut. The read treats `members/<slug>` LEXICALLY: `read_member_briefing_bounded`
-resolves the members root once and appends the slug unresolved, so the pinned
-walk opens that component with `O_NOFOLLOW` and a `members/<slug>` swapped for
-a symlink to a peer's directory is refused (it reads as no notes) instead of
-being followed by `member_dir`'s `resolve()` before the walk begins — this is
-the reader the prompt path uses too, so the crewmate's own context is built
-from the same refusal. The mtime comes from the same pinned open as the text,
-never a separate `lstat`, so `updated_ts` is `null` exactly when the text reads
-as none (unsupported platform included).
+**Notes** is a pushed page inside Profile and renders the crewmate's self-maintained
+briefing (`members/<slug>/briefing.md`) read-only, as markdown, through
+`GET /api/members/{slug}/briefing?member=<name>`. It shows no repeated identity
+row: the pushed-page bar already names the crewmate and Notes. A line above the
+body, rendered in every state, says the crewmate writes these notes for itself
+and that they can be read here but not changed. The response carries
+`slug`, exact `member`, `supported`, `text`, `updated_ts`, `redacted`, and
+`truncated`. Empty text plus a null timestamp is the normal no-notes state.
+Unsupported platforms fail closed and say that notes cannot be read on this
+computer.
 
-App-token callers are denied exactly as on every other member surface, and the
-read is owner-gated like the rules read (`require_owner_dashboard_request`,
-before any validation or file IO): the briefing is the owner's private notes,
-and a `!dashboard` session minted by another allowed user must not see them.
-The exact `member` must derive the slug, exist, and be the ONLY crew that
-derives it (the rules endpoint's posture): the briefing is one file per slug,
-so for a colliding slug the notes belong to neither crewmate and the read
-answers 409 `briefing_slug_ambiguous`, which the panel renders as a plain
-sentence naming the fix (rename one of the two); 400 `member_slug_mismatch` and
-404 `member_not_found` cover the other two mismatches. `redacted` says a
-placeholder replaced a secret in the text; `truncated` (the second value of
-`cap_member_briefing`, not a marker-text check) says the marker stands in for
-the tail. The panel says either in a visible line above the notes — a
-placeholder with no reason reads as the crewmate's own words, and a tooltip
-reaches neither keyboard nor touch. A successful read leaves a SEL row
-(`members.briefing.read`, outcome `allowed`, `slug=<slug>`), the rules read's
-posture: who read a crewmate's private notes is as much a fact of record as
-who was refused.
+The briefing has no dashboard editor or file pointer. Its bounded reader redacts
+exfiltration URLs and credentials before applying `MEMBER_BRIEFING_MAX_CHARS`,
+then drops a split tail. The prompt path composes the same helpers. The read opens
+the unresolved `members/<slug>` component through the pinned `O_NOFOLLOW` walk,
+so replacing a member directory with a symlink cannot redirect the read. The exact
+member must derive the slug, exist, and be the only crew deriving it; a collision
+returns `409 briefing_slug_ambiguous`. Redaction and truncation are visible lines,
+not tooltips. Owner gating, app-token denial, and the `members.briefing.read` SEL
+record are unchanged.
 
-**Work log** is the live status line, the today / 7-day counters and recent
-activity from `/activity`, the sessions the crewmate is driving, the
-auto-patrol status, and the DM thread's own Crew Log record under the heading
-"This conversation" — named for the thread, so it is not read as one of the
-driven sessions listed above it.
+**Schedules** first shows the next enabled wake, then one `CrewScheduleList` row
+per schedule attributed to this crewmate. Each row states its name, active/paused/
+running state, cadence, previous run, result, and next run. A failed list read
+shows an actionable `ErrorNotice` above any retained rows instead of replacing
+them. A failed previous run remains an inline row status and also produces one
+shared actionable notice below the list, outside the row buttons. It carries no
+strip badge. A row
+opens that job's detail on `/schedule?job=<id>` (edit, pause, run live there);
+the explicit `Open Schedule` footer opens `/schedule`. `New
+schedule` pushes the existing
+`CrewWakeSection` create pane into Profile with its form already open, so the
+single New schedule action lands directly on the requested task. The pane is
+mounted `chromeless` there: the pushed page's bar already says "New schedule" and
+holds the one Back control, so the section withholds its own heading row (the
+"What wakes this crewmate" title, the New / Cancel toggle and Open Schedule) —
+two titles and two close controls stacked on one short page read as two things to
+dismiss. Back is the one exit and still runs the draft guard. With no toggle to
+return focus to, the collapse after a save lands focus on the section itself
+(`tabIndex={-1}`, script-focusable only) rather than letting it fall to the body.
+The form's
+pinned-crew hint is the host's sentence here too (`pinnedHint` →
+`JobForm.lockedAgentHint`, `schedules_pinned_hint`: "Created from this crewmate's
+profile, so the job runs as this crewmate"), like the section's `heading` /
+`blurb` / `emptyLine`: the editor's own copy still names the crew editor, and only
+the editor shows it. Attribution,
+validation, and the write path are shared with the crew editor rather than copied.
 
-**Dashboard** is the single dashboard entrance for the crewmate. As the landing
-tab it is on screen for the whole window in which the thread POST is still out,
-so its "Opening the conversation" line is withheld while the main column is
-already showing that same sentence (`activeSlot` unset, no pane to render): two
-surfaces said it at once, one of them a live region. With a cached thread up
-beside it the panel's line is the only one, and it is the honest state -- this
-body cannot bind until the POST confirms.
+A private schedule's `member_id` is the crewmate's immutable slug; `agent` and
+`agent_sequence` remain display-name fields. `wakesCrew` therefore receives both
+slug and name. A schedule with neither a `member_id` nor a bound agent/sequence is
+owned by no crewmate and stays only on `/schedule`, including for the default
+crew. `ownedOnly` suppresses only that fallback; legacy name-attributed schedules
+still list. The Profile surface never needs to read which crew is default.
 
-The panel's MOUNT HOLD protects an unsaved answer: a pending question's draft
-lives only in `QuestionCard`'s own state and the command centre's panel-local
-`drafts`, so a body that unmounts takes the typed text with it, and the panel's
-own comments promise the opposite. It comes in two parts. `keepMounted` on the
-Dashboard leading tab is armed whenever that tab has been on screen for this
-crewmate, landing on it included, so a TAB SWITCH keeps the body. The
-`hasTaskDashboard` term of `shouldMountSidePanel`, which keeps the whole panel
-mounted while hidden, follows the DRAFT: `CommandCenterPanel` reports whether it
-is holding one (`onDraftStateChange`), and the page holds its panel on that alone.
-Nothing outside that subtree can see the draft, which is why it is reported rather
-than inferred; the report is also fired `false` on unmount, so a panel that is
-gone cannot go on holding one open.
+The pushed create pane reports dirty and saving state through `CrewWakeSection`.
+Profile close, pushed-page Back, a local SidePanel reveal that folds Profile,
+the quiet-chat link to Profile Sessions, switching crewmates, opening a team,
+session navigation, route navigation, browser Back, and unload all use the
+page's existing schedule guard. Cancel keeps Profile and its draft mounted. A
+SidePanel hide (including the panel chord and overlay scrim), a transcript file
+open, and a Side Chat switch do not ask: all three leave the separate Profile
+card mounted, so no draft is at risk. A SidePanel reveal received from another
+browser tab cannot be declined, so it leaves a dirty Profile column mounted
+instead of dropping the draft; without a draft it keeps the ordinary
+fold-to-pill behavior. A save in flight refuses an exit that would unmount
+Profile. A typed draft asks once; accepted discard releases only that exit. Side
+Chat remains a dynamic tab, and **Ask about this** keeps its synchronous
+contract: it focuses Side Chat and returns true while the Profile draft remains
+mounted.
 
-What is reported is tracked SEPARATELY from the `drafts` map that stops a card
-being auto-retired, because the two rules differ on blocking questions. Retention
-is limited to stateless `card_id` cards: retaining a blocking `ask_id` card would
-resurrect one whose authority the live list owns. The report is not, since a
-blocking ask's answer is typed into the same way and is lost the same way. Read
-off the retention map it claimed no draft at all for a blocking ask, so the host
-released the panel and the typed answer went with the unmount.
+**Sessions** lists only live dashboard sessions whose `created_by` is the
+crewmate's DM slot. Rows use the shared status precedence (approval, question,
+running, idle), link to that session through the page's guarded session exit,
+preserve stable ordering while the set is unchanged, and fold after five rows.
+Child subagent runs remain presence for the roster but are not dashboard
+sessions. Every page-level request to open Profile — including a second use of
+the quiet-chat Sessions link after the reader changed card tabs or pushed a
+page — advances the Profile open nonce and remounts the card at the requested
+initial tab. The nonce advances only inside the action admitted by the schedule
+draft guard, so a veto neither remounts the card nor loses its pushed form.
 
-Two narrower rules were tried first and each broke something, which is why the
-report exists. Holding whenever the tab had been on screen held the panel for
-every crewmate -- Dashboard being the landing tab -- and kept every OTHER leading
-body alive behind the hidden panel, so a Schedules draft the person had explicitly
-DISCARDED came back on the next open. Holding only while Dashboard was the ACTIVE
-tab fixed that and lost the answer whenever someone typed, left the tab and then
-closed the panel.
+**Goals** is a coming-soon placeholder with no input. Goals need a record the
+crewmate can read and act on; a browser-local list it never sees would promise
+the opposite, so none is offered until that record exists.
 
-The mount hold answers a tab switch and a panel close, and CANNOT answer an exit that
-destroys the subtree under it: `CommandCenterPanel` is keyed on the crewmate, so a
-switch to another crewmate remounts it, and the page belongs to a route. Those exits
-CONFIRM instead, through a second guard pair beside the Schedules one
-(`subtreeAtStakeRef` / `subtreeGuardRef`, the tab-level question OR the Dashboard one):
-the crewmate switch, a team header row, the narrow-window Back, opening one of the
-crewmate's sessions on `/chat`, the registered navigation leave guard (which is what the
-sidebar, the command palette and the header identity pill all ask), the published
-navigation stake for the browser's own Back, and `beforeunload` for a reload. Typing an
-answer and clicking another crewmate in the same roster discarded it silently, with the
-answer living nowhere but component state and no recovery path.
+The chat SidePanel has two standing entries on this page: the leading
+**Dashboard** tab and pinned **Files**. Dashboard is the crewmate's generated HTML
+report (`GET /api/members/{slug}/panel?member=<exact-name>`) rendered by
+`CrewDashboardFrame`: the full document fills the tab, minted on mount, with no
+summary card, Contained bar, Expand control, identity row or Command Center
+around it. It shares the drawer's read (`member-panel` query keyed on slug and
+exact member), its `CREW_WEBVIEW_SANDBOX` (`allow-scripts` only), and its
+single-use mint rule; the `CrewWebview` drawer itself is unchanged. Its
+"Opening the conversation" line is withheld while the main column already says
+it (`activeSlot` unset), so two live regions never say it at once. The tab is a
+standing entry whatever `PREVIEW_DASHBOARD` says: that preview gates the Dynamic
+Dashboard (the Command Center and its in-chat dock), but the crewmate's own
+published page is not that surface. This page never passes the in-chat Command
+Center dock opener into its `ChatPane`, regardless of the preview flag: the
+permanent Dashboard tab is the one entrance here, so a second control would point
+at a different dashboard concept from the same conversation. With no Command
+Center in the tab there is no unsent answer for the page
+to hold or guard, so exits ask only about a Schedules draft. The frame's own
+read-error and mint-failure notices carry a retry and NO agent hand-off: the
+hand-off is a raw soft navigate to `/chat` that unmounts this page without asking
+its leave guard, and `ErrorNotice` has no gate to hand it, so with a Schedules
+draft or an editor pane open it was an unguarded exit. With nothing
+published it says so and points at the chat: a crewmate publishes through
+`panel_publish` (on by default via `agent.crew_panel`) when asked or on its own
+cycle, and nothing in the crew editor makes it publish, so the state has no
+set-up control. That sentence names the crewmate by its display name
+(`displayName`, the page's `crewDisplayName`), falling back to the exact
+`member`; the read itself stays keyed on the raw `member`, so a crewmate shown as
+"Atlas" is not told "atlas has not published". Files is the standard SidePanel browser scoped
+to the workspace rule above. Dashboard and Files are the only STANDING tabs.
+Side Chat remains available dynamically through selection Ask and the plus
+menu; it is not a standing entry — and the plus menu keeps every other dynamic
+view the chat page offers (Terminal, Browser, Git, Subagents, Workflows, the
+Developer-Mode Logs / Context / Crew log, app-contributed tabs), bound to the
+member's slot once the thread is confirmed. Withheld outright are the
+transcript-fed views (Changes / Issues / Links / Pins, plus the session
+Summary), the chat page's Command Center, and Artifacts — a pinned standing
+tab on the chat page that has no place in this page's Dashboard + Files set
+(`MEMBERS_WITHHELD_VIEWS`).
 
-The two pairs stay SEPARATE, and the tab-level one deliberately says nothing about a
-Dashboard draft: a tab switch and a panel close keep that body mounted, so confirming
-there would ask about a draft in no danger, on every one of those gestures. Where both
-drafts are live the questions are asked in sequence rather than merged into one
-"discard everything", since a person may want to keep one and drop the other; the
-Schedules question runs first, because it is the one that can refuse outright (a create
-in flight) and no confirmation should be offered over that.
+SidePanel's resting width on this page is 60% of the row after the live navigation
+rail, clamped so `CHAT_PANE_MIN_W` remains; a persisted user drag wins. The shared
+`SidePanel.defaultWidth` prop changes only the no-preference fallback, leaving the
+chat page at 460 px. The Profile hover card uses 34% of the row and never inherits
+that width.
 
-A held panel is hidden with `display: none` rather than leaving `AnimatePresence`,
-so while a draft is outstanding the docked-column collapse and the narrow-window
-drawer slide and scrim fade do not run. That is accepted, and it now costs only
-the case that earns it: losing an answer silently is worse than losing an
-animation, and with nothing typed the motion runs as before. Dynamic
-Dashboard adds native task progress, questions and approvals to this tab. The
-chat's three-tile dock above the composer opens this tab from its open-panel
-action; the panel's + menu offers no parallel Dynamic Dashboard tab. The existing published
-webview (`GET /api/members/{slug}/panel?member=<exact-name>`) remains a view inside
-it, selectable alongside task-dashboard artifacts. A pipeline-specific board is
-one published view, not a separate dashboard product. The existing publisher,
-exact member identity and sandbox are unchanged. Published pages never resolve
-questions or approvals: only the host's exact-session/request controls do so.
-Once visited, the dashboard stays mounted across tab and panel visibility changes
-to retain answer drafts and published frames. A pending thread revalidation hides
-the native controls without re-keying the last confirmed session's body.
-
-**Schedules** is what wakes THIS crewmate with nobody asking, and nothing else.
-Its body is `CrewWakeSection` — the SAME component the crew editor's Schedules
-pane mounts, not a second list — so the create form, the attribution rules below
-and the member-immutability rule read identically on both surfaces, and there is
-one schedules editor in the product rather than two that can disagree. The tab is
-keyed on the crewmate's NAME, not on a confirmed thread slot, so a crewmate whose
-DM has not opened still reports its wakes.
-
-Its chip carries a live/total count in the crew editor rail's own shape, read from
-the same `crewWakeQueryKey` fetch the body uses, so one request serves both and
-the chip cannot disagree with the list it summarizes. The chip carries no count in
-two cases: an unreadable cron list (stating `0/0` would claim nothing wakes this
-crewmate on the strength of a request that failed) and a crewmate that genuinely
-has none, where a quiet empty pane says it and a number on every unscheduled
-crewmate would be noise.
-
-One vocabulary mismatch this tab makes visible without introducing it: a live schedule
-reads **active** on the row pill here and on the crew editor's pane, and **Ready** in
-`/schedule`'s Status column, and the tab's own external-link button now puts the two a
-click apart. Both words predate this surface, and aligning them means changing the
-shared row or the Schedule page, neither of which this tab owns — so it is recorded
-here rather than fixed here.
-
-The section's three pieces of copy — heading, the line under it, and the empty state —
-are the host's, because the crew editor is editing an AGENT and says so while this
-panel is looking at a CREWMATE. The empty state is the most-read of the three: most
-crewmates have no schedules, so that line is what the reader usually gets.
-
-A crewmate has TWO identities and the tab reads both. `member_id` on a private
-schedule is the crewmate's IMMUTABLE id — the slug allocated with its member memory,
-which `bind_cron_memory` writes over whatever the client sent — while `agent` and
-`agent_sequence` hold display NAMES. `wakesCrew` therefore takes both: the id for the
-`member_id` comparison, the name for the legacy branches. Passing the name for both
-is what the signature exists to prevent, because for any crewmate whose name is not
-already its own slug every private schedule failed the comparison, the chip read as
-none, and a job created from the tab vanished from it the moment it saved. The
-Crewmates panel passes the roster's `slug`; the crew editor passes its display name
-for both, which keeps that page's own attribution exactly as it has always been (it
-holds no slug for the crew it is editing).
-
-A schedule carrying no `member_id` **and** no bound agent or agent sequence belongs
-to no crewmate, and no crewmate's tab claims it — including the default crew's, even
-though `wakesCrew`'s last fallback would hand it there. `/schedule` remains the
-cross-crewmate view and is where such a schedule lives. `ownedOnly` suppresses that
-last fallback and nothing else, so `wakesCrew`'s earlier attribution still holds: a
-legacy job with no `member_id` but `agent` naming this crewmate, or a multi-entry
-`agent_sequence` containing it, IS this crewmate's and is listed. That is the same
-attribution the crew editor shows, which is the point — the two surfaces differ only
-on the unowned fallback. `CrewWakeSection` takes that scope as one question from
-its host (`WakeScope`): the crew editor answers `isDefaultCrew` and asks what this
-crew will RUN, the panel sets `ownedOnly` and asks what wakes this crewmate. A
-union rather than two booleans, so a host cannot forget `isDefaultCrew` and
-silently drop the default crew's unowned schedules from the editor. One
-consequence worth stating: the panel never reads which crew is the default, so
-that read failing costs the tab nothing.
-
-Only the active tab's body is mounted, and the section is keyed on the crewmate, so
-a great many gestures destroy an open create form. There is ONE guard, and every
-user GESTURE that can reach the unmount asks it: switching chips, opening any other
-tab from the **+** menu (the panel's launcher cards are not a second door here:
-`SidePanel` renders them only for a host that supplies NO leading tabs, and this one
-always supplies four), **Ask about this** (which focuses the
-Side tab), the quiet-chat line that focuses Work log, the panel's own close control,
-the scrim tap that dismisses the overlay on a narrow window, the side-panel chord or
-header opener hiding the panel, switching to another crewmate, opening a team header
-row (which clears the open crewmate and unmounts the panel subtree), the header Back
-button below `md` (which drops `?member=` — by a REPLACE for a deep-linked crewmate,
-which raises no `popstate`, so neither the published stake nor the Back trap can see
-it), the in-chat **Command Center** dock (which lives in the THREAD rather than the
-panel, and makes the Crew Dashboard tab active), a file link in the transcript (which opens a document tab through `tabsCtl.openFile`), a row in the thread's
-driving-sessions list (which leaves `/members` for `/chat` by a raw `navigate`, so the
-leave channel never sees it), and leaving the route. Each of those
-reaches the tab store through the page's guard rather than the raw `setActive`, which
-is the strip's own question bypassed. A create whose POST is already in flight refuses
-every one of them outright,
-since unmounting the form does not cancel the write. Nothing at stake keeps each
-gesture on its old synchronous path, so the guard costs the page nothing while no
-form is open.
-
-One unmount is not a gesture and so is not answered by asking: resizing the window
-across the docking boundary moves the panel between its docked and overlay
-placements, and the overlay starts closed, so the body would unmount with nothing to
-decline — declining cannot un-resize a window. It is answered by RETENTION instead.
-While a draft or an in-flight create is at stake the panel is kept mounted and
-hidden, the same treatment mount continuity already gives a live app tab or a Browser
-tab, and the form is still there with its text when the window widens back.
-
-Retention moves where the draft lives, so it also moves what the guards gate on: they
-ask while the section is MOUNTED, not while it is visible. Gating on visibility is
-what the first version of this did, and it disarmed every guard in exactly the state
-retention creates — the hidden form is then the only copy of what was typed, so a
-resize followed by any sidebar click or Back press discarded it without asking. An
-accepted discard stands RETENTION down before the exit runs, and only retention: the
-draft's own flags are left alone, so it stays guarded until the form really unmounts
-and reports itself clean. Retention has to stand down first because it is what would
-hold the panel mounted, and waiting for the unmount to clear the flag preventing that
-unmount keeps the panel hidden and mounted for good. Clearing the draft flags there
-instead — the first version — disarmed the page: the channel asks every registered
-guard, so a guard registered after this page could refuse the same navigation, and the
-form then sat on screen as a visible, unguarded draft for a later exit to discard. A
-release is therefore good for the one exit that asked: if the form is still mounted on
-the next render, that exit did not land and retention arms again.
-
-Leaving the ROUTE is the one exit whose channel (`NavigationLeaveGuard`) is
-synchronous, so it asks through `window.confirm` rather than the app's confirm
-dialog — the same path the New crewmate dialog's own guard on this page already
-takes. That made this page the first with TWO surfaces on the channel at once, and
-the channel kept one slot for each of its two halves: the second `register` silently
-replaced the first, so only the last-mounted draft was guarded, and a single shared
-stake boolean let whichever surface published `false` last disarm the Back guard for
-the other's still-typed draft. Both are now keyed per caller — a set of guards, asked
-in turn and stopping at the first refusal so a user who has said "stay" is not then
-asked about a second draft, and a set of stake holders, where the channel's answer is
-whether ANY of them is holding work.
-
-The Schedules draft publishes its stake, so the browser's own Back button arms for
-it, and while a draft is at stake the page also holds a `beforeunload` listener, which
-is the only thing a reload or a tab close can be asked through. Registering a guard
-without publishing a stake was the gap: every wired in-app exit asked while Back went
-silently, on the same page where the sibling dialog published and therefore did arm.
-
-**Ask about this** is the one exit whose answer is read by its caller. The selection
-seam wants a synchronous boolean for whether to seed its quote, so while a draft is at
-stake the Ask reports FALSE: the discard question is raised, no quote is seeded, and
-the Side tab focuses only if the user discards. Reporting true and focusing later
-would put a quote the user never asked for into the composer of a Side Chat they
-declined to open.
-
-The remaining settings content — the built-from template, the memory binding,
-cloud, routing — lives only on the crew editor / detail page. Operator-facing
-memory diagnostics never render in the panel.
+The remaining settings — built-from template, memory binding, cloud, routing —
+live only in the crew editor. Operator-facing memory diagnostics never render in
+Profile or SidePanel.
 
 ## One-time prune of sync-generated crewmates (startup migration)
 
@@ -1441,9 +1412,7 @@ A member-mode slot's transcript is the crewmate's whole working record: the
 `[auto-nudge cycle N]` turns of its patrol loop, `[Cron notification …]` and
 `[Subagent completion event]` envelopes, every tool call, and the say-nothing
 reply a quiet patrol ends on. The Members page's chat pane shows **only what
-the crewmate says to the user** and the user's own messages. Everything else
-stays in the slot's history — the Work log reads it from there — and is
-filtered at render time by `filterCrewmateChat`
+the crewmate says to the user** and the user's own messages. Everything else stays in the slot's history and is filtered at render time by `filterCrewmateChat`
 (`website/src/components/chat/crewmateBubbles.ts`), which `ChatPane` applies
 when its host passes `crewmate`. Ordinary chats never pass it and are drawn
 unchanged.
@@ -1464,10 +1433,9 @@ card, and the live `streaming` row. A stop card (a `system` row of kind
 `stop_event`) is drawn too, and like an error row it breaks a run. When the
 filter leaves NOTHING to draw although the transcript is not empty (a patroller
 that has never spoken), the pane's empty hint is the crewmate's — "<name> hasn't
-said anything to you yet." plus a verb-first second line pointing at where the
-work went ("See what it has been doing in its Work log."). That second line is a link when the host passes
-`onOpenCrewWorkLog` (the Members page does: it focuses the Work log tab and, in
-overlay mode, reveals the panel), plain text otherwise — words that read as a
+said anything to you yet." plus a verb-first second line pointing at where its visible work is ("See the sessions it is driving."). That second
+line is a link when the host passes `onOpenCrewWorkLog` (the Members page does:
+it opens Profile on Sessions), plain text otherwise — words that read as a
 destination must be one. Never the fresh-thread "Session ready" line, which
 would read as lost history beside a panel counting its wakes; and the drawer's
 Recent activity counts the member's *runs* (`activity_chat_count`: one entry per

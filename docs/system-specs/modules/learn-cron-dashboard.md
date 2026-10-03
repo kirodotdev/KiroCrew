@@ -955,6 +955,13 @@ Security: sanitize-then-truncate ordering enforced for all user-controlled field
 
 Schedule templates live in `SCHEDULE_PRESETS` (`website/src/utils/schedulePresets.tsx`). Each `SchedulePreset` carries an id, icon (lucide), title, description, human-readable cadence, a `category` (`hygiene | quality | security | ops | comms | knowledge` — section order and labels exported as `PRESET_CATEGORIES`), an optional `featured` flag, and a `CronPrefill` payload (name, message, and schedule mode + values). Preset prompts follow two authoring rules: a **silence-on-no-signal** clause ("if none, end silently") so polling-style jobs don't spam notifications — paired with `CronPrefill.silent = true`, without which the saved job still auto-delivers "_No response._" every quiet run, so those prompts deliver positive findings via `send_message`, and **stateless trigger anchors** (a fixed time window like "failed within the last 30 minutes", a state predicate like "has no reply from this agent yet", or search-before-acting dedup) rather than "since the last run", because cross-run session memory is best-effort and prompt text is copied into the user's saved job at save time. Guardrail sentences in prompts (never push to the default branch, never merge, never echo secret values) are advisory instructions to the agent, not an enforced security boundary.
 
+`/schedule?job=<id>` opens that job's detail dialog once the list has loaded,
+then drops the param (replace) so reload and Back do not reopen it; an unknown id
+lands on the list only after a successful load establishes that it is unknown. A
+failed list read preserves the param, including while Retry is in flight, so the
+first successful retry can still open the requested job. The Crewmate Profile's
+Schedules rows link here.
+
 Templates surface in two places on the Schedule page (`/schedule`, `SchedulePage.tsx`):
 - **Empty state** (no jobs): a bottom-pinned "Start from a pre-made schedule" row of the `featured` presets only (`SCHEDULE_PRESETS.filter(p => p.featured)`), plus a **Browse all templates** link that opens the gallery.
 - **Any state**: a **Templates** button next to Add Job in the Jobs header opens `ScheduleTemplateGallery` (`website/src/components/ScheduleTemplateGallery.tsx`) — a modal listing every preset grouped into `PRESET_CATEGORIES` sections (empty categories are skipped).

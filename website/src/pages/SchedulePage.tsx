@@ -1,5 +1,6 @@
 import { safeSetItem } from '../utils/safeStorage'
 import { useState, useEffect, useCallback, useRef, useMemo, Fragment } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useImeGuard } from '../hooks/useImeGuard'
 import Clickable from '../components/Clickable'
 import { List, CalendarDays, CalendarClock, Plus, ClipboardList, ChevronRight, Globe, History, Trash2, FolderPlus, MoreHorizontal, Pencil, Folder, LayoutGrid, GitPullRequestArrow, Download, KeyRound, Info, X } from 'lucide-react'
@@ -359,11 +360,14 @@ export default function SchedulePage() {
   const load = useCallback(async () => {
     const seq = ++loadSeq.current
     try {
-      setLoadError(null)
+      // Keep a prior error visible while its retry is in flight. Clearing it
+      // before the successful response would let the ?job= effect consume the
+      // deep link against the stale list.
       // Jobs are primary -- folders failure must not break the page.
       const d = await api.crons()
       if (seq !== loadSeq.current) return // stale response
       const fresh: CronJob[] = d.jobs || []
+      setLoadError(null)
       setJobs(fresh)
       setSelected(prev => prev ? fresh.find((j: CronJob) => j.id === prev.id) ?? null : null)
       // Drop any selected IDs that no longer exist (deleted elsewhere / by us).
@@ -551,6 +555,19 @@ export default function SchedulePage() {
   const openPreset = useCallback((p: SchedulePreset) => { setSelected(null); setDetailOpen(false); setPrefill({ ...p.prefill, sourcePreset: p.id, sourceTemplatePrompt: presetCanonicalPrompt(p.id) }); setPrefillWrites(!!p.writes); setPrefillNonce(n => n + 1); setCreating(true) }, [])
   // Open the detail dialog on a job (row click / calendar entry click).
   const openDetail = useCallback((job: CronJob) => { setCreating(false); setPrefill(null); setSelected(job); setDetailOpen(true) }, [])
+  // `?job=<id>` opens that job's detail once the list has loaded, then drops the
+  // param so a reload or Back does not reopen it. A Crewmate Profile's schedule
+  // row links here; an id that no longer exists simply lands on the list.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const deepLinkJob = searchParams.get('job')
+  useEffect(() => {
+    // A failed list read has not answered whether the requested job exists.
+    // Preserve the param so a successful retry can still resolve it.
+    if (!deepLinkJob || loading || loadError) return
+    const job = jobs.find((j) => j.id === deepLinkJob)
+    if (job) openDetail(job)
+    setSearchParams((prev) => { const next = new URLSearchParams(prev); next.delete('job'); return next }, { replace: true })
+  }, [deepLinkJob, loading, loadError, jobs, openDetail, setSearchParams])
   // Dismiss the dialog. `selected` survives on purpose — see its declaration.
   const closeDetail = useCallback(() => { setDetailOpen(false); setCreating(false); setPrefill(null); setPrefillWrites(false) }, [])
   // The dialog is bound to `selected` existing, so a job deleted underneath us

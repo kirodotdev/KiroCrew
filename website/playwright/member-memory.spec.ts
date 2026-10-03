@@ -351,24 +351,25 @@ test('an empty private memory opens its exact member conversation and reuses the
   await expect(page).toHaveURL(url => url.pathname === '/members' && url.searchParams.get('member') === owner.name)
   const memberHeader = page.getByTestId('member-thread-header')
   await expect(memberHeader.getByText(owner.name, { exact: true })).toBeVisible()
-  // The identity pill is the edit entry: a button NAMED by the crewmate (its
-  // content) whose tooltip -- the accessible description -- says what it opens.
+  // The identity pill opens the crewmate's Profile card: a button NAMED by the
+  // crewmate (its content) whose tooltip says what it opens.
   const identityPill = memberHeader.getByTestId('member-identity-pill')
   await expect(identityPill).toHaveRole('button')
   await expect(identityPill).toContainText(owner.name)
-  await expect(identityPill).toHaveAttribute('title', 'Edit crewmate')
+  await expect(identityPill).toHaveAttribute('title', 'Profile')
   await expect(page.getByPlaceholder(/message/i)).toBeVisible()
 
-  const panelToggle = page.getByTestId('member-panel-toggle')
-  if (await panelToggle.isVisible()) await panelToggle.click()
-  // The panel opens on the crewmate's own tabs (Notes / Work log / Dashboard);
-  // the memory binding is a setting and lives on the crew editor only (asserted
-  // below in the editor case), so the panel body must not restate it.
-  await page.getByTestId('side-panel-leading-tab-crew-notes').click()
+  // Notes is a pushed page inside Profile. The memory binding is a setting that
+  // lives on the crew editor only (asserted below in the editor case), so the
+  // card restates it only as a short readout, never as "member memory" prose.
+  await identityPill.click()
+  const profileCard = page.getByTestId('crew-profile-panel')
+  await expect(profileCard).toBeVisible()
+  await profileCard.getByTestId('crew-profile-notes').click()
   const notes = page.getByTestId('member-notes')
   await expect(notes).toBeVisible()
   await expect(notes.getByText(`${owner.name} hasn't written any notes yet.`, { exact: true })).toBeVisible()
-  await expect(page.getByTestId('side-panel-leading-body').getByText(/member memory/i)).toHaveCount(0)
+  await expect(profileCard.getByText(/member memory/i)).toHaveCount(0)
   await page.screenshot({ path: testInfo.outputPath('member-memory-members-status.png'), fullPage: false, animations: 'disabled' })
 
   // The roster reads dm.json from disk, so this checks the saved binding rather

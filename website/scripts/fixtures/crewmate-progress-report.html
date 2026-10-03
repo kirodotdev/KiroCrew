@@ -1,0 +1,73 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+:root{--ink:#1d1d1f;--mute:#6e6e73;--line:#e8e8ec;--soft:#f5f5f7;--acc:#7c3aed;--acc2:#ede7fb;--ok:#1f9d55;--ok2:#e6f6ec;--warn:#b86e00;--warn2:#fff4e0;--bad:#c62828;--bad2:#fdebeb}
+*{box-sizing:border-box}body{margin:0;padding:22px 24px 28px;font:14px/1.45 -apple-system,BlinkMacSystemFont,"Inter",system-ui,sans-serif;color:var(--ink);background:#fff}
+.hd{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:6px}
+h1{font-size:20px;font-weight:700;letter-spacing:-.01em;margin:0}
+.meta{display:flex;flex-wrap:wrap;gap:6px 14px;color:var(--mute);font-size:12px;margin-top:4px}.meta b{color:var(--ink);font-weight:600}.meta code{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--soft);padding:1px 6px;border-radius:6px}
+.pill{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;font-size:12px;font-weight:600;white-space:nowrap}
+.pill.ok{background:var(--ok2);color:var(--ok)}.pill.warn{background:var(--warn2);color:var(--warn)}.pill.acc{background:var(--acc2);color:var(--acc)}
+.pill i{width:7px;height:7px;border-radius:50%;background:currentColor;display:inline-block}
+.lead{font-size:15px;margin:10px 0 18px;color:var(--ink)}
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:18px}
+.k{border:1px solid var(--line);border-radius:14px;padding:14px 16px;background:#fff}
+.k .l{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--mute);font-weight:600}.k .v{font-size:26px;font-weight:700;letter-spacing:-.02em;margin-top:4px;line-height:1.1}.k .s{font-size:12px;color:var(--mute);margin-top:4px}
+.bar{height:8px;border-radius:999px;background:var(--soft);overflow:hidden;margin-top:10px}.bar i{display:block;height:100%;background:var(--acc);border-radius:999px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.card{border:1px solid var(--line);border-radius:14px;padding:14px 16px;background:#fff}
+h2{font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--mute);margin:0 0 10px;font-weight:600;display:flex;justify-content:space-between;align-items:center}
+h2 span{letter-spacing:0;text-transform:none;font-weight:500}
+table{width:100%;border-collapse:collapse;font-size:13px}th{text-align:left;font-weight:600;color:var(--mute);font-size:11px;letter-spacing:.04em;text-transform:uppercase;padding:0 0 6px;border-bottom:1px solid var(--line)}
+td{padding:8px 0;border-bottom:1px solid var(--line);vertical-align:top}tr:last-child td{border-bottom:0}td.n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+tr.star td{background:var(--acc2);}tr.star td:first-child{border-radius:8px 0 0 8px;padding-left:8px}tr.star td:last-child{border-radius:0 8px 8px 0;padding-right:8px}
+.hb{display:grid;grid-template-columns:1fr 120px 56px;gap:10px;align-items:center;padding:6px 0;font-size:13px}.hb .t{height:8px;border-radius:999px;background:var(--soft);overflow:hidden}.hb .t i{display:block;height:100%;background:var(--acc);border-radius:999px}.hb .p{text-align:right;color:var(--mute);font-variant-numeric:tabular-nums}
+.stuck{list-style:none;margin:0;padding:0}.stuck li{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line);font-size:13px}.stuck li:last-child{border-bottom:0}
+.stuck code{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--soft);padding:2px 7px;border-radius:6px;min-width:44px;text-align:center}.stuck .w{flex:1;color:var(--ink)}
+.st{display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-top:10px}.st div{border:1px solid var(--line);border-radius:10px;padding:8px 10px}.st .l{font-size:11px;color:var(--mute)}.st .v{font-size:18px;font-weight:700;letter-spacing:-.02em}
+.foot{margin-top:16px;font-size:11.5px;color:var(--mute);line-height:1.5}
+</style></head><body>
+<div class="hd"><div><h1>Campaign dashboard · component refactor</h1>
+<div class="meta"><span>Campaign <code>kirocrew-component-refactor-20260927</code></span><span>Revision <b>1654</b></span><span>Captured <b>Sep 30, 00:18 PDT</b></span><span>Main <code>972675c</code></span></div></div>
+<span class="pill ok"><i></i>Fresh · 12 s</span></div>
+<p class="lead"><b>30 of 46</b> refactor scopes merged. <b>0</b> green and waiting for approval, <b>3</b> in progress.</p>
+
+<div class="kpis">
+<div class="k"><div class="l">Spent</div><div class="v">$11,963</div><div class="s">25.2B tokens · $193/h overall</div></div>
+<div class="k"><div class="l">Runtime</div><div class="v">2d 14h</div><div class="s">Started Sep 27, 10:22 PDT</div></div>
+<div class="k"><div class="l">Progress</div><div class="v">30 / 46</div><div class="s">16 left · 13 serial stages</div><div class="bar"><i style="width:65%"></i></div></div>
+<div class="k"><div class="l">Finish (mid)</div><div class="v">Oct 5</div><div class="s">5d 11h left · $18,440 more</div></div>
+</div>
+
+<div class="grid">
+<div class="card"><h2>Estimate <span>remaining</span></h2>
+<table><tr><th>Case</th><th>Time</th><th>Finish (PT)</th><th style="text-align:right">Cost</th></tr>
+<tr><td>Low</td><td>2d 21h</td><td>Oct 02, 21:40</td><td class="n">$7,200</td></tr>
+<tr class="star"><td><b>Mid ★</b></td><td><b>5d 11h</b></td><td><b>Oct 05, 10:52</b></td><td class="n"><b>$18,440</b></td></tr>
+<tr><td>High</td><td>13d 15h</td><td>Oct 13, 14:45</td><td class="n">$46,120</td></tr></table></div>
+
+<div class="card"><h2>Where the time went <span>scope-hours</span></h2>
+<div class="hb"><span><b>Writing</b> (characterize + refactor)</span><span class="t"><i style="width:34%"></i></span><span class="p">151.9 h</span></div>
+<div class="hb"><span>CI + AI review lanes</span><span class="t"><i style="width:25%"></i></span><span class="p">112.9 h</span></div>
+<div class="hb"><span>Green, waiting for human</span><span class="t"><i style="width:22%"></i></span><span class="p">98.1 h</span></div>
+<div class="hb"><span>Repair rounds</span><span class="t"><i style="width:11%"></i></span><span class="p">48.5 h</span></div>
+<div class="hb"><span>Claim audit / overlap gate</span><span class="t"><i style="width:5%"></i></span><span class="p">23.4 h</span></div>
+<div class="hb"><span>Independent review</span><span class="t"><i style="width:3%"></i></span><span class="p">14.9 h</span></div></div>
+
+<div class="card"><h2>Most stuck <span>6 scopes</span></h2>
+<ul class="stuck">
+<li><code>B11</code><span class="w">Green, waiting for human approval</span><span class="pill warn">needs you</span></li>
+<li><code>F04</code><span class="w">Green, waiting for human approval</span><span class="pill warn">needs you</span></li>
+<li><code>B08</code><span class="w">CI + AI review lanes</span><span class="pill acc">review</span></li>
+<li><code>B07</code><span class="w">Green, mergeable</span><span class="pill ok">ready</span></li>
+<li><code>B12</code><span class="w">CI + AI review lanes</span><span class="pill acc">review</span></li>
+<li><code>F01</code><span class="w">Green, mergeable</span><span class="pill ok">ready</span></li></ul></div>
+
+<div class="card"><h2>Cost by bucket <span>USD</span></h2>
+<table><tr><td>Scope writers</td><td class="n">$7,924</td></tr><tr><td>Review + audit workflows</td><td class="n">$3,086</td></tr><tr><td>Dashboard relay</td><td class="n">$953</td></tr><tr><td><b>Burn</b> · last 6 h / 24 h</td><td class="n">$84/h · $121/h</td></tr></table></div>
+</div>
+
+<div class="card" style="margin-top:12px"><h2>Overall progress <span>35 / 51 tasks</span></h2>
+<div class="bar" style="margin-top:0"><i style="width:69%"></i></div>
+<div class="st"><div><div class="l">Complete</div><div class="v">35</div></div><div><div class="l">Active</div><div class="v">3</div></div><div><div class="l">Ready</div><div class="v">0</div></div><div><div class="l">Blocked</div><div class="v">0</div></div><div><div class="l">Parked</div><div class="v">13</div></div><div><div class="l">Total</div><div class="v">51</div></div></div></div>
+
+<div class="foot">Estimated at list prices ($4 / $20 per M input / output tokens, $0.20 cache read, $5 cache write). Excludes GitHub CI and the repo's AI review lanes. ETA = remaining critical path of 13 dependency stages × observed eligible-to-merged cycle (p25 / median / p75 = 5.9 / 10.9 h over 30 merged scopes). Written by Kiro · metrics as of Sep 30, 00:18 PDT.</div>
+</body></html>
