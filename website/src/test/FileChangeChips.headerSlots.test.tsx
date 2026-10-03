@@ -122,13 +122,20 @@ describe('expanded row header slots', () => {
     expect(secondaryIn('/src/a.ts')).not.toHaveClass('max-[420px]:hidden')
   })
 
-  it('keeps the lightweight metadata rail fluid for narrow rows', () => {
+  it('reserves no fixed width for the lightweight metadata rail, which sits at its content width', () => {
+    // #8316's review removed a 124px reserved basis that crushed filenames at
+    // the 320px viewport. The rail now holds exactly its badge and cells and
+    // no more — `shrink-0` with no basis — because letting it shrink BELOW
+    // them freed nothing for the filename and drew the cells over the ±count
+    // beside it (#14557).
     const { container } = render(
       <FileChangeChips fileChanges={[change('/src/long-component-name.ts', 'a', 'b')]} />,
     )
     const metadata = container.querySelector<HTMLElement>('[data-testid="fcc-metadata"]')!
     expect(metadata.style.flexBasis).toBe('')
-    expect(metadata.className).not.toContain('shrink-0')
+    expect(metadata.className).not.toMatch(/\b(basis-|w-\[)/)
+    expect(metadata).toHaveClass('shrink-0')
+    expect(metadata).not.toHaveClass('min-w-0')
   })
 })
 
