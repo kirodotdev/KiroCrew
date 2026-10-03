@@ -2484,6 +2484,67 @@ class TestACreationFailureRefusesTheSpawn:
         assert sandbox._materialize_sealable_ceilings() == []
 
 
+class TestAMissingParentRefusesTheSpawn:
+    """A ceiling whose parent is not a directory refuses instead of scaffolding.
+
+    Building the parents would create a writable ancestor the agent could
+    rename through, so the materialiser names the path and raises rather than
+    running the spawn unprotected.
+    """
+
+    def test_missing_dir_parent_refuses(self, crew_home, monkeypatch, tmp_path):
+        ghost = str(tmp_path / "no-such-dir" / "profiles")
+        monkeypatch.setattr(sandbox, "_sealable_absent_ceilings", lambda: ([ghost], []))
+
+        with pytest.raises(sandbox.SandboxCeilingUnsealable):
+            sandbox._materialize_sealable_ceilings()
+        assert not (tmp_path / "no-such-dir").exists()
+
+    def test_missing_file_parent_refuses(self, crew_home, monkeypatch, tmp_path):
+        ghost = str(tmp_path / "no-such-dir" / "computer_use.json")
+        monkeypatch.setattr(sandbox, "_sealable_absent_ceilings", lambda: ([], [ghost]))
+
+        with pytest.raises(sandbox.SandboxCeilingUnsealable):
+            sandbox._materialize_sealable_ceilings()
+        assert not (tmp_path / "no-such-dir").exists()
+
+
+class TestEachCeilingIsJudgedAgainstItsOwnHome:
+    """The agents leaf hangs off kiro-cli's home, not the crew data home.
+
+    ``config_dir()`` mkdirs whatever it returns, so gating the agents ceiling on it
+    was true unconditionally and never described that leaf. The refusal then fired on
+    every host with no ``~/.kiro`` at all and took the launcher sweep with it
+    (``test_sandbox_launcher_sweep.py::TestNamespaceArgvPlacement``, whose ``fake_home``
+    creates ``.kirocrew`` and never ``.kiro``). These tests drive the real
+    ``_sealable_absent_ceilings`` and the real refusal rather than replacing the
+    function under test, which is the gap that let that ship.
+    """
+
+    # ``crew_home`` already creates ``tmp_path/.kiro/crew``, so the kiro home under
+    # test is a sibling name -- otherwise the fixture would have made it present
+    # before the test could assert its absence.
+    def test_an_absent_kiro_home_yields_no_agents_ceiling(self, crew_home, monkeypatch, tmp_path):
+        kiro_home = tmp_path / "no-kiro-install"
+        monkeypatch.setattr(sandbox, "kiro_agents_dir", lambda: kiro_home / "agents")
+
+        dir_targets, _ = sandbox._sealable_absent_ceilings()
+
+        assert str(kiro_home / "agents") not in dir_targets
+        # Absent, not refused: the spawn proceeds, and nothing is scaffolded.
+        assert str(kiro_home / "agents") not in sandbox._materialize_sealable_ceilings()
+        assert not kiro_home.exists()
+
+    def test_a_present_kiro_home_keeps_the_agents_ceiling(self, crew_home, monkeypatch, tmp_path):
+        kiro_home = tmp_path / "kiro-install"
+        kiro_home.mkdir()
+        monkeypatch.setattr(sandbox, "kiro_agents_dir", lambda: kiro_home / "agents")
+
+        dir_targets, _ = sandbox._sealable_absent_ceilings()
+
+        assert str(kiro_home / "agents") in dir_targets
+
+
 @_POSIX_ONLY
 class TestADanglingSymlinkRefusesTheSpawn:
     """The one state that defeats every ``os.path.exists`` guard on this path at once.
