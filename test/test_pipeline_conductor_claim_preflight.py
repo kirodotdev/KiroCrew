@@ -86,9 +86,15 @@ def clean_checks(**overrides) -> dict:
             "bug_class_by": None,
         },
         "recency": {"age_days": 200, "author_association": "NONE", "risk": "low"},
+        "forge_claim": {"label": None, "assignees": [], "foreign": False},
     }
     checks.update(overrides)
     return checks
+
+
+def a_forge_claim(label: str | None = "claimed", *assignees: str, foreign: bool = True) -> dict:
+    """A ``forge_claim`` check value, as the detector would have produced it."""
+    return {"label": label, "assignees": list(assignees), "foreign": foreign}
 
 
 class TestVerdictPrecedence:
@@ -268,6 +274,138 @@ class TestVerdictPrecedence:
             == f"REVIEW {ITEM} reporter-asked-close where=body risk=high"
         )
 
+    def test_a_claimed_label_with_no_assignee_skips(self, mod):
+        """The measured defect, on fabricated checks: another pipeline's
+        ``claimed`` label with nobody assigned reads as CLAIM on a live item. A
+        label is a claim in its own right -- the skill's own contract calls
+        labels and assignees the cross-operator lock -- so it is honoured
+        with or without an assignee, the way an open PR is."""
+        checks = clean_checks(forge_claim=a_forge_claim("claimed"))
+        assert naive_claim(checks) is True  # the old predicate would dispatch
+        name, reason, evidence = mod.verdict(checks)
+        assert (name, reason) == ("SKIP", "forge-claim")
+        assert evidence == {"label": "claimed", "assignees": []}
+        assert mod.EXIT_CODES[name] == 10
+        assert (
+            mod.human_line(ITEM, name, reason, evidence, "low")
+            == f"SKIP {ITEM} forge-claim label=claimed assignees=none"
+        )
+
+    def test_a_foreign_assignee_with_no_label_skips(self, mod):
+        """Either field alone is a claim. Measured on this repository, the two
+        arrive together from an atomic claim and apart from a human assigning by
+        hand, so a rule that needed both would miss half of each."""
+        checks = clean_checks(forge_claim=a_forge_claim(None, "otherdev"))
+        assert naive_claim(checks) is True
+        name, reason, evidence = mod.verdict(checks)
+        assert (name, reason) == ("SKIP", "forge-claim")
+        assert evidence == {"label": None, "assignees": ["otherdev"]}
+        assert (
+            mod.human_line(ITEM, name, reason, evidence, "low")
+            == f"SKIP {ITEM} forge-claim label=none assignees=otherdev"
+        )
+
+    def test_the_line_names_every_assignee(self, mod):
+        evidence = {"label": "claimed", "assignees": ["otherdev", "boss"]}
+        assert (
+            mod.human_line(ITEM, "SKIP", "forge-claim", evidence, "low")
+            == f"SKIP {ITEM} forge-claim label=claimed assignees=otherdev,boss"
+        )
+
+    def test_our_own_claim_is_not_somebody_elses(self, mod):
+        """The detector already answered WHOSE claim it is; the verdict only
+        reads ``foreign``. A label with ourselves assigned is the shape of our
+        own atomic claim, and skipping it would tell a conductor to abandon the
+        item it just locked."""
+        checks = clean_checks(forge_claim=a_forge_claim("claimed", "us", foreign=False))
+        name, reason, evidence = mod.verdict(checks)
+        assert (name, reason) == ("CLAIM", "clean")
+        assert evidence == {"risk": "low"}
+
+    def test_a_landed_merged_pr_outranks_a_forge_claim(self, mod):
+        """SKILL.md: an item that is open, claimed and already fixed is triage
+        debt, not a work item. The claim must not hide the CLOSE."""
+        checks = clean_checks(
+            merged_prs=[
+                {
+                    "number": 7900,
+                    "merge_commit_sha": "abc1234def567890",
+                    "landed": True,
+                    "closes_item": True,
+                }
+            ],
+            forge_claim=a_forge_claim("claimed", "otherdev"),
+        )
+        assert mod.verdict(checks)[:2] == ("CLOSE", "already-fixed")
+
+    def test_a_covering_open_pr_outranks_a_forge_claim(self, mod):
+        """Both SKIP; the reason printed is the stronger evidence, and a PR that
+        exists is stronger than a label that says one will."""
+        checks = clean_checks(
+            open_prs=[
+                {
+                    "number": 8100,
+                    "author": "otherdev",
+                    "is_cross_repository": False,
+                    "closes_item": True,
+                }
+            ],
+            forge_claim=a_forge_claim("claimed", "otherdev"),
+        )
+        assert mod.verdict(checks)[:2] == ("SKIP", "open-pr")
+
+    def test_a_closure_request_outranks_a_forge_claim(self, mod):
+        """Same rank order as closure-over-prose-claim, for the same reason: if
+        the reporter says it is done, a human should hear that before a worker
+        -- the claimant's included -- spends a session on it."""
+        checks = clean_checks(
+            prose_claim={
+                "closure_requested": True,
+                "claimed_by_other": False,
+                "where": "comment",
+                "comment_id": 123456,
+                "pattern": "x",
+            },
+            forge_claim=a_forge_claim("claimed", "otherdev"),
+        )
+        assert mod.verdict(checks)[:2] == ("REVIEW", "reporter-asked-close")
+
+    def test_a_forge_claim_outranks_a_prose_claim(self, mod):
+        """Both SKIP. The forge field is the stronger evidence -- it is what the
+        skill calls the lock -- so it is the reason that gets printed when the
+        same owner also wrote a sentence."""
+        checks = clean_checks(
+            prose_claim={
+                "closure_requested": False,
+                "claimed_by_other": True,
+                "claimed_by": "otherdev",
+                "claimed_by_where": "body",
+                "where": "body",
+                "comment_id": None,
+                "pattern": SELF_CLAIM_SAMPLE_PATTERN,
+            },
+            forge_claim=a_forge_claim("claimed", "otherdev"),
+        )
+        assert mod.verdict(checks)[:2] == ("SKIP", "forge-claim")
+
+    def test_a_forge_claim_outranks_an_errored_check(self, mod):
+        """A definite answer to the ownership question beats a partial view of
+        the symbol question, same as every other positive finding."""
+        checks = clean_checks(
+            forge_claim=a_forge_claim("claimed"),
+            symbol_on_base={"error": "no-clone"},
+        )
+        assert mod.verdict(checks)[:2] == ("SKIP", "forge-claim")
+
+    def test_a_forge_claim_that_is_not_foreign_never_skips(self, mod):
+        """``foreign`` is the only bit the verdict reads. A label with assignees
+        that the detector attributed to us must not SKIP however it is spelled."""
+        for label, assignees in (("claimed", ["us"]), (None, ["us"]), (None, [])):
+            checks = clean_checks(
+                forge_claim={"label": label, "assignees": assignees, "foreign": False}
+            )
+            assert mod.verdict(checks)[0] == "CLAIM", (label, assignees)
+
     def test_absent_symbol_skips_only_for_a_corroborated_bug_item(self, mod):
         checks = clean_checks(
             symbol_on_base={
@@ -348,7 +486,7 @@ class TestVerdictPrecedence:
 
     @pytest.mark.parametrize(
         "name",
-        ["open_prs", "merged_prs", "prose_claim", "symbol_on_base", "recency"],
+        ["open_prs", "merged_prs", "prose_claim", "symbol_on_base", "recency", "forge_claim"],
     )
     def test_any_errored_check_is_unknown_never_claim(self, mod, name):
         checks = clean_checks(**{name: {"error": "rate-limited"}})
@@ -394,7 +532,7 @@ class TestVerdictPrecedence:
         """`closedByPullRequestsReferences` measured `[]` on two items that WERE
         closed by merged PRs, so it is dropped rather than carried as a bonus: a
         per-candidate forge call that cannot change the verdict is pure cost
-        against a shared rate limit. Five checks, and none of them is that one.
+        against a shared rate limit. Six checks, and none of them is that one.
         """
         assert mod.CHECK_NAMES == (
             "open_prs",
@@ -402,6 +540,7 @@ class TestVerdictPrecedence:
             "prose_claim",
             "symbol_on_base",
             "recency",
+            "forge_claim",
         )
         source = SCRIPT.read_text(encoding="utf-8")
         assert "closed_by" not in source
@@ -422,7 +561,7 @@ class TestVerdictPrecedence:
         (This docstring deliberately does not spell any wrong count, since the
         scan reads its own file too.)
         """
-        wrong = {"six": 6, "four": 4, "seven": 7}
+        wrong = {"five": 5, "six": 6, "four": 4, "seven": 7}
         for path in (SCRIPT, Path(__file__).resolve()):
             text = path.read_text(encoding="utf-8")
             for word, count in wrong.items():
@@ -818,6 +957,132 @@ class TestBugClassCorroboration:
         # Also present on the error shapes, so the verdict never reads a missing
         # key as "not a bug".
         assert mod.symbols_on_base(["X_Y"], None, "main", bug_class=True)["bug_class"] is True
+
+
+class TestForgeClaim:
+    """Check 6, the detector: the forge's own ownership fields, read as a claim.
+
+    Measured on live items: four in three days carried another pipeline's
+    ``claimed`` label -- two of them with the assignee set too -- and every one
+    read CLAIM when nothing here read either field. The queue
+    build excludes the label; the live recheck immediately before the atomic
+    claim is this script, and it was the one reader that did not look.
+    """
+
+    def test_a_claimed_label_alone_is_a_claim(self, mod):
+        got = mod.scan_forge_claim(an_issue(labels=[{"name": "claimed"}]), "us")
+        assert got == {"label": "claimed", "assignees": [], "foreign": True}
+
+    def test_an_assignee_alone_is_a_claim(self, mod):
+        got = mod.scan_forge_claim(an_issue(assignees=[{"login": "otherdev"}]), "us")
+        assert got == {"label": None, "assignees": ["otherdev"], "foreign": True}
+
+    def test_our_own_atomic_claim_is_ours(self, mod):
+        """Label plus ourselves assigned is exactly what the skill's atomic
+        claim writes, so a conductor re-checking an item it holds must not be
+        told to skip it."""
+        issue = an_issue(labels=[{"name": "claimed"}], assignees=[{"login": "us"}])
+        got = mod.scan_forge_claim(issue, "us")
+        assert got == {"label": "claimed", "assignees": ["us"], "foreign": False}
+        assert mod.scan_forge_claim(an_issue(assignees=[{"login": "us"}]), "us")["foreign"] is False
+
+    def test_a_co_assignee_makes_it_foreign(self, mod):
+        """Somebody else is on it too. The fail-safe direction is SKIP."""
+        issue = an_issue(assignees=[{"login": "us"}, {"login": "otherdev"}])
+        got = mod.scan_forge_claim(issue, "us")
+        assert got["assignees"] == ["us", "otherdev"]
+        assert got["foreign"] is True
+
+    def test_an_unknown_identity_reads_every_claim_as_foreign(self, mod):
+        """Same rule as :func:`scan_prose`: when ``whoami`` could not answer, a
+        claim that might be ours still counts as somebody else's."""
+        assert mod.scan_forge_claim(an_issue(assignees=[{"login": "us"}]), None)["foreign"] is True
+        assert mod.scan_forge_claim(an_issue(labels=[{"name": "claimed"}]), None)["foreign"] is True
+
+    def test_nothing_is_not_a_claim(self, mod):
+        got = mod.scan_forge_claim(an_issue(), "us")
+        assert got == {"label": None, "assignees": [], "foreign": False}
+        assert mod.scan_forge_claim(an_issue(), None)["foreign"] is False
+
+    @pytest.mark.parametrize(
+        ("name", "term"),
+        [
+            ("claimed", "claimed"),
+            ("Claimed", "claimed"),
+            ("CLAIMED", "claimed"),
+            ("in-progress", "in-progress"),
+            ("in progress", "in-progress"),
+            ("crew: in progress", "in-progress"),
+            ("status: In Progress", "in-progress"),
+        ],
+    )
+    def test_the_ownership_vocabulary(self, mod, name, term):
+        """The skill's documented ``skip_signals`` default names ``claimed`` and
+        ``in-progress``; this repository spells the second ``crew: in progress``
+        and applies it with no assignee (measured: 4 of 8 closed items carrying
+        it had none), so the assignee rule alone would miss it."""
+        assert mod.claim_label_of(an_issue(labels=[{"name": name}])) == term
+
+    @pytest.mark.parametrize(
+        "name",
+        ["unclaimed", "reclaimed", "bug", "auto-fixable", "needs-human", "progress", "wip"],
+    )
+    def test_a_label_outside_the_vocabulary_is_not_a_claim(self, mod, name):
+        """``\\b`` keeps ``unclaimed`` out. ``wip`` is deliberately NOT in the
+        vocabulary: the skill's own default does not list it, and widening a
+        veto past the documented contract is how a label nobody meant as a lock
+        starts parking items."""
+        assert mod.claim_label_of(an_issue(labels=[{"name": name}])) is None
+
+    def test_the_term_is_this_modules_not_the_labels_text(self, mod):
+        """Same rule as :func:`bug_class_of`: a label name is user-authored and
+        this value is printed, so what comes back is the vocabulary word that
+        matched, never the label itself."""
+        got = mod.scan_forge_claim(an_issue(labels=[{"name": "Claimed (by the bot!!)"}]), "us")
+        assert got["label"] == "claimed"
+        line = mod.human_line(
+            ITEM, "SKIP", "forge-claim", {"label": got["label"], "assignees": []}, "low"
+        )
+        assert "by the bot" not in line
+        assert line == f"SKIP {ITEM} forge-claim label=claimed assignees=none"
+
+    def test_the_first_matching_label_wins_in_payload_order(self, mod):
+        issue = an_issue(labels=[{"name": "crew: in progress"}, {"name": "claimed"}])
+        assert mod.claim_label_of(issue) == "in-progress"
+
+    def test_junk_metadata_degrades_quietly(self, mod):
+        """Strings where dicts were expected, a singular ``assignee`` where the
+        list is missing, nulls everywhere: none of it raises, and only the
+        shapes the forge actually sends are read."""
+        assert mod.claim_label_of(an_issue(labels=["claimed"])) == "claimed"
+        assert mod.claim_label_of(an_issue(labels=[None, 7, {"name": None}])) is None
+        assert mod.claim_label_of(an_issue(labels=None)) is None
+        assert mod.assignee_logins(an_issue(assignees=None, assignee={"login": "solo"})) == ["solo"]
+        assert mod.assignee_logins(an_issue(assignees=[None, {"login": 3}, {"x": 1}])) == []
+        assert mod.assignee_logins(an_issue(assignees="otherdev")) == []
+        assert mod.assignee_logins({}) == []
+        got = mod.scan_forge_claim({"labels": "claimed", "assignees": 42}, "us")
+        assert got == {"label": None, "assignees": [], "foreign": False}
+
+    def test_the_pipelines_own_claim_wording_is_not_a_prose_claim(self, mod):
+        """A known miss, pinned on purpose. "This issue is now claimed by X's
+        instance" -- the sentence every operator's claim comment on this
+        repository shares -- matches no self-claim pattern, and this change does
+        NOT teach the prose scanner to read it: that comment always lands with
+        the label and the assignee it announces, so check 6 is its channel. (The
+        newer template's second sentence, "A worker session is picking it up
+        now", already fires ``picking it up``; measured here, so the pin is on
+        the shared sentence alone.) If a later change adds the phrase, this test
+        reds and the question gets asked rather than answered by accident."""
+        shared = (
+            "Kiro Crew Auto-Pipeline [operator: redacted]: Starting an automated "
+            "fix -- this issue is now claimed by redacted's instance."
+        )
+        assert mod._first_match(mod.SELF_CLAIM_RES, mod.plain_prose(shared)) is None
+        newer = shared + " A worker session is picking it up now."
+        assert mod._first_match(mod.SELF_CLAIM_RES, mod.plain_prose(newer)) is not None
+        # Control: the instrument can match.
+        assert mod._first_match(mod.SELF_CLAIM_RES, "I'm claiming this") is not None
 
 
 class TestClosureNeedsAnIssueAsItsObject:
@@ -2612,12 +2877,123 @@ class TestEndToEnd:
         # The machine form and the human form must agree about the doubt.
         assert payload["risk"] == "high"
 
-    def test_json_mode_reports_the_five_checks_even_on_unknown(self, mod, monkeypatch, capsys):
+    def test_json_mode_reports_the_six_checks_even_on_unknown(self, mod, monkeypatch, capsys):
         forge = Forge(failures={"/timeline": "API rate limit exceeded"})
         assert run_main(mod, monkeypatch, forge, ["--json"]) == 3
         payload = json.loads(capsys.readouterr().out)
         assert set(payload["checks"]) == set(mod.CHECK_NAMES)
         assert payload["checks"]["open_prs"] == {"error": "rate-limited"}
+
+
+class TestForgeClaimEndToEnd:
+    """Check 6 through ``main``: the issue payload the script already fetched
+    answers the ownership question, so the common path costs no extra call."""
+
+    def test_a_claimed_label_with_no_assignee_exits_ten(self, mod, monkeypatch, capsys):
+        """The shape as measured live: ``claimed`` for half an hour, no
+        assignee, and two CLAIM verdicts in that window."""
+        forge = Forge(issue=an_issue(labels=[{"name": "claimed"}]))
+        assert run_main(mod, monkeypatch, forge) == 10
+        assert (
+            capsys.readouterr().out.strip()
+            == f"SKIP {ITEM} forge-claim label=claimed assignees=none"
+        )
+        # No assignee to attribute, so identity is not asked for: the label is
+        # foreign whoever we are.
+        assert ["gh", "api", "user"] not in forge.calls
+
+    def test_a_claimed_label_with_a_foreign_assignee_exits_ten(self, mod, monkeypatch, capsys):
+        """The commoner live shape: label and assignee both set by another
+        operator's pipeline. Measured to read CLAIM before this check existed."""
+        forge = Forge(
+            issue=an_issue(labels=[{"name": "claimed"}], assignees=[{"login": "CrysisDeu"}]),
+            login="NicholasRBowers",
+        )
+        assert run_main(mod, monkeypatch, forge) == 10
+        assert (
+            capsys.readouterr().out.strip()
+            == f"SKIP {ITEM} forge-claim label=claimed assignees=CrysisDeu"
+        )
+
+    def test_a_foreign_assignee_with_no_label_exits_ten(self, mod, monkeypatch, capsys):
+        forge = Forge(issue=an_issue(assignees=[{"login": "otherdev"}]))
+        assert run_main(mod, monkeypatch, forge) == 10
+        assert (
+            capsys.readouterr().out.strip()
+            == f"SKIP {ITEM} forge-claim label=none assignees=otherdev"
+        )
+
+    def test_our_own_claim_still_claims(self, mod, monkeypatch, capsys):
+        forge = Forge(
+            issue=an_issue(labels=[{"name": "claimed"}], assignees=[{"login": "us"}]), login="us"
+        )
+        assert run_main(mod, monkeypatch, forge) == 0
+        assert capsys.readouterr().out.strip() == f"CLAIM {ITEM} risk=low"
+
+    def test_an_unknown_identity_reads_our_assignee_as_foreign(self, mod, monkeypatch, capsys):
+        """``gh api user`` failed, so the login that LOOKS like ours cannot be
+        confirmed ours. SKIP costs one dispatch; the other reading dispatches
+        onto somebody's live work."""
+        forge = Forge(issue=an_issue(assignees=[{"login": "us"}]), failures={"user": "boom"})
+        assert run_main(mod, monkeypatch, forge) == 10
+        assert "forge-claim label=none assignees=us" in capsys.readouterr().out
+
+    def test_a_claimed_item_that_already_landed_still_closes(self, mod, monkeypatch, capsys):
+        """SKILL.md: open, claimed and already fixed is triage debt. The forge
+        claim sits below rule 1 so the CLOSE is not hidden behind the SKIP."""
+        forge = Forge(
+            timeline=[a_xref(7900)],
+            pulls={7900: a_pull(7900, state="closed", merged=True, sha="abc1234def567890")},
+            issue=an_issue(labels=[{"name": "claimed"}], assignees=[{"login": "otherdev"}]),
+            git_rc={"merge-base": 0},
+        )
+        assert run_main(mod, monkeypatch, forge, ["--repo-dir", "/clone"]) == 11
+        assert capsys.readouterr().out.strip().startswith(f"CLOSE {ITEM} merged-pr=#7900")
+
+    def test_a_covering_open_pr_is_the_reason_printed(self, mod, monkeypatch, capsys):
+        forge = Forge(
+            timeline=[a_xref(8100)],
+            pulls={8100: a_pull(8100, user="otherdev")},
+            issue=an_issue(labels=[{"name": "claimed"}], assignees=[{"login": "otherdev"}]),
+        )
+        assert run_main(mod, monkeypatch, forge) == 10
+        assert capsys.readouterr().out.strip().startswith(f"SKIP {ITEM} open-pr=#8100")
+
+    def test_identity_is_asked_once_when_two_checks_need_it(self, mod, monkeypatch):
+        """A foreign assignee AND an insider's prose claim both need to know who
+        we are. One forge call answers both; the shared rate limit is why."""
+        forge = Forge(
+            issue=an_issue(assignees=[{"login": "otherdev"}]),
+            comments=[a_comment("I am claiming this issue", login="boss", association="MEMBER")],
+        )
+        assert run_main(mod, monkeypatch, forge) == 10
+        assert forge.calls.count(["gh", "api", "user"]) == 1
+
+    def test_an_unreadable_item_errors_the_check_with_the_others(self, mod, monkeypatch, capsys):
+        forge = Forge(failures={f"repos/{REPO}/issues/{ITEM}": "could not resolve host"})
+        assert run_main(mod, monkeypatch, forge, ["--json"]) == 3
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["checks"]["forge_claim"] == {"error": "forge-unreachable"}
+
+    def test_json_mode_carries_the_check_and_the_evidence(self, mod, monkeypatch, capsys):
+        forge = Forge(issue=an_issue(labels=[{"name": "crew: in progress"}]))
+        assert run_main(mod, monkeypatch, forge, ["--json"]) == 10
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["verdict"] == "SKIP"
+        assert payload["reason"] == "forge-claim"
+        assert payload["checks"]["forge_claim"] == {
+            "label": "in-progress",
+            "assignees": [],
+            "foreign": True,
+        }
+        assert payload["evidence"] == {"label": "in-progress", "assignees": []}
+
+    def test_a_clean_item_costs_no_identity_call(self, mod, monkeypatch):
+        """The common path: no label, no assignee, no prose claim. Nothing here
+        may add a forge call to it."""
+        forge = Forge()
+        assert run_main(mod, monkeypatch, forge) == 0
+        assert ["gh", "api", "user"] not in forge.calls
 
 
 class TestArgumentHandling:
