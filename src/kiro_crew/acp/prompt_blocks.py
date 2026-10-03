@@ -150,7 +150,17 @@ def build_prompt_blocks(
             if os.name == "nt" and is_link_or_junction(path):
                 seen.add(raw)
                 continue
-            if not path.is_file():
+            # A long run of prose ending in an image suffix is not a path: a
+            # component over 255 characters (past every common name limit) raises
+            # ENAMETOOLONG (pathlib on 3.12 does not swallow it), and one raise
+            # here fails the whole turn. Skip it, and treat any probe error as
+            # "not a file" so the text still goes out.
+            if any(len(part) > 255 for part in path.parts):
+                continue
+            try:
+                if not path.is_file():
+                    continue
+            except OSError:
                 continue
             try:
                 size = path.stat().st_size
