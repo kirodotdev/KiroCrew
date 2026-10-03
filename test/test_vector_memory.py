@@ -2620,6 +2620,8 @@ class TestMemoryTuningPlumbing:
         "eval/bench/ingest.py": "bench sweep values",
         # The V2 bench harness opens its own throwaway member database.
         "eval/bench/member_v2.py": "bench V2 member database",
+        # The lesson recall bench writes its golden rules into a throwaway store.
+        "eval/bench/lesson_recall.py": "bench lesson recall store",
         # Scenario workspaces are throwaway stores, not the install's memory.
         "eval/runner.py": "eval scenario workspace",
         # Read-only injection audit; it never writes an episode.
