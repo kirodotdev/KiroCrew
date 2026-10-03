@@ -3,7 +3,8 @@
 Registered at gateway startup by ``apps/routes.py:register_app_routes``
 (loaded via the app's ``backend.routes`` manifest field).
 
-Routes (browser-facing, same-origin authed):
+Routes (browser-facing, same-origin authed). Every write is owner-only from
+the dashboard; an app token admitted by its manifest grant keeps its access:
 
   GET  /api/apps/personal-shopper/preferences        -> list all preferences
   POST /api/apps/personal-shopper/preferences        -> add a preference
@@ -38,6 +39,7 @@ from aiohttp import web
 from kiro_crew.apps.builtins.personal_shopper.backend.store import PreferenceStore
 from kiro_crew.apps.manager import app_data_dir, is_app_enabled
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.loop_lock import LoopBoundLock
 
@@ -181,6 +183,36 @@ def _require_enabled(handler):
         return await handler(request)
 
     return _wrapped
+
+
+def _owner_only(operation: str):
+    """Refuse a non-owner dashboard caller before a write runs.
+
+    A dashboard request (``app == ""``) or one with no app claim at all goes
+    through the shared owner gate and its 403 ``owner_only``. An app token keeps
+    today's result: the token middleware has already confined it to the routes
+    its manifest ``permissions.api`` grants.
+    """
+
+    def _decorate(handler):
+        @wraps(handler)
+        async def _wrapped(request: web.Request) -> web.Response:
+            if not request.get("app"):
+                denied = await require_owner_dashboard_request(
+                    request, f"personal_shopper.{operation}"
+                )
+                if denied is not None:
+                    return denied
+            return await handler(request)
+
+        return _wrapped
+
+    return _decorate
+
+
+def _owner_write(operation: str, handler):
+    """A mutating route: the enable gate first, then the owner gate."""
+    return _require_enabled(_owner_only(operation)(handler))
 
 
 def _check_records(
@@ -551,35 +583,35 @@ def register_routes(app: web.Application) -> None:
         f"{_PREFIX}/preferences", _require_enabled(_handle_list_preferences)
     )
     app.router.add_post(
-        f"{_PREFIX}/preferences", _require_enabled(_handle_add_preference)
+        f"{_PREFIX}/preferences", _owner_write("add_preference", _handle_add_preference)
     )
     app.router.add_put(
-        f"{_PREFIX}/preferences/{{id}}", _require_enabled(_handle_update_preference)
+        f"{_PREFIX}/preferences/{{id}}", _owner_write("update_preference", _handle_update_preference)
     )
     app.router.add_delete(
-        f"{_PREFIX}/preferences/{{id}}", _require_enabled(_handle_delete_preference)
+        f"{_PREFIX}/preferences/{{id}}", _owner_write("delete_preference", _handle_delete_preference)
     )
     app.router.add_post(
         f"{_PREFIX}/preferences/search", _require_enabled(_handle_search_preferences)
     )
     app.router.add_post(
-        f"{_PREFIX}/preferences/reembed", _require_enabled(_handle_reembed_preferences)
+        f"{_PREFIX}/preferences/reembed", _owner_write("reembed_preferences", _handle_reembed_preferences)
     )
     # Groups
     app.router.add_get(f"{_PREFIX}/groups", _require_enabled(_handle_list_groups))
-    app.router.add_post(f"{_PREFIX}/groups", _require_enabled(_handle_add_group))
+    app.router.add_post(f"{_PREFIX}/groups", _owner_write("add_group", _handle_add_group))
     app.router.add_delete(
-        f"{_PREFIX}/groups/{{id}}", _require_enabled(_handle_delete_group)
+        f"{_PREFIX}/groups/{{id}}", _owner_write("delete_group", _handle_delete_group)
     )
     # History
     app.router.add_get(f"{_PREFIX}/history", _require_enabled(_handle_list_history))
-    app.router.add_post(f"{_PREFIX}/history", _require_enabled(_handle_add_history))
+    app.router.add_post(f"{_PREFIX}/history", _owner_write("add_history", _handle_add_history))
     app.router.add_put(
         f"{_PREFIX}/history/{{id}}/feedback",
-        _require_enabled(_handle_update_feedback),
+        _owner_write("update_feedback", _handle_update_feedback),
     )
     # Sites
     app.router.add_get(f"{_PREFIX}/sites", _require_enabled(_handle_get_sites))
-    app.router.add_put(f"{_PREFIX}/sites", _require_enabled(_handle_put_sites))
+    app.router.add_put(f"{_PREFIX}/sites", _owner_write("put_sites", _handle_put_sites))
     # Shutdown: close the sqlite connection so the data directory stays removable.
     app.on_cleanup.append(_close_store)

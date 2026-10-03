@@ -16,6 +16,7 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from aiohttp import web
@@ -25,6 +26,15 @@ from kiro_crew.apps.builtins.personal_shopper.backend import routes as routes_mo
 from kiro_crew.apps.builtins.personal_shopper.backend.store import PreferenceStore
 
 _PREFIX = "/api/apps/personal-shopper"
+_OWNER = "owner-user"
+
+
+@web.middleware
+async def _as_owner(request: web.Request, handler):
+    """Stamp the dashboard owner's identity, as the token middleware would."""
+    request["user"] = _OWNER
+    request["app"] = ""
+    return await handler(request)
 
 
 class RoutesTestCase(unittest.IsolatedAsyncioTestCase):
@@ -62,7 +72,8 @@ class RoutesTestCase(unittest.IsolatedAsyncioTestCase):
         enabled.start()
         self.addCleanup(enabled.stop)
 
-        app = web.Application()
+        app = web.Application(middlewares=[_as_owner])
+        app["state"] = SimpleNamespace(owner_id=_OWNER)
         routes_mod.register_routes(app)
         self.client = TestClient(TestServer(app))
         await self.client.start_server()
