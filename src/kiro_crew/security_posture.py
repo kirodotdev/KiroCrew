@@ -1733,6 +1733,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # row.
         "subagent_manager/admission/gate.py",
         "subagent_manager/admission/pump.py",
+        # Same partition: its one redactor call writes a refused run's tombstone
+        # ``detail`` -- the same field ``subagent.py``'s own tombstone writer
+        # redacts -- so the file carries no audience the facade does not already.
+        "subagent_manager/admission/taskq_bridge.py",
         "subagent_manager/continuation.py",
         "subagent_manager/monitoring.py",
         "subagent_manager/run.py",

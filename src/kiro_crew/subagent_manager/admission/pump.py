@@ -23,7 +23,9 @@ if TYPE_CHECKING:
         SubagentInfo,
         _context_groups_field,
         asyncio,
+        contested_spawn_note,
         create_agent_folder,
+        is_contested_root,
         logger,
         parent_spawn_policy,
         sel,
@@ -41,6 +43,7 @@ class _PumpMixin(ManagerComponent):
         def taskq_admit_wait_secs(self) -> float: ...
 
         async def taskq_child_registered_async(self, info: "SubagentInfo") -> None: ...
+        async def await_pending_defer(self, agent_id: str) -> None: ...
 
         def _record_crew_log_spawn_started(self, info: "SubagentInfo") -> None: ...
 
@@ -309,6 +312,19 @@ class _PumpMixin(ManagerComponent):
         # shadowing the fresh read. ``params`` itself stays whole: it is the
         # row's identity for the stop path below.
         spawn_params = {k: v for k, v in params.items() if k != "_parent_spawn_policy"}
+        # A refilled continuation re-resolves its conversation root at
+        # re-entry (``_window_entry`` strips the stamp its row was written
+        # under). The gate compares against the founder's record but reads
+        # nothing itself, so the founder's durable root is read here, off the
+        # loop, the way ``spawn_async`` reads it for a first entry: it is the
+        # only carrier of a contest written while the row waited on disk, and
+        # the in-memory record that contested the conversation may be gone
+        # while the founder's is still retained with its founding root.
+        conversation_for_root = str(spawn_params.get("conversation_key") or "")
+        if conversation_for_root and spawn_params.get("_durable_conversation_root") is None:
+            spawn_params["_durable_conversation_root"] = await asyncio.to_thread(
+                self._manager._durable_conversation_root, conversation_for_root
+            )
         first: Any = self._manager.spawn(
             **spawn_params,
             _parent_spawn_policy=policy,
@@ -327,6 +343,15 @@ class _PumpMixin(ManagerComponent):
                 # durably parked -- or refused for want of a row -- before any
                 # caller can read the answer as a queued handle.
                 first = await admission.finish_parked_defer(first)
+                # A refusal fired on this branch (the gate's commit-point
+                # re-check, an agent name that fails validation at dispatch)
+                # posted its row's FAILED write on the way out. Await it -- and
+                # verify it landed -- before the answer is returned: this
+                # branch runs under neither ``spawn_async``'s accept ``finally``
+                # nor ``claim_and_start``, so without the await the entry would
+                # sit in the pending map for the process lifetime and the row
+                # ADMITTED for the next incarnation's reconcile to requeue.
+                await admission.await_pending_defer(first.id)
             # A re-queued (or, without a store, started) row: the W3 branch
             # runs here, awaited, instead of inline in ``spawn_impl``.
             if (
@@ -447,9 +472,23 @@ class _PumpMixin(ManagerComponent):
             # record under this id. Only a still-proceeding claim that really
             # registered may consume the reservation; terminal report identity
             # is not a registered start. A retained claim keeps the reservation.
-            registered = claim_will_register and point.agent_id in self._manager._agents
+            # A refusal at the gate's commit point ALSO registers a terminal
+            # record under this id (so the caller's next status read finds the
+            # failure, not a 404): that is a record of a run that never
+            # started, so it must not read as a registered start either.
+            started_rec = self._manager._agents.get(point.agent_id)
+            registered = claim_will_register and started_rec is not None and not started_rec.done
             if not registered and not claim_retained:
                 self.release_reservation(point.agent_id)
+                # A claim that was refused at the gate's commit point (the
+                # conversation-busy re-check) posted its row's FAILED write on
+                # the way out. Await it here -- and verify it landed -- before
+                # the refusal is returned: this is the one re-entry path that
+                # does not run under ``spawn_async``'s accept ``finally``, and a
+                # refusal published while its durable failure is still in
+                # flight would let a lost write leave the claimed row ADMITTED
+                # for the next incarnation's reconcile to requeue and run.
+                await self.await_pending_defer(point.agent_id)
             if registered:
                 # Every registered start re-publishes the parent's queued
                 # depth. A direct spawn owes nothing to the count, so its emit
@@ -457,7 +496,8 @@ class _PumpMixin(ManagerComponent):
                 # counted as waiting until this claim moved it out of the
                 # claimable states, and this emit is what removes it. Without
                 # it the chip keeps "1 waiting" and the old wait reason forever.
-                started = self._manager._agents[point.agent_id]
+                started = started_rec
+                assert started is not None
                 self._manager._emit_queue_depth(started.parent_session_key, started.batch_id)
             if report_params is not None:
                 self._manager._report_queued_stop(report_params)
@@ -743,7 +783,12 @@ class _PumpMixin(ManagerComponent):
 
             task_safe, _ = redact_exfiltration_urls(info.task)
             task_safe, _ = redact_credentials(task_safe)
-            task_preview: str = task_safe[:80]
+            # One line: the gateway's spawn approver reads the description's
+            # first line as the prompt's title and the rest as its purpose, so a
+            # task with a newline in its first 80 characters would otherwise cut
+            # its own title short and push the tail (and, for a contested run,
+            # the state and remedy below it) into the body.
+            task_preview: str = " ".join(task_safe[:80].split())
             # Mark the pre-execution spawn gate as a human-wait so the reaper
             # does not misreport it. This is the SAME lifecycle the mid-run TOOL
             # approvals use in run.py: set before the await, cleared in a
@@ -767,9 +812,30 @@ class _PumpMixin(ManagerComponent):
                 request_id,
                 info.parent_session_key or "<unowned>",
             )
+            # The prompt is raised under the chat at the ROOT of the spawn tree,
+            # not the literal parent: a nested run's parent is a ``subagent:<id>``
+            # that owns no channel and no tab, and a Trust press must write the
+            # key the gate reads back (``root_approval_policy``), or the grant
+            # lands on a key nothing consults and the tree keeps prompting.
+            # Equal to the parent for a depth-one run; ``""`` for an unowned one;
+            # the contested marker for a run in a contested conversation, whose
+            # card's tab must not approve it (``trust_root_for``).
+            root_session_key: str = self._manager.trust_root_for(info)
+            description: str = f"spawn_run({task_preview})"
+            if is_contested_root(root_session_key):
+                # A conversation with no single owning chat resolves to a marker
+                # no tab shows, so this prompt reaches only
+                # the global approvals feed, where an unlabeled prompt with no
+                # chat provenance reads as a routing bug and the remedy is not
+                # otherwise discoverable. The first line stays the ask -- the
+                # title every sibling card shows -- and the second is the body:
+                # the state and the remedy, whose words (and why they are shaped
+                # for that card) live beside ``CONTESTED_PROMPT_STATE``; the run
+                # loop leads the run's tool prompts with the same state.
+                description = f"{description}\n{contested_spawn_note()}"
             try:
                 approved: bool = await self._manager._on_spawn_approval(
-                    request_id, f"spawn_run({task_preview})", info.parent_session_key
+                    request_id, description, root_session_key
                 )
             finally:
                 info._awaiting_approval = False
@@ -1102,6 +1168,7 @@ class _PumpMixin(ManagerComponent):
                 execution_context=info.execution_context,
                 memory_mode=info.memory_mode,
                 app=info.app,
+                conversation_root=info.conversation_root_session_key,
             )
         except Exception:
             logger.warning(

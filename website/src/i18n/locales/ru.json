@@ -7734,6 +7734,7 @@
         "close": "Закрыть",
         "continue_in_chat": "Продолжить в чате",
         "could_not_open_the_chat_click_button_to_retry": "Не удалось открыть чат. Нажми {{button}}, чтобы повторить.",
+        "could_not_record_your_decision_click_button_to_retry": "Не удалось сохранить твоё решение. Нажми {{button}}, чтобы повторить.",
         "could_not_open_the_result_in_chat_click_button_to_retry": "Не удалось открыть результат в чате. Нажми {{button}}, чтобы повторить.",
         "go_to_chat": "Перейти в чат",
         "mark_read": "Отметить прочитанным",

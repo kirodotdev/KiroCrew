@@ -223,9 +223,7 @@ class TestOwnedApprovalStillRoutesToItsSlot:
         gateway.dashboard_state._slots = {"slot-other": _slot(running=True)}
 
         with patch("kiro_crew.slack.handler.is_yolo_mode", return_value=False):
-            approve_fn = gateway._interactive_approval(
-                "subagent", slot_resolver=lambda _rid: ""
-            )
+            approve_fn = gateway._interactive_approval("subagent", slot_resolver=lambda _rid: "")
             await approve_fn(_event("req-owned-4"), "")
 
         assert _requested_slot(gateway) == ""
@@ -278,9 +276,7 @@ class TestLowFidelityChildNeverAutoApproved:
         gateway = _make_gateway()
         gateway.dashboard_state._slots = {"slot-1": _slot(running=True, trust=True)}
         gateway.sessions.get_pid = MagicMock(return_value=None)
-        approve_fn = gateway._interactive_approval(
-            "subagent", slot_resolver=lambda _rid: "slot-1"
-        )
+        approve_fn = gateway._interactive_approval("subagent", slot_resolver=lambda _rid: "slot-1")
         assert await approve_fn(_child_lf_event()) is True
         gateway.dashboard_state.request_approval.assert_awaited_once()
 
@@ -375,9 +371,7 @@ class TestIdentityTrustedChildHonorsUnconditionalGrants:
         gateway = _make_gateway()
         gateway.dashboard_state._slots = {"slot-1": _slot(running=True, trust=True)}
         gateway.sessions.get_pid = MagicMock(return_value=None)
-        approve_fn = gateway._interactive_approval(
-            "subagent", slot_resolver=lambda _rid: "slot-1"
-        )
+        approve_fn = gateway._interactive_approval("subagent", slot_resolver=lambda _rid: "slot-1")
         assert await approve_fn(_child_identity_event()) is True
         gateway.dashboard_state.request_approval.assert_not_awaited()
 
@@ -388,9 +382,7 @@ class TestIdentityTrustedChildHonorsUnconditionalGrants:
         gateway = _make_gateway()
         gateway.dashboard_state._slots = {"slot-1": _slot(running=True, trust=False)}
         gateway.sessions.get_pid = MagicMock(return_value=None)
-        approve_fn = gateway._interactive_approval(
-            "subagent", slot_resolver=lambda _rid: "slot-1"
-        )
+        approve_fn = gateway._interactive_approval("subagent", slot_resolver=lambda _rid: "slot-1")
         assert await approve_fn(_child_identity_event()) is True
         gateway.dashboard_state.request_approval.assert_awaited_once()
 
@@ -401,9 +393,7 @@ class TestIdentityTrustedChildHonorsUnconditionalGrants:
         gateway = _make_gateway()
         gateway.dashboard_state._slots = {"slot-1": _slot(running=True, trust=True)}
         gateway.sessions.get_pid = MagicMock(return_value=None)
-        approve_fn = gateway._interactive_approval(
-            "subagent", slot_resolver=lambda _rid: "slot-1"
-        )
+        approve_fn = gateway._interactive_approval("subagent", slot_resolver=lambda _rid: "slot-1")
         assert await approve_fn(_child_lf_event()) is True
         gateway.dashboard_state.request_approval.assert_awaited_once()
 
@@ -419,3 +409,123 @@ class TestIdentityTrustedChildHonorsUnconditionalGrants:
         approve_fn = gateway._interactive_approval("cron")
         assert await approve_fn(ev) is True
         gateway.dashboard_state.request_approval.assert_awaited_once()
+
+
+class TestContestedRootClosesEveryShortcut:
+    """A prompt keyed by a conversation's contested marker reaches a human.
+
+    The admission gate declared the run one only a human may admit, and its
+    prompts arrive keyed by ``contested:<key>`` -- no session key, no tab.
+    Every shortcut in ``_interactive_approval`` that answers without a human is
+    a standing grant by a process or a chat the contest says is not this run's
+    owner: the per-source unattended opt-in, the CLI ``--approval`` flag, the
+    YOLO override, and slot trust. None of them may answer; the prompt does.
+    """
+
+    MARKER = ""
+
+    @classmethod
+    def setup_class(cls) -> None:
+        from kiro_crew.subagent import contested_root
+
+        cls.MARKER = contested_root("subagent:founder")
+
+    @pytest.mark.asyncio
+    async def test_auto_approve_source_still_prompts(self) -> None:
+        gateway = _make_gateway()
+        gateway._cfg.hooks.get = MagicMock(return_value=["subagent"])
+        approve_fn = gateway._interactive_approval("subagent")
+        assert await approve_fn(_event(), self.MARKER) is True  # the human stub answered
+        gateway.dashboard_state.request_approval.assert_awaited_once()
+        assert _requested_slot(gateway) == ""
+
+    @pytest.mark.asyncio
+    async def test_cli_yolo_flag_still_prompts(self) -> None:
+        gateway = _make_gateway()
+        gateway._approval_mode = "yolo"
+        approve_fn = gateway._interactive_approval("subagent")
+        assert await approve_fn(_event(), self.MARKER) is True
+        gateway.dashboard_state.request_approval.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_yolo_override_still_prompts(self) -> None:
+        gateway = _make_gateway()
+        _override = MagicMock()
+        _override.is_active = MagicMock(return_value=True)
+        with patch("kiro_crew.slack.gateway.safety_override", return_value=_override):
+            approve_fn = gateway._interactive_approval("subagent")
+            assert await approve_fn(_event(), self.MARKER) is True
+        gateway.dashboard_state.request_approval.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_slot_trust_still_prompts(self) -> None:
+        """Even a resolver that names a trusted slot does not speak for the marker."""
+        gateway = _make_gateway()
+        gateway.dashboard_state._slots = {"slot-1": _slot(running=True, trust=True)}
+        approve_fn = gateway._interactive_approval("subagent", slot_resolver=lambda _rid: "slot-1")
+        assert await approve_fn(_event(), self.MARKER) is True
+        gateway.dashboard_state.request_approval.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_the_human_answer_is_the_answer(self) -> None:
+        gateway = _make_gateway()
+        gateway._approval_mode = "yolo"
+        gateway.dashboard_state.request_approval = AsyncMock(return_value=False)
+        approve_fn = gateway._interactive_approval("subagent")
+        assert await approve_fn(_event(), self.MARKER) is False
+        gateway.dashboard_state.request_approval.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_the_owner_dm_is_not_opened_for_a_contested_prompt(self) -> None:
+        """With Slack configured, an ordinary slotless prompt races the owner's
+        DM against the dashboard; a contested one goes to the dashboard feed
+        alone. The DM card carries a Trust button that would record the marker
+        as a trusted session, and no explanation of why there is no tab."""
+        gateway = _make_gateway()
+        gateway.slack = MagicMock()
+        gateway.slack.open_dm = AsyncMock(return_value="D-owner")
+        gateway.slack.post_blocks = AsyncMock(return_value="1.0")
+        gateway.slack.update_message = AsyncMock()
+        gateway._owner_id = "U-owner"
+        approve_fn = gateway._interactive_approval("subagent")
+        assert await approve_fn(_event(), self.MARKER) is True
+        gateway.slack.open_dm.assert_not_awaited()
+        gateway.slack.post_blocks.assert_not_awaited()
+        gateway.dashboard_state.request_approval.assert_awaited_once()
+        assert gateway.dashboard_state.request_approval.await_args.kwargs["contested"] is True
+        # The counterfactual: an uncontested slotless prompt still opens the DM.
+        gateway.dashboard_state.request_approval = AsyncMock(return_value=True)
+        assert await approve_fn(_event("req-bg-2"), "cron:job-1") is True
+        gateway.slack.open_dm.assert_awaited_once_with("U-owner")
+        gateway.slack.post_blocks.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_the_audit_line_is_attributed_to_the_calling_source(self) -> None:
+        """The SEL record of the closed shortcuts names the source that raised
+        the prompt (``subagent``), not ``log_api_access``'s ``dashboard`` default
+        -- its own ``operation`` string already says ``subagent.…``."""
+        gateway = _make_gateway()
+        audit = MagicMock()
+        with patch("kiro_crew.slack.gateway.sel", return_value=audit):
+            approve_fn = gateway._interactive_approval("subagent")
+            assert await approve_fn(_event(), self.MARKER) is True
+        closed = [
+            c
+            for c in audit.log_api_access.call_args_list
+            if c.kwargs.get("operation") == "subagent.contested_root_shortcuts_closed"
+        ]
+        assert len(closed) == 1, audit.log_api_access.call_args_list
+        assert closed[0].kwargs["source"] == "subagent"
+        assert closed[0].kwargs["outcome"] == "denied"
+
+    @pytest.mark.asyncio
+    async def test_no_human_surface_fails_closed(self) -> None:
+        """No dashboard, no Slack: the no-UI fallback auto-approves an ordinary
+        request, but a contested one has no answer but a human's, so it is denied."""
+        gateway = _make_gateway()
+        gateway.dashboard_state = None
+        approve_fn = gateway._interactive_approval("subagent")
+        assert await approve_fn(_event(), self.MARKER) is False
+        # The counterfactual: an uncontested request on the same surface still
+        # takes the documented no-UI auto-approve.
+        assert await approve_fn(_event("req-bg-2"), "dashboard:chat-1") is True

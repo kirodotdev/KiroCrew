@@ -7512,6 +7512,7 @@
         "close": "বন্ধ করুন",
         "continue_in_chat": "চ্যাটে চালিয়ে যান",
         "could_not_open_the_chat_click_button_to_retry": "চ্যাট খোলা যায়নি। আবার চেষ্টা করতে {{button}} ক্লিক করো।",
+        "could_not_record_your_decision_click_button_to_retry": "তোমার সিদ্ধান্ত নথিভুক্ত করা যায়নি। আবার চেষ্টা করতে {{button}} ক্লিক করো।",
         "could_not_open_the_result_in_chat_click_button_to_retry": "চ্যাটে ফলাফল খোলা যায়নি। আবার চেষ্টা করতে {{button}} ক্লিক করো।",
         "go_to_chat": "চ্যাটে যান",
         "mark_read": "পঠিত হিসেবে চিহ্নিত করুন",

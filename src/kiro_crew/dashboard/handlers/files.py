@@ -111,6 +111,7 @@ from kiro_crew.security import (
     redaction_switch,
     sandbox_credential_targets,
 )
+from kiro_crew.subagent import is_contested_root
 from kiro_crew.validation import (
     FILE_READ_SCHEMA,
     MODEL_ID_RE,
@@ -208,6 +209,28 @@ def _subagent_parent_session_key(state: DashboardState, session_key: str) -> str
         )
 
     best = max(matches, key=_rank)
+    # The ROOT of the run's spawn tree, not its literal parent: a nested run's
+    # parent is another ``subagent:<id>`` that no tab shows, so its card would be
+    # suppressed even though the chat that started the tree has a tab open. The
+    # manager's tab accessor reads the admission stamp and, for a run below a
+    # contested conversation -- whose stamp is the ``contested:`` marker, a trust
+    # stamp no tab reads -- climbs to the ancestor's tab, so the card lands
+    # where the run's other frames do instead of being dropped with a log line
+    # while the endpoint reports success. A manager without the accessor (a
+    # stubbed roster, or one whose accessor answers a non-str) answers with the
+    # raw stamp, then the parent, as before.
+    accessor = getattr(manager, "root_session_key_for", None)
+    if callable(accessor):
+        try:
+            root = accessor(best)
+        except Exception:
+            logger.warning("outbox notify: tab accessor failed", exc_info=True)
+            root = None
+        if isinstance(root, str):
+            return root
+    root = getattr(best, "root_session_key", "")
+    if isinstance(root, str) and root:
+        return "" if is_contested_root(root) else root
     parent = getattr(best, "parent_session_key", "")
     # isinstance, not truthiness: a stubbed manager can hand back a
     # non-str here and dashboard_slot_key would treat it as a key.

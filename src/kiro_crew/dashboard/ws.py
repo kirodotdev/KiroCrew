@@ -38,6 +38,7 @@ from kiro_crew.dashboard.ws_event_scope import (
     slots_envelope_extras,
 )
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.subagent import is_contested_root
 from kiro_crew.subagent_persistence import PanelRecords, read_panel_records
 
 logger = logging.getLogger(__name__)
@@ -149,7 +150,30 @@ def build_persisted_subagent_frame(record: dict, *, redact: Callable[[str], str]
     }
 
 
-def build_subagent_snapshot(a: Any, *, now: float | None = None) -> dict:
+def subagent_replay_slot(a: Any, manager: Any = None) -> str:
+    """The ``slot`` a replayed frame for *a* must carry: its ROOT chat's tab.
+
+    The live per-run frames are slotted to the root of the run's spawn tree
+    (the stamp taken at admission), so a nested run's card is drawn in the chat
+    that started the tree. The replay must name the same tab: keyed on the
+    literal ``subagent:<id>`` parent, a reconnect would tag the card with a slot
+    no tab reads and the live card would vanish. A record without a stamp (a
+    synthetic terminal, a test double) falls back to its parent, as before.
+
+    A run below a contested conversation is stamped with the conversation's
+    ``contested:`` marker -- a trust stamp no tab reads. Given the *manager*, the
+    same accessor the live frames use (``root_session_key_for``) turns it into
+    the ancestor's tab; without one the marker resolves to no slot rather than
+    tagging the replayed card with a key nothing routes.
+    """
+    accessor = getattr(manager, "root_session_key_for", None) if manager is not None else None
+    if callable(accessor):
+        return subagent_event_slot(accessor(a))
+    root = getattr(a, "root_session_key", "") or a.parent_session_key
+    return subagent_event_slot("" if is_contested_root(root) else root)
+
+
+def build_subagent_snapshot(a: Any, *, now: float | None = None, manager: Any = None) -> dict:
     """Build the ``subagent_snapshot`` replay frame's ``data`` for one agent.
 
     Separate from the reconnect handler so the frame's CONTENTS can be asserted
@@ -180,7 +204,7 @@ def build_subagent_snapshot(a: Any, *, now: float | None = None) -> dict:
 
     data: dict = {
         "id": a.id,
-        "slot": subagent_event_slot(a.parent_session_key),
+        "slot": subagent_replay_slot(a, manager),
         # The sub-agent's OWN session key (where it writes its ctx_blocks /
         # token rows), so a client can fetch this node's own context-trace and
         # render its window composition. Mirrors the run key derived in
@@ -1101,7 +1125,9 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
                                     _replay.append(
                                         {
                                             "type": "subagent_snapshot",
-                                            "data": build_subagent_snapshot(a),
+                                            "data": build_subagent_snapshot(
+                                                a, manager=state.subagents
+                                            ),
                                         }
                                     )
                                 except Exception:
@@ -1115,7 +1141,7 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
                                 # prefix-strip tags replayed cards with a slot
                                 # no tab reads, so the panel rehydrated empty
                                 # after every reconnect for cron/channel tabs.
-                                slot = subagent_event_slot(a.parent_session_key)
+                                slot = subagent_replay_slot(a, state.subagents)
                                 try:
                                     _replay.append(
                                         {

@@ -1565,6 +1565,10 @@ export interface ContentBlock {
 export interface Notification {
   kind: string; title: string; body: string; ts: string
   acked?: boolean; job_id?: string; task_id?: string; approval_id?: string
+  /** An approval the admission gate declared one only a human may answer
+   *  (a continuation across chats): the Review panel renders Approve as the
+   *  secondary choice, since the copy's safe action is to start again. */
+  contested?: boolean
   slot?: string; session_key?: string; slack_link?: string
   // RFC Phase 3: schema-v2 routing + per-channel settings stamps
   source?: string; channel?: string; priority?: string; silenced?: boolean

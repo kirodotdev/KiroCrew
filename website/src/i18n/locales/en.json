@@ -4849,6 +4849,7 @@
         "close": "Close",
         "continue_in_chat": "Continue in Chat",
         "could_not_open_the_chat_click_button_to_retry": "Could not open the chat. Click {{button}} to retry.",
+        "could_not_record_your_decision_click_button_to_retry": "Could not record your decision. Click {{button}} to retry.",
         "could_not_open_the_result_in_chat_click_button_to_retry": "Could not open the result in chat. Click {{button}} to retry.",
         "go_to_chat": "Go to Chat",
         "mark_read": "Mark read",

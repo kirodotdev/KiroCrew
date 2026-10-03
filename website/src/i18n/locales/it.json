@@ -7623,6 +7623,7 @@
         "close": "Chiudi",
         "continue_in_chat": "Continua nella chat",
         "could_not_open_the_chat_click_button_to_retry": "Impossibile aprire la chat. Fai clic su {{button}} per riprovare.",
+        "could_not_record_your_decision_click_button_to_retry": "Impossibile registrare la tua decisione. Fai clic su {{button}} per riprovare.",
         "could_not_open_the_result_in_chat_click_button_to_retry": "Impossibile aprire il risultato nella chat. Fai clic su {{button}} per riprovare.",
         "go_to_chat": "Vai alla chat",
         "mark_read": "Segna come letto",

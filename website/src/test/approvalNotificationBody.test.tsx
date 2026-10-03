@@ -26,6 +26,22 @@ describe('approvalNotificationBody', () => {
     expect(stripMd(body)).toContain('echo safe\nrm -rf target')
   })
 
+  it('leads with the purpose when asked, so a chat-less prompt says why before what', () => {
+    // A prompt slotted to no chat reaches the feed with nothing to place it; the
+    // card excerpt shows the body's first lines, so the purpose -- the one line
+    // that explains why it is there -- must precede the command. The default
+    // order (command, then purpose) is unchanged for slotted prompts.
+    const command = 'psql -h staging-db -f migrate.sql'
+    const purpose = 'This run was continued from more than one chat (no single chat\'s trust applies). Dry-run the migration'
+    const first = stripMd(approvalNotificationBody('subagent', command, purpose, { purposeFirst: true }))
+    expect(first).toBe('Source: subagent · ' + purpose + ' · ' + command)
+    const slotted = stripMd(approvalNotificationBody('subagent', command, purpose))
+    expect(slotted).toBe('Source: subagent · ' + command + ' · ' + purpose)
+    // No purpose: the option changes nothing a reader sees.
+    expect(stripMd(approvalNotificationBody('subagent', command, undefined, { purposeFirst: true })))
+      .toBe(stripMd(approvalNotificationBody('subagent', command)))
+  })
+
   it('preserves blank lines and indentation through approval composition', () => {
     const command = '\n  echo safe  \n\n\trm -rf target\n'
     const body = approvalNotificationBody('cron', command, 'Review this')

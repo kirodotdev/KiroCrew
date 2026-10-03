@@ -43,6 +43,30 @@ export default function NotificationDetailPanel({ n, onClose }: { n: Notificatio
   // `key`, unlike the page), so an unscoped error would follow the reader.
   const [handoffError, setHandoffError] = useState<string | null>(null)
   const handoffFailed = handoffError === n.ts
+  // Same scoping for a failed Approve / Reject: the request that did not reach
+  // the backend leaves the card in place (it is deleted only on success), so
+  // the failure is named beside the two buttons, with the one that failed as
+  // the retry. Keyed by `ts` plus the verb so the notice names the right button
+  // and does not follow the reader to the next notification.
+  const [approvalError, setApprovalError] = useState<{ ts: string; verb: 'approve' | 'reject' } | null>(null)
+  const approvalFailure = approvalError?.ts === n.ts
+    ? i18nT('components.notifications.notificationDetailPanel.could_not_record_your_decision_click_button_to_retry', {
+      button: approvalError.verb === 'approve'
+        ? i18nT('components.notifications.notificationDetailPanel.approve')
+        : i18nT('components.notifications.notificationDetailPanel.reject'),
+    })
+    : null
+  const resolve = async (verb: 'approve' | 'reject') => {
+    setApprovalError(null)
+    try {
+      await api.resolveApproval(n.approval_id || n.ts, verb)
+      dispatch(deleteNotification(n.ts))
+      onClose()
+    } catch (e) {
+      logError(`${verb} failed`, e)
+      setApprovalError({ ts: n.ts, verb })
+    }
+  }
   const km = KIND_META[n.kind] || DEFAULT_META
   const slots = useAppSelector(s => s.dashboard.slots)
 
@@ -183,9 +207,36 @@ export default function NotificationDetailPanel({ n, onClose }: { n: Notificatio
 
         {/* Kind-specific actions */}
         {n.kind === 'approval' && (
-          <div className="flex gap-3 mt-4">
-            <button className="px-4 py-2 rounded-lg bg-ok text-ok-fg text-[13px] font-semibold cursor-pointer border-none hover:brightness-110 transition-all" onClick={async () => { try { await api.resolveApproval(n.approval_id || n.ts, 'approve'); dispatch(deleteNotification(n.ts)); onClose() } catch (e) { logError('Approve failed', e) } }}><CheckCircle className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.approve')}</button>
-            <button className="px-4 py-2 rounded-lg bg-danger text-danger-fg text-[13px] font-semibold cursor-pointer border-none hover:brightness-110 transition-all" onClick={async () => { try { await api.resolveApproval(n.approval_id || n.ts, 'reject'); dispatch(deleteNotification(n.ts)); onClose() } catch (e) { logError('Reject failed', e) } }}><Ban className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.reject')}</button>
+          <div className="flex gap-3 mt-4 items-center">
+            {/* A contested approval (a run continued across chats, which the
+                gate declared one only a human may answer) leads with copy
+                whose safe action is to start again -- so Approve is drawn as
+                the secondary choice (outline), not the filled primary a
+                habituated approver presses. */}
+            <button
+              data-testid="approval-approve"
+              data-contested={n.contested ? 'true' : undefined}
+              className={n.contested
+                ? 'px-4 py-2 rounded-lg bg-transparent text-ok text-[13px] font-semibold cursor-pointer border border-ok hover:bg-ok/10 transition-all'
+                : 'px-4 py-2 rounded-lg bg-ok text-ok-fg text-[13px] font-semibold cursor-pointer border-none hover:brightness-110 transition-all'}
+              onClick={() => resolve('approve')}
+            ><CheckCircle className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.approve')}</button>
+            <button data-testid="approval-reject" className="px-4 py-2 rounded-lg bg-danger text-danger-fg text-[13px] font-semibold cursor-pointer border-none hover:brightness-110 transition-all" onClick={() => resolve('reject')}><Ban className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.reject')}</button>
+            {/* No hand-off: this panel is an OVERLAY over whatever page the
+                reader was on, including a chat holding an unsaved composer
+                draft -- the same draft the hand-off notice above protects.
+                `askAgent` would navigate to a chat past the `useGuardedLeave`
+                gate every action here runs inside, discarding that draft. The
+                failed request is this panel's own call to the backend and the
+                sentence carries its remedy (the button that failed is still
+                in this row). Inline, since it sits in the button row; no
+                dismiss, since it would be a third control there and the
+                notice clears on the next click. */}
+            <ErrorNotice
+              variant="inline"
+              message={approvalFailure}
+              testId="notif-approval-error"
+            />
           </div>
         )}
         {/* RFC Phase 4: generic actions -- rendered only with a validated

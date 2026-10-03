@@ -57,11 +57,12 @@ class ApprovalCoordinator:
         is_background: bool,
         redact_url: _Redactor,
         redact_secret: _Redactor,
+        contested: bool = False,
     ) -> bool:
         loop = asyncio.get_running_loop()
         future: asyncio.Future[bool] = loop.create_future()
         state._approval_futures[approval_id] = future
-        state._pending_approvals[approval_id] = {
+        record: dict[str, Any] = {
             "id": approval_id,
             # The request id is the caller's and can recur; this names THIS
             # request, so a card rendered from an earlier record with the same
@@ -76,6 +77,15 @@ class ApprovalCoordinator:
             "slot": slot,
             "ts": time.time(),
         }
+        if contested:
+            # Set by the gateway from the prompt's TRUST root, never inferred
+            # by a reader from the slot: a prompt with no slot is not thereby a
+            # contested one (a run rooted in a cron, the CLI or a channel has
+            # no tab either), and the flag is what lets the feed card lead
+            # with the contested purpose only where the purpose is the
+            # system's explanation rather than the run's own words.
+            record["contested"] = True
+        state._pending_approvals[approval_id] = record
         state.broadcast_ws("approval", state._pending_approvals[approval_id])
         # The record names its owning slot, and the slot projection reads the
         # live records through ``pending_coordinator_approvals``: this push is

@@ -207,10 +207,22 @@ export function useApprovalRegistry(dispatch: AppDispatch, queryClient: QueryCli
         const approvalNote = {
           kind: 'approval',
           title: i18nT('hooks.useWebSocket.tool_approval', { name: data.tool || i18nT('hooks.useWebSocket.unknown') }),
-          body: approvalNotificationBody(data.source, data.tool_input, data.tool_purpose),
+          // A contested run's prompt reaches the feed with no slot and
+          // leads with its purpose: the card excerpt is all a reader gets
+          // before Review, and here the purpose is the system's account of
+          // why there is no tab. The backend says so explicitly -- a
+          // slotless subagent prompt is NOT thereby contested (a run rooted
+          // in a cron, the CLI or a channel has no tab either, and its
+          // purpose is the run's own words), so those keep the command first.
+          body: approvalNotificationBody(data.source, data.tool_input, data.tool_purpose, {
+            purposeFirst: data.contested === true,
+          }),
           ts: String(data.ts || Date.now() / 1000),
           approval_id: data.id,
           ...(approvalSlot ? { slot: approvalSlot } : {}),
+          // The Review panel reads this to make Approve the secondary
+          // choice: the copy's safe action is to start again from one chat.
+          ...(data.contested === true ? { contested: true } : {}),
         } as Notification
         dispatch(addNotification(approvalNote))
         // The in-app banner hears LIVE arrivals only, same as the

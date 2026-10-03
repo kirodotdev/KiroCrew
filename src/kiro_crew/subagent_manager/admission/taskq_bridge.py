@@ -7,6 +7,8 @@ import logging as _logging
 import time as _time
 from typing import TYPE_CHECKING, Any, Mapping
 
+from kiro_crew.process_identity import MAX_ERROR_DETAIL_LEN
+from kiro_crew.subagent_persistence import read_state, write_tombstone
 from kiro_crew.subagent_wait_reasons import (
     QUEUED_REASON_ADAPTIVE_CAP_ZERO,
     RESUMING_AFTER_RESTART,
@@ -15,6 +17,7 @@ from kiro_crew.subagent_wait_reasons import (
 )
 
 from .._component import ManagerComponent
+from ..monitoring import tombstone_recovery_action
 from .types import (
     DeferPoint,
     FairnessSettings,
@@ -31,6 +34,19 @@ _glue_logger = _logging.getLogger("kiro_crew.subagent_manager.admission")
 # reading one row is normally writer-thread contention, not an outage.
 _STATE_READ_ATTEMPTS = 3
 _STATE_READ_BACKOFF_SECS = 0.2
+# A refused row's FAILED settle is not given up on: past the read attempts above the pause
+# between tries doubles up to this cap, and the retry runs until the row reads terminal.
+_SETTLE_RETRY_BACKOFF_CAP_SECS = 2.0
+# How long one AWAITER of a refused row's settle waits for it before it goes on without
+# the row read terminal. The settle itself is not bounded by this -- it keeps retrying in
+# the background -- but the joins are serial on the pump's dispatch path, so a store that
+# raises for every write (ENOSPC, EROFS, a lock never released) must not hold every other
+# queued spawn behind one refusal. Long enough to outlast the read bound above plus a few
+# capped retries; shorter than the shutdown drain, so a wedged store still ends in the
+# bounded-shutdown posture rather than an unbounded hold. An ORDINARY defer write is not
+# bounded by this: its awaiter publishes ``queued`` on return, and the row's ``next_run_at``
+# must be durable before that verdict goes out.
+_SETTLE_JOIN_TIMEOUT_SECS = 10.0
 
 #: What a store-only queued count answers while the store cannot be read: SOME
 #: waiting work, never none. Every consumer of that count is a fail-closed
@@ -550,26 +566,174 @@ class _TaskqBridgeMixin(ManagerComponent):
             store, f"defer {agent_id}", store.defer, agent_id, store.now() + wait, reason=reason
         )
         if task is not None:
-            pending = getattr(self._manager, "_pending_defers", None)
-            if pending is None:
-                pending = {}
-                setattr(self._manager, "_pending_defers", pending)
-            pending[agent_id] = task
+            self._retain_pending(agent_id, task)
         try:
             _asyncio.get_event_loop().call_later(wait, self._manager._drain_queue)
         except RuntimeError:
             pass
 
     async def await_pending_defer(self, agent_id: str) -> None:
-        """Wait for the defer :meth:`taskq_defer_posted` posted for *agent_id*,
-        so ``next_run_at`` is on the row before the pump may refill it."""
+        """Wait for the write :meth:`taskq_defer_posted` or :meth:`taskq_fail`
+        retained for *agent_id*, so the row carries it before the pump may
+        refill it or the caller hears the verdict. The wait is SHIELDED: the
+        task is the row's durable write, and a caller cancelled mid-wait (a
+        turn torn down, a dispatcher cancelled at shutdown) must not take it
+        down -- for a refusal that would leave the claimed row ADMITTED, the
+        one state a boot reconciler requeues without asking, and the shutdown
+        that cancels the caller is the very event whose restart requeues it.
+        The entry stays in the map until the task is done, so a later awaiter
+        of the same id joins the same task.
+
+        An ORDINARY defer write (:meth:`taskq_defer_posted`) is awaited in
+        full: the caller publishes ``queued`` on its return, and a row whose
+        ``next_run_at`` is still in flight when that verdict goes out is a row
+        a restart dispatches at once. Only a REFUSAL's settle
+        (:meth:`taskq_fail`) is joined with a bound
+        (``_SETTLE_JOIN_TIMEOUT_SECS``): that settle retries without limit,
+        and these awaits run serially on the pump's dispatch path, so a store
+        that raises for every write would otherwise hold every other queued
+        spawn behind one refusal. On expiry the awaiter logs once and goes on;
+        the settle keeps retrying in the background as a tracked store task,
+        still joinable under the row's id, and drained by ``cancel_all``."""
         pending = getattr(self._manager, "_pending_defers", None)
-        task = pending.pop(agent_id, None) if pending else None
-        if task is not None:
+        task = pending.get(agent_id) if pending else None
+        if task is None:
+            return
+        bounded = task in (getattr(self._manager, "_pending_settles", None) or ())
+        try:
+            if bounded:
+                await _asyncio.wait_for(_asyncio.shield(task), _SETTLE_JOIN_TIMEOUT_SECS)
+            else:
+                await _asyncio.shield(task)
+        except _asyncio.TimeoutError:
+            _glue_logger.warning(
+                "taskq: row %s is not settled after %.0fs; going on while its settle "
+                "keeps retrying in the background",
+                agent_id,
+                _SETTLE_JOIN_TIMEOUT_SECS,
+            )
+            return
+        except Exception:  # noqa: BLE001 - the write logged its own failure
+            pass
+        if pending is not None and pending.get(agent_id) is task:
+            pending.pop(agent_id, None)
+
+    def _retain_pending(
+        self, agent_id: str, task: "_asyncio.Task[Any]", *, bounded_join: bool = False
+    ) -> None:
+        """Record *task* as the write pending on the row of *agent_id* until it is done.
+
+        ``bounded_join`` marks a refusal's settle, the one write
+        :meth:`await_pending_defer` may stop waiting for; a defer write is
+        never marked."""
+        pending = getattr(self._manager, "_pending_defers", None)
+        if pending is None:
+            pending = {}
+            setattr(self._manager, "_pending_defers", pending)
+        pending[agent_id] = task
+        settles = getattr(self._manager, "_pending_settles", None)
+        if settles is None:
+            settles = set()
+            setattr(self._manager, "_pending_settles", settles)
+        if bounded_join:
+            settles.add(task)
+
+        def _release(_t: "_asyncio.Task[Any]") -> None:
+            if pending.get(agent_id) is task:
+                pending.pop(agent_id, None)
+            settles.discard(task)
+
+        task.add_done_callback(_release)
+
+    @staticmethod
+    def _tombstone_refused_row(agent_id: str, reason: str) -> None:
+        """The refused run's durable ending, written where the store cannot reach.
+
+        ``reconcile_on_boot`` asks the artifact probe about every row the dead
+        incarnation left behind BEFORE it requeues an ADMITTED one, and a
+        tombstone whose cause is ``error`` is the probe's ``failed``. Blocking
+        file I/O: an on-loop caller wraps it in a thread.
+        """
+        # circular import: ``kiro_crew.subagent`` loads the admission package,
+        # and this module, while it is being imported.
+        from kiro_crew.subagent import _redact
+
+        try:
+            write_tombstone(
+                agent_id,
+                cause="error",
+                recovery_action=tombstone_recovery_action(agent_id, read_state(agent_id) or {}),
+                detail=_redact(reason)[:MAX_ERROR_DETAIL_LEN],
+            )
+        except (ValueError, OSError):
+            _glue_logger.debug("taskq: tombstone for refused %s failed", agent_id, exc_info=True)
+
+    async def _settle_refused_row(
+        self, store: "_taskq.TaskStore", agent_id: str, reason: str, *, memory_mode: str = ""
+    ) -> None:
+        """Write ``failed`` for a refused row until the row reads terminal.
+
+        The tombstone goes first (:meth:`_tombstone_refused_row`): it is the
+        verdict the next boot reads if nothing below ever lands, and a
+        ``to_thread`` cancelled mid-write detaches the worker rather than
+        stopping it, so the file lands even when this task is cancelled at the
+        shutdown drain. Store contention is routine here (one locked database),
+        so a lost write is retried: the first tries pace like a state re-read,
+        then the pause doubles up to ``_SETTLE_RETRY_BACKOFF_CAP_SECS`` for as
+        long as the store keeps raising. The retry stops only on an answer a
+        retry cannot change -- the row reads terminal, or a HEALTHY store
+        refused the edge (no row, or a state the table forbids ``failed`` from)
+        -- or when the store itself is gone.
+        """
+        # circular import: ``kiro_crew.taskq`` reaches back into the subagent package.
+        from kiro_crew import taskq as _taskq
+
+        if memory_mode == "persistent":
+            await _asyncio.to_thread(self._tombstone_refused_row, agent_id, reason)
+        attempt = 0
+        pause = _STATE_READ_BACKOFF_SECS
+        while True:
+            if self.taskq_store() is None:
+                return
             try:
-                await task
-            except Exception:  # noqa: BLE001 - the write logged its own failure
+                if _taskq.is_terminal(await store.run(store.state_of, agent_id) or ""):
+                    if attempt >= _STATE_READ_ATTEMPTS:
+                        _glue_logger.info(
+                            "taskq: refused row %s settled failed after %d retries",
+                            agent_id,
+                            attempt,
+                        )
+                    return
+                wrote = bool(await store.run(store.finish, agent_id, _taskq.FAILED, error=reason))
+                state = await store.run(store.state_of, agent_id) or ""
+                if _taskq.is_terminal(state):
+                    if attempt >= _STATE_READ_ATTEMPTS:
+                        _glue_logger.info(
+                            "taskq: refused row %s settled failed after %d retries",
+                            agent_id,
+                            attempt,
+                        )
+                    return
+                if not wrote:
+                    _glue_logger.warning(
+                        "taskq: refused row %s reads %r and the store refused failed "
+                        "for it; nothing a retry can change",
+                        agent_id,
+                        state,
+                    )
+                    return
+            except Exception:  # noqa: BLE001 - contention or outage: retried below
                 pass
+            attempt += 1
+            if attempt == _STATE_READ_ATTEMPTS:
+                _glue_logger.warning(
+                    "taskq: refused row %s is not settled failed after %d tries; holding "
+                    "its refusal and retrying until the row reads terminal",
+                    agent_id,
+                    attempt,
+                )
+            await _asyncio.sleep(pause)
+            pause = min(pause * 2, _SETTLE_RETRY_BACKOFF_CAP_SECS)
 
     def park_defer(
         self,
@@ -774,16 +938,48 @@ class _TaskqBridgeMixin(ManagerComponent):
             return False
         return store.advance(agent_id, state, generation=generation)
 
-    def taskq_fail(self, agent_id: str, reason: str) -> None:
-        """Terminal ``failed`` for a persisted row refused before it registered."""
+    def taskq_fail(self, agent_id: str, reason: str, *, memory_mode: str = "") -> None:
+        """Terminal ``failed`` for a persisted row refused before it registered.
+
+        ONE tracked task (:meth:`_settle_refused_row`) covers the write and its
+        verification: it is recorded under the row's id (``_pending_defers``,
+        the slot the accept path awaits) so ``spawn_async`` and the dispatcher
+        hold the refusal until the row reads terminal, and it is shielded from
+        every awaiter, so a refusal published while its durable failure is
+        still in flight -- or a caller cancelled while the one-worker store
+        queue is backed up -- cannot leave the row ADMITTED for the next
+        incarnation's reconcile to requeue and run. For a ``persistent`` run the
+        settle FIRST writes the run's tombstone (``cause="error"``), the durable
+        artifact the boot reconcile's probe reads before it requeues an
+        ADMITTED row: that verdict does not depend on the store, so a store
+        wedged for the whole shutdown drain -- the one case the retry cannot
+        outlast -- still ends with the row settled ``failed`` on the next boot
+        rather than requeued. Without a loop (or with the off-loop pump off)
+        both writes run inline, as every other store write does on that path.
+        """
+        # circular import: ``kiro_crew.taskq`` reaches back into the subagent package.
         from kiro_crew import taskq as _taskq
 
         store = self.taskq_store()
         if store is None:
             return
-        self._post_store_write(
-            store, f"fail {agent_id}", store.finish, agent_id, _taskq.FAILED, error=reason
+        try:
+            loop = _asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is None or not type(self).pump_off_loop:
+            if memory_mode == "persistent":
+                self._tombstone_refused_row(agent_id, reason)
+            try:
+                store.finish(agent_id, _taskq.FAILED, error=reason)
+            except _taskq.TaskStoreUnavailable:
+                _glue_logger.debug("taskq: fail %s write failed", agent_id, exc_info=True)
+            return
+        settle = loop.create_task(
+            self._settle_refused_row(store, agent_id, reason, memory_mode=memory_mode)
         )
+        self.track_store_task(settle)
+        self._retain_pending(agent_id, settle, bounded_join=True)
 
     def taskq_settle(self, info: SubagentInfo) -> None:
         """Write the run's terminal state from its record; fenced by generation.
@@ -1696,6 +1892,22 @@ class _TaskqBridgeMixin(ManagerComponent):
         # grants and which no start path reads.
         params.pop("_agent_prevalidated", None)
         params.pop("approval_mode", None)
+        # The conversation root is stripped for the same reason, in the other
+        # direction: a store-only row is not in ``_queue``, so it does not hold
+        # its conversation busy, and a continuation from another chat admitted
+        # while it waited on disk writes a contest onto the founder's record
+        # (``_run_inner_impl``). A stamp taken before that contest would replay
+        # the founding chat's trust into a run the contest exists to deny. The
+        # refilled row re-resolves at re-entry -- the pump reads the founder's
+        # durable record off-loop and hands it to the gate, which fails closed
+        # to a contested root when handed nothing -- so the answer can only
+        # tighten: a contest, once written, is read back by every resolution.
+        params.pop("_conversation_root_session_key", None)
+        # A row written before roots were stamped at admission carries no
+        # ``_root_session_key``. It needs none here: every window entry
+        # re-enters through ``spawn(..., _from_queue=True)``, where the gate
+        # resolves an unstamped ``subagent:`` caller to a contested root rather
+        # than re-walking a tree the restart may have left to another chat.
         return params
 
     def _evict_for_lanes(self, count: int, lanes: "Mapping[str, str] | None" = None) -> int:

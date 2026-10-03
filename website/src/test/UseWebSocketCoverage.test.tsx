@@ -451,6 +451,30 @@ describe('useWebSocket frame router', () => {
     expect(note?.body).toBe(delivery === 'live' ? `${body}\n\n**Reason:** cleanup` : body)
   })
 
+  it('leads a subagent approval with its purpose only when the backend says the prompt is contested', async () => {
+    // A slotless subagent prompt is NOT thereby contested: a run rooted in a
+    // cron, the CLI or a channel has no tab either, and its purpose is the
+    // run's own words, which must not be promoted above the fenced command.
+    const { ws } = mount()
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+    const base = { source: 'subagent', tool: 'shell', tool_input: 'psql --dry-run', tool_purpose: 'Dry-run the migration' }
+    act(() => {
+      ws.simulateMessage({ type: 'approval', data: { ...base, id: 'ap-cron-rooted', slot: '', ts: 7 } })
+      ws.simulateMessage({ type: 'approval', data: { ...base, id: 'ap-contested', slot: '', contested: true, ts: 8 } })
+    })
+    const items = testStore.getState().notifications.items
+    const plain = items.find(n => n.approval_id === 'ap-cron-rooted')?.body
+    const contested = items.find(n => n.approval_id === 'ap-contested')?.body
+    expect(plain).toBeDefined()
+    expect(contested).toBeDefined()
+    expect(plain!.indexOf('psql --dry-run')).toBeLessThan(plain!.indexOf('Dry-run the migration'))
+    expect(contested!.indexOf('Dry-run the migration')).toBeLessThan(contested!.indexOf('psql --dry-run'))
+    // The flag rides the note so the Review panel can make Approve the
+    // secondary choice; a slotless-but-uncontested prompt carries none.
+    expect(items.find(n => n.approval_id === 'ap-contested')?.contested).toBe(true)
+    expect(items.find(n => n.approval_id === 'ap-cron-rooted')?.contested).toBeUndefined()
+  })
+
   it('hands an approval to the feed and raises no desktop notification of its own', () => {
     // The feed entry is what reaches the OS (useNativeNotification constructs
     // the toast, tagged with the approval id); a constructor here would be a

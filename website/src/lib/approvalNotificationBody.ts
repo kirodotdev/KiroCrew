@@ -25,7 +25,12 @@ export const APPROVAL_COMMAND_TAG = 'approval-command'
  * `rm -rf cache`, a narrower command than the one being authorized. Inside a
  * fence there is nothing to guess: `stripMd` keeps the contents verbatim.
  */
-export function approvalNotificationBody(source?: string, toolInput?: string, purpose?: string): string {
+export function approvalNotificationBody(
+  source?: string,
+  toolInput?: string,
+  purpose?: string,
+  options: { purposeFirst?: boolean } = {},
+): string {
   let command = ''
   if (toolInput) {
     // Longer than any backtick run in the command, so it cannot close its own
@@ -43,5 +48,11 @@ export function approvalNotificationBody(source?: string, toolInput?: string, pu
   // the two labels never read as one field.
   const label = i18nT('components.notifications.notificationDetailPanel.source')
   const head = BOLD + label + BOLD + ' ' + (source || DEFAULT_SOURCE)
-  return [head, command, purpose || ''].join(BLANK_LINE).trim()
+  // The feed card shows the body's first lines. A prompt that reaches the feed
+  // with no chat of its own (`purposeFirst`) is one the reader cannot place --
+  // there is no tab it belongs to -- so the line that says WHY it is here goes
+  // ahead of the command, where the card's excerpt still shows it; a prompt
+  // slotted to a chat keeps the command first, its context being the tab.
+  const tail = options.purposeFirst ? [purpose || '', command] : [command, purpose || '']
+  return [head, ...tail].join(BLANK_LINE).trim()
 }

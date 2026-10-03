@@ -701,6 +701,7 @@ class TestInteractiveApproval:
             tool_purpose="review changes",
             slot="parent-slot",
             is_background=False,
+            contested=False,
         )
 
     @pytest.mark.asyncio
@@ -6739,6 +6740,11 @@ class TestRetriggerRecovery:
                 mock_sm_inst.running_agents_for = MagicMock(return_value=[])
                 mock_sm_inst.get = MagicMock(return_value=None)
                 mock_sm_inst.notify_injection_failed = MagicMock()
+                # Per-run frames are slotted by the run's root; a depth-one
+                # run's root is its parent (what admission stamps).
+                mock_sm_inst.root_session_key_for = MagicMock(
+                    side_effect=lambda info: info.parent_session_key
+                )
                 mock_sm.return_value = mock_sm_inst
                 orch._init_subagents()
         return orch, mock_sm
@@ -6822,6 +6828,28 @@ class TestRetriggerRecovery:
         etype, payload = orch.dashboard_state.broadcast_ws.call_args[0]
         assert etype == "subagent_spawn"
         assert payload["slot"] == "cron-188f71e5"
+
+    @pytest.mark.asyncio
+    async def test_a_nested_parents_queue_depth_never_overwrites_the_root_tabs_count(self):
+        """Per-run frames follow a nested run to its root chat's tab, but
+        ``subagent_queued`` is ONE parent's depth, stored per slot as a value:
+        routed to the root tab it would replace the root chat's own count."""
+        orch, mock_sm = self._setup()
+        on_event = mock_sm.call_args[1]["on_event"]
+        mock_sm.return_value.root_session_key_for = MagicMock(return_value="dashboard:slot1")
+
+        info = MagicMock()
+        info.id = "_queue"
+        info.parent_session_key = "subagent:P"
+        info.batch_id = ""
+
+        await on_event("subagent_queued", info, {"queued": 1})
+        _etype, payload = orch.dashboard_state.broadcast_ws.call_args[0]
+        assert payload["slot"] != "slot1"
+        # A per-run frame of the same nested parent does reach the root tab.
+        await on_event("subagent_spawn", info, {"task": "t", "agent": "a"})
+        _etype, payload = orch.dashboard_state.broadcast_ws.call_args[0]
+        assert payload["slot"] == "slot1"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
