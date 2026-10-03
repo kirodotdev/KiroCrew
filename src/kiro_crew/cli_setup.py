@@ -27,12 +27,15 @@ from kiro_crew.config.loader import (
     CRED_SLACK_APP_TOKEN,
     CRED_SLACK_BOT_TOKEN,
     ConfigReadError,
+    EnvFileWideEncodingError,
     _default_workspace_base,
     _workspace_dir_file,
     config_path,
+    env_bom_prefix,
     env_path,
     normalize_workspace_path,
     read_config_text,
+    read_env_text,
     unsandboxed_exec_declared,
     unsandboxed_exec_platform_default,
     update_config_locked,
@@ -636,15 +639,38 @@ def _prompt_verified_slack_value(
     return None, ""
 
 
+def _read_env_pairs(cred_path: Path) -> dict[str, str]:
+    """Parse ``KEY=VALUE`` lines of *cred_path*; ``{}`` when it does not exist.
+
+    Raises :class:`EnvFileWideEncodingError` for a UTF-16 or UTF-32 file,
+    which the caller reports instead of rewriting.
+    """
+    pairs: dict[str, str] = {}
+    if cred_path.exists():
+        for line in read_env_text(cred_path, encoding="utf-8").splitlines():
+            if "=" in line and not line.startswith("#"):
+                k, _, v = line.partition("=")
+                pairs[k.strip()] = v.strip()
+    return pairs
+
+
+def _print_wide_env_remedy(cred_path: Path, exc: EnvFileWideEncodingError) -> None:
+    print(
+        f"  ❌ {cred_path} is saved as {exc.wide_encoding}, which Kiro Crew cannot read. "
+        "Re-save it as UTF-8 and run 'kirocrew setup --slack' again. "
+        "Nothing was changed.\n",
+        file=sys.stderr,
+    )
+
+
 def _setup_slack_tokens() -> None:
     """Prompt for Slack tokens and owner ID, write to config_dir/.env."""
     cred_path = env_path()
-    existing: dict[str, str] = {}
-    if cred_path.exists():
-        for line in cred_path.read_text(encoding="utf-8").splitlines():
-            if "=" in line and not line.startswith("#"):
-                k, _, v = line.partition("=")
-                existing[k.strip()] = v.strip()
+    try:
+        existing = _read_env_pairs(cred_path)
+    except EnvFileWideEncodingError as exc:
+        _print_wide_env_remedy(cred_path, exc)
+        return
 
     print("── Slack Credentials ──\n")
     print("  See docs/guides/slack-setup.md for how to create a Slack app.\n")
@@ -752,12 +778,13 @@ def _setup_slack_tokens() -> None:
     try:
         # Re-read fresh under the lock, then merge the just-collected tokens on
         # top so a concurrent write that landed during the prompts is preserved.
-        merged: dict[str, str] = {}
-        if cred_path.exists():
-            for line in cred_path.read_text(encoding="utf-8").splitlines():
-                if "=" in line and not line.startswith("#"):
-                    k, _, v = line.partition("=")
-                    merged[k.strip()] = v.strip()
+        try:
+            merged = _read_env_pairs(cred_path)
+        except EnvFileWideEncodingError as exc:
+            # Re-saved as UTF-16 or UTF-32 while the prompts ran: never
+            # overwrite it.
+            _print_wide_env_remedy(cred_path, exc)
+            return
         merged[CRED_SLACK_APP_TOKEN] = app_token
         merged[CRED_SLACK_BOT_TOKEN] = bot_token
         if owner_id:
@@ -799,7 +826,7 @@ def _setup_slack_tokens() -> None:
         # wizard instead of aborting after the user typed their tokens.
         atomic_write(
             cred_path,
-            "\n".join(lines) + "\n",
+            env_bom_prefix(cred_path) + "\n".join(lines) + "\n",
             restrict_to_owner=True,
             restrict_on_error="warn",
         )

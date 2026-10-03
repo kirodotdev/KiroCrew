@@ -12,10 +12,12 @@ dashboard URL via the config file. (The dashboard *port* is set with the
 from __future__ import annotations
 
 import asyncio
+import codecs as _codecs
 import contextlib
 import copy
 import hashlib as _hashlib
 import json
+import locale as _locale
 import logging
 import math  # noqa: F401 - historical loader namespace compatibility
 import os
@@ -524,20 +526,169 @@ def env_path() -> Path:
     return config_dir() / ".env"
 
 
+# ``.env`` paths already warned about as undecodable. The set exists because
+# the gateway re-reads ``.env`` from many call sites over its whole life
+# (every ``read_env_file_credential``), and one bad file must not log on each
+# read. A path leaves the set when :func:`read_env_file` next decodes it:
+# without that, the first warning would mute the path for the rest of the
+# process, and an operator who fixes the file and later breaks it again (a
+# second editor save in UTF-16) would get no warning at all while every
+# credential silently reads as unset.
+_warned_undecodable_env: set[str] = set()
+
+
+class EnvFileWideEncodingError(UnicodeDecodeError):
+    """A ``.env`` starts with a UTF-16 or UTF-32 byte-order mark.
+
+    Readers catch exactly this to treat the file as unset. Any other decode
+    error (a BOM-less file invalid in the chosen encoding) propagates as it
+    always has, so the BOM handling cannot hide an unrelated bad file.
+
+    ``encoding`` is the codec the mark declares (``"utf-32-le"`` and so on)
+    and ``object`` holds only the mark itself, never the credentials after
+    it. :attr:`wide_encoding` names the family for a message.
+    """
+
+    @property
+    def wide_encoding(self) -> str:
+        """``"UTF-16"`` or ``"UTF-32"``."""
+        return _wide_family(self.encoding)
+
+    def __str__(self) -> str:
+        # The base class would say "'utf-16-le' codec can't decode bytes in
+        # position 0-1", which reads as a decoding bug rather than a file
+        # saved in the wrong encoding.
+        return f"the .env is saved as {self.wide_encoding}; re-save it as UTF-8"
+
+
+# Longest mark first: a UTF-32LE mark (FF FE 00 00) begins with the UTF-16LE
+# one (FF FE), so it must be matched before it.
+_WIDE_BOMS = (
+    (_codecs.BOM_UTF32_LE, "utf-32-le"),
+    (_codecs.BOM_UTF32_BE, "utf-32-be"),
+    (_codecs.BOM_UTF16_LE, "utf-16-le"),
+    (_codecs.BOM_UTF16_BE, "utf-16-be"),
+)
+
+
+def _wide_family(codec: str) -> str:
+    return "UTF-32" if codec.startswith("utf-32") else "UTF-16"
+
+
+def _wide_bom(head: bytes) -> tuple[bytes, str] | None:
+    """The wide byte-order mark *head* starts with and the codec it declares."""
+    for bom, codec in _WIDE_BOMS:
+        if head.startswith(bom):
+            return bom, codec
+    return None
+
+
+def env_bom_prefix(ep: Path) -> str:
+    """The UTF-8 byte-order mark to put back when rewriting *ep*, or ``""``.
+
+    :func:`read_env_text` drops a UTF-8 BOM, and an in-place rewriter that
+    wrote the text back without it would change how the file decodes: with
+    the BOM it is UTF-8, without it a bare read falls back to the locale, so
+    a non-ASCII byte that loaded before the save would fail or turn to
+    mojibake after it. Each rewriter prefixes this to the text it writes.
+    Reads only the first three bytes; ``""`` when the file is absent or
+    unreadable.
+    """
+    try:
+        with ep.open("rb") as fh:
+            head = fh.read(len(_codecs.BOM_UTF8))
+    except OSError:
+        return ""
+    return "\ufeff" if head == _codecs.BOM_UTF8 else ""
+
+
+def decode_env_bytes(raw: bytes, encoding: str | None = None, errors: str = "strict") -> str:
+    """Decode the bytes of a ``.env`` file, honouring a byte-order mark.
+
+    A UTF-8 BOM (what PowerShell 5.1's ``Out-File -Encoding utf8`` writes) says
+    the file is UTF-8, so the rest is decoded as UTF-8 and the BOM is dropped:
+    left in, it becomes part of the first key and that credential silently
+    never matches. A UTF-16 BOM (PowerShell's default ``>`` / ``Out-File``) or
+    a UTF-32 one raises :class:`EnvFileWideEncodingError`, a
+    :class:`UnicodeDecodeError` readers can tell apart: a wide-encoded
+    credential file is not a supported format, and decoding it as UTF-8 or the
+    locale would either fail with an unrelated error or, under a single-byte
+    code page such as cp1252, silently yield NUL-riddled keys. Without a BOM
+    the bytes are decoded exactly as before: with *encoding*, or the locale
+    default that a bare ``read_text()`` uses when *encoding* is ``None``.
+    """
+    if raw.startswith(_codecs.BOM_UTF8):
+        return raw[len(_codecs.BOM_UTF8) :].decode("utf-8", errors)
+    wide = _wide_bom(raw)
+    if wide is not None:
+        bom, codec = wide
+        # Carry only the BOM bytes: ``.object`` is shown by repr() and by a
+        # traceback that captures locals, and the rest of the file is secrets.
+        reason = f"{_wide_family(codec)} byte-order mark"
+        raise EnvFileWideEncodingError(codec, bom, 0, len(bom), reason)
+    return raw.decode(encoding or _locale.getpreferredencoding(False), errors)
+
+
+def read_env_file(
+    ep: Path, encoding: str | None = None, errors: str = "strict"
+) -> tuple[bytes, str]:
+    """Read a ``.env`` file once; return its raw bytes and decoded text.
+
+    Every reader and in-place rewriter of the data home's ``.env`` decodes it
+    here, or through :func:`read_env_text`, so they agree on what the first
+    key is: if only the readers stripped a BOM, a dashboard clear could not
+    match the key the gateway loads, and the cleared credential would survive.
+    The bytes are for a rewriter that must compare against or restore exactly
+    what it parsed (the secrets migration); they come from the same read as
+    the text. Raises :class:`OSError` or :class:`UnicodeDecodeError`; a
+    rewriter lets the decode error propagate so it never overwrites a file it
+    could not parse. A successful decode re-arms :func:`warn_undecodable_env`
+    for *ep*.
+    """
+    raw = ep.read_bytes()
+    text = decode_env_bytes(raw, encoding, errors)
+    _warned_undecodable_env.discard(str(ep))
+    return raw, text
+
+
+def read_env_text(ep: Path, encoding: str | None = None) -> str:
+    """The decoded text of a ``.env`` file; see :func:`read_env_file`."""
+    return read_env_file(ep, encoding)[1]
+
+
+def warn_undecodable_env(ep: Path, exc: UnicodeDecodeError) -> None:
+    """Log that *ep* could not be decoded and is treated as unset.
+
+    Once per path until :func:`read_env_file` next decodes it.
+    """
+    key = str(ep)
+    if key in _warned_undecodable_env:
+        return
+    _warned_undecodable_env.add(key)
+    logger.warning(
+        "Cannot decode %s (%s); treating it as empty. Save it as UTF-8.",
+        ep,
+        exc.reason,
+    )
+
+
 def read_env_file_credential(key: str, env_file: Path | None = None) -> str:
     """Best-effort read of one ``KEY=VALUE`` entry from the data home's ``.env``.
 
     Same line format :meth:`KiroCrewConfig.load_credentials` parses (one pair
     per line, ``#`` comments, no quotes required, last occurrence wins).
-    Returns ``""`` when the file is absent or unreadable — callers treat the
-    credential as unset rather than failing.
+    Returns ``""`` when the file is absent, unreadable or UTF-16/UTF-32 encoded —
+    callers treat the credential as unset rather than failing.
 
     Blocking file IO: call via ``asyncio.to_thread`` from async paths.
     """
     ep = env_file if env_file is not None else env_path()
     try:
-        text = ep.read_text()
+        text = read_env_text(ep)
     except OSError:
+        return ""
+    except EnvFileWideEncodingError as exc:
+        warn_undecodable_env(ep, exc)
         return ""
     value = ""
     for line in text.splitlines():
@@ -5114,7 +5265,12 @@ class KiroCrewConfig:
                     ep.chmod(0o600)
             except OSError:
                 logger.warning("Cannot enforce permissions on %s", ep)
-            for line in ep.read_text().splitlines():
+            try:
+                env_text = read_env_text(ep)
+            except EnvFileWideEncodingError as exc:
+                warn_undecodable_env(ep, exc)
+                env_text = ""
+            for line in env_text.splitlines():
                 line = line.strip()
                 if not line or line.startswith("#"):
                     continue

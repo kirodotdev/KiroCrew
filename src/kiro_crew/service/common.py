@@ -334,8 +334,8 @@ def _names_defined_in_env_file(path: Path) -> "set[str]":
     warning is the defect being fixed.
     """
     try:
-        raw = path.read_text(encoding="utf-8")
-    except OSError:
+        raw = loader.read_env_text(path, encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
         return set()
     names: set[str] = set()
     for line in raw.splitlines():

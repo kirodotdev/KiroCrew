@@ -5476,7 +5476,7 @@ def _clean_id_list(raw: object, is_valid: Callable[[str], bool], label: str) -> 
     return out
 
 
-async def _write_env_off_loop(updates: dict[str, str | None]) -> None:
+async def _write_env_off_loop(updates: dict[str, str | None], *, config_kept: bool = False) -> None:
     """Run the blocking ``.env`` write on a worker, drained under the config lock.
 
     Every caller holds ``_get_config_lock()`` across this, and a thread cannot be
@@ -5495,6 +5495,17 @@ async def _write_env_off_loop(updates: dict[str, str | None]) -> None:
     All six channel saves go through here. The offload itself is already in
     place on every one of them; the bare offload is what leaves the hole, so
     covering a subset would leave the same window open in the rest.
+
+    A ``.env`` saved as UTF-16 or UTF-32 is refused before anything is written
+    (:func:`_write_env_updates_locked` never overwrites a file it cannot
+    parse). That refusal is raised here as a 409 carrying the fix, so every
+    channel save answers it the same way instead of with an opaque 500. A
+    caller that rolls its config write back on a failed ``.env`` write (Slack,
+    Teams, Webex, WeCom and Feishu) still does, because it catches every
+    exception; Discord and Telegram commit config before this call and keep it,
+    so their 409 leaves the config change in place and only the ``.env`` part
+    unsaved, which a retry after the UTF-8 re-save completes. Those two callers
+    pass ``config_kept=True`` so the 409 says their other settings were saved.
     """
     fut = asyncio.ensure_future(asyncio.to_thread(_write_env_updates, updates))
     try:
@@ -5502,6 +5513,29 @@ async def _write_env_off_loop(updates: dict[str, str | None]) -> None:
     except asyncio.CancelledError:
         await asyncio.wait([fut])
         raise
+    except _loader.EnvFileWideEncodingError as exc:
+        raise _wide_env_refusal(exc, config_kept=config_kept) from exc
+
+
+def _wide_env_refusal(
+    exc: _loader.EnvFileWideEncodingError, *, config_kept: bool = False
+) -> web.HTTPConflict:
+    """The response for a channel save refused because ``.env`` is wide-encoded.
+
+    ``config_kept`` is set by a caller whose config write stays in place when
+    the ``.env`` write is refused, so the message does not imply the whole save
+    was discarded.
+    """
+    outcome = "The .env was not changed"
+    outcome += "; your other settings were saved." if config_kept else "."
+    message = (
+        f"{_loader.env_path()} is saved as {exc.wide_encoding}, which Kiro Crew "
+        f"cannot read. Re-save it as UTF-8 and save again. {outcome}"
+    )
+    return web.HTTPConflict(
+        text=json.dumps({"error": message}),
+        content_type="application/json",
+    )
 
 
 def _write_env_updates(updates: dict[str, str | None]) -> None:
@@ -5566,7 +5600,7 @@ def _write_env_updates_locked(ep: "Path", updates: dict[str, str | None]) -> Non
     """The read-modify-atomic-rewrite of .env, run under the .env lock held by
     the caller (:func:`_write_env_updates`)."""
 
-    lines = ep.read_text(encoding="utf-8").splitlines() if ep.exists() else []
+    lines = _loader.read_env_text(ep, encoding="utf-8").splitlines() if ep.exists() else []
     seen: set[str] = set()
     out: list[str] = []
     for line in lines:
@@ -5585,7 +5619,12 @@ def _write_env_updates_locked(ep: "Path", updates: dict[str, str | None]) -> Non
         if k not in seen and new_val:
             out.append(f"{k}={new_val}")
     content = "\n".join(out) + ("\n" if out else "")
-    atomic_write(ep, content, restrict_to_owner=True, restrict_on_error="warn")
+    atomic_write(
+        ep,
+        _loader.env_bom_prefix(ep) + content,
+        restrict_to_owner=True,
+        restrict_on_error="warn",
+    )
 
 
 async def api_slack_manifest(request: web.Request) -> web.Response:
@@ -6410,7 +6449,7 @@ async def _discord_config_save_locked(request: web.Request) -> web.Response:
     if env_updates:
         # Off-loop: the .env write is blocking file IO (lock, temp write,
         # owner-only lockdown, replace) and must not block the event loop.
-        await _write_env_off_loop(env_updates)
+        await _write_env_off_loop(env_updates, config_kept=True)
         # Keep the live process environment in sync with the new .env state
         # (load_credentials() lets os.environ win over .env — see the Slack
         # save handler for the full rationale).
@@ -6816,7 +6855,7 @@ async def _telegram_config_save_locked(request: web.Request) -> web.Response:
     if env_updates:
         # Off-loop: the .env write is blocking file IO (lock, temp write,
         # owner-only lockdown, replace) and must not block the event loop.
-        await _write_env_off_loop(env_updates)
+        await _write_env_off_loop(env_updates, config_kept=True)
         # Keep the live process environment in sync with the new .env state
         # (load_credentials() lets os.environ win over .env — see the Slack
         # save handler for the full rationale).
