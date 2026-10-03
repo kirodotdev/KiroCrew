@@ -147,6 +147,37 @@ def _rows(log_dir: Path) -> list[dict]:
     return out
 
 
+class _PointClock:
+    """The clock ``memory_recall`` reads, frozen at the moment it is installed.
+
+    The point measures the time left on the request as ``deadline - monotonic()``, so
+    a test that spends that budget in real seconds measures the runner as well: every
+    cold step before the judge is asked (the store, the pool, the embedding) spends
+    the same budget, and on a loaded Windows runner the remaining wait came out
+    negative or the route answered ``504``. Installed on the point's own ``time``
+    name, it moves only when a test calls :meth:`advance`, so the wait the point
+    computes is exact. Everything else, the route's own bound included, keeps the
+    real clock, and a request deadline set generously in real seconds is a deadlock
+    backstop rather than the budget under test.
+    """
+
+    def __init__(self, monkeypatch):
+        import time
+
+        from kiro_crew.decisions.points import memory_recall as point
+
+        self.now = time.monotonic()
+        monkeypatch.setattr(point, "time", SimpleNamespace(monotonic=lambda: self.now))
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+#: Real seconds a request is given when the budget under test runs on
+#: :class:`_PointClock`. Only reached if the point stops answering.
+_REAL_BACKSTOP_SECS = 30.0
+
+
 def _request(session_key: str = SESSION):
     """A request shaped like the MCP tool's own internally-authenticated recall call."""
     request = MagicMock()
@@ -428,7 +459,7 @@ class TestOnlyACommittedRecallLeavesAReceipt:
         assert self._outcomes(wired) == [], "a refused response must leave no receipt"
 
     @pytest.mark.asyncio
-    async def test_a_timed_out_request_records_nothing(self, wired):
+    async def test_a_timed_out_request_records_nothing(self, wired, monkeypatch):
         """The caller received 504, so a receipt would describe memories nobody got.
 
         `memory_recall_deadline` bounds the route with `asyncio.wait_for`, and a
@@ -471,17 +502,21 @@ class TestOnlyACommittedRecallLeavesAReceipt:
         # the rest of it after answering, so the decision is real and the deadline has
         # passed before the receipt would be written. An already-spent budget cannot
         # show this any more -- the point refuses to ask on one at all.
+        #
+        # Neither half runs on the wall clock. The point reads `_PointClock`, which
+        # does not move, so the judge is funded however slow the runner is; and the
+        # deadline is then brought to the real present once the store has answered,
+        # which is what the clock reaching it looks like to the commit's own check.
+        clock = _PointClock(monkeypatch)
+        work = EmbeddingWork(clock.now + _REAL_BACKSTOP_SECS)
         real_recall = wired.store.recall
 
         def _answer_then_outlast_the_deadline(*args, **kwargs):
             result = real_recall(*args, **kwargs)
-            time.sleep(1.4)
+            work.deadline = time.monotonic()
             return result
 
-        # Wide enough that the judge is funded when it is asked -- the whole point of
-        # this half -- and then outlived by the sleep above, so the deadline has passed
-        # by the time the commit would run.
-        embedding_work.set(EmbeddingWork(time.monotonic() + 1.2))
+        embedding_work.set(work)
         try:
             with pytest.MonkeyPatch.context() as patch:
                 patch.setattr(wired.store, "recall", _answer_then_outlast_the_deadline)
@@ -564,15 +599,14 @@ class TestOnlyACommittedRecallLeavesAReceipt:
         the route's deadline and the tool would answer `504` instead of the memories
         the search had already found -- the one direction this seam must not fail in.
 
-        The search is made to burn a third of the budget, and the wait the judge is
-        actually given has to reflect that.
+        The search is made to spend most of the budget on the point's clock, and the
+        wait the judge is actually given has to be exactly what is left.
         """
-        import time
-
         from kiro_crew.decisions.points import memory_recall as mr
         from kiro_crew.embeddings import EmbeddingWork, embedding_work
 
-        budget, burn = 3.0, 1.0
+        clock = _PointClock(monkeypatch)
+        budget, burn = _REAL_BACKSTOP_SECS, _REAL_BACKSTOP_SECS - 2.5
 
         waits: list[float] = []
         real_budget = mr._wait_budget
@@ -585,38 +619,36 @@ class TestOnlyACommittedRecallLeavesAReceipt:
         monkeypatch.setattr(mr, "_wait_budget", _record_wait)
 
         # Burned ONCE: `search_episodic` re-enters itself to hold the identity check
-        # and the index read under one lock, so a bare sleep would be paid twice.
+        # and the index read under one lock, so an unguarded advance would be paid twice.
         burned: list[int] = []
         real_search = wired.store.search_episodic
 
         def _slow_search(*args, **kwargs):
             if not burned:
                 burned.append(1)
-                time.sleep(burn)
+                clock.advance(burn)
             return real_search(*args, **kwargs)
 
         monkeypatch.setattr(wired.store, "search_episodic", _slow_search)
 
         previous = embedding_work.get()
-        embedding_work.set(EmbeddingWork(time.monotonic() + budget))
-        started = time.monotonic()
+        embedding_work.set(EmbeddingWork(clock.now + budget))
         try:
             payload = await _recall(wired)
         finally:
             embedding_work.set(previous)
-        elapsed = time.monotonic() - started
 
         assert burned, "the search did not burn any budget, so this proves nothing"
         assert waits, "the wait was never computed"
         # Shortened: the provider's own budget here is 5.5 s and the no-deadline
-        # ceiling is 7 s, so anything near either would mean the deadline was ignored.
-        assert 0 < waits[0] < 2.0, (
+        # ceiling is 7 s, so the 2 s left after the margin is the deadline's answer.
+        assert waits[0] == pytest.approx(budget - burn - mr.WAIT_MARGIN_SECS), (
             f"the judge was given {waits[0]}s of a {budget}s request that had already "
             f"spent {burn}s, rather than the time remaining"
         )
         assert waits[0] < mr.MAX_WAIT_SECS
-        # And the recall still answered inside the deadline, narrowed.
-        assert elapsed < budget, f"the recall took {elapsed}s of a {budget}s budget"
+        # And the recall still answered, narrowed: `_recall` asserts a 200, which the
+        # route gives only when the bounded work finished inside its deadline.
         ids = {row["id"] for row in payload["retrieval"]["episodes"]}
         assert ids == {"mem-one", "mem-three"}, payload
 
