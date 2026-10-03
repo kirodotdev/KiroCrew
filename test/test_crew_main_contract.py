@@ -789,6 +789,49 @@ def test_units_the_store_cannot_rank_read_as_unreadable(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_the_model_is_told_which_tools_the_log_recorded(_real_log, monkeypatch) -> None:
+    # The note once said no stop call was made while the log held one: transcript rows
+    # the model reads carry no tool calls. The tool names must come from the fold.
+    emit = _real_log
+    emit.on_session_opened("unit-t", slot="root", agent="default", memory="global")
+    emit.on_turn_started("unit-t", 1)
+    emit.on_tool_called("unit-t", 1, name="monitor_start", call_id="c1")
+    emit.on_tool_completed("unit-t", 1, name="monitor_start", call_id="c1", status="ok")
+    emit.on_tool_called("unit-t", 1, name="autonudge_stop", call_id="c2")
+    emit.on_tool_completed("unit-t", 1, name="autonudge_stop", call_id="c2", status="ok")
+    emit.on_turn_completed("unit-t", 1, stop_reason="end_turn")
+    assert emit.flush(10.0)
+    reads = {"now": card_lifecycle._read_card_folds("root")}
+    # The real log re-roots the session tree; the root gate has its own cases.
+    monkeypatch.setattr(card_lifecycle, "is_root_session", lambda slot: True)
+    lifecycle, root, _, prompts = _wire(monkeypatch, reads, [_reply(lede="Reviewing.")])
+    lifecycle.notify(root, "done")
+    await _settle(lifecycle)
+    context = json.loads(prompts[0][len(_ROOT_PROMPT) :])
+    assert set(context["tools_called"]) == {"monitor_start", "autonudge_stop"}
+    assert context["tools_omitted"] == 0
+    assert not any("autonudge_stop" in row["text"] for row in context["recent_messages"])
+    assert 'Never say a tool was or was not called unless "tools_called"' in _ROOT_PROMPT
+
+
+def test_an_unreadable_or_cut_tool_list_never_reads_as_the_whole_one(monkeypatch) -> None:
+    assert card_lifecycle._tool_record(FOLD_UNREADABLE) == {
+        "tools_called": None,
+        "tools_omitted": 0,
+    }
+    rows = {f"tool_{i:03d}": {"calls": 1, "last_time": i} for i in range(300)}
+    record = card_lifecycle._tool_record({"by_name": rows, "names_omitted": 4})
+    assert record["tools_called"][0] == "tool_299"  # newest first
+    assert len(json.dumps(record["tools_called"])) <= card_lifecycle._TOOL_NAMES_CHARS
+    shown = len(record["tools_called"])
+    assert 0 < shown < 300
+    assert record["tools_omitted"] == 300 - shown + 4
+    # A name the fold holds with no call (a completion with no call) was not called.
+    only = card_lifecycle._tool_record({"by_name": {"x": {"calls": 0, "completed": 1}}})
+    assert only == {"tools_called": [], "tools_omitted": 0}
+
+
+@pytest.mark.asyncio
 async def test_a_log_commit_with_no_transcript_row_re_binds_the_numbers(monkeypatch) -> None:
     # The turn's last entries land AFTER the row that ended it, so nothing but the
     # writer's growth signal says the folds moved. A card bound at that row would
