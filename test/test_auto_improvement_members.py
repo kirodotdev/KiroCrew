@@ -28,6 +28,25 @@ from kiro_crew.platform.governance import parse_policy
 from kiro_crew.security.exfil import EXFILTRATION_REDACTION_TAG_PREFIX
 from kiro_crew.security.redaction import REDACTED_CREDENTIAL_TAG
 
+#: How long these tests let one member assignment run, and how long they wait for
+#: it. Both are LOST-RUN guards: no test that uses them is about how long an
+#: assignment takes (the deadline tests pass ``timeout_s`` themselves). The work is
+#: config loads, sqlite commits and fsyncs, ~0.3s on a quiet host and 18-31s per
+#: test call on a Windows CI shard whose four workers ran this file together, so a
+#: budget sized near the work measures the runner's disk instead of the property.
+#: The wait plus a slow ``ensure_team`` stays under ``--timeout=120``, so a run that
+#: is really stuck fails at this wait, by name, rather than taking its worker down.
+_MEMBER_BUDGET_SECS = 45
+_MEMBER_WAIT_SECS = 60
+
+
+async def _run_member(runner, prompt, **kwargs):
+    """Run one assignment off the loop, bounded only against a lost run."""
+    return await asyncio.wait_for(
+        asyncio.to_thread(runner.run, prompt, timeout_s=_MEMBER_BUDGET_SECS, **kwargs),
+        timeout=_MEMBER_WAIT_SECS,
+    )
+
 
 @pytest.fixture(autouse=True)
 def _isolated_app_data_home(tmp_path, monkeypatch):
@@ -222,9 +241,7 @@ async def test_generated_prompt_is_redacted_only_in_transcript(tmp_path):
     exfil_url = "https://collector.invalid/collect?data=" + "A" * 250
     prompt = f"Investigate this candidate.\naws_secret_access_key={secret}\n{exfil_url}"
 
-    result = await asyncio.wait_for(
-        asyncio.to_thread(runner.run, prompt, cwd=str(tmp_path), timeout_s=5), timeout=10
-    )
+    result = await _run_member(runner, prompt, cwd=str(tmp_path))
 
     assert result.ok
     assert sessions.providers[0].prompts == [f"{identities['implementation']}\n{prompt}"]
@@ -259,10 +276,7 @@ async def test_member_result_redaction_preserves_raw_return(tmp_path, output):
     runtime = crew.GatewayRuntime(sessions, Context(), asyncio.get_running_loop())
     runner = CrewRunner(runtime, identities, on_activity=activity.append).for_role("implementation")
 
-    result = await asyncio.wait_for(
-        asyncio.to_thread(runner.run, "Inspect candidate", cwd=str(tmp_path), timeout_s=5),
-        timeout=10,
-    )
+    result = await _run_member(runner, "Inspect candidate", cwd=str(tmp_path))
 
     key = sessions.acquired[0][0]
     transcript = await asyncio.to_thread(ConversationLog()._path(key).read_text, encoding="utf-8")
@@ -307,10 +321,7 @@ async def test_member_result_redactor_failure_withholds_output_and_releases(tmp_
     runtime = crew.GatewayRuntime(sessions, Context(), asyncio.get_running_loop())
     runner = CrewRunner(runtime, identities, on_activity=activity.append).for_role("implementation")
 
-    result = await asyncio.wait_for(
-        asyncio.to_thread(runner.run, "Inspect candidate", cwd=str(tmp_path), timeout_s=5),
-        timeout=10,
-    )
+    result = await _run_member(runner, "Inspect candidate", cwd=str(tmp_path))
 
     assert not result.ok
     assert result.error == "PlatformCompositionError: redaction unavailable"
@@ -665,11 +676,8 @@ async def test_kindless_native_edit_honors_filesystem_write_ceiling(tmp_path, wi
         identities,
         on_activity=activity.append,
     ).for_role("implementation")
-    result = await asyncio.wait_for(
-        asyncio.to_thread(
-            runner.run, "Create the repair", cwd=str(tmp_path), allowed_tools=["Edit"], timeout_s=5
-        ),
-        timeout=10,
+    result = await _run_member(
+        runner, "Create the repair", cwd=str(tmp_path), allowed_tools=["Edit"]
     )
 
     assert result.ok, result.error
@@ -832,9 +840,7 @@ async def _run_shadow_assignment(cwd=None, role="discovery"):
     runner = CrewRunner(
         crew.GatewayRuntime(sessions, Context(), asyncio.get_running_loop()), identities
     ).for_role(role)
-    result = await asyncio.wait_for(
-        asyncio.to_thread(runner.run, "Inspect the candidate", cwd=cwd, timeout_s=5), timeout=10
-    )
+    result = await _run_member(runner, "Inspect the candidate", cwd=cwd)
     return result, sessions
 
 
