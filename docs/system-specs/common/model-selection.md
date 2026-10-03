@@ -54,6 +54,29 @@ alone so the warm-pool re-apply and the slot backfill still read "inherit". The
 dashboard carries the corrected id as the slot's `served_model` so the composer
 chip names the model a turn will run on instead of `auto`.
 
+The claude backend has a different gap on the same exits: the model it reports is
+not always the model Claude Code runs. claude-agent-acp resolves an inheriting
+session's model from `ANTHROPIC_MODEL` or the user's `settings.model` and reports it
+as the `model` option's current value. When that value is the setting verbatim, the
+adapter does not pass it on and trusts Claude Code to have read the same setting.
+After a resume, Claude Code can instead run its own built-in default while the
+report still names the settings model. A custom gateway that does not serve that
+default then refuses every turn until the user runs `/model`.
+`AcpClient._reassert_adapter_resolved_model` runs from `_ensure_served_default` on
+the claude backend. It sends the reported id back over `session/set_config_option`,
+the same write the picker and `/model` make, which the adapter always passes on.
+
+- **When nothing is sent.** The reported id is the head of the advertised list (the
+  adapter's `default` pseudo-model, reported when no setting applies), or the list
+  does not carry it.
+- **What stays unchanged.** As with the kiro check, `_model` keeps `""`/`"auto"`.
+  An explicit pin never reaches this path: it is pushed as the pin.
+- **Failure handling.** It is best effort: a refused value or a failed request only
+  logs, and a dead process still fails the session.
+
+The INFO line on the inherit exit names the model the backend reports, so a log
+shows what an `auto` session was started on.
+
 ## A pin belongs to the harness it was chosen in
 
 A stored pin records WHAT was picked and never WHERE. Switching `agent.acp_backend`
