@@ -71,6 +71,8 @@ import { type PasteBlock, type CarriedPastes, carryPastes, expandAll as expandPa
 import { sendTurn, type SendReceiptStatus } from '../chat-core/transport/sendTurn'
 import { applySteerReceipt } from '../chat-core/transport/steerReceipt'
 import { useSelectionQuoteAsk } from '../chat-core/composer/selectionActions'
+import { useMessageQuote } from '../chat-core/composer/useMessageQuote'
+import { prependQuote } from '../chat-core/composer/messageQuote'
 import FlyingQuote from './FlyingQuote'
 import { revealComposer } from '../pages/chat/composerFocus'
 import { triggerRefresh, updateSlot } from '../store/dashboardSlice'
@@ -963,6 +965,10 @@ export default function ChatPane({
    *  into THAT slot's parked draft (shown again when the user returns to it)
    *  instead of into the composer the user is now looking at, which belongs to
    *  someone else's conversation, or into a component that no longer exists. */
+  // A whole message staged as the quote of the next send (one at a time, dropped
+  // on a slot switch). Both send paths consume it; a failed send restages it.
+  const messageQuote = useMessageQuote({ slot: slotKey, revealComposer, assistantName: crewmate ? (crewmate.label || crewmate.name) : undefined })
+  const { consume: consumeQuote, recoverInto: recoverQuoteInto } = messageQuote
   const restoreIntoComposer = useCallback((text: string, files: string[] = [], pastes: PasteBlock[] = [], forSlot: string = slotKeyRef.current) => {
     if (!mountedRef.current || forSlot !== slotKeyRef.current) { mergePaneDraft(forSlot, text, files, pastes); return }
     // The paste blocks behind the payload's tokens come back with it, numbered
@@ -1019,7 +1025,10 @@ export default function ChatPane({
     // asks the server to skip the hold that parks a message behind them and
     // start a real turn instead of queueing. Same `/api/chat` flag as a steer.
     const text = (optionText || input).trim()
-    if (!text && !pendingFiles.length) return
+    // A staged quote alone is a sendable message. An option pill's send is its
+    // own text and leaves the stage untouched, as it leaves files and pastes.
+    const sentQuote = optionText ? null : consumeQuote('').quote
+    if (!text && !pendingFiles.length && !sentQuote) return
     // A send while STREAMING dictation is live ends the dictation, before the
     // composer is read and cleared (see useComposerVoice.disarmForSend).
     composerRef.current?.voice()?.disarmForSend()
@@ -1056,7 +1065,7 @@ export default function ChatPane({
     // So a picture attached in a member DM or a split pane never rendered
     // and never reached the model, while the same send from the main chat
     // did both (#9433).
-    const { txt, displayTxt, filePaths } = prepareSendPayload(text, files)
+    const { txt, displayTxt: typedDisplayTxt, filePaths } = prepareSendPayload(text, files)
     // Folder tokens take the same wire/bubble split ChatPage uses: the wire
     // text carries `[attached_dir N] path` markers the agent can resolve, the
     // bubble keeps the `@path/` token for the chip, and `meta.dirs` indexes
@@ -1071,8 +1080,14 @@ export default function ChatPane({
     // the side table (saveStoredPaste) re-collapses the server's expanded echo
     // to that chip on history load. Blocks whose token the user deleted as
     // text are pruned first so neither carries a block nothing points at.
-    const bubblePastes = pruneBlocks(displayTxt, blocks)
-    const llm = bubblePastes.length ? expandPasteTokens(dirLlm, bubblePastes) : dirLlm
+    const bubblePastes = pruneBlocks(typedDisplayTxt, blocks)
+    const expanded = bubblePastes.length ? expandPasteTokens(dirLlm, bubblePastes) : dirLlm
+    // The quoted message opens both texts (`messageQuote.ts`), so the bubble's
+    // card strips exactly what was sent. Prepended AFTER the folder and paste
+    // token passes, so the quoted text is never read as one of this send's
+    // tokens (fork Opus review).
+    const llm = sentQuote ? prependQuote(expanded, sentQuote) : expanded
+    const displayTxt = sentQuote ? prependQuote(typedDisplayTxt, sentQuote) : typedDisplayTxt
     if (bubblePastes.length) saveStoredPaste(llm, displayTxt, bubblePastes, filePaths)
     // sendId correlation (same contract as ChatPage): the wire text differs
     // from the bubble text whenever a folder token serialized, so the store's
@@ -1088,9 +1103,10 @@ export default function ChatPane({
       ...(filePaths.length ? { files: filePaths } : {}),
       ...(dirPaths.length ? { dirs: dirPaths } : {}),
       ...(bubblePastes.length ? { pastes: bubblePastes } : {}),
+      ...(sentQuote ? { quote: sentQuote } : {}),
       sendId,
     }
-    const bubbleMinted = !busy && (text || files.length)
+    const bubbleMinted = !busy && (text || files.length || sentQuote)
     if (bubbleMinted) {
       dispatch(appendSlotMessage({
         slot: slotKey,
@@ -1148,7 +1164,9 @@ export default function ChatPane({
         restore: (status) => {
           if (optionText) return
           if (status === 'response-late' && bubbleMinted) return
-          restoreIntoComposer(text, files, bubblePastes, slotKey)
+          // The quote: back on the stage when this pane is still live and the
+          // stage is free, else in the restored text (a rebound pane parks it).
+          restoreIntoComposer(recoverQuoteInto(text, sentQuote, mountedRef.current && slotKey === slotKeyRef.current), files, bubblePastes, slotKey)
         },
         // Report ONLY -- the error row. The restore is `restore`'s job above;
         // handing the payload back here too would restore a `refused` twice.
@@ -1184,7 +1202,7 @@ export default function ChatPane({
         // conservative shape ChatPage's cancel restores through), so the token
         // string alone would be a dead chip that sends literally on retry —
         // the pasted text itself is the lossless form of what the user put in.
-        stashDemoted: (queueId) => { if (!optionText) queuedSendStash.set(queueId, { raw: bubblePastes.length ? expandPasteTokens(text, bubblePastes) : text, files, sent: llm }) },
+        stashDemoted: (queueId) => { if (!optionText) queuedSendStash.set(queueId, { raw: bubblePastes.length ? expandPasteTokens(text, bubblePastes) : text, files, sent: llm, ...(sentQuote ? { quote: sentQuote } : {}) }) },
       })
       // -- doSend's send-machinery tail (not steer-receipt policy) --
       // Blocking ask resolution, owned by doSend and run on every accepted
@@ -1193,7 +1211,7 @@ export default function ChatPane({
       if (!askAtSend) return
       void resolveAskAfterSend(receipt.body, askAtSend, dispatch)
     })
-  }, [input, pendingFiles, pasteBlocks, busy, slotKey, dispatch, restoreIntoComposer, reportSendFailure, scrollToBottom])
+  }, [input, pendingFiles, pasteBlocks, busy, slotKey, dispatch, restoreIntoComposer, reportSendFailure, scrollToBottom, consumeQuote, recoverQuoteInto])
   // The endpointer auto-submit (handed to the Voice atom above) reads the
   // latest send through this ref.
   doSendRef.current = doSend
@@ -1222,9 +1240,11 @@ export default function ChatPane({
     if (!running) { doSend(undefined, true); return }
     const raw = input.trim()
     const files = pendingFiles
+    const sentQuote = consumeQuote('').quote
     // A steer cannot restore what it cleared on an empty payload, so refuse a
     // payload of nothing (mirrors ChatPage.steer's `!raw && !files.length`).
-    if (!raw && !files.length) return
+    // A staged quote alone is a payload.
+    if (!raw && !files.length && !sentQuote) return
     // A steer while STREAMING dictation is live ends the dictation, like
     // doSend: this path clears the composer below, and a partial landing after
     // the clear would rebuild the sent text (see useComposerVoice.disarmForSend).
@@ -1235,7 +1255,9 @@ export default function ChatPane({
     // Same expansion as doSend; the steer channel is text-only and ChatPage's
     // steer shows the expanded text in its bubble too, so this one does.
     const steerPastes = pruneBlocks(inlined, pasteBlocks)
-    const txt = steerPastes.length ? expandPasteTokens(inlined, steerPastes) : inlined
+    const expanded = steerPastes.length ? expandPasteTokens(inlined, steerPastes) : inlined
+    // Quote prepended after the paste pass, as in doSend.
+    const txt = sentQuote ? prependQuote(expanded, sentQuote) : expanded
     const sendId = `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
     // `meta.files` is the ORDERED non-image list the `[attached_file N]`
     // tokens index into: the transcript chip resolves marker N to
@@ -1243,7 +1265,7 @@ export default function ChatPane({
     // path capture, which truncates a filename containing spaces. The steer
     // channel itself is text-only, but the echo reconciles by merging meta
     // onto this bubble, so the index rides the row from here.
-    const steerMeta = { sendId, ...(filePaths.length ? { files: filePaths } : {}) }
+    const steerMeta = { sendId, ...(filePaths.length ? { files: filePaths } : {}), ...(sentQuote ? { quote: sentQuote } : {}) }
     // Drain the per-frame chunk buffer first, same as ChatPage's steer(): a
     // pre-steer chunk still pending in useWebSocket's buffer would otherwise
     // flush BELOW this card (see lib/pendingChunkDrain.ts).
@@ -1272,7 +1294,7 @@ export default function ChatPane({
         echoReconciled: () => selectSendConfirmed(store.getState(), slotKey, sendId),
         // refused / response-late hand the payload back into this pane's
         // composer (raw text + files), addressed to the slot it was typed into.
-        restore: () => restoreIntoComposer(raw, files, steerPastes, slotKey),
+        restore: () => restoreIntoComposer(recoverQuoteInto(raw, sentQuote, mountedRef.current && slotKey === slotKeyRef.current), files, steerPastes, slotKey),
         reportFailure: (reason, status) => reportSendFailure(reason, status),
         // \u26A0 is NoticeCard's warn-tone selector (parseNotice).
         warnUnconfirmed: () => dispatch(appendSlotMessage({ slot: slotKey, message: { role: 'notice', content: '\u26A0\uFE0F ' + i18nT('pages.chatPage.delivery_unconfirmed'), cls: '' } })),
@@ -1287,10 +1309,10 @@ export default function ChatPane({
         // chip gone (#560).
         // Expanded for the same reason as doSend's stash: no blocks travel
         // with the card, so the token alone would restore as a dead chip.
-        stashDemoted: (queueId) => queuedSendStash.set(queueId, { raw: steerPastes.length ? expandPasteTokens(raw, steerPastes) : raw, files, sent: txt }),
+        stashDemoted: (queueId) => queuedSendStash.set(queueId, { raw: steerPastes.length ? expandPasteTokens(raw, steerPastes) : raw, files, sent: txt, ...(sentQuote ? { quote: sentQuote } : {}) }),
       })
     })
-  }, [running, doSend, input, pendingFiles, pasteBlocks, slotKey, dispatch, reportSendFailure, restoreIntoComposer])
+  }, [running, doSend, input, pendingFiles, pasteBlocks, slotKey, dispatch, reportSendFailure, restoreIntoComposer, consumeQuote, recoverQuoteInto])
 
   // Stop mirrors ChatPage's press protocol (ChatPage.onStop): the first press
   // is the cooperative cancel, a second press while the slot reports
@@ -1449,7 +1471,7 @@ export default function ChatPane({
     // alias store -- restoreIntoComposer's own third parameter is its
     // paste-block list -- so the adapter pins the two-argument call and the
     // alias map is dropped here by construction rather than misread as pastes.
-    restoreDraft: (text, files) => restoreIntoComposer(text, files),
+    restoreDraft: (text, files, _aliases, quote) => restoreIntoComposer(recoverQuoteInto(text, quote ?? null), files),
   })
   // Split-view panes draw the SAME transcript rows as the single-chat surface,
   // through the SDK's row registry: the live ToolCallLine (purpose / input /
@@ -1651,6 +1673,7 @@ export default function ChatPane({
           onDisplayItems={onDisplayItems}
           hiddenRow={pinHiddenRow}
           onQuote={onQuote}
+          onQuoteMessage={messageQuote.quoteMessage}
           onAsk={onAsk}
           threads={threads}
           onFileOpen={onFileOpen}
@@ -2042,6 +2065,8 @@ export default function ChatPane({
           onUploadFiles={uploadFiles}
           onCancelUpload={cancelUpload}
           pendingFiles={pendingFiles}
+          pendingQuote={messageQuote.pendingQuote}
+          onRemoveQuote={messageQuote.clearQuote}
           onRemoveFile={(p) => setPendingFiles((prev) => prev.filter((x) => x !== p))}
           uploading={uploadMutation.isPending}
           onDrop={dropTargetProps.onDrop}

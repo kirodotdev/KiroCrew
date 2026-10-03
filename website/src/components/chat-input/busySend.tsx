@@ -18,7 +18,7 @@ import type { ComposerBusyMode } from './props'
    renders the stop controls that replace the send button through a stop's soft
    and hard phases. */
 
-export function useComposerSend({ slotId, busyMode, isRunning, stopState, canSteer, onSteer, jevAutoAvailable, disabled, voiceTranscribing, value, pasteBlocks, contextWindowTokens, pendingFilesCount, pendingSessionsCount, onSend, onStop, onFollowUpSend }: {
+export function useComposerSend({ slotId, busyMode, isRunning, stopState, canSteer, onSteer, jevAutoAvailable, disabled, voiceTranscribing, value, pasteBlocks, contextWindowTokens, pendingFilesCount, pendingSessionsCount, hasQuote, onSend, onStop, onFollowUpSend }: {
   slotId: string | null
   busyMode: ComposerBusyMode
   isRunning: boolean
@@ -33,6 +33,8 @@ export function useComposerSend({ slotId, busyMode, isRunning, stopState, canSte
   contextWindowTokens?: number
   pendingFilesCount: number
   pendingSessionsCount: number
+  /** A whole message is staged as the quote: a draft even with no text. */
+  hasQuote: boolean
   onSend: () => void
   onStop?: () => void
   onFollowUpSend?: (text?: string, sourceKeyAtClick?: string | null) => void
@@ -98,10 +100,10 @@ export function useComposerSend({ slotId, busyMode, isRunning, stopState, canSte
     // The message leaves the hand here, on every path (Enter, Send, steer) --
     // but only when there is one: an Enter on an empty composer reaches onSend
     // (which drops it) and must stay as silent as the Send button it disables.
-    if (value.trim() || pendingFilesCount || pendingSessionsCount) haptic('light')
+    if (value.trim() || pendingFilesCount || pendingSessionsCount || hasQuote) haptic('light')
     if (steerNow && onSteer) onSteer(steerAuto && !flip ? { auto: true } : undefined)
     else onSend()
-  }, [disabled, voiceTranscribing, interceptOverLimitSend, busyChoiceAvailable, steerOnly, steerActive, steerAuto, onSteer, onSend, value, pendingFilesCount, pendingSessionsCount])
+  }, [disabled, voiceTranscribing, interceptOverLimitSend, busyChoiceAvailable, steerOnly, steerActive, steerAuto, onSteer, onSend, value, pendingFilesCount, pendingSessionsCount, hasQuote])
   // Every stop button in the row goes through this, so the tap and the truthiness
   // checks on `onStop` (which decide whether a button renders at all) stay apart.
   const stopWithTap = useCallback(() => {

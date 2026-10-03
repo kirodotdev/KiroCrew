@@ -10383,7 +10383,7 @@
         "fork_conversation_from_here": "यहाँ से बातचीत फ़ोर्क करें",
         "next_version": "अगला संस्करण",
         "previous_version": "पिछला संस्करण",
-        "raw_markdown": "रॉ markdown",
+        "raw_markdown": "रॉ markdown दिखाओ",
         "regenerate": "पुनः बनाएँ",
         "regenerate_response": "प्रतिक्रिया पुनः बनाएँ",
         "rendered_view": "रेंडर किया गया व्यू",
@@ -10407,7 +10407,8 @@
         "needs_earlier_history_count_one": "पुराना इतिहास लोड करने के लिए चुनें — {{count}} पुराना संदेश शेष है",
         "needs_earlier_history_count_other": "पुराना इतिहास लोड करने के लिए चुनें — {{count}} पुराने संदेश शेष हैं",
         "share_message": "छवि के रूप में साझा करें",
-        "copy_failed": "कॉपी विफल"
+        "copy_failed": "कॉपी विफल",
+        "quote_message": "संदेश उद्धृत करो"
       },
       "chatFooter": {
         "compacting": "संक्षिप्त किया जा रहा है…",
@@ -10862,7 +10863,9 @@
         "steering": "निर्देशित किया जा रहा है…",
         "delivery_pending": "डिलीवरी लंबित…",
         "redirecting_the_running_turn_not_yet_confirmed": "चल रहे टर्न को पुनर्निर्देशित किया जा रहा है — अभी पुष्टि नहीं हुई है।",
-        "turn_ended_before_this_applied_runs_as_its_own_message": "यह लागू होने से पहले टर्न समाप्त हो गया — यह एक अलग संदेश के रूप में चलता है।"
+        "turn_ended_before_this_applied_runs_as_its_own_message": "यह लागू होने से पहले टर्न समाप्त हो गया — यह एक अलग संदेश के रूप में चलता है।",
+        "quote_message": "संदेश उद्धृत करो",
+        "more_actions": "अधिक क्रियाएँ"
       },
       "workflowCompletionCard": {
         "hide_result": "परिणाम छिपाएँ",
@@ -11244,6 +11247,14 @@
         "rate_right": "Jev ने यह संक्षेपण सही आँका",
         "rate_wrong": "Jev ने यह संक्षेपण गलत आँका",
         "not_scored": "(+{{count}} की जाँच नहीं हुई)"
+      },
+      "quoteCard": {
+        "you": "तुम",
+        "assistant": "{{productName}}",
+        "quoting_author": "{{author}} को उद्धृत कर रहे हो",
+        "remove_quote": "उद्धरण हटाओ",
+        "jump_to_quoted_message": "उद्धृत संदेश पर जाओ",
+        "message_unavailable": "वहाँ नहीं जा सकते — मूल संदेश अब इस बातचीत में नहीं है।"
       }
     },
     "chatPage": {

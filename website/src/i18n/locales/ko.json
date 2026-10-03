@@ -10240,7 +10240,7 @@
         "fork_conversation_from_here": "여기서 대화 분기",
         "next_version": "다음 버전",
         "previous_version": "이전 버전",
-        "raw_markdown": "Markdown 원문",
+        "raw_markdown": "Markdown 원문 보기",
         "regenerate": "다시 생성",
         "regenerate_response": "응답 다시 생성",
         "rendered_view": "렌더링 보기",
@@ -10263,7 +10263,8 @@
         "needs_active_chat": "이 채팅이 완전히 열리면 사용할 수 있습니다",
         "needs_earlier_history_count_other": "선택하면 이전 기록을 불러옵니다 — 이전 메시지 {{count}}개가 남아 있습니다",
         "share_message": "이미지로 공유",
-        "copy_failed": "복사 실패"
+        "copy_failed": "복사 실패",
+        "quote_message": "메시지 인용"
       },
       "chatFooter": {
         "compacting": "압축 중…",
@@ -10708,7 +10709,9 @@
         "steering": "추가하는 중…",
         "delivery_pending": "전송 대기 중…",
         "redirecting_the_running_turn_not_yet_confirmed": "실행 중인 턴을 리디렉션하는 중 — 아직 확인되지 않았습니다.",
-        "turn_ended_before_this_applied_runs_as_its_own_message": "적용되기 전에 턴이 종료되어 별도의 메시지로 실행됩니다."
+        "turn_ended_before_this_applied_runs_as_its_own_message": "적용되기 전에 턴이 종료되어 별도의 메시지로 실행됩니다.",
+        "quote_message": "메시지 인용",
+        "more_actions": "추가 작업"
       },
       "workflowCompletionCard": {
         "hide_result": "결과 숨기기",
@@ -11088,6 +11091,14 @@
         "rate_right": "Jev의 판단이 맞음",
         "rate_wrong": "Jev의 판단이 틀림",
         "not_scored": "(+{{count}}개는 평가 안 함)"
+      },
+      "quoteCard": {
+        "you": "나",
+        "assistant": "{{productName}}",
+        "quoting_author": "{{author}} 인용 중",
+        "remove_quote": "인용 제거",
+        "jump_to_quoted_message": "인용한 메시지로 이동",
+        "message_unavailable": "이동할 수 없습니다 — 원본 메시지가 더 이상 이 대화에 없습니다."
       }
     },
     "chatPage": {

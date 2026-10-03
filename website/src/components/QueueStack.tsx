@@ -9,6 +9,7 @@ import { i18nT } from '../i18n/t'
 import { parseRecoveryMessage } from '../pages/chat/RecoveryCard'
 import { stripAppEnvelope } from '../pages/chat/groupDisplayItems'
 import { hasSubagentCompletionPrefix } from '../pages/chat/subagentCompletion'
+import { prependQuote, quoteBlock, quoteExcerpt, readMessageQuote, stripQuoteBlock } from '../chat-core/composer/messageQuote'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 /** System-injected sub-agent completion deliveries waiting for the busy slot.
  *  These are NOT user messages: they must not be editable/cancellable (either
@@ -47,9 +48,33 @@ export function isAppMessageQueued(m: ChatMessage): boolean {
 /** Display text for a queued entry: an app-message entry drops its machine
  *  envelope so the queue card wears the same skin the transcript row will —
  *  two skins for one message read as two different messages. */
+/** The entry's own words: the content with a carried quote's block taken off
+ *  the head, exactly as the sent bubble strips it (`UserMessage`). This is
+ *  what the editor opens on; `reglueQuote` puts the block back on commit. */
+function queuedOwnText(m: ChatMessage): string {
+  if (isAppMessageQueued(m)) return stripAppEnvelope(m.content)
+  const quote = readMessageQuote(m.meta as Record<string, unknown> | undefined)
+  return quote ? stripQuoteBlock(m.content, quote) : m.content
+}
+
+/** The card's one visible line. A quoting entry shows the user's own words,
+ *  so two entries quoting the same reply differ; a quote-only send has none,
+ *  so the card shows the quoted excerpt rather than a blank line. Preview
+ *  only -- the editor seeds from `queuedOwnText`, never from this. */
 export function queuedDisplayText(m: ChatMessage): string {
-  if (!isAppMessageQueued(m)) return m.content
-  return stripAppEnvelope(m.content)
+  const own = queuedOwnText(m)
+  if (own.trim()) return own
+  const quote = readMessageQuote(m.meta as Record<string, unknown> | undefined)
+  return quote ? quoteExcerpt(quote.text) : own
+}
+
+/** The text an edit of a quoting entry commits: the editor shows and edits
+ *  the user's own words (`queuedDisplayText`), and the quote block the entry
+ *  carries goes back on the head unchanged, so the card survives the edit. */
+function reglueQuote(m: ChatMessage, edited: string): string {
+  const quote = readMessageQuote(m.meta as Record<string, unknown> | undefined)
+  if (!quote || !m.content.startsWith(quoteBlock(quote))) return edited
+  return prependQuote(edited, quote)
 }
 
 /** Split a slot's message list into the three things a pane surface needs:
@@ -396,7 +421,7 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onReorder, f
                     </span>
                   )}
                   {isEditing && onEdit ? (
-                    <EditInput initial={m.content} onCommit={v => commitEdit(queueId!, v)} onCancel={cancelEdit} />
+                    <EditInput initial={queuedOwnText(m)} onCommit={v => commitEdit(queueId!, reglueQuote(m, v))} onCancel={cancelEdit} />
                   ) : (
                     <>
                       {/* Same attribution the transcript row wears: a queued

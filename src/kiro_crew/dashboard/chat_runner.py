@@ -114,6 +114,7 @@ from kiro_crew.dashboard.chat_delivery import (  # noqa: F401
     find_written_steer_row,
     queue_entry_is_user_origin,
     queued_text_for_display,
+    quote_meta,
 )
 from kiro_crew.dashboard.chat_folders import (
     _resolve_folder_steering_dirs,
@@ -6488,9 +6489,16 @@ async def _start_next_queued_turn(
             # a real user row, and this flag correctly says "rebuild").
             "drain_writes_row": is_cron or is_subagent or is_recovery or is_app_message,
         }
-        _pop_attachments = attachment_meta(item.get("meta"))
-        if _pop_attachments:
-            _pop["meta"] = _pop_attachments
+        # The client rebuilds the drained entry as a user row from this frame
+        # alone (no `chat_message` echo follows for a user row), so the lists
+        # AND the quote ride it: without the quote the rebuilt row shows the
+        # blockquote as text until a reload.
+        _pop_meta = {
+            **attachment_meta(item.get("meta")),
+            **quote_meta(item.get("meta"), user_origin=queue_entry_is_user_origin(item)),
+        }
+        if _pop_meta:
+            _pop["meta"] = _pop_meta
         state.broadcast_ws("queue_pop", _pop)
         _remove_queued_by_id(slot.messages, item["id"])
 
@@ -6591,6 +6599,15 @@ async def _start_next_queued_turn(
             )
     # Model input only: the row keeps the user's text as typed.
     _possibly_delivered_steer = bool(_drained_meta.pop(STEER_POSSIBLY_DELIVERED_META, False))
+    if "quote" in _drained_meta:
+        # The row's quote record follows the row's text: as typed only when
+        # every consumed entry is the human's own (`deliver_as_typed`), else
+        # redacted -- a restored entry carries no origin stamp and the user-row
+        # emit path keeps `meta.quote` as stored, so this is where its form
+        # is decided. A record the bound refuses is dropped whole.
+        _drained_meta.update(
+            quote_meta({"quote": _drained_meta.pop("quote")}, user_origin=deliver_as_typed)
+        )
     if _drained_ids:
         _drained_meta.pop("steer_delivery_id", None)
         _drained_meta["steer_delivery_ids"] = _drained_ids

@@ -2,6 +2,7 @@ import { useRef, useEffect, useMemo, useCallback, useId, memo, lazy, Suspense } 
 import { markComposerResize } from '../utils/composerResize'
 import { ArrowUp, Loader2, RotateCw, Sparkles, Target, CheckCircle, Lock, FolderOpen, ClipboardList, PenLine, MoreHorizontal } from 'lucide-react'
 import SketchDialog from './SketchDialog'
+import QuoteCard from '../pages/chat/QuoteCard'
 import CopyBranchButton from './CopyBranchButton'
 import RejectDropdown from './RejectDropdown'
 import { createPortal } from 'react-dom'
@@ -124,6 +125,8 @@ function ChatInput({
   onRemoveFile,
   onRemoveDir,
   pendingSessions = [],
+  pendingQuote = null,
+  onRemoveQuote,
   onRemoveSessionRef,
   isMac = false,
   onDrop,
@@ -347,7 +350,7 @@ function ChatInput({
   }
   const { effectiveBusyMode, setBusySendMode, steerOnly, overLimitPending, fireComposer, stopWithTap, sendFollowUp } = useComposerSend({
     slotId, busyMode, isRunning, stopState, canSteer, onSteer, jevAutoAvailable, disabled, voiceTranscribing, value, pasteBlocks, contextWindowTokens,
-    pendingFilesCount: pendingFiles.length, pendingSessionsCount: pendingSessions.length, onSend, onStop, onFollowUpSend,
+    pendingFilesCount: pendingFiles.length, pendingSessionsCount: pendingSessions.length, hasQuote: !!pendingQuote, onSend, onStop, onFollowUpSend,
   })
   const { botName } = useBranding()
   const isMobile = useIsMobile()
@@ -472,6 +475,10 @@ function ChatInput({
   const { handleTextareaChange, handleLexicalChange } = useEditorInput({ onChange, valueFromUserRef, openPickersForText, recordCaret, lexicalControlRef, voiceCaretRef })
 
   const hasSessionRefs = pendingSessions.length > 0
+  // A staged quote is a draft for the send gates below, but NOT a strip: it
+  // lives inside the text area, so it must not join `stripsMounted`, whose
+  // measurement waits for a strip box that would never appear.
+  const hasQuote = !!pendingQuote
   const { fileStripRef, sessionStripRef, stripH } = useStripHeights({
     pendingFilesCount: pendingFiles.length, pendingDirsCount: pendingDirs.length, hasSessionRefs, setManualHeight, dragMinHRef,
   })
@@ -488,7 +495,7 @@ function ChatInput({
    *  pending is a normal thing to want and hold mode stays available for it. A
    *  refs-only composer therefore keeps the hold bar while the send button is
    *  live, which is correct for both. */
-  const composerHasDraft = !!value.trim() || pendingFiles.length > 0
+  const composerHasDraft = !!value.trim() || pendingFiles.length > 0 || hasQuote
   const {
     transcribeInFlight, transcribingIsHonest, micHeldElsewhere, micBlocked, micOwnerTitle, micHeldElsewhereLabel,
     setHoldTarget, touchPtt, voiceHoldMode, micIsModeSwitch, voiceSettling, textareaParked, toggleVoiceMode, micLabel, holdBarLabel,
@@ -857,6 +864,11 @@ function ChatInput({
           />
         )}
         <div className={`relative ${showDictation || voiceHoldMode ? 'sr-only' : ''} ${manualHeight !== null ? 'flex-1 min-h-0 flex flex-col' : ''}`}>
+        {/* The staged quote sits inside the text area, above the caret: the
+            quoted message is the first thing the reply says, so it is drawn
+            where the reply is written rather than in the strips above (those
+            are attachments -- things sent ALONG with the text). */}
+        {pendingQuote && <QuoteCard quote={pendingQuote} variant="composer" onRemove={onRemoveQuote} />}
         {lexicalComposer && !lexicalLoadFailed ? (
           <ComposerLoadBoundary onError={() => setLexicalLoadFailed(true)}>
             <Suspense fallback={
@@ -1141,7 +1153,7 @@ function ChatInput({
                 WCAG 2.5.3 (Label in Name). `title` carries the longer
                 explanation for hover.
               */}
-              {continuable && onContinue && !value.trim() && !pendingFiles.length && !hasSessionRefs ? (
+              {continuable && onContinue && !value.trim() && !pendingFiles.length && !hasSessionRefs && !hasQuote ? (
                 <button
                   className="primary h-8 px-3 rounded-full bg-accent text-accent-fg border-none inline-flex items-center gap-1.5 text-[12px] font-medium leading-none cursor-pointer hover:bg-accent-hover disabled:opacity-30 disabled:cursor-not-allowed transition-all"
                   onClick={onContinue}
@@ -1157,7 +1169,7 @@ function ChatInput({
               <button
                 className="primary w-8 h-8 rounded-full bg-accent text-accent-fg border-none flex items-center justify-center cursor-pointer hover:bg-accent-hover disabled:opacity-30 disabled:cursor-not-allowed transition-all"
                 onClick={fireComposer}
-                disabled={(!value.trim() && !pendingFiles.length && !hasSessionRefs) || disabled || optimizing || !connected}
+                disabled={(!value.trim() && !pendingFiles.length && !hasSessionRefs && !hasQuote) || disabled || optimizing || !connected}
                 aria-label={i18nT('components.chatInput.send')}
                 {...offlineProps(connected, 'send', 'Send')}
               >

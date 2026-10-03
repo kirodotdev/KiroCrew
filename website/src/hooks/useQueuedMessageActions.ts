@@ -3,6 +3,7 @@ import { api } from '../api/client'
 import { useAppDispatch } from '../store'
 import { cancelQueuedMessage, editQueuedMessage, queueEntryAttachments } from '../store/chatSlice'
 import { restoreQueuedContent } from '../utils/fileTokens'
+import { quoteBlock, readMessageQuote, stripQuoteBlock, type MessageQuote } from '../chat-core/composer/messageQuote'
 import type { ChatMessage } from '../types'
 
 /** Pre-serialization composer state of a send the server QUEUED, written by the
@@ -22,6 +23,10 @@ export interface QueuedSendRecord {
    *  mention was invisible to reconciliation, so hand-deleting it left a
    *  stale chip that the next send silently re-attached. */
   aliases?: Record<string, string[]>
+  /** The whole-message quote the send consumed (`chat-core/composer/messageQuote`),
+   *  so a cancel puts it back as a staged card rather than leaving its `>` block
+   *  in the restored text -- or, without a stash hit, losing it (fork GPT review). */
+  quote?: MessageQuote
 }
 
 /** Queued-send stash, keyed by the `queue_id` the send receipt returns (the
@@ -75,7 +80,7 @@ export interface QueuedMessageActionsOptions {
    *  Omitted, the recovered state is dropped, which is what cancelling in a
    *  split pane did before #5891 and what no host should do.
    */
-  restoreDraft?: (text: string, files: string[], aliases?: Record<string, string[]>) => void
+  restoreDraft?: (text: string, files: string[], aliases?: Record<string, string[]>, quote?: MessageQuote) => void
 }
 
 const queueIdOf = (m: ChatMessage): string | undefined => m.meta?.queueId as string | undefined
@@ -210,13 +215,26 @@ export function useQueuedMessageActions({
       const stashed = queuedSendStash.get(queueId)
       if (stashed) queuedSendStash.delete(queueId)
       const hit = stashed && stashed.sent === msg.content
-      const { text, files } = hit
+      // Without a stash hit the row's own `meta.quote` (the gateway carries
+      // it on the entry) is the quote, and its block comes off the head of
+      // the parsed text so the host restages a card, not raw `>` lines.
+      // Accepted only while its block still opens the text: a record the
+      // row kept past an edit that deleted the block is not restaged.
+      const rowMetaQuote = hit ? null : readMessageQuote(msg.meta as Record<string, unknown> | undefined)
+      const rowQuote = rowMetaQuote && msg.content.startsWith(quoteBlock(rowMetaQuote)) ? rowMetaQuote : undefined
+      // The block comes off BEFORE the parse: the parser's producer-block
+      // patterns are anchored at offset 0, so a quote on the head would hide
+      // an image block behind it and the file would restore as literal text.
+      const parsed = hit
         ? { text: stashed.raw, files: stashed.files }
-        : restoreQueuedContent(msg.content, queueEntryAttachments(msg.meta).files)
+        : restoreQueuedContent(rowQuote ? stripQuoteBlock(msg.content, rowQuote) : msg.content, queueEntryAttachments(msg.meta).files)
+      const { files, text } = parsed
       // The stash also carries the alias map the send-clear dropped; the
       // parser fallback cannot know it, and a restore without aliases falls
       // into the documented reload-limitation class rather than corrupting.
-      restoreDraftRef.current?.(text, files, hit ? stashed.aliases : undefined)
+      const quote = hit ? stashed.quote : rowQuote
+      if (quote) restoreDraftRef.current?.(text, files, hit ? stashed.aliases : undefined, quote)
+      else restoreDraftRef.current?.(text, files, hit ? stashed.aliases : undefined)
     }
     // Optimistically remove the card; the WS echo is a no-op if already gone.
     dispatch(cancelQueuedMessage({ slot, queue_id: queueId }))

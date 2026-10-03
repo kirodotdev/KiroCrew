@@ -5,6 +5,7 @@
  *  and the oversize tool-payload clamp. No reducer lives here. */
 import { api } from '../../api/client'
 import type { ChatMessage, ToolPayloadCut } from '../../types'
+import { readMessageQuote, type MessageQuote } from '../../chat-core/composer/messageQuote'
 
 const SKIP_ROLES = new Set(['chunk', 'done'])
 export const filterMessages = (msgs: ChatMessage[]) => msgs.filter(m => !SKIP_ROLES.has(m.role))
@@ -96,6 +97,15 @@ export type QueueEntryAttachments = { files?: string[]; dirs?: string[] }
  *  strings is kept: the lists are indexed by marker number, so a malformed
  *  entry would shift every later marker onto the wrong path. Returns `{}` for
  *  anything else, which is what an entry without attachments carries. */
+/** The whole-message quote a queue entry carries (`meta.quote`, bounded by
+ *  the gateway's `quote_meta`), re-validated here like the attachment lists:
+ *  a cancel on THIS tab restores it as a staged card even when the send
+ *  happened on another tab or before a reload. */
+export function queueEntryQuote(meta: unknown): { quote?: MessageQuote } {
+  const q = readMessageQuote(meta && typeof meta === 'object' ? (meta as Record<string, unknown>) : undefined)
+  return q ? { quote: q } : {}
+}
+
 export function queueEntryAttachments(meta: unknown): QueueEntryAttachments {
   const out: QueueEntryAttachments = {}
   if (!meta || typeof meta !== 'object') return out
@@ -108,7 +118,7 @@ export function queueEntryAttachments(meta: unknown): QueueEntryAttachments {
 
 /** One queued-message entry as normalized by `fetchSlotDetail` from the backend
  *  slot-detail `queue` field. */
-export type SlotQueueItem = { content: string; queueId: string; ts: string; kind?: string; appLabel?: string } & QueueEntryAttachments
+export type SlotQueueItem = { content: string; queueId: string; ts: string; kind?: string; appLabel?: string; quote?: MessageQuote } & QueueEntryAttachments
 
 /** Coerce one workflow wire field to the string `WorkflowRunProgress` declares.
  *
@@ -142,5 +152,5 @@ export async function fetchSlotDetail(key: string, limit?: number) {
  *  context meter exactly as a first page does. */
 export function normalizeSlotDetail(key: string, d: Awaited<ReturnType<typeof api.chatSlotDetail>>, boundedRead: boolean) {
   type QueueItem = string | { content: string; id: string; meta?: unknown }
-  return { key, boundedRead, nextBefore: d.next_before || 0, messages: filterMessages(d.messages || []), running: d.running || false, stopping: d.stopping || false, hasMore: d.has_more || false, total: d.total || 0, queue: ((d.queue || []) as QueueItem[]).map((q: QueueItem) => typeof q === 'string' ? { content: q, queueId: crypto.randomUUID(), ts: new Date().toISOString() } : { content: q.content, queueId: q.id, ts: new Date().toISOString(), ...(typeof (q.meta as Record<string, unknown> | undefined)?.kind === 'string' ? { kind: (q.meta as Record<string, unknown>).kind as string } : {}), ...(typeof (q.meta as Record<string, unknown> | undefined)?.appLabel === 'string' ? { appLabel: (q.meta as Record<string, unknown>).appLabel as string } : {}), ...queueEntryAttachments(q.meta) }), context: d.context_pct != null ? { pct: d.context_pct, used: d.context_used_tokens ?? undefined, window: d.context_window_tokens ?? undefined } : undefined }
+  return { key, boundedRead, nextBefore: d.next_before || 0, messages: filterMessages(d.messages || []), running: d.running || false, stopping: d.stopping || false, hasMore: d.has_more || false, total: d.total || 0, queue: ((d.queue || []) as QueueItem[]).map((q: QueueItem) => typeof q === 'string' ? { content: q, queueId: crypto.randomUUID(), ts: new Date().toISOString() } : { content: q.content, queueId: q.id, ts: new Date().toISOString(), ...(typeof (q.meta as Record<string, unknown> | undefined)?.kind === 'string' ? { kind: (q.meta as Record<string, unknown>).kind as string } : {}), ...(typeof (q.meta as Record<string, unknown> | undefined)?.appLabel === 'string' ? { appLabel: (q.meta as Record<string, unknown>).appLabel as string } : {}), ...queueEntryAttachments(q.meta), ...queueEntryQuote(q.meta) }), context: d.context_pct != null ? { pct: d.context_pct, used: d.context_used_tokens ?? undefined, window: d.context_window_tokens ?? undefined } : undefined }
 }

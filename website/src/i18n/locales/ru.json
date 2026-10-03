@@ -10669,7 +10669,7 @@
         "fork_conversation_from_here": "Создать ответвление диалога отсюда",
         "next_version": "Следующая версия",
         "previous_version": "Предыдущая версия",
-        "raw_markdown": "Исходный markdown",
+        "raw_markdown": "Показать исходный markdown",
         "regenerate": "Сгенерировать заново",
         "regenerate_response": "Сгенерировать ответ заново",
         "rendered_view": "Отрисованный вид",
@@ -10695,7 +10695,8 @@
         "needs_earlier_history_count_many": "Выберите, чтобы загрузить более раннюю историю — осталось {{count}} сообщений",
         "needs_earlier_history_count_other": "Выберите, чтобы загрузить более раннюю историю — осталось {{count}} сообщений",
         "share_message": "Поделиться картинкой",
-        "copy_failed": "Не удалось скопировать"
+        "copy_failed": "Не удалось скопировать",
+        "quote_message": "Цитировать сообщение"
       },
       "chatFooter": {
         "compacting": "Сжатие контекста…",
@@ -11170,7 +11171,9 @@
         "steering": "Направляется…",
         "delivery_pending": "Ожидание доставки...",
         "redirecting_the_running_turn_not_yet_confirmed": "Перенаправление выполняющегося хода — ещё не подтверждено.",
-        "turn_ended_before_this_applied_runs_as_its_own_message": "Ход завершился до того, как это применилось, — сообщение выполняется отдельно."
+        "turn_ended_before_this_applied_runs_as_its_own_message": "Ход завершился до того, как это применилось, — сообщение выполняется отдельно.",
+        "quote_message": "Цитировать сообщение",
+        "more_actions": "Другие действия"
       },
       "workflowCompletionCard": {
         "hide_result": "Скрыть результат",
@@ -11556,6 +11559,14 @@
         "rate_right": "Jev оценил это сжатие верно",
         "rate_wrong": "Jev оценил это сжатие неверно",
         "not_scored": "(+{{count}} не оценено)"
+      },
+      "quoteCard": {
+        "you": "Ты",
+        "assistant": "{{productName}}",
+        "quoting_author": "Цитата: {{author}}",
+        "remove_quote": "Убрать цитату",
+        "jump_to_quoted_message": "Перейти к цитируемому сообщению",
+        "message_unavailable": "Перейти не удалось — исходного сообщения больше нет в этом разговоре."
       }
     },
     "chatPage": {

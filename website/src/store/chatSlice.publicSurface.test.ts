@@ -71,7 +71,7 @@ const FUNCTIONS = [
   'abortActiveOlderFetch', 'batchedTextAboveFloor', 'capturePendingAskId', 'clampToolOutput',
   'countMatchedFetchLimit', 'floorForGen', 'hasUnidentifiedDurableRow', 'isAwaitingSpawnApproval',
   'isSupersededPagingRejection', 'isTerminalWorkflowStatus', 'mcpAppKey', 'missedChunkMarker',
-  'pendingQuestionFor', 'queueEditBroadcastAt', 'queueEntryAttachments', 'raiseChunkSeq',
+  'pendingQuestionFor', 'queueEditBroadcastAt', 'queueEntryAttachments', 'queueEntryQuote', 'raiseChunkSeq',
   'selectActiveSlotProject', 'selectAutomationForSlot', 'selectComposerBusy', 'selectContinuable',
   'selectSendConfirmed', 'selectSidebarApprovalCounts', 'selectSidebarAutomationRunningKeys',
   'selectSidebarSubagentCounts', 'selectSidebarWorkflowActive', 'selectSidebarWorkflowActiveKeys',

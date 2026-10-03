@@ -155,7 +155,7 @@ describe('reducer families', () => {
 
 /** owner module -> the names the facade re-exports from it. */
 const REEXPORTS: Array<[string, Record<string, unknown>, string[]]> = [
-  ['wire', wire, ['clampToolOutput', 'TOOL_OUTPUT_MAX_CHARS', 'queueEntryAttachments']],
+  ['wire', wire, ['clampToolOutput', 'TOOL_OUTPUT_MAX_CHARS', 'queueEntryAttachments', 'queueEntryQuote']],
   ['transcript', transcript, ['floorForGen', 'hasUnidentifiedDurableRow', 'raiseChunkSeq', 'snapshotChunkGen', 'snapshotChunkSeq', 'transcriptTsMs']],
   ['paging', paging, [
     'OLDER_PAGE_LIMIT', 'OLDER_WALK_PAGE_LIMIT', 'SLOT_DETAIL_MAX_LIMIT', 'PANE_HYDRATE_LIMIT', 'REFRESH_LIMIT_CEILING',

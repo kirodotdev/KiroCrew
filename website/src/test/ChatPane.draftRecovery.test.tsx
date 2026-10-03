@@ -391,4 +391,33 @@ describe('ChatPane draft & recovery hardening (steer-only DM thread)', () => {
     await waitFor(() => expect((again as HTMLTextAreaElement).value).toContain('still typing'))
     expect((again as HTMLTextAreaElement).value).toContain('sent, then I left')
   })
+
+  it('a staged quote survives the pane unmounting before the refusal lands: it comes back in the parked text, not on a stage that no longer exists', async () => {
+    let refuse!: () => void
+    vi.mocked(api.sendChat).mockReturnValue(new Promise((resolve) => {
+      refuse = () => resolve({ ok: false, status: 409, json: () => Promise.resolve({ error: 'slot agent mismatch' }) } as unknown as Response)
+    }) as ReturnType<typeof api.sendChat>)
+    // A reply on the transcript to quote from.
+    // A reply with a later user turn under it, so its action row is drawn
+    // (the newest reply hides its footer while the turn runs).
+    vi.mocked(api.chatSlotDetail).mockResolvedValue({ messages: [
+      { role: 'assistant', content: 'the quoted reply', ts: '2026-09-30T00:00:00Z' },
+      { role: 'user', content: 'go on', ts: '2026-09-30T00:00:01Z' },
+    ], running: true, has_more: false, total: 2 } as never)
+    const first = renderPane('member-a', { running: true, busyMode: 'steer-only' })
+    fireEvent.click((await screen.findAllByTestId('quote-message'))[0])
+    const box = await composer()
+    fireEvent.change(box, { target: { value: 'about that' } })
+    fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
+    await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(1))
+    expect(lastSendTurnOpts?.message).toContain('> the quoted reply')
+    // Leave the page with the send in flight, then the refusal lands.
+    first.unmount()
+    await act(async () => { refuse() })
+    // Back on the page: the quote is in the text (no stage survived the unmount).
+    renderPane('member-a', { running: false, busyMode: 'steer-only' })
+    const again = await composer()
+    await waitFor(() => expect((again as HTMLTextAreaElement).value).toContain('about that'))
+    expect((again as HTMLTextAreaElement).value).toContain('> the quoted reply')
+  })
 })
