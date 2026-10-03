@@ -61,6 +61,7 @@ from kiro_crew.agent_discovery import (
 from kiro_crew.agent_files import (
     AGENT_FILENAME,
 )
+from kiro_crew.agent_files import DASHBOARD_AUTHOR_AGENT_FILENAME as _DASHBOARD_AUTHOR_FILENAME
 from kiro_crew.agent_files import HEARTBEAT_AGENT_FILENAME as _HEARTBEAT_AGENT_FILENAME
 from kiro_crew.agent_files import (
     OWNED_KIRO_AGENT_FILES,
@@ -276,6 +277,7 @@ if TYPE_CHECKING:  # served by ``__getattr__`` at runtime; named here for mypy
         _foreign_worker_spec_reason,
         _glob_hits,
         _grant_reaches_excluded,
+        _install_dashboard_author_agent,
         _install_worker_agent,
         _installed_default_spec,
         _pattern_reaches_excluded,
@@ -290,6 +292,7 @@ if TYPE_CHECKING:  # served by ``__getattr__`` at runtime; named here for mypy
         default_spec_fingerprint,
         default_spec_identity,
         rederive_worker_agent,
+        renew_managed_ownership_after_authorized_write,
         require_fresh_derived_spec,
         require_unchanged_derived_spec,
     )
@@ -384,6 +387,38 @@ def _atomic_json_write(path: Path, data: dict) -> None:
             platform_compat.fchmod_safe(f.fileno(), mode)
             json.dump(data, f, indent=2)
             f.write("\n")
+        replace_with_retry(tmp_name, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+    _notify_if_config_write(path)
+
+
+def _atomic_bytes_write(path: Path, raw: bytes) -> None:
+    """Write *raw* bytes atomically via tmp+rename, the byte-exact sibling of
+    :func:`_atomic_json_write`.
+
+    The managed dashboard-author installer records its ownership digest of the EXACT bytes
+    it is about to land BEFORE the spec write, so a kill in the window reads the file as
+    unowned (digest != on-disk) and fails closed rather than leaving a spec whose grants no
+    tightened ceiling can ever re-filter. Recording the digest first requires the caller to
+    hold the final bytes before writing, so it serializes once and hands those exact bytes
+    here -- ``_atomic_json_write`` would re-serialize and could differ by a byte, breaking
+    the digest==file invariant. Same tmp-file + ``replace_with_retry`` atomicity and mode
+    preservation as the JSON writer, so a kiro-cli reader never sees partial content.
+    """
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            try:
+                mode = stat.S_IMODE(path.stat().st_mode)
+            except FileNotFoundError:
+                mode = 0o644
+            platform_compat.fchmod_safe(f.fileno(), mode)
+            f.write(raw)
         replace_with_retry(tmp_name, path)
     except BaseException:
         try:
@@ -1945,6 +1980,8 @@ _EXPORTS_BY_OWNER: dict[str, tuple[str, ...]] = {
         "require_unchanged_derived_spec",
         "_require_fresh_worker_spec",
         "rederive_worker_agent",
+        "_install_dashboard_author_agent",
+        "renew_managed_ownership_after_authorized_write",
         "_WORKER_AGENT_FILENAME",
     ),
 }
@@ -2773,6 +2810,16 @@ def _existing_specs_are_mine(target: Path, own_home: Path | None) -> bool | None
         # verdict an attacker can manufacture in the same-uid agents dir.
         if not os.path.lexists(spec_path):
             continue
+        # The dashboard-author stem was a user-creatable template name before it became
+        # owned, and its managed ``mcpServers`` entry carries no ``KIROCREW_HOME`` pin on
+        # either branch -- the installer's own write omits it, and a leftover user file at
+        # the stem never had one. So this stem can never contribute a legitimate home-pin
+        # signal, and letting it into the probe makes a non-default home read every such
+        # file (ours OR an untouched user leftover) as foreign and refuse creation of every
+        # required spec. Exclude it from the pin probe regardless of sidecar confirmation;
+        # its provenance is the digest record, enforced at the gated sites, not a home pin.
+        if name == _DASHBOARD_AUTHOR_FILENAME:
+            continue
         found = True
         if expected is None:
             return False
@@ -3465,6 +3512,23 @@ def rebuild_agent_config(
         worker_agent._install_worker_agent()
     except Exception:
         logger.debug("kirocrew-worker agent install failed", exc_info=True)
+
+    # Install kirocrew-dashboard-author agent (authors one dashboard template and lands
+    # it as a PR). EAGER for the same forced reason spelled out on the worker above:
+    # ``session_create`` refuses an agent it cannot resolve, resolution reads a boot-time
+    # in-memory snapshot that no spec write refreshes, so a lazily-materialized spec is
+    # invisible to the validation that runs ahead of the spawn -- a conductor could never
+    # dispatch it on a clean install. Being here also re-filters its grants through the
+    # governance ceiling on every boot, so the spec normally cannot outlive a tightened
+    # ceiling -- with one explicit exception: if the ownership sidecar is PERSISTENTLY
+    # unreadable (or the file cannot be read), ``managed_owned_matches`` reads None and this
+    # one spec is left untouched (we never overwrite a file we cannot prove is ours), so its
+    # grants are not re-filtered until the sidecar/file is readable again. Ownership is a
+    # content digest bound to the written bytes, so a readable sidecar is the normal case.
+    try:
+        worker_agent._install_dashboard_author_agent()
+    except Exception:
+        logger.debug("kirocrew-dashboard-author agent install failed", exc_info=True)
 
     # Bidirectional sync: ensure packages installed for one provider
     # are also available for the other (agents↔plugins, skills).
@@ -4963,6 +5027,17 @@ def _sanitize_agent_hooks() -> None:
     agents_dir = kiro_agents_dir_path()
     for filename in OWNED_KIRO_AGENT_FILES:
         f = agents_dir / filename
+        # The dashboard-author stem was a user-creatable template name before it became
+        # owned, so a file here may be a user artefact the installer deliberately left in
+        # place (positive-confirmation: it writes only what the sidecar confirms as ours).
+        # A managed REWRITE must honour the same confirmation -- rewriting an unprovable
+        # file would reintroduce exactly the overwrite this change exists to prevent -- so
+        # skip it unless the sidecar positively records this instance as its writer. The
+        # other owned specs were never user-creatable, so they keep the plain sweep.
+        if filename == _DASHBOARD_AUTHOR_FILENAME and (
+            agent_state.managed_owned_matches(filename[: -len(".json")], f) is not True
+        ):
+            continue
         try:
             mtime = f.stat().st_mtime
         except OSError:

@@ -231,6 +231,37 @@ def test_a_plumbing_failure_still_writes_the_governance_passes(
     assert agent._fork_refresh_failed == frozenset()
 
 
+def test_a_fork_of_an_unconfirmed_dashboard_author_origin_is_not_plumbing_refreshed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The dashboard-author stem was a user-creatable template name before it became owned,
+    so a fork can descend from a USER template at that stem. ``_origin_is_owned`` treats it
+    as an owned origin (and refreshes the fork's hooks/MCP plumbing) ONLY when the sidecar
+    confirms the origin spec is ours; an unconfirmed origin leaves the fork's plumbing
+    untouched -- a corroborated fork still gets its governance passes."""
+    name = "kirocrew-dashboard-author"
+    _forks(monkeypatch, {"crewfork": {"private_to": "crew", "forked_from": name}})
+    _bindings(monkeypatch, {"crew": "crewfork"})
+    monkeypatch.setattr(agent, "kiro_agents_dir_path", lambda: tmp_path)
+    spec = tmp_path / "crewfork.json"
+    spec.write_text(json.dumps({"name": "crewfork", "tools": [], "allowedTools": []}))
+    monkeypatch.setattr(agent, "agent_spec_path", lambda _name: spec)
+    plumbed: list[str] = []
+    monkeypatch.setattr(agent, "_refresh_dynamic_fields", lambda config, *a, **k: plumbed.append(1))
+    monkeypatch.setattr(agent, "_atomic_json_write", lambda _p, _c: None)
+
+    # Origin NOT confirmed -> no plumbing refresh (the fork's hooks/MCP are left alone).
+    monkeypatch.setattr(fork_refresh.agent_state, "managed_owned_matches", lambda n, p: False)
+    agent._refresh_forked_templates_locked(gated_off=frozenset())
+    assert plumbed == []
+    assert agent._fork_refresh_failed == frozenset()  # governance still ran; fork not blocked
+
+    # Origin confirmed ours -> plumbing refresh runs.
+    monkeypatch.setattr(fork_refresh.agent_state, "managed_owned_matches", lambda n, p: True)
+    agent._refresh_forked_templates_locked(gated_off=frozenset())
+    assert plumbed == [1]
+
+
 def test_the_settled_event_stays_cleared_for_the_whole_pass(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

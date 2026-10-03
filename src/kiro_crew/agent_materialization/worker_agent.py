@@ -14,15 +14,22 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Any, NamedTuple
 
 from kiro_crew import agent as agent_mod
 from kiro_crew import agent_state
-from kiro_crew.agent_files import AGENT_FILENAME
+from kiro_crew.agent_files import (
+    AGENT_FILENAME,
+)
+from kiro_crew.agent_files import (
+    DASHBOARD_AUTHOR_AGENT_FILENAME as _DASHBOARD_AUTHOR_AGENT_FILENAME,
+)
 from kiro_crew.agent_files import WORKER_AGENT_FILENAME as _WORKER_AGENT_FILENAME
 from kiro_crew.agent_materialization import auto_approve, managed_mcp
+from kiro_crew.agent_spec_format import parse_markdown_spec
 
 #: The keys the worker spec MIRRORS from the resolved default agent spec, so its
 #: superset claim holds against the agent the user actually runs rather than
@@ -1203,3 +1210,332 @@ def rederive_worker_agent(reason: str) -> bool:
         return False
     agent_mod.logger.info("Re-derived worker agent config after %s", reason)
     return True
+
+
+#: The shipped ``dashboard-template`` skill spec -- the ONE authoritative copy of the
+#: dashboard author's charter. The installer reads its ``prompt`` and ``description`` from
+#: here through :func:`parse_markdown_spec` rather than from a Python constant held equal
+#: to it by nothing. ``parent.parent`` is the ``kiro_crew`` package root (this module is
+#: ``kiro_crew/agent_materialization/worker_agent.py``).
+_DASHBOARD_AUTHOR_SPEC_PATH: Path = (
+    Path(__file__).resolve().parent.parent
+    / "builtin_skills"
+    / "kirocrew-dev"
+    / "dashboard-template"
+    / "agent-spec.md"
+)
+
+#: The agent NAME the dashboard-author spec is keyed by in the durable sidecar
+#: (:mod:`kiro_crew.agent_state`), which keys every record by agent name rather than
+#: filename. Equal to ``config["name"]`` the installer writes.
+_MANAGED_OWNED_NAME = "kirocrew-dashboard-author"
+
+
+def _install_dashboard_author_agent() -> None:
+    """Generate and install the kirocrew-dashboard-author agent config.
+
+    A dispatched, worker-shaped agent, but NOT the default-mirroring worker: it carries
+    its own charter and its own tool surface, so it is built from scratch the way each
+    conductor is rather than mirrored from the default spec. It authors ONE dashboard
+    template and lands it as a pull request, so it mounts the two capabilities that work
+    needs -- ``fs_write`` and ``execute_bash`` -- and nothing that would make it a
+    conductor or a reporting worker: no ``session`` verb, no ``@kirocrew-work`` mount, no
+    ``@kirocrew-dashboard`` publication surface, no ``code`` (governance classes it under
+    ``filesystem.write``, a second path to two capabilities already mounted).
+
+    ``fs_write`` and ``execute_bash`` are MOUNTED but never auto-approved, the line
+    ``kirocrew-conductor`` draws and for the same reason: ``allowedTools`` has no argument
+    matching, so a blanket write or shell grant cannot be told apart from "write anywhere"
+    / "run anything", and the author's whole safety story is that a human reads its diff
+    before it lands. Every auto-approved entry only READS or recalls -- the frontmatter
+    ``allowedTools`` of the shipped ``agent-spec.md`` (``fs_read``, ``tool_search`` and the
+    four read-only ``@kirocrew-core`` verbs) minus ``fs_read`` -- which is what makes
+    granting it on the one path that never reaches the PreToolUse gate safe.
+
+    Derived from the kirocrew agent so it inherits the resolved ``@kirocrew-core``
+    invocation and the security hooks, then narrowed: the ``mcpServers`` map keeps only
+    ``kirocrew-core`` (the one server any grant below names), and the KAS policy is
+    derived from the FILTERED grant list rather than restated, so a ceiling that strips a
+    grant strips its KAS rule with it. The shared writer version-gates it.
+
+    The ``prompt``, ``description``, ``tools`` and ``allowedTools`` are ALL read from the
+    shipped ``dashboard-template`` skill's ``agent-spec.md`` -- the one authoritative copy
+    of the charter, which :func:`parse_markdown_spec` already parses from the package --
+    rather than restated in Python literals that nothing holds equal to it. The
+    frontmatter ``allowedTools`` is the SOURCE's authored auto-approve intent; the install
+    drops ``fs_read`` from it (the one omission with a named reason below) and re-filters
+    the rest through the governance ceiling, so what lands is the governed surface rather
+    than a copy.
+    """
+    spec_source = parse_markdown_spec(_DASHBOARD_AUTHOR_SPEC_PATH.read_text(encoding="utf-8"))
+    config = agent_mod.build_agent_config()
+    config["name"] = _MANAGED_OWNED_NAME
+    config["description"] = spec_source["description"]
+    config["prompt"] = spec_source["prompt"]
+    config["tools"] = list(spec_source["tools"])
+    # ``allowedTools`` is the ONE path that never reaches the PreToolUse gate, so every
+    # grant is filtered through the governance ceiling first -- a governed ref stays
+    # MOUNTED (it is still in ``tools``) and simply prompts. The source frontmatter's
+    # ``allowedTools`` is the authored auto-approve intent; we drop ``fs_read`` from it
+    # because the ceiling withholds it from every derived spec's auto-approve list, so it
+    # reaches the gate like ``fs_write`` and ``execute_bash`` do, and offering it only to
+    # have it stripped would emit a withheld-audit event on every rebuild for a grant that
+    # was never going to land. The rest is derived from the parsed spec rather than
+    # restated, so the one authored list stays the single source of truth.
+    config["allowedTools"] = auto_approve._filter_auto_approve(
+        tuple(g for g in spec_source["allowedTools"] if g != "fs_read"),
+        source="_install_dashboard_author_agent",
+    )
+    # Narrowed to the one server any grant above names. ``build_agent_config`` mounts the
+    # whole managed set; a template is not published at run time, so the publication and
+    # session-control servers are surface this charter cannot account for.
+    mcp = config.get("mcpServers", {}) or {}
+    core_entry = mcp.get("kirocrew-core")
+    config["mcpServers"] = {"kirocrew-core": core_entry} if core_entry else {}
+    # Derived from the FILTERED grant list rather than restated, so a ceiling that strips
+    # a grant strips its KAS rule with it; the shared writer version-gates it.
+    auto_approve._write_derived_permissions(
+        config, config["allowedTools"], _DASHBOARD_AUTHOR_AGENT_FILENAME
+    )
+    agents_dir = agent_mod.kiro_agents_dir_path()
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    path = agents_dir / _DASHBOARD_AUTHOR_AGENT_FILENAME
+    # The whole check -> write -> read-back -> stamp runs under ``agents_spec_lock``, the
+    # template-spec writer lock every other read-modify-writer of this directory holds
+    # (the worker installer, the reset path, the fork refresh, the dashboard PATCH).
+    # ``rebuild_agent_config`` is reached from several independent processes, so without
+    # the lock two overlapping rebuilds with differing bytes could interleave: the digest
+    # one records would not match the bytes the other wrote (a permanent mismatch -- read
+    # as unowned forever), or this installer's unlink could delete a spec the other just
+    # wrote. Holding the lock makes provenance and bytes one atomic step, exactly as the
+    # sibling worker installer does.
+    with agent_mod.agents_spec_lock(agents_dir):
+        _write_dashboard_author_spec(path, config)
+
+
+def _reconcile_managed_pending(path: Path, state_name: str) -> None:
+    """Resolve a leftover PENDING crash-marker for *state_name* deterministically. Caller
+    holds ``agents_spec_lock``.
+
+    A pending marker is written before the managed spec write and cleared when the finalized
+    digest lands, so a leftover means a prior install was interrupted (including an ungraceful
+    exit or a ``KeyboardInterrupt`` that skipped the in-invocation rollback). It is NEVER
+    ownership proof and must never be left standing -- a standing marker would make the
+    installer skip the refresh on every boot, stranding this spec's gate-bypassing
+    ``allowedTools`` against a tightened governance ceiling forever. So each rebuild resolves
+    it up front:
+
+    * no pending                          -> nothing to do.
+    * on-disk bytes == pending digest      -> the interrupted write DID land its bytes;
+      promote to finalized (record ``_MANAGED_OWNED`` = those bytes) and clear pending, so
+      the normal refresh then runs against a confirmed-owned spec.
+    * otherwise (mismatch, or no readable file) -> the file is not the one we were mid-writing
+      (a user replaced it, or the write never landed); clear pending and leave the file. A
+      genuine fresh install then proceeds on a free path; a user file is treated as user-owned
+      and never overwritten.
+    """
+    pending = agent_state.managed_owned_pending_digest(state_name)
+    if pending is None:
+        return
+    on_disk = agent_state._read_spec_bytes_no_follow(path)
+    if on_disk is not None and agent_state._spec_digest(on_disk) == pending:
+        # The interrupted write landed: promote the pending bytes to the finalized record.
+        agent_state.set_managed_owned(state_name, on_disk)
+    agent_state.set_managed_pending(state_name, None)
+
+
+def _write_dashboard_author_spec(path: Path, config: dict) -> None:
+    """Write the managed spec and record its ownership digest crash-safely. Caller holds
+    ``agents_spec_lock``.
+
+    POSITIVE-CONFIRMATION write: the managed spec is written ONLY when the path is free or
+    the durable sidecar's FINALIZED digest matches the file there (our own prior landed
+    write). This stem was a user-creatable template name before it became owned, so a user
+    could hand-place a ``kirocrew-dashboard-author.json``; ``_atomic_bytes_write`` keeps no
+    backup, so overwriting one would discard it. Provenance is the sidecar, not spec content.
+
+    Ownership proof is the FINALIZED ``_MANAGED_OWNED`` digest ALONE -- a pending digest is
+    NEVER proof. Crash-safety is a pending crash-marker that is always TRANSIENT:
+
+    1. ``_reconcile_managed_pending`` resolves any leftover marker from a prior interrupted
+       install deterministically, BEFORE the gate: if the on-disk bytes match the pending
+       digest the interrupted write DID land, so it is promoted to finalized; otherwise the
+       pending is cleared and the file treated as user-owned. The marker is never left
+       standing and the refresh is never skipped because of it -- a standing pending would
+       make an interrupted refresh permanent, stranding stale ``allowedTools`` against a
+       tightened governance ceiling forever.
+    2. a PENDING crash-marker for THIS write is recorded first;
+    3. the spec is written atomically;
+    4. the FINALIZED digest is recorded (the ONLY ownership proof) and the pending cleared.
+
+    A kill between (2) and (4) leaves the pending set; the NEXT rebuild's step (1) resolves
+    it. A user who replaced the interrupted spec with their own file is safe: the on-disk
+    bytes match neither the pending nor a finalized digest, so the reconcile clears the
+    pending and the gate leaves the file untouched.
+    """
+    # Serialize ONCE to the exact bytes that will land, so the recorded digest and the file
+    # are provably the same bytes (``_atomic_json_write`` would re-serialize and could differ).
+    raw = (json.dumps(config, indent=2) + "\n").encode("utf-8")
+    # A pending marker is TRANSIENT: resolve any leftover from a prior interrupted install
+    # deterministically BEFORE the write, so it is never left standing and never skips the
+    # refresh (a standing pending would make an interrupted refresh permanent -- stale
+    # ``allowedTools`` surviving a tightened governance ceiling forever).
+    _reconcile_managed_pending(path, _MANAGED_OWNED_NAME)
+    if not _managed_spec_may_be_written(path, _MANAGED_OWNED_NAME):
+        agent_mod.logger.warning(
+            "Not installing the managed %s: a file already exists at %s whose managed "
+            "provenance could not be confirmed; leaving it untouched so a user-authored "
+            "spec is never overwritten. Remove or rename it to let the managed agent "
+            "install.",
+            _DASHBOARD_AUTHOR_AGENT_FILENAME,
+            path,
+        )
+        return
+    try:
+        prior = path.read_bytes()
+    except OSError:
+        prior = None
+    prior_digest = agent_state.managed_owned_digest(_MANAGED_OWNED_NAME)
+    try:
+        # (1) Record the PENDING crash-marker first; the finalized digest is left intact so a
+        # kill before the finalize keeps the prior spec confirmable and this one fails closed.
+        agent_state.set_managed_pending(_MANAGED_OWNED_NAME, raw)
+        # (2) Write the spec atomically.
+        agent_mod._atomic_bytes_write(path, raw)
+        # (3) Finalize: record the ownership digest of the exact bytes on disk and clear the
+        # pending marker, as one critical-section step. A read-back mismatch (a torn or raced
+        # write) must not be recorded as owned.
+        landed = agent_state._read_spec_bytes_no_follow(path)
+        if landed is None or agent_state._spec_digest(landed) != agent_state._spec_digest(raw):
+            raise ValueError("dashboard-author read-back digest mismatch")
+        agent_state.set_managed_owned(_MANAGED_OWNED_NAME, landed)
+        agent_state.set_managed_pending(_MANAGED_OWNED_NAME, None)
+    except (OSError, ValueError):
+        _roll_back_spec(path, prior, prior_digest)
+        agent_mod.logger.warning(
+            "Did not finish installing the managed %s: its spec or ownership digest could "
+            "not be written and verified, so the write was rolled back to avoid a stranded, "
+            "unverifiable grant surface. The next boot retries once the sidecar is writable.",
+            _DASHBOARD_AUTHOR_AGENT_FILENAME,
+        )
+        return
+    agent_mod.logger.info("Installed dashboard-author agent config: %s", path)
+
+
+def _roll_back_spec(path: Path, prior: bytes | None, prior_digest: object = None) -> None:
+    """Undo a partial install when the spec or ownership record could not be written and
+    verified. Restore the *prior* bytes (a refresh) or unlink a fresh install (no prior),
+    THEN restore the prior ownership digest so the sidecar and the file agree again, and
+    clear the pending crash-marker this install set so it does not block the next rebuild.
+
+    The restore goes through ``_atomic_bytes_write`` -- a tmp-file + atomic replace writing
+    the EXACT prior bytes -- NOT ``_atomic_json_write`` (which re-serializes and, in text
+    mode, would rewrite ``\n`` as ``\r\n`` on Windows, so the restored file would stop
+    byte-matching the prior spec or the digest re-stamped below) and NOT ``path.write_bytes``
+    (so a kiro-cli reader never sees empty or partial JSON at an owned filename;
+    ``agents_spec_lock`` serializes writers, not readers). The finalized digest is restored
+    before the pending is cleared, so a crash mid-rollback still leaves either a matching
+    finalized digest or a pending (fail closed), never an owned record against the wrong
+    bytes.
+    """
+    try:
+        if prior is None:
+            path.unlink()
+        else:
+            agent_mod._atomic_bytes_write(path, prior)
+    except OSError:
+        pass
+    try:
+        if isinstance(prior_digest, str) and prior is not None:
+            # Re-stamp the restored prior bytes; set_managed_owned digests what we pass.
+            agent_state.set_managed_owned(_MANAGED_OWNED_NAME, prior)
+        else:
+            agent_state.set_managed_owned(_MANAGED_OWNED_NAME, None)
+        agent_state.set_managed_pending(_MANAGED_OWNED_NAME, None)
+    except (OSError, ValueError):
+        pass
+
+
+def renew_managed_ownership_after_authorized_write(path: Path, prior: bytes | None) -> None:
+    """Re-stamp the dashboard-author ownership digest after an AUTHORIZED in-place edit of
+    the managed spec (the dashboard model/skills ``PATCH`` write path). Caller MUST hold
+    ``agents_spec_lock(path.parent)`` and MUST pass *prior* = the on-disk bytes read UNDER
+    that lock BEFORE the overwrite.
+
+    Why this exists: the installer binds ownership to the digest of the exact bytes it wrote,
+    and the positive-confirmation gate (:func:`_managed_spec_may_be_written`) then refreshes
+    the spec ONLY while the on-disk bytes still hash to that digest. An authorized dashboard
+    edit (a ``model`` or ``skills`` ``PATCH``) legitimately rewrites those bytes but is NOT
+    the installer, so without this call the digest goes stale, the gate reads the file as
+    unowned, every future rebuild SKIPS the refresh, and a later tightened governance ceiling
+    never re-applies -- the spec's gate-bypassing ``allowedTools`` keeps auto-approving a
+    now-forbidden tool. Renewing the digest here keeps the edited spec confirmable so the
+    per-boot ceiling re-filter continues to run.
+
+    SAFE because it is gated on POSITIVE prior ownership, exactly like the write gate:
+
+    * *prior* bytes positively confirmed managed (their digest == the finalized record) -> the
+      file we just edited was OURS, so re-stamp the finalized digest to the bytes now on disk.
+    * otherwise (a user-owned file at the stem, an unreadable sidecar, a missing prior, or a
+      prior whose digest does not match the record) -> do NOTHING. We never ADOPT an unowned
+      file by stamping it: a managed edit of a genuinely user-authored spec leaves it exactly
+      as unowned as before.
+
+    The prior-ownership decision is made against *prior* -- the bytes read UNDER the lock
+    BEFORE the overwrite -- NOT the file as it is now (which already holds the new bytes), so
+    the check answers "were the bytes we just replaced our confirmed managed spec?".
+
+    Crash-safe: re-stamps the digest of the bytes ACTUALLY on disk now (read back, no symlink
+    follow), so a torn/raced write is not recorded as owned; a failure to read or write the
+    sidecar is swallowed, leaving the prior (now-stale) record, which fails CLOSED (the gate
+    reads unowned and skips -- the safe direction) rather than recording ownership against
+    bytes it could not verify.
+    """
+    if prior is None:
+        return  # no prior bytes captured: cannot prove the replaced file was ours
+    recorded = agent_state.managed_owned_digest(_MANAGED_OWNED_NAME)
+    if not isinstance(recorded, str) or agent_state._spec_digest(prior) != recorded:
+        # The bytes we just replaced were NOT our confirmed managed spec (a user file at the
+        # stem, an unverifiable sidecar, or a stale/absent record). Never adopt it -- leave
+        # the ownership record exactly as it was.
+        return
+    landed = agent_state._read_spec_bytes_no_follow(path)
+    if landed is None:
+        return  # cannot verify the bytes now on disk; leave the prior record (fails closed)
+    try:
+        agent_state.set_managed_owned(_MANAGED_OWNED_NAME, landed)
+    except (OSError, ValueError):
+        pass
+
+
+def _managed_spec_may_be_written(path: Path, state_name: str) -> bool:
+    """May the managed dashboard-author spec be written at *path* without risking a user
+    file? True ONLY when the path is FREE or the durable sidecar's FINALIZED digest matches
+    the bytes currently at *path* (our own prior landed write).
+
+    Positive-confirmation, bound to content, so neither a user file, an unreadable sidecar,
+    nor a stale stamp against a different file can lead to an overwrite:
+
+    * nothing at the path                 -> True  (fresh install, nothing to lose)
+    * a non-regular / symlink file        -> False (not a plain spec; never follow/clobber)
+    * ``managed_owned_matches`` is True    -> True  (finalized digest == on-disk bytes: ours)
+    * otherwise                            -> False (no finalized record, or one that does
+      not match this file -> a user artefact, a user replacement of an interrupted install,
+      or a stale stamp; never overwrite)
+
+    Ownership proof is the FINALIZED ``_MANAGED_OWNED`` digest ALONE. A pending/scratch
+    digest is NEVER acceptance: an interrupted install leaves a pending digest and no
+    finalized one, so this gate reads the file as NOT ours and leaves it untouched -- which
+    is also exactly the right thing when the user has replaced that interrupted spec with
+    their own file (the file matches no finalized record, so it is never overwritten).
+
+    A False result makes the caller skip the write and leave the file untouched -- no
+    backup, no exception. That cannot strand a tightened ceiling for a genuinely managed
+    file: its bytes match the finalized record, so the refresh runs; the only skipped cases
+    are a file we did not prove is ours, which we must not overwrite.
+    """
+    if not os.path.lexists(path):
+        return True
+    if path.is_symlink() or not path.is_file():
+        return False
+    return agent_state.managed_owned_matches(state_name, path) is True

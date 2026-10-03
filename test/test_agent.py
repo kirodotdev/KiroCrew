@@ -2538,7 +2538,13 @@ class TestKiroHooksFiltering:
             (kiro_dir / filename).write_text(json.dumps(broken_config))
 
         _hooks_sanitized_mtimes.clear()
-        with patch("kiro_crew.agent.KIRO_AGENTS_DIR", kiro_dir):
+        with (
+            patch("kiro_crew.agent.KIRO_AGENTS_DIR", kiro_dir),
+            patch("kiro_crew.agent.agent_state.managed_owned_matches", return_value=True),
+        ):
+            # The dashboard-author file is repaired only when the sidecar confirms it as
+            # ours (positive-confirmation guards the rewrite as it guards the install); the
+            # other owned specs were never user-creatable and are swept unconditionally.
             _sanitize_agent_hooks()
 
         for filename in OWNED_KIRO_AGENT_FILES:

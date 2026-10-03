@@ -34,6 +34,7 @@ This is a near-leaf module: it imports only the stdlib plus the leaf
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import logging
 import math
@@ -57,6 +58,26 @@ _MIRRORED_FROM = "mirrored_from"
 _MIRRORED_STAT = "mirrored_stat"
 _FORKED_FROM = "forked_from"
 _PRIVATE_TO = "private_to"
+# Durable proof that THIS gateway's managed installer wrote the spec at a given
+# name. Unlike any spec-content signal, a user's template-create copy of a managed
+# spec cannot forge it: ``api_agent_template_create`` calls :func:`prune` on the new
+# name before writing, dropping any entry here, and never sets it. Used by the
+# dashboard-author installer to tell a prior managed write (safe to overwrite) from a
+# user file that merely copied a managed template (must be preserved). The stored value
+# is the sha256 of the exact bytes the installer wrote, so ownership is bound to CONTENT:
+# a record only confirms a file whose bytes still hash to it.
+_MANAGED_OWNED = "managed_owned"
+#: Crash-marker key: set before a managed spec write, cleared when the finalized
+#: ``_MANAGED_OWNED`` digest is recorded. Never ownership proof -- a leftover means a prior
+#: install was interrupted, which the installer gate treats as "not ours, fail closed".
+_MANAGED_PENDING = "managed_pending"
+
+
+class _Unreadable:
+    """Sentinel: the sidecar itself could not be read (distinct from 'no record')."""
+
+
+_UNREADABLE = _Unreadable()
 
 # Guards in-process read-modify-write races (e.g. dashboard PATCH vs gateway
 # refresh). ``atomic_write`` makes each WRITE atomic, but two processes can
@@ -462,6 +483,173 @@ def set_mirrored_stat(name: str, value: str | None) -> None:
             entry[_MIRRORED_STAT] = str(value)
         else:
             entry.pop(_MIRRORED_STAT, None)
+        if entry:
+            data[name] = entry
+        else:
+            data.pop(name, None)
+        _write(data)
+
+
+def _spec_digest(raw: bytes) -> str:
+    """sha256 of the exact on-disk spec bytes -- the ownership record is bound to these,
+    so a stamp can never confirm a file it does not match (a failed write, or a different
+    user file hand-placed at the same stem)."""
+    return hashlib.sha256(raw).hexdigest()
+
+
+def managed_owned_digest(name: str) -> str | None | _Unreadable:
+    """The spec digest THIS gateway's installer last recorded for *name*, or None when the
+    sidecar is readable with no record, or :data:`_UNREADABLE` when the sidecar itself
+    cannot be read. Compared against the on-disk bytes by :func:`managed_owned_matches`."""
+    try:
+        entry = _entry(_read(strict=True), name)
+    except (OSError, ValueError):
+        return _UNREADABLE
+    value = entry.get(_MANAGED_OWNED)
+    return value if isinstance(value, str) and value else None
+
+
+def _read_spec_bytes_no_follow(path: "os.PathLike[str] | str") -> bytes | None:
+    """Read *path* for digesting while refusing to follow a symlink, requiring a regular
+    single-link file, and capping the read at ``STATE_MAX_BYTES``. Returns None when the
+    path is missing, a symlink, non-regular, or oversize -- callers treat None as "cannot
+    confirm", never as a match -- so a user-controlled symlink at an owned stem is never
+    followed to a sensitive target.
+
+    ``O_NOFOLLOW`` is POSIX-only. Where it is absent (Windows), ``os.open`` with a zero
+    flag would silently FOLLOW the link -- a fail-OPEN that defeats the point -- so this
+    FAILS CLOSED instead: it ``lstat``s the path first and refuses any symlink before the
+    open, then re-checks the opened descriptor with ``fstat``. On POSIX the ``O_NOFOLLOW``
+    open is the primary guard and the ``fstat`` check is defence in depth.
+    """
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    if no_follow is None:
+        # No kernel no-follow: refuse a symlink by its own metadata BEFORE opening, so the
+        # link target is never opened. (TOCTOU-narrowed: the fstat re-check below still
+        # rejects a non-regular/multi-link result if the path is swapped after the lstat.)
+        try:
+            if stat.S_ISLNK(os.lstat(path).st_mode):
+                return None
+        except OSError:
+            return None
+        open_flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+    else:
+        open_flags = os.O_RDONLY | no_follow | getattr(os, "O_BINARY", 0)
+    try:
+        fd = os.open(path, open_flags)
+    except OSError:
+        return None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > STATE_MAX_BYTES:
+            return None
+        with os.fdopen(fd, "rb", closefd=False) as stream:
+            raw = stream.read(STATE_MAX_BYTES + 1)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    if len(raw) > STATE_MAX_BYTES:
+        return None
+    return raw
+
+
+def managed_owned_matches(name: str, path: "os.PathLike[str] | str") -> bool | None:
+    """Does the ownership record for *name* match the bytes currently at *path*?
+
+    Ownership is bound to CONTENT, not merely a flag: the installer records the digest of
+    the exact bytes it wrote, so a record only confirms a file whose bytes still hash to
+    it. A record with no file (an ``os.replace`` that does not land) or against a different
+    file (a user spec hand-placed at the same stem) does NOT read as owned, so it is never
+    silently overwritten. The finalized ``_MANAGED_OWNED`` digest is the ONLY ownership
+    proof, and the installer records it only after the spec lands and rolls back on
+    failure, so a half-finished install leaves no record that could classify a restored
+    file as managed.
+
+    * ``True``  — the finalized digest equals the on-disk bytes' digest.
+    * ``False`` — readable sidecar, no finalized record OR it does not match the file.
+    * ``None``  — the sidecar is unreadable, or the file is missing/symlinked/non-regular/
+      oversize (cannot prove a match without following a symlink or reading unbounded data):
+      callers skip rather than guess.
+    """
+    recorded = managed_owned_digest(name)
+    if isinstance(recorded, _Unreadable):
+        return None
+    if recorded is None:
+        return False
+    raw = _read_spec_bytes_no_follow(path)
+    if raw is None:
+        return None  # record exists but the file cannot be safely read: cannot prove a match
+    return _spec_digest(raw) == recorded
+
+
+def managed_owned_pending(name: str) -> bool:
+    """Is a PENDING crash-marker set for *name*? A pending marker is written before the
+    managed spec write and cleared when the finalized digest is recorded, so its presence at
+    rebuild time means a prior install was interrupted mid-write. It is NEVER ownership proof
+    -- the only ownership proof is the finalized ``_MANAGED_OWNED`` digest. A pending marker
+    is TRANSIENT: the installer reconciles it deterministically at the start of every rebuild
+    (see ``worker_agent._reconcile_managed_pending``) rather than ever leaving it standing or
+    skipping the refresh because of it. Returns False on an absent or unreadable record.
+    """
+    return isinstance(managed_owned_pending_digest(name), str)
+
+
+def managed_owned_pending_digest(name: str) -> str | None:
+    """The PENDING crash-marker digest recorded for *name*, or None when absent/unreadable.
+
+    Compared against the on-disk spec bytes by the rebuild-time reconcile: a match means our
+    own interrupted write DID land (promote to finalized), a mismatch means the file is not
+    the one we were mid-writing (clear pending, treat as user-owned, never overwrite).
+    """
+    try:
+        entry = _entry(_read(strict=True), name)
+    except (OSError, ValueError):
+        return None
+    value = entry.get(_MANAGED_PENDING)
+    return value if isinstance(value, str) and value else None
+
+
+# Alias kept short for the installer gate's call site.
+has_managed_pending = managed_owned_pending
+
+
+def set_managed_pending(name: str, raw: bytes | None) -> None:
+    """Record (or clear) the PENDING crash-marker for *name* as the digest of *raw*; pass
+    ``None`` to clear it. STRICT like :func:`set_managed_owned` -- an unreadable/unwritable
+    sidecar RAISES, so a failed marker aborts the install rather than proceeding blind. The
+    pending digest is a crash-marker only and is NEVER consulted as ownership proof."""
+    with _locked():
+        data = _read(strict=True)
+        entry = data.get(name)
+        if not isinstance(entry, dict):
+            entry = {}
+        if raw is not None:
+            entry[_MANAGED_PENDING] = _spec_digest(raw)
+        else:
+            entry.pop(_MANAGED_PENDING, None)
+        if entry:
+            data[name] = entry
+        else:
+            data.pop(name, None)
+        _write(data)
+
+
+def set_managed_owned(name: str, raw: bytes | None) -> None:
+    """Record (or clear) the FINALIZED ownership of the spec at *name* as the DIGEST of its
+    bytes. Pass the exact bytes written to record ownership; pass ``None`` to clear it.
+    STRICT: an unreadable, non-regular, over-size or unwritable sidecar RAISES
+    (``OSError``/``ValueError``), so the installer can treat a failed record as a reason not
+    to publish. This finalized digest is the ONLY ownership proof."""
+    with _locked():
+        data = _read(strict=True)
+        entry = data.get(name)
+        if not isinstance(entry, dict):
+            entry = {}
+        if raw is not None:
+            entry[_MANAGED_OWNED] = _spec_digest(raw)
+        else:
+            entry.pop(_MANAGED_OWNED, None)
         if entry:
             data[name] = entry
         else:

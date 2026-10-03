@@ -3479,3 +3479,34 @@ def test_a_hand_edited_block_still_blocks_a_fork_on_a_refusing_cli(editor, monke
     with pytest.raises(CapabilityError, match="alternate_permissions_require_review"):
         service.reset("A", target)
     assert spec_for(home, specs)["prompt"] == "mine"
+
+
+def test_parent_is_owned_sidecar_gates_the_dashboard_author_stem(tmp_path, monkeypatch):
+    """A global owned-filename parent reads as owned -- except the dashboard-author stem,
+    which was a user-creatable template name before it became owned. For that stem the
+    owned classification holds ONLY when the sidecar confirms the parent spec is ours, so a
+    capability save against a fork of a pre-upgrade USER template does not refresh its hooks
+    and MCP plumbing away."""
+    from kiro_crew import agent_capabilities as cap
+
+    parent = tmp_path / "kirocrew-dashboard-author.json"
+    parent.write_text('{"name": "kirocrew-dashboard-author"}\n', encoding="utf-8")
+    snap = {"parent": {"scope": "global", "path": str(parent)}}
+
+    # Another owned name is owned regardless of the sidecar.
+    other = {"parent": {"scope": "global", "path": str(tmp_path / "kirocrew.json")}}
+    assert cap._parent_is_owned(other) is True
+    # A non-global parent is never owned.
+    assert cap._parent_is_owned({"parent": {"scope": "project", "path": str(parent)}}) is False
+    # Dashboard-author stem: owned only when the sidecar confirms it.
+    monkeypatch.setattr(cap_agent_state_for(cap), "managed_owned_matches", lambda n, p: False)
+    assert cap._parent_is_owned(snap) is False
+    monkeypatch.setattr(cap_agent_state_for(cap), "managed_owned_matches", lambda n, p: True)
+    assert cap._parent_is_owned(snap) is True
+
+
+def cap_agent_state_for(cap):
+    """`_parent_is_owned` imports agent_state locally; patch the module object itself."""
+    from kiro_crew import agent_state
+
+    return agent_state

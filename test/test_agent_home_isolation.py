@@ -1168,6 +1168,50 @@ def test_spec_growing_after_lstat_fails_closed(monkeypatch, tmp_path):
     assert agent._decline_shared_agent_home() is not None
 
 
+def test_dashboard_author_stem_is_always_skipped_in_the_home_probe(monkeypatch, tmp_path):
+    """The dashboard-author stem must never drive the shared-home verdict, regardless of
+    sidecar confirmation.
+
+    Its installer pins no ``KIROCREW_HOME`` in the managed server entry on either branch --
+    the installer's own write omits it, and a leftover user file at the stem never had one.
+    So this stem can never contribute a legitimate home-pin signal: letting it into the
+    probe would make a foreign/absent pin read as foreign and decline every rebuild. That
+    strands the governance ceiling both for OUR OWN file (ours, pin-less) AND for an
+    untouched USER leftover at the stem (whose presence must not refuse creating every
+    other required spec). It is therefore excluded from the pin probe unconditionally; its
+    provenance is the digest record enforced at the gated sites, not a home pin.
+    """
+    from kiro_crew import agent
+
+    own_home = (tmp_path / "my-home").resolve()
+    foreign = (tmp_path / "someone-elses-home").resolve()
+    monkeypatch.delenv("KIRO_HOME", raising=False)
+    monkeypatch.delenv("KIROCREW_POD", raising=False)
+    monkeypatch.setenv("KIROCREW_HOME", str(own_home))
+    _durable_checkout(monkeypatch, agent)
+    shared = tmp_path / "agents"
+    shared.mkdir()
+    # Our own self-pinned spec + a foreign-pinned dashboard-author file at the stem.
+    (shared / agent.AGENT_FILENAME).write_text(_spec_pinned_to(str(own_home)), encoding="utf-8")
+    da = shared / agent._DASHBOARD_AUTHOR_FILENAME
+    da.write_text(_spec_pinned_to(str(foreign)), encoding="utf-8")
+    _pretend_target_is_shared(monkeypatch, agent, shared)
+
+    # Unconfirmed (a user leftover or a crash-stranded file): the foreign-pinned
+    # dashboard-author spec is STILL skipped, so it does not decline the rebuild -- the
+    # remaining self-pinned spec reads as ours.
+    monkeypatch.setattr(agent.agent_state, "managed_owned_matches", lambda n, p: False)
+    assert agent._existing_specs_are_mine(shared, own_home) is True
+
+    # Sidecar-confirmed: skipped for the same reason, same verdict.
+    monkeypatch.setattr(
+        agent.agent_state,
+        "managed_owned_matches",
+        lambda n, p: n == "kirocrew-dashboard-author",
+    )
+    assert agent._existing_specs_are_mine(shared, own_home) is True
+
+
 def test_unnormalized_spelling_of_own_pin_stays_mine(monkeypatch, tmp_path):
     """Lexical means normalized, not byte-identical.
 

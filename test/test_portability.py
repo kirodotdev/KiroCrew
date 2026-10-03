@@ -1492,7 +1492,7 @@ class TestCrewTemplateWarnings:
     @staticmethod
     def _agents_dir(tmp_path: Path) -> Path:
         agents = tmp_path / "kiro_agents"
-        agents.mkdir()
+        agents.mkdir(exist_ok=True)
         (agents / "by-stem.json").write_text(json.dumps({"name": "by-stem"}))
         (agents / "file.json").write_text(json.dumps({"name": "by-declared-name"}))
         return agents
@@ -1520,6 +1520,30 @@ class TestCrewTemplateWarnings:
         cfg.write_text("[" * 100_000 + "]" * 100_000)
         assert portability.crew_template_refs(cfg) == []
         assert portability.crew_template_refs(tmp_path / "absent.json") == []
+
+    def test_dashboard_author_ref_surfaces_unless_the_sidecar_confirms_ownership(
+        self, tmp_path, monkeypatch
+    ):
+        """F1: the ``kirocrew-dashboard-author`` stem was a user-creatable template name
+        before it became an owned managed name, so it is suppressed from the portability
+        warnings ONLY when the ownership sidecar's recorded digest matches the on-disk
+        spec. A user-squatted file at that stem (no match, or unreadable) must surface as a
+        crew-named template, so export/import never silently drops a user's own spec and
+        then lets the managed charter install under the bound name on the target."""
+        cfg = tmp_path / "config.json"
+        cfg.write_text(json.dumps({"agents": {"a": {"kiro_agent": "kirocrew-dashboard-author"}}}))
+        # Sidecar digest matches the on-disk spec -> treated as managed -> suppressed.
+        monkeypatch.setattr(portability.agent_state, "managed_owned_matches", lambda n, p: True)
+        assert portability.crew_template_refs(cfg) == []
+        # No matching record (user squat / digest mismatch) -> NOT suppressed, surfaces.
+        monkeypatch.setattr(portability.agent_state, "managed_owned_matches", lambda n, p: False)
+        assert portability.crew_template_refs(cfg) == [("a", "kirocrew-dashboard-author")]
+        # Unreadable sidecar/file (unknown) -> cannot prove managed -> surfaces too.
+        monkeypatch.setattr(portability.agent_state, "managed_owned_matches", lambda n, p: None)
+        assert portability.crew_template_refs(cfg) == [("a", "kirocrew-dashboard-author")]
+        # The other owned names stay suppressed regardless of the sidecar.
+        cfg.write_text(json.dumps({"agents": {"m": {"kiro_agent": "kirocrew"}}}))
+        assert portability.crew_template_refs(cfg) == []
 
     def test_missing_matches_by_stem_or_declared_name(self, tmp_path, monkeypatch):
         monkeypatch.setattr(portability, "kiro_agents_dir", lambda: self._agents_dir(tmp_path))

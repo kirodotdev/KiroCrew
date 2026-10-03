@@ -16,9 +16,12 @@ from typing import Literal
 
 from kiro_crew import agent as agent_mod
 from kiro_crew import agent_state, user_json
-from kiro_crew.agent_files import OWNED_KIRO_AGENT_FILES
+from kiro_crew.agent_files import DASHBOARD_AUTHOR_AGENT_FILENAME, OWNED_KIRO_AGENT_FILES
 from kiro_crew.agent_materialization import auto_approve
 from kiro_crew.agent_spec_format import is_markdown_spec
+
+#: The dashboard-author origin stem, sidecar-gated in :func:`_origin_is_owned`.
+_DASHBOARD_AUTHOR_STEM = Path(DASHBOARD_AUTHOR_AGENT_FILENAME).stem
 
 
 def refresh_after_rebuild(
@@ -189,7 +192,18 @@ def _refresh_forked_templates_locked(*, gated_off: "frozenset[str] | None" = Non
         while name in forks and name not in seen:
             seen.add(name)
             name = forks[name]["forked_from"]
-        return name in owned_names
+        if name not in owned_names:
+            return False
+        # The dashboard-author stem was a user-creatable template name before it became
+        # owned, so a pre-upgrade fork can descend from a USER template at this stem.
+        # Treating that origin as owned here would overwrite the fork's hooks and MCP
+        # plumbing with the managed set. Count it as an owned origin ONLY when the sidecar
+        # positively confirms the origin spec on disk is ours -- the same gate the installer,
+        # the hook sweep and the home probe apply. Other owned origins keep the plain check.
+        if name == _DASHBOARD_AUTHOR_STEM:
+            origin_path = agent_mod.kiro_agents_dir_path() / (name + ".json")
+            return agent_state.managed_owned_matches(name, origin_path) is True
+        return True
 
     agents_dir = agent_mod.kiro_agents_dir_path()
     failures: set[str] = set()

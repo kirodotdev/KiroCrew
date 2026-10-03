@@ -36,6 +36,14 @@ PIPELINE_CONDUCTOR_AGENT_FILENAME = "kirocrew-pipeline-conductor.json"
 LEDGER_CONDUCTOR_AGENT_FILENAME = "kirocrew-ledger-conductor.json"
 SECURITY_CONDUCTOR_AGENT_FILENAME = "kirocrew-security-conductor.json"
 WORKER_AGENT_FILENAME = "kirocrew-worker.json"
+# The dashboard-author crewmate: authors ONE dashboard template and lands it as a
+# pull request, writing no runtime code. Its own file because it is a dispatched,
+# worker-shaped agent with its own charter and tool surface -- it writes files and
+# drives git, but mounts neither the work-ledger set nor the publication surface, so
+# it is neither the default-mirroring worker nor a conductor. Its system prompt and
+# tool charter are the shipped ``dashboard-template/agent-spec.md`` (parsed at install);
+# its installer lives in ``worker_agent.py`` beside the other dispatched-agent installer.
+DASHBOARD_AUTHOR_AGENT_FILENAME = "kirocrew-dashboard-author.json"
 KNOWLEDGE_AGENT_FILENAME = "kirocrew-knowledge.json"
 RESEARCH_AGENT_FILENAME = "kirocrew-research.json"
 HEARTBEAT_AGENT_FILENAME = "kirocrew-heartbeat.json"
@@ -53,6 +61,7 @@ OWNED_KIRO_AGENT_FILES = (
     LEDGER_CONDUCTOR_AGENT_FILENAME,
     SECURITY_CONDUCTOR_AGENT_FILENAME,
     WORKER_AGENT_FILENAME,
+    DASHBOARD_AUTHOR_AGENT_FILENAME,
     KNOWLEDGE_AGENT_FILENAME,
     RESEARCH_AGENT_FILENAME,
     HEARTBEAT_AGENT_FILENAME,

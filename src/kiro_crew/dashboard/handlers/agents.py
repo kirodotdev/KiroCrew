@@ -44,6 +44,7 @@ from kiro_crew.agent import (
     get_shipped_tools,
     install_agent,
     kiro_agents_dir_path,
+    renew_managed_ownership_after_authorized_write,
 )
 from kiro_crew.agent_capabilities import CapabilityError, require_unmanaged_template
 from kiro_crew.agent_discovery import (
@@ -4383,11 +4384,29 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                                     fresh.pop(key, None)
                             _merge_resources_delta(fresh, before_patch, data, mapped_uris)
                             sanitize_agent_config_governance(fresh)
+                            # Capture the bytes we are about to replace, UNDER the lock, so
+                            # the ownership-digest renewal below can prove the file we edited
+                            # was our own managed spec (not a user file at the same stem).
+                            try:
+                                _prior_spec_bytes = f.read_bytes()
+                            except OSError:
+                                _prior_spec_bytes = None
                             # Atomic replace: a direct write truncates first,
                             # so ENOSPC mid-write would destroy the existing
                             # template. Same tmp+rename helper as the fork
                             # refresh and install paths.
                             _atomic_json_write(f, fresh)
+                            # An authorized model/skills edit of the OWNED dashboard-author
+                            # spec rewrites its bytes, which would stale the ownership digest
+                            # the installer bound to the prior bytes -> the positive-
+                            # confirmation gate would then read the file as unowned and SKIP
+                            # every future rebuild, so a later tightened governance ceiling
+                            # would never re-apply and the spec's gate-bypassing allowedTools
+                            # would keep auto-approving a now-forbidden tool. Re-stamp the
+                            # digest to the bytes just written -- but ONLY when the prior
+                            # bytes were our confirmed managed spec, so a managed edit of a
+                            # genuinely user-authored file never adopts it. Same lock.
+                            renew_managed_ownership_after_authorized_write(f, _prior_spec_bytes)
                         if snapshot is None:
                             # No skills in this patch: the mapping is the pre-lock read's.
                             return mapped

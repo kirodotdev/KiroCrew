@@ -24,10 +24,10 @@ from collections.abc import Callable, Iterator
 from datetime import datetime, timezone
 from pathlib import Path, PurePath, PurePosixPath
 
-from kiro_crew import crew_teams, pinned_fs, platform_compat
+from kiro_crew import agent_state, crew_teams, pinned_fs, platform_compat
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.agent_discovery import parsed_agent_specs
-from kiro_crew.agent_files import OWNED_KIRO_AGENT_FILES
+from kiro_crew.agent_files import DASHBOARD_AUTHOR_AGENT_FILENAME, OWNED_KIRO_AGENT_FILES
 from kiro_crew.config.paths import config_dir, kiro_agents_dir
 from kiro_crew.mcp_cron import _log_cron_denial, _vet_shell_command
 from kiro_crew.member_memory_backup import hold_stores_for_read
@@ -427,6 +427,31 @@ def _add_from_fd(zf: zipfile.ZipFile, fd: int, arcname: str) -> None:
 
 _MANAGED_TEMPLATES = frozenset(Path(name).stem for name in OWNED_KIRO_AGENT_FILES)
 
+#: The dashboard-author stem was a user-creatable template name BEFORE it became an owned
+#: managed name, so a file at that stem is only ours when the durable sidecar confirms it.
+#: Suppressing it from the portability warnings unconditionally (as a plain managed name)
+#: would silently drop a user's hand-authored spec from export/import: on the target the
+#: managed charter installs under the bound name, silently substituting the user's prompt
+#: and tool surface with no path reporting it. So this stem is treated as managed ONLY
+#: when its sidecar record's digest MATCHES the on-disk bytes; otherwise it is a user
+#: template that must surface in the unbundled/missing warnings like any other.
+_DASHBOARD_AUTHOR_TEMPLATE_STEM = Path(DASHBOARD_AUTHOR_AGENT_FILENAME).stem
+
+
+def _managed_template_stems() -> frozenset[str]:
+    """The template stems to treat as managed (and so leave out of portability warnings).
+
+    Static for every owned name except the dashboard-author stem, which counts as managed
+    only when the sidecar's recorded digest matches the on-disk spec (``managed_owned_
+    matches`` is True); an unconfirmed, user-owned, missing or digest-mismatched file at
+    that stem is NOT suppressed.
+    """
+    spec_path = kiro_agents_dir() / DASHBOARD_AUTHOR_AGENT_FILENAME
+    if agent_state.managed_owned_matches(_DASHBOARD_AUTHOR_TEMPLATE_STEM, spec_path) is True:
+        return _MANAGED_TEMPLATES
+    return _MANAGED_TEMPLATES - {_DASHBOARD_AUTHOR_TEMPLATE_STEM}
+
+
 #: The template warnings ride a response header (export) and a summary (import), so
 #: both are bounded: at most this many names, each cut to this many characters.
 MAX_TEMPLATE_WARNINGS = 20
@@ -464,10 +489,11 @@ def crew_template_refs(config_path: Path) -> list[tuple[str, str]]:
         block = data.get(section)
         if isinstance(block, dict):
             named.append((f"{section}.{key}", block.get(key)))
+    stems = _managed_template_stems()  # resolved once: one sidecar/spec read, stable set
     return sorted(
         (holder, template)
         for holder, template in named
-        if isinstance(template, str) and template and template not in _MANAGED_TEMPLATES
+        if isinstance(template, str) and template and template not in stems
     )
 
 
