@@ -215,7 +215,7 @@ jobs:
         id: creds
         if: (steps.fetch.outputs.count != '0' || (steps.issues.outputs.count != '' && steps.issues.outputs.count != '0')) && env.HAS_BEDROCK
         continue-on-error: true
-        uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ secrets.SHIP_REPORT_BEDROCK_ROLE_ARN }}
           aws-region: us-west-2
