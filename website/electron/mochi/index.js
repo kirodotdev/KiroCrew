@@ -534,11 +534,26 @@ async function resolveMochiTarget(choice) {
   };
 }
 
-/** Log resolution changes only — this runs every reconcile tick. */
-let lastMochiInstanceLog = "";
+// Unknown responses do not replace the last confirmed target: a later successful
+// resolution of that same target is not another state change.
+const MOCHI_INSTANCE_LOG_REPEAT_MS = 60_000;
+const recentMochiInstanceLogs = new Map();
+let lastKnownMochiInstanceState = "";
 function mochiInstanceLog(message) {
-  if (message === lastMochiInstanceLog) return;
-  lastMochiInstanceLog = message;
+  const now = Date.now();
+  for (const [outcome, loggedAt] of recentMochiInstanceLogs) {
+    if (now - loggedAt >= MOCHI_INSTANCE_LOG_REPEAT_MS) recentMochiInstanceLogs.delete(outcome);
+  }
+  const knownState = message !== "could not read the instance list — leaving Mochi where it is" &&
+    !message.includes(" did not answer — leaving Mochi where it is");
+  const stateChanged = knownState && message !== lastKnownMochiInstanceState;
+  if (knownState) lastKnownMochiInstanceState = message;
+  // A known target that has not changed was already logged when it became
+  // current; suppress it indefinitely so a steady state cannot re-log once the
+  // repeat window lapses. The TTL re-log is for unknown outcomes only.
+  if (knownState && !stateChanged) return;
+  if (!stateChanged && recentMochiInstanceLogs.has(message)) return;
+  recentMochiInstanceLogs.set(message, now);
   glog(`mochi instance: ${message}`);
 }
 
