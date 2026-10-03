@@ -2,6 +2,7 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
+const child_process = require("node:child_process");
 
 it("Linux BrowserWindows carry the packaged application icon", () => {
   const windowLifecycle = fs.readFileSync(
@@ -224,6 +225,88 @@ describe("macOS bundle naming", () => {
       /-c\.mac\.extendInfo\.CFBundleDisplayName=Kiro Crew Nightly/
     );
     assert.doesNotMatch(buildScript, /-c\.mac\.extendInfo\.CFBundleName=/);
+  });
+});
+
+
+describe("Linux desktop naming", () => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
+  const buildScript = fs.readFileSync(
+    path.resolve(ROOT, "..", "..", "packaging", "build-desktop.sh"),
+    "utf8"
+  );
+  // The per-target override function, executed in isolation: it is written to
+  // depend on its two parameters only, so this is the invocation contract the
+  // Linux loop actually runs, not a regex over the script text.
+  const fnMatch = buildScript.match(/^linux_target_eb_args\(\) \{\n[\s\S]*?\n\}$/m);
+  const targetArgs = (target, productName) => {
+    const out = child_process.execFileSync(
+      "bash",
+      ["-euo", "pipefail", "-c", `${fnMatch[0]}\nlinux_target_eb_args "$1" "$2"`, "_", target, productName],
+      { encoding: "utf8" }
+    );
+    return out.split("\n").filter(Boolean);
+  };
+  const bashOnly = { skip: process.platform === "win32" ? "runs the bash function" : false };
+
+  it("keeps the spaced display name out of the static package config", () => {
+    // A static linux.desktop.entry.Name reaches every Linux target, so it would
+    // rename the deb/rpm launcher that package installs already ship. The
+    // AppImage is the only target whose bundled entry is copied into a user
+    // launcher, and it gets the name per invocation instead.
+    assert.equal(pkg.build.productName, "KiroCrew"); // brand-ok -- internal package identity
+    assert.equal(pkg.build.linux.desktop, undefined);
+    assert.doesNotMatch(buildScript, /EB_ARGS\+=\([\s\S]*?-c\.linux\.desktop\.entry\.Name[\s\S]*?\n\s*\)\n\s*fi/);
+    assert.ok(fnMatch, "build-desktop.sh defines linux_target_eb_args");
+    assert.match(
+      buildScript,
+      /done < <\(linux_target_eb_args "\$target" "\$PRODUCT_NAME"\)[\s\S]*?run_electron_builder_with_retry "\$\{EB_ARGS\[@\]\}" \\\n\s*\$\{TARGET_EB_ARGS\[@\]\+"\$\{TARGET_EB_ARGS\[@\]\}"\} --linux "\$target"/
+    );
+  });
+
+  it("applies per-target overrides to the AppImage only, with exact Name and icon args", bashOnly, () => {
+    // Stable AppImage: spaced Name only. Nightly AppImage: spaced Name plus the
+    // multi-size hicolor icon directory. deb/rpm (both channels): nothing --
+    // they keep electron-builder's productName Name and the canonical
+    // per-channel icon from the common EB_ARGS block.
+    assert.deepEqual(targetArgs("AppImage", "KiroCrew"), [ // brand-ok -- product name under test
+      "-c.linux.desktop.entry.Name=Kiro Crew",
+    ]);
+    assert.deepEqual(targetArgs("AppImage", "KiroCrew Nightly"), [
+      "-c.linux.desktop.entry.Name=Kiro Crew Nightly",
+      "-c.linux.icon=build/icons-nightly",
+    ]);
+    for (const target of ["deb", "rpm"]) {
+      for (const productName of ["KiroCrew", "KiroCrew Nightly"]) { // brand-ok -- product names under test
+        assert.deepEqual(targetArgs(target, productName), [],
+          `${target} (${productName}) must receive no per-target override`);
+      }
+    }
+    // The AppImage icon override is nightly-only; stable AppImage never gets it,
+    // so the stable channel's canonical icon is untouched for every format.
+    assert.ok(
+      !targetArgs("AppImage", "KiroCrew").some((a) => a.startsWith("-c.linux.icon=")), // brand-ok -- product name under test
+      "stable AppImage must not override the icon"
+    );
+  });
+
+  it("pins the metadata helper to the packaged Linux interpreter", () => {
+    const integration = fs.readFileSync(
+      path.join(ROOT, "linux-desktop-integration.js"),
+      "utf8"
+    );
+    assert.match(
+      integration,
+      /path\.join\(resourcesPath, "backend-dist", "kirocrew-backend", "bin"\)/
+    );
+    assert.match(
+      buildScript,
+      /build_backend "\$PBS_DIR" "\$ELECTRON_DIR\/backend-dist\/kirocrew-backend" "\$\{TARGET_ARCH:-\}"/
+    );
+    assert.match(
+      buildScript,
+      /"\$out\/bin\/python3\.12"(?: -[sP]+)* -m kiro_crew --version/
+    );
   });
 });
 
@@ -1230,6 +1313,20 @@ describe("uninstall data preservation contract", () => {
         nightlyOverrides.includes(override),
         `build-desktop.sh must pass ${override} for the nightly channel`
       );
+    }
+    // The common nightly block keeps canonical main's per-channel icon so deb
+    // and rpm are byte-identical to canonical; the multi-size hicolor directory
+    // is applied by linux_target_eb_args to the AppImage ALONE (asserted in the
+    // "Linux desktop naming" suite), never as a common override.
+    assert.match(nightlyOverrides, /-c\.linux\.icon=icon-nightly\.png/);
+    // The nightly hicolor icons are still shipped: the AppImage per-target
+    // override consumes build/icons-nightly, so each size must be a valid PNG.
+    for (const size of [16, 32, 48, 64, 128, 256, 512]) {
+      const icon = path.join(ROOT, "build", "icons-nightly", `${size}x${size}.png`);
+      const bytes = fs.readFileSync(icon);
+      assert.equal(bytes.toString("hex", 0, 8), "89504e470d0a1a0a", `${icon}: not a PNG`);
+      assert.equal(bytes.readUInt32BE(16), size, `${icon}: wrong width`);
+      assert.equal(bytes.readUInt32BE(20), size, `${icon}: wrong height`);
     }
     // And the stable defaults they override must be the ones actually shipped,
     // so a rename on either side fails here instead of silently colliding.
