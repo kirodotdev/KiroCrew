@@ -150,27 +150,6 @@ def _pinned_dir_fd_supported() -> bool:
     )
 
 
-def _is_link_or_reparse_point(path: Path) -> bool:
-    """Whether *path* is a link or a reparse point, judged without following it.
-
-    ``os.lstat`` describes the entry itself, so a planted symlink, directory
-    junction or other reparse point is reported as one rather than as whatever it
-    points at. An absent path is not a link — the append is free to create it.
-    Metadata that cannot be read at all is treated as a link, because a write
-    whose target is unknown is the case this guard exists to refuse.
-    """
-    try:
-        st = os.lstat(path)
-    except FileNotFoundError:
-        return False
-    except OSError:
-        return True
-    if stat.S_ISLNK(st.st_mode):
-        return True
-    attributes = getattr(st, "st_file_attributes", 0)
-    return bool(attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
-
-
 def _finite(number: float, field: str) -> float:
     """*number* unless it is nan or an infinity.
 
