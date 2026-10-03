@@ -84,6 +84,8 @@ interface FetchOpts {
   knowledgeEnabled?: boolean
   knowledgeAdded?: boolean
   knowledgePostStatus?: number
+  knowledgeSourceType?: string
+  knowledgeDeleteStatus?: number
   fileReadOk?: boolean
   fileReadText?: string
   /** Hold the /api/file-read answer until the returned release is called. */
@@ -105,7 +107,12 @@ function installFetch() {
         const status = fetchOpts.knowledgePostStatus ?? 201
         return { ok: status < 400, status, json: async () => (status >= 400 ? { error: 'library refused' } : { id: 1 }) }
       }
-      return { ok: true, json: async () => (fetchOpts.knowledgeAdded ? [{ id: 1 }] : []) }
+      if (init?.method === 'DELETE') {
+        const status = fetchOpts.knowledgeDeleteStatus ?? 200
+        return { ok: status < 400, status, json: async () => (status >= 400 ? { error: 'library refused the removal' } : {}) }
+      }
+      const type = fetchOpts.knowledgeSourceType ?? 'local_file'
+      return { ok: true, json: async () => (fetchOpts.knowledgeAdded ? [{ id: 1, source_type: type }] : []) }
     }
     if (url.startsWith('/api/file-download')) {
       if (fetchOpts.downloadThrows) throw new Error('network down')
@@ -1147,13 +1154,58 @@ describe('MarkdownPanel — knowledge library toggle', () => {
     expect(window.alert).not.toHaveBeenCalled()
   })
 
-  it('renders an inert badge for a file already in the library', async () => {
+  it('turns the badge into a Remove button for an added local_file source', async () => {
     fetchOpts.knowledgeEnabled = true
     fetchOpts.knowledgeAdded = true
     mountPanel()
+    const remove = await screen.findByLabelText('Remove from Knowledge Library')
+    expect(screen.queryByLabelText('Add to Knowledge Library')).toBeNull()
+    fireEvent.click(remove)
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/knowledge/sources/1', expect.objectContaining({ method: 'DELETE' })))
+    // The invalidation refetches the same query key the status check used,
+    // which is what flips the panel back to the Add affordance.
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/knowledge/sources?uri=%2Ftmp%2Fnotes.md'))
+  })
+
+  it('treats an already-gone source (404) as a successful removal', async () => {
+    fetchOpts.knowledgeEnabled = true
+    fetchOpts.knowledgeAdded = true
+    fetchOpts.knowledgeDeleteStatus = 404
+    mountPanel()
+    fireEvent.click(await screen.findByLabelText('Remove from Knowledge Library'))
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/knowledge/sources/1', expect.objectContaining({ method: 'DELETE' })))
+    expect(screen.queryByTestId('markdown-panel-action-error')).toBeNull()
+  })
+
+  it('surfaces a failed removal through the panel error notice', async () => {
+    fetchOpts.knowledgeEnabled = true
+    fetchOpts.knowledgeAdded = true
+    fetchOpts.knowledgeDeleteStatus = 500
+    mountPanel()
+    fireEvent.click(await screen.findByLabelText('Remove from Knowledge Library'))
+    // The backend's raw English body ("library refused the removal") is
+    // intentionally swallowed: the notice shows the localized string instead.
+    expect(await screen.findByTestId('markdown-panel-action-error')).toHaveTextContent('Couldn’t remove the source.')
+  })
+
+  it('keeps the inert badge for a non-local_file (folder) source', async () => {
+    fetchOpts.knowledgeEnabled = true
+    fetchOpts.knowledgeAdded = true
+    fetchOpts.knowledgeSourceType = 'folder'
+    mountPanel()
     const badge = await screen.findByLabelText('In Knowledge Library')
     expect(badge.tagName).toBe('SPAN')
+    expect(screen.queryByLabelText('Remove from Knowledge Library')).toBeNull()
     expect(screen.queryByLabelText('Add to Knowledge Library')).toBeNull()
+  })
+
+  it('offers the Remove row in the overflow menu for an added local_file source', async () => {
+    fetchOpts.knowledgeEnabled = true
+    fetchOpts.knowledgeAdded = true
+    mountPanel()
+    openPanelMenu()
+    fireEvent.click(await screen.findByText('Remove from Knowledge Library'))
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/knowledge/sources/1', expect.objectContaining({ method: 'DELETE' })))
   })
 })
 
