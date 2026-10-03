@@ -4161,6 +4161,16 @@ More shapes this class hides, all Windows-only and all green on every Linux run:
   correct. Bound such a sample instead of pinning it on the boundary: a floor an order
   of magnitude below (which still fails a seconds-for-milliseconds bug) and, as the
   ceiling, a span the test measures itself.
+- **A console child brings a console host.** A child started with `CREATE_NO_WINDOW`
+  gets its own `conhost.exe`, which Toolhelp lists as that child's child, so a
+  process-tree discovery from it can return a member the test never spawned. Whether
+  that console host is still alive at the scan is host timing: gone on an idle
+  machine, present on a loaded shard, which is how `assert {5436, 7788} == {5436}`
+  reached unrelated PRs from a drain test. Assert the tree's own invariant (every
+  member the drain retained reached a terminal scan), never an exact member set, and
+  pin the populated case deterministically: a helper that calls `AttachConsole` on
+  the child keeps its console host alive past the child's exit
+  (`test_runtime_cleanup_windows.py::test_a_child_exiting_259_reads_as_exited_and_its_drain_finishes[True]`).
 - **A fixed drain ceiling over a batch of fsync-priced writes is a rate assertion.**
   Every test in `test_crew_log_edge_concurrency` hands the session log's single writer
   thread 30 to 160 appends, and `assert emit.flush(timeout=10.0)` across that batch
