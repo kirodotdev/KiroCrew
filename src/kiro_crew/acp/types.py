@@ -47,6 +47,7 @@ from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing im
     ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
     ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION,
     ACP_BACKENDS_OPEN_EXTERNAL_URL,
+    ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL,
     ACP_BACKENDS_POD_HOME_REMAP,
     ACP_BACKENDS_RESUME_WITHOUT_LOAD,
     ACP_BACKENDS_SEED_LOCAL_SETTINGS,
@@ -921,6 +922,14 @@ class AcpEvent:
     #: fails CLOSED (identity not counted as verified) instead of silently
     #: passing on non-emptiness alone.
     mcp_identity_trusted: bool = False
+    #: mcp_identity_unreadable: the frame PRESENTED an MCP identity half the
+    #: name bound refused (``tool_surface.mcp_identity_unreadable``) -- on the
+    #: preceding tool_call frame (carried per scoped toolCallId) or on this
+    #: permission frame's own ``mcpTool.identity``. Not the same as naming no
+    #: identity: the call names a tool Crew cannot retain, so the exact per-tool
+    #: deny that name is under cannot be checked, and every site that answers a
+    #: permission request refuses it outright instead of judging it by title.
+    mcp_identity_unreadable: bool = False
     # Canonical, NON-model-authored tool identity from adapter-authored
     # ``_meta.kiro`` or ``_meta.goose`` (see ``_dispatch._kiro_tool_name``).
     # ``title`` is LLM-authored prose — for shell tools ``select_tool_title``

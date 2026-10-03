@@ -9331,11 +9331,33 @@ class TestChatPermissionRequest:
         from kiro_crew.acp.types import ACP_BACKEND_CLAUDE
 
         client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
-        self._direct_tool_call(client)
+        self._direct_tool_call(client, path=str(tmp_path / "notes.md"))
         event = client._build_permission_event(self._direct_permission_message())
 
         assert event.is_shell is False
         assert event.shell_classified is True
+        assert event.raw_params_trusted is True
+        provider, sels, reads = await self._drive(monkeypatch, event=event, answer="a")
+        assert provider.calls == [("approve", "req-direct", False)]
+        assert reads["n"] == 1
+        assert [s["outcome"] for s in sels] == ["allowed"]
+
+    @pytest.mark.asyncio
+    async def test_direct_client_relative_edit_target_reaches_the_prompt(
+        self, monkeypatch, tmp_path
+    ):
+        """An ordinary relative edit target is the routine shape on every
+        backend. Its params spelling is judged verbatim as it always was and
+        the request goes to the human, exactly like the absolute sibling above;
+        only a DELETE's relative target (the call's sole evidence) is refused
+        as unverifiable (``tool_paths.PARAMS_ONLY_TARGET_KINDS``)."""
+        from kiro_crew.acp.client import AcpClient
+        from kiro_crew.acp.types import ACP_BACKEND_CLAUDE
+
+        client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
+        self._direct_tool_call(client, path="notes.md")
+        event = client._build_permission_event(self._direct_permission_message())
+
         assert event.raw_params_trusted is True
         provider, sels, reads = await self._drive(monkeypatch, event=event, answer="a")
         assert provider.calls == [("approve", "req-direct", False)]
@@ -9373,8 +9395,13 @@ class TestChatPermissionRequest:
         from kiro_crew.acp.types import ACP_BACKEND_CLAUDE
 
         client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
+        # Absolute so the hook gate has nothing to refuse on the target itself;
+        # what this pins is that inline data earns no provenance, and the
+        # refusal is the unverified-shell one, not a target denial.
         event = client._build_permission_event(
-            self._direct_permission_message(tool_call_id="uncached", inline_path="notes.md")
+            self._direct_permission_message(
+                tool_call_id="uncached", inline_path=str(tmp_path / "notes.md")
+            )
         )
 
         assert event.raw_params_trusted is False

@@ -653,3 +653,39 @@ class TestProbeToolSurface:
 
         assert await _probe(fake) is None
         assert fake.detached == fake.attached
+
+
+class TestTheNameBoundIsOneDefinition:
+    """``admits_name`` is what the surface guard admits AND what the ACP identity
+    read retains (``mcp_identity_name``): the two cannot drift apart, because a
+    name the surface lists must always carry an identity for a per-tool deny to
+    bind to, and a name it refuses must never be carried into the deny tier."""
+
+    def test_the_surface_and_the_identity_read_agree_at_the_bound(self) -> None:
+        from kiro_crew.mcp_gateway.tool_surface import (
+            _MAX_NAME_LEN,
+            admits_name,
+            mcp_identity_name,
+        )
+
+        at_bound = "n" * _MAX_NAME_LEN
+        over = "n" * (_MAX_NAME_LEN + 1)
+        assert admits_name(at_bound) and mcp_identity_name(at_bound) == at_bound
+        assert not admits_name(over) and mcp_identity_name(over) == ""
+        for bad in (None, 7, ["x"], b"x"):
+            assert not admits_name(bad) and mcp_identity_name(bad) == ""
+        # Spelling is the server's: a metacharacter or a space is a name character.
+        for spelled in ("read_*", "a b", "srv/tool:v2", "@x"):
+            assert admits_name(spelled) and mcp_identity_name(spelled) == spelled
+        # The empty string is admissible as a listing name but names no identity.
+        assert admits_name("") and mcp_identity_name("") == ""
+
+    def test_the_surface_guard_reads_through_the_shared_predicate(self) -> None:
+        """A listing whose one name is over the bound is unmeasurable, through the
+        same predicate the identity read uses."""
+        from kiro_crew.mcp_gateway.tool_surface import _MAX_NAME_LEN, project_tool_surface
+
+        listing = {"tools": [{"name": "n" * (_MAX_NAME_LEN + 1), "inputSchema": {}}]}
+        assert project_tool_surface(listing) is None
+        ok = {"tools": [{"name": "n" * _MAX_NAME_LEN, "inputSchema": {}}]}
+        assert project_tool_surface(ok) is not None

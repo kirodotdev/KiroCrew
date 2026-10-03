@@ -20,6 +20,7 @@ working.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import time
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
@@ -30,6 +31,9 @@ from kiro_crew import acp_tool_gate, model_registry, permission_floor
 from kiro_crew.acp import kas_wire
 from kiro_crew.acp._dispatch import (
     DRAIN_YIELD_AFTER_S,
+    TOOL_CALL_CACHE_MAX_ENTRIES,
+    TOOL_CALL_CACHE_MAX_KEY_CHARS,
+    TOOL_CALL_CACHE_MAX_PAYLOAD_CHARS,
     build_permission_event,
     classify_notification,
     error_is_refusal_terminal,
@@ -45,6 +49,8 @@ from kiro_crew.acp._dispatch import (
     parse_usage_update,
     redact_text,
     reject_option_id,
+    release_tool_call_provenance,
+    scope_overflowed,
     scoped_tool_cache_key,
     set_mode_params,
     set_model_params,
@@ -113,6 +119,7 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_INLINE_COMPACTION,
     ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
     ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION,
+    ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL,
     ACP_BACKENDS_STEER,
     ACP_BACKENDS_STEERING_REQUEST,
     ACP_BACKENDS_STRUCTURED_REFUSAL,
@@ -184,6 +191,35 @@ from kiro_crew.sel import sel
 from kiro_crew.validation import MAX_ACP_SESSION_ID_LEN
 
 logger = logging.getLogger(__name__)
+
+#: Most tool calls the liveness attribution map (``_active_tool_calls``) holds
+#: at once. It is the provenance caches' count bound by name, not a second
+#: literal: both bound the same population -- the calls of one turn with no
+#: terminal result yet -- and a turn cannot legitimately have this many open.
+#: Past it the oldest attribution is evicted (see the map's note in
+#: ``__init__``). Each retained row is itself bounded: ``ToolCallState`` cuts
+#: its ``title`` and ``command`` at construction.
+MAX_ACTIVE_TOOL_CALLS = TOOL_CALL_CACHE_MAX_ENTRIES
+
+
+def _liveness_key(tool_call_id: object) -> str:
+    """The key the liveness map and the output-seen set hold for a call.
+
+    A ``toolCallId`` is backend-authored and bounded on the wire only by the
+    transport frame cap. An id within the provenance caches' key bound is kept
+    as it is; a longer one is held as its digest, so the key is bounded without
+    the two ids a long key could collide on being conflated -- the same id maps
+    to the same digest at dispatch, at its streamed output and at its terminal.
+    A value that is not a string (a JSON number, ``None``) is no key: the
+    result parser hands the frame's ``toolCallId`` through as it arrived, and a
+    harness that spells one as a number must not crash the turn here.
+    """
+    if not isinstance(tool_call_id, str):
+        return ""
+    if len(tool_call_id) <= TOOL_CALL_CACHE_MAX_KEY_CHARS:
+        return tool_call_id
+    return "sha256:" + hashlib.sha256(tool_call_id.encode("utf-8", "surrogatepass")).hexdigest()
+
 
 #: Hook executions one session may have running at once. A hook runs for up to
 #: its own timeout, so this bounds the processes a peer can hold open.
@@ -1093,9 +1129,17 @@ class AcpSessionHandle:
         self._consult_future: asyncio.Future[tuple[str, str]] | None = None
         # Parallel calls can finish in either order; retain each attribution
         # until its terminal result so the oracle never inspects a finished call.
+        # Bounded by ``MAX_ACTIVE_TOOL_CALLS``: a backend that emits distinct
+        # tool_call frames whose results never report a terminal status would
+        # otherwise grow this map for the length of the turn. At the cap the
+        # OLDEST attribution is evicted -- the one most likely to be a call whose
+        # terminal will never arrive -- and the call just dispatched is always
+        # retained, so the oracle keeps reporting the tool actually in flight
+        # rather than failing permissive on stall detection.
         self._active_tool_calls: dict[
             str, tuple[ToolCallState, InteractiveClassification | None]
         ] = {}
+        self._active_tool_calls_evicted = False
         self._inflight_tool: ToolCallState | None = None
         # Pre-dispatch interactive classification of the in-flight SHELL tool
         # (``classify_interactive_command``); ``None`` when no shell tool is in
@@ -1241,6 +1285,27 @@ class AcpSessionHandle:
         # permission event can carry diff_path for the edit gate when the
         # params themselves carry no path key. Same lifecycle as the caches above.
         self._tool_call_diff_path: dict[str, str] = {}
+        # toolCallId -> harness-classified ``kind`` from the tool_call frame, so a
+        # permission_request that omits ``kind`` still reaches the gate's
+        # kind-keyed tiers. Allocated like every sibling cache; whether it is
+        # HANDED to the wire parsers is decided per frame by
+        # ``_tool_kind_cache_for_wire`` (members of
+        # ``ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL`` only), so construction
+        # is the same for every harness and a non-member's path is unchanged.
+        self._tool_call_kind: dict[str, str] = {}
+        # Emitting scopes (sessionIds) whose tool_call frames the per-turn cache
+        # admission bound refused this turn (``_dispatch.admit_tool_call_cache_entry``:
+        # too many distinct ids, or a frame string over its size bound). Holds
+        # fixed-size scope DIGESTS (``overflow_scope_key``), never the scope text
+        # -- the scope is a backend-authored string the admission may have
+        # refused for its size -- one per scope, never per id, and past the
+        # shared entry cap the ``OVERFLOW_EVERY_SCOPE`` marker instead, so the
+        # record is bounded whatever the backend sends. Read by
+        # ``_refuse_unretained_provenance``: a permission request from a recorded
+        # scope whose id misses every cache is REFUSED rather than yielded,
+        # because a consumer would otherwise judge a call whose kind, identity
+        # and target were never retained. Same lifecycle as the caches above.
+        self._tool_call_cache_overflow: set[str] = set()
         # toolCallId -> trusted MCP server name (_meta.kiro.mcpServerName) cached
         # from the tool_call notification so the later permission_request event
         # can carry mcp_server_name (empty on the permission payload). This is
@@ -1251,6 +1316,14 @@ class AcpSessionHandle:
         # so the permission event can rebuild mcp__<server>__<tool> for per-tool
         # governance in the app-own-server auto-approve.
         self._tool_call_tool_name: dict[str, str] = {}
+        # Per scoped toolCallId, True when the tool_call frame PRESENTED an MCP
+        # identity half the name bound refused (``mcp_identity_unreadable``):
+        # the call names a tool Crew cannot retain, and its permission request
+        # is refused (``_refuse_unreadable_mcp_identity``) rather than judged
+        # under the empty name the identity caches hold. Sparse (written only
+        # when True), a sibling of the caches above under the same admission,
+        # cleared, evicted and released with them.
+        self._tool_call_identity_unreadable: dict[str, bool] = {}
         # Parent-scoped cache keys populated by tagged native-child tool calls.
         # Cleared per turn beside the sibling per-call caches below.
         self._native_child_tool_call_ids: set[str] = set()
@@ -1640,6 +1713,7 @@ class AcpSessionHandle:
         self.last_infra_error = None
         self._tool_dispatched = False
         self._active_tool_calls.clear()
+        self._active_tool_calls_evicted = False
         self._inflight_tool = None
         self._inflight_interactive = None
         self._inflight_tool_call_id = ""
@@ -1665,8 +1739,11 @@ class AcpSessionHandle:
         self._tool_call_is_shell.clear()
         self._tool_call_raw_params.clear()
         self._tool_call_diff_path.clear()
+        self._tool_call_kind.clear()
+        self._tool_call_cache_overflow.clear()
         self._tool_call_mcp_server.clear()
         self._tool_call_tool_name.clear()
+        self._tool_call_identity_unreadable.clear()
         self._native_child_tool_call_ids.clear()
         self._permission_options.clear()
         self._permission_gate_events.clear()
@@ -2293,6 +2370,68 @@ class AcpSessionHandle:
         await self.reject_tool(event.request_id)
         return True
 
+    def _no_tool_in_flight(self) -> bool:
+        """Whether the turn provably has no tool call running.
+
+        An empty attribution map proves it only while the map has never
+        evicted this turn: once ``_active_tool_calls_evicted`` is set, a call
+        whose row was evicted at the cap may still be running, and reading the
+        emptied map as "nothing in flight" would arm the stale clock against
+        it -- the cancel-probe would then stop a live call as a wedge that did
+        not exist. After an eviction the turn is treated as having a tool in
+        flight until its ``clear()``; the stale clock gives up nothing it
+        could prove.
+        """
+        return not self._active_tool_calls and not self._active_tool_calls_evicted
+
+    def _release_settled_tool_call(self, update: object, scope: str) -> None:
+        """Drop a settled call's provenance rows once its result frame reports a
+        terminal status.
+
+        The per-turn caches exist for the permission request, which precedes
+        execution; after the result frame nothing reads them for that id, so a
+        completed, failed, cancelled or refused call's rows are dead weight and
+        holding them until the turn's ``clear()`` made the admission's count bound
+        a bound on TURN LENGTH -- a long unattended KAS turn past 256 distinct
+        calls had every later permission request refused. Released here, the
+        population is the calls in flight. Called at every parse site AFTER the
+        frame's own readers (the spec-disabled tripwire reads ``raw_params`` at
+        the terminal), under the same origin-scoped key the frame was written
+        under, so a child's terminal never releases a parent's row. A
+        non-terminal status, a frame with no id, or an id no store holds is a
+        no-op.
+        """
+        if not isinstance(update, dict) or update.get("sessionUpdate") != "tool_call_update":
+            return
+        # KAS only, the same membership that hands the wire the kind cache, the
+        # overflow record and the unreadable mark (H13): the release exists to
+        # keep the KAS-only admission's count bound a bound on calls in flight,
+        # and on a first-class harness the rows are held until the turn's
+        # ``clear()`` exactly as on main -- a same-id permission request that
+        # followed a terminal status there (a re-ask after reject_once, a
+        # mode-change re-prompt) still finds its trusted row.
+        if (
+            getattr(self._runtime, "acp_backend", None)
+            not in ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL
+        ):
+            return
+        status = update.get("status")
+        call_id = update.get("toolCallId")
+        if status not in TERMINAL_TOOL_STATUSES or not isinstance(call_id, str) or not call_id:
+            return
+        release_tool_call_provenance(
+            scoped_tool_cache_key(scope, call_id),
+            self._tool_call_inputs,
+            self._tool_call_input_redacted,
+            self._tool_call_is_shell,
+            self._tool_call_raw_params,
+            self._tool_call_diff_path,
+            self._tool_call_kind,
+            self._tool_call_mcp_server,
+            self._tool_call_tool_name,
+            self._tool_call_identity_unreadable,
+        )
+
     def _tripwire_spec_disabled_tool(self, result: AcpEvent, msg: JsonRpcMessage) -> None:
         """Make a switched-off tool that RAN loud, whatever let it run.
 
@@ -2380,6 +2519,84 @@ class AcpSessionHandle:
             event.request_id,
             "mcp__unidentified",
             "spec_disabled_tool_unidentified_call",
+            sub_session_id=event.sub_session_id or "",
+        )
+        await self.reject_tool(event.request_id)
+        return True
+
+    async def _refuse_unreadable_mcp_identity(self, event: AcpEvent) -> bool:
+        """Refuse a permission request whose MCP identity was PRESENT but unreadable.
+
+        The tool_call frame (or this permission frame's own ``mcpTool.identity``)
+        named a server or tool in a spelling the MCP-name bound refused -- longer
+        than what Crew's own tool surface admits. That is not a call that names
+        no tool: it is a call whose exact per-tool deny cannot be checked, and
+        left to a consumer it is judged under an EMPTY identity, where a
+        ``@server/tool`` rule does not bind and the title-keyed grant loop may
+        approve it. So it is refused here, before any consumer sees it, on every
+        harness alike (a fact about the frame, not about a backend), and audited
+        as ``mcp_identity_unreadable``. A frame that names nothing is untouched.
+        """
+        if not event.mcp_identity_unreadable:
+            return False
+        logger.warning(
+            "session MCP: refusing a permission request whose MCP identity is unreadable -- "
+            "the frame named a server or tool longer than the tool surface admits, so the "
+            "per-tool rules it is under cannot be checked and a consumer would judge it "
+            "under no identity [session=%s]",
+            self._session_id,
+        )
+        self._audit_handle_reject(
+            event.request_id,
+            "mcp__unreadable",
+            "mcp_identity_unreadable",
+            sub_session_id=event.sub_session_id or "",
+        )
+        await self.reject_tool(event.request_id)
+        return True
+
+    async def _refuse_unretained_provenance(self, msg: JsonRpcMessage, event: AcpEvent) -> bool:
+        """Refuse a permission request for a tool call whose provenance the
+        per-turn caches never retained.
+
+        ``_dispatch.admit_tool_call_cache_entry`` refuses a tool_call frame past
+        the shared count bound or over the payload bound and records the emitting
+        scope in ``_tool_call_cache_overflow``. The permission request for that
+        call then misses every cache: no trusted params, no shell classification,
+        no identity, no kind. Left to a consumer, that request is judged by its
+        title alone -- and under AUTO_APPROVE the title tier and the permission
+        floor are the only tiers left, so a mounted KAS ``delete_file`` of a
+        write-protected config flooded past the cap would stop being refused by
+        the write-plane target gate. So a request that carries NO retained
+        provenance from a scope that overflowed this turn is REFUSED here, before
+        any consumer sees it; the bound narrows what is provable, never what is
+        permitted. A request whose id WAS retained (any cache hit) is untouched,
+        as is every request from a scope the bound never refused.
+        """
+        _params = msg.params if isinstance(msg.params, dict) else {}
+        scope = str(_params.get("sessionId") or self._session_id)
+        if not scope_overflowed(self._tool_call_cache_overflow, scope):
+            return False
+        if event.raw_params_trusted or event.shell_classified or event.mcp_identity_trusted:
+            return False
+        # The bounds are named here as well as at the admission site, so the
+        # operator reading the refusal alone knows which limit a call can meet:
+        # more than the count of distinct calls in flight, or one call whose
+        # rendered input exceeds the payload bound (a write that large is
+        # refused for its size, not its target).
+        logger.warning(
+            "refusing a permission request whose tool call the per-turn provenance caches did "
+            "not retain (cache bound reached this turn: more than %d distinct calls in flight, "
+            "or a call whose input exceeds %d chars): kind, identity and target are unknown, "
+            "so it cannot be judged [session=%s]",
+            TOOL_CALL_CACHE_MAX_ENTRIES,
+            TOOL_CALL_CACHE_MAX_PAYLOAD_CHARS,
+            self._session_id,
+        )
+        self._audit_handle_reject(
+            event.request_id,
+            event.title or "",
+            "provenance_cache_overflow",
             sub_session_id=event.sub_session_id or "",
         )
         await self.reject_tool(event.request_id)
@@ -4829,6 +5046,10 @@ class AcpSessionHandle:
                         continue
                     if await self._refuse_unidentifiable_mcp_approval(msg, _perm_event):
                         continue
+                    if await self._refuse_unreadable_mcp_identity(_perm_event):
+                        continue
+                    if await self._refuse_unretained_provenance(msg, _perm_event):
+                        continue
                     if _perm_event.child_low_fidelity and not self.child_fidelity_aware:
                         # This consumer never opted into the child-fidelity
                         # contract: it would run its ordinary hook/trust
@@ -4878,6 +5099,13 @@ class AcpSessionHandle:
                         # consumer that stops pulling: the call already ran, and this
                         # is the only in-band notice that it did.
                         self._tripwire_spec_disabled_tool(ev, msg)
+                        # After the tripwire read the row: a terminal frame settles
+                        # the call, and its provenance is released so the caches
+                        # hold calls in flight, not the turn's history.
+                        _upd = (msg.params or {}).get("update")
+                        self._release_settled_tool_call(
+                            _upd, str((msg.params or {}).get("sessionId") or self._session_id)
+                        )
                         yield ev
                         # kiro-cli's built-in security filter can abort a turn's
                         # tools and emit ONLY this text marker — never a `complete`
@@ -5080,10 +5308,14 @@ class AcpSessionHandle:
                             shell_cache=self._tool_call_is_shell,
                             raw_params_cache=self._tool_call_raw_params,
                             diff_path_cache=self._tool_call_diff_path,
+                            tool_kind_cache=self._tool_kind_cache_for_wire(),
                             mcp_server_name_cache=self._tool_call_mcp_server,
                             tool_name_cache=self._tool_call_tool_name,
+                            identity_unreadable_cache=self._identity_unreadable_cache_for_wire(),
                             cache_scope=ssid,
+                            cache_overflow=self._tool_call_cache_overflow_for_wire(),
                         )
+                        self._release_settled_tool_call(upd, ssid)
                     tcid = str(upd.get("toolCallId") or "")
                     # Single-source the text-shape read via the shared parser so the
                     # sub-agent text path matches the main one (content.text + flat).
@@ -6012,8 +6244,10 @@ class AcpSessionHandle:
             shell_cache=self._tool_call_is_shell,
             raw_params_cache=self._tool_call_raw_params,
             diff_path_cache=self._tool_call_diff_path,
+            tool_kind_cache=self._tool_kind_cache_for_wire(),
             mcp_server_name_cache=self._tool_call_mcp_server,
             tool_name_cache=self._tool_call_tool_name,
+            identity_unreadable_cache=self._identity_unreadable_cache_for_wire(),
             # ORIGIN-BOUND provenance: cache entries are keyed by the
             # emitting frame's sessionId, so a child cannot replay a consumed
             # parent toolCallId to inherit trusted params for a different
@@ -6349,6 +6583,64 @@ class AcpSessionHandle:
         if total is not None:
             self.last_prompt_stats.credits = total
 
+    def _tool_kind_cache_for_wire(self) -> dict[str, str] | None:
+        """The ``tool_kind_cache`` the wire parsers may use for this harness, or None.
+
+        Members of ``ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL`` (KAS) carry a
+        ``kind`` on the tool_call and none on ``session/request_permission``, so
+        the cache lets the permission event keep the harness's WRITE-PLANE
+        classification (``edit``/``delete``; the writer in ``_dispatch`` retains
+        no other kind, so the store is bounded to that closed vocabulary). Every
+        other harness gets ``None``, which disables both the writer and the
+        reader -- kiro-cli's permission frames omit ``kind``
+        too, but it routes edits by the diff content block already and its
+        kindless governance classification is additive, so a carried ``edit``
+        would change what its gate sees. Decided per frame by membership, the
+        same way ``_handle_update`` gates KAS-only discriminants, so no
+        harness's construction path changes (H13).
+        ``getattr``: a minimal runtime double carries no backend, and no backend
+        is not a member.
+        """
+        backend = getattr(self._runtime, "acp_backend", None)
+        if backend in ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL:
+            return self._tool_call_kind
+        return None
+
+    def _identity_unreadable_cache_for_wire(self) -> dict[str, bool] | None:
+        """The ``identity_unreadable_cache`` the wire parsers may write, or ``None``.
+
+        Handed only for members of ``ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL``
+        (KAS), the same membership and per-frame shape as the kind cache and the
+        overflow record: the unreadable mark exists for the KAS identity channel
+        (the one whose halves are bounded at retention) and earns a refusal
+        (``_refuse_unreadable_mcp_identity``) that is a KAS refusal mode. Every
+        other harness is handed ``None``, so its frames are never marked and the
+        refusal never fires on a first-class path (H13).
+        """
+        backend = getattr(self._runtime, "acp_backend", None)
+        if backend in ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL:
+            return self._tool_call_identity_unreadable
+        return None
+
+    def _tool_call_cache_overflow_for_wire(self) -> set[str] | None:
+        """The overflow record the wire parsers write, or ``None`` for a harness
+        the cache admission bound does not govern.
+
+        Handing the record is what opts a harness into ``admit_tool_call_cache_entry``
+        (``_dispatch``): the bound, the eviction and the refusal of an unretained
+        permission request are the KAS projection's -- KAS is the harness with a
+        mountable ``delete_file`` whose write-plane routing the caches carry, and
+        the one whose frames this branch measured. Every other harness gets
+        ``None`` and retains as it always did, so no first-class path gains a
+        refusal mode or changes construction (H13). Same membership set and
+        per-frame shape as ``_tool_kind_cache_for_wire``. The attribute itself
+        is built for every harness; only what the wire is handed differs.
+        """
+        backend = getattr(self._runtime, "acp_backend", None)
+        if backend in ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL:
+            return self._tool_call_cache_overflow
+        return None
+
     def _handle_update(self, msg: JsonRpcMessage) -> list[AcpEvent]:
         """Process a session/update notification and return events."""
         params = msg.params or {}
@@ -6388,10 +6680,19 @@ class AcpSessionHandle:
                 shell_cache=self._tool_call_is_shell,
                 raw_params_cache=self._tool_call_raw_params,
                 diff_path_cache=self._tool_call_diff_path,
+                tool_kind_cache=self._tool_kind_cache_for_wire(),
                 mcp_server_name_cache=self._tool_call_mcp_server,
                 tool_name_cache=self._tool_call_tool_name,
+                identity_unreadable_cache=self._identity_unreadable_cache_for_wire(),
                 cache_scope=frame_sid,
+                cache_overflow=self._tool_call_cache_overflow_for_wire(),
             )
+            # A child's rows share the parent's stores and the admission's
+            # population; released here under the child's own scope, since
+            # this arm re-tags only the call and text events and the terminal
+            # result never reaches the main route's release. Nothing below
+            # reads the settled row: the events out are coarse activity.
+            self._release_settled_tool_call(update, frame_sid)
             out: list[AcpEvent] = []
             for ev in child_events:
                 if ev.kind == EVENT_TOOL_CALL and ev.tool_call_id:
@@ -6502,10 +6803,14 @@ class AcpSessionHandle:
                         shell_cache=self._tool_call_is_shell,
                         raw_params_cache=self._tool_call_raw_params,
                         diff_path_cache=self._tool_call_diff_path,
+                        tool_kind_cache=self._tool_kind_cache_for_wire(),
                         mcp_server_name_cache=self._tool_call_mcp_server,
                         tool_name_cache=self._tool_call_tool_name,
+                        identity_unreadable_cache=self._identity_unreadable_cache_for_wire(),
                         cache_scope=self._session_id,
+                        cache_overflow=self._tool_call_cache_overflow_for_wire(),
                     )
+                    self._release_settled_tool_call(update, self._session_id)
                     return _child_prefix
             if session_update == "agent_message_chunk":
                 kas_chunk_events = self._handle_kas_subagent_chunk(update)
@@ -6525,9 +6830,12 @@ class AcpSessionHandle:
             shell_cache=self._tool_call_is_shell,
             raw_params_cache=self._tool_call_raw_params,
             diff_path_cache=self._tool_call_diff_path,
+            tool_kind_cache=self._tool_kind_cache_for_wire(),
             mcp_server_name_cache=self._tool_call_mcp_server,
             tool_name_cache=self._tool_call_tool_name,
+            identity_unreadable_cache=self._identity_unreadable_cache_for_wire(),
             cache_scope=self._session_id,
+            cache_overflow=self._tool_call_cache_overflow_for_wire(),
         )
         filtered_events: list[AcpEvent] = []
         for ev in events:
@@ -6547,7 +6855,7 @@ class AcpSessionHandle:
             filtered_events.append(ev)
             if ev.kind == EVENT_TEXT_CHUNK:
                 self.last_prompt_stats.text_chunks += 1
-                self._stale_eligible = not self._active_tool_calls
+                self._stale_eligible = self._no_tool_in_flight()
                 self._prompt_or_tool_seen = True
             elif ev.kind == EVENT_TOOL_CALL:
                 self._stale_eligible = False
@@ -6561,6 +6869,26 @@ class AcpSessionHandle:
                 # overwrite the verdict, and the turn's consumer would re-issue a
                 # call whose refusal an intervening call had already superseded.
                 self.last_infra_error = None
+                # The liveness map holds only calls the provenance caches
+                # ADMITTED, so the two bounds act on one population and the
+                # map never evicts an admitted, possibly live call to make room
+                # for a frame whose permission request is about to be refused
+                # as unverifiable. Admission is read off the identity store it
+                # writes a row into for every admitted frame -- a store every
+                # harness fills, so no harness is conditioned on here (H13): a
+                # harness handed no admission record admits every frame, and
+                # the only frames absent are the ones the KAS bound refused. A
+                # frame with no id was never cached and is tracked as before.
+                if ev.tool_call_id and (
+                    scoped_tool_cache_key(self._session_id, ev.tool_call_id)
+                    not in self._tool_call_tool_name
+                ):
+                    logger.debug(
+                        "liveness map skips a tool call the provenance caches refused "
+                        "[session=%s]",
+                        self._session_id,
+                    )
+                    continue
                 # Pre-dispatch interactive classification (RFC §14.6): a TABLE
                 # verdict on the trusted shell command (never the LLM-authored
                 # title), carried on the oracle's tool state so the window
@@ -6572,7 +6900,7 @@ class AcpSessionHandle:
                     else None
                 )
                 self._inflight_interactive = interactive
-                self._inflight_tool_call_id = ev.tool_call_id or ""
+                self._inflight_tool_call_id = _liveness_key(ev.tool_call_id or "")
                 self._input_wait_emitted = False
                 if interactive is not None and interactive.risk != INTERACTIVE_NONE:
                     logger.info(
@@ -6606,6 +6934,21 @@ class AcpSessionHandle:
                     mcp_server_name=(ev.mcp_server_name if ev.mcp_identity_trusted else ""),
                     interactive_risk=(interactive.risk if interactive else INTERACTIVE_NONE),
                 )
+                if (
+                    self._inflight_tool_call_id not in self._active_tool_calls
+                    and len(self._active_tool_calls) >= MAX_ACTIVE_TOOL_CALLS
+                ):
+                    oldest = next(iter(self._active_tool_calls))
+                    self._active_tool_calls.pop(oldest, None)
+                    if not self._active_tool_calls_evicted:
+                        self._active_tool_calls_evicted = True
+                        logger.warning(
+                            "tool-call liveness map reached its bound (%d calls with no terminal "
+                            "result this turn); evicting the oldest attribution so the call in "
+                            "flight stays tracked [session=%s]",
+                            MAX_ACTIVE_TOOL_CALLS,
+                            self._session_id,
+                        )
                 self._active_tool_calls[self._inflight_tool_call_id] = (
                     self._inflight_tool,
                     interactive,
@@ -6615,11 +6958,18 @@ class AcpSessionHandle:
                 if not ev.tool_final and ev.tool_call_id:
                     # Streamed partial output: the command has acted, so any
                     # later non-interactive retry of it is not a safe replay.
-                    self._tool_output_seen.add(ev.tool_call_id)
+                    # Bounded like the map: the key is the liveness key, and at
+                    # the map's cap the set is pruned to the calls still in
+                    # flight -- an id only matters here while its call is one.
+                    _seen_key = _liveness_key(ev.tool_call_id)
+                    if _seen_key:
+                        if len(self._tool_output_seen) >= MAX_ACTIVE_TOOL_CALLS:
+                            self._tool_output_seen &= set(self._active_tool_calls)
+                        self._tool_output_seen.add(_seen_key)
                 if ev.tool_status in TERMINAL_TOOL_STATUSES:
-                    self._active_tool_calls.pop(ev.tool_call_id or "", None)
-                    self._tool_dispatched = bool(self._active_tool_calls)
-                    self._stale_eligible = not self._active_tool_calls
+                    self._active_tool_calls.pop(_liveness_key(ev.tool_call_id or ""), None)
+                    self._tool_dispatched = not self._no_tool_in_flight()
+                    self._stale_eligible = self._no_tool_in_flight()
                     if self._inflight_tool_call_id not in self._active_tool_calls:
                         if self._active_tool_calls:
                             self._inflight_tool_call_id = next(reversed(self._active_tool_calls))

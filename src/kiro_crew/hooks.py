@@ -66,6 +66,7 @@ from kiro_crew.platform.governance import (
 # are defined). Imported here so ``hooks.TARGET_PATH_KEYS`` / ``hooks.TargetPaths``
 # / ``hooks.target_paths`` (and the work caps) stay importable at their historic
 # names; hooks keeps its HARD-DENY reading of ``TargetPaths.truncated``.
+from kiro_crew.platform.tool_names import policy_alias_split, policy_aliases
 from kiro_crew.platform.tool_paths import (  # noqa: F401  (re-exported for callers)
     _TARGET_PATH_MAX_NODES,
     _TARGET_PATH_MAX_PATHS,
@@ -701,6 +702,7 @@ def hook_gate_kwargs(event: object, **overrides: Any) -> dict[str, Any]:
         "mcp_server_name": getattr(event, "mcp_server_name", "") or "",
         "mcp_tool_name": getattr(event, "tool_name", "") or "",
         "mcp_identity_trusted": bool(getattr(event, "mcp_identity_trusted", False)),
+        "mcp_identity_unreadable": bool(getattr(event, "mcp_identity_unreadable", False)),
         "spawn_target": getattr(event, "spawn_target", "") or "",
     }
     unknown = set(overrides) - set(kwargs)
@@ -855,6 +857,7 @@ class HookManager:
         mcp_server_name: str = "",
         mcp_tool_name: str = "",
         mcp_identity_trusted: bool = False,
+        mcp_identity_unreadable: bool = False,
         spawn_target: str = "",
         resolved_agent: str = "",
         classifier_only: bool = False,
@@ -1011,6 +1014,18 @@ class HookManager:
                 "Blocked: shell command could not be verified for security "
                 "policy (deny-by-default)"
             )
+        # The frame PRESENTED an MCP server or tool name longer than Crew's own
+        # tool surface admits (``AcpEvent.mcp_identity_unreadable``). That is not
+        # a call that names no tool -- ``mcp_tool_name`` is empty here because the
+        # name could not be retained, not because there was none -- so the exact
+        # ``@server/tool`` deny it may be under cannot be checked below, and
+        # judging it by title would hand a denied tool to the grant loop. Denied
+        # outright, the same shape as a shell command that cannot be read.
+        if mcp_identity_unreadable:
+            return ToolHookResult.deny(
+                "Blocked: MCP tool identity could not be read (name over the "
+                "tool-surface bound; deny-by-default)"
+            )
 
         # Strip display prefixes (e.g. "Running: ls *" → "ls *") so config
         # patterns like "ls" or "rm *" match without the prefix.
@@ -1160,7 +1175,7 @@ class HookManager:
             # uses (``edit_target_candidates``): a backend may stream params that
             # carry no path key at all and name the file only in that block, so
             # the params alone can judge nothing.
-            candidates = edit_target_candidates(raw_params, diff_path)
+            candidates = edit_target_candidates(raw_params, diff_path, tool_kind=tool_kind)
             if candidates.truncated:
                 # Unreachable while the keystone above denies a truncated walk
                 # first, but this branch keeps its own fail-closed reading so a
@@ -1250,6 +1265,34 @@ class HookManager:
         # cannot waive a rule here, at most it matches one it did not need to.
         if mcp_tool_name and mcp_tool_name not in deny_targets:
             deny_targets.append(mcp_tool_name)
+        # A KAS built-in under the kiro-cli name a rule about it is written in.
+        # ``kas_agents`` mounts kiro-cli's ``fs_write`` on KAS as ``str_replace``
+        # and ``fs_append`` (``platform.tool_names``), so an operator's
+        # ``auto_deny_tools: ["fs_write"]`` -- the natural spelling, since Crew's
+        # specs are authored in kiro-cli vocabulary -- names a tool that never
+        # reaches this tier under that name. Governance gets the same aliases
+        # below.
+        #
+        # IDENTITY ONLY, never the title. ``tool_name`` is ``select_tool_title``'s
+        # pick, which prefers the model-authored ``description`` verbatim, and
+        # ``normalized`` only strips its display prefix; a shell call the model
+        # described as ``str_replace`` would fold to ``fs_write`` and an
+        # operator's ``deny fs_write`` would refuse a command it never named.
+        # A refusal the operator did not write is still the model steering the
+        # gate, so the fold reads only what the engine stamped: ``mcp_tool_name``
+        # (``_meta.kiro.toolName`` on kiro-cli, ``_meta.kiro.toolId`` on KAS).
+        #
+        # BUILT-INS ONLY. The table speaks about the engine's own tools; an MCP
+        # server is free to name a tool ``read_file`` too (the reference
+        # filesystem server does), and that tool is not kiro-cli's ``fs_read``.
+        # Folding it would apply a fence the operator wrote for a built-in to a
+        # server they never named -- a tightening nobody chose. kiro-cli stamps
+        # ``mcpServerName`` on every MCP-served call, so a non-empty server is
+        # the discriminator; an MCP call keeps exactly the targets it had.
+        policy_alias_names: tuple[str, ...] = ()
+        if mcp_tool_name and not mcp_server_name:
+            policy_alias_names = policy_aliases(mcp_tool_name)
+        deny_targets.extend(a for a in policy_alias_names if a not in deny_targets)
         # What the GOVERNANCE plane is asked about, which is NOT the same string,
         # because that plane has a SERVER level the deny plane does not and it
         # matches canonical references rather than raw titles.
@@ -1364,6 +1407,35 @@ class HookManager:
         # snapshot and permit a tool that both complete profiles deny -- and each
         # extra call walked ``profiles/`` synchronously on the event loop.
         # Tightest-wins is preserved: a deny on any identity denies the call.
+        #
+        # A KAS built-in with a kiro-cli policy name is asked as ONE identity with
+        # two spellings (``gate_decision``'s ``alias_groups``): an explicit deny on
+        # either spelling binds (a deny-mode ``tools.deny: ["str_replace"]`` still
+        # refuses), and otherwise one permitted spelling admits the call. Neither
+        # appending nor replacing is right: governance profiles are written in
+        # kiro-cli vocabulary and an ALLOW-mode profile requires every queried
+        # item to match, so a raw id asked BESIDE its alias becomes a second
+        # required entry no operator wrote and a permitted write is refused;
+        # asked INSTEAD, a raw-id deny stops binding. The deny tier above reads
+        # both spellings unconditionally, because a deny target can only deny.
+        #
+        # One alias is deny-only (``policy_alias_split``): ``delete_file`` reads
+        # under ``fs_write`` so a write deny reaches it, but kiro-cli's
+        # ``fs_write`` cannot delete, so an allow-mode ``tools: ["fs_write"]``
+        # must not admit a deletion. That id is asked on its own name
+        # (``extra_titles``) and ``fs_write`` only for an explicit deny
+        # (``deny_aliases``).
+        _gov_identity: tuple[str, ...] = ()
+        _gov_alias_groups: tuple[tuple[str, ...], ...] = ()
+        _gov_deny_aliases: tuple[str, ...] = ()
+        if policy_alias_names:
+            _admitting, _gov_deny_aliases = policy_alias_split(mcp_tool_name)
+            if _admitting:
+                _gov_alias_groups = ((mcp_tool_name, *_admitting),)
+            elif mcp_tool_name != tool_name:
+                _gov_identity = (mcp_tool_name,)
+        elif mcp_tool_name and mcp_tool_name != tool_name:
+            _gov_identity = (mcp_tool_name,)
         gov_reason = _governance_denial(
             ctx,
             tool_name,
@@ -1374,7 +1446,9 @@ class HookManager:
             raw_params,
             diff_path=diff_path,
             mcp_ref=governance_mcp_ref,
-            extra_titles=(mcp_tool_name,) if mcp_tool_name and mcp_tool_name != tool_name else (),
+            extra_titles=_gov_identity,
+            alias_groups=_gov_alias_groups,
+            deny_aliases=_gov_deny_aliases,
             spawn_target=spawn_target,
         )
         if gov_reason:
@@ -1720,7 +1794,18 @@ def _is_host_read_only_builtin(
         return False
     if mcp_server_name or not mcp_tool_name:
         return False
-    return mcp_tool_name in _HOST_READ_ONLY_BUILTIN_TOOLS
+    # A KAS built-in arrives under its own id (``read_file``, ``grep_search``;
+    # ``platform.tool_names``), and this allowlist is spelled in kiro-cli's.
+    # Read the id under its kiro-cli policy name, the same fold the deny tier
+    # applies -- but only for a name the table knows to be the SAME work: the
+    # aliases are the read/search family of a kiro-cli read tool, so a KAS
+    # ``read_file`` is proven read-only exactly where ``fs_read`` is, and a
+    # write alias (``str_replace`` -> ``fs_write``) resolves to a name this
+    # allowlist does not carry. Without this a ``--approval reads`` gateway
+    # prompted for every KAS read it would have auto-approved on kiro-cli.
+    if mcp_tool_name in _HOST_READ_ONLY_BUILTIN_TOOLS:
+        return True
+    return any(alias in _HOST_READ_ONLY_BUILTIN_TOOLS for alias in policy_aliases(mcp_tool_name))
 
 
 # Semantic kinds known to mutate/execute. DOCUMENTATION ONLY — the gate does not
@@ -1909,6 +1994,8 @@ def _governance_denial(
     diff_path: str = "",
     mcp_ref: str = "",
     extra_titles: tuple[str, ...] = (),
+    alias_groups: tuple[tuple[str, ...], ...] = (),
+    deny_aliases: tuple[str, ...] = (),
     spawn_target: str = "",
 ) -> str | None:
     """Return a denial reason if governance forbids *tool_name*, else None.
@@ -1963,6 +2050,8 @@ def _governance_denial(
             diff_path=diff_path,
             mcp_ref=mcp_ref,
             extra_titles=extra_titles,
+            alias_groups=alias_groups,
+            deny_aliases=deny_aliases,
         )
         if not decision.permitted:
             # The denied identity when the decision names one -- with the title,

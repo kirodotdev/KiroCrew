@@ -161,6 +161,9 @@ with no row here.
      - pre-session registry query (whether the dashboard may skip a session reset)
    * - ``ACP_BACKENDS_STRUCTURED_REFUSAL``
      - driver-internal (whether the metadata refusal parser is consulted)
+   * - ``ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL``
+     - driver-internal (whether a kindless permission frame takes the preceding
+       tool_call's ``kind``; read per frame by the session handle's wire accessor)
    * - ``ACP_BACKENDS_HOOKS_LIST``
      - driver-internal (whether this harness's agent asks its client for the hooks
        matching a trigger and to run one, read by the session dispatch loop that
@@ -2146,6 +2149,34 @@ ACP_BACKENDS_SERIAL_SESSION_STARTS = frozenset({ACP_BACKEND_KIRO})
 # keeps provider-specific detail off the wire, so its refusal card has no category
 # line either.
 ACP_BACKENDS_STRUCTURED_REFUSAL = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
+
+# Backends whose ``session/request_permission`` names no ``kind`` and whose
+# tool_call ``kind`` is SAFE to carry onto the permission event in its place,
+# so the gate's write-plane routing for ``edit``/``delete`` sees the
+# classification the harness gave the call. Only the write-plane kinds are
+# carried (``_dispatch.build_permission_event`` withholds every other cached
+# kind), so membership decides whether a member's edits and deletes are
+# routed by kind at all; the read-only proof is never fed a carried kind.
+# KAS is the member: its permission ``toolCall`` is id, status and title only
+# (``test/fixtures/acp_frames/kas/session.jsonl``), and it is the harness that
+# has ``delete_file``. The kind it stamps on every built-in is recorded in
+# ``test/fixtures/kas_builtin_tool_ids.json`` (``tool_call_kind``, from the
+# engine's ``mapActionTypeToToolKind``): ``search`` on ``grep_search``,
+# ``file_search`` AND ``list_directory``, ``other`` on ``code``/``tool_search``,
+# ``read``/``edit``/``delete``/``execute``/``fetch`` on the rest -- which is
+# why the carry is confined to the write plane rather than "every kind KAS
+# stamps is one the gate reads".
+# kiro-cli is NOT a member although its permission frames omit ``kind`` as
+# well (``test/fixtures/acp_frames/kiro/session.jsonl``): its gates already
+# route edits by the diff content block and it has no delete tool, and a
+# carried ``edit`` would change what its kindless governance classification
+# sees (the additive read pairs), so it needs nothing carried (H13).
+# claude-agent-acp, codex-acp and the rest are not members: unmeasured, and a
+# wrong kind on a permission event can only narrow or veto.
+# Membership decides whether ``AcpSessionHandle`` hands its ``tool_kind_cache``
+# (allocated for every backend) to ``_dispatch.build_permission_event``; a
+# non-member's parser receives none and the frame's own ``kind`` stands.
+ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL: FrozenSet[str] = frozenset({ACP_BACKEND_KAS})
 
 # Backends whose child may ask THIS host for an access token over the
 # ``_kiro/auth/getAccessToken`` connection-level request, to be answered from Kiro

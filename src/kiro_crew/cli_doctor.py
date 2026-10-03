@@ -165,6 +165,10 @@ from kiro_crew.platform import (
 from kiro_crew.platform.capability_bound import bind_capability_manager
 from kiro_crew.platform.defaults import DefaultCapabilityManager
 from kiro_crew.platform.governance import CU_MCP_SERVER, may_skip_gate_now
+from kiro_crew.platform.tool_names import (
+    kas_verified_releases,
+    kas_vocabulary_drift,
+)
 from kiro_crew.sandbox import _MOUNT_SOURCE_PREFIX, warm_backend  # noqa: F401
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.sel import sel
@@ -1532,6 +1536,7 @@ def _report_kas_backend(issues: list[str]) -> None:
     # letting it swallow this row would hide a withheld auto-approve on exactly
     # the host where kiro-cli is misbehaving.
     _report_kas_spec_permissions(issues)
+    _report_kas_tool_vocabulary(issues)
     help_text = _kas_relay_help(binary)
     if help_text is None:
         # The probe itself failed, so nothing is known either way. Advisory: a
@@ -1602,6 +1607,54 @@ def _report_kas_spec_permissions(issues: list[str]) -> None:
     print("               already carries the block, `kirocrew setup --agent-only --clean`")
     print("               rebuilds it without the key.")
     issues.append("kiro-cli is too old to carry the KAS `permissions` block")
+
+
+def _report_kas_tool_vocabulary(issues: list[str]) -> None:
+    """Whether the installed engine is one the KAS tool-vocabulary tables were read from.
+
+    Crew mounts a spec's kiro-cli tool names on KAS by translating them to KAS's
+    built-in ids and governs KAS ids under their kiro-cli names
+    (``platform.tool_names``). Both directions were measured on ONE engine
+    release; any other kiro-cli ships a different KAS, which may rename a
+    built-in, add one, or (older) lack one. The mount direction fails silent
+    (an id the engine does not recognise is dropped from the spec's tool set
+    without an error, so a read tool is simply absent from the agent), the
+    policy direction fails permissive (an id the table does not know is
+    governed only under its own name), so a mismatch in either direction is
+    worth one line here. Advisory: another release is not known to have
+    drifted, only not known not to have.
+    """
+    version = installed_kiro_cli_version()
+    verified = kas_verified_releases()
+    drift = kas_vocabulary_drift(version)
+    if drift == "unknown" or version is None:
+        print(
+            f"  tool names:  ➖ vocabulary verified on kiro-cli {verified}; installed version unknown"
+        )
+        return
+    if not drift:
+        shown = ".".join(str(part) for part in version)
+        print(f"  tool names:  ✅ vocabulary verified on kiro-cli {verified} (installed {shown})")
+        return
+    shown = ".".join(str(part) for part in version)
+    if drift == "older":
+        # Unverified, not compatible: the tables were read from the verified
+        # releases and an older KAS may lack an id or spell it differently. Same
+        # standing as a newer one -- only the direction of the drift risk differs.
+        print(
+            f"  tool names:  ⚠️  installed kiro-cli {shown} is older than every release ({verified})"
+        )
+        print("               the KAS tool-name tables were verified on; not verified against it.")
+        print("               A built-in the tables name may be absent or spelled differently.")
+        return
+    relation = "newer than every release" if drift == "newer" else "not among the releases"
+    print(f"  tool names:  ⚠️  installed kiro-cli {shown} is {relation} ({verified}) the KAS")
+    print("               tool-name tables were verified on. A renamed or added built-in")
+    print("               would mount or be governed under a name Crew does not know.")
+    print("               Re-measure: test/fixtures/kas_builtin_tool_ids.json (its note says how),")
+    print("               then append the release to its verified_kiro_cli_versions.")
+    print("               The kas backend also logs this once per engine version at session start,")
+    print("               reading the same pinned binary (KAS reports no version on the wire).")
 
 
 def _discord_intent_grants(token: str) -> intent_probe.IntentGrants:

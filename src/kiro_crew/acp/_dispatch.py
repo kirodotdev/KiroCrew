@@ -64,7 +64,9 @@ from kiro_crew.acp.types import (
     RefusalInfo,
 )
 from kiro_crew.acp_backends import ACP_BACKENDS_META_IDENTITY
+from kiro_crew.mcp_gateway.tool_surface import mcp_identity_name, mcp_identity_unreadable
 from kiro_crew.metrics.tool_calls import note_tool_call_started, record_tool_call_finished
+from kiro_crew.platform.tool_paths import WRITE_PLANE_KINDS
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.security.credential_sources import tool_output_fingerprints
 
@@ -1156,6 +1158,11 @@ class ToolCallIdentity:
     mcp_server_name: str
     tool_name: str
     identity_trusted: bool
+    #: The frame PRESENTED an identity half the MCP-name bound refused
+    #: (``tool_surface.mcp_identity_unreadable``): it names a tool Crew cannot
+    #: retain, which is not the same as naming none. Carried to the permission
+    #: path so the request is refused rather than judged under no identity.
+    identity_unreadable: bool = False
 
     @property
     def tool_identity_trusted(self) -> bool:
@@ -1220,7 +1227,7 @@ def classify_tool_call(update: dict[str, Any]) -> ToolCallIdentity:
     # ``_meta.goose.toolCall``; see _MCP_IDENTITY_META_CHANNELS). A server is set
     # ONLY for MCP-served calls, a tool name for every tool (built-ins included).
     # The kind is the harness's own verdict on the tool, so it stands.
-    meta_server, meta_tool, meta_shell = _meta_identity_full(update)
+    meta_server, meta_tool, meta_shell, meta_unreadable = _meta_identity_full(update)
     if meta_shell:
         # The harness named its OWN shell (goose: developer/shell) and sends no
         # ``kind`` on that branch. Harness-authored, so it RESOLVES the call:
@@ -1228,12 +1235,19 @@ def classify_tool_call(update: dict[str, Any]) -> ToolCallIdentity:
         return ToolCallIdentity(True, True, "", meta_tool, False)
     if meta_server:
         return ToolCallIdentity(
-            kind_resolved, shell_by_kind, meta_server, meta_tool, bool(meta_tool)
+            kind_resolved,
+            shell_by_kind,
+            meta_server,
+            meta_tool,
+            bool(meta_tool),
+            identity_unreadable=meta_unreadable,
         )
 
     # codex-acp: adapter marker plus the adapter-resolved (server, tool) pair.
     if meta.get(_CODEX_MCP_TOOL_CALL_MARKER) is True:
         raw = update.get("rawInput")
+        # A first-class harness's pair, read as it always was (H13): the KAS
+        # MCP-name bound and the unreadable mark belong to the KAS channel only.
         server = _str_field(raw, "server")
         tool = _str_field(raw, "tool")
         if server and tool:
@@ -1245,7 +1259,9 @@ def classify_tool_call(update: dict[str, Any]) -> ToolCallIdentity:
 
     # No MCP marker: the kind decides. The harness's built-in tool name (no
     # server) is still carried so hooks can match a host-known built-in.
-    return ToolCallIdentity(kind_resolved, shell_by_kind, "", meta_tool, False)
+    return ToolCallIdentity(
+        kind_resolved, shell_by_kind, "", meta_tool, False, identity_unreadable=meta_unreadable
+    )
 
 
 # Legacy kiro permission options omit the spec-mandated `kind` field. Only
@@ -1378,6 +1394,207 @@ def scoped_tool_cache_key(cache_scope: str, tool_call_id: str) -> str:
     return f"{cache_scope}|{tool_call_id}" if cache_scope else tool_call_id
 
 
+#: Bound on the number of DISTINCT scoped tool-call ids the per-turn provenance
+#: caches (``raw_params`` / ``shell`` / ``mcp_server_name`` / ``tool_name`` /
+#: ``diff_path`` / ``tool_kind`` / ``tool_input`` + its redaction bit) retain at
+#: once. ONE constant for the whole population: every cache is keyed on the same
+#: ``scoped_tool_cache_key`` and written for the same frames, so two structures
+#: with two caps would split one announced population into two classes by
+#: arrival order. The population is the calls IN FLIGHT, not the calls a turn has
+#: made: a row is released the moment its call's result frame reports a
+#: terminal status (:func:`release_tool_call_provenance`, run by the handle after
+#: the result's own readers), because the permission request precedes execution
+#: and nothing reads a settled call's provenance afterwards. A harness runs a
+#: handful of calls at once (a native sub-agent fan-out is the widest shape);
+#: the cap is well above that and exists so a runaway or hostile stream of
+#: unique ids whose results never arrive cannot grow the caches without limit
+#: until the turn resets.
+TOOL_CALL_CACHE_MAX_ENTRIES = 256
+
+
+def release_tool_call_provenance(key: str, *caches: dict[str, Any] | None) -> None:
+    """Drop every provenance row under *key* -- a call that reached a terminal status.
+
+    The counterpart of :func:`admit_tool_call_cache_entry`'s eviction, for the
+    ordinary end of a call rather than a refusal: the caller passes the same
+    sibling stores the admission gates, so a settled call leaves no row anywhere
+    and the count bound measures calls in flight. Reached from the handle only
+    after the result frame's own readers ran (the spec-disabled tripwire reads
+    ``raw_params`` under this key at the terminal), never from the parser, which
+    would release the row before they did. A key no store holds is a no-op, so a
+    stray terminal frame for an unannounced id changes nothing.
+    """
+    for c in caches:
+        if c is not None:
+            c.pop(key, None)
+
+
+#: Bound on the LARGEST externally-sized field a retained row carries: the
+#: frame's ``rawInput``, measured as the LARGER of the rendered JSON of the
+#: dict the row stores (``raw_params``) and the final string it stores
+#: (``tool_input``, which a diff block or derived diff may have replaced with a
+#: smaller rendering -- measuring that alone would retain the dict unmeasured).
+#: The two
+#: other externally-sized fields -- the scoped key and the diff-block path --
+#: have their own bounds below, applied in the same admission; every remaining
+#: retained field is bounded on its own (a bool, a ``WRITE_PLANE_KINDS``
+#: literal, a ``_harness_identifier``-checked name). The transport caps a
+#: whole frame at ``runtime._STDOUT_BUFFER_LIMIT`` (10 MiB), which bounds one
+#: row but not the population; these bounds are what make
+#: ``TOOL_CALL_CACHE_MAX_ENTRIES`` a bound on memory (at most
+#: ``MAX_ENTRIES * (MAX_PAYLOAD_CHARS + MAX_KEY_CHARS + MAX_PATH_CHARS)`` per
+#: turn, ~512 MiB). Generous on purpose: a 2 MB tool input is far beyond any
+#: real file write's ``fileText``; a call over it is not retained and its
+#: permission request is refused, never trusted on a partial reading.
+TOOL_CALL_CACHE_MAX_PAYLOAD_CHARS = 2_000_000
+
+#: Bound on the scoped KEY a row is stored under -- the emitting frame's
+#: ``sessionId`` joined to its ``toolCallId``, both backend-authored strings.
+#: Real ids are UUIDs or short ``toolu_``/``call_``-prefixed tokens; a key over
+#: this length is not one, and the frame is refused as overflow so a stream of
+#: near-limit ids cannot spend the count cap on key bytes alone.
+TOOL_CALL_CACHE_MAX_KEY_CHARS = 512
+
+#: Bound on the diff-block ``path`` a row retains (``diff_path_cache``). The
+#: longest path any host filesystem accepts is a few KiB (Linux ``PATH_MAX``
+#: is 4096), so a longer value is not a file the write went to and the frame is
+#: refused rather than the path cut -- a truncated path would name a different
+#: file to the target gate.
+TOOL_CALL_CACHE_MAX_PATH_CHARS = 4096
+
+#: Marker a caller-owned overflow record carries once it holds
+#: ``TOOL_CALL_CACHE_MAX_ENTRIES`` distinct scope digests: from then on EVERY
+#: scope reads as overflowed, so the record stays bounded without a refused
+#: scope ever going unrecorded (the fail-safe direction: an unretained request
+#: is refused, never judged on its title).
+OVERFLOW_EVERY_SCOPE = "*"
+
+
+def overflow_scope_key(cache_scope: str) -> str:
+    """The fixed-size key an overflow record stores for *cache_scope*.
+
+    The scope is the emitting frame's own ``sessionId`` -- a backend-authored
+    string with no length bound -- and the record exists precisely to remember
+    scopes whose frames were refused for being oversized, so storing the text
+    would retain what the admission refused. A SHA-256 digest is 64 characters
+    whatever the scope was; the one reader (the handle's refusal of an
+    unretained permission request) digests the request's scope the same way.
+    """
+    return hashlib.sha256(cache_scope.encode("utf-8", "surrogatepass")).hexdigest()
+
+
+def scope_overflowed(cache_overflow: set[str], cache_scope: str) -> bool:
+    """Whether *cache_scope* is recorded as overflowed in *cache_overflow*."""
+    return (
+        OVERFLOW_EVERY_SCOPE in cache_overflow or overflow_scope_key(cache_scope) in cache_overflow
+    )
+
+
+def admit_tool_call_cache_entry(
+    key: str,
+    cache_scope: str,
+    payload_chars: int,
+    cache_overflow: set[str] | None,
+    *caches: dict[str, Any] | None,
+    path_chars: int = 0,
+) -> bool:
+    """Whether the per-turn provenance caches may take an entry under *key*.
+
+    The admission answer gates EVERY sibling store, and three bounds decide it:
+
+    * COUNT -- a key already present in any store (a same-id refinement or repeat
+      frame) is admitted, so an announced call keeps refining; a key none of them
+      holds is admitted only while the population -- the union of the sibling key
+      sets -- is below :data:`TOOL_CALL_CACHE_MAX_ENTRIES`.
+    * SIZE -- *payload_chars* must not exceed :data:`TOOL_CALL_CACHE_MAX_PAYLOAD_CHARS`,
+      whether the id is new or held: a refinement carrying an oversized payload is
+      refused too, so a small first frame cannot reserve a row a huge second
+      frame then fills. The callers pass the LARGER of the params rendering and
+      the final retained rendering, because a row keeps both the ``raw_params``
+      dict and the (diff-replaced, redacted) ``tool_input`` string, and a diff
+      rendering is usually smaller than the params it was derived from.
+    * SIZE of the other two retained frame strings -- *key* itself (the scoped
+      ``toolCallId``) must not exceed :data:`TOOL_CALL_CACHE_MAX_KEY_CHARS` and
+      *path_chars* (the diff-block ``path`` the frame named, 0 when it named
+      none) must not exceed :data:`TOOL_CALL_CACHE_MAX_PATH_CHARS`. Every byte a
+      row keeps is then measured by a bound the gate applies, so the count cap
+      is a bound on memory rather than on rows of unbounded width.
+
+    A refused key gets no row anywhere -- including any row an earlier admitted
+    frame wrote under it, which is evicted from every store -- and its SCOPE is
+    recorded in *cache_overflow* as a fixed-size digest (:func:`overflow_scope_key`;
+    one entry per emitting session, cleared with the caches, and past
+    :data:`TOOL_CALL_CACHE_MAX_ENTRIES` distinct scopes the record holds
+    :data:`OVERFLOW_EVERY_SCOPE` instead, so it is bounded and every later scope
+    reads as overflowed): the permission request for a refused id then misses
+    every cache, and the
+    handle REFUSES it outright (``AcpSessionHandle._refuse_unretained_provenance``)
+    rather than letting a consumer judge a call whose kind, identity and target
+    were never retained -- so the bound narrows what is provable, never what is
+    permitted, and a write-plane deny cannot stop binding by being flooded past
+    the cap. Overflow is logged once per scope PER SNAPSHOT: the warning is
+    deduplicated against *cache_overflow* itself, which is cleared with the
+    caches at turn reset, so the next turn's overflow is said again rather than
+    swallowed by a record that outlives the turn.
+    """
+    live = [c for c in caches if c is not None]
+    admitted = (
+        payload_chars <= TOOL_CALL_CACHE_MAX_PAYLOAD_CHARS
+        and len(key) <= TOOL_CALL_CACHE_MAX_KEY_CHARS
+        and path_chars <= TOOL_CALL_CACHE_MAX_PATH_CHARS
+    )
+    if admitted and not any(key in c for c in live):
+        population: set[str] = set()
+        for c in live:
+            population.update(c.keys())
+        admitted = len(population) < TOOL_CALL_CACHE_MAX_ENTRIES
+    if admitted:
+        return True
+    # A refused frame leaves NO row under its key: a refinement of a held id
+    # that is refused for size would otherwise leave the earlier frame's
+    # params, diff path, identity and kind in place -- and the permission
+    # request that follows would be judged against the superseded target,
+    # marked trusted, so the handle's unretained-provenance refusal would not
+    # catch it. Evicting makes the request miss every cache and be refused.
+    for c in live:
+        c.pop(key, None)
+    digest = overflow_scope_key(cache_scope)
+    # The warning is deduplicated against the caller-owned record, which lives
+    # and is cleared with the caches: a scope is said out loud the first time
+    # THIS snapshot refuses it, and said again on the next snapshot. A record
+    # that has saturated (OVERFLOW_EVERY_SCOPE) cannot tell scopes apart, so the
+    # saturation itself is the last line it says; every later scope reads as
+    # overflowed from the marker.
+    first_sighting = cache_overflow is None or not (
+        digest in cache_overflow or OVERFLOW_EVERY_SCOPE in cache_overflow
+    )
+    saturated = False
+    if cache_overflow is not None and first_sighting:
+        if len(cache_overflow) >= TOOL_CALL_CACHE_MAX_ENTRIES:
+            cache_overflow.add(OVERFLOW_EVERY_SCOPE)
+            saturated = True
+        else:
+            cache_overflow.add(digest)
+    if first_sighting:
+        logger.warning(
+            "tool-call provenance caches refused a frame this turn (cap %d distinct ids, "
+            "%d chars of input per call, %d-char ids, %d-char diff paths); the refused "
+            "call's permission request is rejected as unverifiable (scope digest %s)%s",
+            TOOL_CALL_CACHE_MAX_ENTRIES,
+            TOOL_CALL_CACHE_MAX_PAYLOAD_CHARS,
+            TOOL_CALL_CACHE_MAX_KEY_CHARS,
+            TOOL_CALL_CACHE_MAX_PATH_CHARS,
+            digest[:16],
+            (
+                "; the overflow record is saturated, so every later scope this turn "
+                "reads as overflowed without a line of its own"
+                if saturated
+                else ""
+            ),
+        )
+    return False
+
+
 def identified_mcp_call(event: AcpEvent) -> tuple[str, str] | None:
     """The ``(server, tool)`` a permission event PROVABLY refers to, or None.
 
@@ -1494,23 +1711,42 @@ _MAX_HARNESS_TOOL_ID_LEN = 128
 _HARNESS_TOOL_ID_RE = re.compile(r"[A-Za-z0-9_.\-/@:]+")
 
 
+def _harness_identifier(value: object) -> str:
+    """*value* as a harness-authored identifier, or "" when absent or malformed.
+
+    The bound on a BUILT-IN harness tool id -- the permission frame's
+    ``_meta.kiro.toolId``, a KAS engine name such as ``fs_read`` -- applied at
+    the point the value is retained, so it can never reach ``AcpEvent.tool_name``
+    (and from there the deny tier, governance, the read-only proof, the audit
+    log) longer than ``_MAX_HARNESS_TOOL_ID_LEN`` or spelled outside
+    ``_HARNESS_TOOL_ID_RE``: word characters, ``.``, ``-`` and the ``/``, ``@``
+    and ``:`` separators. No glob metacharacter or whitespace survives, so the
+    value is matched as a name and logged unescaped. An MCP server or tool name
+    is NOT bounded here: it is the server's string, admitted up to 512
+    characters in any spelling by Crew's own tool surface, and a per-tool deny
+    binds to it exactly, so the identity channels retain it under
+    :func:`kiro_crew.mcp_gateway.tool_surface.mcp_identity_name` instead --
+    emptying a valid 129-character name here would drop the deny target and
+    hand the call to the title-keyed grant loop.
+    """
+    if (
+        not isinstance(value, str)
+        or len(value) > _MAX_HARNESS_TOOL_ID_LEN
+        or not _HARNESS_TOOL_ID_RE.fullmatch(value)
+    ):
+        return ""
+    return value
+
+
 def _permission_tool_id(params: dict[str, Any]) -> str:
     """``_meta.kiro.toolId`` of a permission request, or "" when absent or malformed.
 
-    Only an identifier is kept: word characters, ``.``, ``-`` and the ``/``, ``@``
-    and ``:`` separators an MCP tool's spelling uses. No glob metacharacter or
-    whitespace survives, so the value is matched as a name and logged unescaped.
+    Bounded by :func:`_harness_identifier`.
     """
     meta = params.get("_meta")
     kiro = meta.get("kiro") if isinstance(meta, dict) else None
     tool_id = kiro.get("toolId") if isinstance(kiro, dict) else None
-    if (
-        not isinstance(tool_id, str)
-        or len(tool_id) > _MAX_HARNESS_TOOL_ID_LEN
-        or not _HARNESS_TOOL_ID_RE.fullmatch(tool_id)
-    ):
-        return ""
-    return tool_id
+    return _harness_identifier(tool_id)
 
 
 def build_permission_event(
@@ -1524,6 +1760,8 @@ def build_permission_event(
     tool_name_cache: dict[str, str] | None = None,
     cache_scope: str = "",
     diff_path_cache: dict[str, str] | None = None,
+    tool_kind_cache: dict[str, str] | None = None,
+    identity_unreadable_cache: dict[str, bool] | None = None,
     gate_envelope_nonce: str | None = None,
     kas_consent_meta: bool = False,
 ) -> tuple[AcpEvent | None, dict[str, str] | None]:
@@ -1585,10 +1823,15 @@ def build_permission_event(
     raw_title = tool_call.get("title", "unknown")
     title = _redact(raw_title if isinstance(raw_title, str) else "")
     # The ACP toolCall carries a `kind` ("execute" for Bash, "read"/"edit"/…).
-    # Carry it onto the event as display/telemetry metadata only — the is_shell
-    # length-cap exemption resolves from shell_cache below, never this field.
-    raw_tool_kind = tool_call.get("kind", "")
-    tool_kind = raw_tool_kind if isinstance(raw_tool_kind, str) else ""
+    # The gate keys two tiers on it (the read-only proof as an ALLOW-list, the
+    # write-plane routing for edit/delete); the is_shell length-cap exemption
+    # resolves from shell_cache below, never this field. Filled from the
+    # tool_call cache below when this frame omits it (KAS). A non-string value
+    # is read as absent: the field is an unvalidated frame value from the
+    # harness subprocess, and a list or number reaching the kind-keyed set
+    # membership downstream would raise rather than classify.
+    _frame_kind = tool_call.get("kind", "")
+    tool_kind = _frame_kind if isinstance(_frame_kind, str) else ""
 
     # ACP spec uses optionId/name + kind ("allow_once"|"allow_always"|
     # "reject_once"|"reject_always"); kiro-cli uses id/label with id
@@ -1665,6 +1908,24 @@ def build_permission_event(
     # same-origin repeat frames (re-ask after reject_once, mode-change
     # re-prompt) still find their entry.
     _ck = scoped_tool_cache_key(cache_scope, tool_call_id)
+    # A permission frame that names no ``kind`` takes the one its preceding
+    # ``tool_call`` frame carried, under the same origin-scoped id. KAS sends
+    # ``toolCall: {toolCallId, status, title}`` here and puts ``kind`` on the
+    # tool_call only, so every KAS call otherwise reached the gate's kind-keyed
+    # tiers as ``""`` -- and the write-plane routing that makes a KAS
+    # ``delete_file`` of a write-protected config refusable never fired on the
+    # one harness that has ``delete_file``. The cache holds ONLY write-plane
+    # kinds (``edit``/``delete``; the writer in ``_build_tool_call_event``
+    # retains nothing else), so this carries exactly that routing and never a
+    # ``search`` -- which KAS stamps on ``grep_search``/``file_search``/
+    # ``list_directory`` and which would veto the host read-only proof -- nor a
+    # ``read`` that would widen the interactive allow-list on a field the
+    # frame never stated. Fallback ONLY: a kind the frame does state is never
+    # overridden. The cache is passed by ``AcpSessionHandle`` on the KAS
+    # backend ONLY (``ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL``); ``None``
+    # here means "not this harness", and the kiro-cli path is unchanged.
+    if not tool_kind and tool_call_id and tool_kind_cache is not None:
+        tool_kind = tool_kind_cache.get(_ck, "") or ""
     tool_input = ""
     tool_input_redacted = False
     if tool_call_id and tool_input_cache is not None and _ck in tool_input_cache:
@@ -1785,6 +2046,93 @@ def build_permission_event(
     # governance ceiling are asked about it and not about its title alone. It
     # does NOT set ``_mcp_identity_trusted`` below: that flag records a cache hit.
     _tool_name = _cached_tool or _kas_tool
+    # KAS stamps the running tool's identity on the permission request itself and
+    # NO ``toolName`` on its preceding tool_call -- that frame carries a display
+    # title ("Read File") and ``toolOrigin`` only (captured live, kiro-cli 2.24.0).
+    # Two frame fields, both harness-authored (the model cannot reach ``_meta``),
+    # the same trust class as ``toolName``:
+    #
+    # * ``_meta.kiro.mcpTool.identity.{serverName, toolName}`` -- an MCP-served
+    #   call's canonical pair. Read FIRST. The server half never FILLS the
+    #   cached server: a KAS MCP tool_call names its server as
+    #   ``_meta.kiro.serverName`` (the second ``kiro`` channel), so a request
+    #   about that call agrees with the cache, and agreement is a no-op. A
+    #   server the preceding tool_call did NOT name -- the cache holds "" for a
+    #   built-in, or a different server -- is a disagreement between two
+    #   harness-authored frames about one call. It must not be adopted: the
+    #   trust flag below records the CACHE hit, and a built-in's tool_call wrote
+    #   a hit with an empty server, so a server taken from the request would
+    #   inherit that trust and reach the server-keyed grants (the app-own MCP
+    #   auto-approve) for a call that is not that server's. On the KAS wire the
+    #   disagreement is refused as an unreadable identity (the same KAS-only
+    #   refusal mode as an oversized half, H13); a first-class harness, which
+    #   never had the fill, ignores the half as it always did.
+    # * ``_meta.kiro.toolId`` -- the built-in's id (``read_file``,
+    #   ``run_command``), or ``mcp_<server>_<tool>`` for an MCP tool.
+    #
+    # The frame id becomes ``tool_name`` and so reaches every reader keyed on it.
+    # ``mcp_identity_trusted`` stays derived from the cache hits below, and a KAS
+    # built-in's tool_call writes a hit with EMPTY names, so the flag is True
+    # with no server: the id therefore feeds (1) the deny tier and governance,
+    # (2) the host read-only proof in ``hooks._is_host_read_only_builtin`` --
+    # deliberately, so a KAS ``read_file`` is free under ``--approval reads``
+    # exactly where ``fs_read`` is, and only ids on that read-only allowlist can
+    # gain from it -- and (3) ``is_document_writing_tool``'s field scoping when
+    # the id is a write tool's. Same trust class as ``toolName`` (harness-authored
+    # ``_meta``); what it cannot do is name a SERVER, so every server-keyed grant
+    # (the spawn rung, the identified-MCP-call reader) still sees none and does
+    # not fire.
+    #
+    # Read only when the preceding tool_call WROTE the identity cache (a KAS
+    # built-in's tool_call writes a hit with an empty name, which the frame id
+    # then fills). A request no tool_call preceded -- a sub-agent spawn, whose
+    # synthetic toolCallId misses every cache -- is classified by
+    # ``kas_consent_tool`` above and by nothing else: its identity is the Crew
+    # name rules are written against, given only when every consent field
+    # agrees, and a raw spawn-family id or a disagreeing block must not name
+    # the request by a spelling no rule carries.
+    # Every value taken from the frame is bounded at the point it is retained,
+    # each by the bound of what it names: the built-in ``toolId`` by
+    # ``_harness_identifier`` (the KAS identifier bound ``_permission_tool_id``
+    # applies), the ``mcpTool.identity`` server/tool pair by ``mcp_identity_name``
+    # -- exactly what Crew's own MCP tool surface admits, so a name the surface
+    # listed (up to 512 characters, any spelling) always has an identity for a
+    # per-tool deny to bind to, and an oversized one reads as absent.
+    # The preceding tool_call frame's verdict on its own identity halves,
+    # carried under the same scoped key as the identity caches: True only when
+    # that frame presented a half the bound refused.
+    _mcp_identity_unreadable = bool(
+        identity_unreadable_cache is not None
+        and tool_call_id
+        and identity_unreadable_cache.get(_ck, False)
+    )
+    _frame_meta = params.get("_meta") if _cached_tool is not None else None
+    _frame_kiro = _frame_meta.get("kiro") if isinstance(_frame_meta, dict) else None
+    if isinstance(_frame_kiro, dict):
+        _mcp_tool = _frame_kiro.get("mcpTool")
+        _identity = _mcp_tool.get("identity") if isinstance(_mcp_tool, dict) else None
+        if isinstance(_identity, dict):
+            _id_server = mcp_identity_name(_identity.get("serverName"))
+            _id_tool = mcp_identity_name(_identity.get("toolName"))
+            # A half that is PRESENT but over the bound names a tool Crew cannot
+            # retain; the request is refused on that, never judged under the
+            # cached name or the toolId as if the frame had named nothing. Only
+            # for a harness handed the store (KAS, H13): the mark is what the
+            # handle refuses on, and no other harness has that refusal mode.
+            if identity_unreadable_cache is not None and (
+                mcp_identity_unreadable(_identity.get("serverName"))
+                or mcp_identity_unreadable(_identity.get("toolName"))
+            ):
+                _mcp_identity_unreadable = True
+            if _id_server and _id_server != _mcp_server_name:
+                # Never adopted (see the design note above): refused on the
+                # harness handed the store, ignored elsewhere.
+                if identity_unreadable_cache is not None:
+                    _mcp_identity_unreadable = True
+            if _id_server and _id_server == _mcp_server_name and not _tool_name and _id_tool:
+                _tool_name = _id_tool
+        if not _tool_name:
+            _tool_name = _harness_identifier(_frame_kiro.get("toolId"))
     # Explicit identity-provenance flag (mirrors _raw_params_trusted): True iff
     # BOTH cache reads above actually HIT — a written entry may legitimately be
     # "" for a non-MCP tool, so the hit is distinguished from a miss by the
@@ -1837,6 +2185,7 @@ def build_permission_event(
         mcp_server_name=_mcp_server_name,
         tool_name=_tool_name,
         mcp_identity_trusted=_mcp_identity_trusted,
+        mcp_identity_unreadable=_mcp_identity_unreadable,
         diff_path=_diff_path,
         spawn_target=_spawn_target,
         harness_tool_id=_harness_tool_id,
@@ -1855,6 +2204,9 @@ def _build_tool_call_event(
     cache_scope: str = "",
     tool_input_redacted_cache: dict[str, bool] | None = None,
     diff_path_cache: dict[str, str] | None = None,
+    tool_kind_cache: dict[str, str] | None = None,
+    cache_overflow: set[str] | None = None,
+    identity_unreadable_cache: dict[str, bool] | None = None,
 ) -> AcpEvent:
     """Build an ``EVENT_TOOL_CALL`` from a ``tool_call`` update (with redaction)."""
     title = update.get("title", "unknown")
@@ -1870,10 +2222,96 @@ def _build_tool_call_event(
         None,
     )
     purpose = extract_tool_purpose(raw_input)
-    tool_call_id = update.get("toolCallId", "")
+    _raw_tool_call_id = update.get("toolCallId", "")
+    tool_call_id = _raw_tool_call_id if isinstance(_raw_tool_call_id, str) else ""
     # ORIGIN-BOUND cache key (see build_permission_event): entries written
     # here are readable only under the same emitting-session scope.
     _ck = scoped_tool_cache_key(cache_scope, tool_call_id)
+    # ONE admission decision for every sibling store (see
+    # ``admit_tool_call_cache_entry``): a refused id is written to none of them,
+    # so the cache handles below are simply absent for this frame. The event
+    # itself is still built and displayed; only the retained provenance is
+    # withheld, and the permission request for the id is then refused by the
+    # handle as unverifiable. The rendered input is computed here, before the
+    # gate, in its FINAL retained form -- diff content block or derived edit
+    # diff over the raw params, then redaction -- because its size is one of
+    # the two bounds the gate applies, and a bound measured on an intermediate
+    # rendering (the params alone) would let a small ``rawInput`` beside a large
+    # diff block pass admission and then retain the diff unmeasured.
+    input_str = ""
+    if tool_call_id and raw_input:
+        input_str = (
+            _dumps_degraded(raw_input, indent=2)
+            if isinstance(raw_input, (dict, list))
+            else str(raw_input)
+        )
+    # The params rendering's size stands for the ``raw_params`` dict the row
+    # retains alongside the final rendering: a diff block or derived diff
+    # REPLACES ``input_str`` below with something usually smaller than the
+    # params it came from, so measuring the final string alone would admit a
+    # near-limit ``rawInput`` beside a small diff and retain the dict unmeasured.
+    _params_chars = len(input_str)
+    # Edit tools with diff content blocks → render a unified diff instead.
+    # Also capture oldText/path for the file-change snapshot (race-free source).
+    found_diff = False
+    _diff_old_text: str | None = None
+    _diff_path: str = ""
+    content_blocks = update.get("content", [])
+    if isinstance(content_blocks, list):
+        for cb in content_blocks:
+            if isinstance(cb, dict) and cb.get("type") == "diff":
+                _cb_old = cb.get("oldText")
+                _diff_old_text = _cb_old if isinstance(_cb_old, str) else (_cb_old or "")
+                _cb_path = cb.get("path")
+                _diff_path = _cb_path if isinstance(_cb_path, str) else ""
+                diff_str = make_unified_diff(
+                    _diff_old_text or "", cb.get("newText") or "", _diff_path
+                )
+                if diff_str:
+                    input_str = diff_str
+                    found_diff = True
+                break
+    # Fallback when no diff content block was present: derive from the edit
+    # args themselves (strReplace pair, create/insert content). Gated on the
+    # EDIT kind — "content"-shaped args exist on many non-edit tools, and a
+    # derived diff would corrupt their input display.
+    if not found_diff and (
+        kind == "edit" or (isinstance(raw_input, dict) and raw_input.get("command") == "strReplace")
+    ):
+        diff_str = derive_edit_diff(raw_input)
+        if diff_str:
+            input_str = diff_str
+    input_redacted = False
+    if input_str:
+        safe_input = _redact(input_str)
+        input_redacted = safe_input != input_str
+        input_str = safe_input
+    # The admission runs only for a caller that hands an overflow record: the
+    # record is what the refusal is written to, and a harness whose handle
+    # hands none (every non-KAS harness, H13) retains as it always did.
+    if (
+        tool_call_id
+        and cache_overflow is not None
+        and not admit_tool_call_cache_entry(
+            _ck,
+            cache_scope,
+            max(_params_chars, len(input_str)),
+            cache_overflow,
+            raw_params_cache,
+            shell_cache,
+            mcp_server_name_cache,
+            tool_name_cache,
+            diff_path_cache,
+            tool_kind_cache,
+            tool_input_cache,
+            tool_input_redacted_cache,
+            identity_unreadable_cache,
+            path_chars=len(_diff_path),
+        )
+    ):
+        raw_params_cache = shell_cache = mcp_server_name_cache = tool_name_cache = None
+        diff_path_cache = tool_kind_cache = tool_input_cache = tool_input_redacted_cache = None
+        identity_unreadable_cache = None
     # Cache the STRUCTURED raw params (dict) keyed by toolCallId so a later
     # permission_request — which carries only a truncated title — can recover
     # them for governance enforcement (raw_tool_params). Mirrors AcpClient's
@@ -1929,53 +2367,47 @@ def _build_tool_call_event(
     _tool_name = identity.tool_name
     if tool_call_id and tool_name_cache is not None:
         tool_name_cache[_ck] = _tool_name
-    # Initial tool input string from raw params.
-    input_str = ""
-    if tool_call_id and raw_input:
-        input_str = (
-            _dumps_degraded(raw_input, indent=2)
-            if isinstance(raw_input, (dict, list))
-            else str(raw_input)
-        )
-    # Edit tools with diff content blocks → render a unified diff instead.
-    # Also capture oldText/path for the file-change snapshot (race-free source).
-    found_diff = False
-    _diff_old_text: str | None = None
-    _diff_path: str = ""
-    content_blocks = update.get("content", [])
-    if isinstance(content_blocks, list):
-        for cb in content_blocks:
-            if isinstance(cb, dict) and cb.get("type") == "diff":
-                _cb_old = cb.get("oldText")
-                _diff_old_text = _cb_old if isinstance(_cb_old, str) else (_cb_old or "")
-                _diff_path = cb.get("path") or ""
-                diff_str = make_unified_diff(
-                    _diff_old_text or "", cb.get("newText") or "", _diff_path
-                )
-                if diff_str:
-                    input_str = diff_str
-                    found_diff = True
-                break
+    # A frame that PRESENTED an identity half the bound refused is recorded as
+    # such (a bool, never the half), so the permission request that follows is
+    # refused rather than judged under the empty name the caches above hold.
+    # Sparse: a row exists only for a frame that presented an unreadable half,
+    # and a tool_call frame OVERWRITES the verdict under its id the way the
+    # identity caches beside it are overwritten, so a mark never outlives the
+    # frame that earned it. Keyed like its siblings, evicted/released with them.
+    if tool_call_id and identity_unreadable_cache is not None:
+        if identity.identity_unreadable:
+            identity_unreadable_cache[_ck] = True
+        else:
+            identity_unreadable_cache.pop(_ck, None)
     # Cache the content block's path for the permission event (see
     # build_permission_event). Written only when a diff block NAMED a path, so
-    # a later frame without one cannot clobber a real target with "".
+    # a later frame without one cannot clobber a real target with "". The path
+    # was read above with the rendering, before the admission gate.
     if tool_call_id and _diff_path and diff_path_cache is not None:
         diff_path_cache[_ck] = _diff_path
-    # Fallback when no diff content block was present: derive from the edit
-    # args themselves (strReplace pair, create/insert content). Gated on the
-    # EDIT kind — "content"-shaped args exist on many non-edit tools, and a
-    # derived diff would corrupt their input display.
-    if not found_diff and (
-        kind == "edit" or (isinstance(raw_input, dict) and raw_input.get("command") == "strReplace")
-    ):
-        diff_str = derive_edit_diff(raw_input)
-        if diff_str:
-            input_str = diff_str
-    input_redacted = False
-    if input_str:
-        safe_input = _redact(input_str)
-        input_redacted = safe_input != input_str
-        input_str = safe_input
+    # Cache the harness-classified ``kind`` for the permission event. KAS's
+    # ``session/request_permission`` carries a ``toolCall`` of id, status and
+    # title only -- no ``kind`` (recorded: ``test/fixtures/acp_frames/kas/
+    # session.jsonl``) -- so without this the gate's write-plane delete routing
+    # saw ``""`` for every KAS call. BOUNDED AT RETENTION: the frame's ``kind``
+    # is an externally-sized string, and only membership in the closed
+    # write-plane vocabulary is retained -- the stored value is one of the
+    # ``WRITE_PLANE_KINDS`` literals, never the frame's own bytes, so an entry
+    # costs a fixed few bytes whatever the frame carried. Any other kind
+    # (``read``/``search``/``execute``/``fetch``/``other``, the placeholder
+    # ``"unknown"``, a non-string) is not written: the reader carries nothing
+    # else, so retaining it would be growth with no reader. The entry COUNT is
+    # the sibling caches' -- one per write-plane tool_call under the same
+    # origin-scoped id, cleared per turn with them -- and is not capped here on
+    # its own: an entry this cache refused would reach the gate as a kindless
+    # delete and route nowhere, so a count cap on this store alone would fail
+    # OPEN, and the per-turn population is already what bounds the params
+    # cache beside it.
+    if tool_call_id and tool_kind_cache is not None:
+        if isinstance(kind, str) and kind in WRITE_PLANE_KINDS:
+            tool_kind_cache[_ck] = kind
+    # The rendered input retained here is the string the gate above measured:
+    # no rendering happens between the two.
     if tool_call_id and input_str and tool_input_cache is not None:
         tool_input_cache[_ck] = input_str
         if tool_input_redacted_cache is not None:
@@ -2485,6 +2917,14 @@ class _MetaIdentityChannel(NamedTuple):
     #: server field reads as "an MCP server served this" on a shell command. Matching it
     #: means two things at once: the call is a shell command, and it has no MCP server.
     builtin_shell: tuple[str, str] | None = None
+    #: Whether this channel's halves are bounded at retention by the MCP-name
+    #: bound Crew's own tool surface admits (``mcp_identity_name``), with a
+    #: PRESENT half over it reported as unreadable. True for the KAS spelling
+    #: only: its identity caches sit under the KAS-only admission, and the
+    #: refusal an unreadable half earns is a KAS refusal mode. A first-class
+    #: harness's channel reads as it always did -- a string is retained
+    #: verbatim -- so no first-class path gains a bound or a refusal (H13).
+    bounds_names: bool = False
 
 
 #: Harness ``_meta`` channels that carry a trusted tool identity, in read order.
@@ -2500,6 +2940,27 @@ class _MetaIdentityChannel(NamedTuple):
 #: security gate needs to tell a genuine MCP tool from a shell command whose stdout the
 #: model authored.
 _MCP_IDENTITY_META_CHANNELS: tuple[_MetaIdentityChannel, ...] = (
+    # The KAS row FIRST, and it answers only when its own ``serverName`` is present on
+    # the block (``_meta_identity_full`` skips a bounded row whose server field is
+    # absent): the two ``kiro`` rows share the ``toolName`` field, so consulted second
+    # the KAS row would never see a KAS MCP frame's tool half (the kiro-cli row would
+    # have taken it, unbounded), and consulted first without the presence gate it
+    # would take every kiro-cli built-in's ``toolName`` -- a frame with no server of
+    # either spelling -- under the KAS bound.
+    # KAS (kiro-agent) spells the MCP server on a tool_call as ``_meta.kiro.serverName``
+    # and stamps NO tool name on that frame -- captured live on kiro-cli 2.24.0 against a
+    # stdio server: ``{"kiro": {"serverName": "probefs", "toolOrigin": "client"}}``. The
+    # tool half arrives later, on the permission request, as
+    # ``_meta.kiro.mcpTool.identity.{serverName,toolName}`` (``build_permission_event``
+    # reads that). Without this row a KAS MCP call read as a BUILT-IN: no server, so the
+    # built-in-only readers (the kiro-cli-name alias fold, the host read-only proof)
+    # treated a server's ``read_file`` as the engine's own.
+    _MetaIdentityChannel(
+        key="kiro",
+        server_field="serverName",
+        tool_field="toolName",
+        bounds_names=True,
+    ),
     _MetaIdentityChannel(
         key="kiro",
         server_field="mcpServerName",
@@ -2529,10 +2990,13 @@ _MCP_IDENTITY_META_CHANNELS: tuple[_MetaIdentityChannel, ...] = (
 )
 
 
-def _meta_identity_full(update: dict[str, Any]) -> tuple[str, str, bool]:
-    """``(server, tool, builtin_shell)`` from the first meta channel that answers.
+def _meta_identity_full(update: dict[str, Any]) -> tuple[str, str, bool, bool]:
+    """``(server, tool, builtin_shell, unreadable)`` from the first meta channel that answers.
 
-    ``("", "", False)`` when none does. Both identity halves come from ONE channel:
+    ``("", "", False, False)`` when none does. ``unreadable`` is True when the
+    answering channel PRESENTED a half the MCP-name bound refused
+    (:func:`mcp_identity_unreadable`): the frame names a tool Crew cannot retain,
+    which the permission path must refuse rather than read as no identity. Both identity halves come from ONE channel:
     mixing a server from one harness's block with a tool name from another's would be an
     identity no harness asserted.
 
@@ -2544,7 +3008,7 @@ def _meta_identity_full(update: dict[str, Any]) -> tuple[str, str, bool]:
     """
     meta = update.get("_meta")
     if not isinstance(meta, dict):
-        return "", "", False
+        return "", "", False, False
     for channel in _MCP_IDENTITY_META_CHANNELS:
         block = meta.get(channel.key)
         if not isinstance(block, dict):
@@ -2553,29 +3017,48 @@ def _meta_identity_full(update: dict[str, Any]) -> tuple[str, str, bool]:
             block = block.get(channel.nested)
             if not isinstance(block, dict):
                 continue
+        if channel.bounds_names and channel.server_field not in block:
+            # A bounded row answers only for a frame spelled in its own vocabulary
+            # (its server field present); a frame that carries only the shared
+            # tool field is another harness's and falls through to that row.
+            continue
         server = block.get(channel.server_field)
         tool = block.get(channel.tool_field)
-        if not isinstance(tool, str):
-            tool = ""
-        if not isinstance(server, str):
-            server = ""
+        if channel.bounds_names:
+            # The KAS spelling: bounded at the point of retention by the MCP-name
+            # bound Crew's own tool surface admits (``mcp_identity_name``, 512
+            # characters, any spelling), because the server half is cached per
+            # call for the permission path under the KAS-only admission. Every
+            # name the surface would list keeps its identity (an exact per-tool
+            # deny binds to nothing else); a PRESENT half over the bound is
+            # reported unreadable, never read as absent, so the request is
+            # refused rather than judged under no identity.
+            unreadable = mcp_identity_unreadable(tool) or mcp_identity_unreadable(server)
+            tool = mcp_identity_name(tool)
+            server = mcp_identity_name(server)
+        else:
+            # A first-class harness's channel: retained as it always was -- a
+            # string verbatim, anything else absent -- and never unreadable (H13).
+            unreadable = False
+            tool = tool if isinstance(tool, str) else ""
+            server = server if isinstance(server, str) else ""
         # Matched on the RAW pair, before any prefix reduction: the pair is what the
         # harness wrote, and the reduction below is Crew's own normalization of a fused
         # MCP tool name.
         if channel.builtin_shell is not None and (server, tool) == channel.builtin_shell:
-            return "", tool, True
+            return "", tool, True, False
         if channel.strips_server_prefix and server and tool:
             prefix = f"{server}{channel.strips_server_prefix}"
             if tool.startswith(prefix):
                 tool = tool[len(prefix) :]
-        if server or tool:
-            return server, tool, False
-    return "", "", False
+        if server or tool or unreadable:
+            return server, tool, False, unreadable
+    return "", "", False, False
 
 
 def _meta_identity(update: dict[str, Any]) -> tuple[str, str]:
     """``(server, tool)`` from the first meta channel that answers, else ``("", "")``."""
-    server, tool, _ = _meta_identity_full(update)
+    server, tool, _, _ = _meta_identity_full(update)
     return server, tool
 
 
@@ -2741,16 +3224,26 @@ def _build_tool_refinement_event(
     cache_scope: str = "",
     tool_input_redacted_cache: dict[str, bool] | None = None,
     diff_path_cache: dict[str, str] | None = None,
+    cache_overflow: set[str] | None = None,
+    mcp_server_name_cache: dict[str, str] | None = None,
+    tool_name_cache: dict[str, str] | None = None,
+    tool_kind_cache: dict[str, str] | None = None,
+    identity_unreadable_cache: dict[str, bool] | None = None,
 ) -> AcpEvent | None:
     """Build an ``EVENT_TOOL_CALL_UPDATE`` (refined title/kind/input) for a tool.
 
+    ``mcp_server_name_cache`` / ``tool_name_cache`` / ``tool_kind_cache`` are
+    never written by a refinement (identity and kind come from the initial
+    frame); they are passed so the ONE admission sees the whole population and a
+    refused refinement evicts the id's row from every sibling store, not only the
+    ones a refinement writes.
     claude-agent-acp emits a follow-up ``tool_call_update`` once the streamed
     ``rawInput`` is complete (the initial ``tool_call`` had empty input + a
     generic title). Returns None when the update carries no refinement fields
     (pure-output updates are handled by :func:`_build_tool_result_event`).
     """
     tool_use_id = update.get("toolCallId", "")
-    if not tool_use_id:
+    if not tool_use_id or not isinstance(tool_use_id, str):
         return None
     # ORIGIN-BOUND cache key (see build_permission_event).
     _rk = scoped_tool_cache_key(cache_scope, tool_use_id)
@@ -2767,6 +3260,13 @@ def _build_tool_refinement_event(
         input_str = _dumps_degraded(raw_input, indent=2)
     elif isinstance(raw_input, str):
         input_str = raw_input
+    # Stands for the retained ``raw_params`` dict, as in the initial tool_call:
+    # the diff block below replaces the rendering with a usually smaller string.
+    _params_chars = len(input_str)
+    # Rendered in its FINAL retained form before the gate, as the initial
+    # tool_call does: the diff content block (where claude-agent-acp first
+    # carries it) replaces the params rendering, then redaction, and THAT is
+    # the string the size bound measures and the cache retains.
     content_blocks = update.get("content", [])
     _diff_old_text: str | None = None
     _diff_path: str = ""
@@ -2775,26 +3275,49 @@ def _build_tool_refinement_event(
             if isinstance(cb, dict) and cb.get("type") == "diff":
                 _cb_old = cb.get("oldText")
                 _diff_old_text = _cb_old if isinstance(_cb_old, str) else (_cb_old or "")
-                _diff_path = cb.get("path") or ""
+                _cb_path = cb.get("path")
+                _diff_path = _cb_path if isinstance(_cb_path, str) else ""
                 diff_str = make_unified_diff(
                     _diff_old_text or "", cb.get("newText") or "", _diff_path
                 )
                 if diff_str:
                     input_str = diff_str
                 break
-    # Same diff-block path cache as the initial tool_call (the refinement is
-    # where claude-agent-acp first carries the content block).
-    if _diff_path and diff_path_cache is not None:
-        diff_path_cache[_rk] = _diff_path
     input_redacted = False
     if input_str:
         safe_input = _redact(input_str)
         input_redacted = safe_input != input_str
         input_str = safe_input
-        if tool_input_cache is not None:
-            tool_input_cache[_rk] = input_str
-            if tool_input_redacted_cache is not None:
-                tool_input_redacted_cache[_rk] = input_redacted
+    # Same single admission as the initial tool_call, and for the same callers
+    # (an overflow record opts a harness in): a refinement of an id the caches
+    # already hold is admitted unless its payload is over the size bound; a
+    # first sighting past the shared count cap is written nowhere, and a
+    # refused refinement evicts the id from every sibling store.
+    if cache_overflow is not None and not admit_tool_call_cache_entry(
+        _rk,
+        cache_scope,
+        max(_params_chars, len(input_str)),
+        cache_overflow,
+        raw_params_cache,
+        shell_cache,
+        mcp_server_name_cache,
+        tool_name_cache,
+        diff_path_cache,
+        tool_kind_cache,
+        tool_input_cache,
+        tool_input_redacted_cache,
+        identity_unreadable_cache,
+        path_chars=len(_diff_path),
+    ):
+        raw_params_cache = shell_cache = diff_path_cache = None
+        tool_input_cache = tool_input_redacted_cache = None
+    # Same diff-block path cache as the initial tool_call.
+    if _diff_path and diff_path_cache is not None:
+        diff_path_cache[_rk] = _diff_path
+    if input_str and tool_input_cache is not None:
+        tool_input_cache[_rk] = input_str
+        if tool_input_redacted_cache is not None:
+            tool_input_redacted_cache[_rk] = input_redacted
     # The refinement's rawInput is the COMPLETE params object — cache it for
     # the permission event's structured-params (path/arg scope) checks, same
     # as the initial tool_call does. Without this, a backend whose initial
@@ -2859,6 +3382,9 @@ def parse_session_update(
     cache_scope: str = "",
     tool_input_redacted_cache: dict[str, bool] | None = None,
     diff_path_cache: dict[str, str] | None = None,
+    tool_kind_cache: dict[str, str] | None = None,
+    cache_overflow: set[str] | None = None,
+    identity_unreadable_cache: dict[str, bool] | None = None,
 ) -> list[AcpEvent]:
     """Parse one ``session/update`` inner ``update`` dict into ``AcpEvent``s.
 
@@ -2870,6 +3396,13 @@ def parse_session_update(
     ``tool_input_cache`` (caller-owned) is written with ``toolCallId -> redacted
     input`` for ``tool_call`` / refinement updates, mirroring each class's
     ``_tool_call_inputs`` map. Stats and stall bookkeeping stay with the caller.
+    ``cache_overflow`` (caller-owned, same lifecycle) OPTS THE CALLER INTO the
+    cache admission bound and collects the scope digests whose frames it refused
+    this turn (see :func:`admit_tool_call_cache_entry`). A caller that hands
+    ``None`` -- every harness outside ``ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL``,
+    through ``AcpSessionHandle._tool_call_cache_overflow_for_wire`` -- retains as
+    it always did; the bound is the KAS projection's, not a change to the
+    first-class harness's construction (H13).
     """
     if not isinstance(update, dict):
         return []
@@ -2897,6 +3430,9 @@ def parse_session_update(
                 cache_scope=cache_scope,
                 tool_input_redacted_cache=tool_input_redacted_cache,
                 diff_path_cache=diff_path_cache,
+                tool_kind_cache=tool_kind_cache,
+                cache_overflow=cache_overflow,
+                identity_unreadable_cache=identity_unreadable_cache,
             )
         )
         return events
@@ -2912,6 +3448,11 @@ def parse_session_update(
             cache_scope=cache_scope,
             tool_input_redacted_cache=tool_input_redacted_cache,
             diff_path_cache=diff_path_cache,
+            cache_overflow=cache_overflow,
+            mcp_server_name_cache=mcp_server_name_cache,
+            tool_name_cache=tool_name_cache,
+            tool_kind_cache=tool_kind_cache,
+            identity_unreadable_cache=identity_unreadable_cache,
         )
         if refine is not None:
             events.append(refine)
