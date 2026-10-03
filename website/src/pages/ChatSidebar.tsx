@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, memo, useMemo, useCallback, useId, Fragment } from 'react'
 import { createPortal } from 'react-dom'
 import { LayoutGroup, AnimatePresence, motion } from 'framer-motion'
-import { Plus, X, Pin, Monitor, ArrowUpDown, Eye, EyeOff, VenetianMask, Ghost, FolderPlus, FolderX, MessageSquare, MessageSquarePlus, Folder, ChevronRight, ChevronDown, ChevronUp, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns3, CornerDownRight, GripVertical, Check, GitFork, List, ListTree, Loader, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot, Users, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck, Server, Pause, Play } from 'lucide-react'
+import { Plus, X, Pin, Monitor, ArrowUpDown, Eye, EyeOff, VenetianMask, Ghost, FolderPlus, FolderX, MessageSquare, MessageSquarePlus, Folder, ChevronRight, ChevronDown, ChevronUp, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns3, CornerDownRight, GripVertical, Check, GitFork, List, ListTree, Loader, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot, Users, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck, Server, Pause, Play, Hourglass } from 'lucide-react'
 import GithubLogo from '../components/icons/GithubLogo'
 import GitlabLogo from '../components/icons/GitlabLogo'
 import { FolderBody } from '../components/FolderBody'
@@ -74,6 +74,7 @@ import { sanitizeLlmOutput } from '../utils/sanitize'
 import type { PaletteBoost } from '../utils/sessionColors'
 import type { ChatFolder, ChatTag, SessionLink } from '../types'
 import { SESSION_LANES, hasLiveSessionWork } from './chat/sessionLane'
+import { isMemoryWait, queuedWaitText } from './chat/subagentQueuedReason'
 import {
   type RecentUnit,
   RECENT_WINDOW_PRESETS,
@@ -1009,6 +1010,7 @@ const SessionRow = memo(function SessionRow({
   const goalLoop = automation?.kind === 'legacy_goal_loop' ? automation : undefined
   const monitor = automation?.kind === 'structured_monitor' ? automation : null
   const queuedForSlot = useAppSelector(st => st.chat.subagentQueued?.[localSlotKey] || 0)
+  const queuedReason = useAppSelector(st => st.chat.subagentQueuedReason?.[localSlotKey])
   // {count, name, phase} of this slot's running workflow fan-out, or undefined.
   // shallowEqual because the map is rebuilt per run event; the primitives only
   // change when THIS slot's runs do.
@@ -1178,6 +1180,14 @@ const SessionRow = memo(function SessionRow({
         ? i18nT('pages.chatSidebar.running_queued', { started: subagentStarted, queued: subagentQueuedCount })
         : i18nT('pages.chat.subagentRunCard.agent_running', { count: subagentStarted })
     const subagentApprovalLabel = i18nT('pages.chatSidebar.sub_agent_needs_approval', { count: subagentAwaiting })
+    // Children accepted but not started, with none started: the session is
+    // WAITING on them, not working, so the row says so without the running
+    // pulse. A memory wait names memory; a cap wait keeps the queued count.
+    const subagentsOnlyQueued = subagentQueuedCount > 0 && subagentStarted === 0 && subagentAwaiting === 0
+    const subagentWaitingLabel = isMemoryWait(queuedReason)
+      ? i18nT('pages.chatSidebar.waiting_for_memory')
+      : subagentLabel
+    const subagentWaitingTitle = queuedWaitText(queuedReason) ?? subagentLabel
     // Live dynamic-workflow activity for THIS slot (slot-scoped subscription
     // above). The label mirrors what the sidebar-wide map used to precompute:
     // one run shows its sanitized name · phase, a fan-out shows a count.
@@ -1224,7 +1234,8 @@ const SessionRow = memo(function SessionRow({
     const snapshotLiveWorkLabel = i18nT('pages.chatSidebar.filter_running')
     const liveWorkSupersedesInterruption = hasLiveSessionWork(s, {
       workflowActive: !!wfActive,
-      detailedSubagentsRunning: subagentCount > 0,
+      // Started children only: a queued child has not superseded anything.
+      detailedSubagentsRunning: subagentCount - subagentQueuedCount > 0,
     })
     const goalLoopStalled = !!goalLoop && !!s.interrupted && !liveWorkSupersedesInterruption
     // An armed loop whose NEWEST reply is an explicit `[OPTIONS:]` ask. The
@@ -1511,10 +1522,23 @@ const SessionRow = memo(function SessionRow({
         ),
       },
       {
-        // A spawned subagent is still running (or queued behind the concurrency
-        // cap) — surface it even if the parent turn has ended (`s.running` is
-        // false while it waits for completion events), so the sidebar shows
-        // live activity instead of a stale last message.
+        // Every child is still queued: a static badge, never the running pulse,
+        // because nothing has started. The tooltip carries the wait's own
+        // sentence (how much memory is short, or the concurrency limit).
+        key: 'subagents_waiting',
+        when: subagentsOnlyQueued,
+        build: () => (
+          <div className={ROW_STATUS_LINE_MUTED_CLS} title={subagentWaitingTitle} data-testid="session-subagents-waiting">
+            <Hourglass size={ROW_ICON_PX} className="shrink-0" aria-hidden />
+            <span className="truncate">{subagentWaitingLabel}</span>
+          </div>
+        ),
+      },
+      {
+        // A spawned subagent is still running (with or without more queued
+        // behind it) — surface it even if the parent turn has ended
+        // (`s.running` is false while it waits for completion events), so the
+        // sidebar shows live activity instead of a stale last message.
         key: 'subagents',
         when: subagentCount > 0,
         build: () => (
@@ -2647,7 +2671,7 @@ function ChatSidebar({
     toggleFoldersShelved, toggleFilter, disableFilter, enableFilter,
   } = useSessionFilterState()
   const {
-    slotsLoaded, workflowActiveSet, automationRunningSet, subagentCounts, subagentApprovalCounts, unreadSet,
+    slotsLoaded, workflowActiveSet, automationRunningSet, subagentCounts, subagentStartedCounts, subagentApprovalCounts, unreadSet,
     recentWindowMs, recentAmountDraft, setRecentAmountDraft, recentUnitDraft, selectRecentPreset,
     commitRecentAmount, changeRecentUnit, runningSet, _derivedLookup, filterCounts,
   } = useSessionStatusFilters({ unreadSlots, activeFilters, filtersPaused, enableFilter, localSlots, allRows, disableFilter })
@@ -2955,7 +2979,7 @@ function ChatSidebar({
   } = useBoardColumnMutations({ queryClient, setBoardError, orderedColumns, rawColumns, sidebarWidthRef, widenForBoard, setSeedError })
   const {
     columnMatches,
-  } = useColumnMatches({ subagentCounts, subagentApprovalCounts, workflowActiveSet, automationRunningSet })
+  } = useColumnMatches({ subagentStartedCounts, subagentApprovalCounts, workflowActiveSet, automationRunningSet })
 
   const {
     slotFolders, foldersWithActiveSubtree, setRevealForcedVisible, isFolderHidden, filterHiddenSubtree,

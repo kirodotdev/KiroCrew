@@ -204,15 +204,18 @@ export const selectSubagentActivityCount = createSelector(
 
 /** Per-slot subagent counts for sidebar. Reuses shared counting helpers above. */
 
-/** Total active subagents per slot (running + tool + pending). */
-export const selectSidebarSubagentCounts = createSelector(
+/** STARTED sub-agents per slot (running + tool + pending), never the queued
+ *  count. This is the reading for anything that says a session is working: a
+ *  child that has not started holds no process and makes no progress, so a
+ *  queued-only parent whose own turn has ended is waiting, not working (the
+ *  board's Working lane, and the row's "live work" checks). */
+export const selectSidebarStartedSubagentCounts = createSelector(
   [
     (state: RootState) => state.chat.activeSlot,
     (state: RootState) => state.chat.subagents,
     (state: RootState) => state.chat.slotActivity,
-    (state: RootState) => state.chat.subagentQueued,
   ],
-  (activeSlot, activeSubs, slotActivity, queued) => {
+  (activeSlot, activeSubs, slotActivity) => {
     const counts: Record<string, number> = {}
     if (activeSlot) {
       const n = countActiveSubagents(activeSubs)
@@ -224,7 +227,20 @@ export const selectSidebarSubagentCounts = createSelector(
       const n = countActiveSubagents(act.subagents)
       if (n > 0) counts[slot] = n
     }
-    // Fold in queued counts.
+    return counts
+  },
+)
+
+/** Every sub-agent a slot has in flight: started (above) plus accepted-but-
+ *  queued. The reading for "does this session still own sub-agent work" — the
+ *  row's count label, the turn-done chime, stale collapse — never for Working. */
+export const selectSidebarSubagentCounts = createSelector(
+  [
+    selectSidebarStartedSubagentCounts,
+    (state: RootState) => state.chat.subagentQueued,
+  ],
+  (started, queued) => {
+    const counts: Record<string, number> = { ...started }
     for (const [slot, q] of Object.entries(queued ?? {})) {
       if (q > 0) counts[slot] = (counts[slot] || 0) + q
     }
@@ -302,6 +318,29 @@ export const subagentReducers = {
     const reason = parseSubagentQueuedReason(action.payload)
     if (reason) state.subagentQueuedReason[key] = reason
     else delete state.subagentQueuedReason[key]
+  },
+  /** Reconcile the queued counts with a `slots` push. Each row carries the
+   *  depth the gateway last published for its session (`subagents_queued`), so
+   *  a count a missed or misapplied `subagent_queued` frame left behind is
+   *  corrected by the next push, for every slot in the list and not only the
+   *  one on screen. A row without the field (a `slot_patch`, an older gateway)
+   *  leaves its count alone. The wait label is kept while rows still wait: the
+   *  push carries the count, and the label stays the one the frames gave it. */
+  reconcileSubagentQueuedFromSlots(state: ChatState, action: PayloadAction<ReadonlyArray<{ key: string; subagents_queued?: unknown }>>) {
+    state.subagentQueued ??= {}
+    state.subagentQueuedReason ??= {}
+    for (const row of action.payload) {
+      const published = row.subagents_queued
+      if (typeof published !== 'number' || !Number.isFinite(published) || isUnsafeKey(row.key)) continue
+      const key = safeKey(row.key)
+      const n = Math.max(0, Math.floor(published))
+      if (n === 0) {
+        delete state.subagentQueued[key]
+        delete state.subagentQueuedReason[key]
+      } else if (state.subagentQueued[key] !== n) {
+        state.subagentQueued[key] = n
+      }
+    }
   },
   sseSubagentPending(state: ChatState, action: PayloadAction<{ slot: string; id: string; task: string; approval_id: string }>) {
     if (isUnsafeKey(action.payload.slot) || isUnsafeKey(action.payload.id)) return

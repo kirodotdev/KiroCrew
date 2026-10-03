@@ -11682,7 +11682,8 @@
       "archived_sessions_kept_one": "{{count}} आर्काइव किया गया सत्र पुराने सत्र में रहेगा",
       "archived_sessions_kept_other": "{{count}} आर्काइव किए गए सत्र पुराने सत्र में रहेंगे",
       "archived_count_one": "{{count}} आर्काइव किया गया",
-      "archived_count_other": "{{count}} आर्काइव किए गए"
+      "archived_count_other": "{{count}} आर्काइव किए गए",
+      "waiting_for_memory": "मेमोरी की प्रतीक्षा में"
     },
     "connectionsPage": {
       "action_failed": "कार्रवाई विफल: {{error}}",

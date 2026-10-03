@@ -50,7 +50,11 @@ export interface LaneExtras {
   /** An armed goal loop is work while healthy, but not while its last turn is
    *  interrupted — that stalled state remains Waiting until the next cycle. */
   goalLoopActive?: boolean
-  /** Detailed child activity can lead or lag the slot snapshot during reconnect. */
+  /** Detailed child activity can lead or lag the slot snapshot during reconnect.
+   *  STARTED children only: a child still queued (for memory or behind the
+   *  concurrency cap) has not started, so it is never Working by itself. A
+   *  parent blocked waiting on its queued children is Working through its own
+   *  `running` turn, and one whose turn has ended is not. */
   detailedSubagentsRunning?: boolean
 }
 

@@ -808,6 +808,47 @@ made; no gate reads it back. Two consumers:
   `sseSubagentQueued` reducer (`website/src/store/chat/subagents.ts`), which
   rewrites or clears both on every frame, so a count never sits under a stale
   reason.
+  **The slot list carries the published depth, so a missed frame heals.** Every
+  frame goes out through `_fire_event`, which first records its `queued` in the
+  manager's `PublishedQueueDepths` (`subagent_manager/published_depth.py`): the
+  last published depth per parent, never a fresh read, so the slot list needs no
+  store read on the loop and cannot disagree with the frame stream. 0 is not
+  stored, a parent end forgets its entry (`cancel_for_teardown`), and the table
+  is capped at `MAX_PUBLISHED_PARENTS` (oldest publisher dropped; it reads 0 until
+  its next frame). A held entry is re-derived from state: when a child of a
+  parent with a non-zero entry starts or ends (`subagent_spawn`,
+  `subagent_done`), `_fire_event` asks the parent's burst for a heal read, which
+  publishes only a depth that differs from the held entry. A path that pops or
+  ends a row without its own emit therefore publishes the real count at the next
+  lifecycle edge instead of leaving a count the slot list (and a reload's first
+  `slots` frame) would keep re-sending, and a path that did emit is not
+  answered with the same frame twice. `serialize_slots` puts it on each row as
+  `subagents_queued` (an int, 0 when none) beside `subagents_running`, routed the
+  way the frames are: each entry lands on `subagent_event_slot(parent)`, and
+  entries sharing a tab sum, so a cron tab (`cron-<job>`) reports the runs that
+  publish under `cron:<job>:<run>` or `cron:<job>:<agent>`, not its linked
+  `cron:<job>` key alone. The gateway schedules its debounced slots push on
+  `subagent_queued` as it does on spawn/done. The dashboard applies the field on
+  every `slots` push (`reconcileSubagentQueuedFromSlots`, from
+  `hooks/websocket/slotList.ts`) to every row in the list, ahead of the
+  identical-frame skip (a push equal to the previous one still corrects a count
+  a frame moved in between), so a client holding a stale count — on screen or a
+  background session — is corrected by the next push. A row without the field (a
+  `slot_patch`, an older gateway) leaves its count alone, and the wait label is
+  kept while the count is non-zero. Only the pushed frame reconciles, never the
+  `fetchSlots` GET: the push is ordered with the `subagent_queued` frames on the
+  same socket, and a GET answer can land after a newer frame.
+  **A queued child is never Working.** The board's Working lane and the row's
+  live-work checks read `selectSidebarStartedSubagentCounts` (running, tool and
+  pending cards), never the queued count, so a parent is Working only through its
+  own turn (`running`, which stays true while it blocks in `spawn_sub_agents`) or a
+  started child. A row whose children are all queued shows a static
+  "Waiting for memory" badge for a memory wait (`isMemoryWait`: `low_memory`,
+  `posture_critical`, `memory_pressure`) and the queued count otherwise, with the wait's sentence as
+  its tooltip. `selectSidebarSubagentCounts` (started plus queued) stays the
+  reading for "this session still owns sub-agent work": the row's count label, the
+  turn-done chime, stale collapse; the ⌘W close gate confirms on queued children on
+  their own term.
 - `POST /api/spawn` answers the DEFERRED kinds (`DEFERRED_QUEUED_REASONS`)
   with `status: "queued"`, `reason` and `reason_detail` under the same `id`;
   every reader of that answer relays it: `spawn_run` prints a

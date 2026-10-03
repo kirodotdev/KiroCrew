@@ -1183,6 +1183,11 @@ export interface ChatSlot {
   webapp_metadata?: WebAppMetadata
   // Board fields
   has_options?: boolean; options_ts?: string; options?: string[]; pending_approval_info?: PendingApproval | null; last_activity_ts?: string; waiting_for_input?: boolean; prompt_preview?: string; subagents_running?: boolean; orchestrating?: boolean
+  /** The sub-agent queued depth the gateway last published for this session —
+   * the same value as its newest `subagent_queued` frame. Read only to
+   * reconcile `chat.subagentQueued` on a `slots` push; absent from a
+   * `slot_patch` and from an older gateway. */
+  subagents_queued?: number
   /** An unanswered question card the turn is parked on, so the row would
    * otherwise read "Thinking…" with nothing able to advance it. Narrower than
    * `waiting_for_input` (true of every finished turn, and therefore no signal)
