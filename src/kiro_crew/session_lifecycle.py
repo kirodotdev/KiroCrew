@@ -502,6 +502,7 @@ class _ChildTeardownHandler(Protocol):
 class _SessionEntry(Protocol):
     provider: Any
     semaphore: asyncio.BoundedSemaphore
+    turn_owner: Any
     queue: Any
     first_turn: object
     provider_switch_replay: bool
@@ -677,6 +678,7 @@ class SessionLifecycleDeps:
     get_claude_code_provider_type: Callable[[], type[Any] | None]
     provider_label: Callable[[Any], str]
     provider_has_unfinished_turn: Callable[[Any], bool]
+    provider_turn_is_known_terminal: Callable[[Any], bool]
     provider_uses_kiro_identity_store: Callable[[Any], bool]
     get_audit_logger: Callable[[], Any]
     #: Abort push addressed by the opaque target a provider mints, never by a pid.
@@ -2894,6 +2896,49 @@ class SessionLifecycleService:
             return "no_turn"
         outcome = await session.provider.cancel(wait_ack_timeout=wait_ack_timeout)
         self._deps.logger.info("Cancelled in-flight operation for %s: %s", key, outcome)
+        return outcome
+
+    async def cancel_owned_turn(
+        self,
+        key: str,
+        owner_task: Any,
+        *,
+        wait_ack_timeout: float = 0.0,
+    ) -> CancelOutcome | None:
+        """Cancel only when *owner_task* still owns this session's turn lease."""
+        owner = self._owner
+        key = owner._fold_key(key)
+        session = owner._sessions.get(key)
+        if session is None or session.turn_owner is not owner_task:
+            return None
+        # The Python owner can still be finishing transcript teardown after the
+        # native prompt reached its done boundary. Prove that state independently
+        # before arming replay or sending session/cancel; ``no_turn`` alone is not
+        # proof because a cancel request can make a still-unfinished turn inactive.
+        # Unknown providers stay on the fail-closed cancellation path.
+        if self._deps.provider_turn_is_known_terminal(session.provider):
+            self._deps.logger.info(
+                "Owner-fenced turn already terminal for %s; native cancel skipped",
+                key,
+            )
+            return None
+        # No await occurs between the owner check and entering provider.cancel,
+        # so a successor cannot acquire this lease before the native request
+        # starts. The provider object remains the exact target even if teardown
+        # later replaces the registry entry under the folded key.
+        # ACP discards cancelled turns from its native transcript. Arm replay
+        # before the first await so an acknowledgement cannot release this lease
+        # to a successor before the interrupted context is marked. On an
+        # unacknowledged outcome this is deliberately fail-closed: the warning
+        # forbids resume, and a forced successor still receives the context
+        # instead of silently losing it.
+        session.prev_turn_cancelled = True
+        outcome = await session.provider.cancel(wait_ack_timeout=wait_ack_timeout)
+        self._deps.logger.info(
+            "Cancelled owner-fenced in-flight operation for %s: %s",
+            key,
+            outcome,
+        )
         return outcome
 
     async def stop_turn(

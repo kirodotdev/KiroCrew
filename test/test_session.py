@@ -1534,6 +1534,95 @@ class TestStopTurn:
         provider.cancel.assert_awaited_once_with(wait_ack_timeout=0.0)
         await mgr.close_all()
 
+    @pytest.mark.asyncio
+    async def test_cancel_owned_turn_refuses_a_different_lease_owner(self, cfg):
+        """A deadline must not cancel another task sharing the folded key."""
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        provider, _, _ = await mgr.get_or_create("key1")
+        provider.cancel = AsyncMock(return_value="acked")
+
+        result = await mgr.cancel_owned_turn(
+            "key1",
+            object(),
+            wait_ack_timeout=1.0,
+        )
+
+        assert result is None
+        provider.cancel.assert_not_awaited()
+        mgr.release("key1")
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_cancel_owned_turn_skips_a_natively_completed_owner(self, cfg):
+        """Python teardown after native completion must not arm false replay."""
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        provider, _, _ = await mgr.get_or_create("key1")
+        provider.has_unfinished_turn = MagicMock(return_value=False)
+        provider.cancel = AsyncMock(return_value="no_turn")
+        owner = asyncio.current_task()
+        assert owner is not None
+
+        result = await mgr.cancel_owned_turn(
+            "key1",
+            owner,
+            wait_ack_timeout=1.0,
+        )
+
+        assert result is None
+        assert mgr._sessions["key1"].prev_turn_cancelled is False
+        provider.cancel.assert_not_awaited()
+        mgr.release("key1")
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_cancel_owned_turn_keeps_unfinished_no_turn_fail_closed(self, cfg):
+        """An inactive but unfinished native turn is not proven stopped."""
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        provider, _, _ = await mgr.get_or_create("key1")
+        provider.has_unfinished_turn = MagicMock(return_value=True)
+        provider.cancel = AsyncMock(return_value="no_turn")
+        owner = asyncio.current_task()
+        assert owner is not None
+
+        result = await mgr.cancel_owned_turn(
+            "key1",
+            owner,
+            wait_ack_timeout=1.0,
+        )
+
+        assert result == "no_turn"
+        assert mgr._sessions["key1"].prev_turn_cancelled is True
+        provider.cancel.assert_awaited_once_with(wait_ack_timeout=1.0)
+        mgr.release("key1")
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_cancel_owned_turn_marks_acknowledged_turn_for_reinjection(self, cfg):
+        """Native ACP drops cancelled turns, so the next prompt must replay it."""
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        provider, _, _ = await mgr.get_or_create("key1")
+
+        async def _cancel(*, wait_ack_timeout):
+            assert wait_ack_timeout == 1.0
+            assert mgr._sessions["key1"].prev_turn_cancelled is True
+            return "acked"
+
+        provider.cancel = AsyncMock(side_effect=_cancel)
+        owner = asyncio.current_task()
+        assert owner is not None
+
+        result = await mgr.cancel_owned_turn(
+            "key1",
+            owner,
+            wait_ack_timeout=1.0,
+        )
+
+        assert result == "acked"
+        assert mgr._sessions["key1"].prev_turn_cancelled is True
+        provider.cancel.assert_awaited_once_with(wait_ack_timeout=1.0)
+        mgr.release("key1")
+        await mgr.close_all()
+
 
 class TestCompactCallback:
     """Tests for the compact callback wiring on SessionManager.

@@ -2415,27 +2415,26 @@ class TestDispatchTurn:
             await slot.task
 
     @pytest.mark.asyncio
-    async def test_the_turn_is_bounded_by_the_shared_chat_timeout(self):
+    async def test_the_turn_uses_the_owner_aware_bounded_wrapper(self):
         slot = _Slot("spec-builder-demo")
         state = _State(**{"spec-builder-demo": slot})
         seen: dict = {}
 
-        def _capture(coro, timeout=None):
-            seen["timeout"] = timeout
+        async def _capture(coro, *, state, slot):
+            seen["state"] = state
+            seen["slot"] = slot
             coro.close()
-
-            async def _noop():
-                return None
-
-            return _noop()
 
         with (
             mock.patch("kiro_crew.dashboard.chat_runner._run_chat", mock.AsyncMock()),
-            mock.patch.object(asyncio, "wait_for", _capture),
+            mock.patch(
+                "kiro_crew.dashboard.turn_dispatch.bounded_chat_turn",
+                new=_capture,
+            ),
         ):
             r._dispatch_turn(state, slot, "do the thing")
             await slot.task
-        assert seen["timeout"] == r.CHAT_TURN_TIMEOUT
+        assert seen == {"state": state, "slot": slot}
 
     def test_a_busy_slot_queues_the_turn_and_shows_it_redacted(self):
         slot = _Slot("spec-builder-demo", running=True)
