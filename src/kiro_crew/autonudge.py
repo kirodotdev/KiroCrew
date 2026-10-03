@@ -97,9 +97,11 @@ from kiro_crew.autonudge_service.model import (  # noqa: F401 -- re-exported
     _TERMINAL_BOUND_REASONS,
     APPROVAL_STALL_REASON,
     AUTONUDGE_STOP_REASON,
+    CYCLE_CAP_REASON,
     MANUAL_STOP_REASON,
     MONITOR_TERMINAL_REASON,
     NUDGE_RENEW_DUE_SHARE,
+    RUNTIME_BUDGET_REASON,
     SENTINEL_DROPPED_REASON,
     SESSION_START_FAILURE_REASON,
     STRUCTURAL_TERMINAL_REASON,
@@ -1294,6 +1296,25 @@ class AutoNudgeService:
                 )
                 loop.consecutive_start_failures = int(streak_num)
                 if streak_repaired:
+                    self._store_dirty = True
+                # The two counters the timer reads on every wake, for the same
+                # reason: ``cycle_count`` meets ``>=`` against the cap and
+                # ``created_ts`` is subtracted from the clock, so a persisted
+                # string or ``null`` in either raises inside ``_timer`` and
+                # dead-ends the loop the same way. Repaired to 0 -- a count of
+                # nothing run, and the anchor every budget reader already treats
+                # as "nothing to measure from" -- rather than a guess that could
+                # stop a healthy loop. The user's resume preserves the
+                # breakpoint, so this boundary is the one place they are
+                # repaired. The BOUNDS are deliberately left as stored: a
+                # malformed cap or budget repaired to 0 would quietly remove a
+                # cost limit the user typed, and persist that.
+                count_num, count_repaired = _repair_number(loop.cycle_count, lo=0.0, fallback=0.0)
+                loop.cycle_count = int(count_num)
+                loop.created_ts, created_repaired = _repair_number(
+                    loop.created_ts, lo=0.0, fallback=0.0
+                )
+                if count_repaired or created_repaired:
                     self._store_dirty = True
                 if (
                     loop.monitor is not None

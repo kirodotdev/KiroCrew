@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 
 import pytest
 
@@ -377,12 +378,20 @@ async def test_the_streak_survives_a_restart(svc, store_dir, _nosleep):
         await _stop_and_drain(reloaded)
 
 
+@pytest.mark.parametrize("field", ["consecutive_start_failures", "cycle_count", "created_ts"])
 @pytest.mark.parametrize("stored", ["3", None, -5, 2.9, float("nan"), 10**400])
 @pytest.mark.asyncio
-async def test_a_malformed_persisted_streak_is_normalised_at_load(svc, store_dir, stored, _nosleep):
-    """The store is agent-writable and the streak is compared with ``>=`` on every
-    wake, so a string or ``null`` would raise TypeError inside ``_timer`` and the
-    automation would silently never fire again -- surviving every reload."""
+async def test_a_malformed_persisted_counter_is_normalised_at_load(
+    svc, store_dir, field, stored, _nosleep
+):
+    """The store is agent-writable and every one of these meets ``>=`` or a
+    subtraction on every wake (the streak and ``cycle_count`` against their caps,
+    ``created_ts`` against the clock), so a string or ``null`` would raise
+    TypeError inside ``_timer`` and the automation would silently never fire
+    again -- surviving every reload. The user's resume preserves the breakpoint
+    rather than overwriting the counters, so the load boundary is the one repair
+    point. The bounds are not repaired: a malformed cap or budget read as 0
+    would quietly remove a cost limit."""
     loop = await _armed(svc)
     await svc._persist_locked()
     await _stop_and_drain(svc)
@@ -390,14 +399,14 @@ async def test_a_malformed_persisted_streak_is_normalised_at_load(svc, store_dir
 
     raw = json.loads((store_dir / "autonudge.json").read_text(encoding="utf-8"))
     for row in raw["loops"]:
-        row["consecutive_start_failures"] = stored
+        row[field] = stored
     (store_dir / "autonudge.json").write_text(json.dumps(raw), encoding="utf-8")
 
     reloaded = AutoNudgeService(base_dir=store_dir)
     await reloaded.start()
     try:
-        value = reloaded._loops[loop.id].consecutive_start_failures
-        assert isinstance(value, int) and value >= 0
+        value = getattr(reloaded._loops[loop.id], field)
+        assert isinstance(value, (int, float)) and math.isfinite(value) and value >= 0
         # The comparison the finding named must not raise.
         reloaded._cancel_timer(loop.id)
         await reloaded._timer(reloaded._loops[loop.id])

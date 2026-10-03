@@ -1087,8 +1087,12 @@ async def api_autonudge_update(request: web.Request) -> web.Response:
         max_cycles=body.get("max_cycles"),
         active=body.get("active"),
         # This route is the user's own press (the goal popover's Play), so a
-        # revival through it is a resume and runs on a fresh budget; a save on
-        # a running loop carries ``active: true`` too and the flag is inert there.
+        # revival through it is a resume: the service resets only the counter
+        # behind a spent bound (a spent cycle cap zeroes the count, a spent time
+        # budget re-anchors the clock, read from the stored stop reason and the
+        # bounds at the press) and keeps the rest, so the loop resumes from its
+        # breakpoint; a save on a running loop carries ``active: true`` too and
+        # the flag is inert there.
         fresh_run=True,
         max_runtime_secs=body.get("max_runtime_secs"),
         banner=body.get("banner"),

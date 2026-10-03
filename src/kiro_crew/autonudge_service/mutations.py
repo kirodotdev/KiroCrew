@@ -35,12 +35,16 @@ from kiro_crew.autonudge_service.model import (
     _MIN_IDLE_SECS,
     _TERMINAL_BOUND_REASONS,
     AUTONUDGE_STOP_REASON,
+    CYCLE_CAP_REASON,
     MANUAL_STOP_REASON,
+    RUNTIME_BUDGET_REASON,
     AutoNudgeStaleBaseline,
     MonitorUpdateConflict,
     NudgeAdmissionRefused,
     NudgeLoop,
     _stopped_row_is_replaceable,
+    budget_elapsed,
+    cap_reached,
     is_structured_monitor_loop,
     new_goal_token,
 )
@@ -409,9 +413,15 @@ async def update(
     "not applied" answer as a missing row; only the stale-wake stop passes one.
     ``on_absent`` is called inside the same hold when the row is missing, so
     that caller can tell a deleted row from a replaced one. ``fresh_run`` marks
-    a revival as the user's own resume, which runs on a fresh budget; without
-    it a revival keeps the loop's count and clock (the reconciler re-arms and a
-    ``monitor_update`` bound raise, where a fresh allowance is not what was asked).
+    a revival as the user's own resume, which resets ONLY the counter behind a
+    spent bound: a spent cycle cap (the loop stopped on ``cycle_cap``, or its
+    count has reached a non-zero cap) zeroes ``cycle_count``; a spent time
+    budget (it stopped on ``runtime_budget``, or the clock has run a non-zero
+    budget out by the press) re-anchors ``created_ts``. The other counter is
+    kept, so a loop paused by hand at 7 of 24 and resumed the next day comes
+    back at 7 of 24 on a fresh clock. A revival without the flag keeps both in
+    every case (the reconciler re-arms and a ``monitor_update`` bound raise,
+    where a fresh allowance is not what was asked).
     """
     # CANCELLATION SAFETY: same contract as add(). The mutate+persist runs
     # as a SHIELDED, supervised task so a caller cancelled mid-write cannot
@@ -901,20 +911,45 @@ async def _update_unserialized(
                         # Same rule, same reason: the streak is evidence
                         # about a PAST run, and a revival starts a fresh one.
                         loop.consecutive_start_failures = 0
-                        # The user's resume runs a FRESH budget (Hermes ``/goal
-                        # resume`` resets the turn counter): without this the
-                        # timer's cap and budget checks re-stop a bound-stopped
-                        # loop on its first tick unless the bound was raised
-                        # first. ``created_ts`` IS the budget clock -- every
-                        # reader of the runtime left measures from it -- so it
-                        # moves too. Opt-in rather than a property of every
-                        # revival: the Research Lab and Issue Radar reconcilers
-                        # re-arm ANY inactive loop of a live campaign or crew
-                        # every few seconds, and a ``monitor_update`` bound raise
-                        # asks for its increment -- on those paths a reset would
-                        # turn the user's cap into a per-run allowance.
-                        if fresh_run:
+                        # The user's resume resets the counter BEHIND A SPENT
+                        # BOUND, and only that one: a spent cycle cap zeroes
+                        # ``cycle_count``, a spent time budget re-anchors
+                        # ``created_ts`` (it IS the budget clock -- every reader
+                        # of the runtime left measures from it). Without the
+                        # reset the timer re-stops the loop on its first tick
+                        # unless the bound was raised first (Hermes ``/goal
+                        # resume`` resets the turn counter). Spent means EITHER
+                        # the reason the loop stopped with names that bound,
+                        # read from the snapshot because this revival has
+                        # already cleared the field, OR the bound as it stands
+                        # after this update would refuse the first tick anyway:
+                        # the wall clock keeps running through a pause, so a
+                        # loop paused by hand with an hour of budget left and
+                        # resumed the next day is as dead a press as one the
+                        # timer stopped, and a cap raised in this same save is
+                        # read here as raised. The OTHER counter is kept: the
+                        # cap is a lifetime limit the user typed, and a pause
+                        # must not quietly turn it into a fresh one, so that
+                        # same overnight pause at 7 of 24 comes back at 7 of 24
+                        # on a fresh clock. A pause with both allowances left
+                        # -- by hand, by the agent, on a stalled approval or a
+                        # session that would not start -- resets nothing. A
+                        # non-string reason simply matches neither bound, and
+                        # the bound reads are type-safe, so no malformed row
+                        # raises here after ``active`` has already flipped and
+                        # leaves the loop half-revived in memory. Opt-in rather
+                        # than a property of every revival: the Research Lab and
+                        # Issue Radar reconcilers re-arm ANY inactive loop of a
+                        # live campaign or crew every few seconds, and a
+                        # ``monitor_update`` bound raise asks for its increment
+                        # -- on those paths a reset would turn the user's cap
+                        # into a per-run allowance.
+                        stopped_with = previous["stopped_reason"]
+                        if fresh_run and (stopped_with == CYCLE_CAP_REASON or cap_reached(loop)):
                             loop.cycle_count = 0
+                        if fresh_run and (
+                            stopped_with == RUNTIME_BUDGET_REASON or budget_elapsed(loop)
+                        ):
                             loop.created_ts = time.time()
                 else:
                     loop.stopped_reason = stopped_reason or MANUAL_STOP_REASON
