@@ -991,8 +991,58 @@ async def internal_memory_scope(
     )
 
 
+#: The two chat routes a script cron opens and seeds sessions on. Session control
+#: is what ``agent.session_control`` switches off, and these are its writes.
+_CRON_SESSION_CONTROL_PATHS = frozenset(
+    {"/api/chat", "/api/chat/", "/api/chat/slots", "/api/chat/slots/"}
+)
+
+
+async def _cron_session_control_refusal(request: web.Request) -> web.Response | None:
+    """Refuse a cron's session-control write while ``agent.session_control`` is off.
+
+    This sits in :func:`private_chat_route_refusal` because that is the one gate
+    every internal chat-route call passes after the internal secret validates.
+    Only a ``cron:`` key is checked, because the switch gates a cron caller the
+    same way the session-control routes do. Owner and member callers keep their
+    own gates. Only the two routes a script cron writes to are checked. The
+    folder routes are not session control.
+    """
+    if request.method != "POST" or request.path not in _CRON_SESSION_CONTROL_PATHS:
+        return None
+    if not request.headers.get("X-Session-Key", "").startswith("cron:"):
+        return None
+    from kiro_crew.dashboard.session_control import session_control_enabled
+
+    # The config read can touch the disk, so it runs off the loop.
+    if await asyncio.to_thread(session_control_enabled):
+        return None
+    message = "session control is disabled in config (agent.session_control)"
+
+    def _write() -> None:
+        from kiro_crew.sel import sel as _sel
+
+        _sel().log_api_access(
+            caller="internal",
+            operation="chat.control",
+            outcome="denied",
+            source="session_control",
+            resources=request.path,
+            error="session_control_disabled",
+        )
+
+    try:
+        await asyncio.to_thread(_write)
+    except Exception:
+        logger.debug("SEL audit for a switched-off cron chat call failed", exc_info=True)
+    return web.json_response({"error": message, "code": "session_control_disabled"}, status=403)
+
+
 async def private_chat_route_refusal(request: web.Request) -> web.Response | None:
     """Keep member tools within their admitted chat controls."""
+    switched_off = await _cron_session_control_refusal(request)
+    if switched_off is not None:
+        return switched_off
     scope, refusal = await internal_memory_scope(request, "chat.control")
     if refusal is not None:
         # Let the ordinary internal-auth middleware produce its established
