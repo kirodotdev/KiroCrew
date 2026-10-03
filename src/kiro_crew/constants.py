@@ -1435,3 +1435,10 @@ DENY_CAUSE_APPROVAL_UNDELIVERABLE = "approval_undeliverable"
 #: on a backpressured ACP stdin would stall the reject that unblocks the turn.
 #: One number so the three surfaces cannot drift apart.
 STEER_NOTICE_BOUND_SECS = 5.0
+
+# The longest ``seconds`` the kirocrew-core ``wait`` tool accepts and sleeps. One
+# name bounds the tool's schema (``validation.WAIT_SCHEMA``), its handler's clamp
+# (``mcp_tools.control.wait``) and the liveness contract that trusts a declared
+# wait (``acp.liveness.ToolCallState.declared_wait_verdict``), so raising it in one
+# place cannot leave a long wait badged as stalled.
+WAIT_TOOL_MAX_SECS = 1800

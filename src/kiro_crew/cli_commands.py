@@ -154,6 +154,7 @@ from kiro_crew.security import (
     scan_memory,
 )
 from kiro_crew.sel import sel
+from kiro_crew.subagent_wait_reasons import queued_wait_text
 from kiro_crew.terminal_safe import _TERMINAL_CTRL_RE, safe_terminal_line
 from kiro_crew.validation import (
     _AGENT_NAME_RE,
@@ -333,7 +334,7 @@ def _spawn(args: argparse.Namespace) -> None:
 
     if action == "list":
         req = urllib.request.Request(
-            f"{base}/api/spawn",
+            f"{base}/api/spawn?queued=1",
             headers={"X-Internal-Secret": _internal_secret(args.port)},
         )
         try:
@@ -350,9 +351,20 @@ def _spawn(args: argparse.Namespace) -> None:
             print("Error: gateway not running (cannot reach dashboard on port %d)" % args.port)
             sys.exit(1)
         agents = data.get("agents", [])
-        if not agents:
+        queued = [q for q in data.get("queued") or [] if isinstance(q, dict) and q.get("id")]
+        partial = data.get("queued_truncated") is True
+        if not agents and not queued and not partial:
             print("No subagents.")
             return
+        for q in queued:
+            # Accepted, no run yet (or waiting to resume one): a distinct icon,
+            # so this is never read as a run in progress.
+            tag = "resuming" if q.get("resuming") is True else "queued, not started"
+            print(
+                f"  🕒 {q['id']}  {str(q.get('task') or '')[:60]}  — {tag}: {queued_wait_text(q)}"
+            )
+        if partial:
+            print("  (the queued list is partial; more spawns may be queued)")
         for a in agents:
             if a.get("done"):
                 status, note = "✅", ""

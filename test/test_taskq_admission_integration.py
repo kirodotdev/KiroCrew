@@ -14,8 +14,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from overload_fakes import memory_critical, settle_store_writes
 
-import kiro_crew.resource_status as resource_status
 import kiro_crew.subagent as subagent_mod
 from kiro_crew.dashboard import chat_utils
 from kiro_crew.subagent import SubagentInfo, SubagentManager
@@ -133,23 +133,10 @@ def quiet():
         yield
 
 
-def _noop() -> None:
-    return None
-
-
-async def _settle(store: TaskStore, rounds: int = 12) -> None:
-    """Barrier for the loop's posted store work -- SIGNALS, never a sleep.
-
-    ``TaskStore.run`` submits to an executor with exactly ONE worker, so a job
-    queued here cannot start before every job queued earlier has finished; a
-    ``sleep(0)`` first lets a task that was only just created reach its own
-    submission before this one is queued behind it. Repeated because a pump pass
-    posts more work from the callback of the work before it, so each round
-    settles one link of that chain.
-    """
-    for _ in range(rounds):
-        await asyncio.sleep(0)
-        await store.run(_noop)
+async def _settle(store: TaskStore) -> None:
+    """Barrier for the loop's posted store work: a pump pass posts more work from
+    the callback of the work before it, so each round settles one link."""
+    await settle_store_writes(store, rounds=12)
 
 
 # ── write-before-ack ──────────────────────────────────────────────────────────
@@ -225,16 +212,7 @@ async def test_memory_pressure_defers_instead_of_refusing(
     # time and the STARTING assertion failed as ``'queued' == 'starting'``.
     # Leaving this block restores the fixture's healthy readings, not the host's.
     with monkeypatch.context() as pressure:
-        pressure.setattr(
-            subagent_mod,
-            "cached_admission_check",
-            lambda: resource_status.AdmissionDecision(
-                admitted=False,
-                posture=resource_status.POSTURE_CRITICAL,
-                available_gb=0.5,
-                reason="host memory critically low",
-            ),
-        )
+        pressure.setattr(subagent_mod, "cached_admission_check", memory_critical)
         with patch.object(SubagentManager, "_run", new=AsyncMock()):
             info = mgr.spawn("later", parent_session_key="dash:1")
         assert info is not None

@@ -485,10 +485,20 @@ releases it). The same split serves the ACCEPT
 path -- `spawn_async` awaits the window decision (`taskq_should_window_async`)
 and the claim on the writer thread and posts a pressure defer
 (`taskq_defer_posted`), so the sync re-entry with `_store_accepted` performs
-no store I/O; while its awaits are in flight -- and until a posted pressure
-defer has LANDED (`await_pending_defer`), so the pump never sees the row before
-its `next_run_at` is set -- the row is in `_admitting_ids`, which
-`taskq_excluded_ids` adds so the refill cannot start it a second time. The
+no store I/O; while its awaits are in flight the row is in `_admitting_ids`,
+which `taskq_excluded_ids` adds so the refill cannot start it a second time.
+The pump must also never see the row before a pressure defer's `next_run_at`
+is set. The defer write is QUEUED on the writer thread by the call that defers
+(`_post_store_write` posts at call time, `TaskStore.post`), so it lands ahead of
+any refill read queued after it, and `spawn_async` keeps the row in
+`_admitting_ids` until that write has LANDED (`await_pending_defer`, shielded
+from the caller's cancel). A cancel of the caller ends the wait early and
+releases the row while the write is still in flight; the FIFO writer is what
+still holds the invariant then. On the inline pump the write runs inline, so it
+has landed before the call returns. When the call releases a row that may still
+wait (the gate queued it, or the call ended without an answer) it runs one pump
+pass: every pass during the call left the row out, and the slot one of them
+would have given it may already be free. The
 nested W3 branch (a child of a parent blocked in `spawn_sub_agents`) takes the
 same route for event-loop callers: `taskq_child_registered_async` reads the
 ledger's outstanding children and the parent's deadline on the writer thread,
@@ -794,11 +804,27 @@ The store keeps no dispatch state in memory. The adapter's in-memory queue
   `created_at` first inside a lane, deferred rows skipped. FIFO therefore
   holds inside a lane across the window boundary, and every pending lane is
   represented in the window.
-- Depth for a parent = window entries for that session + `count_pending(...,
-  session_key=…)` outside the window; wave accounting consults
-  `fetch_pending_by_batch` the same way.
-- When nothing is eligible but rows wait on a `next_run_at`, the pump arms
-  one `call_later` at the earliest of those (capped at `admit_wait_secs`).
+- Depth for a parent = window entries for that session that are unstarted
+  spawns (not a resident run's `_resume_id` entry unless it is a
+  `_startup_release` start) + `count_pending(..., session_key=…,
+  include_admitted=True)` outside the window: claimable rows plus `admitted`
+  ones (a claim in flight, or retained across an outage) that no live run is
+  registered for — the one "accepted, no run yet" definition the queued
+  listing (`list_pending(include_admitted=True, app=…)`) shares. When the
+  dashboard chip asks, a row the pump has popped and not yet claimed is left
+  out (a row a `spawn_async` caller is still admitting does count once the
+  gate has queued it). Wave accounting consults `fetch_pending_by_batch` the
+  same way.
+- When a pass finds nothing and the window is empty, the pump arms one
+  `call_later` at `next_eligible_at`: the earliest moment a row held only by
+  time (deferred by `next_run_at`, or leased by `lease_expires_at`) becomes
+  claimable, over the same rows the pass read (its exclusions, and children
+  only on a `children_only` pass), capped at `admit_wait_secs`. A row with
+  neither time is no wake: a pass that left it out did so for a reason the
+  clock does not change (a `spawn_async` accept in flight, a live run), and
+  reading it as "due at 0" would re-run that empty pass on every loop turn. The delay
+  is floored at `MIN_RECHECK_DELAY_SECS`; a wake more than a second overdue
+  that still found nothing is logged at WARNING, at most once a minute.
 
 ## Fairness lanes (`lanes.py`; RFC §6, §13 Q5)
 

@@ -23,6 +23,7 @@ import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from overload_fakes import settle_depth_emits, settle_store_writes
 
 from kiro_crew import subagent as subagent_module
 from kiro_crew.subagent import (
@@ -2771,3 +2772,319 @@ class TestRunIdMinting:
         assert "uuid4()" not in source
         mint = source.split("def _mint_agent_id", 1)[1].split("\n    def ", 1)[0]
         assert "os.urandom(_RUN_ID_HEX_CHARS // 2).hex()" in mint
+
+
+# ── 8. Queued-depth events against the durable store ─────────────────────
+
+
+class TestQueuedDepthReachesZero:
+    """The ``subagent_queued`` depth a parent receives must end at 0.
+
+    The pump emits the parent's depth right after popping a row from the
+    window. That row's durable state is still QUEUED until its claim lands,
+    and it is in none of the store count's exclusion sets (not windowed, not
+    registered, not admitting). Counting it there makes every emit between
+    pop and claim one higher than the window: a 4-cap, 5-spawn wave reads
+    4, 3, 2, 1 and stops, and the dashboard chip clears its "waiting" count
+    only on 0, so one agent stays "waiting" under a finished turn. The pump
+    marks the popped row dispatching and the count excludes it until
+    ``spawn`` has answered for it.
+    """
+
+    @pytest.mark.asyncio
+    async def test_last_pop_publishes_zero_with_a_store_attached(self):
+        mgr = SubagentManager(sessions=_mock_sessions(), ctx_builder=_mock_ctx(), max_concurrent=4)
+        await mgr.wait_taskq_ready()
+        assert mgr._taskq is not None, "this test is about the store-backed count"
+        mgr._spawn_stagger_secs = 0.0
+        depths: list[int] = []
+        real_fire = mgr._fire_event
+
+        async def fire(etype, info, extra=None):
+            if etype == "subagent_queued" and info.parent_session_key == "dashboard:s1":
+                depths.append(int((extra or {}).get("queued", -1)))
+            return await real_fire(etype, info, extra)
+
+        mgr._fire_event = fire  # type: ignore[method-assign]
+        started: list[str] = []
+
+        async def run(self, info):
+            started.append(info.id)
+            await asyncio.sleep(0.05)
+            info.done = True
+            self._claim_finalize(info)
+            if self._release_slot(info):
+                self._running_count -= 1
+                self._drain_queue()
+
+        with (
+            patch("kiro_crew.subagent.Stats"),
+            patch("kiro_crew.subagent.sel"),
+            patch.object(SubagentManager, "_run", new=run),
+        ):
+            for i in range(5):
+                mgr.spawn(f"t{i}", parent_session_key="dashboard:s1", batch_id="b1")
+            deadline = time.monotonic() + 15.0
+            while time.monotonic() < deadline:
+                await asyncio.sleep(0.02)
+                if len(started) == 5 and mgr._running_count == 0 and not mgr._queue:
+                    # let the in-flight depth emits land
+                    for _ in range(5):
+                        await asyncio.sleep(0.02)
+                    break
+        assert len(started) == 5
+        assert mgr.queued_count_for("dashboard:s1") == 0
+        assert mgr._dispatching_ids == set()
+        assert depths, "no subagent_queued event reached the parent"
+        assert depths[-1] == 0, f"depth sequence never reached 0: {depths}"
+        # Once the last waiting row is popped, nothing may report it as waiting again.
+        first_zero = depths.index(0)
+        assert all(d == 0 for d in depths[first_zero:]), depths
+
+    def test_dispatching_rows_are_excluded_from_dispatch_reads_only(self):
+        """Two exclusion sets, on purpose. The pump's refill (and, through its
+        own set, the depth the chip shows) leaves a popped row out (it is being
+        started); a parent's Stop and every other pending-work read keep seeing
+        it, because a row in exactly that popped-unclaimed state is the one a
+        Stop must still reach."""
+        mgr = SubagentManager(sessions=_mock_sessions(), ctx_builder=_mock_ctx(), max_concurrent=4)
+        mgr._dispatching_ids.add("popped-row")
+        assert "popped-row" in mgr._admission.taskq_dispatch_excluded_ids()
+        assert "popped-row" not in mgr._admission.taskq_excluded_ids()
+        mgr._dispatching_ids.discard("popped-row")
+        assert "popped-row" not in mgr._admission.taskq_dispatch_excluded_ids()
+
+    @pytest.mark.asyncio
+    async def test_a_popped_but_unclaimed_row_still_counts_as_pending_work(self):
+        """The reset-deferral guards read ``has_pending_work_for`` /
+        ``queued_count_for``. While the pump holds a popped row between the pop
+        and its claim, the parent still has accepted work that has not run: a
+        cron teardown that read "nothing pending" here would reset the parent
+        before the child starts. Only the chip's depth leaves the row out."""
+        mgr = SubagentManager(sessions=_mock_sessions(), ctx_builder=_mock_ctx(), max_concurrent=1)
+        await mgr.wait_taskq_ready()
+        assert mgr._taskq is not None
+        mgr._spawn_stagger_secs = 0.0
+        hold = asyncio.Event()
+        released = asyncio.Event()
+        depths: list[int] = []
+        real_fire = mgr._fire_event
+
+        async def fire(etype, info, extra=None):
+            if etype == "subagent_queued" and info.parent_session_key == "dashboard:s1":
+                depths.append(int((extra or {}).get("queued", -1)))
+            return await real_fire(etype, info, extra)
+
+        mgr._fire_event = fire  # type: ignore[method-assign]
+
+        async def slow_policy(fn, *a, **kw):
+            hold.set()
+            await released.wait()
+            return fn(*a, **kw)
+
+        with (
+            patch("kiro_crew.subagent.Stats"),
+            patch("kiro_crew.subagent.sel"),
+            patch.object(SubagentManager, "_run", new=AsyncMock()),
+            patch("asyncio.to_thread", new=slow_policy),
+            patch.object(type(mgr._admission), "pump_off_loop", True),
+        ):
+            first = mgr.spawn("t0", parent_session_key="dashboard:s1")
+            second = mgr.spawn("t1", parent_session_key="dashboard:s1")
+            assert second.queued
+            first.done = True
+            mgr._claim_finalize(first)
+            assert mgr._release_slot(first)
+            mgr._running_count -= 1
+            await settle_store_writes(mgr._taskq, rounds=4)
+            await settle_depth_emits(mgr)
+            popped_at = len(depths)
+            mgr._drain_queue()
+            await asyncio.wait_for(hold.wait(), 5)
+            assert second.id in mgr._dispatching_ids and not mgr._queue
+            # The guards' reading: the row is still this parent's work.
+            assert await mgr.has_pending_work_for_async("dashboard:s1") is True
+            assert mgr.queued_count_for("dashboard:s1") == 1
+            assert await mgr.queued_count_for_async("dashboard:s1") == 1
+            # The chip's reading, as published: the row is being started.
+            await settle_store_writes(mgr._taskq, rounds=4)
+            await settle_depth_emits(mgr)
+            assert depths[popped_at:] == [0], depths
+            released.set()
+            await settle_store_writes(mgr._taskq, rounds=4)
+            await settle_depth_emits(mgr)
+        assert second.id in mgr._agents
+        assert mgr._dispatching_ids == set()
+        # Nothing published after the pop shows the started row as waiting.
+        assert depths[popped_at:] and all(d == 0 for d in depths[popped_at:]), depths
+
+    @pytest.mark.asyncio
+    async def test_stop_all_reaches_a_popped_but_unclaimed_row(self):
+        """The pump has popped the row and is between the pop and the claim
+        (its policy read is on a thread) when the parent stops everything. The
+        row is in no window and has no ``_agents`` record, so the store sweep
+        is the only one that can see it -- and it must."""
+        from kiro_crew.taskq import model
+
+        mgr = SubagentManager(sessions=_mock_sessions(), ctx_builder=_mock_ctx(), max_concurrent=1)
+        await mgr.wait_taskq_ready()
+        assert mgr._taskq is not None
+        mgr._spawn_stagger_secs = 0.0
+        hold = asyncio.Event()
+        released = asyncio.Event()
+
+        async def slow_policy(fn, *a, **kw):
+            # The pump's off-loop spec read: park here so the popped row sits
+            # unclaimed while the parent's Stop runs.
+            hold.set()
+            await released.wait()
+            return fn(*a, **kw)
+
+        with (
+            patch("kiro_crew.subagent.Stats"),
+            patch("kiro_crew.subagent.sel"),
+            patch.object(SubagentManager, "_run", new=AsyncMock()),
+            patch("asyncio.to_thread", new=slow_policy),
+            patch.object(type(mgr._admission), "pump_off_loop", True),
+        ):
+            first = mgr.spawn("t0", parent_session_key="dashboard:s1")
+            second = mgr.spawn("t1", parent_session_key="dashboard:s1")
+            assert second.queued
+            first.done = True
+            mgr._claim_finalize(first)
+            assert mgr._release_slot(first)
+            mgr._running_count -= 1
+            mgr._drain_queue()
+            await asyncio.wait_for(hold.wait(), 5)
+            # Popped, marked, unclaimed, and invisible to the in-memory sweeps.
+            assert second.id in mgr._dispatching_ids
+            assert not mgr._queue
+            assert second.id not in mgr._agents or mgr._agents[second.id].queued
+            _running, queued_stopped = await mgr.cancel_for_parent("dashboard:s1")
+            released.set()
+            for _ in range(25):
+                await asyncio.sleep(0.02)
+        assert queued_stopped == 1, "Stop all did not reach the popped row"
+        row = mgr._taskq.get(second.id)
+        assert row is not None and row.state not in (
+            model.QUEUED,
+            model.ADMITTED,
+            model.STARTING,
+            model.RUNNING,
+        ), row.state
+        assert not (
+            second.id in mgr._agents and not mgr._agents[second.id].done
+        ), "row started after Stop all"
+        assert mgr._dispatching_ids == set()
+
+    @pytest.mark.asyncio
+    async def test_an_unavailable_claim_publishes_the_row_as_waiting(self):
+        """A claim the store cannot take leaves the row QUEUED. The re-entry's
+        depth emit is the one the chip reads next, so it must count the row
+        (1), never a dispatching-masked 0."""
+        from kiro_crew import taskq as _taskq
+
+        mgr = SubagentManager(sessions=_mock_sessions(), ctx_builder=_mock_ctx(), max_concurrent=1)
+        await mgr.wait_taskq_ready()
+        assert mgr._taskq is not None
+        mgr._spawn_stagger_secs = 0.0
+        depths: list[tuple[int, frozenset[str]]] = []
+        real_fire = mgr._fire_event
+
+        async def fire(etype, info, extra=None):
+            if etype == "subagent_queued" and info.parent_session_key == "dashboard:s1":
+                depths.append(
+                    (int((extra or {}).get("queued", -1)), frozenset(mgr._dispatching_ids))
+                )
+            return await real_fire(etype, info, extra)
+
+        mgr._fire_event = fire  # type: ignore[method-assign]
+        store = mgr._taskq
+        real_claim = store.claim
+        outage: dict[str, str] = {}
+
+        def claim(agent_id, *a, **kw):
+            if agent_id == outage.get("id"):
+                raise _taskq.TaskStoreUnavailable("probe outage")
+            return real_claim(agent_id, *a, **kw)
+
+        with (
+            patch("kiro_crew.subagent.Stats"),
+            patch("kiro_crew.subagent.sel"),
+            patch.object(SubagentManager, "_run", new=AsyncMock()),
+            patch.object(store, "claim", new=claim),
+        ):
+            first = mgr.spawn("t0", parent_session_key="dashboard:s1")
+            second = mgr.spawn("t1", parent_session_key="dashboard:s1")
+            assert second.queued
+            outage["id"] = second.id
+            # The first run finishes and releases its slot; the drain pops the
+            # queued row and its claim hits the outage.
+            first.done = True
+            mgr._claim_finalize(first)
+            if mgr._release_slot(first):
+                mgr._running_count -= 1
+                mgr._drain_queue()
+            for _ in range(50):
+                await asyncio.sleep(0.02)
+                if depths and depths[-1][0] == 1 and not mgr._dispatching_ids:
+                    break
+        assert mgr._dispatching_ids == set(), "mark leaked past a failed claim"
+        assert depths and depths[-1][0] == 1, f"failed claim published {depths[-3:]}"
+        assert mgr.queued_count_for("dashboard:s1") == 1
+
+    @pytest.mark.asyncio
+    async def test_a_dispatch_that_raises_leaves_no_mark(self):
+        """A leaked mark would exclude the durable row from every refill, so a
+        spawn that raises while dispatching must not leave one behind."""
+        mgr = SubagentManager(sessions=_mock_sessions(), ctx_builder=_mock_ctx(), max_concurrent=1)
+        await mgr.wait_taskq_ready()
+        mgr._spawn_stagger_secs = 0.0
+        real_spawn = mgr.spawn
+        boom: dict[str, str] = {}
+
+        def spawn(*a, **kw):
+            if kw.get("_from_queue") and kw.get("_preassigned_id") == boom.get("id"):
+                raise RuntimeError("probe: dispatch raised")
+            return real_spawn(*a, **kw)
+
+        with (
+            patch("kiro_crew.subagent.Stats"),
+            patch("kiro_crew.subagent.sel"),
+            patch.object(SubagentManager, "_run", new=AsyncMock()),
+        ):
+            first = mgr.spawn("t0", parent_session_key="dashboard:s1")
+            second = mgr.spawn("t1", parent_session_key="dashboard:s1")
+            assert second.queued
+            boom["id"] = second.id
+            mgr.spawn = spawn  # type: ignore[method-assign]
+            first.done = True
+            mgr._claim_finalize(first)
+            assert mgr._release_slot(first)
+            mgr._running_count -= 1
+            # The inline pump does not catch a raising ``spawn``; the raise
+            # reaches the caller, and the mark must already be gone by then.
+            with pytest.raises(RuntimeError, match="probe: dispatch raised"):
+                mgr._drain_queue()
+        assert mgr._dispatching_ids == set(), "mark leaked past a raising dispatch"
+        assert second.id not in mgr._admission.taskq_excluded_ids()
+
+    @pytest.mark.asyncio
+    async def test_a_raise_before_the_pick_is_logged_not_rethrown(self, caplog):
+        """A store error in the awaits ahead of the pick reaches the pass's own
+        handler and is logged; the mark cleanup after it walks an empty pick
+        instead of raising over the handler."""
+        mgr = SubagentManager(sessions=_mock_sessions(), ctx_builder=_mock_ctx(), max_concurrent=1)
+        await mgr.wait_taskq_ready()
+        assert mgr._taskq is not None
+
+        async def boom():
+            raise RuntimeError("probe: store read failed before the pick")
+
+        with (
+            patch.object(mgr, "retry_pending_boundary_cancellations", new=boom),
+            caplog.at_level("ERROR"),
+        ):
+            await mgr._drain_queue_pass()  # must not raise
+        assert any("drain pump failed" in r.getMessage() for r in caplog.records)
+        assert not any("UnboundLocalError" in (r.exc_text or "") for r in caplog.records)

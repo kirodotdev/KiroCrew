@@ -104,10 +104,11 @@ STRICT_ON_LOOP_ENV = "KIROCREW_STRICT_ON_LOOP_TASK_STORE"
 #    can start it, and an await between those two is a race in either order.
 #
 # Those takes are on-loop and cannot simply be offloaded, so arming this from
-# ``KIROCREW_DEV_MODE`` would raise on a cancel or a Stop-all and the developer's
-# rational response -- unsetting that variable -- silences every OTHER surface's
-# guard too. Flip it back to True once both classes are either restructured or
-# inside a vetted ``allow_on_loop()`` block.
+# ``KIROCREW_DEV_MODE`` would raise on a cancel or a Stop-all -- a Stop all whose
+# unqueue raises leaves that row waiting and fails the request before it reaps
+# anything -- and the developer's rational response, unsetting that variable,
+# silences every OTHER surface's guard too. Flip it back to True once both
+# classes are either restructured or inside a vetted ``allow_on_loop()`` block.
 _ON_LOOP_DB_GUARD = OnLoopDBGuard(
     label="task store",
     remedy=(
@@ -155,6 +156,12 @@ _SQL_CLAIMABLE = "(" + ",".join(f"'{s}'" for s in sorted(CLAIMABLE)) + ")"
 _SQL_TERMINAL = "(" + ",".join(f"'{s}'" for s in sorted(TERMINAL)) + ")"
 _SQL_ACTIVE = "(" + ",".join(f"'{s}'" for s in sorted(ACTIVE)) + ")"
 _SQL_WAITING = "(" + ",".join(f"'{s}'" for s in sorted(WAITING)) + ")"
+#: Claimable rows plus ``admitted`` ones: every row accepted and not yet started.
+#: A caller that subtracts the rows this process has registered as runs is left
+#: with exactly the accepted work no run exists for yet (``include_admitted``).
+_SQL_UNSTARTED = "(" + ",".join(f"'{s}'" for s in sorted(CLAIMABLE | {ADMITTED})) + ")"
+#: The ``children_only`` filter the dispatch reads and their wake share: nested rows.
+_SQL_CHILD_ONLY = " AND parent_id IS NOT NULL AND parent_id <> ''"
 
 
 class _CorruptStore(Exception):
@@ -653,10 +660,18 @@ class TaskStore:
         single worker keeps writes serialized without the loop thread ever
         holding the connection lock.
         """
+        return await self.post(fn, *args, **kwargs)
+
+    def post(self, fn: Callable[..., Any], /, *args: Any, **kwargs: Any) -> "asyncio.Future[Any]":
+        """Queue ``fn(*args, **kwargs)`` on the writer thread NOW; return its future.
+
+        :meth:`run` without the wait, for a caller that must not await before
+        the job is queued: the single worker runs jobs in submission order, so
+        a write posted here lands ahead of any job queued after this call
+        returns -- whichever task queues it, and however soon.
+        """
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(
-            self._writer_executor(), functools.partial(fn, *args, **kwargs)
-        )
+        return loop.run_in_executor(self._writer_executor(), functools.partial(fn, *args, **kwargs))
 
     @staticmethod
     def _on_running_loop_thread() -> bool:
@@ -791,6 +806,50 @@ class TaskStore:
                     kind=str(r["kind"]),
                     data=data if isinstance(data, dict) else {},
                 )
+            )
+        return out
+
+    @_typed_read
+    def latest_events(
+        self, task_ids: Sequence[str], kinds: Sequence[str]
+    ) -> dict[tuple[str, str], TaskEvent]:
+        """The newest event of each of *kinds* for each of *task_ids*, in ONE query.
+
+        Keyed ``(task_id, kind)``; a pair with no such event is absent. For a
+        reader that needs one fact per row of a page (the queued listing),
+        where one :meth:`events` call per row would serialize a query per row
+        on the writer thread.
+        """
+        ids = [str(i) for i in task_ids if i]
+        if not ids or not kinds:
+            return {}
+        id_marks = ", ".join("?" for _ in ids)
+        kind_marks = ", ".join("?" for _ in kinds)
+        with self._lock:
+            # SQLite fills the bare columns of a MAX() aggregate from the row
+            # holding that maximum, so each group yields its newest event.
+            rows = (
+                self._c()
+                .execute(
+                    "SELECT task_id, MAX(seq) AS seq, ts, kind, data_json FROM task_events "
+                    f"WHERE task_id IN ({id_marks}) AND kind IN ({kind_marks}) "
+                    "GROUP BY task_id, kind",
+                    [*ids, *kinds],
+                )
+                .fetchall()
+            )
+        out: dict[tuple[str, str], TaskEvent] = {}
+        for r in rows:
+            try:
+                data = json.loads(r["data_json"])
+            except (TypeError, ValueError):
+                data = {}
+            out[(str(r["task_id"]), str(r["kind"]))] = TaskEvent(
+                task_id=str(r["task_id"]),
+                seq=int(r["seq"]),
+                ts=float(r["ts"]),
+                kind=str(r["kind"]),
+                data=data if isinstance(data, dict) else {},
             )
         return out
 
@@ -1489,6 +1548,16 @@ class TaskStore:
         return str(row["state"]) if row is not None else None
 
     @staticmethod
+    def _admitted_exclusion(ids: Sequence[str]) -> tuple[str, list[Any]]:
+        ids = [str(i) for i in ids if i]
+        if not ids:
+            return "", []
+        return (
+            f" AND NOT (state='{ADMITTED}' AND id IN ({', '.join('?' for _ in ids)}))",
+            ids,
+        )
+
+    @staticmethod
     def _exclusion(exclude_ids: Sequence[str]) -> tuple[str, list[Any]]:
         ids = [str(i) for i in exclude_ids if i]
         if not ids:
@@ -1528,7 +1597,7 @@ class TaskStore:
         """Eligible (claimable now) row count per lane, for the fair dispatcher."""
         ts = self.now()
         excl_sql, excl_args = self._exclusion(exclude_ids)
-        child_sql = " AND parent_id IS NOT NULL AND parent_id <> ''" if children_only else ""
+        child_sql = _SQL_CHILD_ONLY if children_only else ""
         with self._lock:
             rows = (
                 self._c()
@@ -1571,7 +1640,7 @@ class TaskStore:
             return []
         ts = self.now()
         excl_sql, excl_args = self._exclusion(exclude_ids)
-        child_sql = " AND parent_id IS NOT NULL AND parent_id <> ''" if children_only else ""
+        child_sql = _SQL_CHILD_ONLY if children_only else ""
         lane_sql, lane_args = ("", [])
         if lanes is not None:
             lane_sql = f" AND lane IN ({', '.join('?' for _ in lanes)})"
@@ -1634,6 +1703,9 @@ class TaskStore:
         session_key: str | None = None,
         exclude_ids: Sequence[str] = (),
         limit: int | None = None,
+        include_admitted: bool = False,
+        exclude_admitted_ids: Sequence[str] = (),
+        app: str | None = None,
     ) -> list[TaskRecord]:
         """Every waiting row of *kind* (deferred ones included), oldest first.
 
@@ -1644,21 +1716,32 @@ class TaskStore:
         nothing else -- so a row past a cap is one the user stopped that stays
         queued and dispatchable. A caller that wants a page (a listing, a probe)
         passes *limit* and gets the oldest that many.
+
+        *include_admitted* adds ``admitted`` rows (claimed, not started); see
+        :data:`_SQL_UNSTARTED`, and *exclude_admitted_ids* drops the ``admitted``
+        ones among those ids (a claim whose run is registered). *app* keeps only
+        rows whose params name that owning app, applied before *limit* so a page
+        is that app's own rows.
         """
         excl_sql, excl_args = self._exclusion(exclude_ids)
+        adm_sql, adm_args = self._admitted_exclusion(exclude_admitted_ids)
         sess_sql, sess_args = ("", [])
         if session_key is not None:
             sess_sql, sess_args = " AND session_key=?", [session_key]
+        app_sql, app_args = ("", [])
+        if app is not None:
+            app_sql, app_args = " AND COALESCE(json_extract(params_json, '$.app'), '')=?", [app]
         lim_sql, lim_args = ("", [])
         if limit is not None:
             lim_sql, lim_args = " LIMIT ?", [int(limit)]
+        states = _SQL_UNSTARTED if include_admitted else _SQL_CLAIMABLE
         with self._lock:
             rows = (
                 self._c()
                 .execute(
-                    f"SELECT * FROM tasks WHERE kind=? AND state IN {_SQL_CLAIMABLE}"
-                    f"{sess_sql}{excl_sql} ORDER BY created_at, rowid{lim_sql}",
-                    [kind, *sess_args, *excl_args, *lim_args],
+                    f"SELECT * FROM tasks WHERE kind=? AND state IN {states}"
+                    f"{sess_sql}{app_sql}{excl_sql}{adm_sql} ORDER BY created_at, rowid{lim_sql}",
+                    [kind, *sess_args, *app_args, *excl_args, *adm_args, *lim_args],
                 )
                 .fetchall()
             )
@@ -1684,15 +1767,37 @@ class TaskStore:
         return [TaskRecord.from_row(r) for r in rows]
 
     @_typed_read
-    def next_eligible_at(self, kind: str) -> float | None:
-        """Earliest ``next_run_at`` among waiting rows of *kind*; None when none wait."""
+    def next_eligible_at(
+        self,
+        kind: str,
+        *,
+        exclude_ids: Sequence[str] = (),
+        children_only: bool = False,
+    ) -> float | None:
+        """When the earliest waiting row of *kind* that time alone holds back
+        becomes claimable; None when no row is held by time.
+
+        A row is held by time while it is deferred (``next_run_at``) or leased
+        (``lease_expires_at``), and claimable at the later of the two -- the
+        same eligibility the dispatch reads apply (``pending_lanes``,
+        ``fetch_dispatchable_fair``), over the same rows: one they may not
+        claim (excluded, or not a child on a ``children_only`` pass) has no
+        wake to offer them. A row with neither is not a wake: no time has to
+        pass for it, so a pass that found nothing left it out for a reason the
+        clock does not change. Read as "due at 0", it would re-arm that empty
+        pass at once, on every pass, for as long as the row is held.
+        """
+        excl_sql, excl_args = self._exclusion(exclude_ids)
+        child_sql = _SQL_CHILD_ONLY if children_only else ""
         with self._lock:
             row = (
                 self._c()
                 .execute(
-                    f"SELECT MIN(COALESCE(next_run_at, 0)) FROM tasks WHERE kind=? "
-                    f"AND state IN {_SQL_CLAIMABLE}",
-                    (kind,),
+                    "SELECT MIN(MAX(COALESCE(next_run_at, 0), COALESCE(lease_expires_at, 0))) "
+                    f"FROM tasks WHERE kind=? AND state IN {_SQL_CLAIMABLE} "
+                    "AND (next_run_at IS NOT NULL OR lease_expires_at IS NOT NULL)"
+                    f"{child_sql}{excl_sql}",
+                    [kind, *excl_args],
                 )
                 .fetchone()
             )
@@ -1708,14 +1813,20 @@ class TaskStore:
         exclude_ids: Sequence[str] = (),
         session_key: str | None = None,
         eligible_only: bool = False,
+        include_admitted: bool = False,
+        exclude_admitted_ids: Sequence[str] = (),
     ) -> int:
         """Rows waiting for dispatch (claimable states), optionally per session.
 
         ``eligible_only`` drops rows deferred past now; the default counts a
         deferred row too, because it is still accepted work the parent is owed.
+        ``include_admitted`` counts claimed, not started rows as well
+        (:data:`_SQL_UNSTARTED`), less the ``admitted`` ones among
+        *exclude_admitted_ids*.
         """
         excl_sql, excl_args = self._exclusion(exclude_ids)
-        where = [f"state IN {_SQL_CLAIMABLE}"]
+        adm_sql, adm_args = self._admitted_exclusion(exclude_admitted_ids)
+        where = [f"state IN {_SQL_UNSTARTED if include_admitted else _SQL_CLAIMABLE}"]
         args: list[Any] = []
         if kind is not None:
             where.append("kind=?")
@@ -1730,8 +1841,8 @@ class TaskStore:
             row = (
                 self._c()
                 .execute(
-                    f"SELECT COUNT(*) FROM tasks WHERE {' AND '.join(where)}{excl_sql}",
-                    [*args, *excl_args],
+                    f"SELECT COUNT(*) FROM tasks WHERE {' AND '.join(where)}{excl_sql}{adm_sql}",
+                    [*args, *excl_args, *adm_args],
                 )
                 .fetchone()
             )

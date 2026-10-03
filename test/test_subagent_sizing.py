@@ -15,6 +15,7 @@ from io import StringIO
 from typing import Any
 
 import pytest
+from overload_fakes import settle_depth_emits
 
 import kiro_crew.subagent as subagent
 from conftest import absent_sysconf
@@ -669,7 +670,7 @@ class TestQueuedReasonOnTheEvent:
         import asyncio
         import time as _t
 
-        async def run() -> list:
+        async def run() -> tuple[list, list]:
             m = _mgr(running=0, max_concurrent=4, last_ts=_t.monotonic())
             events = self._capture(m)
             m._queue = [{"task": "a", "parent_session_key": "dashboard:s1"}]
@@ -677,22 +678,31 @@ class TestQueuedReasonOnTheEvent:
                 "dashboard:s1",
                 wait={"reason": "low_memory", "available_gb": 3.2, "required_gb": 4.5},
             )
+            await settle_depth_emits(m)
             m._emit_queue_depth("dashboard:s1")  # a drain-style re-emit, no verdict
+            await settle_depth_emits(m)
             m._queue = []
             m._emit_queue_depth("dashboard:s1")  # parent drained
-            await asyncio.sleep(0)
-            await asyncio.sleep(0)
-            return events
+            await settle_depth_emits(m)
+            # The same three requests in one step are one read, after all of
+            # them, and the label it carries is the one the burst left.
+            burst = self._capture(m)
+            m._queue = [{"task": "b", "parent_session_key": "dashboard:s1"}]
+            m._emit_queue_depth("dashboard:s1", wait={"reason": "posture_critical"})
+            m._emit_queue_depth("dashboard:s1")
+            m._emit_queue_depth("dashboard:s1")
+            await settle_depth_emits(m)
+            return events, burst
 
-        events = asyncio.run(run())
-        assert events[0] == {
+        events, burst = asyncio.run(run())
+        low_memory = {
             "queued": 1,
             "reason": "low_memory",
             "available_gb": 3.2,
             "required_gb": 4.5,
         }
-        assert events[1] == events[0]
-        assert events[2] == {"queued": 0}
+        assert events[:3] == [low_memory, low_memory, {"queued": 0}]
+        assert burst == [{"queued": 1, "reason": "posture_critical"}]
 
 
 class TestQueuedIdentityRoundTrip:

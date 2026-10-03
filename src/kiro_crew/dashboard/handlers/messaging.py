@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import importlib.util
+import inspect
 import json
 import logging
 import os
@@ -39,7 +40,7 @@ from kiro_crew.config.loader import (
     config_path,
     read_config_text,
 )
-from kiro_crew.constants import CHANNEL_SEND_NAMESPACES
+from kiro_crew.constants import CHANNEL_SEND_NAMESPACES, SUBAGENT_COMPLETION_META_KEY
 from kiro_crew.cron import CronStoreBusy, CronStoreUnreadable
 from kiro_crew.dashboard.channel_folders import (
     CHANNEL_CONFIG_SECTIONS,
@@ -52,6 +53,7 @@ from kiro_crew.dashboard.channel_slots import backfill_channel_folder
 from kiro_crew.dashboard.chat_persistence import rehydrate_slot_from_history_async
 from kiro_crew.dashboard.chat_utils import (
     CRON_NOTIFICATION_KIND,
+    SUBAGENT_COMPLETION_KIND,
     _remove_queued_by_id,
     dashboard_slot_key,
     drained_to_thread,
@@ -108,6 +110,11 @@ from kiro_crew.subagent import (
     effort_drop_reason,
     parent_spawn_allowlists,
     stage_boundary_owner_for_run,
+)
+from kiro_crew.subagent_manager.admission.types import (
+    QueuedReadUnavailable,
+    QueuedRun,
+    QueuedRunListing,
 )
 from kiro_crew.subagent_persistence import _agent_dir, read_state
 from kiro_crew.validation import (
@@ -437,6 +444,106 @@ async def _is_host_cli_spawn(request: web.Request, parent_session: str) -> bool:
     return await asyncio.to_thread(local_owner_bootstrap_allowed, request)
 
 
+async def _queued_run(state: DashboardState, run_id: str) -> QueuedRun | None:
+    """The accepted spawn *run_id* when it has no run yet, else None.
+
+    A spawn the gate deferred, or one waiting for a slot, exists only as a queue
+    entry or a task-store row, so the registry and the run folders cannot name
+    it. Without this read a caller that was just told "queued" is then told the
+    run does not exist. A read that fails answers None, which leaves the caller
+    where it was before this lookup existed.
+    """
+    if state.subagents is None:
+        return None
+    try:
+        return await state.subagents.queued_run_async(run_id)
+    except QueuedReadUnavailable:
+        raise  # "not queued" is unknowable: the caller answers 503, never 404
+    except Exception:
+        logger.debug("Queued-run lookup failed for %s", run_id, exc_info=True)
+        return None
+
+
+def _queue_unreadable() -> web.Response:
+    """503 for a lookup the task store could not answer: transient, retry it."""
+    return web.json_response(
+        {"error": "the task queue is unreadable; retry shortly", "code": "taskq_unavailable"},
+        status=503,
+        headers={"Retry-After": "2"},
+    )
+
+
+async def _queued_runs(
+    state: DashboardState, parent: str | None, *, app: str | None = None
+) -> QueuedRunListing:
+    """:func:`_queued_run` for a listing: *parent*'s queued spawns (None = all).
+
+    A failed read is a PARTIAL listing, never an empty one: an empty answer
+    reads as "nothing queued", the reading that gets accepted work dispatched
+    twice.
+    """
+    if state.subagents is None:
+        return QueuedRunListing(())
+    try:
+        return await state.subagents.queued_runs_async(parent, app=app)
+    except Exception:
+        logger.debug("Queued-run listing failed", exc_info=True)
+        return QueuedRunListing((), partial=True)
+
+
+async def _queued_lookup(
+    request: web.Request, state: DashboardState, run_id: str
+) -> QueuedRun | None:
+    """The guard's queued lookup for this request, or a fresh one."""
+    if "spawn_queued_lookup" in request:
+        return cast("QueuedRun | None", request["spawn_queued_lookup"])
+    return await _queued_run(state, run_id)  # QueuedReadUnavailable: the caller's 503
+
+
+def _queued_not_started() -> web.Response:
+    """409 for a control that needs a run, aimed at a spawn still queued.
+
+    The same id answers ``queued`` on ``GET /api/spawn/{id}``, so "not found"
+    here would contradict it.
+    """
+    return web.json_response(
+        {"error": "queued — not started", "code": "queued_not_started"}, status=409
+    )
+
+
+def _queued_run_payload(queued: QueuedRun) -> dict[str, object]:
+    """The wire shape of a queued spawn, shared by the status and list routes.
+
+    ``done: false`` with ``queued: true`` and no transcript: the run has not
+    started, so there are no turns and no partial text. ``reason`` and
+    ``reason_detail`` are present only when known, the same fields the accept
+    answer (``POST /api/spawn``) carries for a deferred spawn.
+    """
+    data: dict[str, object] = {
+        "id": queued.id,
+        "task": _redact(queued.task),
+        "done": False,
+        # Both spellings: ``status`` matches the accept answer
+        # (``POST /api/spawn``), ``queued`` is what the poll loops read.
+        "status": "queued",
+        "queued": True,
+        "agent": _redact(queued.agent),
+    }
+    if queued.accepted_at > 0:
+        data["started"] = queued.accepted_at
+        data["elapsed"] = max(0, round(time.time() - queued.accepted_at))
+    if queued.reason:
+        data["reason"] = queued.reason
+    if queued.reason_detail:
+        data["reason_detail"] = _redact(queued.reason_detail)
+    if queued.resuming:
+        # It STARTED and waits to go on (after a restart, or to retry): queued,
+        # but never "not started".
+        data["resuming"] = True
+        data["resuming_reason"] = queued.resuming
+    return data
+
+
 async def _spawn_scope_refusal(
     request: web.Request, *, claimed_session: str | None = None
 ) -> web.Response | None:
@@ -463,11 +570,25 @@ async def _spawn_scope_refusal(
     state = request.app["state"]
     run_id = request.match_info["agent_id"]
     info = state.subagents.get(run_id) if state.subagents else None
-    record = None if info is not None else await asyncio.to_thread(read_state, run_id)
+    queued: QueuedRun | None = None
+    if info is None and state.subagents:
+        # Kept on the request, None included, so the handler does not ask the
+        # store again.
+        try:
+            queued = request["spawn_queued_lookup"] = await _queued_run(state, run_id)
+        except QueuedReadUnavailable:
+            return _queue_unreadable()
     parent: object
+    # One order, stated once: the live run, then a spawn the gate is still
+    # holding, then the persisted record, then a harness-native card.
     if info is not None:
         parent = info.parent_session_key
-    elif record is not None:
+    elif queued is not None:
+        # A spawn the gate is still holding has no run folder yet; its row's
+        # session key is the originating session, the field the live branch
+        # reads from ``info``.
+        parent = queued.parent_session_key
+    elif (record := await asyncio.to_thread(read_state, run_id)) is not None:
         # The persisted record spells the field ``parent_session``
         # (``subagent_persistence.write_state``). A record that lacks it is an
         # unknown owner, not a parentless run: ``None`` stays ``None``.
@@ -909,7 +1030,6 @@ async def _spawn_on_loop(state: "DashboardState", task: str, **kwargs: Any) -> A
     A manager without that entry -- a test double -- is spawned synchronously,
     which is the pre-queue behaviour those doubles model.
     """
-    import inspect
 
     subagents = state.subagents
     assert subagents is not None  # every caller checked ``state.subagents`` first
@@ -922,7 +1042,6 @@ async def _spawn_on_loop(state: "DashboardState", task: str, **kwargs: Any) -> A
 async def _continue_on_loop(state: "DashboardState", conv_id: str, task: str, **kwargs: Any) -> Any:
     """:func:`_spawn_on_loop` for continuations: ``continue_conversation_async``
     writes the durable row off-loop; a double without it continues synchronously."""
-    import inspect
 
     subagents = state.subagents
     assert subagents is not None
@@ -1071,6 +1190,11 @@ async def api_spawn_steer(request: web.Request) -> web.Response:
                 return web.json_response(
                     {"error": native, "code": NATIVE_CHILD_NOT_RESUMABLE}, status=409
                 )
+            try:
+                if await _queued_lookup(request, state, agent_id) is not None:
+                    return _queued_not_started()
+            except QueuedReadUnavailable:
+                return _queue_unreadable()
             return web.json_response({"error": detail, "code": "not_found"}, status=404)
         if detail.startswith("not_running"):
             return web.json_response({"error": detail, "code": "not_running"}, status=409)
@@ -1150,6 +1274,13 @@ async def api_spawn_lost(request: web.Request) -> web.Response:
     return web.json_response({"status": "reconciled", "batch_id": batch_id})
 
 
+#: Bounds on the inline-collected ids a slot retains: each id's length (run ids
+#: are 16 hex characters), and the set as a whole, since only a completion that
+#: matches an id evicts it.
+_COLLECTED_ID_MAX_LEN = 128
+_COLLECTED_IDS_CAP = 1000
+
+
 async def api_spawn_mark_collected(request: web.Request) -> web.Response:
     """POST /api/spawn/mark-collected — suppress injection for blocking tool.
 
@@ -1180,10 +1311,41 @@ async def api_spawn_mark_collected(request: web.Request) -> web.Response:
     slot = state.get_slot(slot_name)
     if not slot:
         return web.json_response({"status": "no_slot"})
-    # Record the IDs (bounded to 200 to prevent unbounded growth)
-    for aid in ids[:200]:
-        if isinstance(aid, str) and aid:
-            slot._subagents_inline_collected.add(aid)
+    # Record the IDs (bounded to 200 to prevent unbounded growth). A member whose
+    # completion is already QUEUED on the slot (its delivery timed out waiting on
+    # this tool's turn) is settled here instead: the queued announce is removed
+    # so it never plays as a redundant turn, and its owed delivery marks are
+    # written now, since the tool's return value IS the consumption. Its id is
+    # kept out of the set, where nothing would ever discard it again.
+    wanted = {
+        aid
+        for aid in ids[:200]
+        if isinstance(aid, str) and 0 < len(aid) <= _COLLECTED_ID_MAX_LEN
+        # Only ids this gateway knows: nothing else will ever discard them.
+        and (state.subagents is None or state.subagents.get(aid) is not None)
+    }
+    owed: list[Any] = []
+    for item in list(slot._queue):
+        meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+        card = meta.get(SUBAGENT_COMPLETION_META_KEY) if meta else None
+        aid = card.get("agentId") if isinstance(card, dict) and card.get("kind") == "single" else ""
+        if item.get("kind") != SUBAGENT_COMPLETION_KIND or aid not in wanted:
+            continue
+        if slot.queue_remove_by_id(str(item.get("id") or "")) is None:
+            continue
+        wanted.discard(aid)
+        try:
+            owed.extend(slot.take_pending_subagent_deliveries([str(item.get("content") or "")]))
+        except Exception:
+            logger.debug("Could not claim delivery marks for %s", aid, exc_info=True)
+    room = max(0, _COLLECTED_IDS_CAP - len(slot._subagents_inline_collected))
+    slot._subagents_inline_collected.update(sorted(wanted)[:room])
+    if owed and state.subagents is not None:
+        try:
+            await state.subagents.settle_queued_delivery(owed)
+        except Exception:
+            logger.debug("Could not settle inline-collected deliveries", exc_info=True)
+    state.push_slots_update()
     return web.json_response({"status": "ok", "marked": len(ids)})
 
 
@@ -1257,6 +1419,20 @@ async def api_spawn_status(request: web.Request) -> web.Response:
         return web.json_response({"error": "subagents not available"}, status=503)
     agent_id = request.match_info["agent_id"]
     info = state.subagents.get(agent_id)
+    if not info:
+        # Accepted but not started: the gate deferred it, or it waits for a
+        # slot. It has no run folder, so the persistence fallback below would
+        # answer 404 for a spawn the caller was just told is queued. The scope
+        # guard already looked it up for an internal caller.
+        try:
+            queued = await _queued_lookup(request, state, agent_id)
+        except QueuedReadUnavailable:
+            return _queue_unreadable()
+        if queued is not None:
+            return web.json_response(_queued_run_payload(queued))
+        # The pump can register the run while that lookup awaited; the
+        # registry then answers, not the half-written folder.
+        info = state.subagents.get(agent_id)
     if not info:
         # Fall back to persistence layer (orphaned/recovered agents)
         try:
@@ -1387,6 +1563,16 @@ async def api_spawn_list(request: web.Request) -> web.Response:
     # needs, so the list must not hand out what the control route would refuse.
     # The dashboard owner (no ``internal_auth``) still sees everything.
     internal = request.get("internal_auth") is True
+    # The queued half is opt-in (``?queued=1``): only the spawn tools act on it,
+    # and the dashboard's pollers would otherwise pay a store read every few
+    # seconds to throw it away. Read BEFORE the live registry: a spawn that
+    # registers between the two reads is then live in the second (live wins
+    # below), where the other order would show it in neither.
+    queued_listing: QueuedRunListing | None = None
+    if request.query.get("queued") in ("1", "true"):
+        queued_listing = await _queued_runs(
+            state, caller if internal else None, app=str(request.get("app") or "") or None
+        )
     for info in state.subagents.all_agents:
         if internal and not _run_belongs_to_caller(caller, info.id, info.parent_session_key):
             continue
@@ -1428,7 +1614,36 @@ async def api_spawn_list(request: web.Request) -> web.Response:
         if withheld:
             entry["context_withheld"] = withheld
         agents.append(entry)
-    return web.json_response({"agents": agents})
+    # Accepted spawns with no run yet: deferred by the memory gate, waiting for
+    # a slot, or claimed and not registered. They go under their own key rather
+    # than into ``agents``, whose readers (the dashboard's reconcile and agent
+    # strip) take a not-done entry for a run in progress. An internal caller
+    # sees only its own rows, as in the live half; an app caller also sees only
+    # its app's rows (filtered in the store read, before its cap), a bound the
+    # live half does not apply.
+    caller_app = str(request.get("app") or "")
+    live_ids = {str(entry["id"]) for entry in agents}
+    queued_entries: list[dict[str, object]] = []
+    for queued in queued_listing.runs if queued_listing is not None else ():
+        if queued.id in live_ids:
+            continue
+        if caller_app and queued.app != caller_app:
+            continue
+        if internal and not _run_belongs_to_caller(caller, queued.id, queued.parent_session_key):
+            continue
+        queued_entry = _queued_run_payload(queued)
+        queued_entry["parent"] = queued.parent_session_key
+        queued_entries.append(queued_entry)
+    payload: dict[str, object] = {"agents": agents}
+    if queued_entries:
+        payload["queued"] = queued_entries
+    if queued_listing is not None and queued_listing.partial:
+        # A page or an outage, and said so: the caller of this listing acts on
+        # it, and a cut-off or unread tail taken as complete tells it accepted
+        # spawns were never accepted -- the reading that gets work dispatched
+        # twice. Present only when true; the bridge logs the transition once.
+        payload["queued_truncated"] = True
+    return web.json_response(payload)
 
 
 async def api_spawn_retry(request: web.Request) -> web.Response:
@@ -1453,6 +1668,11 @@ async def api_spawn_retry(request: web.Request) -> web.Response:
         )
     old = state.subagents.get(agent_id)
     if not old:
+        try:
+            if await _queued_lookup(request, state, agent_id) is not None:
+                return _queued_not_started()
+        except QueuedReadUnavailable:
+            return _queue_unreadable()
         return web.json_response({"error": "not found"}, status=404)
     if not old.done:
         return web.json_response({"error": "agent is still running"}, status=409)

@@ -139,9 +139,11 @@ from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Protocol
 
 from kiro_crew import platform_compat
+from kiro_crew.constants import WAIT_TOOL_MAX_SECS
 from kiro_crew.platform_compat import (  # noqa: F401 - re-exported for existing importers
     boottime_now,
 )
+from kiro_crew.session_directive import CORE_MCP_SERVER
 
 logger = logging.getLogger(__name__)
 
@@ -249,6 +251,16 @@ _MODEL_WRAPPING_TOOLS: frozenset[str] = frozenset({"use_subagent"})
 CHILD_EXIT_GRACE_SECS = 15.0
 # Declared-duration slack for the MCP wait tool: WORKING until seconds + this.
 WAIT_TOOL_SLACK_SECS = 120.0
+# No declared duration vouches for a session past ``WAIT_TOOL_MAX_SECS``
+# (imported from ``constants``), the one bound the wait tool's schema and handler
+# both clamp to.
+# The wait tool's name on ``CORE_MCP_SERVER``, as the adapter identity reports it.
+_WAIT_TOOL_NAME = "wait"
+# Separator in a server-qualified MCP tool name: kiro-cli may report
+# ``<server>___<tool>`` and the canonical prefix form is ``mcp__<server>__<tool>``.
+# Mirrors ``session_directive._MCP_SEPARATOR_RE``: a run of two or more
+# underscores, so a single-underscore name such as ``do_wait`` stays distinct.
+_MCP_SEPARATOR_RE = re.compile(r"_{2,}")
 # Minimum cmdline fragment length for a definite shell-child match.
 _MIN_MATCH_FRAGMENT = 8
 # How much a process may predate its tool's dispatch and still count as started
@@ -639,14 +651,17 @@ def parse_wait_seconds(command: str) -> int | None:
         return None
 
 
-def is_wait_tool(title: str) -> bool:
-    """True when a tool title names the kirocrew-core ``wait`` tool.
+def wait_tool_verdict(tool: ToolCallState, now: float) -> tuple[str, str] | None:
+    """The oracle's wait-tool verdict, selected by *tool*'s adapter identity.
 
-    Titles vary by transport ("wait", "kirocrew-core___wait", "wait (mcp)");
-    match on the last alphanumeric token equalling "wait".
+    Returns ``None`` unless :meth:`ToolCallState.is_trusted_wait` holds, so the
+    caller applies its other evidence; otherwise
+    :meth:`ToolCallState.declared_wait_verdict`. The model-authored title never
+    selects the contract.
     """
-    tokens = re.split(r"[^a-zA-Z0-9]+", (title or "").strip().lower())
-    return "wait" in [t for t in tokens if t]
+    if not tool.is_trusted_wait():
+        return None
+    return tool.declared_wait_verdict(now)
 
 
 # ── Interactive-command classification (tool layer, pre-dispatch) ──
@@ -1060,6 +1075,11 @@ class ToolCallState:
     # attribution: the narrowing applies ONLY when this matches a known
     # model-wrapping tool (see ``_MODEL_WRAPPING_TOOLS``).
     tool_name: str = ""
+    # Trusted MCP server from the adapter identity channel, set only when the
+    # tool_call frame's identity is provenance-verified
+    # (``AcpEvent.mcp_identity_trusted``); empty otherwise (fail-closed). Read by
+    # :meth:`is_trusted_wait`.
+    mcp_server_name: str = ""
     # Pre-dispatch verdict of :func:`classify_interactive_command` for a shell
     # tool (one of the ``INTERACTIVE_*`` classes; ``none`` for a non-shell tool
     # or an unmatched command). The oracle itself does not read it — it is
@@ -1067,6 +1087,40 @@ class ToolCallState:
     # classification see the same value the dispatch computed, and so a
     # detached consult never re-derives it from a different command string.
     interactive_risk: str = INTERACTIVE_NONE
+
+    def is_trusted_wait(self) -> bool:
+        """True when the adapter-authored identity names the kirocrew-core ``wait``.
+
+        Keys on ``mcp_server_name`` + ``tool_name``, never on ``title``, which is
+        model-authored prose. ``mcp_server_name`` is set only from a
+        provenance-verified identity channel, so an unverified call fails closed.
+        A server-qualified ``tool_name`` resolves to its last segment, the same
+        normalization ``session_directive.match_tool`` applies to this field; the
+        server itself is still authenticated by ``mcp_server_name`` alone.
+        """
+        if self.is_shell or self.mcp_server_name != CORE_MCP_SERVER:
+            return False
+        return _MCP_SEPARATOR_RE.split(self.tool_name)[-1] == _WAIT_TOOL_NAME
+
+    def declared_wait_verdict(self, now: float) -> tuple[str, str]:
+        """Declared-duration contract for the kirocrew-core ``wait`` tool.
+
+        The session is WORKING by definition until the declared sleep plus
+        :data:`WAIT_TOOL_SLACK_SECS` elapses. The verdict reads only this call's
+        own input and dispatch instant, never a process tree, so it is
+        attributable to one session even on a shared runtime. *now* is on the
+        same monotonic clock as ``dispatch_ts``. A declared duration above
+        :data:`WAIT_TOOL_MAX_SECS` counts as that maximum, since the tool never
+        accepts a longer one. The caller decides that this is a wait call.
+        """
+        secs = parse_wait_seconds(self.command)
+        if secs is None:
+            return VERDICT_UNKNOWN, "wait tool without parseable seconds"
+        secs = min(secs, WAIT_TOOL_MAX_SECS)
+        elapsed = now - self.dispatch_ts
+        if elapsed < secs + WAIT_TOOL_SLACK_SECS:
+            return VERDICT_WORKING, f"wait tool declared {secs}s ({elapsed:.0f}s elapsed)"
+        return VERDICT_UNKNOWN, f"wait tool declared {secs}s elapsed"
 
 
 class LivenessOracle:
@@ -1197,16 +1251,9 @@ class LivenessOracle:
         if not runtime_pid:
             return VERDICT_UNKNOWN, "no runtime pid"
 
-        # Declared-duration contract for the kirocrew-core wait tool: the
-        # session is WORKING by definition until the declared sleep elapses.
-        if not tool.is_shell and is_wait_tool(tool.title):
-            secs = parse_wait_seconds(tool.command)
-            if secs is not None:
-                elapsed = self._now() - tool.dispatch_ts
-                if elapsed < secs + WAIT_TOOL_SLACK_SECS:
-                    return VERDICT_WORKING, f"wait tool declared {secs}s ({elapsed:.0f}s elapsed)"
-                return VERDICT_UNKNOWN, f"wait tool declared {secs}s elapsed"
-            return VERDICT_UNKNOWN, "wait tool without parseable seconds"
+        wait = wait_tool_verdict(tool, self._now())
+        if wait is not None:
+            return wait
 
         if tool.is_shell:
             return self._check_shell_child(runtime_pid, tool)

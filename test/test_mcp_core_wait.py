@@ -104,7 +104,7 @@ def test_spawn_run_transport_failure_reports_unknown_acceptance():
     assert "task1: timed out" in result
     assert "may have accepted" in result
     assert "Do not retry automatically" in result
-    assert "empty spawn_list result is inconclusive" in result
+    assert "a submission still in flight" in result
     assert "wait and recheck" in result
     assert "none of the requested subagents were started" not in result
     assert "task(s) failed to start" not in result

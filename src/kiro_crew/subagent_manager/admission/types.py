@@ -14,6 +14,13 @@ if TYPE_CHECKING:
 #: can tell "nothing was accepted, retry later" from a policy refusal.
 TASK_STORE_UNAVAILABLE_CODE = "task_store_unavailable"
 
+#: The shortest delay an admission re-check timer whose delay derives from
+#: ``admit_wait_secs`` or a row's wake is armed with: the pump's waiting-row
+#: wake and the retained-claim and boundary-cancel retries. A delay that reaches
+#: 0 would re-run the same pass on the next loop turn, which is a spin when that
+#: pass cannot make progress.
+MIN_RECHECK_DELAY_SECS = 0.05
+
 
 def tombstone_terminal_state(cause: str) -> str | None:
     """The terminal task state a tombstone cause proves, loaded on first use."""
@@ -130,6 +137,60 @@ class DeferPoint:
     # published on the ``subagent_queued`` emit that follows a SUCCESSFUL
     # defer write -- never before it, so a refused row leaves no label behind.
     wait: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class QueuedRun:
+    """An accepted spawn that has no run yet.
+
+    It waits in the dispatch window or only as a task-store row: deferred by the
+    memory gate, queued behind capacity, or claimed and not yet registered. The
+    registry (``SubagentManager.get`` / ``all_agents``) cannot name it, so this is
+    what ``GET /api/spawn/{id}`` and ``GET /api/spawn`` report for it instead of
+    "not found".
+
+    ``reason`` is the parent's current wait label (a ``QUEUED_REASON_*`` kind).
+    It is per parent, last writer wins, like the ``subagent_queued`` event it
+    comes from (``_emit_queue_depth``). ``reason_detail`` is the gate's own
+    sentence from the row's latest ``deferred`` event, present only while that
+    deferral is in force and newer than the row's last claim or transition.
+
+    ``resuming`` is set for a run that already STARTED and waits to go on: a
+    ``recovering`` row after a gateway restart (``RESUMING_AFTER_RESTART``) or a
+    ``retry_wait`` row that ran before (``RESUMING_RETRY``). It is not "not
+    started", and a reader must not call it that.
+    """
+
+    id: str
+    task: str
+    parent_session_key: str
+    agent: str = ""
+    app: str = ""
+    accepted_at: float = 0.0
+    reason: str = ""
+    reason_detail: str = ""
+    resuming: str = ""
+
+
+class QueuedReadUnavailable(Exception):
+    """The task store could not say whether an id is queued (an outage, or a
+    row this build cannot model). Distinct from "not queued": a reader answers
+    it as transient (503), never as a definitive "not found". Defined here, not
+    in ``taskq``, so a route can catch it without loading the task queue."""
+
+
+@dataclass(frozen=True)
+class QueuedRunListing:
+    """One read of the accepted spawns no run exists for yet, oldest first.
+
+    ``partial`` is True when the listing cannot be every such spawn: the store
+    held more rows than one listing returns (``taskq_bridge.QUEUED_LISTING_CAP``)
+    or could not be read at all. A reader then says the list is partial instead
+    of presenting it as every queued spawn.
+    """
+
+    runs: tuple[QueuedRun, ...]
+    partial: bool = False
 
 
 @dataclass(frozen=True)

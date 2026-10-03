@@ -162,9 +162,12 @@ class TestSpawnSubAgents:
                 "spawn_sub_agents", {"agents": [{"prompt": "a"}, {"prompt": "b"}]}
             )
 
-            envelope = json.loads(result.split("\n\n")[-1])
-            assert envelope["status"] == "still_running"
-            assert envelope["states"] == {"q1": "queued", "p1": "waiting_permission"}
+            records = [json.loads(chunk) for chunk in result.split("\n\n")]
+            still = [r for r in records if r.get("status") == "still_running"]
+            assert still and still[0]["states"] == {"p1": "waiting_permission"}
+            # A member queued and not started is its own record, never "running".
+            queued = [r for r in records if r.get("status") == "queued"]
+            assert queued and list(queued[0]["agents"]) == ["q1"]
 
     def test_pings_session_keepalive_during_long_poll(self):
         """Finding 1: the poll loop must ping /api/session-keepalive so the

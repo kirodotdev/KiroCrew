@@ -38,6 +38,7 @@ from kiro_crew.constants import (
     CHANNEL_OWNER_DM_NAMESPACES,
     MAX_BANNER_CHARS,
     SLACK_NAMESPACE,
+    WAIT_TOOL_MAX_SECS,
     WINDOWS_DEVICE_STEMS,
 )
 
@@ -3240,7 +3241,7 @@ READ_SLACK_PROFILE_SCHEMA = ToolSchema(
 WAIT_SCHEMA = ToolSchema(
     tool_name="wait",
     fields=[
-        FieldSpec("seconds", int, required=True, min_val=60, max_val=1800),
+        FieldSpec("seconds", int, required=True, min_val=60, max_val=WAIT_TOOL_MAX_SECS),
         FieldSpec("reason", str, required=True, max_len=MAX_SHORT_STRING),
     ],
 )

@@ -579,7 +579,7 @@ class TestApiSpawnMarkCollected:
         assert _payload(_run(mod.api_spawn_mark_collected, req)) == {"status": "no_slot"}
 
     def test_records_ids_bounded_and_skips_non_strings(self) -> None:
-        slot = SimpleNamespace(_subagents_inline_collected=set())
+        slot = SimpleNamespace(_subagents_inline_collected=set(), _queue=[])
         state = _state()
         state.get_slot.return_value = slot
         ids: list[Any] = [f"a{i}" for i in range(250)] + ["", 7]

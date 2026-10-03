@@ -315,7 +315,7 @@ class TestParkedRunIsVisibleOnBothReadPaths:
         from kiro_crew.mcp_tools import spawn as spawn_tools
 
         def _fake_get(path: str) -> dict:
-            assert path == "/api/spawn"
+            assert path == "/api/spawn?queued=1"
             return {
                 "agents": [
                     {

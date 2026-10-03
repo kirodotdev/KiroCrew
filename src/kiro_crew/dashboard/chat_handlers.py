@@ -1021,7 +1021,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     if (
         not body.get("steer")
         and state.subagents is not None
-        and state.subagents.running_agents_for(f"dashboard:{slot.key}")
+        and state.subagents.running_agents_for(effective_session_key(slot))
     ):
         # circular import: session_control imports this package's modules at module level.
         from kiro_crew.dashboard.session_control import containment_meta

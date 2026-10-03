@@ -264,6 +264,9 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("channel_slots.py", "_window_refresh_is_safe"),
                 ("chat_orchestrator.py", "api_chat_plan_action"),
                 ("chat_slack.py", "drain_slack_backfill"),
+                # The synthesis outage re-check fires only on an idle slot: a
+                # running TURN, not a reservation, is what it must not overlap.
+                ("chat_runner.py", "_arm_synthesis_recheck"),
                 ("slot_projection.py", "SlotProjection.to_dict"),
                 ("slot_registry.py", "SlotRegistry.running_session_keys"),
                 ("state.py", "_ChatSlot.running"),
@@ -289,7 +292,7 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
         ("chat_regenerate.py", "api_chat_slot_edit_resend"),
         ("chat_regenerate.py", "api_chat_slot_regenerate"),
         ("chat_rewind.py", "api_chat_slot_rewind"),
-        ("chat_runner.py", "_finish_queue_cycle"),
+        ("chat_runner.py", "_launch_synthesis"),
         ("chat_runner.py", "_start_next_queued_turn"),
         ("handlers/mcp_apps.py", "api_mcp_apps_message"),
         ("handlers/messaging.py", "api_send_message"),

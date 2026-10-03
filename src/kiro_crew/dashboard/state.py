@@ -2690,6 +2690,8 @@ class _ChatSlot:
         "_pending_subagent_failures",
         "_pending_synthesis",
         "_synthesis_inflight",
+        "_synthesis_recheck",
+        "_synthesis_rechecks",
         "_subagent_deliveries_inflight",
         "_subagents_inline_collected",
         "_subagent_delivery_pending",
@@ -3315,6 +3317,10 @@ class _ChatSlot:
         # Kept separate from _pending_synthesis so readiness loss does not
         # consume the one-shot request or permit duplicate waiters.
         self._synthesis_inflight: bool = False
+        # The fire gate's outage re-check (chat_runner._arm_synthesis_recheck):
+        # its pending timer, cancelled by begin_close, and how many it ran.
+        self._synthesis_recheck: asyncio.TimerHandle | None = None
+        self._synthesis_rechecks: int = 0
         # Fix 2 (B1) race guard: number of sub-agent completion deliveries
         # currently in flight for this slot (incremented in gateway._subagent_done
         # from entry until the completion is queued/launched). The synthesis
@@ -3988,6 +3994,9 @@ class _ChatSlot:
         the fence stays up until the last retraction lets go.
         """
         self._closing += 1
+        if self._synthesis_recheck is not None:
+            self._synthesis_recheck.cancel()
+            self._synthesis_recheck = None
 
     def cancel_close(self) -> None:
         """Release THIS holder's admission fence when teardown leaves the slot live.
@@ -8422,6 +8431,9 @@ class DashboardState:
         # suspenders on ``__new__``-built states that never ran __init__:
         # treat a missing set as empty rather than AttributeError-ing this hot
         # path.
+        # circular import: chat_utils imports this module at load time.
+        from kiro_crew.dashboard.chat_utils import effective_session_key
+
         under_construction = getattr(self, "_slots_under_construction", None) or ()
         for s in self._slots.values():
             if s.key in under_construction:
@@ -8432,7 +8444,9 @@ class DashboardState:
                 include_check_status=include_check_status,
                 dashboard_user=dashboard_user,
             )
-            d["subagents_running"] = bool(subs and subs.running_agents_for(f"dashboard:{s.key}"))
+            d["subagents_running"] = bool(
+                subs and subs.running_agents_for(effective_session_key(s))
+            )
             out.append(d)
         # The slot-key/session-key correspondence the lineage join needs, read the same
         # way ``/api/sessions/memory`` reads it for the Sessions table. Handed over

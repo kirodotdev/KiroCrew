@@ -5950,7 +5950,7 @@ class TestSpawnCliAuth:
 
         assert len(captured) == 1
         req = captured[0]
-        assert req.full_url == "http://127.0.0.1:5476/api/spawn"
+        assert req.full_url == "http://127.0.0.1:5476/api/spawn?queued=1"
         headers_lower = {k.lower(): v for k, v in dict(req.headers).items()}
         assert headers_lower["x-internal-secret"] == "test-secret-xyz"
 
