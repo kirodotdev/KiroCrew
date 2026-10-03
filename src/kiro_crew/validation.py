@@ -1958,6 +1958,17 @@ SUGGEST_FOLLOWUP_SCHEMA = ToolSchema(
     custom_validator=_validate_followup_items,
 )
 
+NOTHING_TO_DO_SCHEMA = ToolSchema(
+    tool_name="nothing_to_do",
+    fields=[
+        # Clamped, not rejected, for the same reason as ``autonudge_stop``'s
+        # ``reason``: the note selects no behavior — the consumer only records
+        # it on the quiet transcript step — so a long note must not cost the
+        # quiet end itself and fire the consumer's lost-marker WARNING.
+        FieldSpec("note", str, max_len=MAX_SHORT_STRING, clamp_to_max=True),
+    ],
+)
+
 # --- Dynamic Workflows (M6) ---
 _WF_RUN_ID_RE = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
 
@@ -3717,6 +3728,7 @@ MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
     "monitor_start": MONITOR_START_SCHEMA,
     "monitor_update": MONITOR_UPDATE_SCHEMA,
     "ask_question": ASK_QUESTION_SCHEMA,
+    "nothing_to_do": NOTHING_TO_DO_SCHEMA,
     "delete_message": DELETE_MESSAGE_SCHEMA,
     "update_message": UPDATE_MESSAGE_SCHEMA,
     "local_knowledge_search": LOCAL_KNOWLEDGE_SEARCH_SCHEMA,

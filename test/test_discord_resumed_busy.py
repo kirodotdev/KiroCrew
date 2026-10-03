@@ -30,6 +30,7 @@ from test_discord_sessions import _bind_to_chat1, _dispatcher, _log, _message
 from kiro_crew.dashboard import channel_handoff as ch
 from kiro_crew.dashboard import chat_runner as cr
 from kiro_crew.dashboard import session_control as sc
+from kiro_crew.dashboard.session_directive_apply import DirectiveOutcome
 from kiro_crew.history import HUMAN_TURN_META_KEY
 from kiro_crew.messaging.transport import InboundMessage
 
@@ -1208,8 +1209,8 @@ async def _turn_emits_monitor_watch_after_a_steer(tmp_path, monkeypatch, *, chan
     client.context_usage_pct = MagicMock(return_value=1.0)
     client.client = inner  # the inner ACP client the turn publishes on the slot
     state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
-    spy = AsyncMock(return_value="[applied]")
-    monkeypatch.setattr(cr, "apply_session_directive", spy)
+    spy = AsyncMock(return_value=DirectiveOutcome("[applied]"))
+    monkeypatch.setattr(cr, "apply_session_directive_outcome", spy)
 
     await cr._run_chat(state, slot, "go", _directive_user_origin=True)
     task = getattr(slot, "task", None)

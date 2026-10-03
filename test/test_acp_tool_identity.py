@@ -40,6 +40,7 @@ from kiro_crew.acp.types import (
     EVENT_TOOL_RESULT,
     AcpEvent,
 )
+from kiro_crew.dashboard.session_directive_apply import DirectiveOutcome
 
 # ── Part 1: ACP identity plumbing ─────────────────────────────────────────────
 
@@ -236,8 +237,8 @@ async def _drive(
 
     spy = None
     if applied_result is not None:
-        spy = AsyncMock(return_value=applied_result)
-        monkeypatch.setattr(chat_runner, "apply_session_directive", spy)
+        spy = AsyncMock(return_value=DirectiveOutcome(applied_result))
+        monkeypatch.setattr(chat_runner, "apply_session_directive_outcome", spy)
 
     await chat_runner._run_chat(
         state,

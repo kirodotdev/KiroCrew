@@ -25,6 +25,7 @@
     "register_hook": "Register webhook",
     "autonudge_stop": "Stop nudge loop",
     "ask_question": "Ask question",
+    "nothing_to_do": "End turn quietly",
     "monitor_watch": "Watch pull request",
     "monitor_inspect": "Inspect monitor",
     "monitor_stop": "Stop monitor",

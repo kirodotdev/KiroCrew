@@ -363,6 +363,9 @@ _HOSTILE_CALLS: dict[str, dict] = {
     # to catch mechanically instead of by grep.
     "monitor_update": {"target": "http://example.com/not/a/pr"},
     "monitor_stop": {"reason": "y" * 900},
+    # nothing_to_do has one clamped field, so a schema-plausible hostile call
+    # is a non-string note: the dispatch wrapper refuses it before the handler.
+    "nothing_to_do": {"note": ["not", "a", "string"]},
     "set_project": {"path": "/definitely/not/a/real/project/xyz"},
     "reset_conversation": {},
     "suggest_followup": {"items": [{}]},

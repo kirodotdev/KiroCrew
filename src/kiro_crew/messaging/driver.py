@@ -120,8 +120,12 @@ AutoApprovePredicate = Callable[[Any], bool]
 #: invokes it when a genuine directive-tool result (see ``session_directive``)
 #: carries a decoded marker; the caller injects a consumer bound to ITS OWN
 #: session key (keeping the driver channel-neutral), typically
-#: ``messaging.dispatch.build_directive_consumer``.
-DirectiveConsumer = Callable[[str, dict[str, Any]], Awaitable[None]]
+#: ``messaging.dispatch.build_directive_consumer``. The awaited value is the
+#: structured terminal-turn signal: ``True`` when the applied directive is the
+#: turn's intended terminal output (``DirectiveOutcome.ends_turn``), so the
+#: empty-turn verdict is owed no notice. Any other value (``None`` from an
+#: older consumer) means the turn is judged as usual.
+DirectiveConsumer = Callable[[str, dict[str, Any]], Awaitable[Any]]
 
 # ── Empty-turn verdict ─────────────────────────────────────────────────────
 #
@@ -528,6 +532,10 @@ class TurnDriver:
         # user cancelled. The same sentence rides the DONE event to the renderer,
         # so the bubble and the transcript can never tell two stories.
         self.empty_turn_notice: str = ""
+        # Whether a TERMINAL directive applied this turn (the consumer answered
+        # ``True``): a quiet end the model asked for is not an empty reply, so
+        # :func:`empty_turn_notice` is not consulted. Reset per run().
+        self.terminal_directive_applied: bool = False
         # The channel-safe assistant text run() has accumulated SO FAR -- the
         # same value run() returns once the stream ends, kept current at every
         # growth site so it survives an exception. A dispatcher whose run() raised
@@ -547,6 +555,7 @@ class TurnDriver:
         """Drive one turn; return the accumulated channel-safe assistant text."""
         accumulated = ""
         self.empty_turn_notice = ""
+        self.terminal_directive_applied = False
         self.partial_text = ""
         # Whether this turn did work a reply could be missing FROM: a tool call
         # or a reasoning chunk. Decides between the two end-of-turn notices; a
@@ -992,12 +1001,18 @@ class TurnDriver:
                     await self.renderer.dispatch(OutputEvent(kind=STEER_CONSUMED))
                 pending_steer_events = 0
                 # After the flushes: ``accumulated`` is final only now, and the
-                # verdict must read the same text the renderer was handed.
-                self.empty_turn_notice = empty_turn_notice(
-                    accumulated,
-                    completed=True,
-                    stop_reason=event.stop_reason or "",
-                    productive=productive,
+                # verdict must read the same text the renderer was handed. A
+                # turn that ended on a terminal directive owes no verdict: the
+                # quiet end IS the reply.
+                self.empty_turn_notice = (
+                    ""
+                    if self.terminal_directive_applied
+                    else empty_turn_notice(
+                        accumulated,
+                        completed=True,
+                        stop_reason=event.stop_reason or "",
+                        productive=productive,
+                    )
                 )
                 await self.renderer.dispatch(
                     OutputEvent(
@@ -1143,11 +1158,14 @@ class TurnDriver:
         if consumed is not None and event.tool_call_id:
             consumed.add(event.tool_call_id)
         try:
-            await consumer(tool, args)
+            applied = await consumer(tool, args)
         except Exception:
             # The consumer is injected code applying a side effect; a failure
             # there must never abort the rest of the turn's stream.
             logger.warning("session-directive consumer failed for %r", tool, exc_info=True)
+            return
+        if applied is True:
+            self.terminal_directive_applied = True
 
     async def _steer_deny_cause(self, event: Any) -> None:
         """Explain a host-caused denial to the model before the reject goes out.
