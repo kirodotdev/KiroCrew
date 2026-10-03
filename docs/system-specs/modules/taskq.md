@@ -675,9 +675,16 @@ makes cancel-vs-dispatch safe in either order: cancel first → the claim's
 `WHERE state IN (...)` fails; claim first → the next fenced write (`starting`)
 fails, and for the runner entries that refusal STOPS the start (§ The
 claim/start boundary). On the subagent path that write is posted, so its refusal
-reaches nobody: the ROW is the cancel the operator asked for and every later
-write of that run is fenced out as `stale_result`, but a run registered in the
-same tick still finishes in memory. Nothing is re-dispatched either way.
+reaches nobody. So the subagent claimer re-reads the row after its claim and
+before it registers (`claim_and_start`, subagent.md § `spawn` step 5): a cancel
+that landed before that re-read refuses the start there. The re-read is a read,
+not a compare-and-set, so a store-only cancel (no `_agents` record, such as an
+orphan cancel or reconcile) that commits after it answers and before the
+claimer resumes still registers a run that finishes in memory. Stop all's queued
+stop does not reach that window: it also installs a loop record, which the
+claimer checks after the re-read. The ROW is the cancel the operator asked for
+and every later write of that run is fenced out as `stale_result`. Nothing is
+re-dispatched either way.
 
 #### A cancel whose PRECONDITION came from an earlier read
 
