@@ -16435,7 +16435,10 @@ async def _run_chat(
             )
             needs_session_reset = True  # checked in finally block
             _persist_partial_reply()
-            if _should_suppress_requeue(slot):
+            # A Stop that already resolved to idle is invisible to the suppress
+            # check; the replay snapshots below are post-Stop, so only this gate
+            # can see it.
+            if _should_suppress_requeue(slot) or _stop_pressed():
                 pass
             elif _prompt_depth == 0 and not slot._session_not_found_retry_used:
                 slot._session_not_found_retry_used = True
