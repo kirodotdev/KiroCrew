@@ -21,7 +21,7 @@ from kiro_crew.apps.backend_runtime.pidfile import (
     _forget_app_pid_if,
     _proc_start_time,
 )
-from kiro_crew.apps.backend_runtime.ports import _allocated_ports
+from kiro_crew.apps.backend_runtime.ports import _allocated_ports, _forward_leases_changed
 from kiro_crew.apps.backend_runtime.probe import _health_probe
 from kiro_crew.apps.backend_runtime.tracking import (
     _LIFECYCLE_STOP,
@@ -312,22 +312,29 @@ def stop_app_backend(
     tracking restored instead, so the caller can retry. Only a caller enforcing a
     withdrawn trust ceiling needs that, and it pays for the probe.
     """
-    # Teardown participates in the health serialization, so the pop cannot land in the
-    # middle of a reconcile. Without this, a watcher that had already passed its identity
-    # check could still be inside `_gate_mcp_registration` when the caller's subsequent
-    # `deregister_app` scrubs — and its write would land AFTER, restoring the dead url
-    # this whole gate exists to keep out of mcp.json. Holding it across the pop makes the
-    # two mutually exclusive: either the reconcile completes and this pop follows it (the
-    # caller's scrub then wins), or this pop lands first and the reconcile's identity
-    # check fails. Lock order matches `_set_backend_health`: reconcile lock, then `_lock`.
+    # Teardown participates in the health serialization. Retirement and lease
+    # acquisition share ``_lock``: new requests fail closed while signed requests
+    # already being transmitted keep the port reserved until they release.
     with _health_reconcile_lock:
-        with _lock:
-            if _expected is not None and _processes.get(app_name) is not _expected:
-                return False
-            _advance_lifecycle_locked(app_name, _LIFECYCLE_STOP)
-            ap = _processes.pop(app_name, None)
-            _allocated_ports.pop(app_name, None)
-            _restart_attempts.pop(app_name, None)
+        while True:
+            with _lock:
+                ap = _processes.get(app_name)
+                if _expected is not None and ap is not _expected:
+                    return False
+                if ap is not None:
+                    ap.retiring = True
+                if ap is not None and ap.forward_leases > 0:
+                    wait_for_leases = True
+                else:
+                    wait_for_leases = False
+                if not wait_for_leases:
+                    _advance_lifecycle_locked(app_name, _LIFECYCLE_STOP)
+                    ap = _processes.pop(app_name, None)
+                    _allocated_ports.pop(app_name, None)
+                    _restart_attempts.pop(app_name, None)
+                    break
+            with _forward_leases_changed:
+                _forward_leases_changed.wait(timeout=0.1)
         # Keep cleanup inside the lifecycle transition's serialization. A later explicit
         # start cannot record its successor between the pop and this identity check.
         if ap is not None and ap.proc is not None:

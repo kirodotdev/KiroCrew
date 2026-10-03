@@ -826,6 +826,7 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
     # secret is readable AND the origin was injected above; a missing
     # .app_secret is tolerated as before and yields neither the secret nor the
     # proof (a secret-less legacy backend gets the origin only).
+    _proxy_secret = ""
     try:
         _proxy_secret = (root / ".app_secret").read_text().strip()
         if _proxy_secret:
@@ -1282,6 +1283,9 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
         proc=proc,
         log_fh=log_fh,
         healthy=False,
+        proxy_secret_digest=(
+            hashlib.sha256(_proxy_secret.encode("utf-8")).digest() if _proxy_secret else b""
+        ),
         started_at=time.time(),
         log_path=str(log_path),
         gateway_started=True,
@@ -1335,6 +1339,28 @@ def _pid_alive(pid: int) -> bool:
     EPERM-is-alive logic on POSIX, so POSIX behavior is unchanged.
     """
     return platform_compat.pid_exists(pid)
+
+
+def app_backend_matches_current_secret(app_name: str) -> bool | None:
+    """Compare the tracked spawned child with the current on-disk secret."""
+    try:
+        secret = (app_dir(app_name) / ".app_secret").read_text().strip()
+    except OSError:
+        return None
+    if not secret:
+        return None
+    actual_digest = hashlib.sha256(secret.encode("utf-8")).digest()
+    with _lock:
+        ap = _processes.get(app_name)
+        if (
+            ap is None
+            or ap.starting
+            or ap.proc is None
+            or ap.proc.poll() is not None
+            or not ap.proxy_secret_digest
+        ):
+            return False
+        return hmac.compare_digest(ap.proxy_secret_digest, actual_digest)
 
 
 # ---------------------------------------------------------------------------
@@ -1489,12 +1515,18 @@ if _typing.TYPE_CHECKING:
         _PORT_PROBE_TIMEOUT,
         _SPAWN_SURVIVAL_CHECKS,
         _SPAWN_SURVIVAL_INTERVAL,
+        BackendTargetLease,
+        _adopted_record_still_bound,
         _find_free_port,
+        _forward_leases_changed,
         _listening_pids,
         _pid_is_self_or_descendant_of,
         _port_is_listening,
         _spawn_owns_listener,
+        acquire_adopted_app_backend_target,
+        acquire_app_backend_target,
         recorded_backend_port,
+        release_app_backend_target,
         spawned_backend_owns_pid,
         unstopped_backend_port,
     )

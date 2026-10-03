@@ -26,6 +26,7 @@ shortened so the assertions do not take half a minute:
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 from aiohttp import web
@@ -148,7 +149,14 @@ async def _gateway(monkeypatch, backend_base: str) -> web.Application:
     signing, the header filtering and the body relay are all the real code.
     """
     monkeypatch.setattr(routes, "is_app_enabled", lambda name: True)
-    monkeypatch.setattr(routes, "_resolve_app_backend_url", lambda name: backend_base)
+    monkeypatch.setattr(
+        routes,
+        "get_app_manifest",
+        lambda name: SimpleNamespace(backend=SimpleNamespace(entryPoint="")),
+    )
+    monkeypatch.setattr(
+        routes, "_resolve_app_backend_url", lambda name, manifest=None: backend_base
+    )
     monkeypatch.setattr(routes, "_get_app_secret", lambda name: "test-secret")
     monkeypatch.setattr(routes, "_PROXY_TIMEOUT", _BOUND)
 

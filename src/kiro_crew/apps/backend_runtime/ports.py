@@ -10,9 +10,13 @@ never by the port merely being open.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import logging
 import socket
+import threading
 import time
+from dataclasses import dataclass, field
 from typing import Any
 
 from kiro_crew import platform_compat
@@ -44,6 +48,89 @@ _PORT_PROBE_TIMEOUT = 0.15  # cheap loopback gate before the costly port->PID lo
 
 
 _allocated_ports: dict[str, int] = {}  # app_name -> port
+
+
+@dataclass(frozen=True)
+class BackendTargetLease:
+    """A verified backend record pinned against teardown."""
+
+    port: int
+    pid: int
+    _process: Any = field(repr=False, compare=False)
+
+
+_forward_leases_changed = threading.Condition(_lock)
+
+
+def acquire_app_backend_target(app_name: str, secret: str) -> BackendTargetLease | None:
+    """Lease the healthy gateway child spawned with *secret*, or fail closed."""
+    if not secret:
+        return None
+    actual_digest = hashlib.sha256(secret.encode("utf-8")).digest()
+    with _lock:
+        ap = _processes.get(app_name)
+        if (
+            ap is None
+            or not ap.healthy
+            or ap.retiring
+            or ap.proc is None
+            or ap.proc.poll() is not None
+            or not ap.proxy_secret_digest
+            or not hmac.compare_digest(ap.proxy_secret_digest, actual_digest)
+        ):
+            return None
+        ap.forward_leases += 1
+        return BackendTargetLease(port=ap.port, pid=ap.pid, _process=ap)
+
+
+def _adopted_record_still_bound(ap: Any) -> bool:
+    """Whether current listener identities still match an adopted record."""
+    try:
+        current_owners = platform_compat.loopback_owner_pids(
+            platform_compat.find_port_listeners(ap.port)
+        )
+    except Exception:  # noqa: BLE001 -- an unreadable identity fails closed
+        return False
+    if not current_owners:
+        return False
+    recorded = set(ap.adopted_pids)
+    for pid in current_owners:
+        if pid not in recorded:
+            return False
+        live_start = _proc_start_time(pid)
+        if live_start is None or live_start != ap.adopted_start_times.get(pid):
+            return False
+    return True
+
+
+def acquire_adopted_app_backend_target(app_name: str) -> BackendTargetLease | None:
+    """Lease a healthy backend through its tracked adoption record."""
+    with _lock:
+        ap = _processes.get(app_name)
+        if (
+            ap is None
+            or not ap.healthy
+            or ap.retiring
+            or ap.starting
+            or ap.proc is not None
+            or not ap.adopted_pids
+            or set(ap.adopted_pids) != set(ap.adopted_start_times)
+            or not _adopted_record_still_bound(ap)
+        ):
+            return None
+        ap.forward_leases += 1
+        return BackendTargetLease(port=ap.port, pid=ap.adopted_pids[0], _process=ap)
+
+
+def release_app_backend_target(lease: BackendTargetLease) -> None:
+    """Return a target lease and wake teardown waiting on the record."""
+    with _forward_leases_changed:
+        ap = lease._process
+        if ap.forward_leases <= 0:
+            logger.error("App %s backend target lease released twice", ap.app_name)
+            return
+        ap.forward_leases -= 1
+        _forward_leases_changed.notify_all()
 
 
 class PortUnavailableError(RuntimeError):

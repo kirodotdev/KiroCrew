@@ -974,6 +974,32 @@ advance the generation through the public `start_app_backend` or
 `stop_app_backend` entry points, which take `_health_reconcile_lock` and `_lock`
 and call `_advance_lifecycle_locked`, never by mutating `_processes` directly.
 
+A gateway-spawned backend is also bound to the proxy-secret generation injected
+at spawn. `AppProcess.proxy_secret_digest` stores only the SHA-256 digest. The
+proxy reads the current secret from disk off-loop and acquires a target only when
+the live tracked child carries the matching digest. An adopted external backend
+uses its separate tracked-adoption contract: its current listener PIDs and start
+times must still match the identities captured at adoption. An absent or stale
+record is unavailable and never authorizes routing to a fixed manifest port.
+
+Target selection returns a forwarding lease. Acquisition and retirement share
+the process-table lock; teardown marks the record retiring, refuses new leases,
+and keeps the port reserved until requests already transmitting a signed body
+release their leases. The lease ends once aiohttp establishes the upstream
+response, because the signed body has reached that connected process and a later
+port reuse cannot retarget the connection. The hook reconciler compares each
+tracked spawned child with the current on-disk secret and performs the existing
+shutdown/startup hook sequence around a permitted replacement. It leaves adopted
+records under their external supervisor and re-runs activation admission before
+spawning replacement code.
+
+Writers: `apps/backend.py::_start_app_backend_body`,
+`apps/backend_runtime/tracking.py::AppProcess`,
+`apps/backend_runtime/ports.py` (target acquisition and release),
+`apps/backend_runtime/termination.py::stop_app_backend`,
+`apps/routes.py::handle_app_api_proxy`, and
+`apps/hook_reconcile.py::_reconcile_managed_backend`.
+
 ## 8. An app's EventBus only exists with a real broadcast function
 
 `build_app_context` returns `events=None` when `broadcast_fn` is None, and

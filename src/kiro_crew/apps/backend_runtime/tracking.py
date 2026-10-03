@@ -53,6 +53,13 @@ class AppProcess:
     proc: subprocess.Popen | None = field(default=None, repr=False)
     log_fh: Any = field(default=None, repr=False)
     healthy: bool = False
+    # Digest of the proxy secret injected into this exact child. The plaintext
+    # remains only in the child environment and on disk.
+    proxy_secret_digest: bytes = field(default=b"", repr=False)
+    # Requests that leased this exact record and have not completed request
+    # transmission. A retiring record accepts no new leases.
+    forward_leases: int = field(default=0, repr=False)
+    retiring: bool = field(default=False, repr=False)
     # The `healthy` value last SUCCESSFULLY reconciled into mcp.json, or None if nothing
     # has been written for this record yet. Distinct from `healthy` because the flag
     # moves even when the mcp.json write fails; the gap between them is what the watch

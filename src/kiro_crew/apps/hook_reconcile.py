@@ -62,6 +62,14 @@ import logging
 from functools import partial
 from typing import Any
 
+from kiro_crew.apps.backend import (
+    _activation_denied,
+    app_backend_matches_current_secret,
+    get_app_process,
+    list_app_processes,
+    start_app_backend,
+    stop_app_backend,
+)
 from kiro_crew.apps.hooks_integration import (
     clear_loaded_hook_signature,
     compute_hook_signature,
@@ -78,6 +86,8 @@ from kiro_crew.apps.lifecycle import app_has_retained_startup, apps_with_retaine
 from kiro_crew.apps.manager import app_enabled_state, app_lifecycle_lock, get_app, list_apps
 from kiro_crew.apps.module_loader import unload_app_modules
 from kiro_crew.apps.teardown import forget_app_hooks
+from kiro_crew.executors import subprocess_executor
+from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +143,205 @@ _active_pass: asyncio.Task | None = None
 #: most ONE reconcile per app is ever outstanding; the entry clears when the task
 #: finishes (done callback), so the next tick picks the app up normally.
 _inflight_app_tasks: dict[str, asyncio.Task] = {}
+
+#: Replacement retry state is private to this reconciler. It affects when the
+#: next start is attempted, never whether the proxy may forward.
+BACKEND_RETRY_SECS = 30.0
+_backend_retry_after: dict[str, float] = {}
+
+
+def _declares_managed_backend(app_info: dict[str, Any] | None) -> bool:
+    manifest = (app_info or {}).get("manifest") or {}
+    backend = manifest.get("backend") or {}
+    return bool(backend.get("entryPoint"))
+
+
+def _tracked_backend_names() -> list[str]:
+    return [str(row["app_name"]) for row in list_app_processes() if row.get("app_name")]
+
+
+def _audit_backend_replacement(name: str, outcome: str, error: str = "") -> None:
+    try:
+        sel().log_api_access(
+            caller="gateway",
+            operation="app_backend_replace",
+            outcome=outcome,
+            resources=name,
+            error=error,
+        )
+    except Exception as exc:  # noqa: BLE001 -- audit failure cannot change the decision
+        logger.debug("SEL audit failed for app backend replacement %s: %s", name, exc)
+
+
+async def _reconcile_managed_backend(
+    name: str, current: dict[str, Any] | None, *, gone: bool
+) -> None:
+    """Keep one enabled managed app on the current secret generation."""
+    ap = get_app_process(name)
+    should_run = (
+        not gone
+        and current is not None
+        and bool(current.get("enabled"))
+        and _declares_managed_backend(current)
+    )
+    if not should_run:
+        _backend_retry_after.pop(name, None)
+        if ap is not None:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(subprocess_executor(), stop_app_backend, name)
+        return
+    if _stopping or (ap is not None and ap.starting):
+        return
+    if ap is not None and ap.proc is None:
+        # Externally-managed adoption is an existing audited capability.  It
+        # has no spawn-time secret digest, and this reconciler must not turn
+        # that absence into permission to kill and replace the operator's
+        # process.  The backend health watcher owns adopted-record recovery.
+        _backend_retry_after.pop(name, None)
+        return
+
+    generation_matches = await asyncio.to_thread(app_backend_matches_current_secret, name)
+    if generation_matches is None:
+        return  # a secret write may be in flight; retry from the next disk snapshot
+    if generation_matches:
+        _backend_retry_after.pop(name, None)
+        return
+
+    now = asyncio.get_running_loop().time()
+    if now < _backend_retry_after.get(name, 0.0):
+        return
+
+    # Re-vet governance + admission before replacing, with the SAME three-way
+    # outcome the crash-restart supervisor uses (backend.py _restart_exited_backend):
+    #   * a POSITIVE policy denial (``denied and not transient``) is a kill
+    #     switch -- tightened policy must prevent newly-denied app code from
+    #     executing, so stop the running child and audit ``denied``;
+    #   * a TRANSIENT governance/admission EVALUATION error must NOT tear a
+    #     healthy child down over an evaluator hiccup: leave it serving, audit
+    #     ``error``, and retry on the backoff, exactly as restart supervision does;
+    #   * a permit falls through to the replacement, audited ``allowed`` below.
+    verdict = await asyncio.to_thread(_activation_denied, name, "respawn")
+    if verdict.denied and not verdict.transient:
+        if ap is not None:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(subprocess_executor(), stop_app_backend, name)
+        _backend_retry_after[name] = now + BACKEND_RETRY_SECS
+        _audit_backend_replacement(name, "denied", verdict.denied)
+        return
+    if verdict.transient:
+        # Evaluator error, not a decision: do not stop the child that is serving.
+        _backend_retry_after[name] = now + BACKEND_RETRY_SECS
+        _audit_backend_replacement(name, "error", verdict.denied or "activation evaluation error")
+        return
+
+    loop = asyncio.get_running_loop()
+    if ap is not None:
+        # Buffered-state teardown ordering: the retiring backend's own
+        # ``on_shutdown`` hook must run and complete BEFORE the process is
+        # stopped, matching the disable/uninstall path in teardown.py (shutdown
+        # hook first, backend stop second). ``stop_app_backend`` only SIGTERMs
+        # the child -- it never dispatches ``on_shutdown`` -- so without this a
+        # rotation would kill the old generation with its buffered state
+        # unflushed. Signed-request safety is orthogonal and already handled:
+        # ``stop_app_backend`` marks the record ``retiring`` and drains
+        # ``forward_leases`` before freeing the port, so no signed body can reach
+        # the retired/reused port regardless of hook timing.
+        shutdown_ok = await _run_backend_shutdown_hooks(name)
+        if not shutdown_ok:
+            # on_shutdown did not complete: the app's teardown routine is
+            # unsettled, so its worker may still hold buffered state. Leave the
+            # old generation in place and retry rather than killing it mid-flush.
+            _backend_retry_after[name] = now + BACKEND_RETRY_SECS
+            return
+        stopped = await loop.run_in_executor(subprocess_executor(), stop_app_backend, name)
+        if not stopped and get_app_process(name) is not None:
+            _backend_retry_after[name] = now + BACKEND_RETRY_SECS
+            return
+
+    # A CLI process does not share this in-process lock. Re-read immediately
+    # before and after spawn, leaving a child serving only on positive enablement.
+    enabled = await asyncio.to_thread(app_enabled_state, name)
+    if enabled is not True:
+        if enabled is False:
+            _backend_retry_after.pop(name, None)
+        else:
+            _backend_retry_after[name] = now + BACKEND_RETRY_SECS
+        return
+    try:
+        spawned = await loop.run_in_executor(subprocess_executor(), start_app_backend, name)
+    except Exception as exc:  # noqa: BLE001 -- one app must not wedge the reconcile pass
+        _backend_retry_after[name] = now + BACKEND_RETRY_SECS
+        _audit_backend_replacement(name, "error", str(exc))
+        logger.exception("hook reconcile: managed backend replacement failed for %s", name)
+        return
+    enabled_after = await asyncio.to_thread(app_enabled_state, name)
+    if spawned is None or enabled_after is not True:
+        if spawned is not None:
+            await loop.run_in_executor(subprocess_executor(), stop_app_backend, name)
+        if enabled_after is False:
+            _backend_retry_after.pop(name, None)
+        else:
+            _backend_retry_after[name] = now + BACKEND_RETRY_SECS
+        return
+    # Re-run the app's ``on_startup`` against the new generation, completing the
+    # teardown/startup pair the ordering above began. Same helper the load/reload
+    # branch uses, so a rotation and a code reload share one enable path.
+    await _run_backend_startup_hooks(name)
+    _backend_retry_after.pop(name, None)
+    _audit_backend_replacement(name, "allowed")
+    logger.info("hook reconcile: replaced managed backend for %s", name)
+
+
+async def _run_backend_shutdown_hooks(name: str) -> bool:
+    """Fire the loaded backend's ``on_shutdown`` before its process is stopped.
+
+    Reuses ``on_app_disable`` against the manifest the hooks were actually
+    LOADED from (``loaded_hook_manifest``), never the on-disk one, so the exact
+    ``on_shutdown`` that the running code declares is the one invoked -- the same
+    rule ``_disable_loaded`` follows. Returns True when there is nothing to do
+    (no hooks loaded) or the shutdown settled; returns False only when the app's
+    own ``on_shutdown`` failed, so the caller can defer the kill and retry
+    rather than tearing the generation down with buffered state unflushed.
+    """
+    retained = loaded_hook_manifest(name)
+    if retained is None:
+        return True  # no in-gateway hooks loaded for this app -- nothing to flush
+    try:
+        result = await on_app_disable(
+            name,
+            {"name": name, "manifest": retained},
+            run_app_hooks=True,
+            bounded_startup_cleanup=False,
+        )
+    except Exception:  # noqa: BLE001 -- a hook failure must not wedge the reconcile pass
+        logger.exception("hook reconcile: on_shutdown raised during rotation for %s", name)
+        return False
+    if str(result.get("startup_cleanup", "")).startswith("failed:"):
+        return False
+    if result.get("hooks_shutdown") == "failed":
+        logger.info("hook reconcile: %s on_shutdown failed during rotation; deferring", name)
+        return False
+    # Settled teardown: unload modules so the respawn's on_startup reimports the
+    # rotated code instead of reusing the retired generation's resident modules.
+    unload_app_modules(name)
+    return True
+
+
+async def _run_backend_startup_hooks(name: str) -> None:
+    """Re-load routes + ``on_startup`` after a rotation respawn, if hooks declared.
+
+    Skipped when the app declares no hooks (nothing to re-load). On failure the
+    shared loaded-signature is left unset so the next reconcile tick re-attempts
+    the wiring, exactly as the load/reload branch does.
+    """
+    current = await asyncio.to_thread(get_app, name)
+    if current is None or not manifest_declares_hooks(current):
+        return
+    try:
+        await _enable_app(name, current)
+    except Exception:  # noqa: BLE001 -- a reimport failure must not wedge the loop
+        clear_loaded_hook_signature(name)
+        logger.exception("hook reconcile: startup re-wire failed after rotation for %s", name)
 
 
 def _clear_inflight(app_name: str, task: asyncio.Task) -> None:
@@ -284,6 +493,14 @@ async def _reconcile_app(name: str, snapshot_info: dict[str, Any] | None) -> Non
                 name,
             )
             return
+
+        await _reconcile_managed_backend(name, current, gone=gone)
+
+        # Managed-backend rotation may have run the app's shutdown/startup hooks
+        # and recorded their new on-disk signature. Refresh the shared state so
+        # this tick does not immediately reload the freshly rewired hooks again.
+        loaded = loaded_hook_signature(name)
+
         turned_off = current is not None and (
             not current.get("enabled") or not manifest_declares_hooks(current)
         )
@@ -399,10 +616,12 @@ async def reconcile_once(installed: list[dict[str, Any]]) -> None:
     # the exact snapshot value non-authoritative, so this set only needs to be a
     # superset of what actually changed.
     candidates_set = set(loaded_hook_apps())
+    candidates_set.update(_tracked_backend_names())
     candidates_set.update(
         name
         for name, info in by_name.items()
-        if info.get("enabled") and manifest_declares_hooks(info)
+        if info.get("enabled")
+        and (manifest_declares_hooks(info) or _declares_managed_backend(info))
     )
     # Also examine apps whose loaded record was cleared on a degraded startup but
     # whose detached startup task is still live -- they must be torn down when they
