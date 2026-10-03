@@ -1484,15 +1484,27 @@ class TestPromptExpansionStaysOffTheEventLoop:
 
     def test_no_coroutine_resolves_a_mention_inline(self):
         """The ``@mention`` site cannot be driven without a live session, so the
-        rule is pinned statically over ``chat_runner``'s own source: a bare call
-        from a coroutine is an on-loop call, whichever site adds it."""
+        rule is pinned statically over the source of ``chat_runner`` and the
+        ``chat_turn`` owners composed into it: a bare call from a coroutine is an
+        on-loop call, whichever site adds it."""
+        import importlib
+        import pkgutil
+
         import kiro_crew.dashboard.chat_runner as cr
+        from kiro_crew.dashboard import chat_turn
 
         tree = ast.parse(Path(cr.__file__).read_text(encoding="utf-8"))
+        owners = [
+            importlib.import_module(f"{chat_turn.__name__}.{info.name}")
+            for info in pkgutil.iter_modules(chat_turn.__path__)
+        ]
+        assert owners, "the owner scan found no module, so it is measuring nothing"
+        trees = [tree, *(ast.parse(Path(m.__file__).read_text(encoding="utf-8")) for m in owners)]
         blocking = {"_expand_prompt_mention", "_resolve_prompt_mention"}
         inline = [
             "{} -> {}".format(fn.name, node.func.id)
-            for fn in ast.walk(tree)
+            for module_tree in trees
+            for fn in ast.walk(module_tree)
             if isinstance(fn, ast.AsyncFunctionDef)
             for node in ast.walk(fn)
             if isinstance(node, ast.Call)

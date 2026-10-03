@@ -1793,6 +1793,9 @@
     "agentImportFlow": {
       "choose_sources": "Choose sources",
       "could_not_save_onboarding_state": "Could not save onboarding state.",
+      "config_unreadable_onboarding_state": "{{productName}} can't read its config.json (in ~/.kiro/crew by default), so setup can't be marked done. Your imported items were not affected. Close setup for now, and ask the agent to repair the file.",
+      "close_setup_for_now": "Close setup for now",
+      "close_setup_for_now_hint": "Your imported items are kept. Setup opens again next time.",
       "import_all_your_supported_work_or_handpick_what": "Import all your supported work or handpick what to bring over.",
       "import_complete": "Import complete",
       "import_selected": "Import selected",
@@ -2044,7 +2047,7 @@
     },
     "chatPane": {
       "crewmate_quiet": "{{name}} hasn't said anything to you yet.",
-      "crewmate_quiet_where": "See what it has been doing in its Work log.",
+      "crewmate_quiet_where": "See the sessions it is driving.",
       "earlier_messages_load_failed": "Couldn't load earlier messages. Scroll to the top of the session to try again.",
       "earlier_messages_open_session": "Earlier messages — open full session (closes split)",
       "earlier_messages_unavailable": "Earlier messages are no longer available in this session's history.",

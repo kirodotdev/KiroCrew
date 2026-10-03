@@ -104,8 +104,10 @@ for `bypassPermissions` and for `acceptEdits` on the operations it covers.
 rules do not have to come from the operator. The SDK reads `.claude/settings.json`
 from the **project directory** — the `project` setting source is enabled for default
 options — so a cloned repository can carry allow rules its author wrote. Crew's public
-core passes no `settingSources` restriction and no `PreToolUse` hook, so it closes
-none of it. What Crew does write is a session-scoped
+core adds no `PreToolUse` hook and keeps every setting source for a session whose
+settings file it authored, so it closes none of it there. For a project that owns its
+own `settings.local.json`, it loads the `user` source alone (see "A project-owned
+settings file" below). What Crew does write is a session-scoped
 `.claude/settings.local.json`, and only while it can prove the file still holds the
 bytes it wrote; that seed carries deny rules translated from the spec's
 `disabledTools` and never merges into a foreign project settings file.
@@ -132,9 +134,18 @@ line.
 Anthropic documents two mechanisms that would close even the pre-approved case — a
 `PreToolUse` hook, which runs before every other step and whose deny holds even in
 `bypassPermissions` mode, and excluding `project` from `settingSources`, which stops
-the untrusted copy being read at all. Whether `claude-agent-acp` forwards either over
-ACP is not answered in this repository, and is the prerequisite for Crew gating
-*every* Claude tool call rather than every call Claude asks about.
+the untrusted copy being read at all. `claude-agent-acp` forwards the second: it
+spreads `_meta.claudeCode.options` over its own `settingSources: ["user", "project",
+"local"]` default, verified against release **0.84.0** (`dist/acp-agent.js`). The
+project-owned settings path below relies on it, so that path is floored at
+`CLAUDE_ACP_SETTING_SOURCES_MIN_VERSION` (0.84.0), twice. Before spawn, the installed
+package's own `package.json` version decides whether the path is taken at all. After
+`initialize`, the reported `agentInfo.version` must agree, or the session is stopped
+before its first prompt. Below the floor, or with no readable version, the project file
+stays loaded and the array stays withheld. The forwarding
+itself is not read back; the floor is the evidence. Whether it forwards a `PreToolUse` hook is still not answered
+in this repository, and that is the prerequisite for Crew gating *every* Claude tool
+call rather than every call Claude asks about.
 
 ### MCP tools on a Claude session
 
@@ -389,34 +400,135 @@ restore write and a foreign-edit comparison all become necessary — and each of
 is a place to get it wrong on someone's project state. Refusing the path is the
 invariant that removes all of them at once.
 
-The cost is disclosed rather than hidden, and it is a REDUCTION in what Crew
-applies, never a widening of what the session can do:
+The cost is disclosed rather than hidden. For a session that does not take the
+exclusion path below, it is a REDUCTION in what Crew applies, never a widening of what
+the session can do:
 
-- A project that already has its own `settings.local.json` gets no seed, so that
-  session runs without the `availableModels` allowlist (a versioned `[1m]` id may
-  collapse to 200K) and without the `permissions.deny` rules derived from
-  `disabledTools`.
+- A project that already has its own `settings.local.json` gets no seed file.
+  The file is left exactly as it is.
 - An inherited `bypassPermissions` in such a file is **not** stripped. Crew used to
   strip it; stripping required rewriting the user's file, which is exactly the
-  machinery this rule removes. A tool call still reaches Crew's `canUseTool` gate
-  unless that file pre-approves it — the same boundary the inherited-`~/.claude`
-  gap below already documents, arriving through the project file instead.
-- **That session also gets no `mcpServers` array at all**, and this is what keeps
-  the sentence above true. The array is the only channel Crew has onto the
-  session's MCP surface, so
-  delivering it here would hand `spawn_run`, `cron_add`, `send_message` and every
-  configured server into a permission surface Crew does not control — a
-  `permissions.allow` entry in the project's own file pre-approves the tool, no
-  `session/request_permission` is ever sent, and Crew sees the `tool_call`
-  notification too late to withhold it. That would be a widening, not a
-  reduction. So the seed and the array travel together: Crew delivers tools only
-  where it authored the file that governs their use, and
-  `ClaudeCodeMirror.session_params` fails closed on that precondition rather than
-  taking it on trust from its caller.
+  machinery this rule removes. Such a file is left out of the session instead (see
+  below): whatever starting mode the adapter picks from it is read back and pinned.
+
+#### A project-owned settings file
+
+The project's file is left out of the session instead of being rewritten.
+`_exclude_foreign_local_settings` takes that path, and `_claude_session_meta`
+puts it on the wire for `session/new` and `session/load`:
+
+| `_meta.claudeCode.options` key | Value |
+|---|---|
+| `settingSources` | `["user"]` (no `project`, no `local`) |
+| `settings` | Crew's seed payload, inline (the flag tier) |
+| `allowDangerouslySkipPermissions` | `false` |
+
+The claude CLI then loads neither project tier: not the project's local file, and not
+a checked-in `.claude/settings.json`. No `permissions.allow` a repository carries can
+pre-approve a tool, so every call still reaches Crew's gate. Crew's deny rules and
+model allowlist ride the inline settings. That makes the permission surface governed
+(`_permission_surface_governed`), so the session gets the full `mcpServers` array:
+`send_message`, `cron_add`, `spawn_run` and the spec's servers. A cron job on such a
+project delivers its result. The cost is that project-scope config does not load on
+this path either: its `settings.json` env and plugins, and its `CLAUDE.md` memory
+files, which the SDK loads only with the `project` source. The runtime warning names
+the same list.
+
+What the project tiers REFUSE is carried, not dropped. Leaving a tier out must drop its
+allows, never its restrictions, so `_project_settings_restrictions` reads the
+`permissions.deny` and `permissions.ask` rules of both project files
+(`settings.local.json` and a checked-in `settings.json`) and they ride the inline
+settings beside Crew's own. An `ask` rule matters as much as a deny: it forces a
+prompt, and so a trip through Crew's gate, even where a user-tier allow or
+`acceptEdits` would pre-approve the call. The read is bounded, never through
+a link, and never followed by a write. It does not reopen the race the design avoids: a
+file that changes after the read can only have gained a rule Crew did not carry, and
+its allows never load either way. That startup window is closed too:
+`_verify_claude_project_denies_unchanged` re-reads both files after `session/new` (or
+`session/load`) and before the first prompt, and stops the harness when either holds a
+deny or ask rule the envelope did not ship, or cannot be examined. A rule added after that
+is the stated residual: the session's inline settings are fixed at creation, and the
+next session reads the files again. A file whose bytes cannot be examined (a link, a
+non-regular or oversized file, a read error, JSON nested past the parser's depth)
+withholds the array, because taking the exclusion then could drop a refusal. Content
+claude itself could take no deny rules from (not JSON, a `permissions` or `deny` of the
+wrong type) contributes none, since nothing is dropped that the CLI would have
+enforced.
+
+Project `hooks` and `sandbox` settings restrict a session too, but they cannot be
+carried inline: a `PreToolUse` hook can also answer `allow`, and `sandbox` carries
+`autoAllowBashIfSandboxed`, so either would reopen a pre-approval channel. A project
+file that sets either therefore refuses the exclusion
+(`_CLAUDE_PROJECT_UNCARRIED_GUARD_KEYS`): its tiers keep loading and the array stays
+withheld, as before this path existed. The startup re-read treats a file that gained
+either key the same way, and stops the harness.
+
+Two smaller residuals. The adapter's own `SettingsManager` still reads
+`availableModels` from every tier for its model picker, so a project file can shape
+the picker even though the CLI loads Crew's inline allowlist; this is cosmetic for
+permissions. An operator's `dontAsk` is kept (below): it refuses every call that is
+not pre-approved, so it runs nothing `default` would not.
+
+What still loads is the `user` tier. A session whose file Crew authored loads
+`user`, `project` and `local`, so this path is narrower than the normal one. The user
+tier is the inherited-config gap below.
+
+The project file is never read for its mode or allows, only for its deny rules,
+because it can change between a read and `session/new`. One thing a file still decides: claude-agent-acp picks the
+STARTING permission mode itself, from every settings file, whatever `settingSources`
+says. In 0.84.0 its `SettingsManager` resolves all tiers, the project's
+`settings.local.json` included (its `settings.js` module), and `newSession` passes the
+result to the SDK as an explicit `permissionMode` (`dist/acp-agent.js`,
+`initialPermissionMode`). So a project file's `defaultMode: plan` or `dontAsk` still
+starts the session in that mode on this path, and the pin below keeps it. The mode is
+read back rather than trusted. `_pin_claude_starting_mode` takes `modes.currentModeId` from the
+`session/new` (or `session/load`) response, which is the mode the session really
+started in. When that mode decides MCP calls without asking Crew
+(`bypassPermissions` or `auto`) or is not reported, it sends `session/set_mode`
+`default` and waits for it to succeed, before the first prompt. Every other mode
+(`default`, `plan`, `acceptEdits`, and `dontAsk`, which refuses every call not
+pre-approved) is kept as the session started it, so an operator's stricter posture is
+never widened. A pin that fails stops the harness,
+so a session never runs with Crew's tools under a mode that approves on its own.
+
+The pin runs only on this path. A session whose file Crew authored is not pinned: a
+user `~/.claude` mode reaching it is the inherited-config gap below (W2-1), which this
+path does not widen. The exclusion is never taken below
+`CLAUDE_ACP_SETTING_SOURCES_MIN_VERSION`, or when Crew requested a mode itself, so
+neither case reaches the pin.
+
+The adapter behaviour the pin rests on is captured, not assumed:
+`test/fixtures/claude_mode_pin/` holds live claude-agent-acp 0.84.0 frames driven with
+this path's envelope. A project `defaultMode: plan` started the session in `plan`, and
+`session/load` reported the mode back. A project `defaultMode: auto` was filtered by the
+adapter and the session started in `default`, so a project file cannot start this path
+in `auto` or `bypassPermissions`. `session/set_mode` `default` from `auto` answered `{}`.
+The pin tests replay those answers.
+
+The array stays withheld when the session asked for a permission mode of its own,
+since the pin sets only `default`, when a project file's deny rules cannot be read
+(above), when the adapter is below the `settingSources` floor or reports no version,
+and when the path is a link (below). The floor is decided before the array exists: the
+claude spawn arm reads the installed version (`_claude_adapter_installed_version`)
+before the settings writer runs and before the array is warmed off the loop, so nothing
+re-resolves the array after the handshake. A re-seed after the handshake uses the
+reported version. A handshake that reports a version below the floor on a session that
+took the exclusion stops that session (`_pin_claude_starting_mode`); the shared
+handshake gains no step.
+
+**A session whose permission surface Crew does not govern gets no `mcpServers`
+array at all.** The array is the only channel Crew has onto the session's MCP
+surface, so delivering it there would hand `spawn_run`, `cron_add`, `send_message`
+and every configured server into a permission surface Crew does not control — a
+`permissions.allow` entry in the project's own file pre-approves the tool, no
+`session/request_permission` is ever sent, and Crew sees the `tool_call`
+notification too late to withhold it. So `ClaudeCodeMirror.session_params` fails
+closed on that precondition rather than taking it on trust from its caller.
 
 A **symlink** at either component (the file or the `.claude` directory), or a
-sensitive resolved target, is REFUSED rather than followed. Since Crew never reads
-or rewrites an existing file, the exposure is the *create*: a dangling link is
+sensitive resolved target, is REFUSED rather than followed. Since Crew never rewrites
+an existing file, and reads one only for its deny rules without following a link, the
+exposure is the *create*: a dangling link is
 absent to `exists()` yet writing it materializes Crew's settings at the link's
 target, and a symlinked `.claude` directory puts the whole write somewhere the
 project does not own. A repository can ship
@@ -441,10 +553,10 @@ user's real `~/.claude`. Project-scope `settings.local.json` outranks it for
 `defaultMode`, but `permissions.allow` entries **merge** rather than being
 overridden — so a user whose global settings pre-approve a tool family gets those
 calls auto-approved by Claude's own engine, which never calls `canUseTool` and so
-never reaches Crew's gate. Crew does not close this from the project file either:
-the seam above declines a `settings.local.json` it did not author, so an
-`allow` entry in a user's own project file is left in place exactly as one in
-`~/.claude` is. Both are the same hazard the "no gate on pre-approved calls"
+never reaches Crew's gate. A project's own `settings.local.json` is not part of
+this gap: a session that carries Crew's tools either authored that file or left it
+out of its setting sources. Its checked-in `.claude/settings.json` is part of the
+gap only for a session whose file Crew authored. Both are the same hazard the "no gate on pre-approved calls"
 section above describes, arriving through inherited config. Closing it means an
 isolated config root, which is a separate change: it has to carry credentials
 across (or CC cannot authenticate at all) while dropping exactly the `permissions`

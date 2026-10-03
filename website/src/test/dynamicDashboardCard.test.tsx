@@ -89,13 +89,27 @@ describe('host-owned card freshness and cost controls', () => {
     await waitFor(() => expect(patch).toHaveBeenCalledWith('dashboard.dynamic_dashboard_cards', true))
   })
 
-  it('never requests a card for a team worker, which the producer does not generate', () => {
-    const get = vi.spyOn(api, 'dashboardCard')
+  it('fetches the derived board for a spawned conductor and shows unavailable when none exists', async () => {
+    const get = vi.spyOn(api, 'dashboardCard').mockResolvedValue({
+      card: null, status: 'unavailable', published_at: null, content_event_at: null, stale: false,
+    })
     const store = createTestStore()
     store.dispatch(sseSlots([{ key: 'root', messages: 2, running: false }, { key: 'worker', messages: 2, running: false, created_by: 'root' }]))
     renderWithProviders(<SessionStatusFrame slot="worker" title="Worker" active />, { store })
-    expect(screen.getByRole('status')).toHaveTextContent('Content generation is unavailable for this session.')
-    expect(get).not.toHaveBeenCalled()
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Content generation is unavailable for this session.'))
+  })
+
+  it('displays a spawned conductor’s derived board that the read route serves', async () => {
+    const get = vi.spyOn(api, 'dashboardCard').mockResolvedValue({
+      card: { html: '<p data-dashboard-field="next"></p>', data: { next: 'Board' } },
+      status: 'published', published_at: 1_700_000_000, content_event_at: null, stale: false,
+    })
+    const store = createTestStore()
+    store.dispatch(sseSlots([{ key: 'worker', messages: 2, running: false, created_by: 'root' }]))
+    renderWithProviders(<SessionStatusFrame slot="worker" title="Conductor board" active />, { store })
+    await screen.findByTitle('Conductor board')
+    expect(get).toHaveBeenCalledTimes(1)
   })
 
   it('never requests a card for an adopted worker, whose only parent edge is the session tree', () => {

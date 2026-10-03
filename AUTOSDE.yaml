@@ -427,6 +427,7 @@ custom-rules:
       - "src/kiro_crew/telegram/**/*.py"
       - "src/kiro_crew/discord/**/*.py"
       - "src/kiro_crew/dashboard/chat_runner.py"
+      - "src/kiro_crew/dashboard/chat_turn/**/*.py"
       - "src/kiro_crew/dashboard/handlers/**/*.py"
       - "src/kiro_crew/eval/runner.py"
       - "src/kiro_crew/config/loader.py"

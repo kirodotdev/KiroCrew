@@ -1059,7 +1059,12 @@ async def private_chat_route_refusal(request: web.Request) -> web.Response | Non
 #: every agent principal); it READS the shared tag vocabulary (GET) but does NOT
 #: coin/rename/delete tags (``chat_tags.api_chat_tag_delete`` has no
 #: vocabulary fence at all, so admitting DELETE would let a member remove a
-#: shared tag); it files/tags only its own or created sessions. The per-handler
+#: shared tag); it files/tags only its own or created sessions, and a tag it
+#: assigns is still subject to the agent tag-grants policy
+#: (``chat_tags.agent_tag_change_refusal``): it may apply a tag the owner opened
+#: to agents (``add-only``/``add-remove``) or any rowless ordinary label, but a
+#: tag the owner reserved (a protected ``none`` row) is refused the same as for
+#: any other agent. The per-handler
 #: ownership fence (``owner_app``/``folder_principal`` for the tree,
 #: ``member_owns_slot`` for filing/tagging, ``_refuse_vocabulary_write`` for tag
 #: creation/rename) is still the authoritative gate; this set just refuses to

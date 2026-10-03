@@ -127,11 +127,13 @@ _quarantine_repaired = False
 
 
 def store_degraded() -> str | None:
-    """Why grants are unavailable or reduced, or ``None`` when the store is healthy."""
-    with _cache_lock:
-        if _quarantined_this_boot:
-            return "quarantined"
-        return _degraded
+    """Why grants are unavailable or reduced, or ``None`` when the store is healthy.
+
+    Delegates to :func:`capture_grants_snapshot` so the verdict logic lives in
+    exactly one place (the ``grants_reduced`` axis) and cannot drift from the
+    atomic snapshot the slot-tags gate reads.
+    """
+    return capture_grants_snapshot().grants_reduced()
 
 
 def store_write_blocked() -> str | None:
@@ -146,19 +148,111 @@ def store_write_blocked() -> str | None:
     quarantine is exactly what explicit dashboard-owner adoption repairs, and
     refusing that adoption until a restart would leave the one recovery path
     the quarantine points at closed.
+
+    Delegates to :func:`capture_grants_snapshot` so the ``write_blocked`` axis
+    is defined once.
+    """
+    return capture_grants_snapshot().write_blocked()
+
+
+class GrantsSnapshot:
+    """One immutable read of the grants cache: health plus the row map.
+
+    Taken under ``_cache_lock`` so the health verdict and the rows it is paired
+    with come from the SAME installed cache state — a concurrent refresh or
+    write cannot swap the cache between a health check and a row lookup
+    (the stale-health window a split read would open). Every method serves
+    only the captured values and touches neither the module globals nor the
+    filesystem, so an evaluation of a whole tag diff against one snapshot is
+    atomic with respect to cache installs. Create it with
+    :func:`capture_grants_snapshot`.
+
+    Two distinct health axes, because a reader must not conflate them:
+
+    * ``write_blocked`` — whether an authenticated WRITE may land (mirrors
+      :func:`store_write_blocked`); clears once a reseed verifies.
+    * ``grants_reduced`` — whether the installed rows are REDUCED from what the
+      operator established (mirrors :func:`store_degraded`), which stays true for
+      the life of a boot quarantine even after the reseed verifies. A caller
+      that must not treat a FORMERLY-reserved tag now missing from the rows as
+      an ordinary label reads THIS axis: after a quarantine a lost reservation
+      and a never-reserved label both read as rowless, so a tag-grants gate
+      fails a rowless tag closed while ``grants_reduced`` holds.
+    """
+
+    __slots__ = ("_write_blocked", "_grants_reduced", "_rows")
+
+    def __init__(
+        self,
+        write_blocked: str | None,
+        grants_reduced: str | None,
+        rows: dict[str, tuple[str, bool]],
+    ) -> None:
+        self._write_blocked = write_blocked
+        self._grants_reduced = grants_reduced
+        self._rows = rows
+
+    def write_blocked(self) -> str | None:
+        """Why an authenticated write must refuse against this snapshot, or ``None``."""
+        return self._write_blocked
+
+    def grants_reduced(self) -> str | None:
+        """Why the installed rows are reduced from the operator's set, or ``None``.
+
+        Stays set for the life of a boot quarantine even after the reseed
+        verifies and :meth:`write_blocked` clears, because the custom identities
+        the quarantine discarded are gone until the owner re-adopts them.
+        """
+        return self._grants_reduced
+
+    def grant_record(self, tag_id: str) -> tuple[str, bool, bool]:
+        """``(policy, status, row_exists)`` for ``tag_id`` from this snapshot."""
+        if not tag_id:
+            return ("none", False, False)
+        row = self._rows.get(tag_id)
+        if row is None:
+            return ("none", False, False)
+        return (row[0], row[1], True)
+
+    def grant(self, tag_id: str) -> tuple[str, bool]:
+        """``(policy, status)`` for ``tag_id`` from this snapshot."""
+        policy, status, _exists = self.grant_record(tag_id)
+        return (policy, status)
+
+    def has_row(self, tag_id: str) -> bool:
+        """Whether this snapshot carries a protected row for ``tag_id``."""
+        return self.grant_record(tag_id)[2]
+
+
+def capture_grants_snapshot() -> GrantsSnapshot:
+    """Atomically snapshot cache health (both axes) and the installed row map.
+
+    One critical section under ``_cache_lock``, mirroring both
+    :func:`store_write_blocked` (``write_blocked``) and :func:`store_degraded`
+    (``grants_reduced``), so a caller evaluating a tag diff reads health and
+    every grant row from a single consistent cache state. Call
+    :func:`refresh_cache` first (off the event loop) to install a fresh
+    snapshot; this accessor then only reads the installed one and never touches
+    the filesystem.
     """
     with _cache_lock:
+        # write_blocked: can an authenticated write land? (clears on verified reseed)
         if _degraded is not None:
-            return _degraded
-        if _quarantined_this_boot and not _quarantine_repaired:
-            return "quarantined"
-        return None
-
-
-def _set_degraded(reason: str | None) -> None:
-    global _degraded
-    with _cache_lock:
-        _degraded = reason
+            write_blocked: str | None = _degraded
+        elif _quarantined_this_boot and not _quarantine_repaired:
+            write_blocked = "quarantined"
+        else:
+            write_blocked = None
+        # grants_reduced: are the rows reduced from the operator's set? A boot
+        # quarantine keeps this true for the whole process even after repair,
+        # because the discarded custom identities do not come back until the
+        # owner adopts them.
+        if _quarantined_this_boot:
+            grants_reduced: str | None = "quarantined"
+        else:
+            grants_reduced = _degraded
+        rows = _cache[1] if _cache is not None else {}
+    return GrantsSnapshot(write_blocked, grants_reduced, rows)
 
 
 # Serializes snapshot installs (refresh vs authenticated write): see
@@ -425,17 +519,19 @@ def _parse_rows(raw: Any, *, allow_oversized: bool = False) -> dict[str, tuple[s
 
 def _load_rows() -> dict[str, tuple[str, bool]]:
     """Read the store for the resolver: any failure yields ZERO grants."""
-    global _cache
+    global _cache, _degraded
     path = _store_path()
     sig = _stat_signature(path)
     if sig is None:
         # The store is GONE (deleted/renamed). The resolver is cache-only, so
         # leaving the old snapshot installed would keep authorizing revoked
         # grants until the next write — clear it so
-        # every resolve fails closed to ("none", False).
+        # every resolve fails closed to ("none", False). Clear the cache and
+        # set the health flag in ONE critical section so a reader cannot pair a
+        # healthy flag with the just-cleared cache.
         with _cache_lock:
             _cache = None
-        _set_degraded("missing")
+            _degraded = "missing"
         return {}
     with _cache_lock:
         if _cache is not None and _cache[0] == sig:
@@ -464,9 +560,36 @@ def _load_rows() -> dict[str, tuple[str, bool]]:
         # lock, so the orderings interleave safely: a writer that lands after
         # our re-stat blocks until our install completes and then installs
         # the fresh snapshot last.
-        if _stat_signature(path) == sig:
+        #
+        # The health flag is set in THIS SAME critical section as the row
+        # install, not a second one: a reader (``capture_grants_snapshot``)
+        # takes ``_cache`` and ``_degraded`` together under this lock, so a
+        # split install/flag would let it observe a healthy ``_degraded`` paired
+        # with our fail-closed empty rows — a reserved tag then reads as a
+        # healthy rowless label (a review finding). Only touch ``_degraded``
+        # when we actually install, so a newer concurrent write's health is not
+        # clobbered by this stale read.
+        #
+        # Three outcomes from the install-time re-stat, so a signature change
+        # between the opening stat and here cannot leave a stale HEALTHY cache
+        # authorizing writes against a store that has since vanished:
+        reinstall_sig = _stat_signature(path)
+        if reinstall_sig is None:
+            # The store vanished (deleted/renamed) mid-read. Clear the cache and
+            # mark it missing in this one section — do NOT keep the snapshot we
+            # just read, which may already be revoked. Fail closed.
+            _cache = None
+            _degraded = "missing"
+            return {}
+        if reinstall_sig == sig:
+            # Still the store we read: install our rows and the paired health.
             _cache = (sig, rows)
-    _set_degraded(None if healthy else "unreadable")
+            _degraded = None if healthy else "unreadable"
+        # Otherwise the signature DIFFERS but the store still exists: a
+        # concurrent authenticated write installed a NEWER snapshot (and set its
+        # own health) under this lock while we parsed. Leave it — clobbering it
+        # with this stale read would restore revoked authorization, the exact
+        # case the signature guard exists to prevent.
     return rows
 
 

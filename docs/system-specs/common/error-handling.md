@@ -85,6 +85,28 @@ body remains debt in `test/test_error_code_contract.py`. That guard also checks
 literal code values on computed-status responses and refuses dictionary spreads
 that could replace the code.
 
+## Dashboard Error Hand-off
+
+`ErrorNotice`'s optional **Ask the agent** action resolves the structured report,
+stages its prompt in the error hand-off FIFO, then navigates to `/chat` through
+the imperative navigator installed by `App`. The installed navigator carries the
+same `useMayLeaveForNavigation` answer used by shell links. `sendErrorToChat`
+asks that answer before it writes the FIFO or notifies a mounted chat subscriber;
+a veto therefore leaves the current page, its draft, and the hand-off queue
+unchanged. With no registered page guard the answer remains `true`, preserving
+the existing hand-off. The root error boundary's explicit hard-navigation mode
+continues to bypass the live React tree and stages before reloading.
+
+The ask happens exactly once per click. A surface that already has a leave gate
+in scope (the notification sheet's crash fallback, through `AskAgentButton`'s
+`gate` built on `useGuardedLeave`) asks the page through that gate; the hand-off
+it then runs passes `leaveGranted` to `sendErrorToChat`, which skips the
+installed navigator's own ask. Both reads are the same
+`useMayLeaveForNavigation` channel, and a page guard that confirms a draft away
+keeps the draft dirty until the page unmounts, so a second ask was a second live
+confirm — one whose "keep my draft" cancelled a hand-off the first ask had
+already accepted. An ungated caller still asks through the navigator.
+
 ## Backend Error Classification
 
 `acp/transport_errors.py` (re-exported by `acp/client.py`) rewrites raw JSON-RPC

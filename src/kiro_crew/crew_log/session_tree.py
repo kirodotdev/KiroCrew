@@ -82,7 +82,7 @@ from __future__ import annotations
 import logging
 import threading
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import islice
 from pathlib import Path
 from typing import Any, Final
@@ -317,6 +317,22 @@ class TreeReading:
     #: why ``nodes`` is the value to read rather than these: a consumer cannot tell a
     #: scan that found no adoptions from one that never looked, and does not need to.
     edges: tuple[EdgeRecord, ...] = ()
+    #: The units whose own bytes faulted after their head proved itself, so the scan
+    #: holds a record for them and an unproven decision. Unlike a unit with no usable
+    #: head, which is simply absent from ``records``, these are present and cannot be
+    #: told apart from a clean read without this list.
+    suspect_sids: tuple[str, ...] = ()
+    #: Whether the LISTING faulted. A fault no unit can be named for: the units it hid
+    #: are absent from ``records`` and nothing says which slots they belong to.
+    unattributed_fault: bool = False
+
+
+@dataclass
+class _ScanFaults:
+    """Where one scan's faults landed, filled by :meth:`SessionTree._records_with_fault`."""
+
+    sids: list[str] = field(default_factory=list)
+    unattributed: bool = False
 
 
 @dataclass(frozen=True)
@@ -1227,7 +1243,11 @@ class SessionTree:
         return self._records_with_fault(preferred)[0]
 
     def _records_with_fault(
-        self, preferred: Iterable[str] = (), *, with_edges: bool = False
+        self,
+        preferred: Iterable[str] = (),
+        *,
+        with_edges: bool = False,
+        faults: "_ScanFaults | None" = None,
     ) -> tuple[list[OpenedRecord], list[EdgeRecord], bool, bool]:
         """:meth:`records`, plus the later decisions when asked for, plus whether any
         unit's bytes could not be READ, plus whether the population ran past the cap.
@@ -1279,6 +1299,8 @@ class SessionTree:
                 KIND_SESSION, limit=TREE_UNIT_CAP - len(named), exclude=seen
             )
             self._over_cap = over_cap
+            if listing_faulted and faults is not None:
+                faults.unattributed = True
             if listing_faulted:
                 # Reported by the read that FAILED. A probe of our own cannot
                 # stand in for it: `iterdir` yields as it goes, so a failure after
@@ -1292,6 +1314,8 @@ class SessionTree:
                 faulted = faulted or read_faulted
                 if record is not None:
                     out.append(record)
+                    if read_faulted and faults is not None:
+                        faults.sids.append(record.sid)
                 if with_edges and record is not None:
                     # Only for a unit whose head PROVED itself. An edge is keyed by
                     # slot and the head record is where this scan learned the slot,
@@ -1300,6 +1324,8 @@ class SessionTree:
                     # are the slots that have logs.
                     edge, edge_faulted = self._read_edge(directory, record)
                     faulted = faulted or edge_faulted
+                    if edge_faulted and faults is not None:
+                        faults.sids.append(record.sid)
                     if edge is not None:
                         edges.append(edge)
             # Evict what this scan did not admit: a unit that is gone, and one
@@ -1492,14 +1518,17 @@ class SessionTree:
         complete one.
         """
         try:
+            faults = _ScanFaults()
             records, edges, faulted, over_cap = self._records_with_fault(
-                preferred, with_edges=with_edges
+                preferred, with_edges=with_edges, faults=faults
             )
             return TreeReading(
                 nodes=fold_tree(records, edges),
                 incomplete=faulted or over_cap,
                 records=tuple(records),
                 edges=tuple(edges),
+                suspect_sids=tuple(faults.sids),
+                unattributed_fault=faults.unattributed,
             )
         except Exception:  # pragma: no cover -- defensive; the store calls are guarded
             logger.warning("session tree scan failed; reporting no lineage", exc_info=True)

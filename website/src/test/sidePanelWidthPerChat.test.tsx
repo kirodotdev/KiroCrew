@@ -70,9 +70,9 @@ const heightKey = (slot: string) => sidePanelDimKey(SIDE_PANEL_HEIGHT_KEY, slot)
 
 let ctl: ReturnType<typeof usePanelTabs> | null = null
 
-type PanelProps = { slot: string; slotOwner?: string; persistSlot?: string; tabsSlot?: string; expanded?: boolean; fillWidth?: number; canDockBottom?: boolean; extraReserveW?: number }
+type PanelProps = { slot: string; slotOwner?: string; persistSlot?: string; tabsSlot?: string; expanded?: boolean; fillWidth?: number; canDockBottom?: boolean; extraReserveW?: number; defaultWidth?: number }
 
-function Harness({ slot, slotOwner, persistSlot, tabsSlot, expanded, fillWidth, canDockBottom = false, extraReserveW }: PanelProps) {
+function Harness({ slot, slotOwner, persistSlot, tabsSlot, expanded, fillWidth, canDockBottom = false, extraReserveW, defaultWidth }: PanelProps) {
   // The strip is per slot too, so a slot switch swaps the tabs the way the chat
   // page does; the panel itself is NOT remounted, exactly as its stable-keyed
   // host wrappers keep it.
@@ -92,6 +92,7 @@ function Harness({ slot, slotOwner, persistSlot, tabsSlot, expanded, fillWidth, 
       expanded={expanded}
       fillWidth={fillWidth}
       extraReserveW={extraReserveW}
+      defaultWidth={defaultWidth}
     />
   )
 }
@@ -227,6 +228,12 @@ describe('SidePanel size per chat', () => {
     renderPanel()
     act(() => { ctl!.openView('git') })
     expect(renderedWidth()).toBe(`${DEFAULT_W}px`)
+  })
+
+  it('lets a host choose the resting width without changing the chat default', () => {
+    renderPanel({ defaultWidth: 780 })
+    act(() => { ctl!.openView('git') })
+    expect(renderedWidth()).toBe('780px')
   })
 
   it('holds one width per chat: a drag in one chat leaves the other where it was', () => {

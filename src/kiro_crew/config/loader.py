@@ -423,6 +423,7 @@ from kiro_crew.memory_stores import (
     DEFAULT_MEMORY_STORE,
     memory_store_name_defect,
 )
+from kiro_crew.user_json import strip_utf8_bom
 
 logger = logging.getLogger(__name__)
 
@@ -705,6 +706,21 @@ def config_path() -> Path:
     return config_dir() / "config.json"
 
 
+def read_config_text(path: Path) -> str:
+    """The text of ``config.json`` / ``config.local.json``, without a leading BOM.
+
+    Both files are hand-edited, and an editor that saves "UTF-8 with BOM" puts a
+    U+FEFF in front that ``json.loads`` refuses. The mark is dropped by
+    :func:`kiro_crew.user_json.strip_utf8_bom`, the one place that already does it
+    for the other user-owned JSON files. Writers keep emitting plain UTF-8, so a
+    locked write removes the mark. Every reader in this module comes through here,
+    as do the consumers that must agree with the loader about what the files say:
+    the hot-reload tear probe, doctor's drift and overlay reads, and the
+    app-trust gates. Other readers of these files are not yet converted.
+    """
+    return strip_utf8_bom(path.read_text(encoding="utf-8"))
+
+
 def overlay_pins(*key_path: str) -> bool:
     """Whether ``config.local.json`` sets the key at *key_path*.
 
@@ -724,7 +740,7 @@ def overlay_pins(*key_path: str) -> bool:
             return False
         # ValueError covers JSONDecodeError AND the UnicodeDecodeError a file
         # saved in a non-UTF-8 code page raises.
-        node: object = json.loads(path.read_text(encoding="utf-8"))
+        node: object = json.loads(read_config_text(path))
     except (OSError, ValueError):
         return False
     for key in key_path[:-1]:
@@ -1277,7 +1293,7 @@ def unsandboxed_exec_declared() -> bool:
     """
     for path in (config_path(), config_local_path()):
         try:
-            doc = json.loads(path.read_text(encoding="utf-8"))
+            doc = json.loads(read_config_text(path))
         except (OSError, ValueError):
             continue
         agent = doc.get("agent") if isinstance(doc, dict) else None
@@ -1309,15 +1325,17 @@ def _raw_config() -> dict:
 
     Uncached on purpose: callers want the bytes on disk right now, and the
     validated-config cache is keyed for :meth:`KiroCrewConfig.load`, not for
-    this raw view. An absent or unreadable file reads as ``{}``.
+    this raw view. An absent, unreadable or non-object file reads as ``{}``, so
+    the annotated ``dict`` holds for every caller.
     """
     p = config_path()
     if not p.exists():
         return {}
     try:
-        return json.loads(p.read_text(encoding="utf-8"))
+        raw = json.loads(read_config_text(p))
     except (json.JSONDecodeError, OSError):
         return {}
+    return raw if isinstance(raw, dict) else {}
 
 
 class ConfigWriteRefused(ValueError):
@@ -1372,7 +1390,7 @@ def read_config_for_update(path: Path | None = None) -> dict:
     try:
         if not p.exists():
             return {}
-        raw = json.loads(p.read_text(encoding="utf-8"))
+        raw = json.loads(read_config_text(p))
     except (json.JSONDecodeError, UnicodeDecodeError, OSError) as e:
         # UnicodeDecodeError is a ValueError, NOT an OSError, so it needs naming
         # explicitly: a config containing invalid UTF-8 (a truncated multi-byte
@@ -1445,7 +1463,7 @@ def _deepseek_env_on_disk(path: Path) -> object:
     which the caller treats as "not shown pre-existing".
     """
     try:
-        document = json.loads(path.read_text(encoding="utf-8"))
+        document = json.loads(read_config_text(path))
     except (OSError, ValueError):
         return None
     agent = document.get("agent") if isinstance(document, dict) else None
@@ -2042,7 +2060,7 @@ def _overlay_kiro_agent() -> str | None:
         local_path = config_local_path()
         if not local_path.is_file():
             return None
-        raw = json.loads(local_path.read_text(encoding="utf-8"))
+        raw = json.loads(read_config_text(local_path))
     except (json.JSONDecodeError, UnicodeDecodeError, OSError):
         return None
     if not isinstance(raw, dict):
@@ -2285,7 +2303,7 @@ def config_content_stamp() -> str | None:
     parts: list[bytes | None] = []
     for p in (config_path(), config_local_path()):
         try:
-            parts.append(p.read_text(encoding="utf-8").encode("utf-8"))
+            parts.append(read_config_text(p).encode("utf-8"))
         except FileNotFoundError:
             # A file that does not exist is a real state, not a failure.
             parts.append(None)
@@ -3761,7 +3779,7 @@ class KiroCrewConfig:
             digestible = True
             if path.exists():
                 try:
-                    base_text = path.read_text(encoding="utf-8")
+                    base_text = read_config_text(path)
                     read_parts[0] = base_text.encode("utf-8")
                     raw = json.loads(base_text)
                     if isinstance(raw, dict):
@@ -3828,7 +3846,7 @@ class KiroCrewConfig:
                             st_mode & 0o777,
                             local_path,
                         )
-                    local_text = local_path.read_text(encoding="utf-8")
+                    local_text = read_config_text(local_path)
                     read_parts[1] = local_text.encode("utf-8")
                     raw_local = json.loads(local_text)
                     if isinstance(raw_local, dict):
@@ -4755,7 +4773,7 @@ class KiroCrewConfig:
         local_path = config_local_path()
         if local_path.is_file():
             try:
-                raw_local = json.loads(local_path.read_text(encoding="utf-8"))
+                raw_local = json.loads(read_config_text(local_path))
                 if isinstance(raw_local, dict):
                     # Compare CANONICAL values for resource_limits.
                     # _subtract_overlay recognises an overlay-owned leaf only when
@@ -5414,6 +5432,35 @@ _MATERIALIZED_AGENTS: frozenset[str] = frozenset()
 # residue witness compares a dict by identity. See :func:`dispatch_kiro_agent`.
 _MATERIALIZED_STEMS: dict[str, str] = {}
 _MATERIALIZED_AGENTS_READY = False
+# Whether the snapshot now installed came from a scan that read every spec.
+# Published with the snapshot, under the same lock, because the healer reads the
+# INSTALLED snapshot, which a later partial scan may have replaced since the
+# refresh that called it scanned (see :func:`reset_dangling_default_agent`).
+_MATERIALIZED_COMPLETE = False
+# Every name a landed snapshot or a publish has let a binding dispatch in this
+# process: declared names and the file names mapped to one. Updated in place,
+# never rebound. A name in it that the current snapshot does not declare was
+# REMOVED, which is the evidence :func:`reset_dangling_default_agent` needs;
+# keeping it here rather than diffing two consecutive scans means a refresh that
+# does not heal cannot use the evidence up before one that does.
+#
+# An insertion-ordered dict used as a set, bounded by :func:`_remember_seen`:
+# every name the directory still declares moves to the end on each scan, so the
+# oldest entries are the removals seen longest ago, and those go first when the
+# count passes its bound.
+_MATERIALIZED_SEEN: dict[str, None] = {}
+# The directory is user-writable and its files choose these names, so the
+# retained maps are bounded where they are kept: at most this many entries each,
+# and no name (a stem, or the name it maps to) longer than this. A name past the
+# length bound is not recorded. For the stem map that leaves the binding
+# dispatched verbatim; for the removal evidence it means a default bound to that
+# name is never reset, which is the healer's answer to anything it cannot be
+# sure of.
+_MATERIALIZED_SEEN_MAX = 4096
+_MATERIALIZED_SEEN_NAME_MAX_CHARS = 256
+# What the last bounded write dropped, so a diagnostic is written when that
+# changes rather than on every refresh of an unchanged directory.
+_MATERIALIZED_LAST_DROPPED: dict[str, int] = {}
 # Bumped by every publish. A refresh samples it before scanning and, if it moved
 # while the scan was in flight, unions instead of replacing — otherwise a scan
 # that globbed the directory BEFORE a registration wrote into it would assign its
@@ -5430,6 +5477,57 @@ _MATERIALIZED_REFRESH_APPLIED = 0
 # for a lookup: the read path stays lock-free, which is the whole point of the
 # snapshot.
 _MATERIALIZED_AGENTS_LOCK = threading.Lock()
+
+
+def _report_dropped(what: str, dropped: int) -> None:
+    """One aggregate line when a bounded write's drop count changes.
+
+    Every bounded map reports through here, once per landed scan or publish
+    and only when the count differs from the last report for *what*, so an
+    unchanged oversized directory is reported once, not on every refresh.
+    """
+    if _MATERIALIZED_LAST_DROPPED.get(what, 0) == dropped:
+        return
+    _MATERIALIZED_LAST_DROPPED[what] = dropped
+    if dropped:
+        logger.warning(
+            "agents directory: %d %s not kept (bounds: %d entries, %d characters per name)",
+            dropped,
+            what,
+            _MATERIALIZED_SEEN_MAX,
+            _MATERIALIZED_SEEN_NAME_MAX_CHARS,
+        )
+
+
+def _remember_seen(names: Iterable[str]) -> None:
+    """Record *names* in ``_MATERIALIZED_SEEN`` as the newest entries, within its bounds.
+
+    Caller holds ``_MATERIALIZED_AGENTS_LOCK``. A name already present moves to
+    the end, so what the directory still declares stays newest and the oldest
+    entries are stale removal evidence; those are evicted first once the count
+    passes ``_MATERIALIZED_SEEN_MAX``. Overlong names and evictions are counted
+    and reported in one line (see :func:`_report_dropped`).
+    """
+    dropped = 0
+    for name in names:
+        if len(name) > _MATERIALIZED_SEEN_NAME_MAX_CHARS:
+            dropped += 1
+            continue
+        _MATERIALIZED_SEEN.pop(name, None)
+        _MATERIALIZED_SEEN[name] = None
+    while len(_MATERIALIZED_SEEN) > _MATERIALIZED_SEEN_MAX:
+        del _MATERIALIZED_SEEN[next(iter(_MATERIALIZED_SEEN))]
+        dropped += 1
+    _report_dropped("removal-evidence name(s)", dropped)
+
+
+# Whether the last :func:`_scan_materialized_index` on THIS thread read every
+# candidate spec. Thread-local, not returned: the scan's ``(names, stems)``
+# contract has other callers, and each refresh runs its scan and reads this on
+# one thread. A scan that skipped an unreadable or unparseable spec leaves that
+# agent's name out of the snapshot although its file is still there, so its
+# absence is not evidence of a removal (see :func:`refresh_materialized_agents`).
+_SCAN_STATE = threading.local()
 
 
 def _scan_materialized_agents(agents_dir: Path) -> frozenset[str]:
@@ -5467,9 +5565,11 @@ def _scan_materialized_index(agents_dir: Path) -> tuple[frozenset[str], dict[str
     # fail-closed, rather than falling back to an unguarded read.
     from kiro_crew.hooks import safe_read_file
 
+    _SCAN_STATE.complete = True
     try:
         candidates = iter_agent_spec_files(agents_dir)
     except OSError:
+        _SCAN_STATE.complete = False
         return frozenset(), {}
     for af in candidates:
         try:
@@ -5481,6 +5581,8 @@ def _scan_materialized_index(agents_dir: Path) -> tuple[frozenset[str], dict[str
             # refused entry is skipped by the same handler as an unreadable one.
             data = parse_agent_spec_text(safe_read_file(str(af)), af)
         except (ValueError, OSError):
+            # Its agent may be one this scan now leaves out; the scan is partial.
+            _SCAN_STATE.complete = False
             continue
         # Skip stray non-object JSON a user may have dropped in the dir. The
         # filename stem is only trusted AFTER the file parses as an agent config:
@@ -5507,13 +5609,28 @@ def _scan_materialized_index(agents_dir: Path) -> tuple[frozenset[str], dict[str
         else:
             names.add(af.stem)
     # A stem that is itself some agent's declared name already dispatches that
-    # agent; one two configs share is no evidence of which was meant.
-    return frozenset(names), {
-        stem: name for stem, name in stems.items() if stem not in names and stem not in ambiguous
-    }
+    # agent; one two configs share is no evidence of which was meant. The map is
+    # kept for the process, so it is bounded here, where it is built: an
+    # overlong stem or name is left out (the binding then dispatches verbatim),
+    # and past the count bound the rest are dropped. Both are reported once.
+    kept: dict[str, str] = {}
+    dropped = 0
+    for stem, name in stems.items():
+        if stem in names or stem in ambiguous:
+            continue
+        if (
+            len(stem) > _MATERIALIZED_SEEN_NAME_MAX_CHARS
+            or len(name) > _MATERIALIZED_SEEN_NAME_MAX_CHARS
+            or len(kept) >= _MATERIALIZED_SEEN_MAX
+        ):
+            dropped += 1
+            continue
+        kept[stem] = name
+    _report_dropped("file-name mapping(s)", dropped)
+    return frozenset(names), kept
 
 
-def refresh_materialized_agents(*, heal_default: bool = True) -> None:
+def refresh_materialized_agents(*, heal_default: bool = False) -> None:
     """Rescan the kiro agents directory into the in-memory snapshot.
 
     MUST be called off the event loop — it globs a directory and reads every
@@ -5526,11 +5643,16 @@ def refresh_materialized_agents(*, heal_default: bool = True) -> None:
     does zero filesystem work. Never raises.
 
     A scan that lands is the one moment the snapshot is known to be whole, so
-    it also runs :func:`reset_dangling_default_agent`. ``heal_default=False``
-    is for the LAZY build a lookup performs in a synchronous context: that
-    lookup can run inside a caller's own locked config write (the default-agent
-    PUT reaches :func:`dispatch_kiro_agent` from its mutate), and the reset's
-    write would then wait on the lock that caller holds.
+    a caller acting for the owner passes ``heal_default=True`` to also run
+    :func:`reset_dangling_default_agent`. Healing is opt-in because the reset
+    writes the owner's ``config.json``: a refresh reached from anyone else's
+    request (an app token's turn, a lookup) must not, and a lazy build can run
+    inside a caller's own locked config write (the default-agent PUT reaches
+    :func:`dispatch_kiro_agent` from its mutate), where the reset's write would
+    wait on the lock that caller holds. A refresh that does not heal still
+    records what it saw removed, for the next one that does. A scan that could
+    not read or parse every spec never heals: the agent of a skipped file is
+    missing from that snapshot while its file is still on disk.
 
     Consequence worth stating plainly: editing an existing config IN PLACE — say
     renaming its ``name`` field by hand — refreshes nothing, so that new name
@@ -5540,14 +5662,16 @@ def refresh_materialized_agents(*, heal_default: bool = True) -> None:
     rather than papered over with a per-file stat.
     """
     global _MATERIALIZED_AGENTS, _MATERIALIZED_AGENTS_READY, _MATERIALIZED_REFRESH_ISSUED
-    global _MATERIALIZED_REFRESH_APPLIED
+    global _MATERIALIZED_REFRESH_APPLIED, _MATERIALIZED_COMPLETE
     with _MATERIALIZED_AGENTS_LOCK:
         generation_at_start = _MATERIALIZED_AGENTS_GENERATION
         _MATERIALIZED_REFRESH_ISSUED += 1
         my_ticket = _MATERIALIZED_REFRESH_ISSUED
     try:
         agents_dir = kiro_agents_dir()
+        _SCAN_STATE.complete = True
         snapshot, stems = _scan_materialized_index(agents_dir)
+        scan_complete = bool(getattr(_SCAN_STATE, "complete", True))
     except Exception:  # noqa: BLE001 — a refresh failure only costs a fallback
         logger.debug("Failed to refresh materialized agent names", exc_info=True)
         return
@@ -5573,6 +5697,10 @@ def refresh_materialized_agents(*, heal_default: bool = True) -> None:
         _MATERIALIZED_STEMS.update(stems)
         for stale in [stem for stem in _MATERIALIZED_STEMS if stem not in stems]:
             del _MATERIALIZED_STEMS[stale]
+        # One call per landed snapshot, so its eviction and its report happen
+        # once for the whole of what it declares.
+        _remember_seen([*snapshot, *stems])
+        _MATERIALIZED_COMPLETE = scan_complete
         _MATERIALIZED_AGENTS_READY = True
         _MATERIALIZED_REFRESH_APPLIED = my_ticket
     # An app install/upgrade that rewrote agent JSON just landed in the snapshot;
@@ -5585,8 +5713,25 @@ def refresh_materialized_agents(*, heal_default: bool = True) -> None:
         invalidate_include_crew_context_cache()
     except Exception:  # noqa: BLE001 — best-effort; a stale flag is not fatal
         logger.debug("Failed to invalidate includeCrewContext cache", exc_info=True)
-    if heal_default:
+    # Only a scan that read every spec may heal: one that skipped a file it could
+    # not read or parse is missing that file's agent while the file is still
+    # there, and the reset it would make is durable.
+    if heal_default and scan_complete:
         reset_dangling_default_agent()
+
+
+def _removal_evidence() -> tuple[frozenset[str] | None, frozenset[str], bool]:
+    """``(installed names, removed names, scan complete)``, read in one lock hold.
+
+    ``None`` names while no snapshot has landed. Read together so the removals
+    and the completeness flag describe the same installed snapshot.
+    """
+    with _MATERIALIZED_AGENTS_LOCK:
+        names = _MATERIALIZED_AGENTS if _MATERIALIZED_AGENTS_READY else None
+        removed = frozenset(
+            _MATERIALIZED_SEEN.keys() - _MATERIALIZED_AGENTS - _MATERIALIZED_STEMS.keys()
+        )
+        return names, removed, _MATERIALIZED_COMPLETE
 
 
 def reset_dangling_default_agent() -> bool:
@@ -5602,11 +5747,19 @@ def reset_dangling_default_agent() -> bool:
     The alias row is left alone: it is the owner's record, and the template may
     come back.
 
+    "Gone" is a REMOVED name: one an earlier landed snapshot (or a publish) in
+    this process let a binding dispatch, and the current snapshot does not.
+    Absence alone is not evidence. A
+    binding can name an agent this directory never declared and still
+    dispatch: a project checkout's own spec (kiro-cli resolves ``--agent``
+    against the session's directory first) or an agent the edition contributes.
+    For the same reason a removed name the edition still supplies is kept.
+
     Decides against the materialized snapshot only, so it is a pure in-memory
     check between the config load and the write, and it never acts on
-    uncertainty -- a cold or empty snapshot, an unreadable or degraded config, a
-    missing ``default`` alias, or a default already ``default`` all leave the
-    file untouched. The managed ``kirocrew`` template is exempt: a missing one is
+    uncertainty -- a cold or empty snapshot, nothing removed, an unreadable or
+    degraded config, a missing ``default`` alias, or a default already
+    ``default`` all leave the file untouched. The managed ``kirocrew`` template is exempt: a missing one is
     regenerated before spawn (``agent.ensure_agent_materialized``), not a loss.
     The write is the same locked read-modify-write the default-agent PUT uses,
     and both conditions are re-derived inside the lock, so a PUT that repointed
@@ -5614,9 +5767,8 @@ def reset_dangling_default_agent() -> bool:
     and takes the config lock); :func:`refresh_materialized_agents` is its
     caller. Never raises. Returns ``True`` when the default was reset.
     """
-    with _MATERIALIZED_AGENTS_LOCK:
-        names = _MATERIALIZED_AGENTS if _MATERIALIZED_AGENTS_READY else None
-    if not names:
+    names, removed, complete = _removal_evidence()
+    if not names or not removed or not complete:
         return False
     try:
         cfg = KiroCrewConfig.load()
@@ -5630,7 +5782,7 @@ def reset_dangling_default_agent() -> bool:
     if current == "default" or row is None or "default" not in cfg.agents:
         return False
     template = _dangling_template(row.kiro_agent, names)
-    if template is None:
+    if template is None or template not in removed or template in _edition_agent_names():
         return False
     reset = False
 
@@ -5642,7 +5794,13 @@ def reset_dangling_default_agent() -> bool:
         row = agents.get(current)
         if "default" not in agents or not isinstance(row, dict):
             return None
-        if _dangling_template(row.get("kiro_agent"), _MATERIALIZED_AGENTS) is None:
+        # Re-derived from the snapshot installed NOW: another refresh may have
+        # replaced the one read above, and if its scan was partial its absences
+        # are not evidence.
+        names_now, removed_now, complete_now = _removal_evidence()
+        if names_now is None or not complete_now or template not in removed_now:
+            return None
+        if _dangling_template(row.get("kiro_agent"), names_now) != template:
             return None
         data["default_agent"] = "default"
         reset = True
@@ -5664,6 +5822,20 @@ def reset_dangling_default_agent() -> bool:
     )
     _log_default_agent_reset(current, template)
     return True
+
+
+def _edition_agent_names() -> frozenset[str]:
+    """Names of the agents the edition contributes beside the on-disk specs.
+
+    Taken from ``agent_discovery._with_edition_agents``, the one reader of the
+    edition's agent catalog, so the healer and the agent listing agree on which
+    rows exist: its failure handling (none on an adapter error) and its row
+    validation apply here unchanged. The public edition contributes none.
+    """
+    # Deferred: agent_discovery imports this package's paths at load time.
+    from kiro_crew.agent_discovery import _with_edition_agents
+
+    return frozenset(agent.name for agent in _with_edition_agents([]))
 
 
 def _dangling_template(kiro_agent: object, names: frozenset[str]) -> str | None:
@@ -5726,6 +5898,7 @@ def publish_materialized_agents(names: Iterable[str]) -> None:
         return
     with _MATERIALIZED_AGENTS_LOCK:
         _MATERIALIZED_AGENTS = frozenset(_MATERIALIZED_AGENTS | fresh)
+        _remember_seen(fresh)
         _MATERIALIZED_AGENTS_READY = True
         # Signals any in-flight refresh that its view predates this write, so it
         # unions rather than replacing (see refresh_materialized_agents).
@@ -5774,7 +5947,7 @@ def dispatch_kiro_agent(kiro_agent: str) -> str:
     declares, so the existing crewmate works without editing its row.
 
     Changes nothing else: a name that is itself declared, a stem two files share,
-    and any unknown name are returned verbatim. A pure in-memory lookup (see
+    a name the edition contributes, and any unknown name are returned verbatim. A pure in-memory lookup (see
     :func:`_materialized_kiro_agent` for why), built by the same full refresh.
     """
     if not kiro_agent or kiro_agent in _MATERIALIZED_AGENTS:
@@ -5786,7 +5959,16 @@ def dispatch_kiro_agent(kiro_agent: str) -> str:
             refresh_materialized_agents(heal_default=False)
         else:
             return kiro_agent
-    return _MATERIALIZED_STEMS.get(kiro_agent, kiro_agent)
+    mapped = _MATERIALIZED_STEMS.get(kiro_agent)
+    if mapped is None:
+        return kiro_agent
+    # A name the edition contributes is that agent, whatever a local file of the
+    # same stem declares: the directory is user-writable, so a file must not be
+    # able to redirect a binding to an edition agent onto some other agent.
+    # Asked only when a mapping exists, so the common path stays in memory.
+    if kiro_agent in _edition_agent_names():
+        return kiro_agent
+    return mapped
 
 
 def member_template_id(agent_cfg: KiroCrewAgentConfig) -> str:

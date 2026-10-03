@@ -26,8 +26,10 @@ interface, the public edition is complete standalone.
 
 The execution catalog reads `ProviderRegistry.agent_runtime_policy(engine_identity)`
 through `current_context()` and `safe_context_call` for owner-visible member rows.
-The lookup key is the member's `kiro_agent`, falling back to its roster alias
-when empty. Redacted requests neither query nor emit this metadata; template
+The lookup key is the agent the member runs: its `kiro_agent` through
+`dispatch_kiro_agent`, so a row that recorded an agent's file name keys on the
+name that file declares, falling back to its roster alias when the binding is
+empty. Redacted requests neither query nor emit this metadata; template
 rows never carry it. The public adapter returns `None`; companion policy is
 advisory metadata, not an enforcement boundary or a public picker behavior.
 Composition failures propagate, while other lookup failures log at debug and

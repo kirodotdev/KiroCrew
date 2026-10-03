@@ -288,15 +288,21 @@ git push --force-with-lease origin <feature-branch>
    git fetch origin
    git checkout -b feat/my-feature origin/main
    ```
-3. **Make your change** and add tests (new functions/components should be tested).
-4. **Run the [gate before you commit](AGENTS.md#the-gate-before-you-commit)**
+3. **Start from an issue.** Every PR must name an issue of this repository that
+   triage has already read, on a line of its own in the description: `Closes #N`
+   closes the issue when the PR merges; `Part of #N` leaves it open for the
+   rest of the work. The `Issue Gate` check enforces it. No issue yet? Open one
+   and let triage run first -- see
+   [Reporting Bugs and Requesting Features](#reporting-bugs-and-requesting-features).
+4. **Make your change** and add tests (new functions/components should be tested).
+5. **Run the [gate before you commit](AGENTS.md#the-gate-before-you-commit)**
    before opening a PR; its test step is:
    ```bash
    python3 scripts/local-gate.py
    ```
-5. **Commit** using [Conventional Commits](https://www.conventionalcommits.org/)
+6. **Commit** using [Conventional Commits](https://www.conventionalcommits.org/)
    (see below), push to your fork, and open a **Pull Request against `main`**.
-6. A maintainer will review. Address feedback by pushing additional commits to
+7. A maintainer will review. Address feedback by pushing additional commits to
    your branch.
 
 Two things are worth knowing before you start something large.

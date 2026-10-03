@@ -503,11 +503,16 @@ recoverClaimedChatHandoffs()
 // imperative seam so non-page modules can navigate without importing a page.
 
 let _softNavigate: ((to: string) => void) | null = null
+let _maySoftNavigate: (() => boolean) | null = null
 const _handoffListeners = new Set<() => void>()
 
-/** Install (or clear, with `null`) the in-app navigator. Called by App.tsx. */
-export function installSoftNavigate(fn: ((to: string) => void) | null): void {
+/** Install (or clear, with `null`) the in-app navigator and its leave guard. Called by App.tsx. */
+export function installSoftNavigate(
+  fn: ((to: string) => void) | null,
+  mayNavigate: (() => boolean) | null = null,
+): void {
   _softNavigate = fn
+  _maySoftNavigate = fn ? mayNavigate : null
 }
 
 /**
@@ -533,19 +538,32 @@ export function subscribeChatHandoff(fn: () => void): () => void {
  * unmount the surface the user was on and deliver them to an empty chat — it
  * destroys context and gains nothing. Staying put keeps the error, and whatever
  * they had typed, on screen. Returns whether the hand-off proceeded.
+ *
+ * `leaveGranted: true` says the caller has ALREADY asked the page's leave
+ * guard through its own gate (`AskAgentButton`'s `gate`, built on
+ * `useGuardedLeave`) and the page agreed. The installed `mayNavigate` is that
+ * same channel, so asking it again here would pose the discard question a
+ * second time — and a page guard that confirms a draft away does not clear the
+ * draft until it unmounts, so the second ask is a live confirm, not a free
+ * `true`. Cancelling it would abort a hand-off the user had just accepted.
+ * Ungated callers keep the ask.
  */
-export function sendErrorToChat(prompt: string, opts: { hard?: boolean } = {}): boolean {
+export function sendErrorToChat(prompt: string, opts: { hard?: boolean; leaveGranted?: boolean } = {}): boolean {
+  // The app-level leave guard must run before staging: if the page refuses to
+  // leave, a queued prompt would ambush the next chat the user opens even
+  // though this click did not navigate. Hard mode is the root-boundary escape
+  // hatch and deliberately bypasses the live React tree.
+  const softNavigate = !opts.hard ? _softNavigate : null
+  if (softNavigate && !opts.leaveGranted && _maySoftNavigate && !_maySoftNavigate()) return false
   if (!handoffToChat(prompt)) return false
-  if (!opts.hard) {
+  if (softNavigate) {
     // Notify before navigating: an already-mounted ChatPage drains here, and a
     // not-yet-mounted one drains on mount instead.
     for (const fn of _handoffListeners) {
       try { fn() } catch { /* a bad subscriber must not strand the hand-off */ }
     }
-    if (_softNavigate) {
-      _softNavigate('/chat')
-      return true
-    }
+    softNavigate('/chat')
+    return true
   }
   try { window.location.assign('/chat') } catch { /* nothing left to try */ }
   return true
@@ -554,5 +572,6 @@ export function sendErrorToChat(prompt: string, opts: { hard?: boolean } = {}): 
 /** Test seam — the seam is module state. */
 export function __resetNavSeamForTests(): void {
   _softNavigate = null
+  _maySoftNavigate = null
   _handoffListeners.clear()
 }

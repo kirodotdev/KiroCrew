@@ -457,7 +457,20 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "retry. Metadata only: the transcript, model and any running turn are "
                 "untouched. ARCHIVED (history) sessions cannot be tagged — bring one back "
                 "with session_revive first. An app agent may tag only its own sessions; "
-                "a crew member may tag only a session it owns or created."
+                "a crew member may tag only a session it owns or created. The agent "
+                "tag-grants policy applies the same way it does to the chat_tag "
+                "set_state directive: a tag the person RESERVED (a protected grant row "
+                "with policy 'none', or 'add-only' when you try to remove it) is refused "
+                "``tag_policy_denied``; a workflow-STATUS tag whose protected identity is "
+                "missing is refused ``status_identity_unprotected`` on add as well as "
+                "strip, and adding one that would leave the session with two states is "
+                "refused ``status_tag_requires_set_state`` (use chat_tag set_state for "
+                "workflow states); "
+                "and when the grants store is unavailable the refusal is "
+                "``tag_grants_unavailable``. An ordinary label with no protected row is "
+                "yours to apply. A tag chat_tag_create makes stays rowless until the "
+                "owner adopts it, so a freshly-created workflow-STATUS tag may not be "
+                "assignable until then."
             ),
             "inputSchema": {
                 "type": "object",

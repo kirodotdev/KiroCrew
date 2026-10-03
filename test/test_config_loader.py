@@ -15,6 +15,7 @@ import platform
 import re
 import tempfile
 import threading
+import types
 import unittest.mock
 from pathlib import Path
 
@@ -5355,6 +5356,9 @@ class TestAppAgentDispatch(unittest.TestCase):
 
         loader._MATERIALIZED_AGENTS = frozenset()
         loader._MATERIALIZED_STEMS = {}
+        loader._MATERIALIZED_SEEN.clear()
+        loader._MATERIALIZED_LAST_DROPPED.clear()
+        loader._MATERIALIZED_COMPLETE = False
         loader._MATERIALIZED_AGENTS_READY = False
         loader._MATERIALIZED_AGENTS_GENERATION = 0
         loader._MATERIALIZED_REFRESH_ISSUED = 0
@@ -6089,13 +6093,21 @@ class TestDanglingDefaultAgentReset(unittest.TestCase):
     """A default agent whose template file is gone is pointed back at ``default``
     by the next landed snapshot refresh, and only then: a healthy, managed,
     cold, unreadable or concurrently changed state leaves ``config.json`` as it
-    is, and the alias row is never edited."""
+    is, and the alias row is never edited.
+
+    "Gone" means an agent an earlier landed snapshot declared that the latest
+    landed snapshot does not. A template the directory never declared -- one a
+    project checkout or the edition supplies -- may still dispatch, so it is
+    not evidence of a removal."""
 
     def setUp(self):
         import kiro_crew.config.loader as loader
 
         loader._MATERIALIZED_AGENTS = frozenset()
         loader._MATERIALIZED_STEMS = {}
+        loader._MATERIALIZED_SEEN.clear()
+        loader._MATERIALIZED_LAST_DROPPED.clear()
+        loader._MATERIALIZED_COMPLETE = False
         loader._MATERIALIZED_AGENTS_READY = False
         loader._MATERIALIZED_AGENTS_GENERATION = 0
         loader._MATERIALIZED_REFRESH_ISSUED = 0
@@ -6139,12 +6151,15 @@ class TestDanglingDefaultAgentReset(unittest.TestCase):
                 Path(td),
                 {"default": {"kiro_agent": "kirocrew"}, "pkg": {"kiro_agent": "captain"}},
                 "pkg",
-                {"kirocrew.json": {"name": "kirocrew"}},
+                {"kirocrew.json": {"name": "kirocrew"}, "captain.json": {"name": "captain"}},
             )
             p1, p2 = self._patched(config, d)
             with p1, p2, unittest.mock.patch("kiro_crew.sel.sel") as sel:
+                loader.refresh_materialized_agents(heal_default=True)
+                assert self._on_disk(config)["default_agent"] == "pkg"
+                (d / "captain.json").unlink()
                 with self.assertLogs("kiro_crew.config.loader", level="WARNING") as logs:
-                    loader.refresh_materialized_agents()
+                    loader.refresh_materialized_agents(heal_default=True)
             on_disk = self._on_disk(config)
         assert on_disk["default_agent"] == "default"
         assert on_disk["agents"]["pkg"]["kiro_agent"] == "captain"
@@ -6171,10 +6186,10 @@ class TestDanglingDefaultAgentReset(unittest.TestCase):
             )
             p1, p2 = self._patched(config, d)
             with p1, p2:
-                loader.refresh_materialized_agents()
+                loader.refresh_materialized_agents(heal_default=True)
                 assert self._on_disk(config)["default_agent"] == "pkg"
                 (d / "KiroPkg-captain.json").unlink()
-                loader.refresh_materialized_agents()
+                loader.refresh_materialized_agents(heal_default=True)
                 assert self._on_disk(config)["default_agent"] == "default"
 
     def test_healthy_default_is_untouched(self):
@@ -6189,7 +6204,7 @@ class TestDanglingDefaultAgentReset(unittest.TestCase):
             )
             p1, p2 = self._patched(config, d)
             with p1, p2:
-                loader.refresh_materialized_agents()
+                loader.refresh_materialized_agents(heal_default=True)
                 assert loader.reset_dangling_default_agent() is False
             assert self._on_disk(config)["default_agent"] == "pkg"
 
@@ -6208,14 +6223,14 @@ class TestDanglingDefaultAgentReset(unittest.TestCase):
             p1, p2 = self._patched(config, d)
             with p1, p2:
                 assert loader.reset_dangling_default_agent() is False
-                loader.refresh_materialized_agents()  # lands an EMPTY snapshot
+                loader.refresh_materialized_agents(heal_default=True)  # lands an EMPTY snapshot
                 assert loader._MATERIALIZED_AGENTS_READY is True
                 assert self._on_disk(config)["default_agent"] == "pkg"
                 (d / "kirocrew.json").write_text(json.dumps({"name": "kirocrew"}), encoding="utf-8")
                 with unittest.mock.patch.object(
                     loader, "_scan_materialized_index", side_effect=OSError("boom")
                 ):
-                    loader.refresh_materialized_agents()
+                    loader.refresh_materialized_agents(heal_default=True)
                 assert self._on_disk(config)["default_agent"] == "pkg"
                 # The lazy build a lookup performs answers that lookup only.
                 loader._MATERIALIZED_AGENTS_READY = False
@@ -6238,7 +6253,7 @@ class TestDanglingDefaultAgentReset(unittest.TestCase):
                 )
                 p1, p2 = self._patched(config, d)
                 with p1, p2:
-                    loader.refresh_materialized_agents()
+                    loader.refresh_materialized_agents(heal_default=True)
                 assert self._on_disk(config)["default_agent"] == "mine"
 
     def test_missing_default_alias_invents_no_target(self):
@@ -6249,11 +6264,13 @@ class TestDanglingDefaultAgentReset(unittest.TestCase):
                 Path(td),
                 {"pkg": {"kiro_agent": "captain"}, "other": {"kiro_agent": "kirocrew"}},
                 "pkg",
-                {"kirocrew.json": {"name": "kirocrew"}},
+                {"kirocrew.json": {"name": "kirocrew"}, "captain.json": {"name": "captain"}},
             )
             p1, p2 = self._patched(config, d)
             with p1, p2:
-                loader.refresh_materialized_agents()
+                loader.refresh_materialized_agents(heal_default=True)
+                (d / "captain.json").unlink()
+                loader.refresh_materialized_agents(heal_default=True)
             assert self._on_disk(config)["default_agent"] == "pkg"
 
     def test_default_changed_inside_the_lock_wins(self):
@@ -6271,19 +6288,27 @@ class TestDanglingDefaultAgentReset(unittest.TestCase):
                     "other": {"kiro_agent": "kirocrew"},
                 },
                 "pkg",
-                {"kirocrew.json": {"name": "kirocrew"}},
+                {"kirocrew.json": {"name": "kirocrew"}, "captain.json": {"name": "captain"}},
             )
             real_read = loader.read_config_for_update
 
+            repointed: list[bool] = []
+
             def _repointed(path=None):
+                repointed.append(True)
                 data = real_read(path)
                 data["default_agent"] = "other"
                 config.write_text(json.dumps(data), encoding="utf-8")
                 return data
 
             p1, p2 = self._patched(config, d)
-            with p1, p2, unittest.mock.patch.object(loader, "read_config_for_update", _repointed):
-                loader.refresh_materialized_agents()
+            with p1, p2:
+                loader.refresh_materialized_agents(heal_default=True)
+                (d / "captain.json").unlink()
+                with unittest.mock.patch.object(loader, "read_config_for_update", _repointed):
+                    loader.refresh_materialized_agents(heal_default=True)
+            # The refresh reached the locked write, and lost it to the PUT.
+            assert repointed
             assert self._on_disk(config)["default_agent"] == "other"
 
     def test_unreadable_config_is_untouched(self):
@@ -6307,6 +6332,326 @@ class TestDanglingDefaultAgentReset(unittest.TestCase):
                     loader, "read_config_for_update", side_effect=loader.ConfigReadError("torn")
                 ):
                     assert loader.reset_dangling_default_agent() is False
+            assert self._on_disk(config)["default_agent"] == "pkg"
+
+    def test_a_refresh_that_does_not_heal_leaves_the_evidence_for_one_that_does(self):
+        # A non-owner catalog fetch or a lazy lookup refreshes without healing.
+        # When one of those is the first to see the file gone, the owner's next
+        # refresh must still reset the default it left dangling.
+        import kiro_crew.config.loader as loader
+
+        with tempfile.TemporaryDirectory() as td:
+            config, d = self._home(
+                Path(td),
+                {"default": {"kiro_agent": "kirocrew"}, "pkg": {"kiro_agent": "captain"}},
+                "pkg",
+                {"kirocrew.json": {"name": "kirocrew"}, "captain.json": {"name": "captain"}},
+            )
+            p1, p2 = self._patched(config, d)
+            with p1, p2:
+                loader.refresh_materialized_agents(heal_default=True)
+                (d / "captain.json").unlink()
+                loader.refresh_materialized_agents(heal_default=False)
+                assert self._on_disk(config)["default_agent"] == "pkg"
+                loader.refresh_materialized_agents(heal_default=True)
+            assert self._on_disk(config)["default_agent"] == "default"
+
+    def test_the_removal_evidence_is_bounded_and_evicts_the_oldest_removals_first(self):
+        # The directory is user-writable, so the names it has ever declared are
+        # bounded where they are kept. Past the count bound the removals seen
+        # longest ago go first; a name the directory still declares is kept.
+        import kiro_crew.config.loader as loader
+
+        with tempfile.TemporaryDirectory() as td:
+            config, d = self._home(
+                Path(td),
+                {"default": {"kiro_agent": "kirocrew"}, "pkg": {"kiro_agent": "captain"}},
+                "pkg",
+                {"kirocrew.json": {"name": "kirocrew"}, "captain.json": {"name": "captain"}},
+            )
+            p1, p2 = self._patched(config, d)
+            cap = 8
+            with p1, p2, unittest.mock.patch.object(loader, "_MATERIALIZED_SEEN_MAX", cap):
+                for n in range(3 * cap):
+                    (d / f"churn-{n}.json").write_text(
+                        json.dumps({"name": f"churn-{n}"}), encoding="utf-8"
+                    )
+                    loader.refresh_materialized_agents(heal_default=False)
+                    (d / f"churn-{n}.json").unlink()
+                    loader.refresh_materialized_agents(heal_default=False)
+                seen = list(loader._MATERIALIZED_SEEN)
+                assert len(seen) <= cap
+                # Still declared, so still newest: never the one evicted.
+                assert {"kirocrew", "captain"} <= set(seen)
+                assert "churn-0" not in seen and f"churn-{3 * cap - 1}" in seen
+                # The bound did not cost the evidence a current name needs.
+                (d / "captain.json").unlink()
+                loader.refresh_materialized_agents(heal_default=True)
+            assert self._on_disk(config)["default_agent"] == "default"
+
+    def test_an_unchanged_oversized_directory_reports_its_evidence_drop_once(self):
+        # Declared names and file-name bindings are one snapshot: past the bound
+        # the drop is counted once for both, and an unchanged directory does not
+        # report it again on the next refresh.
+        import kiro_crew.config.loader as loader
+
+        with tempfile.TemporaryDirectory() as td:
+            config, d = self._home(Path(td), {"default": {"kiro_agent": "kirocrew"}}, "default", {})
+            for n in range(6):
+                (d / f"agent-{n}.json").write_text(json.dumps({"name": f"agent-{n}"}), "utf-8")
+                (d / f"Pkg-x{n}.json").write_text(json.dumps({"name": f"x{n}"}), "utf-8")
+            p1, p2 = self._patched(config, d)
+
+            def evidence_lines(calls) -> list:
+                return [
+                    call
+                    for call in calls
+                    if any("removal-evidence" in str(arg) for arg in call.args)
+                ]
+
+            with p1, p2, unittest.mock.patch.object(loader, "_MATERIALIZED_SEEN_MAX", 8):
+                with unittest.mock.patch.object(loader.logger, "warning") as warning:
+                    loader.refresh_materialized_agents()
+                    loader.refresh_materialized_agents()
+                    loader.refresh_materialized_agents()
+            assert len(evidence_lines(warning.call_args_list)) == 1
+
+    def test_a_name_past_the_length_bound_is_not_kept_as_evidence(self):
+        import kiro_crew.config.loader as loader
+
+        long_name = "x" * (loader._MATERIALIZED_SEEN_NAME_MAX_CHARS + 1)
+        with tempfile.TemporaryDirectory() as td:
+            config, d = self._home(
+                Path(td),
+                {"default": {"kiro_agent": "kirocrew"}, "pkg": {"kiro_agent": long_name}},
+                "pkg",
+                {"kirocrew.json": {"name": "kirocrew"}, "long.json": {"name": long_name}},
+            )
+            p1, p2 = self._patched(config, d)
+            with p1, p2:
+                loader.refresh_materialized_agents(heal_default=True)
+                assert long_name in loader._MATERIALIZED_AGENTS
+                assert long_name not in loader._MATERIALIZED_SEEN
+                (d / "long.json").unlink()
+                loader.refresh_materialized_agents(heal_default=True)
+            assert self._on_disk(config)["default_agent"] == "pkg"
+
+    def test_a_refresh_heals_only_when_its_caller_asks(self):
+        # The reset writes the owner's config, so a plain refresh -- the kind a
+        # turn, a lookup or an app registration triggers -- records the removal
+        # and leaves the file alone; only an opted-in refresh writes it.
+        import kiro_crew.config.loader as loader
+
+        with tempfile.TemporaryDirectory() as td:
+            config, d = self._home(
+                Path(td),
+                {"default": {"kiro_agent": "kirocrew"}, "pkg": {"kiro_agent": "captain"}},
+                "pkg",
+                {"kirocrew.json": {"name": "kirocrew"}, "captain.json": {"name": "captain"}},
+            )
+            p1, p2 = self._patched(config, d)
+            with p1, p2:
+                loader.refresh_materialized_agents()
+                (d / "captain.json").unlink()
+                loader.refresh_materialized_agents()
+                assert self._on_disk(config)["default_agent"] == "pkg"
+                loader.refresh_materialized_agents(heal_default=True)
+            assert self._on_disk(config)["default_agent"] == "default"
+
+    def test_a_local_file_cannot_redirect_a_binding_to_an_edition_agent(self):
+        # ``captain`` is an agent the edition contributes. A user-level file
+        # named ``captain.json`` that declares ``pilot`` must not turn a binding
+        # to ``captain`` into a dispatch of ``pilot``; without the edition agent
+        # the same file name still maps to the agent it declares.
+        import kiro_crew.config.loader as loader
+
+        edition = types.SimpleNamespace(
+            agent_catalog=types.SimpleNamespace(builtin_agents=lambda: [{"name": "captain"}])
+        )
+        with tempfile.TemporaryDirectory() as td:
+            config, d = self._home(
+                Path(td),
+                {"default": {"kiro_agent": "kirocrew"}},
+                "default",
+                {"kirocrew.json": {"name": "kirocrew"}, "captain.json": {"name": "pilot"}},
+            )
+            p1, p2 = self._patched(config, d)
+            with p1, p2:
+                loader.refresh_materialized_agents()
+                assert loader._MATERIALIZED_STEMS == {"captain": "pilot"}
+                assert loader.dispatch_kiro_agent("captain") == "pilot"
+                with unittest.mock.patch(
+                    "kiro_crew.platform.context.current_context", lambda: edition
+                ):
+                    assert loader.dispatch_kiro_agent("captain") == "captain"
+
+    def test_the_file_name_map_is_bounded_where_it_is_built_and_reported_once(self):
+        import kiro_crew.config.loader as loader
+
+        long_name = "n" * (loader._MATERIALIZED_SEEN_NAME_MAX_CHARS + 1)
+        files = {"kirocrew.json": {"name": "kirocrew"}, "long-target.json": {"name": long_name}}
+        files.update({f"Pkg-{n}.json": {"name": f"agent-{n}"} for n in range(12)})
+        with tempfile.TemporaryDirectory() as td:
+            config, d = self._home(Path(td), {"default": {"kiro_agent": "kirocrew"}}, "default", {})
+            for filename, body in files.items():
+                (d / filename).write_text(json.dumps(body), encoding="utf-8")
+            p1, p2 = self._patched(config, d)
+            with p1, p2, unittest.mock.patch.object(loader, "_MATERIALIZED_SEEN_MAX", 8):
+                with unittest.mock.patch.object(loader.logger, "warning") as warning:
+                    loader.refresh_materialized_agents()
+                    stems = dict(loader._MATERIALIZED_STEMS)
+                    # An unchanged directory is not reported again on the next refresh.
+                    loader.refresh_materialized_agents()
+                assert len(stems) <= 8
+                assert all(
+                    len(k) <= loader._MATERIALIZED_SEEN_NAME_MAX_CHARS
+                    and len(v) <= loader._MATERIALIZED_SEEN_NAME_MAX_CHARS
+                    for k, v in stems.items()
+                )
+                assert "long-target" not in stems
+                reported = [
+                    call
+                    for call in warning.call_args_list
+                    if any("file-name mapping" in str(arg) for arg in call.args)
+                ]
+                assert len(reported) == 1
+
+    def test_a_scan_that_could_not_read_every_spec_is_not_evidence_of_a_removal(self):
+        # The default's spec is caught mid-write (or briefly unreadable) during
+        # the owner's fetch. The scan skips it, so its name is missing, but the
+        # file is still there: the default must not be reset on that scan, and
+        # once the file reads again nothing has changed. A real removal still
+        # resets on the next complete scan.
+        import kiro_crew.config.loader as loader
+
+        with tempfile.TemporaryDirectory() as td:
+            config, d = self._home(
+                Path(td),
+                {"default": {"kiro_agent": "kirocrew"}, "pkg": {"kiro_agent": "captain"}},
+                "pkg",
+                {"kirocrew.json": {"name": "kirocrew"}, "captain.json": {"name": "captain"}},
+            )
+            p1, p2 = self._patched(config, d)
+            with p1, p2:
+                loader.refresh_materialized_agents(heal_default=True)
+                spec = d / "captain.json"
+                good = spec.read_text(encoding="utf-8")
+                spec.write_text('{"name": "capt', encoding="utf-8")  # torn
+                loader.refresh_materialized_agents(heal_default=True)
+                assert "captain" not in loader._MATERIALIZED_AGENTS
+                assert self._on_disk(config)["default_agent"] == "pkg"
+                spec.write_text(good, encoding="utf-8")
+                loader.refresh_materialized_agents(heal_default=True)
+                assert self._on_disk(config)["default_agent"] == "pkg"
+                spec.unlink()
+                loader.refresh_materialized_agents(heal_default=True)
+            assert self._on_disk(config)["default_agent"] == "default"
+
+    def test_a_partial_snapshot_installed_after_a_complete_scan_is_not_evidence(self):
+        # Two refreshes overlap: a complete one scans, then a partial one (a torn
+        # spec) installs its snapshot before the complete one's healer reads.
+        # The healer reads the INSTALLED snapshot, so it must see that snapshot
+        # is partial and leave the default alone.
+        import kiro_crew.config.loader as loader
+
+        with tempfile.TemporaryDirectory() as td:
+            config, d = self._home(
+                Path(td),
+                {"default": {"kiro_agent": "kirocrew"}, "pkg": {"kiro_agent": "captain"}},
+                "pkg",
+                {"kirocrew.json": {"name": "kirocrew"}, "captain.json": {"name": "captain"}},
+            )
+            p1, p2 = self._patched(config, d)
+            with p1, p2:
+                loader.refresh_materialized_agents()
+                (d / "captain.json").write_text('{"name": "capt', encoding="utf-8")
+                loader.refresh_materialized_agents()  # the partial one lands
+                assert loader.reset_dangling_default_agent() is False
+            assert self._on_disk(config)["default_agent"] == "pkg"
+
+    def test_a_partial_snapshot_installed_inside_the_locked_write_stops_it(self):
+        # The healer checked a complete snapshot, then a partial one was
+        # installed while it waited for the config lock: the locked mutate
+        # re-reads the installed snapshot and declines.
+        import kiro_crew.config.loader as loader
+
+        with tempfile.TemporaryDirectory() as td:
+            config, d = self._home(
+                Path(td),
+                {"default": {"kiro_agent": "kirocrew"}, "pkg": {"kiro_agent": "captain"}},
+                "pkg",
+                {
+                    "kirocrew.json": {"name": "kirocrew"},
+                    "captain.json": {"name": "captain"},
+                    "other.json": {"name": "other"},
+                },
+            )
+            real_read = loader.read_config_for_update
+            raced: list[bool] = []
+
+            def _partial_lands_first(path=None):
+                raced.append(True)
+                (d / "other.json").write_text('{"name": "oth', encoding="utf-8")
+                loader.refresh_materialized_agents()
+                return real_read(path)
+
+            p1, p2 = self._patched(config, d)
+            with p1, p2:
+                loader.refresh_materialized_agents()
+                (d / "captain.json").unlink()
+                loader.refresh_materialized_agents()  # complete: captain removed
+                with unittest.mock.patch.object(
+                    loader, "read_config_for_update", _partial_lands_first
+                ):
+                    assert loader.reset_dangling_default_agent() is False
+            assert raced, "the locked write was reached"
+            assert self._on_disk(config)["default_agent"] == "pkg"
+
+    def test_a_template_the_directory_never_declared_is_not_reset(self):
+        # ``scout`` runs ``reviewer``, which only a project checkout (or an
+        # edition) declares: it dispatches, though no file in this directory
+        # names it. Neither the boot refresh nor a later one may repoint the
+        # owner's default on that absence.
+        import kiro_crew.config.loader as loader
+
+        with tempfile.TemporaryDirectory() as td:
+            config, d = self._home(
+                Path(td),
+                {"default": {"kiro_agent": "kirocrew"}, "scout": {"kiro_agent": "reviewer"}},
+                "scout",
+                {"kirocrew.json": {"name": "kirocrew"}},
+            )
+            p1, p2 = self._patched(config, d)
+            with p1, p2:
+                loader.refresh_materialized_agents(heal_default=True)
+                loader.refresh_materialized_agents(heal_default=True)
+            assert self._on_disk(config)["default_agent"] == "scout"
+
+    def test_a_removed_file_whose_agent_the_edition_supplies_is_not_reset(self):
+        # The file went, but the edition contributes an agent of the same name,
+        # so the default still dispatches.
+        import kiro_crew.config.loader as loader
+
+        with tempfile.TemporaryDirectory() as td:
+            config, d = self._home(
+                Path(td),
+                {"default": {"kiro_agent": "kirocrew"}, "pkg": {"kiro_agent": "captain"}},
+                "pkg",
+                {"kirocrew.json": {"name": "kirocrew"}, "captain.json": {"name": "captain"}},
+            )
+            p1, p2 = self._patched(config, d)
+            with p1, p2:
+                loader.refresh_materialized_agents(heal_default=True)
+                (d / "captain.json").unlink()
+                with unittest.mock.patch(
+                    "kiro_crew.platform.context.current_context",
+                    lambda: types.SimpleNamespace(
+                        agent_catalog=types.SimpleNamespace(
+                            builtin_agents=lambda: [{"name": "captain"}]
+                        )
+                    ),
+                ):
+                    loader.refresh_materialized_agents(heal_default=True)
             assert self._on_disk(config)["default_agent"] == "pkg"
 
 

@@ -133,7 +133,7 @@ Answering is prose work. It never needs a push and never widens the diff.
 |---|---|---|
 | `fixed` | you changed the code | the change and the SHA |
 | `rebutted` | the code stays correct as-is | the evidence it does not hold, **or** the reasoning it is disproportional |
-| `accepted-and-deferred` | the work is already decided, just out of scope here — unlike `needs-a-decision`, nothing is being asked | why, plus an issue whose body names a task someone can pick up. The issue MUST carry the `deferred-finding` label, an assignee (the owner), and a `Due: YYYY-MM-DD` line in its body — an untracked deferral is how flagged findings ship anyway, and the Disposition Deferral Check replies to dispositions whose issue lacks any of the three. Note the server-side asymmetry: the GPT lane's convergence rules do not accept a deferral as a ruling on a security / data-loss / corruption finding, so a deferred one of those is re-raised every round until fixed, rebutted as not-a-defect, or human-overridden |
+| `accepted-and-deferred` | the work is already decided, just out of scope here — unlike `needs-a-decision`, nothing is being asked | why, plus an issue whose body names a task someone can pick up. The issue MUST carry the `deferred-finding` label, the `needs-triage` label (so the triage pipeline's intake sees it and the follow-up PR can pass `Issue Gate`), an assignee (the owner), and a `Due: YYYY-MM-DD` line in its body — an untracked deferral is how flagged findings ship anyway, and the Disposition Deferral Check replies to dispositions whose issue lacks any of the three. Note the server-side asymmetry: the GPT lane's convergence rules do not accept a deferral as a ruling on a security / data-loss / corruption finding, so a deferred one of those is re-raised every round until fixed, rebutted as not-a-defect, or human-overridden |
 | `needs-a-decision` | the outcome depends on a maintainer ruling | the question, put to the maintainer directly — do **not** file an issue for it |
 
 **What must be answered:**
@@ -768,9 +768,22 @@ This is the only thing that closes the issue on merge — `Related: #<n>`, `Part
 in the body means the keyword is missing or malformed, and `pr_status.py` prints a
 `NOTICE:`. The reference may be `#<n>`, `owner/repo#<n>`, or a full URL.
 
-If the PR deliberately closes nothing, say so at the start of a line —
-`no linked issue: <why>` — so a reader can tell an intentional omission from a
-forgotten trailer. **Advisory, not a gate:** readiness never blocks on it.
+On Kiro Crew the link is **a gate, not advice**: the `Issue Gate` lane of
+`PR Readiness` fails a PR whose visible body declares no issue of the repository,
+or declares one that still carries `needs-triage` or has no triage verdict label
+(`auto-fixable`, `needs-investigation`, `needs-human`). The gate reads the body
+with `pr_status.py`'s `declared_issue_numbers()` (through
+`.github/scripts/issue_gate_refs.py`): a declaration STARTS a line and the rest
+of the line is free, and the non-closing `Refs #<n>` / `Part of #<n>` count as
+declarations even though they close nothing. That is a wider reading than the
+whole-line, closing-verbs-only trailer this section describes and the `NOTICE:`
+below classifies with -- so a body can pass the gate and still earn a `NOTICE:`
+(`Fixes #123 (the Windows half)`, or `Part of #123` alone). Write the trailer as
+a whole line of its own and both are satisfied. Open the issue and let triage
+reach it BEFORE Phase 1. There is no body-side opt-out: an issue-less PR is red
+until a maintainer applies the `issue-gate: waived` label (production fire,
+release PR), and `pr_status.py` prints its `NOTICE:` for the missing link every
+round rather than accepting a line the gate rejects.
 
 `pr_status.py` masks fenced blocks and indented examples and reconciles closures
 on repository *and* number, so just read the `NOTICE:` lines it prints.

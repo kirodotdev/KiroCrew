@@ -119,10 +119,16 @@ class TestApprovalThreading:
 
     @pytest.mark.asyncio
     async def test_cron_key_not_used_as_thread_ts(self) -> None:
-        """Cron key without stored thread must NOT be used as thread_ts."""
+        """Cron key without a stored thread or a job thread must NOT be used as thread_ts."""
         gateway = _make_gateway()
         gateway.sessions.get_channel = MagicMock(return_value="C_CRON")
         gateway.sessions.get_thread = MagicMock(return_value=None)  # no thread stored yet
+        # Job exists but carries no inherited thread_ts, so there is no anchor to
+        # fall back to and the cron key itself must not be used as a ts.
+        _job = MagicMock()
+        _job.thread_ts = None
+        gateway.cron_svc = MagicMock()
+        gateway.cron_svc.get_job = MagicMock(return_value=_job)
         gateway.slack.post_blocks = AsyncMock(return_value="approval_ts")
         gateway.slack.update_message = AsyncMock()
 
@@ -134,8 +140,33 @@ class TestApprovalThreading:
 
         call_args = gateway.slack.post_blocks.call_args
         assert call_args.args[0] == "C_CRON"
-        # "cron:j1" is NOT a valid Slack ts — should be None
+        # "cron:j1" is NOT a valid Slack ts and the job has no thread — should be None
         assert call_args.args[3] is None
+
+    @pytest.mark.asyncio
+    async def test_cron_approval_threads_under_inherited_job_thread(self) -> None:
+        """A threaded cron with no stored session anchor must thread the approval
+        prompt under the job's own inherited thread_ts (buluoray's blocking
+        finding: approval buttons otherwise post at the channel top level)."""
+        gateway = _make_gateway()
+        gateway.sessions.get_channel = MagicMock(return_value="C_CRON")
+        gateway.sessions.get_thread = MagicMock(return_value=None)  # anchor not claimed
+        _job = MagicMock()
+        _job.thread_ts = "1699999999.000111"
+        gateway.cron_svc = MagicMock()
+        gateway.cron_svc.get_job = MagicMock(return_value=_job)
+        gateway.slack.post_blocks = AsyncMock(return_value="approval_ts")
+        gateway.slack.update_message = AsyncMock()
+
+        with patch("kiro_crew.slack.handler.is_yolo_mode", return_value=False), patch(
+            "kiro_crew.slack.handler._PendingApproval", return_value=_pre_approved_pending()
+        ):
+            approve_fn = gateway._interactive_approval("subagent")
+            await approve_fn(_make_event(), "cron:j1")
+
+        call_args = gateway.slack.post_blocks.call_args
+        assert call_args.args[0] == "C_CRON"
+        assert call_args.args[3] == "1699999999.000111"
 
     @pytest.mark.asyncio
     async def test_falls_back_to_dm_without_parent(self) -> None:

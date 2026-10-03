@@ -10908,7 +10908,10 @@ class TestSubstitutionFollow:
         async def _send(method, params):
             sent.append(list(params.get("mcpServers") or []))
             if len(sent) == 1 and lose_surface:
-                settings.write_text("{}", encoding="utf-8")
+                # A link: the one shape that can be neither governed nor left out
+                # of the session's setting sources.
+                settings.unlink()
+                settings.symlink_to(tmp_path / "elsewhere.json")
             return len(sent)
 
         waits = 0

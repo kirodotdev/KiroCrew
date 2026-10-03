@@ -1,0 +1,143 @@
+<!--
+  The pipeline conductor's board, as a DYNAMIC DASHBOARD CARD.
+
+  A FRAGMENT, not a document: ``dashboardDocument.ts`` parses this, binds the data,
+  prepends its own CSP and theme block and emits the doctype itself, so a wrapper here
+  would be reparented and the file would describe a document nobody serves.
+
+  Two halves, per ``dashboard/dynamic_cards.py``: this file is the ``html`` half and is
+  inert -- no script, no control, no outbound reference -- and every value arrives in the
+  ``data`` half, bound by ``data-dashboard-field`` (``dashboardDocument.ts`` sets each
+  bound element's ``textContent``). A field the data omits is bound to the EMPTY STRING,
+  which on a page of counts is indistinguishable from a real zero, so the flattener
+  ``pipeline_board_contract.panel_card_data`` writes a value for every field below and
+  writes words rather than a blank for a gap.
+
+  THE FIELD SET IS THE CONTRACT. ``test_pipeline_board_contract_parity`` asserts this
+  file's ``data-dashboard-field`` set equals ``panel_card_data``'s output keys in BOTH
+  directions, and separately that every leaf of ``PipelineBoardPanel`` reaches one of
+  them -- so a field bound here with no writer, a key written with no binding, and a
+  contract leaf that reaches no field are each a failure rather than a blank cell.
+
+  NO DOTS IN A FIELD NAME. ``normalize_card``'s ``_FIELD_NAME`` admits
+  ``[a-zA-Z][a-zA-Z0-9_-]{0,47}`` only, so the contract's dotted paths reach the card
+  with ``_`` for ``.`` (``meta.name`` -> ``meta_name``) and a list index as its own
+  segment (``columns[0].name`` -> ``column_0_head``). The whole rule is written out in
+  ``panel_card_data``'s docstring.
+
+  TWENTY-FOUR FIELDS, 4096 DATA BYTES, 8192 HTML BYTES. A card over any cap is dropped
+  WHOLE by the host, so a board with sixty items cannot be allowed to grow a field per
+  item: a column's rows arrive as ONE pre-line text field, and the flattener states its
+  own trimming in that text rather than silently showing a prefix.
+
+  NO ``content``, ``list-style`` or ``text-overflow`` DECLARATIONS. In card mode
+  ``dashboardDocument.ts`` deletes exactly those properties -- they make the browser draw
+  characters the backend's text scan never reads -- so a label put in ``::before`` would
+  be removed and leave the row unlabelled. Every label below is real markup text.
+-->
+<style>
+  :root{
+    --ink:    var(--text,   #f7f7f8);
+    --ink-2:  var(--muted,  #a1a1aa);
+    --edge:   var(--border, #27272a);
+    --sp1:4px; --sp2:8px; --sp3:12px; --sp4:16px;
+  }
+  *{box-sizing:border-box}
+  .wrap{display:flex; flex-direction:column; gap:var(--sp3);
+    font:14px/1.45 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    color:var(--ink); font-variant-numeric:tabular-nums}
+  .bar{display:flex; flex-wrap:wrap; align-items:baseline; gap:var(--sp1) var(--sp3)}
+  .nm{font-weight:600; letter-spacing:-0.01em}
+  .dim{color:var(--ink-2); font-size:12px}
+  .lede{margin:0; font-size:15px; font-weight:500; letter-spacing:-0.011em; max-width:74ch}
+  .cols{display:grid; gap:var(--sp2); grid-template-columns:repeat(auto-fit,minmax(170px,1fr))}
+  .col{border:1px solid var(--edge); border-radius:8px; min-width:0; overflow:hidden}
+  .col > .hd{display:block; padding:var(--sp2) var(--sp3); border-bottom:1px solid var(--edge);
+    font-size:12px; font-weight:500; letter-spacing:0.02em; color:var(--ink)}
+  /* pre-WRAP, not pre-line. `pre-line` collapses white space and drops it where it sits
+       next to a forced break, so the four-space indent the flattener writes on an action line
+       and on the "+N not shown" line never rendered: both sat flush with the item rows they
+       belong under, and the only visual hierarchy in the column did not exist. `pre-wrap`
+       preserves the indent and still wraps a long line. */
+  .col > .rows{display:block; padding:var(--sp2) var(--sp3); margin:0;
+    font-size:12px; line-height:1.5; color:var(--ink-2); white-space:pre-wrap;
+    overflow-wrap:break-word; font-family:inherit}
+  .tiles{display:grid; gap:var(--sp2); grid-template-columns:repeat(auto-fit,minmax(140px,1fr))}
+  .tile{border:1px solid var(--edge); border-radius:8px; padding:var(--sp2) var(--sp3)}
+  .tile .k{display:block; color:var(--ink-2); font-size:11px; font-weight:500;
+    text-transform:uppercase; letter-spacing:0.04em}
+  .tile .v{display:block; font-size:20px; font-weight:500; letter-spacing:-0.02em;
+    line-height:1.2; margin-top:2px}
+  .tile .n{display:block; color:var(--ink-2); font-size:11.5px; line-height:1.35; margin-top:2px}
+  .foot{margin:0; color:var(--ink-2); font-size:12px}
+  /* The progress legend carries NO accent colour. This card declares zero interactive
+       elements and the host strips anything shaped like one, so accent-coloured text is a
+       promise the page cannot keep: a reader took the blue for a link, tried to follow it, and
+       nothing happened -- on every view, which costs trust in the numbers beside it. The
+       legend earns its weight from being the only full-width line above the columns. */
+  .legend{color:var(--ink); font-weight:500}
+</style>
+<div class="wrap">
+
+  <div class="bar">
+    <span class="nm" data-dashboard-field="meta_name"></span>
+    <span class="dim" data-dashboard-field="meta_when"></span>
+  </div>
+
+  <div class="bar">
+    <span class="dim" data-dashboard-field="omitted"></span>
+    <span class="dim" data-dashboard-field="contract_note"></span>
+  </div>
+
+  <p class="lede" data-dashboard-field="lede"></p>
+
+  <p class="dim legend" data-dashboard-field="progress_legend"></p>
+
+  <div class="cols">
+    <section class="col">
+      <span class="hd" data-dashboard-field="column_0_head"></span>
+      <p class="rows" data-dashboard-field="column_0_rows"></p>
+    </section>
+    <section class="col">
+      <span class="hd" data-dashboard-field="column_1_head"></span>
+      <p class="rows" data-dashboard-field="column_1_rows"></p>
+    </section>
+    <section class="col">
+      <span class="hd" data-dashboard-field="column_2_head"></span>
+      <p class="rows" data-dashboard-field="column_2_rows"></p>
+    </section>
+    <section class="col">
+      <span class="hd" data-dashboard-field="column_3_head"></span>
+      <p class="rows" data-dashboard-field="column_3_rows"></p>
+    </section>
+  </div>
+
+  <!--
+    The tile LABELS are literal text, not bound fields. ``stats[].k`` is a closed
+    provider-side vocabulary -- ``_stats`` emits exactly items, entries, round, in that
+    order -- so a label is the same on every board ever published and belongs in the
+    inert half. The key still reaches the card: it is the field NAME each value is bound
+    by, and ``test_the_card_binds_a_value_and_a_note_for_every_stat_the_provider_emits``
+    builds a real board and asserts these three names against the provider's own keys,
+    so renaming a metric reddens here rather than leaving a tile bound to nothing.
+  -->
+  <div class="tiles">
+    <div class="tile">
+      <span class="k">items on board</span>
+      <span class="v" data-dashboard-field="stat_items"></span>
+      <span class="n" data-dashboard-field="stat_items_note"></span>
+    </div>
+    <div class="tile">
+      <span class="k">log entries</span>
+      <span class="v" data-dashboard-field="stat_entries"></span>
+      <span class="n" data-dashboard-field="stat_entries_note"></span>
+    </div>
+    <div class="tile">
+      <span class="k">round</span>
+      <span class="v" data-dashboard-field="stat_round"></span>
+      <span class="n" data-dashboard-field="stat_round_note"></span>
+    </div>
+  </div>
+
+  <p class="foot" data-dashboard-field="since"></p>
+</div>

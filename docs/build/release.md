@@ -175,6 +175,9 @@ code.
      makes the next RC a promotion candidate**; the 0.4.0 promotion was nearly
      tagged before it existed because this step lived only in the policy
      section, not here. The checklist in step 2 below verifies it landed.
+     This PR has no tracking issue, so the maintainer opening it applies the
+     `issue-gate: waived` label; `Issue Gate` (see
+     [CI and reviews](../ci/ci-and-reviews.md)) is otherwise red on it.
    - *CHANGELOG*: the release branch already carries `## [X.Y.Z] - <date>` (no
      `[Unreleased]`, enforced by the changelog gate). Confirm at cut time.
    - *Version display*: keep the base-version fold above on `main` and

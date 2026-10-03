@@ -138,6 +138,68 @@ class TestCronCallbackStoresThread:
         _run_callback(gateway, _make_job())
         gateway.sessions.set_thread.assert_not_awaited()
 
+    # ── Regression: a cron must NOT claim a thread it did not create ──
+    #
+    # When a run delivers into an INHERITED or explicit ``job.thread_ts`` -- a
+    # human's own Slack thread, keyed ``slack:<ts>`` -- claiming it for
+    # ``cron:<id>`` via ``set_thread`` evicts the human's owner from the
+    # thread->session index permanently (``cron:`` is not self-derived, so
+    # ``set_slack_link`` sweeps rivals), and the human's next message in their
+    # own thread then runs in the cron session. The cron may claim the thread
+    # ONLY when it created it itself (no ``job.thread_ts``, so ``thread_root`` is
+    # this run's own newly-posted ``parent_ts``).
+
+    def test_does_not_claim_inherited_thread(self) -> None:
+        # job.thread_ts is set (inherited from the caller or explicit): the cron
+        # posts INTO the human's thread but must NOT claim it. The anchor it
+        # writes is empty (clearing any stale ts), never the human's thread_ts.
+        gateway = _make_gateway()
+        gateway.slack.post_blocks = AsyncMock(return_value="1711957800.001234")
+        _run_callback(gateway, _make_job(thread_ts="1699999999.000111"))
+        for call in gateway.sessions.set_thread.await_args_list:
+            assert call.args[1] == "", (
+                "cron claimed/kept a non-empty thread anchor for an inherited thread"
+            )
+
+    def test_clears_stale_anchor_for_inherited_thread(self) -> None:
+        # Scenario: cron:<id> already holds a stale thread anchor from a
+        # top-level run, and the job now carries an explicit thread_ts. The
+        # callback writes an empty anchor so the readers resolve the job's own
+        # thread_ts via _cron_outbound_thread, never the stale ts.
+        gateway = _make_gateway()
+        gateway.slack.post_blocks = AsyncMock(return_value="1711957800.001234")
+        _run_callback(gateway, _make_job(thread_ts="1699999999.000111"))
+        gateway.sessions.set_thread.assert_awaited_once_with("cron:j1", "")
+
+    def test_still_binds_channel_for_inherited_thread(self) -> None:
+        # The channel bind is harmless (set_channel writes an empty ts for an
+        # unclaimed cron, which evicts no one) and still happens, so subagent
+        # replies can resolve the cron's channel.
+        gateway = _make_gateway()
+        gateway.slack.post_blocks = AsyncMock(return_value="1711957800.001234")
+        _run_callback(gateway, _make_job(channel="C999", thread_ts="1699999999.000111"))
+        gateway.sessions.set_channel.assert_awaited_once_with("cron:j1", "C999")
+
+    def test_overflow_still_threads_under_inherited_thread(self) -> None:
+        # Not claiming the thread must not stop overflow parts from threading:
+        # they still post under the inherited thread_ts.
+        gateway = _make_gateway()
+        gateway.slack.post_blocks = AsyncMock(return_value="1711957800.001234")
+        gateway.slack.post_message = AsyncMock()
+        long = "x" * 60000  # forces render_for_slack to split into overflow parts
+        _run_callback(gateway, _make_job(thread_ts="1699999999.000111"), stream_result=long)
+        assert gateway.slack.post_message.await_count >= 1, "expected overflow parts"
+        for call in gateway.slack.post_message.await_args_list:
+            assert call.args[2] == "1699999999.000111", "overflow part did not thread"
+
+    def test_claims_self_created_thread(self) -> None:
+        # Inverse / unchanged behavior: with NO job.thread_ts the cron created
+        # the thread itself (parent_ts), so it legitimately claims it.
+        gateway = _make_gateway()
+        gateway.slack.post_blocks = AsyncMock(return_value="1711957800.001234")
+        _run_callback(gateway, _make_job(thread_ts=None))
+        gateway.sessions.set_thread.assert_awaited_once_with("cron:j1", "1711957800.001234")
+
 
 # ── Tests: _subagent_done injects cron results via session ──
 
@@ -245,6 +307,57 @@ class TestSubagentDoneCronRouting:
         assert call_count == 2
         mock_sleep.assert_awaited_once_with(1)  # 2 ** 0
         gateway.sessions.cancel_current.assert_any_await("cron:j1")
+
+
+# ── Tests: a threaded cron's follow-ups must thread, not post top-level ──
+
+
+class TestCronResponseThreadsUnderInheritedThread:
+    """A threaded cron does not CLAIM its inherited thread, so cron:<id> has no
+    recorded outbound anchor in the session map. _deliver_cron_response must
+    still thread subagent-completion follow-ups under the job's own thread_ts
+    rather than posting them at the channel top level (buluoray's blocking
+    finding at 5e3aaff6: the regression the thread-takeover guard introduced).
+    """
+
+    def _gateway_with_job(self, *, thread_ts):
+        gateway = _make_gateway()
+        # The channel bind is kept for an inherited-thread cron; the thread
+        # anchor is NOT (claiming it would evict the human owner). Reproduce
+        # exactly that session-map state.
+        gateway.sessions.get_channel = MagicMock(return_value="C123")
+        gateway.sessions.get_thread = MagicMock(return_value=None)
+        # The job still carries the authoritative thread_ts.
+        job = _make_job(channel="C123", thread_ts=thread_ts)
+        gateway.cron_svc = MagicMock()
+        gateway.cron_svc.get_job = MagicMock(return_value=job)
+        # Channel leg does not deliver, so the Slack leg runs.
+        gateway._deliver_cron_to_channel = AsyncMock(return_value=False)
+        gateway.slack.post_message = AsyncMock()
+        gateway.slack.post_blocks = AsyncMock(return_value="ts.block")
+        gateway._remember_options = MagicMock()
+        return gateway
+
+    @pytest.mark.asyncio
+    async def test_threads_subagent_response_under_job_thread_ts(self) -> None:
+        gateway = self._gateway_with_job(thread_ts="1699999999.000111")
+        await gateway._deliver_cron_response("cron:j1", "subagent finished")
+        gateway.slack.post_message.assert_awaited()
+        for call in gateway.slack.post_message.await_args_list:
+            assert call.args[2] == "1699999999.000111", (
+                "cron follow-up posted at channel top level instead of the "
+                "job's inherited thread"
+            )
+
+    @pytest.mark.asyncio
+    async def test_no_fallback_when_job_has_no_thread(self) -> None:
+        # A cron that posted its own thread (no job.thread_ts) legitimately has
+        # no inherited anchor to fall back to; it must not invent one.
+        gateway = self._gateway_with_job(thread_ts=None)
+        await gateway._deliver_cron_response("cron:j1", "subagent finished")
+        gateway.slack.post_message.assert_awaited()
+        for call in gateway.slack.post_message.await_args_list:
+            assert call.args[2] is None, "fabricated a thread_ts for a self-posted cron"
 
 
 # ── Tests: cancel_current called before release in _subagent_done ──

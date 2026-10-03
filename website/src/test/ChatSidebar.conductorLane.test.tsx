@@ -941,29 +941,29 @@ describe('chat sidebar — conductor lane', () => {
     expect(says.toLowerCase()).toContain('conductor')
   })
 
-  it('refetches while lineage is provisional, then nests once the seed lands', async () => {
-    // A cold start ships `parent: null` with `lineage_pending`, because the gateway's
-    // projection is still seeding and it deliberately does not broadcast when it lands.
-    // On an IDLE gateway no further frame is coming, so the sidebar has to come back for
-    // the real answer or it stays unnested until the user acts.
+  it('does not poll while lineage is provisional; the pushed rows nest it', async () => {
+    // A cold start ships `parent: null` with `lineage_pending` while the gateway's
+    // projection seeds. The gateway pushes the settled rows when the seed lands, so
+    // the sidebar never reads the slot list again on its own.
     vi.useFakeTimers()
     try {
       localStorage.setItem('mc-sidebar-lane', 'conductor')
-      const { queryByTestId } = renderSidebar([
+      const { queryByTestId, getByTestId, pushFrame } = renderSidebar([
         { key: 'k-root', title: 'Conductor', messages: 1, running: false, modified: 2000, parent: null, lineage_pending: true },
         { key: 'k-kid', title: 'Worker', messages: 1, running: false, modified: 1000, parent: null, lineage_pending: true },
       ])
-      // Provisional and flat: no edges in this frame, so the lane is not offered yet.
       expect(queryByTestId('conductor-view-lane')).toBeNull()
+      await act(async () => { await vi.advanceTimersByTimeAsync(31_000) })
       expect(mocks.chatSlots).not.toHaveBeenCalled()
 
-      // The seed lands; the next read carries the edge.
-      mocks.chatSlots.mockResolvedValue([
-        { key: 'k-root', title: 'Conductor', messages: 1, running: false, modified: 2000, parent: null },
-        { key: 'k-kid', title: 'Worker', messages: 1, running: false, modified: 1000, parent: { slot: 'k-root', key: 'k-root' } },
-      ])
-      await act(async () => { await vi.advanceTimersByTimeAsync(2100) })
-      expect(mocks.chatSlots).toHaveBeenCalled()
+      act(() => {
+        pushFrame([
+          { key: 'k-root', title: 'Conductor', messages: 1, running: false, modified: 2000, parent: null },
+          { key: 'k-kid', title: 'Worker', messages: 1, running: false, modified: 1000, parent: { slot: 'k-root', key: 'k-root' } },
+        ])
+      })
+      expect(getByTestId('conductor-view-lane')).toBeTruthy()
+      expect(getByTestId('conductor-child-count-k-root').textContent).toBe('1')
     } finally {
       vi.useRealTimers()
     }

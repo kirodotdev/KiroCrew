@@ -233,7 +233,7 @@ order, and pins that no owner imports the facade:
 | `rowIdentity.ts` | origin-qualified identity for live and history rows, and the peer guards on local pin and folder state |
 | `persistence.ts` | the browser-stored view preferences (lane, width, filters, fold sets, pane height): every key except the four status-chip keys, which ride on `SESSION_FILTERS` in `filters.tsx`; and the readers, defaults, validation and migrations of every key except the width and the pre-board width (`resize.ts`), the pane height (`history.ts`), and the status chips and the folders-shelved flag (`filters.tsx`) |
 | `filters.tsx` | the status chips (`SESSION_FILTERS`), the folder and tag filter state, the Recent window, the running, recent and unread sets and chip counts, and the unread auto-drain |
-| `lanes.ts`, `conductor.ts` | the lane preference, the flat-lane projection and the lane cycle; the conductor lane's lineage seed poll, population, lineage tree and open conductors |
+| `lanes.ts`, `conductor.ts` | the lane preference, the flat-lane projection and the lane cycle; the conductor lane's lineage availability (pushed `slot_patch`, no poll), population, lineage tree and open conductors |
 | `folders.ts` | folder sort mode, visibility, the subtree index and ancestor expansion, the filter-menu rows, and folder writes |
 | `board.ts` | the tag-column board: columns, the column popover, column writes, lane seeding (it widens the sidebar through `resize.ts`), per-column collapse and membership |
 | `stale.ts`, `pinnedOrder.ts`, `hoverHold.ts` | the dormant-session collapse, the manual pinned order, and the hover hold |

@@ -153,10 +153,12 @@ class TestLoopSafetyPins:
     def test_every_surface_shares_the_one_off_loop_entry_point(self):
         # The dashboard's rung seam IS the promoted helper (an alias, never a
         # copy), and no surface spawns its own thread instead of using it.
+        import importlib
         import inspect
+        import pkgutil
 
         from kiro_crew import llm_helpers, subagent, task_executor
-        from kiro_crew.dashboard import chat_runner
+        from kiro_crew.dashboard import chat_runner, chat_turn
         from kiro_crew.discord import transport_dispatch as discord_dispatch
         from kiro_crew.messaging import driver
         from kiro_crew.slack import handler as slack_handler
@@ -164,8 +166,15 @@ class TestLoopSafetyPins:
         from kiro_crew.telegram import transport_dispatch as telegram_dispatch
 
         assert chat_runner._name_grant_refusal_off_loop is name_grant.refusal_for_command_off_loop
+        # The dashboard's rung is composed into chat_runner from these owners.
+        owners = [
+            importlib.import_module(f"{chat_turn.__name__}.{info.name}")
+            for info in pkgutil.iter_modules(chat_turn.__path__)
+        ]
+        assert owners, "the owner scan found no module, so it is measuring nothing"
         for mod in (
             chat_runner,
+            *owners,
             task_executor,
             subagent,
             driver,

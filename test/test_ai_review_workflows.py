@@ -1394,6 +1394,9 @@ class TestPrReadiness:
             "fast-gate.yml|Fast Gate",
             "build.yml|Build",
             "code-review.yml|Code Review",
+            # Every PR must declare a triaged issue; a lane readiness does not
+            # aggregate is a gate that can go red without turning the PR red.
+            "issue-gate.yml|Issue Gate",
             "dynamic/github-code-scanning/codeql|CodeQL",
             "claude-review.yml|Opus 5.5 Review",
             "codex-review.yml|GPT 6.1 Review",

@@ -216,9 +216,10 @@ def _stopped_row_is_replaceable(loop: "NudgeLoop") -> bool:
 #
 # Membership therefore does NOT assert deliverability; it asserts "this key names
 # a conversation rather than a chat slot". Whether a nudge can actually be
-# delivered stays with the fail-closed ladder in ``dashboard/chat_runner.py``
-# (``_resolve_channel_target``: governance, then a REGISTERED transport, then
-# ``supports_proactive_send``), which logs its reason and degrades to a no-op.
+# delivered stays with the fail-closed ladder ``chat_runner._resolve_channel_target``
+# (defined in ``dashboard/chat_turn/recipient.py``: governance, then a REGISTERED
+# transport, then ``supports_proactive_send``), which logs its reason and degrades
+# to a no-op.
 # So a namespace is listed even when nothing can currently be delivered to it,
 # and the two clearest cases are both here: ``whatsapp`` has no transport package
 # in this fork at all, and ``feishu`` ships one that declares

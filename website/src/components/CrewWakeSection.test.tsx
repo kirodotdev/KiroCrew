@@ -256,6 +256,23 @@ describe('CrewWakeSection — inline schedule creation', () => {
     expect(chip.className).toContain('break-all')
   })
 
+  it('a host with its own noun hands in the pinned hint, and only that host sees it', async () => {
+    // The crewmate Profile card's pushed New schedule page says "crewmate"; the
+    // editor's sentence names a surface that reader is not on. The sentence is
+    // the host's (like `heading` / `blurb` / `emptyLine`), so the editor's own
+    // copy is untouched by the override existing.
+    H.crons.mockResolvedValue({ jobs: [] })
+    wrap(
+      <CrewWakeSection
+        crew="radar" memberId="radar" agentTemplate="shared-template" ownedOnly initialAdding
+        pinnedHint="Created from this crewmate's profile, so the job runs as this crewmate."
+      />,
+    )
+    await screen.findByTestId('crew-wake-create')
+    expect(screen.getByText("Created from this crewmate's profile, so the job runs as this crewmate.")).toBeTruthy()
+    expect(screen.queryByText(/this crew's editor/)).toBeNull()
+  })
+
   it('creates the job carrying member identity separately from its template', async () => {
     await openForm('kirocrew-autofix')
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'morning digest' } })
@@ -370,6 +387,41 @@ describe('CrewWakeSection — a second create works after the first', () => {
     fireEvent.click(again)
     await waitFor(() => expect(H.createCron).toHaveBeenCalledTimes(2))
     expect(H.createCron.mock.calls[1][0].name).toBe('second')
+  })
+})
+
+describe('CrewWakeSection — chromeless host', () => {
+  it('withholds its header row and, after a save, lands focus on the section rather than the body', async () => {
+    // The Profile card's pushed New schedule page draws its own title and Back,
+    // so the section renders no heading, no New / Cancel toggle and no Open
+    // Schedule. That toggle is also where focus went after a save collapsed
+    // the form; with it absent the restore must still land somewhere on the
+    // page the host drew — the section itself — not fall to document.body.
+    H.crons.mockResolvedValue({ jobs: [] })
+    wrap(<CrewWakeSection crew="radar" memberId="radar" agentTemplate="shared-template" ownedOnly initialAdding chromeless />)
+    await screen.findByTestId('crew-wake-create')
+    expect(screen.queryByTestId('crew-wake-add')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Open Schedule' })).toBeNull()
+    const section = screen.getByTestId('crew-wake-section')
+    expect(section).toHaveAttribute('data-chromeless', 'true')
+    expect(section).toHaveAttribute('tabindex', '-1')
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'n' } })
+    fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'm' } })
+    fireEvent.click(screen.getByTestId('crew-wake-create-submit'))
+    await waitFor(() => expect(screen.queryByTestId('crew-wake-create')).toBeNull())
+    await waitFor(() => expect(document.activeElement).toBe(section))
+  })
+
+  it('with its own header, the collapse-after-save still returns focus to the toggle', async () => {
+    H.crons.mockResolvedValue({ jobs: [] })
+    wrap(<CrewWakeSection crew="oncall" memberId="oncall" isDefaultCrew={false} />)
+    fireEvent.click(await screen.findByTestId('crew-wake-add'))
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'n' } })
+    fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'm' } })
+    fireEvent.click(screen.getByTestId('crew-wake-create-submit'))
+    await waitFor(() => expect(screen.queryByTestId('crew-wake-create')).toBeNull())
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId('crew-wake-add')))
+    expect(screen.getByTestId('crew-wake-section')).not.toHaveAttribute('tabindex')
   })
 })
 

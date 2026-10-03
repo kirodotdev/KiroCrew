@@ -234,18 +234,6 @@ _BARE_REF_RE = re.compile(
     r"|https?://[A-Za-z0-9.-]+/" + _REPO_SLUG + r"/issues/\d+\b",
     re.IGNORECASE,
 )
-# Explicit opt-out so an issue-less PR can say so once instead of being asked
-# every round. Anchored at column 0 and requires the colon, because an
-# UNANCHORED substring is satisfied by any prose that merely discusses this
-# check — including the instruction block of our own body template, which would
-# make an author who copies the template and skips that section look like they
-# declared something. A declaration is a trailer, not a mention.
-# The phrasing deliberately contains no GitHub closing keyword
-# (close/closes/closed, fix/fixes/fixed, resolve/resolves/resolved): a keyword
-# directly before the colon would turn a '#<n>' at the start of the <why> into
-# '<keyword>: #<n>', which GitHub parses as a close-on-merge trigger — the
-# opt-out would then auto-close the very issue it explains not closing.
-_NO_ISSUE_RE = re.compile(r"^no linked issue[ \t]*:", re.IGNORECASE | re.MULTILINE)
 
 # Issue-link classification must see the same Markdown surface GitHub treats as
 # prose. Mask ignored contexts character-for-character so MULTILINE anchors and
@@ -540,6 +528,82 @@ def _declared_closing_numbers(visible_body, base_repo=None):
     return declared, well_formed
 
 
+# The DECLARATION grammar: what a PR body says it is for. A declaration is a
+# closing verb (the host auto-closes the issue on merge) OR a non-closing
+# ``Refs`` / ``Part of`` (the issue stays open: partial work, a follow-up of
+# several), each followed by one of the three issue targets. It STARTS a
+# visible line (three columns of indent at most, an optional bullet) and what
+# follows the reference on that line is free. Everything ``_CLOSING_KW_RE``
+# refuses for being code or quotation -- four-column indent, a ``>``
+# blockquote, a mid-sentence mention -- this refuses too, since none of them
+# can start a line this way; what it accepts that ``_CLOSING_KW_RE`` does not
+# is a trailer followed by prose (``Fixes #7 (the Windows half)``) and the
+# non-closing verbs, which GitHub renders as links and never resolves as a
+# closure -- the NOTICE path has no use for them, a gate that asks "which issue
+# is this work for" does. Every verb is read at a word start: the line-start
+# regex consumes the bullet/indent for the first one, and the lookbehind in
+# ``_DECLARING_REF_RE`` guards the rest of the line, so ``unresolved: #2`` in
+# the free tail is not ``resolved #2``.
+_DECLARING_VERB = r"(?:" + _CLOSING_VERB[3:-1] + r"|refs?|part of)"
+_DECLARING_LINE_START_RE = re.compile(
+    r"^ {0,3}(?:[-*+][ \t]+)?(?=" + _DECLARING_VERB + r"[ \t]*:?[ \t]+)",
+    re.IGNORECASE | re.MULTILINE,
+)
+# A URL target counts only on the github.com host: GitHub renders nothing from
+# ``https://example.com/.../issues/N`` and a gate that credited it would be
+# crediting a link to nowhere. (``_ISSUE_TARGET`` for the NOTICE path keeps
+# any host, because that classifier only explains a body the host already
+# resolved to nothing and its message is right either way.)
+_DECLARING_REF_RE = re.compile(
+    r"(?<![A-Za-z0-9_])" + _DECLARING_VERB + r"[ \t]*:?[ \t]+"
+    r"(?:(?P<slug>" + _REPO_SLUG + r")?#(?P<number>\d+)"
+    r"|https?://(?:www\.)?github\.com/(?P<url_slug>" + _REPO_SLUG + r")"
+    r"/issues/(?P<url_number>\d+))",
+    re.IGNORECASE,
+)
+
+
+def declared_issue_numbers(body, repo):
+    """Return (numbers declared for ``repo``, well_formed) -- the public grammar.
+
+    The ONE entry point other surfaces use to read which issues a PR body
+    declares it is for (`.github/scripts/issue_gate_refs.py`, the Issue Gate's
+    adapter, is its caller), so the masking and the reference grammar are never
+    re-derived elsewhere: a semantic change here reaches every caller, where a
+    caller rewrapping a private pattern drifts from it unnoticed.
+
+    ``body`` is masked with ``_visible_markdown_prose`` first, then read with
+    ``_DECLARING_LINE_START_RE`` / ``_DECLARING_REF_RE`` (stated above): a
+    declaration starts a line and the rest of that line is free, every reference
+    on it is read. A closing verb and a non-closing ``Refs`` / ``Part of`` both
+    declare; only the former closes on merge. This is a different question from
+    the one ``closing_link_reason`` answers (why the HOST resolved no closure),
+    which keeps its own whole-line, closing-verbs-only classifier.
+
+    Only references naming ``repo`` are returned (an unqualified ``#<n>`` can
+    only mean the PR's own repository). ``well_formed`` is False when a
+    reference names a number the host could never have issued, which the
+    caller reports rather than drops. Numbers are canonical decimal strings,
+    sorted numerically.
+    """
+    visible = _visible_markdown_prose(body)
+    repo_key = _normalize_repo_key(repo)
+    numbers = set()
+    well_formed = True
+    for start in _DECLARING_LINE_START_RE.finditer(visible):
+        line_end = visible.find("\n", start.end())
+        line = visible[start.end() : line_end if line_end >= 0 else len(visible)]
+        for ref in _DECLARING_REF_RE.finditer(line):
+            number = _normalize_issue_number(ref.group("number") or ref.group("url_number"))
+            if number is None:
+                well_formed = False
+                continue
+            slug = ref.group("slug") or ref.group("url_slug")
+            if (_normalize_repo_key(slug) or repo_key) == repo_key:
+                numbers.add(number)
+    return sorted(numbers, key=_issue_number_sort_key), well_formed
+
+
 def closing_link_reason(body, closing_refs, repo=None):
     """Return an advisory issue-link reason, else None.
 
@@ -597,8 +661,6 @@ def closing_link_reason(body, closing_refs, repo=None):
             + " (confirm every closure is intentional; add one 'Fixes #<n>' "
             "trailer per issue)"
         )
-    if _NO_ISSUE_RE.search(visible_body):
-        return None
     if _CLOSING_KW_RE.search(visible_body):
         # A visible verb is present but the host resolved nothing: the number,
         # repository target, or issue state does not form a live closure. A code
@@ -611,11 +673,12 @@ def closing_link_reason(body, closing_refs, repo=None):
     if _BARE_REF_RE.search(visible_body):
         return (
             "body references an issue with no closing keyword - use "
-            "'Fixes #<n>' so it closes on merge, or state 'no linked issue: <why>'"
+            "'Fixes #<n>' so it closes on merge (the Issue Gate lane also accepts "
+            "'Part of #<n>' for partial work)"
         )
     return (
-        "no issue link - add 'Fixes #<n>', or state 'no linked issue: <why>' "
-        "to record that the omission is deliberate"
+        "no issue link - add 'Fixes #<n>' (or 'Part of #<n>') for a triaged issue; "
+        "the Issue Gate lane fails the PR without one"
     )
 
 

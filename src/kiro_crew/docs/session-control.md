@@ -579,6 +579,19 @@ tag at the same moment, the call fails with the current list instead of
 overwriting their click — re-read and retry. At least one of `add` / `remove`
 must be non-empty, and a tag must already exist.
 
+The agent tag-grants policy (the same one `chat_tag` `set_state` enforces)
+applies to `chat_tag_assign` for every non-person caller. A tag the person
+**reserved** — a protected grant row with policy `none`, or `add-only` when you
+try to remove it — is refused `tag_policy_denied`. A workflow-**status** tag
+whose protected identity is missing is refused `status_identity_unprotected` on
+add as well as strip, and adding a status tag that would leave the session with
+two mutually exclusive states is refused `status_tag_requires_set_state` (drive a
+workflow state through `chat_tag` `set_state`, which strips the peer). When the
+grants store is unavailable the refusal is `tag_grants_unavailable`. An ordinary
+label with no protected row is yours to apply; a freshly `chat_tag_create`d
+status tag stays rowless until the owner adopts it, so it may not be assignable
+until then.
+
 Tag names are capped at 60 characters, checked after redaction. **This server can
 never delete a tag**, so nothing here can lose a label the person put on a
 session. `chat_tag_update` is metadata only: every session carrying the tag keeps

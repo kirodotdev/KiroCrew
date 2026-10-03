@@ -57,6 +57,24 @@ def _close_skills_loaders(close_skills_loaders):
     """``build_first_turn`` builds a ``ContextBuilder``: close its ``SkillsLoader`` (``test/conftest.py``)."""
 
 
+def _pin_write_order(memory: VectorMemoryStore, texts) -> None:
+    """Stamp the lessons holding *texts* one second apart, oldest first.
+
+    The startup order is newest-first by ``updated_at``. Two writes inside one
+    clock tick (routine on Windows) share a stamp, and the tie then falls to
+    SQLite's row order, so a test that relies on which row is newer pins that
+    order here instead of on the clock.
+    """
+    with memory._db_lock, memory.db:
+        for index, text in enumerate(texts):
+            changed = memory.db.execute(
+                "UPDATE semantic_memory SET updated_at = ? "
+                "WHERE key LIKE 'lesson.%' AND value_json LIKE ?",
+                (f"2026-01-01T00:00:{index:02d}+00:00", f"%{text}%"),
+            ).rowcount
+            assert changed == 1, f"fixture text matched {changed} lessons: {text!r}"
+
+
 class Embedder:
     """A deterministic stand-in: the first message and SEMANTIC share a direction."""
 
@@ -689,6 +707,10 @@ class TestOneKeywordMeasureAcrossTheVectorBoundary:
             memory.embed_fn = None
             for text in (self.RARE, self.COMMON_A, self.COMMON_B, *self.FILLERS[1:]):
                 assert memory.write_lesson(text)
+            _pin_write_order(
+                memory,
+                (self.FILLERS[0], self.RARE, self.COMMON_A, self.COMMON_B, *self.FILLERS[1:]),
+            )
             rows = memory.get_lessons()
             assert len(rows) == 11, "dedup merged fixture rows"
             assert sum(row["embedding"] is not None for row in rows) == 1
@@ -856,6 +878,7 @@ class TestTheKeywordHalfStaysBounded:
             # richer first, so recency alone would rank shorter above it.
             for text in (richer, shorter, *self.FILLERS):
                 assert memory.write_lesson(text)
+            _pin_write_order(memory, (embedded, richer, shorter, *self.FILLERS))
             rows = memory.get_lessons()
             assert len(rows) == 9, "dedup merged fixture rows"
             assert sum(row["embedding"] is not None for row in rows) == 1

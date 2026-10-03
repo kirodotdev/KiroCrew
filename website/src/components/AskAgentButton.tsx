@@ -47,17 +47,20 @@ export function handoffErrorToAgent({
   report,
   message,
   hard = false,
+  leaveGranted = false,
   onHandoff,
 }: {
   report?: ErrorReport
   message?: string
   hard?: boolean
+  /** The caller's own leave gate already asked the page and it agreed — see `sendErrorToChat`. */
+  leaveGranted?: boolean
   onHandoff?: () => void
 }): boolean {
   const resolved: ErrorReport | { message: string } | null =
     report ?? findReport(message) ?? (message ? { message } : null)
   if (!resolved) return false
-  if (!sendErrorToChat(askAgentPrompt(resolved), { hard })) return false
+  if (!sendErrorToChat(askAgentPrompt(resolved), { hard, leaveGranted })) return false
   try { onHandoff?.() } catch { /* dismissal is cosmetic; never throw here */ }
   return true
 }
@@ -108,6 +111,12 @@ export default function AskAgentButton({
    * itself. The gate receives the hand-off as `proceed` and decides whether it
    * runs; a veto leaves the surface exactly as it was — nothing staged, nothing
    * moved. Without a gate the hand-off runs directly.
+   *
+   * The gate IS the leave ask: once it has run `proceed`, the hand-off skips the
+   * installed navigator's own guard (`leaveGranted`). Both read the same
+   * `useMayLeaveForNavigation` channel, so asking twice posed one discard
+   * question two times, and a "keep my draft" on the second cancelled a hand-off
+   * the first had already accepted.
    */
   gate?: (proceed: () => void) => void
   className?: string
@@ -132,9 +141,8 @@ export default function AskAgentButton({
     // The gate goes in FRONT of the whole hand-off, staging included: a vetoed
     // hand-off that had already queued its prompt would deliver it to the next
     // chat the user opens, long after the crash it describes.
-    const proceed = () => { handoffErrorToAgent({ report, message, hard, onHandoff }) }
-    if (gate) gate(proceed)
-    else proceed()
+    if (gate) gate(() => { handoffErrorToAgent({ report, message, hard, leaveGranted: true, onHandoff }) })
+    else handoffErrorToAgent({ report, message, hard, onHandoff })
   }
 
   const base = 'inline-flex items-center gap-1 shrink-0 cursor-pointer transition-colors'

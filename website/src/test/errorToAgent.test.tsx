@@ -11,9 +11,18 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { useEffect } from 'react'
 import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom'
+import AskAgentButton from '../components/AskAgentButton'
 import ErrorNotice from '../components/ErrorNotice'
+import {
+  NavigationLeaveGuardProvider,
+  useGuardedLeave,
+  useMayLeaveForNavigation,
+  useRegisterNavigationLeaveGuard,
+} from '../components/NavigationLeaveGuard'
 import { mergeIntoDraft } from '../utils/chatDrafts'
 import { buildErrorPrompt } from '../utils/errorReport.prompt'
 import {
@@ -39,6 +48,60 @@ import {
 } from '../utils/errorReport'
 
 const navigated: string[] = []
+
+function GuardedErrorNotice({ allow }: { allow: boolean }) {
+  const navigate = useNavigate()
+  const mayLeave = useMayLeaveForNavigation()
+  useRegisterNavigationLeaveGuard(() => allow)
+  useEffect(() => {
+    installSoftNavigate(navigate, mayLeave)
+    return () => installSoftNavigate(null)
+  }, [navigate, mayLeave])
+  return (
+    <>
+      <ErrorNotice message="guarded failure" askAgent />
+      <LocationProbe />
+    </>
+  )
+}
+
+function LocationProbe() {
+  return <div data-testid="handoff-location">{useLocation().pathname}</div>
+}
+
+/**
+ * The notification sheet's shape: the button runs through the page's own
+ * `useGuardedLeave` gate, AND the app-level navigator carries the same channel.
+ * `guard` stands in for a page holding a dirty draft — it is asked on every
+ * call and answers from `answers` in order, so the test can see how many times
+ * the one discard question was posed and what a second answer would do.
+ */
+function GatedAskAgent({ guard }: { guard: () => boolean }) {
+  const navigate = useNavigate()
+  const mayLeave = useMayLeaveForNavigation()
+  const leave = useGuardedLeave()
+  useRegisterNavigationLeaveGuard(guard)
+  useEffect(() => {
+    installSoftNavigate(navigate, mayLeave)
+    return () => installSoftNavigate(null)
+  }, [navigate, mayLeave])
+  return (
+    <>
+      <AskAgentButton message="sheet failure" gate={proceed => leave(proceed, '/chat')} />
+      <LocationProbe />
+    </>
+  )
+}
+
+function renderGuardedErrorNotice(allow: boolean) {
+  return render(
+    <NavigationLeaveGuardProvider>
+      <MemoryRouter initialEntries={['/members']}>
+        <GuardedErrorNotice allow={allow} />
+      </MemoryRouter>
+    </NavigationLeaveGuardProvider>,
+  )
+}
 
 beforeEach(() => {
   __resetErrorJournalForTests()
@@ -402,6 +465,18 @@ describe('chat hand-off channel', () => {
     expect(mergeIntoDraft('   \n ', 'P')).toBe('P')
   })
 
+  it('leaveGranted skips the installed leave guard; an ungated call still asks it', () => {
+    const mayNavigate = vi.fn(() => true)
+    installSoftNavigate(to => { navigated.push(to) }, mayNavigate)
+
+    expect(sendErrorToChat('already asked', { leaveGranted: true })).toBe(true)
+    expect(mayNavigate).not.toHaveBeenCalled()
+    expect(navigated).toEqual(['/chat'])
+
+    expect(sendErrorToChat('not yet asked')).toBe(true)
+    expect(mayNavigate).toHaveBeenCalledTimes(1)
+  })
+
   it('hard mode bypasses the soft navigator entirely', () => {
     const assign = vi.fn()
     // happy-dom refuses to reassign `location`, so stub only the method.
@@ -435,6 +510,69 @@ describe('ErrorNotice', () => {
 
     expect(onParentClick).toHaveBeenCalledOnce()
     expect(navigated).toEqual(['/chat'])
+  })
+
+  it('does not navigate or stage the prompt when the registered leave guard vetoes', async () => {
+    const view = renderGuardedErrorNotice(false)
+
+    await userEvent.click(screen.getByRole('button', { name: /ask the agent/i }))
+
+    expect(screen.getByTestId('handoff-location')).toHaveTextContent('/members')
+    expect(consumeChatHandoff()).toBeNull()
+    view.unmount()
+  })
+
+  it('stages the prompt and navigates when the registered leave guard allows it', async () => {
+    const view = renderGuardedErrorNotice(true)
+
+    await userEvent.click(screen.getByRole('button', { name: /ask the agent/i }))
+
+    expect(screen.getByTestId('handoff-location')).toHaveTextContent('/chat')
+    expect(consumeChatHandoff()).toContain('guarded failure')
+    view.unmount()
+  })
+
+  it('a gated button asks the page ONCE — the installed navigator does not repeat the discard question', async () => {
+    // Regression. The sheet's `gate` and the navigator's `mayNavigate` are the
+    // same `useMayLeaveForNavigation` channel. Asked twice, a page guard that
+    // confirms a draft away answered "yes" to the gate and then raised the same
+    // confirm again from `sendErrorToChat`, because the draft is only cleared on
+    // unmount. The second answer here is a veto: with the old double ask it
+    // cancelled a hand-off the user had just accepted and staged nothing.
+    const answers = [true, false]
+    const guard = vi.fn(() => answers.shift() ?? false)
+    const view = render(
+      <NavigationLeaveGuardProvider>
+        <MemoryRouter initialEntries={['/members']}>
+          <GatedAskAgent guard={guard} />
+        </MemoryRouter>
+      </NavigationLeaveGuardProvider>,
+    )
+
+    await userEvent.click(screen.getByRole('button', { name: /ask the agent/i }))
+
+    expect(guard).toHaveBeenCalledTimes(1)
+    expect(screen.getByTestId('handoff-location')).toHaveTextContent('/chat')
+    expect(consumeChatHandoff()).toContain('sheet failure')
+    view.unmount()
+  })
+
+  it('a gated veto still stages nothing and stays put', async () => {
+    const guard = vi.fn(() => false)
+    const view = render(
+      <NavigationLeaveGuardProvider>
+        <MemoryRouter initialEntries={['/members']}>
+          <GatedAskAgent guard={guard} />
+        </MemoryRouter>
+      </NavigationLeaveGuardProvider>,
+    )
+
+    await userEvent.click(screen.getByRole('button', { name: /ask the agent/i }))
+
+    expect(guard).toHaveBeenCalledTimes(1)
+    expect(screen.getByTestId('handoff-location')).toHaveTextContent('/members')
+    expect(consumeChatHandoff()).toBeNull()
+    view.unmount()
   })
 
   it('renders nothing when there is no message', () => {

@@ -189,6 +189,7 @@ def _mounted(
     agent: str | None = CREW,
     *,
     internal: bool = True,
+    owner: bool = True,
     namespace: str = "member",
     sessions: Any = None,
 ) -> web.Application:
@@ -207,6 +208,32 @@ def _mounted(
     """
     app = web.Application()
     app["state"] = _State(agent, namespace=namespace, sessions=sessions)
+
+    if owner:
+
+        @web.middleware
+        async def _owner(request, handler):
+            # Present an owner-dashboard identity: the panel READ route
+            # (`api_member_panel`) is owner-gated like its sibling member reads
+            # (`api_member_thread`, briefing, rules), so a caller with no owner
+            # identity is denied regardless of the internal secret. ``X-Test-User``
+            # names a NON-owner caller for the denial test; absent it, the
+            # local-owner subject the gate accepts when no owner_id is configured.
+            # Applied even when ``internal`` is False, because the drawer is an
+            # owner BROWSER caller: owner-identified, no internal secret.
+            #
+            # Non-destructive: a test that injects its OWN identity (an app token,
+            # a specific subject) does so with a middleware inserted at index 0,
+            # which runs first; this one must not clobber it, so it only fills a
+            # gap the test left open.
+            if "app" not in request:
+                request["app"] = ""
+            if "user" not in request:
+                request["user"] = request.headers.get("X-Test-User", "local-app")
+            return await handler(request)
+
+        app.middlewares.append(_owner)
+
     if internal:
 
         @web.middleware
@@ -251,6 +278,7 @@ async def _client(
     agent: str | None = CREW,
     *,
     internal: bool = True,
+    owner: bool = True,
     namespace: str = "member",
     sessions: Any = None,
 ):
@@ -267,7 +295,9 @@ async def _client(
     hides it.
     """
     c = TestClient(
-        TestServer(_mounted(agent, internal=internal, namespace=namespace, sessions=sessions))
+        TestServer(
+            _mounted(agent, internal=internal, owner=owner, namespace=namespace, sessions=sessions)
+        )
     )
     await c.start_server()
     try:
@@ -440,6 +470,35 @@ async def test_the_drawer_read_needs_no_internal_secret():
     async with _client(internal=False) as c:
         resp = await c.get(f"/api/members/{SLUG}/panel?member={CREW}")
         assert resp.status == 200
+
+
+async def test_a_non_owner_reads_the_panel_but_triggers_no_card_write(vetted):
+    """The panel READ is served to any dashboard caller -- the crew webview depends on it,
+    so a route-level owner gate would 403 a non-owner's webview. Only the derived-card WRITE
+    is owner-gated: a dashboard token with an empty app identity but a NON-owner subject (the
+    `!dashboard` Slack case) still READS its panel, but must not reach `_publish_derived_card`,
+    or a non-owner GET would mutate the owner-facing store and broadcast to owners.
+    """
+    app = _mounted()
+    async with TestClient(TestServer(app)) as c:
+        # Publish a card as the owner so there is something to protect.
+        pub = await c.post(
+            "/api/agent-panel/publish",
+            json={"data": {"x": 1}},
+            headers={"X-Session-Key": "dashboard:chat-1"},
+        )
+        assert pub.status == 200
+        before = len(app["state"].broadcasts)
+        # A non-owner (named via X-Test-User) is SERVED the read -- the webview still works --
+        # but the write is skipped, so nothing reaches a broadcast.
+        resp = await c.get(
+            f"/api/members/{SLUG}/panel?member={CREW}",
+            headers={"X-Test-User": "not-the-owner"},
+        )
+        assert resp.status == 200, "the non-owner read was refused, breaking the crew webview"
+        # The write is gated, not the read: no store mutation reaches a broadcast on the
+        # non-owner read.
+        assert len(app["state"].broadcasts) == before
 
 
 async def test_the_crew_is_not_taken_from_the_body(vetted):

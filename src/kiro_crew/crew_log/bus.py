@@ -29,10 +29,11 @@ and no backlog. A baseline is a fresh READ of the fold, not a replay from the bu
 is not the record, the log is -- so a lost event leaves a consumer behind the file and the
 next read carries it forward.
 
-WHO SUBSCRIBES. One subscriber today, registered unfiltered where the dashboard state
-exists (``install_crew_log_publisher``): the WS exporter, which turns a
-:class:`FoldAdvanced` into a ``slot_projection`` or ``session_projection`` frame. Three
-more are named and NOT built: a summary fold over a session's events, the automatic-card
+WHO SUBSCRIBES. One subscriber object today, registered where the dashboard state
+exists (``install_crew_log_publisher``): the WS exporter turns a :class:`FoldAdvanced`
+into a ``slot_projection`` or ``session_projection`` frame, and a :class:`TreeAdvanced`
+into one coalesced ``slot_patch`` of the rows whose ``parent`` moved. Three more are
+named and NOT built: a summary fold over a session's events, the automatic-card
 sentence trigger, and channel
 notifications. They are named here because the shape of this module is the answer to
 "where does the next consumer go", and a reader asking that should not have to guess.
@@ -89,6 +90,27 @@ SCOPE_SESSION: Final[str] = "session"
 #: The event kinds this bus carries. A string rather than the type itself, so a subscriber
 #: registers against a name it can hold without importing the event's module.
 FOLD_ADVANCED: Final[str] = "fold_advanced"
+#: The session tree moved: a session was opened, adopted, released or forgotten, or the
+#: projection finished seeding. Published by
+#: :mod:`~kiro_crew.crew_log.session_tree_projection` with a :class:`TreeAdvanced`.
+TREE_ADVANCED: Final[str] = "tree_advanced"
+
+
+class TreeAdvanced(NamedTuple):
+    """The session tree projection changed state.
+
+    Carries no tree. The tree is one in-memory fold with one reader API
+    (``projection().nodes()``), and every consumer resolves it against its OWN live
+    rows -- the sidebar joins it to the slots it is showing -- so shipping a copy here
+    would hand each subscriber a value it has to re-join anyway. It carries no counter
+    either: the one subscriber coalesces by time, and a field nothing reads is a
+    contract nothing checks.
+
+    Published on whatever thread changed the tree: the emitter's writer thread for an
+    open or a takeover, the maintenance pool for a seed. A subscriber hops to its own
+    loop and returns, the contract every subscriber of this bus already owes.
+    """
+
 
 #: What :func:`subscribe` returns: call it to stop listening. Idempotent.
 Disposer = Callable[[], None]

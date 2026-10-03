@@ -11,7 +11,7 @@ from typing import Any
 
 from aiohttp import web
 
-from kiro_crew.config.loader import coerce_dict_section, update_config_locked
+from kiro_crew.config.loader import ConfigReadError, coerce_dict_section, update_config_locked
 from kiro_crew.dashboard.chat_utils import run_config_write
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.loop_lock import LoopBoundLock
@@ -724,6 +724,16 @@ async def api_onboarding_import_state(request: web.Request) -> web.Response:
         # hold releases the lock on cancellation while the thread is still
         # rewriting config.json.
         await run_config_write(_persist_state, body["completed"])
+    except ConfigReadError:
+        # Named apart from the generic failure because no retry clears it and the
+        # user can: the loader reads the same unparseable config.json as defaults,
+        # so import_onboarded reads false and first run reopens on every load
+        # while this fail-closed write refuses every exit from it.
+        logger.exception("Onboarding import state update failed: config.json is unreadable")
+        _audit(caller=caller, operation=operation, outcome="failed", error="config_unreadable")
+        return web.json_response(
+            {"error": "request failed", "code": "config_unreadable"}, status=500
+        )
     except Exception:
         logger.exception("Onboarding import state update failed")
         _audit(caller=caller, operation=operation, outcome="failed", error="state_failed")

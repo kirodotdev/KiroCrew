@@ -1686,10 +1686,9 @@ export default function ChatPane({
                     {crewmate && paneMessages.length > 0 ? (
                       <>
                         <div>{i18nT('components.chatPane.crewmate_quiet', { name: crewmate.label || crewmate.name })}</div>
-                        {/* Where the work went: named after the panel tab
-                            (pages.membersPage.work_log_tab). A link when the
-                            host can focus that tab — the words read as a
-                            destination, so they must be one. */}
+                        {/* Where the work went: Profile > Sessions. A link when the host
+                            can open that tab — the words read as a destination,
+                            so they must be one. */}
                         {onOpenCrewWorkLog ? (
                           <button
                             type="button"

@@ -151,8 +151,9 @@ describe('Notification Center sheet — the crash fallback hands off to the agen
     expect(prompt).toContain('- Message: zzq-feed-broke')
     expect(prompt).toContain('- Code: notifications-bell')
     expect(prompt).not.toContain('Notifications failed to load')
-    // Soft: the router carries the user to the chat with the store intact.
-    expect(opts, 'the sheet\'s crash is contained to the sheet; a full load would drop every store-held draft').toEqual({ hard: false })
+    // Soft: the router carries the user to the chat with the store intact. The
+    // sheet's own gate already asked the leave guard, so it is not asked twice.
+    expect(opts, 'the sheet\'s crash is contained to the sheet; a full load would drop every store-held draft').toEqual({ hard: false, leaveGranted: true })
   })
 
   it('still hands off when the thrown error has no message: the name stands in for it', async () => {

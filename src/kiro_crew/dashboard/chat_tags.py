@@ -24,6 +24,8 @@ from aiohttp import web
 
 from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
 from kiro_crew.dashboard.chat_tag_grants import (
+    GrantsSnapshot,
+    capture_grants_snapshot,
     has_grant_row,
     is_grantable_tag_id,
     mint_grant,
@@ -97,6 +99,151 @@ def agent_tag_policy(tag: dict[str, Any]) -> str:
     context injection so the policy lives in one place.
     """
     return agent_tag_grant(tag)[0]
+
+
+def agent_tag_change_refusal(
+    added: list[dict[str, Any]],
+    removed: list[dict[str, Any]],
+    result: list[dict[str, Any]],
+    snapshot: GrantsSnapshot,
+) -> tuple[str, str] | None:
+    """Grants-policy verdict for a non-person caller's tag diff, or ``None``.
+
+    The protected-store authority the ``chat_tag`` directive enforces, expressed
+    over the DIFF so the wholesale list replace at
+    ``PUT /api/chat/slots/{slot}/tags`` is held to it. Every policy decision is
+    read from ONE atomic ``snapshot`` of the grants cache
+    (:func:`~kiro_crew.dashboard.chat_tag_grants.capture_grants_snapshot`) —
+    both health axes and the rows come from the same installed cache state, so a
+    concurrent refresh cannot swap the cache between a health check and a row
+    lookup (the stale-health window). The protected ROW is the source of truth
+    for both policy and status; a tag dict's own agent-writable ``status`` field
+    (in ``tags.json``) is consulted ONLY to recognise a rowless tag CLAIMING to
+    be a status tag, which is never trusted as a grant — only ever a reason to
+    REFUSE.
+
+    Health, two cases:
+
+    * If the store is WRITE-BLOCKED (unreadable or gone), nothing can be
+      verified at all, so the whole change fails closed ``tag_grants_unavailable``.
+    * If grants are merely REDUCED (a boot quarantine that has since reseeded
+      and verified: the default states are row-backed again, but the operator's
+      custom reservations were discarded), a tag that is ROWLESS might be a lost
+      reservation rather than an ordinary label — the two are indistinguishable
+      now. So a rowless tag fails closed ``tag_grants_unavailable`` while
+      ``grants_reduced`` holds, but a ROW-BACKED tag (a reseeded default state)
+      resolves normally and stays assignable. Recovery is owner adoption.
+
+    What a non-person caller is otherwise refused is a RESERVATION the store
+    actually records — a protected grant row. A healthy-store rowless tag is an
+    ordinary label (apps self-organise their own sessions with these), not
+    something the person reserved, so it is not gated; the row is what makes a
+    tag the person's:
+
+    * an ADDED row-backed tag needs ``add-only`` or ``add-remove`` — a row-backed
+      ``none`` tag is a state the person reserved for themselves
+      (``tag_policy_denied``);
+    * a REMOVED row-backed tag needs ``add-remove`` — row-backed ``add-only`` and
+      ``none`` both forbid an agent from stripping it (``tag_policy_denied``);
+    * an ADDED or REMOVED tag whose agent-writable vocabulary bit says "status"
+      but which has NO protected row (an upgraded install's custom status tag,
+      or one caught between a revoke and its re-mint) has an UNKNOWN identity,
+      not a plain label: it is refused ``status_identity_unprotected`` rather
+      than stacking (on add) or silently dropping (on remove) a workflow state
+      the store cannot vouch for.
+
+    Workflow-state exclusivity: workflow states are mutually exclusive and
+    ``set_state`` is the only verb that strips peers. This route strips nothing
+    of its own, so a change THIS diff makes that leaves the result carrying more
+    than one status tag is refused ``status_tag_requires_set_state`` — the agent
+    must drive a workflow state through ``chat_tag`` ``set_state``. A status tag
+    here is any tag that is a row-backed status OR carries the vocabulary status
+    bit, so a rowless status cannot slip the count. The refusal fires ONLY when
+    the offending status tag was ADDED by this diff: the person (never gated) may
+    leave a session carrying two status tags, and a later agent write that
+    touches neither must not be blamed for that pre-existing state. Swapping one
+    status tag for another (its peer in ``removed``) is permitted; stacking a
+    second is not.
+
+    Returns the FIRST ``(code, tag_id)`` refusal (so one bad id in a multi-tag
+    change leaves the whole write unapplied), or ``None`` when every change is
+    permitted. Pure: it reads only ``snapshot`` and the resolved diff.
+    """
+    if snapshot.write_blocked() is not None:
+        # Store unreadable or gone: nothing can be verified. Fail closed for the
+        # whole change rather than treat a reserved tag as rowless. The error id
+        # is empty — the refusal is about the store, not one tag.
+        return ("tag_grants_unavailable", "")
+    # Grants reduced by a boot quarantine (even one that has since reseeded and
+    # verified): a rowless tag may be a lost reservation, indistinguishable from
+    # an ordinary label, so rowless tags are failed closed below while this
+    # holds. Row-backed tags still resolve, so a reseeded default state stays
+    # usable.
+    grants_reduced = snapshot.grants_reduced() is not None
+
+    def _rowless_refusal(tag: dict[str, Any], tag_id: str) -> tuple[str, str] | None:
+        # Shared verdict for a tag with no protected row, used on both add and
+        # remove. A rowless vocabulary-status tag is always refused (its
+        # identity is unknown); otherwise a rowless tag is an ordinary label and
+        # passes, EXCEPT while grants are reduced, when it might be a lost
+        # reservation and so fails closed.
+        if tag.get("status") is True:
+            return ("status_identity_unprotected", tag_id)
+        if grants_reduced:
+            return ("tag_grants_unavailable", tag_id)
+        return None
+
+    def _is_status(tag: dict[str, Any]) -> bool:
+        # A workflow state for exclusivity purposes is a tag that is EITHER a
+        # row-backed status OR carries the vocabulary ``status`` bit with no
+        # protected row. The second case is agent-forgeable, which is why it is
+        # never a GRANT — but it is still a reason to treat the tag as a state
+        # here, so a rowless status cannot be stacked past the exclusivity check.
+        _, row_status = snapshot.grant(str(tag.get("id") or ""))
+        return row_status or tag.get("status") is True
+
+    for tag in added:
+        tag_id = str(tag.get("id") or "")
+        if not snapshot.has_row(tag_id):
+            # Rowless: a vocabulary-status tag is refused outright (adding it
+            # would stack a workflow state the peer-strip cannot later remove,
+            # wedging ``set_state``); an ordinary label passes unless grants are
+            # reduced, when it might be a lost reservation. Checked BEFORE the
+            # policy branch, which only applies to row-backed tags.
+            rowless = _rowless_refusal(tag, tag_id)
+            if rowless is not None:
+                return rowless
+            continue
+        if snapshot.grant(tag_id)[0] not in ("add-only", "add-remove"):
+            return ("tag_policy_denied", tag_id)
+    for tag in removed:
+        tag_id = str(tag.get("id") or "")
+        if not snapshot.has_row(tag_id):
+            # Rowless: a vocabulary-status tag is refused (stripping it would
+            # silently drop a workflow state the store cannot vouch for); an
+            # ordinary label is strippable unless grants are reduced, when it
+            # might be a lost reservation.
+            rowless = _rowless_refusal(tag, tag_id)
+            if rowless is not None:
+                return rowless
+            continue
+        if snapshot.grant(tag_id)[0] != "add-remove":
+            return ("tag_policy_denied", tag_id)
+    # Mutual exclusivity: at most one workflow-state tag may survive. Fire ONLY
+    # when THIS diff raised the status count — the person (ungated) can leave a
+    # session carrying two status tags, and a later agent write that touches
+    # neither (even a pure remove of its own label) must not be blamed for that
+    # pre-existing state. So the offender must be a status tag the diff ADDED.
+    result_status = [t for t in result if _is_status(t)]
+    if len(result_status) > 1:
+        added_ids = {str(t.get("id") or "") for t in added}
+        offender = next(
+            (str(t.get("id") or "") for t in result_status if str(t.get("id") or "") in added_ids),
+            "",
+        )
+        if offender:
+            return ("status_tag_requires_set_state", offender)
+    return None
 
 
 def resolve_board_tags(
@@ -1265,6 +1412,49 @@ async def api_chat_slot_tags(request: web.Request) -> web.Response:
         )
     base_tags_revision: str | None = raw_base or None
 
+    # The agent tag-grants policy applies to every NON-PERSON caller: the
+    # browser is the person, who may set or strip any tag — the whole grants
+    # store exists to constrain what an AGENT may do to a session's tags, not
+    # the owner. ``chat_tag`` ``set_state`` enforces it, and this
+    # wholesale-replace route (which ``chat_tag_assign`` reaches) must too, or
+    # the policy is bypassable here. Deny-by-default on identity: an agent is
+    # gated unless POSITIVELY confirmed to be the person. Three non-person
+    # signals, any one of which gates — the transport alone is not enough,
+    # because an app token declaring ``/api/chat/*`` reaches this route over the
+    # browser transport with NO ``X-Internal-Secret`` yet is still an agent:
+    #   * ``request_origin`` source != ``"dashboard"`` — the internal-secret
+    #     (managed MCP) transport, whose secret the token-auth middleware has
+    #     already verified;
+    #   * a resolved app claim (``effective_request_app`` / ``request_app``) —
+    #     an app token acting as a non-person principal;
+    #   * an admitted crew-member principal (``member:<store>``).
+    origin_source, origin_caller = request_origin(request, what="slot tags", log=logger)
+    member_principal = str(request.get(MEMBER_CHAT_PRINCIPAL_KEY) or "")
+    is_internal_caller = (
+        origin_source != "dashboard" or bool(request_app) or member_principal.startswith("member:")
+    )
+    # These three are the non-person principal representations the auth layer
+    # produces for this route: the internal-secret transport, a resolved app
+    # claim, and an admitted member principal. The gate decides "person" by
+    # their ABSENCE. The mint path's positive predicate
+    # (``is_owner_dashboard_request``) is deliberately NOT used here: it also
+    # requires an owner ``user`` claim, which only becomes reliably present once
+    # ``KIROCREW_OWNER_ID`` is configured, so keying the gate on it would GATE
+    # THE PERSON on a no-owner / local install — a regression with no security
+    # value, since the person is who the store exists to leave unconstrained.
+    # The enumeration is the accepted contract, matching the three
+    # representations the sibling ``member_slot_write_refused`` and
+    # app-isolation fences key on; it is guarded by convention plus the
+    # co-located pin test ``test_non_person_signal_enumeration_each_leg_gates``,
+    # NOT by an automatic tripwire — a NEW principal representation added to the
+    # auth layer must be added to this enumeration (and that test) deliberately.
+    # Pull the grants store read+parse off the event loop ONCE, BEFORE the lock,
+    # so the atomic snapshot captured in-lock below serves the installed
+    # in-memory cache (the snapshot is cache-only and touches no filesystem).
+    # Only agent callers consult it, so skip the thread hop for the browser.
+    if is_internal_caller:
+        await asyncio.to_thread(refresh_cache)
+
     async with _tags_write_lock(state):
         valid_ids = {t.get("id") for t in state._tags}
         new_tags: list[str] = []
@@ -1318,6 +1508,74 @@ async def api_chat_slot_tags(request: web.Request) -> web.Response:
                 },
                 status=409,
             )
+        # Agent tag-grants policy for non-person callers. The requested list is
+        # a wholesale replace, so the add/remove the caller is asking for is the
+        # DIFF against the slot's CURRENT tags — read FRESH inside the lock, the
+        # same discipline the rest of this write span uses, so a concurrent
+        # change cannot make us gate a stale delta. The person (browser) is
+        # never gated; it reached ``is_internal_caller`` False and skips this
+        # entirely. ONE atomic grants snapshot (store health + rows together)
+        # is captured here and threaded through the gate, so a concurrent cache
+        # refresh cannot swap the store's health out from under a row lookup.
+        if is_internal_caller:
+            snapshot = await asyncio.to_thread(capture_grants_snapshot)
+            current_ids = list(getattr(slot, "tags", None) or [])
+            by_id = {
+                t.get("id"): t
+                for t in state._tags
+                if isinstance(t, dict) and isinstance(t.get("id"), str)
+            }
+            current_set = set(current_ids)
+            new_set = set(new_tags)
+            # Fail closed on a REMOVAL we cannot resolve. An id on the slot that
+            # is being dropped (in current, not in new) but is absent from the
+            # live vocabulary cannot be checked for a reservation — and when the
+            # vocabulary is NON-AUTHORITATIVE (``tags.json`` was unreadable at
+            # boot, so ``state._tags`` is empty while protected rows persist), a
+            # tag the owner reserved sits exactly here: on the slot, out of
+            # ``by_id``. ``new_tags`` is already filtered to the (empty)
+            # vocabulary so the tag can never be re-listed, and a diff built only
+            # from ``by_id`` would silently omit the removal and persist it with
+            # no grants check. Refuse rather than strip a reservation we cannot
+            # see. When the vocabulary IS authoritative, an absent current id is
+            # a dangling reference to a deleted tag — benign to drop.
+            vocab_authoritative = getattr(state, "_tags_authoritative", True)
+            if not vocab_authoritative:
+                unresolved_removed = [i for i in current_ids if i not in new_set and i not in by_id]
+                if unresolved_removed:
+                    sel().log_api_access(
+                        caller=request_app or member_principal or origin_caller,
+                        operation="chat.slot_tags",
+                        outcome="denied",
+                        source="app_isolation",
+                        resources=f"slot={slot.key} tag={unresolved_removed[0]}",
+                        error="tag_grants_unavailable",
+                    )
+                    return web.json_response(
+                        {
+                            "error": f"tag_grants_unavailable:{unresolved_removed[0]}",
+                            "code": "tag_grants_unavailable",
+                        },
+                        status=403,
+                    )
+            added = [by_id[i] for i in new_tags if i not in current_set and i in by_id]
+            removed = [by_id[i] for i in current_ids if i not in new_set and i in by_id]
+            result = [by_id[i] for i in new_tags if i in by_id]
+            refusal = agent_tag_change_refusal(added, removed, result, snapshot)
+            if refusal is not None:
+                code, tag_id = refusal
+                sel().log_api_access(
+                    caller=request_app or member_principal or origin_caller,
+                    operation="chat.slot_tags",
+                    outcome="denied",
+                    source="app_isolation",
+                    resources=f"slot={slot.key}" + (f" tag={tag_id}" if tag_id else ""),
+                    error=code,
+                )
+                return web.json_response(
+                    {"error": f"{code}:{tag_id}" if tag_id else code, "code": code},
+                    status=403,
+                )
         prior_tags = slot.tags
         prior_tags_revision = slot.tags_revision
         slot.tags = new_tags

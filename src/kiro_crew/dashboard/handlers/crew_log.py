@@ -1855,6 +1855,8 @@ class CrewLogPublisher:
         # land and be broadcast last. When a pass finishes with more work marked,
         # it schedules the next pass itself.
         self._flushing = False
+        # True while a lineage push is armed on the loop (see :meth:`_mark_tree`).
+        self._tree_scheduled = False
 
     # -- writer thread ------------------------------------------------------ #
 
@@ -1882,9 +1884,9 @@ class CrewLogPublisher:
     def subscribe_bus(self) -> None:
         """Subscribe this publisher to the crew-log bus, replacing any earlier pair.
 
-        TWO keyed subscriptions, one per scope, so each handler receives only its own
-        kind of fold and the bus never hands a slot event to the session path or the
-        reverse. The disposers are KEPT: a second install in the same process (a gateway
+        TWO keyed fold subscriptions, one per scope, so each handler receives only its
+        own kind of fold and the bus never hands a slot event to the session path or the
+        reverse, plus one for the session tree. The disposers are KEPT: a second install in the same process (a gateway
         restarted inside one interpreter) disposes the old pair before subscribing the
         new one, so this publisher is never called twice for one event.
         """
@@ -1902,10 +1904,13 @@ class CrewLogPublisher:
                 self.on_session_fold,
                 scope=crew_log_bus.SCOPE_SESSION,
             ),
+            # The session tree's change event: an open, a takeover, a release, a forget,
+            # or the seed landing. The sidebar's nesting is pushed from here.
+            crew_log_bus.subscribe(crew_log_bus.TREE_ADVANCED, self.on_tree_advanced),
         ]
 
     def unsubscribe_bus(self) -> None:
-        """Drop both bus subscriptions. Idempotent."""
+        """Drop every bus subscription. Idempotent."""
         disposers, self._bus_disposers = self._bus_disposers, []
         for dispose in disposers:
             dispose()
@@ -1980,7 +1985,44 @@ class CrewLogPublisher:
             return None
         return key, fold, revision, seq, value
 
+    def on_tree_advanced(self, event: Any) -> None:
+        """The session tree moved. Called on whichever thread changed it.
+
+        That is the emitter's writer thread for an open or a takeover, so this does what
+        :meth:`notify` does: no I/O, no lock, one hop to the loop. The event carries no
+        tree -- the push re-joins the projection against the live slots on the loop.
+        """
+        loop = self._loop
+        if loop is None:
+            return
+        try:
+            loop.call_soon_threadsafe(self._mark_tree)
+        except RuntimeError:
+            logger.debug("session tree change arrived after the loop closed")
+
     # -- event loop --------------------------------------------------------- #
+
+    def _mark_tree(self) -> None:
+        """Arm ONE coalesced lineage push. On the loop.
+
+        A burst -- a lead opening six workers, a seed landing beside a turn's open -- is
+        one push after :data:`COALESCE_SECONDS`, not one per change.
+        """
+        if self._tree_scheduled or self._loop is None:
+            return
+        self._tree_scheduled = True
+        self._loop.call_later(COALESCE_SECONDS, self._push_tree)
+
+    def _push_tree(self) -> None:
+        """Send the slots whose ``parent`` moved. On the loop. Never raises."""
+        self._tree_scheduled = False
+        push = getattr(self._state, "push_lineage_patch", None)
+        if push is None:
+            return
+        try:
+            push()
+        except Exception:
+            logger.debug("session lineage push failed", exc_info=True)
 
     def _push_fold(self, slot: str, fold: str, revision: int, value: "dict[str, Any]") -> None:
         """Broadcast one folded slot value. On the loop.
@@ -2255,9 +2297,16 @@ class CrewLogPublisher:
         self._loop = loop
         if state is not None:
             self._state = state
+        tree_owed = self._tree_scheduled
         self._scheduled = False
         self._flushing = False
         self._sessions_armed = False
+        self._tree_scheduled = False
+        if tree_owed:
+            # A push armed on the retiring loop never fires; re-arm it here so a tree
+            # change that landed during the swap still reaches the new sockets.
+            self._tree_scheduled = True
+            loop.call_later(COALESCE_SECONDS, self._push_tree)
         if self._dirty:
             self._scheduled = True
             loop.call_later(COALESCE_SECONDS, self._run)
@@ -2322,8 +2371,13 @@ def install_crew_log_publisher(state: Any) -> CrewLogPublisher | None:
     # is the one place the dashboard state exists, so this is where a consumer of a
     # crew-log event can be attached without the crew log naming the dashboard. The
     # growth listener says a session's file moved; the bus says a fold's value moved and
-    # what it is. A re-install swaps the bus pair through their disposers.
+    # what it is, or that the session tree moved. A re-install swaps them through their
+    # disposers.
     _publisher.subscribe_bus()
+    # The bus keeps nothing for a late subscriber, and a client can read the slot list
+    # before this line runs: its seed may already have landed and announced to nobody.
+    # One push now re-joins the tree against the live slots, so that page still nests.
+    _publisher._mark_tree()
     return _publisher
 
 

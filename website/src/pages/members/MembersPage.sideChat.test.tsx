@@ -76,7 +76,7 @@ import { api } from '../../api/client'
 import MembersPage from './MembersPage'
 
 const WIDE_WINDOW = 1440
-const NARROW_WINDOW = 1000
+const NARROW_WINDOW = 700
 function setWindowWidth(px: number) {
   Object.defineProperty(window, 'innerWidth', { value: px, configurable: true, writable: true })
 }
@@ -204,12 +204,9 @@ describe('MembersPage Side Chat in the side panel (selection Ask)', () => {
     // The collision surfaces as its own notice; no pane, so no Ask …
     await screen.findByTestId('member-thread-collision')
     expect(screen.queryByTestId('chat-pane-stub')).toBeNull()
-    // … and the strip is the slot-free bucket: only the Dashboard / Work log / Notes /
-    // Schedules chips, no Side Chat on the roster's unconfirmed `member-other`
-    // key. Schedules is in that bucket because it keys on the crewmate's NAME,
-    // not on a confirmed slot — the schedules a crewmate owns are readable
-    // whether or not its thread opened.
-    await waitFor(() => expect(tabLabels()).toEqual(['Dashboard', 'Work log', 'Notes', 'Schedules']))
+    // … and the strip is the slot-free bucket: Dashboard only. Side Chat
+    // remains dynamic and requires a confirmed member thread.
+    await waitFor(() => expect(tabLabels()).toEqual(['Dashboard']))
     expect(screen.queryByTestId('side-chat-stub')).toBeNull()
   })
 })

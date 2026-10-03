@@ -331,6 +331,9 @@ jobs:
             # is red every time and that nobody can act on trains maintainers to
             # ignore the signal. Any OTHER create failure is a real error and
             # must still fail loud. Same remedy as add-contributor.yml.
+            # The standing tracking issue for workflow-generated PRs; the Issue
+            # Gate lane reads this line.
+            printf '\nPart of #16362\n' >> comparison.md
             rc=0
             out="$(gh pr create --base main --head "$BRANCH" \
               --title "chore(bench): accept new memory-benchmark baseline" \
@@ -340,7 +343,7 @@ jobs:
               case "$out" in
                 *"not permitted to create or approve pull requests"*)
                   compare="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/compare/main...$BRANCH?expand=1"
-                  echo "::notice::Branch $BRANCH is pushed and ready, but GitHub Actions may not open pull requests in this repository. Open it here: $compare"
+                  echo "::notice::Branch $BRANCH is pushed and ready, but GitHub Actions may not open pull requests in this repository. Open it here: $compare Put \`Part of #16362\` on a line of its own in the description so the Issue Gate lane passes (that is the standing tracking issue for workflow-generated PRs)."
                   exit 0
                   ;;
                 *)

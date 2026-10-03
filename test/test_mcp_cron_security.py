@@ -32,10 +32,13 @@ from conftest import make_dir_link, requires_symlinks
 from kiro_crew import mcp_cron, mcp_shared
 from kiro_crew.mcp_cron import (
     _CRON_MAX_COMMAND_SCAN,
+    _SENSITIVE_HOME_DIRS,
     _call_tool_inner,
     _glob_could_reach_credentials,
     _has_bash_brace_expansion,
+    _matched_sensitive_name,
     _not_found,
+    _protected_path_refusal,
     _quote_states,
     _shell_quote_removal,
     _substitute_local_assignments,
@@ -980,6 +983,83 @@ def test_vet_script_contents_blocks_malicious(body):
 @pytest.mark.parametrize("body", BENIGN_SCRIPTS)
 def test_vet_script_contents_allows_benign(body):
     assert _vet_script_contents(body) is None
+
+
+# ── The refusal names the specific matched path and describes it with one
+#    neutral "protected path" wording. The list it classifies mixes credential
+#    stores with paths fenced for other reasons, and the entry strings are not a
+#    reliable credential signal, so no entry is singled out as a "credential
+#    file" -- naming the matched entry is what makes the refusal useful. ──
+
+
+def test_matched_sensitive_name_reports_the_specific_dir():
+    assert _matched_sensitive_name("cat ~/.aws/credentials") == ".aws"
+    assert _matched_sensitive_name("cat ~/.kube/config") == ".kube/config"
+    assert _matched_sensitive_name("echo hi > /tmp/log") is None
+
+
+def test_command_refusal_names_the_matched_path_neutrally():
+    err = _vet_shell_command("cat ~/.aws/credentials")
+    assert err is not None
+    assert ".aws" in err
+    assert "protected path" in err
+    # It must NOT fall back to always citing the example triple.
+    assert "e.g. .aws/.ssh/.netrc" not in err
+
+
+def test_command_refusal_on_a_non_credential_protected_path_is_not_mislabelled():
+    # .kube/config is protected but is NOT a credential file; it is named and
+    # described with the same neutral wording as every other entry.
+    err = _vet_shell_command("cat ~/.kube/config")
+    assert err is not None
+    assert ".kube/config" in err
+    assert "protected path" in err
+    assert "credential file" not in err
+
+
+def test_script_refusal_names_the_matched_path_neutrally():
+    err = _vet_script_contents("open('/home/u/.kube/config').read()\n")
+    assert err is not None
+    assert ".kube/config" in err
+    assert "protected path" in err
+    assert "credential file" not in err
+    cred = _vet_script_contents("open('/home/u/.aws/credentials').read()\n")
+    assert cred is not None
+    assert ".aws" in cred
+    assert "protected path" in cred
+    assert "credential file" not in cred
+
+
+def test_glob_reached_refusal_stays_generic_but_accurate():
+    # A glob match cannot carry back the specific name; the message stays
+    # illustrative but must not single out one entry as a credential file, and
+    # must still start with Error:.
+    err = _vet_shell_command("cat ~/.??h/id_rsa")
+    assert err is not None and err.startswith("Error:")
+    assert "protected path" in err
+    assert "credential file" not in err
+
+
+def test_protected_path_refusal_builder_is_pure():
+    assert "command" in _protected_path_refusal("command", ".aws")
+    assert "script" in _protected_path_refusal("script", ".kube/config")
+    assert _protected_path_refusal("command", None).startswith("Error:")
+
+
+@pytest.mark.parametrize("sensitive", _SENSITIVE_HOME_DIRS)
+def test_every_sensitive_entry_refuses_with_one_neutral_wording(sensitive):
+    # Regression pin: dropping the credential/non-credential split must leave the
+    # refuse/allow outcome unchanged for EVERY list entry -- including the data-
+    # home entries (an SSO cookie dir, a redaction config, an oauth-endpoints
+    # file) where the old substring classifier labelled the wrong ones. A literal
+    # reference to any entry is still refused, is named in the message, and is
+    # described as a "protected path" with no entry singled out as a credential
+    # file.
+    err = _vet_shell_command(f"cat ~/{sensitive}")
+    assert err is not None
+    assert sensitive in err
+    assert "protected path" in err
+    assert "credential file" not in err
 
 
 # A cron script body is PYTHON SOURCE, not a shell command line. Each body below

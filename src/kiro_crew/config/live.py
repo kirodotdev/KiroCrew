@@ -908,13 +908,13 @@ class ConfigWatch:
         stays for the life of the process, so the flag cannot say whether THIS
         read hit a torn file; the file can. Missing files are not torn.
         """
-        from kiro_crew.config.loader import config_local_path, config_path
+        from kiro_crew.config.loader import config_local_path, config_path, read_config_text
 
         for path in (config_path(), config_local_path()):
             try:
                 if not path.exists():
                     continue
-                data = json.loads(path.read_text(encoding="utf-8"))
+                data = json.loads(read_config_text(path))
             except Exception:  # noqa: BLE001 - unreadable or unparseable: torn
                 return True
             if not isinstance(data, dict):

@@ -140,7 +140,7 @@ type WakeScope =
   | { ownedOnly: true; isDefaultCrew?: never }
   | { ownedOnly?: false; isDefaultCrew: boolean }
 
-export default function CrewWakeSection({ crew, memberId, agentTemplate, isDefaultCrew, ownedOnly = false, dense = false, heading, blurb, emptyLine, onDraftChange, onSavingChange, onRequestCancel, onNavigateAway }: WakeScope & {
+export default function CrewWakeSection({ crew, memberId, agentTemplate, isDefaultCrew, ownedOnly = false, dense = false, initialAdding = false, chromeless = false, heading, blurb, emptyLine, pinnedHint, onDraftChange, onSavingChange, onRequestCancel, onNavigateAway }: WakeScope & {
   crew: string
   /** The crew's IMMUTABLE id (its slug), which is what a private schedule's
    *  `member_id` holds and what a new one is bound to. Separate from `crew`, the
@@ -154,6 +154,14 @@ export default function CrewWakeSection({ crew, memberId, agentTemplate, isDefau
    *  header actions to icon-only, which `md:` would otherwise expand at exactly the
    *  width where they crowd out the heading. */
   dense?: boolean
+  /** Open the create form on first mount for hosts whose entry already means "New schedule". */
+  initialAdding?: boolean
+  /** Withhold the section's own header row (heading, the New / Cancel toggle,
+   *  Open Schedule) for a host that already draws a title and ONE exit over this
+   *  section — the Profile card's pushed New schedule page. Two titles and two
+   *  close controls stacked on one short page read as two things to dismiss; the
+   *  host's Back is the one exit and still runs the draft guard it owns. */
+  chromeless?: boolean
   /** Section heading, when the host's word for this thing is not "agent". The crew
    *  editor is editing an AGENT and says so; the Crewmates panel is looking at a
    *  CREWMATE, and borrowing the editor's noun there makes the panel read as if it
@@ -167,6 +175,11 @@ export default function CrewWakeSection({ crew, memberId, agentTemplate, isDefau
    *  most crewmates have no schedules, so on the panel this is the line the reader
    *  usually gets, and the editor's wording calls the crewmate an "agent". */
   emptyLine?: string
+  /** The create form's pinned-crew hint ("Created from this crew's editor, so
+   *  the job runs as this crew"), for the same reason as the three above: the
+   *  Profile card's pushed New schedule page says "crewmate", and the editor's
+   *  sentence names a surface the reader is not on. Unset keeps the editor's. */
+  pinnedHint?: string
   /** Reports whether the create form holds unsaved TYPED work, so the host
    *  editor can fold it into its own unsaved-state accounting (dirty dot,
    *  Save gating, discard confirms). Keyed on the form's own dirtiness, not
@@ -195,7 +208,7 @@ export default function CrewWakeSection({ crew, memberId, agentTemplate, isDefau
 }) {
   const navigate = useNavigate()
   const leaveFor = onNavigateAway ?? ((to: string) => navigate(to))
-  const [creating, setCreatingState] = useState(false)
+  const [creating, setCreatingState] = useState(initialAdding)
   const [savingDraft, setSavingDraftState] = useState(false)
   const submitRef = useRef<(() => void) | null>(null)
   const addBtnRef = useRef<HTMLButtonElement | null>(null)
@@ -215,11 +228,19 @@ export default function CrewWakeSection({ crew, memberId, agentTemplate, isDefau
   }, [onSavingChange])
   // Focus follows the surface that appeared: into the form's first field on
   // expand, back to the toggle on collapse — otherwise a collapse-after-save
-  // unmounts the focused Create button and focus falls to the body.
+  // unmounts the focused Create button and focus falls to the body. A
+  // `chromeless` host renders no toggle, so the collapse lands on the section
+  // itself (focusable by script only, `tabIndex={-1}`): focus stays on the page
+  // the host drew, beside the list that now carries the saved schedule, instead
+  // of dropping to the body.
   const everOpened = useRef(false)
+  const sectionRef = useRef<HTMLElement | null>(null)
   useEffect(() => {
     if (creating) { everOpened.current = true; document.getElementById('jobform-name')?.focus() }
-    else if (everOpened.current) addBtnRef.current?.focus()
+    else if (everOpened.current) {
+      if (addBtnRef.current) addBtnRef.current.focus()
+      else sectionRef.current?.focus()
+    }
   }, [creating])
   // Switching panes unmounts this section and its form state with it — the
   // draft no longer exists, so the host must not keep accounting for it (a
@@ -284,7 +305,16 @@ export default function CrewWakeSection({ crew, memberId, agentTemplate, isDefau
         : <div>{jobs.map(j => <WakeRow key={j.id} job={j} onChanged={onChanged} dense={dense} />)}</div>
 
   return (
-    <section className="flex flex-col gap-3" data-testid="crew-wake-section">
+    <section
+      ref={sectionRef}
+      // The collapse-after-save focus target where no toggle exists (above);
+      // never in the tab order itself.
+      tabIndex={chromeless ? -1 : undefined}
+      className="flex flex-col gap-3 outline-hidden"
+      data-testid="crew-wake-section"
+      data-chromeless={chromeless || undefined}
+    >
+      {!chromeless && (
       <div className="flex items-center gap-2">
         <h3 className="text-[12px] font-semibold uppercase tracking-wider text-muted">{heading ?? i18nT('components.crewWakeSection.what_wakes_this_crew')}</h3>
         <div className="ml-auto flex items-center gap-1.5">
@@ -352,6 +382,7 @@ export default function CrewWakeSection({ crew, memberId, agentTemplate, isDefau
           )}
         </div>
       </div>
+      )}
       <p className="m-0 text-[11.5px] leading-relaxed text-muted">{blurb ?? i18nT('components.crewWakeSection.schedules_that_run_this_crew_without_you_asking')}</p>
       {creating && (
         <div
@@ -391,6 +422,7 @@ export default function CrewWakeSection({ crew, memberId, agentTemplate, isDefau
                the roster row's own identity and cannot collide that way. Unconditional:
                JobForm applies the default-crew rule itself. */
             memberId={crew}
+            lockedAgentHint={pinnedHint}
             providerAgent={agentTemplate}
             onSaved={onCreated}
             externalSubmit

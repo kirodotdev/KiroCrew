@@ -146,12 +146,12 @@ describe("a crewmate's chat", () => {
     expect(limits.every((l) => l !== undefined)).toBe(true)
   })
 
-  it('the "where the work went" line is a live link to the Work log when the host can open it', async () => {
+  it('the "where the work went" line is a live link to the sessions it drives when the host can open it', async () => {
     const onOpenCrewWorkLog = vi.fn()
     const view = renderPane({ onOpenCrewWorkLog })
     const where = await view.findByTestId('crewmate-quiet-where')
     expect(where.tagName).toBe('BUTTON')
-    expect(where).toHaveTextContent('Work log')
+    expect(where).toHaveTextContent('See the sessions it is driving.')
     expect(where.className).toMatch(/underline/)
     fireEvent.click(where)
     expect(onOpenCrewWorkLog).toHaveBeenCalledTimes(1)

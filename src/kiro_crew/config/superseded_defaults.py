@@ -188,13 +188,13 @@ def _overlay_stt_provider() -> object:
     loop and opening a FIFO there would block it.
     """
     # Imported at call time: the loader imports this module.
-    from kiro_crew.config.loader import config_local_path
+    from kiro_crew.config.loader import config_local_path, read_config_text
 
     try:
         local_path = config_local_path()
         if not local_path.is_file():
             return _ABSENT
-        raw = json.loads(local_path.read_text(encoding="utf-8"))
+        raw = json.loads(read_config_text(local_path))
     except (OSError, ValueError):
         # ValueError covers malformed JSON and invalid UTF-8 alike.
         return _ABSENT
@@ -1358,7 +1358,7 @@ def render_doctor_section(issues: list[str]) -> None:
     module, directly and through ``config.migration`` (which owns the load-path
     warning), so a module-level import would be a cycle.
     """
-    from kiro_crew.config.loader import config_path  # circular import
+    from kiro_crew.config.loader import config_path, read_config_text  # circular import
 
     print("\nStored Defaults")
     # The adoption ledger is rendered FIRST, before config.json is even opened: an
@@ -1370,7 +1370,7 @@ def render_doctor_section(issues: list[str]) -> None:
         print(f"  adopted:     ℹ️  {adoption_summary(dotted, removed)}")
     path = config_path()
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw = json.loads(read_config_text(path))
     except FileNotFoundError:
         print("  drift:       ✅ no config file yet (current defaults apply)")
         return

@@ -26,11 +26,15 @@ export default function SessionStatusFrame({ slot, title, active }: { slot: stri
   const { t } = useTranslation()
   const { theme, colorTheme, themeVersion } = useTheme()
   const owner = useAppSelector(s => s.dashboard.slots.find(item => item.key === slot))
-  // Mirrors the producer: only a ROOT session gets an automatic card. `created_by` is
-  // the birth-time parent edge; `parent` is the session-tree edge every slot row
-  // carries, the only way this side can see an ADOPTED worker.
+  // Mirrors the backend's _derived_allowed on the privacy half (privacy and remoteness),
+  // and drops only the CREATOR-link cost term: a spawned conductor (`created_by` set) still
+  // owns a DERIVED board, which the read route serves before the cost gate, so we must fetch
+  // here or that board never reaches its own panel. When there is no derived card the route
+  // answers 'unavailable', which renders as the unavailable status below. The session-tree
+  // `parent` edge stays excluded: an ADOPTED worker is a member of someone else's team and
+  // never carries its own board, so it must not fetch at all.
   const eligible = !isPrivateMemoryMode(owner?.memory_mode) && owner?.executor !== 'remote'
-    && !owner?.created_by && !owner?.parent
+    && !owner?.parent
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const vars = useMemo(() => readThemeVars(), [theme, colorTheme, themeVersion])
   const query = useQuery({ queryKey: ['dashboard-card', slot, owner?.linked_session_key ?? '', owner?.memory_mode ?? 'persistent'], queryFn: () => api.dashboardCard(slot),

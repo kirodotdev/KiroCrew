@@ -1609,6 +1609,605 @@ class TestSlotTags:
             assert resp.status == 200
         assert own.tags == [tag["id"]]
 
+    # ── Agent tag-grants policy on PUT /tags ──
+    #
+    # ``chat_tag`` ``set_state`` and the board drop route refuse an agent that
+    # sets or strips a tag the person reserved; ``chat_tag_assign`` reaches this
+    # route, so the same policy applies to the add/remove it implies. An
+    # INTERNAL (MCP) caller presents ``X-Internal-Secret`` (validated upstream
+    # by the token-auth middleware); the browser does not and is never gated.
+    _INTERNAL = {"X-Internal-Secret": "s3cret", "X-Internal-Caller": "kirocrew-dashboard"}
+
+    @pytest.mark.asyncio
+    async def test_internal_caller_cannot_add_a_person_reserved_tag(self, tmp_path, monkeypatch):
+        """An agent adding a ``none``-policy (person-reserved) tag is refused;
+        nothing is written."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        from kiro_crew.dashboard import chat_tag_grants
+
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            tag = await (await client.post("/api/chat/tags", json={"name": "Reserved"})).json()
+            chat_tag_grants.mint_grant(tag["id"], policy="none", status=False)
+            chat_tag_grants.refresh_cache()
+            slot = _ChatSlot("s1")
+            state._slots["s1"] = slot
+            with patch("kiro_crew.dashboard.chat_tags.save_slot_off_loop") as save:
+                resp = await client.put(
+                    "/api/chat/slots/s1/tags",
+                    json={"tags": [tag["id"]]},
+                    headers=self._INTERNAL,
+                )
+            assert resp.status == 403
+            body = await resp.json()
+            assert body["code"] == "tag_policy_denied"
+            assert body["error"] == f"tag_policy_denied:{tag['id']}"
+            assert slot.tags == []  # unapplied
+            assert save.call_count == 0  # never persisted
+
+    @pytest.mark.asyncio
+    async def test_internal_caller_cannot_strip_an_add_only_tag(self, tmp_path, monkeypatch):
+        """Removing needs ``add-remove``: an agent stripping an ``add-only`` tag
+        the person placed is refused, leaving the tag on the slot."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        from kiro_crew.dashboard import chat_tag_grants
+
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            tag = await (await client.post("/api/chat/tags", json={"name": "Sticky"})).json()
+            chat_tag_grants.mint_grant(tag["id"], policy="add-only", status=False)
+            chat_tag_grants.refresh_cache()
+            slot = _ChatSlot("s1")
+            slot.tags = [tag["id"]]
+            state._slots["s1"] = slot
+            with patch("kiro_crew.dashboard.chat_tags.save_slot_off_loop") as save:
+                resp = await client.put(
+                    "/api/chat/slots/s1/tags", json={"tags": []}, headers=self._INTERNAL
+                )
+            assert resp.status == 403
+            assert (await resp.json())["code"] == "tag_policy_denied"
+            assert slot.tags == [tag["id"]]  # not stripped
+            assert save.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_internal_caller_can_change_an_add_remove_tag(self, tmp_path, monkeypatch):
+        """The gate is a policy check, not a blanket agent ban: an ``add-remove``
+        tag the person opened to the agent is still assignable."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        from kiro_crew.dashboard import chat_tag_grants
+
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            tag = await (await client.post("/api/chat/tags", json={"name": "Open"})).json()
+            chat_tag_grants.mint_grant(tag["id"], policy="add-remove", status=False)
+            chat_tag_grants.refresh_cache()
+            slot = _ChatSlot("s1")
+            state._slots["s1"] = slot
+            with patch("kiro_crew.dashboard.chat_tags.save_slot_off_loop"):
+                resp = await client.put(
+                    "/api/chat/slots/s1/tags",
+                    json={"tags": [tag["id"]]},
+                    headers=self._INTERNAL,
+                )
+            assert resp.status == 200
+            assert slot.tags == [tag["id"]]
+
+    @pytest.mark.asyncio
+    async def test_browser_is_never_gated_by_the_grants_policy(self, tmp_path, monkeypatch):
+        """The person (no ``X-Internal-Secret``) may set a person-reserved tag;
+        the whole policy constrains agents, not the owner."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        from kiro_crew.dashboard import chat_tag_grants
+
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            tag = await (await client.post("/api/chat/tags", json={"name": "Reserved"})).json()
+            chat_tag_grants.mint_grant(tag["id"], policy="none", status=False)
+            chat_tag_grants.refresh_cache()
+            slot = _ChatSlot("s1")
+            state._slots["s1"] = slot
+            with patch("kiro_crew.dashboard.chat_tags.save_slot_off_loop"):
+                resp = await client.put(
+                    "/api/chat/slots/s1/tags", json={"tags": [tag["id"]]}
+                )  # no internal-secret header -> browser
+            assert resp.status == 200
+            assert slot.tags == [tag["id"]]
+
+    @pytest.mark.asyncio
+    async def test_internal_caller_untouched_person_tag_is_not_regated(self, tmp_path, monkeypatch):
+        """Only the DIFF is gated: an agent write that leaves a person-reserved
+        tag already on the slot in place (adding an open tag beside it) is
+        allowed — the reserved tag is neither added nor removed."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        from kiro_crew.dashboard import chat_tag_grants
+
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            reserved = await (await client.post("/api/chat/tags", json={"name": "Reserved"})).json()
+            open_tag = await (await client.post("/api/chat/tags", json={"name": "Open"})).json()
+            chat_tag_grants.mint_grant(reserved["id"], policy="none", status=False)
+            chat_tag_grants.mint_grant(open_tag["id"], policy="add-remove", status=False)
+            chat_tag_grants.refresh_cache()
+            slot = _ChatSlot("s1")
+            slot.tags = [reserved["id"]]
+            state._slots["s1"] = slot
+            with patch("kiro_crew.dashboard.chat_tags.save_slot_off_loop"):
+                resp = await client.put(
+                    "/api/chat/slots/s1/tags",
+                    json={"tags": [reserved["id"], open_tag["id"]]},
+                    headers=self._INTERNAL,
+                )
+            assert resp.status == 200
+            assert slot.tags == [reserved["id"], open_tag["id"]]
+
+    @pytest.mark.asyncio
+    async def test_app_token_cannot_strip_a_person_reserved_tag(self, tmp_path, monkeypatch):
+        """Deny-by-default on identity: an app token (no internal secret, but a
+        resolved app claim) is a non-person principal and is gated too, so it
+        cannot strip a row-backed person-reserved tag."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        from aiohttp import web as _web
+
+        from kiro_crew.dashboard import chat_tag_grants
+
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+
+        @_web.middleware
+        async def _as_app(request, handler):
+            request["app"] = "my-app"
+            return await handler(request)
+
+        app.middlewares.append(_as_app)
+        async with TestClient(TestServer(app)) as client:
+            tag = {
+                "id": "reserved1",
+                "name": "Reserved",
+                "color": "#000000",
+                "order": 0,
+                "status": True,
+            }
+            state._tags.append(tag)
+            chat_tag_grants.mint_grant(tag["id"], policy="none", status=True)
+            chat_tag_grants.refresh_cache()
+            slot = _ChatSlot("s1")
+            slot._app = "my-app"
+            slot.tags = [tag["id"]]
+            state._slots["s1"] = slot
+            with patch("kiro_crew.dashboard.chat_tags.save_slot_off_loop") as save:
+                resp = await client.put("/api/chat/slots/s1/tags", json={"tags": []})
+            assert resp.status == 403
+            assert (await resp.json())["code"] in (
+                "tag_policy_denied",
+                "status_identity_unprotected",
+            )
+            assert slot.tags == [tag["id"]]
+            assert save.call_count == 0
+
+    @pytest.mark.asyncio
+    @pytest.mark.asyncio
+    async def test_internal_caller_cannot_stack_two_status_tags(self, tmp_path, monkeypatch):
+        """Workflow states are mutually exclusive. An agent replace whose result
+        carries two row-backed status tags is refused — the agent must use
+        ``chat_tag`` ``set_state`` (which strips peers). Swapping one status for
+        another (its peer removed in the same diff) is allowed."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        from kiro_crew.dashboard import chat_tag_grants
+
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            review = await (await client.post("/api/chat/tags", json={"name": "Review"})).json()
+            done = await (await client.post("/api/chat/tags", json={"name": "Done"})).json()
+            chat_tag_grants.mint_grant(review["id"], policy="add-remove", status=True)
+            chat_tag_grants.mint_grant(done["id"], policy="add-remove", status=True)
+            chat_tag_grants.refresh_cache()
+            slot = _ChatSlot("s1")
+            slot.tags = [review["id"]]
+            state._slots["s1"] = slot
+            # Stacking Done beside Review -> two status tags -> refused.
+            with patch("kiro_crew.dashboard.chat_tags.save_slot_off_loop") as save:
+                resp = await client.put(
+                    "/api/chat/slots/s1/tags",
+                    json={"tags": [review["id"], done["id"]]},
+                    headers=self._INTERNAL,
+                )
+            assert resp.status == 403
+            assert (await resp.json())["code"] == "status_tag_requires_set_state"
+            assert slot.tags == [review["id"]]
+            assert save.call_count == 0
+            # Swapping Review -> Done (Review removed in the same diff) is fine.
+            with patch("kiro_crew.dashboard.chat_tags.save_slot_off_loop"):
+                resp = await client.put(
+                    "/api/chat/slots/s1/tags",
+                    json={"tags": [done["id"]]},
+                    headers=self._INTERNAL,
+                )
+            assert resp.status == 200
+            assert slot.tags == [done["id"]]
+
+    @pytest.mark.asyncio
+    async def test_internal_caller_may_assign_a_rowless_ordinary_label(self, tmp_path, monkeypatch):
+        """A tag with no protected grant row is an ordinary label, not a
+        reservation: a non-person caller may still apply it. This is what keeps
+        app self-tagging working — the gate bites only tags the owner minted a
+        row for."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            tag = {"id": "label1", "name": "Label", "color": "#000000", "order": 0, "status": False}
+            state._tags.append(tag)  # rowless: resolves to ("none", False)
+            slot = _ChatSlot("s1")
+            state._slots["s1"] = slot
+            with patch("kiro_crew.dashboard.chat_tags.save_slot_off_loop"):
+                resp = await client.put(
+                    "/api/chat/slots/s1/tags",
+                    json={"tags": [tag["id"]]},
+                    headers=self._INTERNAL,
+                )
+            assert resp.status == 200
+            assert slot.tags == [tag["id"]]
+
+    @pytest.mark.asyncio
+    async def test_internal_caller_cannot_add_a_rowless_status_tag(self, tmp_path, monkeypatch):
+        """A rowless tag whose vocabulary ``status`` bit is true has an identity
+        the store cannot vouch for. Adding it would stack a workflow state the
+        peer-strip can never remove (``set_state`` would wedge), so it is refused
+        ``status_identity_unprotected`` — a forged status cannot slip the gate by
+        being rowless."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            # Vocabulary says status, but no grant row (an internal chat_tag_create
+            # leaves it rowless).
+            tag = {
+                "id": "forged1",
+                "name": "Forged",
+                "color": "#000000",
+                "order": 0,
+                "status": True,
+            }
+            state._tags.append(tag)
+            slot = _ChatSlot("s1")
+            state._slots["s1"] = slot
+            with patch("kiro_crew.dashboard.chat_tags.save_slot_off_loop") as save:
+                resp = await client.put(
+                    "/api/chat/slots/s1/tags",
+                    json={"tags": [tag["id"]]},
+                    headers=self._INTERNAL,
+                )
+            assert resp.status == 403
+            assert (await resp.json())["code"] == "status_identity_unprotected"
+            assert slot.tags == []
+            assert save.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_pre_existing_two_status_does_not_block_an_unrelated_change(
+        self, tmp_path, monkeypatch
+    ):
+        """The person (never gated) can leave a session carrying two status tags.
+        A later agent change that touches neither — a pure remove of its own
+        ordinary label — must not be blamed for that pre-existing state: the
+        exclusivity refusal fires only when THIS diff adds a status tag."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        from kiro_crew.dashboard import chat_tag_grants
+
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            review = await (await client.post("/api/chat/tags", json={"name": "Review"})).json()
+            done = await (await client.post("/api/chat/tags", json={"name": "Done"})).json()
+            label = {"id": "lbl", "name": "Lbl", "color": "#000000", "order": 0, "status": False}
+            state._tags.append(label)
+            chat_tag_grants.mint_grant(review["id"], policy="add-remove", status=True)
+            chat_tag_grants.mint_grant(done["id"], policy="add-remove", status=True)
+            chat_tag_grants.refresh_cache()
+            # Pre-existing two status tags (as if the person placed both) plus an
+            # ordinary label.
+            slot = _ChatSlot("s1")
+            slot.tags = [review["id"], done["id"], label["id"]]
+            state._slots["s1"] = slot
+            # Agent removes only its own ordinary label; the two status tags are
+            # untouched -> allowed, not blamed for the pre-existing stack.
+            with patch("kiro_crew.dashboard.chat_tags.save_slot_off_loop"):
+                resp = await client.put(
+                    "/api/chat/slots/s1/tags",
+                    json={"tags": [review["id"], done["id"]]},
+                    headers=self._INTERNAL,
+                )
+            assert resp.status == 200
+            assert slot.tags == [review["id"], done["id"]]
+
+    @pytest.mark.asyncio
+    async def test_internal_caller_fails_closed_when_grants_store_degraded(
+        self, tmp_path, monkeypatch
+    ):
+        """When the grants store cannot be verified (unreadable / gone /
+        unrepaired quarantine), a reservation cannot be checked, so a non-person
+        write is refused ``tag_grants_unavailable`` rather than letting a
+        possibly-reserved tag through as rowless. The health and the rows come
+        from ONE atomic snapshot, so a refresh cannot flip health between the
+        check and a row lookup."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        from kiro_crew.dashboard import chat_tags as ct
+        from kiro_crew.dashboard.chat_tag_grants import GrantsSnapshot
+
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        # Force a write-blocked snapshot regardless of the on-disk store.
+        monkeypatch.setattr(
+            ct,
+            "capture_grants_snapshot",
+            lambda: GrantsSnapshot("unreadable", "unreadable", {}),
+        )
+        async with TestClient(TestServer(app)) as client:
+            tag = {"id": "lbl2", "name": "Lbl2", "color": "#000000", "order": 0, "status": False}
+            state._tags.append(tag)
+            slot = _ChatSlot("s1")
+            state._slots["s1"] = slot
+            with patch("kiro_crew.dashboard.chat_tags.save_slot_off_loop") as save:
+                resp = await client.put(
+                    "/api/chat/slots/s1/tags",
+                    json={"tags": [tag["id"]]},
+                    headers=self._INTERNAL,
+                )
+            assert resp.status == 403
+            assert (await resp.json())["code"] == "tag_grants_unavailable"
+            assert slot.tags == []
+            assert save.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_internal_caller_after_repaired_quarantine(self, tmp_path, monkeypatch):
+        """A boot quarantine that has reseeded and VERIFIED (write_blocked clear)
+        still has grants_reduced set, because the operator's custom reservations
+        were discarded. A tag that is now rowless might be a lost reservation, so
+        it is failed closed ``tag_grants_unavailable`` — but a ROW-BACKED tag (a
+        reseeded default state) resolves normally and stays assignable."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        from kiro_crew.dashboard import chat_tags as ct
+        from kiro_crew.dashboard.chat_tag_grants import GrantsSnapshot
+
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        # Reseeded default state is row-backed add-remove; the operator's former
+        # custom label is gone from the rows (quarantine discarded it).
+        reseeded_rows = {"review": ("add-remove", True)}
+        monkeypatch.setattr(
+            ct,
+            "capture_grants_snapshot",
+            # write_blocked clear (reseed verified), grants_reduced still set.
+            lambda: GrantsSnapshot(None, "quarantined", reseeded_rows),
+        )
+        async with TestClient(TestServer(app)) as client:
+            review = {
+                "id": "review",
+                "name": "Review",
+                "color": "#000000",
+                "order": 0,
+                "status": True,
+            }
+            lost = {
+                "id": "lostlabel",
+                "name": "Lost",
+                "color": "#000000",
+                "order": 1,
+                "status": False,
+            }
+            state._tags.extend([review, lost])
+            # A formerly-reserved (now rowless) label is failed closed.
+            slot = _ChatSlot("s1")
+            state._slots["s1"] = slot
+            with patch("kiro_crew.dashboard.chat_tags.save_slot_off_loop") as save:
+                resp = await client.put(
+                    "/api/chat/slots/s1/tags",
+                    json={"tags": [lost["id"]]},
+                    headers=self._INTERNAL,
+                )
+            assert resp.status == 403
+            assert (await resp.json())["code"] == "tag_grants_unavailable"
+            assert slot.tags == []
+            assert save.call_count == 0
+            # A reseeded default state (row-backed add-remove) still assigns.
+            with patch("kiro_crew.dashboard.chat_tags.save_slot_off_loop"):
+                resp = await client.put(
+                    "/api/chat/slots/s1/tags",
+                    json={"tags": [review["id"]]},
+                    headers=self._INTERNAL,
+                )
+            assert resp.status == 200
+            assert slot.tags == [review["id"]]
+
+    @pytest.mark.asyncio
+    async def test_internal_caller_cannot_strip_an_unresolvable_tag_when_vocab_nonauthoritative(
+        self, tmp_path, monkeypatch
+    ):
+        """When ``tags.json`` was unreadable at boot the vocabulary is empty and
+        NON-authoritative, yet protected rows for reserved tags persist. A tag
+        on the slot is then absent from ``by_id``, so a diff built only from the
+        vocabulary would silently omit its removal and persist it with no grants
+        check. The route fails closed ``tag_grants_unavailable`` for a removal it
+        cannot resolve while the vocabulary is non-authoritative."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        # Simulate an unreadable tags.json: empty, non-authoritative vocabulary.
+        state._tags = []
+        state._tags_authoritative = False
+        async with TestClient(TestServer(app)) as client:
+            slot = _ChatSlot("s1")
+            slot.tags = ["review"]  # a reserved status id not present in the (empty) vocab
+            state._slots["s1"] = slot
+            with patch("kiro_crew.dashboard.chat_tags.save_slot_off_loop") as save:
+                resp = await client.put(
+                    "/api/chat/slots/s1/tags", json={"tags": []}, headers=self._INTERNAL
+                )
+            assert resp.status == 403
+            assert (await resp.json())["code"] == "tag_grants_unavailable"
+            assert slot.tags == ["review"]  # removal not persisted
+            assert save.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_authoritative_vocab_allows_dropping_a_dangling_id(self, tmp_path, monkeypatch):
+        """With an AUTHORITATIVE vocabulary, a slot id absent from it is a
+        dangling reference to a deleted tag — benign for an agent to drop. The
+        non-authoritative fail-closed does not fire here."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        state._tags = []  # authoritative-and-empty: the id really was deleted
+        state._tags_authoritative = True
+        async with TestClient(TestServer(app)) as client:
+            slot = _ChatSlot("s1")
+            slot.tags = ["ghost"]
+            state._slots["s1"] = slot
+            with patch("kiro_crew.dashboard.chat_tags.save_slot_off_loop"):
+                resp = await client.put(
+                    "/api/chat/slots/s1/tags", json={"tags": []}, headers=self._INTERNAL
+                )
+            assert resp.status == 200
+            assert slot.tags == []
+
+    @pytest.mark.asyncio
+    async def test_non_person_signal_enumeration_each_leg_gates(self, tmp_path, monkeypatch):
+        """Regression guard on the gate's non-person enumeration AS IT STANDS.
+        Person-identity is the absence of three signals — internal-secret
+        transport, a resolved app claim, a ``member:`` principal — and this test
+        pins that each of those three independently causes gating while the
+        person (presenting none) is not gated, on a row-backed person-reserved
+        tag. It does NOT prove a hypothetical fourth principal class would fail:
+        the enumeration is the accepted contract (keying on the mint path's
+        positive owner predicate was rejected because it gates the person on a
+        no-owner install), so a new auth representation must be added to this
+        enumeration AND to this test together. The sibling fences
+        (``member_slot_write_refused``, the app-isolation check) key on the same
+        three representations."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        from aiohttp import web as _web
+
+        from kiro_crew.dashboard import chat_tag_grants
+        from kiro_crew.dashboard.chat_utils import effective_session_key
+        from kiro_crew.dashboard.token_auth import MEMBER_CHAT_PRINCIPAL_KEY
+
+        async def _put(request_markers, slot_setup=None):
+            state = _make_state(tmp_path)
+            tag = {"id": "resv", "name": "Resv", "color": "#000000", "order": 0, "status": False}
+            state._tags = [tag]
+            chat_tag_grants.mint_grant(tag["id"], policy="none", status=False)
+            chat_tag_grants.refresh_cache()
+            slot = _ChatSlot("s1")
+            if slot_setup is not None:
+                slot_setup(state, slot)
+            state._slots["s1"] = slot
+            app = _make_tags_app(state)
+
+            @_web.middleware
+            async def _mark(request, handler):
+                for k, v in request_markers.get("req", {}).items():
+                    request[k] = v
+                return await handler(request)
+
+            app.middlewares.append(_mark)
+            async with TestClient(TestServer(app)) as client:
+                with patch("kiro_crew.dashboard.chat_tags.save_slot_off_loop"):
+                    resp = await client.put(
+                        "/api/chat/slots/s1/tags",
+                        json={"tags": [tag["id"]]},
+                        headers=request_markers.get("headers", {}),
+                    )
+                body = await resp.json()
+                return resp.status, slot.tags, body.get("code")
+
+        # Person: no signal -> NOT gated (the reserved tag is applied).
+        status, tags, _ = await _put({})
+        assert status == 200 and tags == ["resv"]
+        # Internal-secret transport signal -> gated by the grants gate itself.
+        status, _, code = await _put({"headers": self._INTERNAL})
+        assert status == 403 and code == "tag_policy_denied"
+        # App-claim signal -> the app LEGITIMATELY owns the slot (``_app``
+        # matches, so the app-isolation fence passes and ``app_owns_transcript``
+        # is satisfied for the slot's own transcript), so the request reaches
+        # the GRANTS GATE, which refuses it. Asserting the gate's own
+        # ``tag_policy_denied`` (not merely ``!= 200``) means dropping
+        # ``request_app`` from ``is_internal_caller`` would turn this 403 into a
+        # 200 and fail the pin -- the sibling fence cannot stand in for the gate.
+
+        def _own_app(state, slot):
+            slot._app = "an-app"
+
+        status, _, code = await _put({"req": {"app": "an-app"}}, slot_setup=_own_app)
+        assert status == 403 and code == "tag_policy_denied"
+        # Member-principal signal -> the member LEGITIMATELY owns the slot (its
+        # own session key is the slot's), so the member-ownership fence passes
+        # and the request reaches the GRANTS GATE. Same reasoning: asserting
+        # ``tag_policy_denied`` means dropping the ``member:`` arm from
+        # ``is_internal_caller`` would surface a 200 and fail the pin.
+        member_key = effective_session_key(_ChatSlot("s1"))
+
+        def _own_member(state, slot):
+            slot._created_by = ""
+
+        status, _, code = await _put(
+            {
+                "req": {MEMBER_CHAT_PRINCIPAL_KEY: "member:store-x"},
+                "headers": {"X-Session-Key": member_key},
+            },
+            slot_setup=_own_member,
+        )
+        assert status == 403 and code == "tag_policy_denied"
+
+    @pytest.mark.asyncio
+    async def test_denial_audit_attributes_the_authenticated_principal(self, tmp_path, monkeypatch):
+        """The grants-policy denial audit must record the authenticated app or
+        member principal, not the transport origin. ``request_origin`` yields
+        ``dashboard`` for an app-token or member caller on this route, so a bare
+        ``caller=origin_caller`` would file every denial under ``dashboard`` and
+        corrupt the append-only SEL attribution. Pin that the app leg's denial
+        records the app id."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        from aiohttp import web as _web
+
+        from kiro_crew.dashboard import chat_tag_grants
+
+        captured: list[dict] = []
+
+        class _CapturingSel:
+            def log_api_access(self, **kwargs):
+                captured.append(kwargs)
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_tags.sel", lambda: _CapturingSel())
+
+        state = _make_state(tmp_path)
+        tag = {"id": "resv", "name": "Resv", "color": "#000000", "order": 0, "status": False}
+        state._tags = [tag]
+        chat_tag_grants.mint_grant(tag["id"], policy="none", status=False)
+        chat_tag_grants.refresh_cache()
+        slot = _ChatSlot("s1")
+        slot._app = "an-app"
+        state._slots["s1"] = slot
+        app = _make_tags_app(state)
+
+        @_web.middleware
+        async def _mark(request, handler):
+            request["app"] = "an-app"
+            return await handler(request)
+
+        app.middlewares.append(_mark)
+        async with TestClient(TestServer(app)) as client:
+            with patch("kiro_crew.dashboard.chat_tags.save_slot_off_loop"):
+                resp = await client.put("/api/chat/slots/s1/tags", json={"tags": [tag["id"]]})
+        assert resp.status == 403
+        denials = [c for c in captured if c.get("outcome") == "denied"]
+        assert denials, "expected a denial audit"
+        # The app principal, not the transport origin ``dashboard``.
+        assert denials[-1]["caller"] == "an-app"
+
 
 # ── Sidebar columns ──
 

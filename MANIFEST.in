@@ -33,6 +33,12 @@ recursive-include src/kiro_crew/config *
 # setup.cfg alone would still ship a wheel-only fix: `python -m build` builds the
 # wheel from the sdist, so a template missing here is missing everywhere.
 recursive-include src/kiro_crew/agent_panel_templates *.html
+# Derived-card pages (e.g. the pipeline board), for the same reason: a page missing
+# from the sdist is missing from the wheel built out of it, and a page that never
+# shipped renders an empty card with every gate green. Kept out of dashboard_templates
+# on purpose -- that is the TemplateSpec registry package, and a card page that does not
+# use that framework must not sit under the gate that requires a registry row.
+recursive-include src/kiro_crew/dashboard_card_pages *.html
 # Dashboard-template pages, for the same reason: a page missing from the sdist is
 # missing from the wheel built out of it, and a page that never shipped renders an
 # empty card with every gate green.

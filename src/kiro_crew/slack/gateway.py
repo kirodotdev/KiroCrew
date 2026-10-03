@@ -1721,6 +1721,14 @@ class GatewayOrchestrator:
                             # Slack ts format: "{epoch_seconds}.{microseconds}" — pure digits + one dot
                             if re.fullmatch(r"\d+\.\d+", parent_session_key):
                                 thread_ts = parent_session_key
+                        if not thread_ts:
+                            # A threaded cron does not claim its own inherited
+                            # thread, so cron:<id> has no recorded outbound
+                            # anchor and the ts-shaped fallback above cannot match
+                            # it. Resolve the job's own thread_ts so the approval
+                            # buttons a threaded run is blocked on thread under
+                            # the human's thread instead of posting top-level.
+                            thread_ts = self._cron_outbound_thread(parent_session_key)
                     is_dm = not channel
                     if not channel:
                         channel = await self.slack.open_dm(self._owner_id)
@@ -2623,6 +2631,12 @@ class GatewayOrchestrator:
             return delivered
         channel = self.sessions.get_channel(parent_key)
         thread_ts = self.sessions.get_thread(parent_key)
+        if not thread_ts:
+            # A threaded cron does not claim its own inherited thread (that would
+            # evict the human owner), so cron:<id> has no recorded outbound
+            # anchor. Fall back to the job's own thread_ts so follow-ups thread
+            # under the human's thread instead of posting at the channel top.
+            thread_ts = self._cron_outbound_thread(parent_key)
         if not channel and self._owner_id:
             channel = await self._open_dm_with_retry(self._owner_id, parent_key)
             thread_ts = None  # a thread_ts from another channel is invalid in a DM
@@ -2825,6 +2839,33 @@ class GatewayOrchestrator:
     _cron_origin_key = _delivery._cron_origin_key
 
     _deliver_cron_to_channel = _delivery._deliver_cron_to_channel
+
+    def _cron_outbound_thread(self, parent_key: str) -> str | None:
+        """The outbound Slack thread a ``cron:<id>`` run threads its follow-ups under.
+
+        A cron that runs in an INHERITED/explicit ``job.thread_ts`` -- a human's
+        own thread, keyed ``slack:<ts>`` -- is NOT claimed for ``cron:<id>``:
+        ``set_thread`` is a non-self-derived ``set_slack_link`` claim that evicts
+        the human's owner from the inbound index, so a run into a thread it did
+        not post leaves the session map with no ``cron:<id>`` outbound anchor. The
+        authoritative ``thread_ts`` lives on the job itself, so the delivery and
+        approval readers resolve it from there to thread under the human's thread
+        without the session map ever claiming it.
+
+        Returns the job's ``thread_ts`` (as a string) for a ``cron:<id>`` key when
+        the job exists and carries one, else ``None``. A cron that posts its own
+        thread carries no ``job.thread_ts`` and resolves ``None``. Returns ``None``
+        on a non-cron key, a missing job, or a corrupt/non-string field -- this is
+        a delivery path and must never raise.
+        """
+        if not parent_key.startswith("cron:") or self.cron_svc is None:
+            return None
+        parts = parent_key.split(":", 2)
+        if len(parts) < 2:
+            return None
+        job = self.cron_svc.get_job(parts[1])
+        thread_ts = job.thread_ts if job else None
+        return thread_ts if isinstance(thread_ts, str) and thread_ts else None
 
     # ── One spelling of the cron failure-alert mechanism ───────────────────
     #
@@ -5389,9 +5430,40 @@ class GatewayOrchestrator:
                                 channel, blocks, parts[0], job.thread_ts
                             )
                             thread_root = job.thread_ts or parent_ts
-                            # Store thread_ts so subagents can route replies here
+                            # Store the thread so subagents can route replies here
+                            # -- but CLAIM the thread for inbound routing only when
+                            # the cron POSTED it itself (no ``job.thread_ts``, so
+                            # ``thread_root`` is this run's own ``parent_ts``).
+                            #
+                            # ``set_thread`` -> ``set_slack_link("cron:<id>", ts)``
+                            # is a NON-self-derived claim (``cron:`` is not in
+                            # ``CHANNEL_SESSION_NAMESPACES``), so it EVICTS whatever
+                            # else owns ``ts`` in ``_thread_to_session``. For an
+                            # inherited/explicit ``job.thread_ts`` -- a human's own
+                            # Slack thread, keyed ``slack:<ts>`` -- that eviction is
+                            # permanent: the self-link that would restore the owner
+                            # (``transport_dispatch.py``) only fires on an UNCLAIMED
+                            # thread, so the human's next message in their own thread
+                            # would run in ``cron:<id>`` forever. A cron must never
+                            # take over a thread it did not create. The channel bind
+                            # is harmless (``set_channel`` writes an empty ``ts`` for
+                            # an unclaimed cron, which never evicts) and overflow
+                            # parts below still thread under ``thread_root``.
                             if thread_root and self.sessions:
-                                await self.sessions.set_thread(session_key, thread_root)
+                                if not job.thread_ts:
+                                    await self.sessions.set_thread(session_key, thread_root)
+                                else:
+                                    # An inherited/explicit ``job.thread_ts`` must
+                                    # not be stored as ``cron:<id>``'s anchor (the
+                                    # claim above evicts the human owner), and any
+                                    # anchor a prior top-level run left is cleared
+                                    # to empty so ``set_channel`` keeps it empty
+                                    # and the readers resolve the job's own
+                                    # ``thread_ts`` through ``_cron_outbound_thread``
+                                    # instead of a stale ts. ``set_thread(key, "")``
+                                    # is an empty, unindexed anchor and evicts no
+                                    # owner.
+                                    await self.sessions.set_thread(session_key, "")
                                 await self.sessions.set_channel(session_key, channel)
                             # Overflow parts as threaded follow-up messages
                             for part in parts[1:]:

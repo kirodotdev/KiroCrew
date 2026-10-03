@@ -25,6 +25,10 @@ on:
       - Fast Gate
       - Build
       - Code Review
+      # Blocking: a PR that declares no triaged issue reds it. Runs on
+      # `pull_request` for every PR, forks included, so its payload carries
+      # the PR head like Code Review's does.
+      - Issue Gate
       - Opus 5.5 Review
       - GPT 6.1 Review
       - Design Review
@@ -211,7 +215,7 @@ jobs:
       # The same-repo workflow-run lanes of the verdict step's spec list, read
       # by the publish step's pre-success re-check.
       MONITORED_LANES: >-
-        ci.yml fast-gate.yml build.yml code-review.yml
+        ci.yml fast-gate.yml build.yml code-review.yml issue-gate.yml
         internal-content-scan-gate.yml claude-review.yml codex-review.yml
         design-review.yml ux-review.yml first-principles-review.yml
         security-scope-review.yml
@@ -875,6 +879,12 @@ jobs:
           # Code Review and the AI reviewers trigger on `pull_request` with no
           # base-branch filter, so they run on every PR regardless of base.
           workflow_specs+=("code-review.yml|Code Review")
+          # Issue Gate runs on `pull_request` with no base filter and needs
+          # only a read token, so it runs on every PR too, forks and stacked
+          # PRs included. It is enrolled HERE, not as a second branch-protection
+          # entry: `PR Readiness` is the one required status, so a lane this
+          # list omits is a gate that can go red without reddening the PR.
+          workflow_specs+=("issue-gate.yml|Issue Gate")
 
           if [ "$FORK" = "true" ]; then
             # A fork head cannot run the repository's managed default-setup

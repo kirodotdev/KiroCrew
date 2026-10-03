@@ -878,6 +878,20 @@ class TestAProjectAlwaysSkillCannotFailTheSession:
         assert oversized.notice == []
         assert oversized.logged == [f"{'z' * delivery._SKIPPED_PROJECT_KEY_LOG_CHARS!r} (reason)"]
 
+    def test_a_key_whose_repr_expands_is_still_bounded_where_it_is_kept(self):
+        """``repr`` renders a non-printable code point as up to ten characters, so a
+        key cut to its first 200 characters can still render past the whole bound.
+        The kept item is capped after rendering, the first one included."""
+        from kiro_crew.skill_runtime import delivery
+
+        cap = delivery._SKIPPED_PROJECT_KEYS_MAX_CHARS
+        per_key = delivery._SKIPPED_PROJECT_KEY_LOG_CHARS
+        skipped = delivery.SkippedProjectSkills()
+        skipped.add("\U000e0001" * 1000, "reason")
+        assert len(skipped.logged) == 1
+        assert len(skipped.logged[0]) <= per_key + len("'' (reason)")
+        assert sum(len(item) + 2 for item in skipped.logged) <= cap
+
     def test_every_skipped_row_rejoins_the_directory_named_or_not(self, tmp_path, opened):
         """The pinned set loses each skipped key as it is skipped, past the bound too."""
         loader = _loader(tmp_path, opened=opened)
