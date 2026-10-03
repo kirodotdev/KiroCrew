@@ -28,9 +28,14 @@ _MAX_URL_LENGTH = 2048
 class SourceProviderError(RuntimeError):
     """A provider CLI could not return the requested source data."""
 
-    def __init__(self, message: str, *, reason: str = "") -> None:
+    def __init__(self, message: str, *, reason: str = "", login_command: str = "") -> None:
         super().__init__(message)
         self.reason = reason
+        # The command that fixes this failure when it is an expired sign-in the
+        # message alone cannot name correctly (a self-managed GitLab host). The
+        # HTTP layer ships it as its own field, so the client never has to parse
+        # a command back out of provider-controlled text.
+        self.login_command = login_command
 
 
 class SourceCapacityError(SourceProviderError):

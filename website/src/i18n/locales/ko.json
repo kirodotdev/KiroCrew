@@ -6285,6 +6285,7 @@
       "add_to_chat": "채팅에 추가",
       "cancel": "취소",
       "collapse_comment": "댓글 접기",
+      "comment_on_this_merge_request": "이 머지 리퀘스트에 댓글 달기",
       "comment_on_this_pull_request": "이 풀 리퀘스트에 댓글 달기",
       "could_not_change_the_thread_s_state": "스레드 상태를 변경할 수 없습니다.",
       "empty_comment": "_(비어 있음)_",

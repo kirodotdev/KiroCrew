@@ -260,9 +260,26 @@ describe('writing', () => {
     await waitFor(() => expect(screen.queryByRole('textbox', { name: /Reply/ })).toBeNull())
   })
 
-  it('says replying is GitHub-only on a GitLab merge request', () => {
-    mount(source([comment({ threadId: '' })], { provider: 'gitlab' }))
-    expect(screen.getByText(/GitHub-only for now/)).toBeTruthy()
-    expect(screen.queryByRole('button', { name: /^Reply$/ })).toBeNull()
+  it('offers reply on a GitLab merge request thread', () => {
+    mount(source([comment({ threadId: 'a1b2c3' })], { provider: 'gitlab' }))
+    expect(screen.queryByText(/GitHub-only for now/)).toBeNull()
+    expect(screen.getByRole('button', { name: /^Reply$/ })).toBeTruthy()
+  })
+
+  it('offers reply but no resolve on a GitLab plain comment', () => {
+    // GitLab gives every comment a discussion id, but only diff and review
+    // threads are resolvable; a plain comment is published resolvable: false.
+    mount(source(
+      [comment({ kind: 'comment', threadId: 'd4e5f6', path: '', resolvable: false })],
+      { provider: 'gitlab' },
+    ))
+    expect(screen.getByRole('button', { name: /^Reply$/ })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /Resolve/ })).toBeNull()
+  })
+
+  it('labels the top-level comment box in merge-request words on GitLab', () => {
+    mount(source([comment({ threadId: 'a1b2c3' })], { provider: 'gitlab' }))
+    expect(screen.getByRole('button', { name: /Comment on this merge request/ })).toBeTruthy()
+    expect(screen.queryByText(/pull request/i)).toBeNull()
   })
 })

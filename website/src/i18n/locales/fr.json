@@ -6487,6 +6487,7 @@
       "add_to_chat": "Ajouter à la conversation",
       "cancel": "Annuler",
       "collapse_comment": "Réduire le commentaire",
+      "comment_on_this_merge_request": "Commenter cette merge request",
       "comment_on_this_pull_request": "Commenter cette pull request",
       "could_not_change_the_thread_s_state": "Impossible de modifier l'état du fil.",
       "empty_comment": "_(vide)_",

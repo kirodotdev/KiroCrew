@@ -6285,6 +6285,7 @@
       "add_to_chat": "チャットに追加",
       "cancel": "キャンセル",
       "collapse_comment": "コメントを折りたたむ",
+      "comment_on_this_merge_request": "このマージリクエストにコメントする",
       "comment_on_this_pull_request": "このプルリクエストにコメントする",
       "could_not_change_the_thread_s_state": "スレッドの状態を変更できませんでした。",
       "empty_comment": "_（空）_",
