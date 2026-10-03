@@ -2707,7 +2707,8 @@ async def _fetch_kiro_catalog() -> list[dict]:
     root — so this background worker reaches the spawn helpers without adding an
     ACP-layer edge (see ``scripts/check_agent_sdk_boundary.py``).
 
-    Returns the deprecated-stripped list and seeds the window/advertised caches —
+    Returns the deprecated-stripped list, each row in its wire spelling
+    (:func:`_kiro_wire_row`), and seeds the window/advertised caches —
     the UNFILTERED-then-deprecated-stripped list, i.e. the response body before
     per-request entitlement narrowing. Raises :class:`_CatalogUnavailable` for a
     degraded outcome (binary unresolved, timeout, non-zero exit, empty / invalid
@@ -2877,7 +2878,31 @@ async def _fetch_kiro_catalog() -> list[dict]:
         await asyncio.get_running_loop().run_in_executor(
             maintenance_executor(), model_registry.persist_advertised_models
         )
-    return [m for m in models if not is_deprecated_model(m.get("model_name", ""))]
+    return [_kiro_wire_row(m) for m in models if not is_deprecated_model(m.get("model_name", ""))]
+
+
+def _kiro_wire_row(row: dict) -> dict:
+    """A ``--list-models`` row as the picker serves it: ``model_name`` is the wire id.
+
+    Every reader downstream treats a row's ``model_name`` as the model id: the
+    entitlement narrowing judges it against the live ``session/new``
+    ``availableModels`` ids, the pin validators compare it literally, and the
+    picker sends it to ``session/set_model``. kiro-cli prints a ``model_id``
+    beside the name, and the two are not always the same string -- a model can
+    carry a display name that differs from its id. ``session/new`` advertises
+    the ``model_id``, so a row left under its printed name is never found
+    among the advertised ids and the picker hides a model the account can run.
+
+    So a row whose ``model_id`` differs is served under the ``model_id``, with
+    the printed name kept as ``display_name``. A row with no usable
+    ``model_id`` is returned unchanged.
+    """
+    model_id = row.get("model_id")
+    name = row.get("model_name")
+    if not isinstance(model_id, str) or not model_id.strip() or model_id == name:
+        return row
+    label = name if isinstance(name, str) and name.strip() else model_id
+    return {**row, "model_name": model_id, "display_name": row.get("display_name") or label}
 
 
 def _shared_catalog_fetch() -> "asyncio.Task[list[dict]]":
