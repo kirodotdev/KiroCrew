@@ -319,7 +319,22 @@ class TestBootSweep:
                 "scandir",
                 lambda path: sorted(real_scandir(path), key=lambda entry: entry.name),
             )
-            ordered.setattr(bt.shutil, "rmtree", lambda path, **_kwargs: reaped.append(path))
+
+            # The sweep reaps through ``platform_compat.rmtree_force`` and only
+            # counts a directory it confirms is GONE afterwards, so a stub that
+            # merely records the path would read back as a failed delete and
+            # never be counted. Record what was reaped and perform the real
+            # removal (with the real ``os.scandir`` restored, since
+            # ``shutil.rmtree`` enters it as a context manager) so the
+            # production success contract is exercised.
+            def _record_and_remove(path, **_kwargs):
+                reaped.append(Path(path))
+                with monkeypatch.context() as unordered:
+                    unordered.setattr(os, "scandir", real_scandir)
+                    return real_rmtree_force(path)
+
+            real_rmtree_force = bt.platform_compat.rmtree_force
+            ordered.setattr(bt.platform_compat, "rmtree_force", _record_and_remove)
             removed = bt.sweep_all_backend_tmp()
 
         assert corrupt.exists(), "an invalid identity is not evidence that its owner is dead"
