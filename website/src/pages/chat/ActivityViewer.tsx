@@ -25,7 +25,6 @@ import SideChat from './SideChat'
 import WorkflowSidebarRow, { type WfRunRow } from './WorkflowSidebarRow'
 import { runBelongsToSlot } from '../../apps/workflows/runModel'
 
-import { ContextBreakdownTab } from '../ContextBreakdownPanel'
 import ErrorBoundary from '../../components/ErrorBoundary'
 
 // The crew log is a drill-in: six fold sections, their own i18n copy and the table
@@ -33,6 +32,11 @@ import ErrorBoundary from '../../components/ErrorBoundary'
 // rather than riding in the dashboard shell, the same shape `CapabilitiesPage` uses
 // for its templates tab and `DeveloperPage` for the memory graph.
 const CrewLogTab = lazy(() => import('./CrewLogPanel').then(m => ({ default: m.CrewLogTab })))
+// Lazy for the same reason: a Developer-Mode-only tab (chart, segment rows,
+// prompt text) that most sessions never open, kept out of the App chunk.
+const LazyContextBreakdownTab = lazy(() =>
+  import('../ContextBreakdownPanel').then(m => ({ default: m.ContextBreakdownTab })),
+)
 import SessionSummaryTab from './SessionSummaryTab'
 import { i18nT } from '../../i18n/t'
 import { queuedWaitText } from './subagentQueuedReason'
@@ -1256,7 +1260,24 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
       {/* Sits next to Logs on purpose: both answer "what actually happened
           in THIS session" — Logs for the tool calls, this for the context
           that was injected around them. */}
-      {effectiveTab === 'context' && <ContextBreakdownTab slot={slot} subagents={subagents} />}
+      {/* ErrorBoundary around the lazy chunk for the same reason as the crew
+          log's below: a stale chunk request after a deploy rejects, and without a
+          local boundary that rejection would take down the whole dashboard. */}
+      {effectiveTab === 'context' && (
+        <ErrorBoundary>
+          <Suspense
+            // The chunk loads once per session; on a slow link a blank panel
+            // reads as "nothing here", so show the tab's own loading line.
+            fallback={
+              <div className="text-muted text-[11px] py-6 text-center">
+                {i18nT('pages.contextBreakdown.loading')}
+              </div>
+            }
+          >
+            <LazyContextBreakdownTab slot={slot} subagents={subagents} />
+          </Suspense>
+        </ErrorBoundary>
+      )}
 
       {/* Crew log — the five folds over this session's append-only record. Sits
           beside Logs and Context for the same reason they sit together: all

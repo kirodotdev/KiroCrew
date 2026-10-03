@@ -88,6 +88,10 @@ export function createTelemetryEndpoints({ get, post, j }: ClientTransport) {
     // telemetry main switch: the usage rows it reads are always written.
     telemetryContextTrace: (slot: string) =>
       fetch('/api/telemetry/context-trace?slot=' + encodeURIComponent(slot)).then(j),
+    // The newest prompts one session handed the agent, verbatim, with the block
+    // spans found in each. In-memory on the gateway: empty after a restart.
+    telemetryPromptTrace: (slot: string) =>
+      fetch('/api/telemetry/prompt-trace?slot=' + encodeURIComponent(slot)).then(j),
     /** Per-turn usage rows for one session — the Spend table's drill-down.
      *  Same always-written row store as the context trace; the dashboard reads
      *  every row (the endpoint's app-ownership filter applies to app callers). */

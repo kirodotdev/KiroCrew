@@ -38,7 +38,10 @@ refactor changes the shape of a turn.
 is appended to `<dir>/<backend>.jsonl` with owner-only permissions. It records
 what a running gateway sees, so it is the right tool when the scenario needs
 Crew's own session wiring — its MCP projection, its permission policy, its auth
-callback.
+callback. The same switch also appends every OUTBOUND (client->agent) frame to
+`<dir>/<backend>.out.jsonl`. That file is a debugging aid for reading what a turn
+sent and is NOT corpus material: the replay test consumes agent->client frames
+only, so never splice `.out.jsonl` lines into a fixture.
 
 It is not the only route, and for most classes it is not the shortest one. A
 backend that speaks ACP over stdio can be driven directly: spawn it, send

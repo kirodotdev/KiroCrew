@@ -1472,12 +1472,22 @@ class AcpSessionHandle:
 
     # ── Prompt ──
 
-    async def prompt(self, message: str, timeout: float | None = None) -> AsyncIterator[AcpEvent]:
+    async def prompt(
+        self,
+        message: str,
+        timeout: float | None = None,
+        *,
+        on_sent: Callable[[], None] | None = None,
+    ) -> AsyncIterator[AcpEvent]:
         """Send session/prompt and yield AcpEvent objects until the turn completes.
 
         Dispatches events from the per-session queue with the same logic as
         AcpClient._dispatch_events. Detects turn boundaries via the JSON-RPC
         response matching the prompt's request_id.
+
+        ``on_sent`` is called once, synchronously, the moment the prompt's write
+        returned and before any event is awaited — the point at which the prompt
+        is known to have left this process (see ``EssentialDelivery.stream``).
 
         ``timeout=None`` (every dashboard turn) resolves from
         ``agent.chat_turn_timeout_secs`` so the transport wait follows a raised
@@ -1522,7 +1532,7 @@ class AcpSessionHandle:
         # finally is what unmarks the turn and re-sets _turn_done. Left to the
         # event loop's async-generator GC hook, the handle would read as
         # turn-active until some later collection pass.
-        turn = self._run_turn(_build, timeout)
+        turn = self._run_turn(_build, timeout, on_sent=on_sent)
         try:
             async for event in turn:
                 yield event
@@ -1596,6 +1606,7 @@ class AcpSessionHandle:
         timeout: float | None,
         *,
         extract_command_result: bool = False,
+        on_sent: Callable[[], None] | None = None,
     ) -> AsyncGenerator[AcpEvent, None]:
         """Shared turn lifecycle for :meth:`prompt` and :meth:`stream_command`.
 
@@ -1969,6 +1980,11 @@ class AcpSessionHandle:
             if _mark is not None:
                 _mark(self._session_id, False)
             raise
+        # The write returned: the prompt has left this process, whatever the
+        # backend does next. Said here, before the first event is awaited, so a
+        # backend that dies before answering cannot un-send it.
+        if on_sent is not None:
+            on_sent()
 
         # Did a terminal reach the consumer, and did this generator finish of its
         # own accord? Together these answer a question no layer above can: the

@@ -799,7 +799,9 @@ async def test_a_shared_turn_binds_the_session_its_stubs_declare() -> None:
 
         during: list[frozenset[str]] = []
 
-        async def _fake_stream(message, prompt, incarnation):
+        async def _fake_stream(message, prompt, incarnation, *, on_accepted=None):
+            # The real stream takes the prompt-trace hook too; this stub is about
+            # tenancy, so it accepts and ignores it.
             during.append(ro.session_keys_bound_to_pid(9400))
             yield "event"
 

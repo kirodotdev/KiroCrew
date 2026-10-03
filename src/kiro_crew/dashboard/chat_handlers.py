@@ -23,7 +23,7 @@ from aiohttp import web
 from aiohttp.client_exceptions import ClientConnectionResetError
 
 from kiro_crew import members as members_mod
-from kiro_crew import model_registry
+from kiro_crew import model_registry, prompt_trace  # noqa: F401 - owners read it
 from kiro_crew.acp.client import AcpModelUnavailable
 from kiro_crew.agent_discovery import cached_project_agent_names, warm_project_agent_names
 from kiro_crew.agent_sdk.backends import ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS
@@ -80,6 +80,8 @@ from kiro_crew.dashboard.chat_api.slot_detail import (  # noqa: F401
 from kiro_crew.dashboard.chat_api.slot_lifecycle import (  # noqa: F401
     _await_guarded_history_write,
     _close_slot,
+    _finish_close,
+    _forget_prompt_trace_if_unshared,
     _NudgeRetireFailed,
     _pending_guarded_history_writes,
     _release_closed_execution,

@@ -8200,7 +8200,7 @@ async def test_stream_translates_runtime_dead_to_process_died():
     rt.saw_not_logged_in = MagicMock(return_value=False)
     handle = MagicMock()
 
-    async def _boom(msg):
+    async def _boom(msg, *, on_sent=None):
         raise AcpRuntimeDead("pipe broken")
         yield  # noqa: mark as async generator
 
@@ -8224,7 +8224,7 @@ async def test_stream_translates_auth_failure_to_auth_required():
     rt.saw_not_logged_in = MagicMock(return_value=True)
     handle = MagicMock()
 
-    async def _boom(msg):
+    async def _boom(msg, *, on_sent=None):
         raise AcpRuntimeDead("pipe broken")
         yield
 

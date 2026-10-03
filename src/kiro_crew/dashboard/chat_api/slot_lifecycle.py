@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 
@@ -30,6 +30,7 @@ if TYPE_CHECKING:
         effective_session_key,
         logger,
         note_slot_closed,
+        prompt_trace,
         read_bounded_json,
         save_slot_off_loop,
         sel,
@@ -434,6 +435,34 @@ def _release_closed_execution(
         release_closed_execution()
 
 
+def _forget_prompt_trace_if_unshared(state: DashboardState, closing_key: str) -> None:
+    """Drop the closed session's prompt text unless another live tab still reads it.
+
+    Two live slots can run on one session key (a channel thread routed onto a
+    dashboard owner key, a linked tab): the ring is keyed by that session, so
+    forgetting on the first close would empty the surviving tab's view. Same
+    multiplicity test the execution release two frames up applies.
+
+    Only a ``dashboard:`` key is forgotten here. A channel-born slot's effective
+    key IS the channel's (``slack:<ts>``), and that conversation outlives the
+    tab that happened to show it: another linked tab may open on it and want the
+    numbered prompts this one's turns recorded. Channel keys are left to the
+    ring's own bounds.
+    """
+    if not closing_key.startswith("dashboard:"):
+        return
+    if any(effective_session_key(live) == closing_key for live in state._slots.values()):
+        return
+    prompt_trace.forget(closing_key)
+
+
+# Ceiling on how long a close waits for this slot's guarded history writes to
+# finish. The wait is bounded so a genuinely stuck write cannot hang the tab
+# close: on breach the close is REFUSED and rolled back, which returns promptly
+# and leaves the tab the user still has open, rather than retracting the name
+# while a worker thread is still on its way to the rename.
+
+
 def _pending_guarded_history_writes(slot: "_ChatSlot") -> set:
     """This slot's guarded history writes that have not finished yet.
 
@@ -766,6 +795,46 @@ async def _close_slot(
             state.push_slots_update()
             raise
     state._slots.pop(name, None)
+    try:
+        await _finish_close(
+            state,
+            slot,
+            name,
+            closed_at=closed_at,
+            closing_key=closing_key,
+            closing_execution=closing_execution,
+            retired_loop=retired_loop,
+            discard_closing_failure_scopes=discard_closing_failure_scopes,
+        )
+    finally:
+        # ONE exit for the closed tab's prompt text, over every path the teardown
+        # can take past the pop: the ordinary close, the hand-over return, the
+        # history_save_failed raise, a provider shutdown that raises. A tab the
+        # failed-save arm restored is live again, and the helper's live-slot check
+        # keeps its text; every other exit has let go of the original, whose
+        # verbatim prompt must not stay servable under a key no later close
+        # forgets — a replacement linked elsewhere runs on a different session
+        # key, so its own close would never reach this one.
+        _forget_prompt_trace_if_unshared(state, closing_key)
+
+
+async def _finish_close(
+    state: DashboardState,
+    slot: "_ChatSlot",
+    name: str,
+    *,
+    closed_at: float,
+    closing_key: str,
+    closing_execution: Any,
+    retired_loop: "NudgeLoop | None",
+    discard_closing_failure_scopes: Callable[[], None],
+) -> None:
+    """The half of :func:`_close_slot` past the point of no return (the pop).
+
+    Split out so the caller holds ONE ``finally`` over all of its exits — this
+    body returns early on the hand-over and raises on a failed persist, and the
+    closed tab's prompt text must be forgotten on each of them.
+    """
     # Release any blocking wait before cancelling the task: a question pending on
     # the blocking POST /api/ask-question path holds an MCP worker on an open
     # HTTP request, and the slot is going away, so nobody will answer its card.
@@ -1249,6 +1318,10 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
                 # in ``archived`` either way, and the two together say "not
                 # archived, and something was lost" rather than "nothing to do".
                 failed.append(name)
+            # This exit skips the archive's `finally` below, and the original is
+            # gone either way: its prompt text must not stay servable under a key
+            # the replacement (linked elsewhere, on its own key) will never forget.
+            _forget_prompt_trace_if_unshared(state, closing_key)
             continue
         try:
             # Order is unchanged and load-bearing: the cancel above, then the
@@ -1320,6 +1393,10 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
                     "msg msg-err",
                 )
             failed.append(name)
+            # Skips the archive's `finally` below too. A restored tab is live
+            # again and the helper keeps its text; one NOT restored (a recreate
+            # took the key) has let go of the original, whose text must go.
+            _forget_prompt_trace_if_unshared(state, closing_key)
             continue
         else:
             # Through the shared postcondition rather than a bare discard, for the
@@ -1334,16 +1411,25 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
         # key archived — ``archived`` names SLOT KEYS, and this one has a live holder
         # whatever became of the transcript, so listing it would tell the UI a tab on
         # screen was swept. Move on without touching the replacement's session or its
-        # running task.
-        if not _slot_still_ours(state, name, removed):
-            continue
-        # Session cleanup is best-effort — history is already written.
+        # running task. The ownership check sits INSIDE the try so the `finally`
+        # still drops the archived tab's prompt text on that `continue`: a
+        # replacement linked elsewhere runs on a different session key, and the
+        # original's text must not stay servable to the next unbound tab of this
+        # name; a replacement on the SAME key is what the helper's live-slot check
+        # preserves.
         try:
+            if not _slot_still_ours(state, name, removed):
+                continue
+            # Session cleanup is best-effort — history is already written.
             await state.sessions.remove(_history_key_for(name))
         except Exception:
             logger.warning("Cleanup: session remove failed for %s", name, exc_info=True)
         else:
             _release_closed_execution(state, removed, closing_key, closing_execution)
+        finally:
+            # The tab is archived either way, so its raw prompt text must not
+            # stay readable behind a session teardown that happened to fail.
+            _forget_prompt_trace_if_unshared(state, closing_key)
         archived.append(name)
         # Collect running tasks for concurrent cancellation after the loop
         if removed.running and removed.task is not None:

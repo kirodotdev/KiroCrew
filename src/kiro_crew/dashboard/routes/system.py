@@ -95,6 +95,7 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/usage", handlers.api_usage)
     app.router.add_get("/api/telemetry/startup", handlers.api_telemetry_startup)
     app.router.add_get("/api/telemetry/context-trace", handlers.api_context_trace)
+    app.router.add_get("/api/telemetry/prompt-trace", handlers.api_prompt_trace)
     app.router.add_get("/api/usage/turns", handlers.api_usage_turns)
     app.router.add_get("/api/wakatime/stats", handlers.api_wakatime_stats)
     app.router.add_get("/api/wakatime/export", handlers.api_wakatime_export)

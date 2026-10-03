@@ -241,19 +241,21 @@ _SHARED_STREAK_MAX_KEYS = 512
 #: streak bounds unrelated sessions together and would stand a loop down for a
 #: process it never rode. Same reasoning and same shape as
 #: ``messaging/turn_ceiling.py``'s own retained-key bound.
-_MAX_RETAINED_KEY_CHARS = 256
+MAX_RETAINED_KEY_CHARS = 256
 _shared_streaks: dict[str, int] = {}
 
 
-def _store_key(session_key: str) -> str:
-    """The bounded form of *session_key*, as this table retains and looks it up.
+def bounded_session_key(session_key: str) -> str:
+    """The bounded form of *session_key*, as a per-session table retains and looks it up.
 
     Applied at EVERY door -- record, read and clear -- because a digest used at
     one and the raw string at another is worse than neither: the row would be
     written under one name and looked up under a second, so the streak would read
-    0 forever and the bound it feeds would never fire.
+    0 forever and the bound it feeds would never fire. Public because it is the
+    ONE spelling of this bound: ``prompt_trace`` keys its ring through it too,
+    so the two tables cannot drift onto two rules.
     """
-    if len(session_key) <= _MAX_RETAINED_KEY_CHARS:
+    if len(session_key) <= MAX_RETAINED_KEY_CHARS:
         return session_key
     return "sha256:" + hashlib.sha256(session_key.encode("utf-8", "surrogatepass")).hexdigest()
 
@@ -279,7 +281,7 @@ def note_shared_death(session_key: str) -> int:
     """
     if not session_key:
         return 0
-    stored = _store_key(session_key)
+    stored = bounded_session_key(session_key)
     streak = _shared_streaks.pop(stored, 0) + 1
     _shared_streaks[stored] = streak
     while len(_shared_streaks) > _SHARED_STREAK_MAX_KEYS:
@@ -305,12 +307,12 @@ def clear_shared_deaths(session_key: str) -> None:
     work done at all, and a completed turn proves it can. That is also the
     conservative direction -- it can only let recovery continue, never stop it.
     """
-    _shared_streaks.pop(_store_key(session_key), None)
+    _shared_streaks.pop(bounded_session_key(session_key), None)
 
 
 def shared_deaths(session_key: str) -> int:
     """*session_key*'s current shared-death streak (0 when it has none)."""
-    return _shared_streaks.get(_store_key(session_key), 0)
+    return _shared_streaks.get(bounded_session_key(session_key), 0)
 
 
 def _runtime_candidates(target: object) -> list[object]:
