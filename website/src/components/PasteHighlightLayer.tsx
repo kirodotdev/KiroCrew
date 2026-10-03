@@ -27,7 +27,9 @@ interface Props {
  * selection stay on top and fully interactive. Vertical scroll is synced by the
  * textarea's onScroll handler (see ChatInput). The mirror fills its wrapper, so
  * the textarea must be `display: block` (ChatInput) for the two boxes to be the
- * same height; otherwise their scroll ranges differ and the chips drift.
+ * same height; otherwise their scroll ranges differ and the chips drift. Both
+ * boxes also reserve the scrollbar gutter, so the textarea's scrollbar cannot
+ * make it wrap narrower than this mirror.
  */
 const PasteHighlightLayer = forwardRef<HTMLDivElement, Props>(function PasteHighlightLayer({ value, blocks }, ref) {
   const ranges = findTokenRanges(value, blocks)
@@ -51,7 +53,7 @@ const PasteHighlightLayer = forwardRef<HTMLDivElement, Props>(function PasteHigh
       ref={ref}
       aria-hidden
       data-composer-typo
-      className={`pointer-events-none absolute inset-0 overflow-hidden select-none text-transparent whitespace-pre-wrap break-words ${INPUT_TYPO}`}
+      className={`pointer-events-none absolute inset-0 overflow-hidden [scrollbar-gutter:stable] select-none text-transparent whitespace-pre-wrap break-words ${INPUT_TYPO}`}
       style={{ overflowWrap: 'break-word', wordBreak: 'normal' }}
     >
       {nodes}

@@ -75,9 +75,14 @@ function measuredContentHeight(el: HTMLTextAreaElement): number {
   // reports a height the live element would never have. The live textarea is
   // `border-none`, which is why clearing the border above is safe: under
   // `box-sizing:border-box` a themed border would otherwise give the twin a WIDER
-  // content box than the element it stands in for.
+  // content box than the element it stands in for. `scrollbarGutter` is copied
+  // for the same reason: the live textarea reserves its 6px scrollbar gutter
+  // permanently (`scrollbar-gutter:stable`), which the copied border-box `width`
+  // does not show. A twin without the gutter wraps 6px wider, measures a draft
+  // whose break falls in that band one line short, and the textarea then scrolls
+  // below the cap instead of growing.
   const COPIED = [
-    'width', 'boxSizing',
+    'width', 'boxSizing', 'scrollbarGutter',
     'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft',
     'font', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontStretch',
     'fontFeatureSettings', 'fontVariationSettings', 'fontKerning',
