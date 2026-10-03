@@ -5,7 +5,7 @@ One invocation answers every cheap question about one candidate work item and
 returns ONE verdict, so a worker dispatch is never spent discovering that the
 work does not exist.
 
-WHY FIVE QUESTIONS AND NOT ONE. The predicate this replaces was a single prose
+WHY SIX QUESTIONS AND NOT ONE. The predicate this replaces was a single prose
 line, ``gh pr list --search``, and it was blind in three directions at once.
 Each blind spot cost a whole dispatch to discover:
 
@@ -21,8 +21,16 @@ Each blind spot cost a whole dispatch to discover:
   * three items said "I am claiming this issue" / "Ownership claimed by @X" in
     PROSE, in the body, which no label or field query sees.
 
-The lesson those three share, and the design rule of this script: **one
-question with an empty answer is not permission.** So it asks all five, and an
+The fourth blind spot was this script's own, found the same way: four live items
+in three days carried another pipeline's ``claimed`` label — two with the
+assignee set too — and every one read CLAIM, because the first five questions
+read neither forge field. The label and the assignee are what the skill calls
+the cross-operator lock; the queue build excludes on the label, and this script
+is the live recheck immediately before the atomic claim, so it was the one
+reader that had to look and did not.
+
+The lesson those four share, and the design rule of this script: **one
+question with an empty answer is not permission.** So it asks all six, and an
 unanswerable question yields UNKNOWN — never CLAIM.
 
 Usage:
@@ -59,7 +67,7 @@ Exit codes (the conductor branches on these):
     3   UNKNOWN  — a check could not be answered (forge unreachable, rate
                    limited, no clone for a question only git can answer)
 
-The five checks, all of them, every call:
+The six checks, all of them, every call:
 
   1. ``open_prs``      open PRs referencing the item, FORK PRs included, each
                        annotated ``closes_item`` by a closing keyword aimed at
@@ -98,6 +106,15 @@ The five checks, all of them, every call:
                        consumer is the skill: ``risk=high`` means the item is
                        not batched, it gets a live re-check immediately before
                        the atomic claim.
+  6. ``forge_claim``   the item's own ownership fields: a ``claimed`` or
+                       ``in-progress`` label (the skill's documented
+                       ``skip_signals`` vocabulary), and the assignees. Either
+                       one alone is a claim, and it is FOREIGN unless every
+                       assignee is the authenticated login — a label with
+                       nobody assigned is unattributed and reads as foreign, as
+                       does every claim when the login is unknown. Read off the
+                       issue payload the prose check already fetched, so it
+                       costs no call of its own.
 
 Verdict precedence, first match wins (see :func:`verdict`, a pure function of
 the checks dict so every branch is unit-testable with no forge access):
@@ -112,10 +129,16 @@ the checks dict so every branch is unit-testable with no forge access):
                                                forces ``risk=high``
   3. ``prose_claim.closure_requested``       → REVIEW ``reporter-asked-close``
                                                at ``risk=high``
-  4. ``prose_claim.claimed_by_other``        → SKIP  ``prose-claim``
-  5. ``symbol_on_base.missing`` AND bug-class→ SKIP  ``symbol-absent``
-  6. any check errored                       → UNKNOWN
-  7. otherwise                               → CLAIM, annotated with ``risk``,
+  4. ``forge_claim.foreign``                 → SKIP  ``forge-claim``, with the
+                                               label term and the assignees as
+                                               evidence. Below 1 so a claimed
+                                               item that is already fixed still
+                                               reads CLOSE; above 5 because a
+                                               forge field outranks prose
+  5. ``prose_claim.claimed_by_other``        → SKIP  ``prose-claim``
+  6. ``symbol_on_base.missing`` AND bug-class→ SKIP  ``symbol-absent``
+  7. any check errored                       → UNKNOWN
+  8. otherwise                               → CLAIM, annotated with ``risk``,
                                                which an UNCORROBORATED absent
                                                symbol, an UNAUTHORIZED claim, or
                                                a MENTION-ONLY open PR forces to
@@ -135,10 +158,12 @@ the job it can do, which is noticing that an item might be resolved, and does no
 get the job of deciding it. Rule 1 still CLOSES, because a merged commit that is
 an ancestor of the base is evidence, not prose.
 
-Rules 2, 3 and 4 all suppress work on evidence anybody can manufacture, and all
+Rules 2, 3 and 5 all suppress work on evidence anybody can manufacture, and all
 answer it the same way rather than by refusing to look: the finding stands, and
 the doubt is published alongside it. A verdict that acts while doubting has to
-say so, or the doubt is only in this docstring.
+say so, or the doubt is only in this docstring. Rule 4 is not in that family:
+setting a label or an assignee needs triage permission on the repository, so
+standing is built into the field it reads and it carries no doubt marker.
 
 The mention-only open PR is that rule run backwards, and it owes the same debt. A
 reference with no closing keyword is the weaker evidence, so rule 2 DECLINES to
@@ -148,7 +173,7 @@ The finding is published as ``open_pr_mention_only`` and forces ``risk=high``,
 which routes the item to the live recheck instead of the batch. A verdict that
 declines while doubting has to say so too.
 
-Note that 6 sits BELOW the positive findings on purpose: a definite answer to
+Note that 7 sits BELOW the positive findings on purpose: a definite answer to
 one question outranks a partial view of another, and no error path can reach
 CLAIM.
 
@@ -160,11 +185,14 @@ Deliberately boring properties, do not weaken:
     never labels, assigns, comments, or closes.
   * At most one forge call per question. The timeline is fetched once and
     answers checks 1 and 2 together; each referencing PR is then detailed once,
-    because fork-ness and the merge commit exist only on the pull object.
+    because fork-ness and the merge commit exist only on the pull object. The
+    issue is fetched once and feeds checks 3 through 6, and the authenticated
+    login is looked up at most once, only when a claim needs attributing.
   * No user-authored PROSE reaches stdout. Failures are reported as SLUGS
     rather than forge stderr, a prose match reports the PATTERN that fired
-    rather than the sentence, and a bug-class match reports this module's own
-    TERM rather than the label's text — this output lands in an agent's context.
+    rather than the sentence, and a bug-class or claim-label match reports this
+    module's own TERM rather than the label's text — this output lands in an
+    agent's context.
     What DOES appear is identifiers: logins, PR numbers, commit prefixes,
     comment ids and symbol names extracted from the item. Those are the evidence
     a conductor needs to check the verdict, and a login is chosen by its owner
@@ -384,6 +412,7 @@ CHECK_NAMES = (
     "prose_claim",
     "symbol_on_base",
     "recency",
+    "forge_claim",
 )
 
 #: One integer per verdict, and a verdict never borrows another's number: the
@@ -1225,6 +1254,92 @@ def scan_recency(issue: dict, now: datetime | None = None) -> dict:
 
 
 # --------------------------------------------------------------------------- #
+# check 6 — forge ownership: the claim label and the assignees
+# --------------------------------------------------------------------------- #
+
+
+#: Label names that mean "somebody owns this", as the skill's own documented
+#: ``work_source.skip_signals`` default spells them: ``claimed`` and
+#: ``in-progress``. The queue build excludes on these labels; this check is the
+#: live recheck immediately before the atomic claim, and it was the one reader
+#: that did not look -- four live items in three days carried another pipeline's
+#: ``claimed`` label, two with the assignee set too, and every one read CLAIM.
+#:
+#: Enumerated against this repository's labels at the time of the fix:
+#:
+#:   * ``claimed`` ("An automated fix is in progress") -- 60 open items carried
+#:     it, 2 with no assignee at all. Matched.
+#:   * ``crew: in progress`` ("A Kiro Crew Issue Radar worker is actively
+#:     working this issue") -- 4 of the 8 most recent closed items carrying it
+#:     had no assignee, so the assignee rule alone would miss that worker.
+#:     Matched, through ``in[ -]progress`` with any prefix.
+#:   * ``wip`` / ``assigned``-style names -- NOT matched. The skill's default
+#:     does not list them, and widening a veto past the documented contract is
+#:     how a label nobody meant as a lock starts parking items.
+#:
+#: ``\b`` keeps ``unclaimed`` and ``reclaimed`` out. The match is reported as
+#: this module's TERM, never the label's text, the same rule :func:`bug_class_of`
+#: follows: a label name is user-authored and this value is printed.
+CLAIM_LABEL_RE = re.compile(r"\b(claimed|in[ -]progress)\b", re.IGNORECASE)
+
+
+def claim_label_of(issue: dict) -> str | None:
+    """The module's term for the first ownership label on the item, or None."""
+    labels = issue.get("labels")
+    if not isinstance(labels, list):
+        return None
+    for label in labels:
+        name = label.get("name") if isinstance(label, dict) else label
+        if isinstance(name, str):
+            hit = CLAIM_LABEL_RE.search(name)
+            if hit:
+                return hit.group(1).lower().replace(" ", "-")
+    return None
+
+
+def assignee_logins(issue: dict) -> list[str]:
+    """Every assignee login on the item, in payload order. Reads the list the
+    forge sends and falls back to the singular field only when the list is
+    missing, so a payload with both never counts one person twice."""
+    assignees = issue.get("assignees")
+    if not isinstance(assignees, list):
+        single = issue.get("assignee")
+        assignees = [single] if isinstance(single, dict) else []
+    found: list[str] = []
+    for entry in assignees:
+        login = entry.get("login") if isinstance(entry, dict) else None
+        if isinstance(login, str) and login:
+            found.append(login)
+    return found
+
+
+def scan_forge_claim(issue: dict, me: str | None) -> dict:
+    """The ``forge_claim`` check value. Pure: no forge access.
+
+    Either field alone is a claim -- the skill calls labels and assignees the
+    cross-operator lock, and measured on this repository they arrive together
+    from an atomic claim and apart from a human assigning by hand, so a rule
+    that needed both would miss half of each.
+
+    WHOSE claim it is comes from the assignees: ours when every assignee is the
+    authenticated login, since a label with ourselves assigned is exactly the
+    shape of our own atomic claim and a conductor re-checking an item it holds
+    must not be told to abandon it. A label with nobody assigned is unattributed
+    and reads as foreign; a co-assignee reads as foreign; and when ``me`` is
+    unknown every claim reads as foreign -- the same fail-safe direction
+    :func:`scan_prose` takes, because SKIP costs one dispatch and the other
+    reading dispatches onto somebody's live work.
+    """
+    label = claim_label_of(issue)
+    assignees = assignee_logins(issue)
+    if assignees:
+        foreign = me is None or any(login != me for login in assignees)
+    else:
+        foreign = label is not None
+    return {"label": label, "assignees": assignees, "foreign": foreign}
+
+
+# --------------------------------------------------------------------------- #
 # the verdict — pure function of the checks
 # --------------------------------------------------------------------------- #
 
@@ -1419,6 +1534,26 @@ def verdict(checks: dict) -> tuple[str, str, dict]:
                 "reporter-asked-close",
                 {"comment_id": prose.get("comment_id"), "where": prose.get("where")},
             )
+    forge = checks.get("forge_claim")
+    if isinstance(forge, dict) and not errored(forge) and forge.get("foreign"):
+        # The forge's own ownership fields -- the lock the skill tells every
+        # operator to honour. Below rule 1 on purpose: an item that is open,
+        # claimed and already fixed is triage debt, and the claim must not hide
+        # the CLOSE. Above the prose claim because a forge field outranks
+        # hand-written English, so when both say the same thing the stronger
+        # evidence is the reason printed. The detector already decided WHOSE
+        # claim it is; this rule reads only ``foreign``.
+        return (
+            "SKIP",
+            "forge-claim",
+            {
+                "label": forge.get("label"),
+                "assignees": [
+                    login for login in forge.get("assignees") or [] if isinstance(login, str)
+                ],
+            },
+        )
+    if isinstance(prose, dict) and not errored(prose):
         if prose.get("claimed_by_other"):
             return (
                 "SKIP",
@@ -1503,6 +1638,14 @@ def human_line(item: int, name: str, reason: str, evidence: dict, risk: str) -> 
             f"SKIP {item} prose-claim claimed-by={evidence.get('claimed_by')} "
             f"where={evidence.get('where')}"
         )
+    if reason == "forge-claim":
+        # Logins and this module's own label term: identifiers a conductor
+        # needs to check the verdict, never the label's text.
+        assignees = ",".join(evidence.get("assignees") or []) or "none"
+        return (
+            f"SKIP {item} forge-claim label={evidence.get('label') or 'none'} "
+            f"assignees={assignees}"
+        )
     if reason == "symbol-absent":
         return f"SKIP {item} symbol-absent={evidence.get('symbol')}"
     return f"{name} {item} {reason}"  # pragma: no cover - every reason above is covered
@@ -1514,8 +1657,9 @@ def human_line(item: int, name: str, reason: str, evidence: dict, risk: str) -> 
 
 
 def whoami() -> str | None:
-    """The authenticated login, or None. Called only when a self-claim phrase
-    already matched, so the common path pays nothing for it."""
+    """The authenticated login, or None. Called only when it can change a
+    verdict -- a self-claim phrase matched, or the item has an assignee -- and
+    at most once per run, so the common path pays nothing for it."""
     data, error = gh_json(["gh", "api", "user"])
     if error or not isinstance(data, dict):
         return None
@@ -1524,7 +1668,7 @@ def whoami() -> str | None:
 
 
 def collect(repo: str, item: int, default_branch: str, repo_dir: str | None) -> dict:
-    """Run all five checks. A check that cannot be answered carries ``error``."""
+    """Run all six checks. A check that cannot be answered carries ``error``."""
     checks: dict[str, Any] = {}
 
     open_prs, merged_prs, prs_error = referencing_prs(repo, item)
@@ -1547,6 +1691,7 @@ def collect(repo: str, item: int, default_branch: str, repo_dir: str | None) -> 
         checks["prose_claim"] = {"error": slug}
         checks["recency"] = {"error": slug}
         checks["symbol_on_base"] = {"error": slug}
+        checks["forge_claim"] = {"error": slug}
         # An open PR that claims closure still SKIPs when the item itself cannot
         # be read -- ``closes_item`` comes from the PULL's own title and body, so
         # it survives an unreadable item -- and the suppression still needs its
@@ -1562,6 +1707,19 @@ def collect(repo: str, item: int, default_branch: str, repo_dir: str | None) -> 
     else:
         reporter = (issue.get("user") or {}).get("login") if isinstance(issue, dict) else None
         annotate_untrusted_forks(open_prs, reporter if isinstance(reporter, str) else None)
+        identity: list[str | None] = []
+
+        def me() -> str | None:
+            # One lookup at most, shared by the two readers that can need it,
+            # and made only when an answer can change the verdict.
+            if not identity:
+                identity.append(whoami())
+            return identity[0]
+
+        # The ownership fields ride on the payload just fetched, so this check
+        # costs no call of its own. Identity is needed only to attribute an
+        # assignee: an unattributed label is foreign whoever we are.
+        checks["forge_claim"] = scan_forge_claim(issue, me() if assignee_logins(issue) else None)
         comments, comments_error = gh_json(
             [
                 "gh",
@@ -1589,8 +1747,9 @@ def collect(repo: str, item: int, default_branch: str, repo_dir: str | None) -> 
                         comment, prose = claimed, recovered
             if prose["claimed_by_other"]:
                 # Re-scan knowing who we are: our own claim is not somebody
-                # else's. One extra call, only when it can change the verdict.
-                prose = scan_prose(issue, comment, whoami(), withdrawn)
+                # else's. One extra call at most, only when it can change the
+                # verdict, and none if check 6 already asked.
+                prose = scan_prose(issue, comment, me(), withdrawn)
             checks["prose_claim"] = prose
         checks["recency"] = scan_recency(issue)
         text = f"{issue.get('title') or ''}\n{issue.get('body') or ''}"

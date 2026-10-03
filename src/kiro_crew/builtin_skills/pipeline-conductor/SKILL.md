@@ -566,7 +566,7 @@ python3 scripts/claim_preflight.py --repo <owner/repo> --item <N> \
 Exit 3 is why the verdicts are exit codes at all: an unanswerable question is
 not a green light, and partial data yields `UNKNOWN` rather than `CLAIM`.
 
-Five checks run on every call, and the verdict is the FIRST match down this
+Six checks run on every call, and the verdict is the FIRST match down this
 precedence list:
 
 1. `merged_prs` — a MERGED PR that CLAIMS TO CLOSE the item (a closing keyword
@@ -609,10 +609,25 @@ precedence list:
    you read the comment the line names and you decide. The authorization
    condition stays too, for a different reason than it had — `REVIEW` writes
    nothing, but it does withhold a dispatch, and a suppression any passer-by can
-   cast is the same denial-of-work channel rule 4 refuses to open. A closure
+   cast is the same denial-of-work channel rule 5 refuses to open. A closure
    phrase from anybody else is not a closure request — it falls through to the
    remaining checks.
-4. `prose_claim` — a self-claim ("I'm claiming this", "working on this") **from
+4. `forge_claim` — the item's own ownership fields, read off the payload the
+   script already fetched: a `claimed` or `in-progress` label (the vocabulary of
+   the default `skip_signals`, matched by word so `crew: in progress` counts and
+   `unclaimed` does not), or any assignee → **SKIP** `forge-claim`, with the
+   label term and the assignees on the line. **Either field alone is a claim.**
+   It is honoured for anybody but you: a label with yourself as the only
+   assignee is the shape of your own atomic claim, so re-checking an item you
+   hold still reads CLAIM; a label with nobody assigned is unattributed and
+   reads as foreign; so does every claim when your own login cannot be read.
+   This is the live half of the queue build's label exclusion — a claim that
+   lands after the queue is built is exactly what the recheck immediately before
+   the atomic claim exists to catch, and until this check existed it could not:
+   four live items in three days carried another pipeline's `claimed` label and
+   read CLAIM. It sits below rule 1 on purpose, so an item that is open, claimed
+   and already fixed still reads CLOSE.
+5. `prose_claim` — a self-claim ("I'm claiming this", "working on this") **from
    the item's reporter or a repository insider** → **SKIP** `prose-claim`. A claim
    written in prose is invisible to every label and field query that exists, which
    is why it is scanned for rather than inferred. From anybody else it is NOT a
@@ -628,15 +643,15 @@ precedence list:
    honouring suppresses the item forever. Bot comments never claim and never
    close. Ownership is read from the newest STANDING claim, not from the last
    comment, so a passer-by's "any update?" does not clear a claim.
-5. `symbol_on_base` — a symbol the item names is absent from
+6. `symbol_on_base` — a symbol the item names is absent from
    `{default_branch}`. **Absence alone is not a SKIP.** Corroborated as
    bug-class, it is **SKIP** `symbol-absent`: the target code lives only on an
    unmerged branch, so that is a park, not a dispatch. Uncorroborated it
    downgrades to **CLAIM** `risk=high`, because a feature request names the
    symbol it PROPOSES to add — vetoing on absence alone would permanently park
    every item of that class.
-6. any check errored → **UNKNOWN**.
-7. otherwise → **CLAIM**, annotated with `risk` from the `recency` check (a
+7. any check errored → **UNKNOWN**.
+8. otherwise → **CLAIM**, annotated with `risk` from the `recency` check (a
    recently opened item from an active contributor is a high self-claim risk).
 
 **A PR that only MENTIONS the item is a POINTER you hand over, not a verdict you
