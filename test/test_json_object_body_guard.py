@@ -299,20 +299,20 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
         _BOUNDED_EXPLICIT,
     ),
     # ---- tranche 3 ----
-    # chat_handlers.py: control-field slot mutations take the cap; the sites
-    # that carry a chat message, queued-edit text, follow-up prompts, or
-    # injected context/note content stay uncapped.
+    # chat_handlers.py and its chat_api owners: control-field slot mutations take
+    # the cap; the sites that carry a chat message, queued-edit text, follow-up
+    # prompts, or injected context/note content stay uncapped.
     "chat_handlers.py::api_chat": ("None", _UNBOUNDED_USER_CONTENT),
     "chat_handlers.py::api_chat_slot_create": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_handlers.py::api_chat_slot_end_wait": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_handlers.py::api_chat_slot_interrupt": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_handlers.py::api_chat_slot_queue_edit": ("None", _UNBOUNDED_USER_CONTENT),
     "chat_handlers.py::api_chat_slot_queue_reorder": ("<default>", _BOUNDED_CONTROL_FIELDS),
-    "chat_handlers.py::api_chat_slot_reset_conversation": (
+    "chat_api/slot_lifecycle.py::api_chat_slot_reset_conversation": (
         "<default>",
         _BOUNDED_CONTROL_FIELDS,
     ),
-    "chat_handlers.py::api_chat_slots_cleanup": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "chat_api/slot_lifecycle.py::api_chat_slots_cleanup": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_folder_cleanup.py::api_chat_folders_cleanup": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_handlers.py::api_chat_slot_agent": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_handlers.py::api_chat_slot_model": ("<default>", _BOUNDED_CONTROL_FIELDS),
@@ -324,7 +324,7 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     "chat_handlers.py::api_chat_slot_workspace": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_handlers.py::api_chat_slot_project": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_handlers.py::api_chat_slot_followup": ("None", _UNBOUNDED_USER_CONTENT),
-    "chat_handlers.py::api_chat_slot_resume": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "chat_api/resume.py::api_chat_slot_resume": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_handlers.py::api_chat_mode": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_handlers.py::api_chat_slot_approve": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_handlers.py::api_chat_slot_color": ("<default>", _BOUNDED_CONTROL_FIELDS),
@@ -437,6 +437,8 @@ class TestCapRegister:
         # A refactor that moved or renamed the helper would otherwise empty the
         # scan and make every assertion below pass by finding nothing.
         assert len(_call_sites()) >= 25
+        # The chat_api owners composed into chat_handlers hold call sites too.
+        assert sum(key.startswith("chat_api/") for key in _call_sites()) >= 3
 
     def test_every_call_site_records_a_cap_decision(self) -> None:
         unregistered = sorted(set(_call_sites()) - set(_CAP_REGISTER))

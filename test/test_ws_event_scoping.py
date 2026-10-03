@@ -51,6 +51,16 @@ def _clear_module_caches():
 # ---------------------------------------------------------------------------
 
 
+def _chat_handler_source() -> str:
+    """chat_handlers.py and the chat_api owners it composes, as one text."""
+    import kiro_crew.dashboard.chat_handlers as _ch
+
+    facade = Path(_ch.__file__)
+    owners = sorted((facade.parent / "chat_api").glob("[!_]*.py"))
+    assert owners, "no chat_api owner found beside chat_handlers.py"
+    return "\n".join(path.read_text(encoding="utf-8") for path in [facade, *owners])
+
+
 def _make_slot(*, owner_app: str = "", origin: str = SlotOrigin.USER, key: str = "s1") -> MagicMock:
     slot = MagicMock()
     slot._app = owner_app
@@ -2612,12 +2622,11 @@ class TestUntaggedOriginIsNotUser:
         relabels a cron slot as USER. Counting both together is the invariant;
         pinning one of them everywhere is what got the resume path wrong.
         """
-        import kiro_crew.dashboard.chat_handlers as _ch
-
-        src = Path(_ch.__file__).read_text(encoding="utf-8")
+        src = _chat_handler_source()
         creates = src.count("state.get_or_create_slot(")
         from_request = src.count("origin=request_slot_origin(")
         from_persisted = src.count('origin=str(meta.get("origin", ""))')
+        assert creates >= 3, f"the scan found only {creates} slot creations"
         assert creates == from_request + from_persisted, (
             f"{creates} slot creations but only {from_request} declare a "
             f"request-derived origin and {from_persisted} a persisted one"
@@ -2637,9 +2646,7 @@ class TestUntaggedOriginIsNotUser:
         the creation lives in the shared helper: the persisted-origin declaration
         is separately pinned by ``test_every_handler_slot_creation_declares_an_origin``.
         """
-        import kiro_crew.dashboard.chat_handlers as _ch
-
-        src = Path(_ch.__file__).read_text(encoding="utf-8")
+        src = _chat_handler_source()
         # Search from the resume handler's definition so the helper (defined
         # earlier in the file) is not what the indices land on.
         resume_def = src.index("async def api_chat_slot_resume(")

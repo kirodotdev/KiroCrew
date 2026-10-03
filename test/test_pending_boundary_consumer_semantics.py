@@ -160,7 +160,7 @@ def test_running_guarded_task_loads_null_check_task_for_pending_boundaries() -> 
                 assert f"{alias}.task is not None" in ast.unparse(node.test)
 
     assert len(guarded_task_loads) == 2
-    assert {path for path, _line in guarded_task_loads} == {"chat_handlers.py"}
+    assert {path for path, _line in guarded_task_loads} == {"slot_lifecycle.py"}
 
 
 def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
@@ -230,15 +230,15 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("chat_handlers.py", "_switch_target_busy"),
                 ("chat_handlers.py", "api_chat_slot_agent"),
                 ("chat_handlers.py", "api_chat_slot_continue"),
-                ("chat_handlers.py", "api_chat_slot_detail"),
+                ("chat_api/slot_detail.py", "api_chat_slot_detail"),
                 ("chat_handlers.py", "api_chat_slot_interrupt"),
                 ("chat_handlers.py", "api_chat_slot_model"),
                 ("chat_handlers.py", "api_chat_slot_note"),
                 ("chat_handlers.py", "api_chat_slot_reasoning_effort"),
-                ("chat_handlers.py", "api_chat_slot_reset_conversation"),
-                ("chat_handlers.py", "api_chat_slot_resume"),
+                ("chat_api/slot_lifecycle.py", "api_chat_slot_reset_conversation"),
+                ("chat_api/resume.py", "api_chat_slot_resume"),
                 ("chat_handlers.py", "api_chat_slot_workspace"),
-                ("chat_handlers.py", "api_chat_slots_cleanup"),
+                ("chat_api/slot_lifecycle.py", "api_chat_slots_cleanup"),
                 ("chat_handlers.py", "api_chat_slots_model"),
                 ("chat_handlers.py", "stop_slot_turn"),
                 ("chat_rewind.py", "api_chat_slot_rewind"),

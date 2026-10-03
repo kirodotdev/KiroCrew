@@ -18,10 +18,13 @@ from pathlib import Path
 
 
 def _handler_source() -> str:
-    src = (
-        Path(__file__).resolve().parents[1] / "src" / "kiro_crew" / "dashboard" / "chat_handlers.py"
+    """chat_handlers.py and the chat_api owners it composes, as one text."""
+    dashboard = Path(__file__).resolve().parents[1] / "src" / "kiro_crew" / "dashboard"
+    owners = sorted((dashboard / "chat_api").glob("[!_]*.py"))
+    assert owners, "no chat_api owner found beside chat_handlers.py"
+    return "\n".join(
+        path.read_text(encoding="utf-8") for path in [dashboard / "chat_handlers.py", *owners]
     )
-    return src.read_text(encoding="utf-8")
 
 
 def _mid_rotation_except_block(body: str) -> str:

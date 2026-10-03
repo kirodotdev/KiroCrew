@@ -75,12 +75,15 @@ PLUMBING: frozenset[tuple[str, str]] = frozenset(
         ("kiro_crew/context.py", "read_messages_chained"),
         ("kiro_crew/context.py", "recent"),
         ("kiro_crew/dashboard/channel_slots.py", "read_messages"),
+        # The chat handlers' resume and slot-detail owners, composed into
+        # chat_handlers: the same resume and render reads it made.
+        ("kiro_crew/dashboard/chat_api/resume.py", "read_messages_chained"),
+        ("kiro_crew/dashboard/chat_api/slot_detail.py", "read_messages_chained"),
+        ("kiro_crew/dashboard/chat_api/slot_detail.py", "read_messages_chained_full"),
         ("kiro_crew/dashboard/chat_backfill.py", "read_messages_chained"),
         ("kiro_crew/dashboard/chat_backfill.py", "recent"),
         ("kiro_crew/dashboard/chat_fork.py", "read_messages_chained"),
         ("kiro_crew/dashboard/chat_fork.py", "read_messages_chained_full"),
-        ("kiro_crew/dashboard/chat_handlers.py", "read_messages_chained"),
-        ("kiro_crew/dashboard/chat_handlers.py", "read_messages_chained_full"),
         # ``selection.recent`` -- a mirror selection field, not a transcript read.
         ("kiro_crew/dashboard/chat_mirror.py", "recent"),
         ("kiro_crew/dashboard/chat_persistence.py", "read_messages_chained"),
@@ -155,6 +158,8 @@ class TestTheFence:
         one-line reason.
         """
         found = _plain_read_sites()
+        # The chat_api owners are in the sweep, not beside it.
+        assert {rel for rel, _ in found if rel.startswith("kiro_crew/dashboard/chat_api/")}
         unnamed = sorted(found - PLUMBING)
         assert not unnamed, f"plain transcript reads not named as plumbing: {unnamed}"
 

@@ -1646,7 +1646,8 @@ _KNOWN_HYDRATION_SITES = frozenset(
         ("chat_persistence", "_rehydrate_slot_from_history"),
         ("chat_persistence", "_apply_recent_session"),
         ("channel_slots", "surface_channel_session"),
-        ("chat_handlers", "_hydrate_slot_from_history"),
+        # The chat handlers' resume owner, composed into chat_handlers.
+        ("resume", "_hydrate_slot_from_history"),
         ("cron_inject", "_bind_cron_slot"),
         ("cron", "api_cron_to_chat"),
     }
