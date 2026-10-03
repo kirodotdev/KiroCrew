@@ -1470,6 +1470,25 @@ class TestPrReadiness:
         # they are keyed on Fast Gate, which does carry the PR head.
         assert '|fast-gate.yml"' in workflow
 
+    def test_the_legacy_lane_name_table_holds_only_the_lanes_16238_renamed(self) -> None:
+        # The publish re-check reads an old-name fork row as its lane when the
+        # head has no current-name row (behaviour: test_pr_readiness_publish.py).
+        # An entry for a lane that was NOT renamed, or one pointing at a name
+        # no lane uses, would let some other row answer for a lane; an old name
+        # that a workflow still posts would never stop answering. Removal is
+        # tracked in #16373.
+        workflow = _workflow("pr-readiness.yml")
+        spec = yaml.safe_load(workflow)
+        table = json.loads(spec["jobs"]["readiness"]["env"]["LEGACY_LANE_NAMES"])
+        assert table == {"Opus 5 Review": "Opus 5.5 Review", "GPT 5.6 Review": "GPT 6.1 Review"}
+        current = set(re.findall(r'"checkrun:([^|"]+)\|', workflow))
+        assert set(table.values()) <= current
+        assert not set(table) & current
+        for path in WORKFLOWS.glob("*.yml"):
+            if path.name != "pr-readiness.yml":
+                text = path.read_text(encoding="utf-8")
+                assert not [old for old in table if old in text], path.name
+
     def test_external_check_polling_counts_each_pass_once(self) -> None:
         workflow = _workflow("pr-readiness.yml")
 

@@ -2931,6 +2931,19 @@ Two subtleties:
   security verdict is a separate exact-SHA check-run a re-scan re-opens; a fork head cannot
   run it.
 
+  The fork re-check is the one read that binds a row by **name** as well as
+  `external_id`, so #16238's rename (`Opus 5 Review` -> `Opus 5.5 Review`, `GPT 5.6 Review`
+  -> `GPT 6.1 Review`) froze every fork head reviewed before it at "(not started)". The
+  job's `LEGACY_LANE_NAMES` table (old name -> current name, renamed lanes only) lets an
+  old-name row answer for its lane **only when the head has no bound row under the current
+  name**, read exactly like one: red publishes red, running holds, and the `external_id`
+  binding still applies. The hold step and `MONITORED_LANES` key on run ids and workflow
+  files, so they need no alias. A head stuck before the alias merged has no new check
+  evidence for the sweep, so re-dispatch it once:
+  `gh workflow run pr-readiness.yml --repo kirodotdev/KiroCrew --ref main -f pr=<PR> -f sha=<full 40-char head sha>`
+  (a short sha reads as a stale revision and publishes nothing).
+  Remove the table once no open PR has a pre-#16238 head (#16373).
+
   Each run ends with a `pr-readiness: core rate limit -- N/M remaining` log line
   (`GET /rate_limit` is free) so the pool's draw can be measured rather than estimated.
   Screening events before the evaluation was measured and then withdrawn: settling an

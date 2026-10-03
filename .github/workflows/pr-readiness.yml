@@ -219,6 +219,12 @@ jobs:
         internal-content-scan-gate.yml claude-review.yml codex-review.yml
         design-review.yml ux-review.yml first-principles-review.yml
         security-scope-review.yml
+      # Old check-run name -> current name for the fork lanes #16238 renamed,
+      # read by the publish step's fork re-check (the one read that binds a row
+      # by name). Why and how: docs/ci/ci-and-reviews.md. Remove once no open
+      # PR has a pre-#16238 head (#16373).
+      LEGACY_LANE_NAMES: >-
+        {"Opus 5 Review": "Opus 5.5 Review", "GPT 5.6 Review": "GPT 6.1 Review"}
     steps:
       # Transient network/TLS errors between the runner and api.github.com can
       # abort a single-shot `gh` call, and under `set -e` that ended the whole
@@ -1996,8 +2002,10 @@ jobs:
                 DESCRIPTION="readiness check(s) changed since evaluation; re-checking Fast Gate"
               elif fork_state="$(gh_retry gh api --method GET --paginate \
                 "repos/$REPO/commits/$SHA/check-runs?per_page=100" \
-                | jq -rs --arg pr "$PR" --arg fg "$fast_gate" '
-                  {"Internal Content Scan": "internal-content-scan-pr-",
+                | jq -rs --arg pr "$PR" --arg fg "$fast_gate" \
+                  --argjson legacy "$LEGACY_LANE_NAMES" '
+                  ($legacy | with_entries({key: .value, value: .key})) as $old_name
+                  | {"Internal Content Scan": "internal-content-scan-pr-",
                    "Opus 5.5 Review": "opus-pr-",
                    "GPT 6.1 Review": "gpt-pr-",
                    "Design Review": "design-pr-",
@@ -2007,8 +2015,11 @@ jobs:
                   | [.[].check_runs[]] as $rows
                   | [$lanes | to_entries[]
                      | .key as $name | (.value + $pr + "-" + $fg) as $want
-                     | ($rows | map(select(.name == $name and (.external_id // "") == $want))
-                        | max_by(.id)) as $row
+                     | ($rows | map(select((.external_id // "") == $want))) as $bound
+                     # A pre-rename row answers only when no current-name row
+                     # is bound; see LEGACY_LANE_NAMES.
+                     | (($bound | map(select(.name == $name)) | max_by(.id))
+                        // ($bound | map(select(.name == $old_name[$name])) | max_by(.id))) as $row
                      | {name: $name, row: $row}]
                   | (map(select(.row != null and .row.status == "completed"
                                 and ((.row.conclusion // "")
