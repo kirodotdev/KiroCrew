@@ -1,7 +1,8 @@
 /**
  * The sidebar row's single-menu form (phones, and any touch screen) replaces the
- * hover cluster that hosts the fork action, so the menu must carry it (labelled "Fork chat" since #16101) itself
- * when the row passes it. Surfaces that pass no handler get no item.
+ * hover cluster that hosts the fork button, so the menu must carry "Fork chat"
+ * itself when the row passes it (#16101 relabelled pages.chatSidebar.duplicate
+ * from "Duplicate" to "Fork chat"). Surfaces that pass no handler get no item.
  */
 import { describe, it, expect, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
@@ -55,7 +56,7 @@ function renderMenu(onDuplicate?: () => void) {
   return utils
 }
 
-describe('SessionActionsMenu Duplicate item', () => {
+describe('SessionActionsMenu Fork chat item', () => {
   it('renders Fork chat when the row passes a handler, and selecting it calls the handler', async () => {
     const onDuplicate = vi.fn()
     renderMenu(onDuplicate)

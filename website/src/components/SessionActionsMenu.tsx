@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Pencil, Circle, Pin, Locate, Link2, Tag as TagIcon, X, ExternalLink, Monitor, Undo2, RotateCw, PanelTop, Sparkles, Copy } from 'lucide-react'
+import { Pencil, Circle, Pin, Locate, Link2, Tag as TagIcon, X, ExternalLink, Monitor, Undo2, RotateCw, PanelTop, Sparkles, GitFork } from 'lucide-react'
 import type { ChatFolder } from '../types'
 import FolderMoveSubmenu from './FolderMoveSubmenu'
 import ErrorNotice, { ErrorNoticeMenuItem } from './ErrorNotice'
@@ -53,8 +53,9 @@ export interface SessionActionsMenuProps {
    */
   onOpenInNewTab?: () => void
   /**
-   * Duplicate this session. Passed only by the sidebar row's single-menu form,
-   * where the menu replaces the hover cluster that otherwise hosts Duplicate.
+   * Fork this chat (labelled "Fork chat"). Passed only by the sidebar row's
+   * single-menu form, where the menu replaces the hover cluster that otherwise
+   * hosts the fork button.
    */
   onDuplicate?: () => void
   /** Extra items rendered in the top "informational" group (header-only today:
@@ -273,7 +274,7 @@ export default function SessionActionsMenu({
       ),
       onDuplicate && (
         <Item key="duplicate" onSelect={onDuplicate}>
-          <Copy size={13} className="shrink-0 text-muted" /> {i18nT('pages.chatSidebar.duplicate')}
+          <GitFork size={13} className="shrink-0 text-muted" /> {i18nT('pages.chatSidebar.duplicate')}
         </Item>
       ),
       // This session's work-item board, when it conducts one. Sits with the

@@ -110,9 +110,12 @@ describe('hover variant policy (tailwind-theme.css)', () => {
 
 /** A hover variant that makes something visible. Colour/shadow/transform
  *  hovers are decoration and are fine to lose on touch. */
-const REVEAL = /(?:^|[\s"'`{])(?:[a-z]+:)?(?:(?:group|peer)-hover(?:\/[\w-]+)?|hover):(?:opacity-\d+|visible|block|flex|inline-flex|inline-block|grid|pointer-events-auto|w-auto|line-clamp-none|text-muted)(?=[\s"'`}]|$)/
+/** Variant prefixes may stack and include arbitrary values such as
+ *  `[@media(min-width:640px)_and_(min-height:600px)]:`, so a site moved behind a
+ *  custom breakpoint stays in the scan instead of silently dropping out. */
+const REVEAL = /(?:^|[\s"'`{])(?:(?:[a-z]+|\[[^\]\s]+\]):)*(?:(?:group|peer)-hover(?:\/[\w-]+)?|hover):(?:opacity-\d+|visible|block|flex|inline-flex|inline-block|grid|pointer-events-auto|w-auto|line-clamp-none|text-muted)(?=[\s"'`}]|$)/
 /** A resting state that hides the control, clips its text or makes its glyph transparent (whole class tokens only). */
-const HIDDEN = /(?:^|[\s"'`{])(?:(?:sm|md|lg):)?(?:opacity-0|invisible|hidden|w-0|line-clamp-\d+|text-transparent)(?=[\s"'`}]|$)/
+const HIDDEN = /(?:^|[\s"'`{])(?:(?:sm|md|lg|\[[^\]\s]+\]):)?(?:opacity-0|invisible|hidden|w-0|line-clamp-\d+|text-transparent)(?=[\s"'`}]|$)/
 /** A touch state: an explicit (hover: none) utility or a shared touch class. */
 const TOUCH = /\[@media\(hover:none\)\]:|HOVER_NONE_ACTIONS_ROW_CLS|HOVER_NONE_ACTION_BTN_CLS|ICON_ACTION_ROW_CLS/
 
@@ -129,6 +132,7 @@ const DECORATIVE: Array<[file: string, snippet: string, why: string]> = [
   ['pages/ArtifactDetailPage.tsx', '<Pencil size={14}', 'edit glyph inside the always-visible rename button'],
   ['pages/chat/SessionTitleControl.tsx', '<Pen size=', 'edit glyph beside the always-visible title'],
   ['pages/settings/SecurityPanel.tsx', '<ExternalLink size={11}', 'external-link glyph on an always-visible row'],
+  ['components/WelcomeView.tsx', '[@media(min-width:640px)_and_(min-height:600px)]:group-hover:line-clamp-none', 'unclamps a suggestion\'s text on hover; one tap sends the full text to the composer'],
 ]
 
 /** Files no route or component mounts, so no user can reach their hover-only
