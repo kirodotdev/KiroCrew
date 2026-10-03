@@ -507,6 +507,7 @@ EXPORTED_NAMES: tuple[str, ...] = (
     "canonicalize_ip",
     "compute_effective_denied",
     "contains_injection",
+    "contains_sensitive_resolved_path",
     "crew_home_prefixes",
     "dataclass",
     "datetime",
