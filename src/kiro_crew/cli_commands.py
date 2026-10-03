@@ -81,6 +81,7 @@ from kiro_crew.config.loader import (
     config_path,
     materialize_workspace_dir,
     read_config_for_update,
+    read_config_text,
     read_local_secret,
     update_config_locked,
 )
@@ -2446,8 +2447,15 @@ def _security(args: argparse.Namespace) -> None:
             print(f"  ✗ {p}")
         cfg_path = config_dir() / "config.json"
         if cfg_path.exists():
-            data = json.loads(cfg_path.read_text())
-            extra = data.get("hooks", {}).get("auto_deny_tools", [])
+            try:
+                data = json.loads(read_config_text(cfg_path))
+            except (OSError, ValueError) as exc:
+                # The built-in list above is already printed; say plainly that the
+                # user-configured half could not be read instead of a traceback.
+                print(f"\n⚠️  Could not read user-configured deny patterns from {cfg_path}: {exc}")
+                data = {}
+            hooks = data.get("hooks") if isinstance(data, dict) else None
+            extra = hooks.get("auto_deny_tools", []) if isinstance(hooks, dict) else []
             if extra:
                 print("\n🔧 User-configured deny patterns:")
                 for p in extra:

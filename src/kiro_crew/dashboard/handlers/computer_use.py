@@ -81,7 +81,7 @@ from kiro_crew.computer_use.types import (
     PolicyConfig,
     PolicyStateError,
 )
-from kiro_crew.config.loader import computer_use_state_path
+from kiro_crew.config.loader import computer_use_state_path, read_config_text
 from kiro_crew.executors import subprocess_executor
 
 logger = logging.getLogger(__name__)
@@ -463,7 +463,7 @@ def _read_config_strict() -> dict:
     if not path.exists():
         return {}
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(read_config_text(path))
     except (OSError, json.JSONDecodeError) as exc:
         raise StateCorruptError(f"config.json is not readable as a JSON object: {exc}") from exc
     if not isinstance(data, dict):

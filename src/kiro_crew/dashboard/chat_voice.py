@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from aiohttp import web
 
 from kiro_crew import aws_consent
-from kiro_crew.config.loader import config_path
+from kiro_crew.config.loader import config_path, read_config_text
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.piper_runtime import PiperRuntime
@@ -310,8 +310,7 @@ async def api_voice_config(request: web.Request) -> web.Response:
     # silently drop any key not in this handler's set.
     try:
         cfg_path = config_path()
-        with open(cfg_path) as f:
-            cfg = json.load(f)
+        cfg = json.loads(read_config_text(cfg_path))
         vr = cfg.get("voice_reply")
         if not isinstance(vr, dict):
             vr = {}

@@ -19,6 +19,7 @@ from kiro_crew.config.loader import (
     _subtract_overlay,
     config_local_path,
     config_path,
+    read_config_text,
     update_config_locked,
     workspace_dir_from_entry,
 )
@@ -335,7 +336,7 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                     lp = config_local_path()
                     if lp.is_file():
                         try:
-                            raw_local = json.loads(lp.read_text(encoding="utf-8"))
+                            raw_local = json.loads(read_config_text(lp))
                             if isinstance(raw_local, dict):
                                 return _subtract_overlay(existing, raw_local)
                         except (json.JSONDecodeError, OSError):
@@ -424,7 +425,7 @@ def _defaults_cmd(args: argparse.Namespace) -> None:
         _print_adopted()
     path = config_path()
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw = json.loads(read_config_text(path))
     except FileNotFoundError:
         print("✅ No config.json yet — the current defaults already apply.")
         return
@@ -643,7 +644,7 @@ def _overlay_keys(dotted_keys: list[str]) -> set[str]:
     if not p.is_file():
         return set()
     try:
-        raw = json.loads(p.read_text(encoding="utf-8"))
+        raw = json.loads(read_config_text(p))
     except (OSError, ValueError):
         # ValueError covers malformed JSON and invalid UTF-8 alike; either way the
         # overlay is treated as carrying nothing.

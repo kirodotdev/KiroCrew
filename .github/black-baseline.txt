@@ -213,7 +213,6 @@ src/kiro_crew/knowledge/artifact_ingest.py
 src/kiro_crew/knowledge/chunker.py
 src/kiro_crew/knowledge/connectors/__init__.py
 src/kiro_crew/knowledge/dedup.py
-src/kiro_crew/knowledge/embedder.py
 src/kiro_crew/knowledge/extractor.py
 src/kiro_crew/knowledge/folder_watcher.py
 src/kiro_crew/knowledge/ingestion.py

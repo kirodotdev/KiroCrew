@@ -48,6 +48,7 @@ from kiro_crew.snapshot import (
     _staging_is_pinned,
     is_product_tree_database,
 )
+from kiro_crew.user_json import strip_utf8_bom
 from kiro_crew.zip_vet import ZipInventoryRejected, vet_zip_inventory
 
 logger = logging.getLogger(__name__)
@@ -450,7 +451,7 @@ def crew_template_refs(config_path: Path) -> list[tuple[str, str]]:
     answers ``[]``: this feeds a warning, never a refusal.
     """
     try:
-        data = json.loads(config_path.read_text(encoding="utf-8"))
+        data = json.loads(strip_utf8_bom(config_path.read_text(encoding="utf-8")))
         rows = data.get("agents")
     except (OSError, ValueError, AttributeError, RecursionError):
         return []

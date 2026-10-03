@@ -185,13 +185,14 @@ class TestChatStartLoading:
     def test_agent_loader_keeps_judging_crew_config_like_the_config_loader(
         self, tmp_path: Path
     ) -> None:
-        # ``config.json`` is read by ``KiroCrewConfig.load`` with plain json, so
-        # the agent's own loader must not accept what that one refuses.
+        # ``KiroCrewConfig.load`` accepts a BOM'd ``config.json``, so the agent's
+        # own loader must too: if the two judged one file differently, the spec
+        # builder would treat a config the gateway loaded as absent.
         from kiro_crew import agent
 
         path = tmp_path / "config.json"
         _write_bom_json(path, {"model": "m"})
-        assert agent._load_json(path) == {}
+        assert agent._load_json(path) == {"model": "m"}
 
     def test_doctor_reads_a_bom_agent_config(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]

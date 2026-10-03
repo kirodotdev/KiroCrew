@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 from aiohttp import web
 
 from kiro_crew import platform_compat
-from kiro_crew.config.loader import config_path
+from kiro_crew.config.loader import config_path, read_config_text
 from kiro_crew.dashboard import terminal_commands
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.dashboard.origin import check_origin, mark_audit_claimed
@@ -607,7 +607,7 @@ def _get_config(request: web.Request) -> dict:
     which is also what an absent key means.
     """
     try:
-        data = json.loads(config_path().read_text(encoding="utf-8"))
+        data = json.loads(read_config_text(config_path()))
     except (OSError, ValueError):
         return {}
     if not isinstance(data, dict):

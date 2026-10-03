@@ -38,6 +38,7 @@ from kiro_crew.config.loader import (
     KiroCrewConfig,
     config_dir,
     outbox_dir,
+    read_config_text,
     read_local_secret,
     resolve_agent_bindings,
 )
@@ -563,8 +564,10 @@ def _get_knowledge_search(db_path: Path, cfg_path: Path) -> tuple[Any, Any]:
         prev = _KNOWLEDGE_CACHE
         store = KnowledgeStore(str(db_path))
         try:
-            cfg = json.loads(cfg_path.read_text()) if cfg_path.exists() else {}
+            cfg = json.loads(read_config_text(cfg_path)) if cfg_path.exists() else {}
         except Exception:
+            cfg = {}
+        if not isinstance(cfg, dict):
             cfg = {}
         embedder = create_embedder_from_config(cfg)
         # Close the stale connection only AFTER the full rebuild (store + cfg +

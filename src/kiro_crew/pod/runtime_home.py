@@ -23,6 +23,7 @@ from pathlib import Path
 
 from kiro_crew import pinned_fs
 from kiro_crew import seed as seed_mod
+from kiro_crew import user_json
 from kiro_crew.atomic_write import atomic_write_at
 from kiro_crew.identity_stores import StoreMapping, store_mappings
 from kiro_crew.platform_compat import is_link_or_junction, open_file_no_reparse, pin_directory
@@ -89,7 +90,7 @@ def _prepare_seeded_home_fd(home_fd: int) -> None:
         if len(text) > 1024 * 1024:
             raise PodError("seeded config.json exceeds the 1 MiB pod setup limit")
         try:
-            data = json.loads(text)
+            data = json.loads(user_json.strip_utf8_bom(text))
         except ValueError as exc:
             raise PodError(f"seeded config.json is not valid JSON: {exc}") from exc
         if not isinstance(data, dict):
@@ -352,7 +353,7 @@ def _prepare_seeded_home_dir(home_dir: Path) -> None:
         if len(text) > 1024 * 1024:
             raise PodError("seeded config.json exceeds the 1 MiB pod setup limit")
         try:
-            loaded = json.loads(text)
+            loaded = json.loads(user_json.strip_utf8_bom(text))
         except ValueError as exc:
             raise PodError(f"seeded config.json is not valid JSON: {exc}") from exc
         if not isinstance(loaded, dict):

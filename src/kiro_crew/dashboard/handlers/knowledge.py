@@ -22,7 +22,7 @@ from kiro_crew import platform_compat
 from kiro_crew._sqlite_compat import fts5_segment_for_index, sqlite3
 from kiro_crew.artifacts import get_default_store
 from kiro_crew.config import live
-from kiro_crew.config.loader import KiroCrewConfig, config_dir, data_home
+from kiro_crew.config.loader import KiroCrewConfig, config_dir, data_home, read_config_text
 from kiro_crew.dashboard import part_stream
 from kiro_crew.dashboard.handlers._shared import (
     read_bounded_json,
@@ -253,8 +253,10 @@ def _create_embedder(app):
     """Create embedder from KiroCrew config. Returns None if disabled/unavailable."""
     cfg_path = config_dir() / "config.json"
     try:
-        cfg = json.loads(cfg_path.read_text()) if cfg_path.exists() else {}
+        cfg = json.loads(read_config_text(cfg_path)) if cfg_path.exists() else {}
     except Exception:
+        cfg = {}
+    if not isinstance(cfg, dict):
         cfg = {}
     return create_embedder_from_config(cfg)
 
@@ -2937,11 +2939,16 @@ async def search_for_context(request: web.Request) -> web.Response:
 
     cfg_path = data_home() / "config.json"
     try:
-        cfg = json.loads(cfg_path.read_text()) if cfg_path.exists() else {}
+        cfg = json.loads(read_config_text(cfg_path)) if cfg_path.exists() else {}
     except Exception:
         cfg = {}
-    top_n = cfg.get("knowledge", {}).get("fetch_top_n", KNOWLEDGE_FETCH_TOP_N)
-    max_tokens = cfg.get("knowledge", {}).get("fetch_max_tokens", KNOWLEDGE_FETCH_MAX_TOKENS)
+    if not isinstance(cfg, dict):
+        cfg = {}
+    knowledge_cfg = cfg.get("knowledge")
+    if not isinstance(knowledge_cfg, dict):
+        knowledge_cfg = {}
+    top_n = knowledge_cfg.get("fetch_top_n", KNOWLEDGE_FETCH_TOP_N)
+    max_tokens = knowledge_cfg.get("fetch_max_tokens", KNOWLEDGE_FETCH_MAX_TOKENS)
 
     try:
         limit = min(100, max(1, int(request.query.get("limit", top_n))))

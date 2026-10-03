@@ -1448,7 +1448,7 @@ def _load_json(path: Path) -> dict[str, Any]:
     if not path.is_file():
         return {}
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = loads_user_json(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
         logger.warning("Ignoring invalid %s: %s", path, exc)
         return {}
