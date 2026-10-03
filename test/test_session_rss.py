@@ -269,13 +269,13 @@ class TestRssThresholdCheck:
         monkeypatch.setattr(session.platform_compat, "IS_WINDOWS", False)
 
     def test_shipped_default_reaches_the_enforcement_point(self) -> None:
-        """The ceiling is on by default: a manager built from the shipped
-        SessionConfig default arms ``_rss_threshold_check`` at 1536 MiB, so the
-        watchdog bounds a runaway tree without any config.json edit."""
+        """The ceiling is off by default: a manager built from the shipped
+        SessionConfig default holds 0, so ``_rss_threshold_check`` never
+        recycles a session until an operator sets a ceiling."""
         from kiro_crew.config.sections import DEFAULT_WATCHDOG_RSS_MAX_MB, SessionConfig
 
         manager = _make_manager(rss_max_mb=SessionConfig().watchdog_rss_max_mb)
-        assert manager._rss_max_mb == DEFAULT_WATCHDOG_RSS_MAX_MB == 1536
+        assert manager._rss_max_mb == DEFAULT_WATCHDOG_RSS_MAX_MB == 0
 
     @pytest.mark.asyncio
     async def test_explicit_zero_disables(self) -> None:

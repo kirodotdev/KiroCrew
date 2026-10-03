@@ -18,6 +18,7 @@ import pytest
 
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.session import _BG_BLIND_RECYCLE_PROMPTS, BACKGROUND_KEY, SessionManager
+from kiro_crew.session_background import BACKGROUND_RSS_FALLBACK_MB
 
 _CEILING_MB = 1536
 _BG_PID = 4242
@@ -87,7 +88,7 @@ class TestTreeRssRecyclesTheBackgroundSession:
 
     @pytest.mark.asyncio
     async def test_a_tree_far_over_the_ceiling_recycles(self, cfg, caplog):
-        """The 1.9 GB reading from the report, against the 1536 MB default."""
+        """The 1.9 GB reading from the report, against a 1536 MB ceiling."""
         mgr = await _started_manager(cfg)
         provider = mgr._sessions[BACKGROUND_KEY].provider
 
@@ -114,19 +115,36 @@ class TestTreeRssRecyclesTheBackgroundSession:
         await mgr.close_all()
 
 
-class TestTheCeilingCanBeDisabled:
-    """``session.watchdog_rss_max_mb = 0`` disables this check, as in the sweep."""
+class TestZeroFallsBackToTheBackgroundCeiling:
+    """``session.watchdog_rss_max_mb = 0`` turns the chat-session sweep off, but
+    the background runtime keeps ``BACKGROUND_RSS_FALLBACK_MB``."""
 
     @pytest.mark.asyncio
-    async def test_zero_never_recycles_on_rss_and_reads_no_tree(self, cfg):
+    async def test_zero_still_recycles_a_tree_over_the_fallback(self, cfg, caplog):
         cfg.session.watchdog_rss_max_mb = 0
         mgr = await _started_manager(cfg)
         provider = mgr._sessions[BACKGROUND_KEY].provider
 
-        with patch("kiro_crew.session.get_session_rss_mb", return_value=99_999) as measure:
+        with patch("kiro_crew.session.get_session_rss_mb", return_value=1890):
+            with caplog.at_level("INFO", logger="kiro_crew.session"):
+                await mgr.recycle_background()
+
+        provider.shutdown.assert_awaited_once()
+        assert f"tree rss=1890MB exceeds {BACKGROUND_RSS_FALLBACK_MB}MB" in caplog.text
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_zero_leaves_a_tree_under_the_fallback_alone(self, cfg):
+        cfg.session.watchdog_rss_max_mb = 0
+        mgr = await _started_manager(cfg)
+        provider = mgr._sessions[BACKGROUND_KEY].provider
+
+        with patch(
+            "kiro_crew.session.get_session_rss_mb",
+            return_value=BACKGROUND_RSS_FALLBACK_MB - 1,
+        ):
             await mgr.recycle_background()
 
-        measure.assert_not_called()
         provider.shutdown.assert_not_awaited()
         assert mgr._sessions[BACKGROUND_KEY].provider is provider
         await mgr.close_all()

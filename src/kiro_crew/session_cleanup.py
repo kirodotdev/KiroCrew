@@ -57,7 +57,7 @@ HARNESS_BACKGROUND_WORK_HOLD_SECS = 3600.0
 #: have been stopped (only this recycle does: one let through past the hold
 #: presumed the work finished, so its notice stays plain).
 #: Why 2x: the reported workflow trees read 2398-2641 MB against
-#: the 1536 MB default ceiling, so the hold must survive an ordinary workflow
+#: a 1536 MB ceiling, so the hold must survive an ordinary workflow
 #: at ~1.6-1.7x while still cutting off a runaway before it grows unbounded.
 HARNESS_BACKGROUND_WORK_HARD_CEILING_FACTOR = 2
 

@@ -639,7 +639,7 @@ POSIX fleet too, where the Windows branches never execute.
 
 ## The RSS-recycle ceiling measures real trees on Windows
 
-`session.watchdog_rss_max_mb` (default 1536 MiB; `0` disables) recycles a
+`session.watchdog_rss_max_mb` (default `0`, off) recycles a
 non-busy session whose process tree exceeds the ceiling. Its measurement is
 `/proc`-based, so `get_session_rss_mb` measured every tree as 0 MiB on Windows:
 the ceiling an operator had configured could never be reached and no session was

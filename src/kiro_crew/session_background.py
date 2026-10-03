@@ -44,6 +44,13 @@ if TYPE_CHECKING:
     from kiro_crew.acp.types import AcpEvent
     from kiro_crew.providers.base import LLMProvider
 
+#: Tree-RSS ceiling (MiB) for the persistent background runtime when
+#: ``session.watchdog_rss_max_mb`` is 0. Its turns are tiny text prompts, so a
+#: transcript of oversized records grows the tree long before the context or
+#: prompt criteria fire; observed at 1.9 GB. Recycling it spawns the replacement
+#: first, so no user sees it.
+BACKGROUND_RSS_FALLBACK_MB = 1536
+
 
 class _BackgroundSessionEntry(Protocol):
     """The live-registry session shape used by the background boundary."""
@@ -170,7 +177,7 @@ class BackgroundRuntimeDeps:
     bg_blind_recycle_prompts: int
     #: ``session.watchdog_rss_max_mb`` read live, off the same state the cleanup
     #: sweep's RSS check reads, so a config change applies on the next
-    #: background turn. ``0`` disables the RSS criterion, as it does there.
+    #: background turn. ``0`` means ``BACKGROUND_RSS_FALLBACK_MB`` here.
     rss_max_mb: Callable[[], int]
     #: Resident MiB of a pid's whole process tree, or ``None`` when unreadable.
     tree_rss_mb: Callable[[int], int | None]
@@ -869,7 +876,10 @@ class BackgroundSessionRuntime:
     async def _rss_recycle_reason(self, background_key: str) -> str | None:
         """The recycle reason when the background tree is at or over its ceiling.
 
-        The ceiling is ``session.watchdog_rss_max_mb``; ``0`` disables the check.
+        The ceiling is ``session.watchdog_rss_max_mb`` when it is positive, else
+        ``BACKGROUND_RSS_FALLBACK_MB``: the per-session knob is off by default,
+        and this internal runtime is the one tree a transcript of oversized
+        records grows without bound, so it keeps a ceiling either way.
         The RSS sweep in ``session_cleanup`` skips persistent keys and the
         background key is one, so this is the only path that compares this
         runtime's tree against that number. It belongs here rather than there
@@ -881,7 +891,7 @@ class BackgroundSessionRuntime:
         """
         ceiling = self._deps.rss_max_mb()
         if ceiling <= 0:
-            return None
+            ceiling = BACKGROUND_RSS_FALLBACK_MB
         # This module owns the background runtime: it spawns the provider, is the
         # one place that retires it, and the background key is a pool of one, so
         # the reading below attributes the tree to the session that alone holds it.

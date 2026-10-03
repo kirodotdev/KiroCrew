@@ -158,12 +158,12 @@ CONTEXT_WARN_MARGIN_PCT = 10.0
 # invisible on disk — this constant is the only place the value is written.
 DEFAULT_POOL_SIZE = 0
 # Per-session process-tree RSS ceiling (MiB) the cleanup watchdog recycles an
-# idle session at. Non-zero by default so a runaway session tree is bounded
-# out of the box: fleet gateways were observed at several hundred MB with
-# nothing bounding them. 1536 leaves a healthy kiro-cli plus its MCP servers
-# (typically 300-600 MiB) a wide margin while still catching a leak before
-# it takes the host with it. 0 disables.
-DEFAULT_WATCHDOG_RSS_MAX_MB = 1536
+# idle session at. 0 disables, and that is the default: a fixed ceiling cannot
+# tell a leak from a healthy session that loads many MCP servers. An agent with
+# six MCP servers measured ~1.4 GB of tree RSS thirteen seconds after start, so
+# the old 1536 default recycled ordinary sessions after one heavy turn. An
+# operator who wants a bound sets one sized to their own agents.
+DEFAULT_WATCHDOG_RSS_MAX_MB = 0
 # session.reconcile_max_kills — root candidates the runtime reconciler may signal
 # the tree of in one pass. Defaults to the budget the arm already ships with, so an
 # unconfigured host behaves exactly as before; the field's ceiling equals that same
@@ -1865,7 +1865,8 @@ class SessionConfig:
         metadata=_meta(
             "Watchdog RSS Limit (MiB)",
             "Recycle a session when its process tree resident memory exceeds "
-            "this many MiB (default 1536). 0 disables. Busy sessions (turn in "
+            "this many MiB. 0 disables (the default); the internal background "
+            "runtime still recycles at 1536 MiB. Busy sessions (turn in "
             "flight) are never recycled.",
         ),
     )
