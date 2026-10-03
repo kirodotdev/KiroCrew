@@ -103,6 +103,25 @@ describe('sanitizeCredentials: JWT family', () => {
     }
   })
 
+  it('still redacts a hostname containing eyJ (known residual, #8476)', () => {
+    // This pins the CURRENT behaviour, not the desired one. A hostname that
+    // merely contains `eyJ` has the JWS shape (two or more dots after it), and
+    // this mirror matches on shape alone. The backend closed the same false
+    // positive at every consumer with a structural check (segment one must
+    // decode to a JSON object; see `src/kiro_crew/jwt_header.py`); the mirror
+    // deliberately did not follow in that change, so the pattern text stays
+    // byte-identical and the parity test keeps holding. When the mirror gains
+    // the structural check, flip this expectation on purpose rather than
+    // discovering the change by accident.
+    const url = 'https://honeyJar.atlassian.net/wiki/spaces/ABC/pages/1/Design+Doc'
+    const out = sanitizeCredentials(url)
+    expect(out).not.toBe(url)
+    expect(out).toBe('https://hon[REDACTED]/wiki/spaces/ABC/pages/1/Design+Doc')
+    // The lowercase control isolates the trigger to the case of one letter.
+    const control = 'https://honeyjar.atlassian.net/wiki/x'
+    expect(sanitizeCredentials(control)).toBe(control)
+  })
+
   it('redacts a token a renderer concatenated straight onto a label', () => {
     // Adding a left boundary to the JWS alternative makes these MISS while the
     // backend still redacts them, so the mirror would leak a token the backend

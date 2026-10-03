@@ -23,7 +23,6 @@ import base64
 import bisect
 import hashlib
 import hmac
-import json
 import math
 import posixpath
 import re
@@ -33,6 +32,7 @@ from collections.abc import Callable, Iterator
 from typing import NamedTuple
 
 from kiro_crew.credential_patterns import AWS_KEY_ID, JWT_MULTI_SEGMENT
+from kiro_crew.jwt_header import is_jwt_lookalike
 from kiro_crew.security.redaction_switch import credential_pass_bypassed
 
 # ── Credential Output Redaction ──
@@ -287,19 +287,11 @@ def get_credential_patterns() -> list[re.Pattern[str]]:
 
 
 # The JWS/JWE branch is shape-only (it matches `honeyJar.example.com`), so its hits need a
-# JSON-object header. Only it and the one-dot link token start with `eyJ`: two dots mark them.
+# JSON-object header: `jwt_header.is_jwt_lookalike`, shared with the log floor and the
+# decisions gate. Only it and the one-dot link token start with `eyJ`: two dots mark them.
 _CREDENTIAL_PATTERNS_SANS_JWT = re.compile(
     _CREDENTIAL_PATTERNS.pattern.replace(f"|{JWT_MULTI_SEGMENT}", "", 1)
 )
-
-
-def _is_json_object_segment(segment: str) -> bool:
-    """Whether *segment* base64url-decodes to a JSON object: JOSE, itsdangerous, Flask session."""
-    try:
-        header = json.loads(base64.urlsafe_b64decode(segment + "=" * (-len(segment) % 4)))
-    except (ValueError, RecursionError):
-        return False
-    return isinstance(header, dict)
 
 
 def _credential_matches(text: str) -> Iterator[re.Match[str]]:
@@ -311,13 +303,7 @@ def _credential_matches(text: str) -> Iterator[re.Match[str]]:
     """
     pos = 0
     while (m := _CREDENTIAL_PATTERNS.search(text, pos)) is not None:
-        header = m.group().split(".", 1)[0]
-        if (
-            m.group().startswith("eyJ")
-            and m.group().count(".") >= 2
-            and header.find("eyJ", 1) == -1
-            and not _is_json_object_segment(header)
-        ):
+        if is_jwt_lookalike(m):
             alt = _CREDENTIAL_PATTERNS_SANS_JWT.match(text, m.start())
             if alt is None:
                 pos = m.start() + 1

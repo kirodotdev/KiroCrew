@@ -105,6 +105,112 @@ class TestSecretRedactionFilter:
         assert "eyJhbGciOiJkaXIifQ" not in result
 
 
+#: Real tokens with a JSON-object first segment: a JWS (``alg``), a ``dir`` JWE
+#: with its EMPTY encrypted-key segment (``enc``), and a signed itsdangerous
+#: payload, which is not JOSE but is a credential the floor already redacted.
+_JWS = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+_JWE_DIR = "eyJhbGciOiJkaXIiLCJlbmMiOiJBMjU2R0NNIn0..48V1_ALb6US04U3b.5eym8TW_c8SuK0ltJ3rpYIzOeDQz7TALvtu6UG9oMo4vpzs9tX_EFShS8iB7j6ji.XFBoMYUZodetZdvTiFvSkQ"
+_ITSDANGEROUS = "eyJ1c2VyIjogMX0.ZXhwaXJ5.c2lnbmF0dXJlLXZhbHVl"
+
+
+class TestJwtLookalikesInLogs:
+    """The JWT spelling matches on shape alone, so the floor checks the header.
+
+    Without the check a logged URL whose hostname merely contains ``eyJ`` renders
+    as ``https://hon[REDACTED]/wiki/x``. The pattern text is unchanged (the
+    frontend mirror pins it byte-identical); the verdict lives in ``jwt_header``.
+    """
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "GET https://honeyJar.atlassian.net/wiki/spaces/ABC/pages/1234567890/Design+Doc",
+            "https://moneyJar.atlassian.net/browse/ABC-1",
+            "https://disneyJapan.atlassian.net/wiki/x",
+            "https://blueyJam.example.com/a/b",
+            "ssh honeyJar.example.com",
+            "at eyJsonSerializer.deserialize.value",
+            "keyJson.parse.value",
+        ],
+        ids=[
+            "honeyJar",
+            "moneyJar",
+            "disneyJapan",
+            "blueyJam",
+            "ssh-host",
+            "stack-trace",
+            "two-dot-ident",
+        ],
+    )
+    def test_a_dotted_name_containing_eyj_is_left_intact(self, text: str) -> None:
+        assert SecretRedactionFilter([]).redact(text) == text
+
+    def test_the_lowercase_control_isolates_the_trigger(self) -> None:
+        text = "https://honeyjar.atlassian.net/wiki/x"
+        assert SecretRedactionFilter([]).redact(text) == text
+
+    @pytest.mark.parametrize(
+        "token", [_JWS, _JWE_DIR, _ITSDANGEROUS], ids=["jws", "jwe-dir", "itsdangerous"]
+    )
+    @pytest.mark.parametrize(
+        "frame",
+        [
+            "{token}",
+            "Authorization: Bearer {token}",
+            "https://api.example.com/cb?token={token}&x=1",
+            "compact=jwt{token}",
+            '{{"access_token": "{token}"}}',
+        ],
+        ids=["bare", "bearer", "query", "glued-label", "json"],
+    )
+    def test_every_real_token_shape_is_still_redacted_whole(self, frame: str, token: str) -> None:
+        result = SecretRedactionFilter([]).redact(frame.format(token=token))
+        assert token not in result
+        for segment in filter(None, token.split(".")):
+            assert segment not in result, segment
+        assert "[REDACTED]" in result
+
+    def test_a_real_token_right_after_a_lookalike_is_redacted(self) -> None:
+        """``eyJar.<jws>`` is ONE regex hit with header ``eyJar``; the scan must not
+        skip the token by resuming at the end of the rejected hit."""
+        result = SecretRedactionFilter([]).redact(f"url honeyJar.{_JWS} end")
+        assert result == "url honeyJar.[REDACTED] end"
+
+    def test_a_lookalike_beside_a_real_token_keeps_only_the_token_redacted(self) -> None:
+        result = SecretRedactionFilter([]).redact(f"host honeyJar.example.com token {_JWS}")
+        assert result == "host honeyJar.example.com token [REDACTED]"
+
+    def test_an_aws_key_nested_in_a_lookalike_span_is_redacted(self) -> None:
+        """The AWS pass runs first, and the JWT pass's rescan would catch it anyway."""
+        key = "AKIA" + "A" * 16
+        result = SecretRedactionFilter([]).redact(f"eyJx.{key}.y")
+        assert key not in result
+
+    def test_a_record_carrying_such_a_hostname_is_preserved(self) -> None:
+        """Through the LIVE factory: a clean scalar record keeps ``msg``/``args``."""
+        uninstall_log_redaction()
+        install_log_redaction([])
+        try:
+            record = logging.getLogRecordFactory()(
+                "kiro_crew.test",
+                logging.INFO,
+                "",
+                0,
+                "fetching %s",
+                ("https://honeyJar.atlassian.net/wiki/x",),
+                None,
+            )
+            assert record.getMessage() == "fetching https://honeyJar.atlassian.net/wiki/x"
+            assert record.args == ("https://honeyJar.atlassian.net/wiki/x",)
+            leaked = logging.getLogRecordFactory()(
+                "kiro_crew.test", logging.INFO, "", 0, "token %s", (_JWS,), None
+            )
+            assert leaked.getMessage() == "token [REDACTED]"
+            assert leaked.args is None
+        finally:
+            uninstall_log_redaction()
+
+
 def _make_record(msg: str, exc_info: object = None) -> logging.LogRecord:
     """Create a record through the LIVE factory — how ``logging`` itself does it."""
     return logging.getLogRecordFactory()("kiro_crew.test", logging.INFO, "", 0, msg, None, exc_info)

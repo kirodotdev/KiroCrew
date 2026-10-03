@@ -37,7 +37,8 @@ import logging
 import re
 from typing import Callable, Optional
 
-from kiro_crew.credential_patterns import AWS_KEY_ID_REDACTION, JWT_MULTI_SEGMENT
+from kiro_crew.credential_patterns import AWS_KEY_ID_REDACTION
+from kiro_crew.jwt_header import JWT_RE, jwt_matches
 
 logger = logging.getLogger(__name__)
 
@@ -63,8 +64,32 @@ _AWS_KEY_ID_RE = re.compile(AWS_KEY_ID_REDACTION)
 # Standalone JWTs: the shared ``eyJ`` header plus 2-4 further dot-separated
 # base64url segments, covering 3-segment JWS AND 4-5-segment JWE (dir/ECDH-ES).
 # Catches tokens logged OUTSIDE a ``Bearer `` scheme -- JSON-embedded, bare, or
-# assignment-style. Same string object as the scrubber's JWS/JWE branch.
-_JWT_RE = re.compile(JWT_MULTI_SEGMENT)
+# assignment-style. The compiled shared spelling, the same string object as the
+# scrubber's JWS/JWE branch; ``jwt_header`` owns the compile.
+#
+# The spelling is shape-only, so a hit counts only when its first segment
+# decodes to a JSON object (``jwt_header``, shared with the scrubber): a dotted
+# name that merely contains ``eyJ`` -- ``honeyJar.atlassian.net`` in a logged URL
+# -- is left intact instead of being cut in half. ``re.sub`` cannot carry that
+# check (a rejected span must be rescanned from one character on, not skipped:
+# a real token can follow a lookalike with only a dot between them), and a plain
+# ``search`` is quadratic on a long dot-less run of ``eyJ``; ``jwt_matches`` is
+# the linear scan that does both.
+_JWT_RE = JWT_RE
+
+
+def _redact_jwts(text: str) -> str:
+    """Replace every validated JWS/JWE in *text*; leave a shape-only lookalike alone."""
+    out: list[str] = []
+    pos = 0
+    for match in jwt_matches(text):
+        out.append(text[pos : match.start()])
+        out.append("[REDACTED]")
+        pos = match.end()
+    if pos == 0:
+        return text
+    out.append(text[pos:])
+    return "".join(out)
 
 
 class SecretRedactionFilter:
@@ -100,7 +125,7 @@ class SecretRedactionFilter:
             text = self._secret_pattern.sub("[REDACTED]", text)
         text = _BEARER_RE.sub("Bearer [REDACTED]", text)
         text = _AWS_KEY_ID_RE.sub("[REDACTED]", text)
-        text = _JWT_RE.sub("[REDACTED]", text)
+        text = _redact_jwts(text)
         return text
 
 

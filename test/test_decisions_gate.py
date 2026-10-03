@@ -27,6 +27,7 @@ from types import SimpleNamespace
 import pytest
 
 from kiro_crew import credential_patterns as _cred
+from kiro_crew import jwt_header
 from kiro_crew.config.sections import (
     DECISION_PROVIDER_ENDPOINT_DEFAULT,
     DecisionProviderConfig,
@@ -766,6 +767,70 @@ class TestScrub:
             gate_mod.ERROR_SCRUBBED_CREDENTIAL,
             gate_mod.ERROR_SCRUBBED_URL,
         ]
+
+    @pytest.mark.parametrize(
+        "host_url",
+        [
+            "https://honeyJar.atlassian.net/wiki/spaces/ABC/pages/1234567890/Design+Doc",
+            "https://moneyJar.atlassian.net/browse/ABC-1",
+            "https://disneyJapan.atlassian.net/wiki/x",
+            "https://blueyJam.example.com/a/b",
+            "https://honeyjar.atlassian.net/wiki/x",
+        ],
+        ids=["honeyJar", "moneyJar", "disneyJapan", "blueyJam", "lowercase-control"],
+    )
+    def test_a_hostname_containing_eyj_is_not_a_credential(self, install_impl, host_url):
+        """The JWT spelling matches on shape alone; the gate checks the header.
+
+        Without the check a conversation that merely links ``honeyJar.atlassian.net``
+        is refused as ``scrubbed:credential`` by the local regex, before
+        ``redact_credentials`` (which validates) ever sees it.
+        """
+        oracle = install_impl(_RecordingOracle())
+        state = {"messages": [{"text": f"design doc at {host_url}"}]}
+        assert gate_mod.scrub_reason(state, QUESTIONS, model="jev-latest") is None
+        assert asyncio.run(decide(POINT, state, QUESTIONS, config=_config())) is not None
+        assert len(oracle.calls) == 1
+
+    @pytest.mark.parametrize(
+        "token",
+        [
+            "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
+            "eyJhbGciOiJkaXIiLCJlbmMiOiJBMjU2R0NNIn0..48V1_ALb6US04U3b.5eym8TW_c8SuK0ltJ3rpYIzOeDQz7TALvtu6UG9oMo4vpzs9tX_EFShS8iB7j6ji.XFBoMYUZodetZdvTiFvSkQ",
+        ],
+        ids=["jws", "jwe-dir"],
+    )
+    @pytest.mark.parametrize(
+        "frame",
+        [
+            "{token}",
+            "Authorization: Bearer {token}",
+            "https://x.example/cb?token={token}",
+            "compact=jwt{token}",
+        ],
+        ids=["bare", "bearer", "query", "glued-label"],
+    )
+    def test_every_real_token_shape_still_refuses_locally(
+        self, install_impl, log_home, frame, token
+    ):
+        """The narrowing reaches only the false-positive class; a real JWS/JWE in any
+        frame still refuses, and refuses on the LOCAL regex (the first scanner)."""
+        text = frame.format(token=token)
+        assert gate_mod._holds_local_credential(text) is True
+        oracle = install_impl(_ExplodingOracle())
+        assert asyncio.run(decide(POINT, text, QUESTIONS, config=_config())) is None
+        assert oracle.entered is False
+        assert log_home()[0]["error"] == gate_mod.ERROR_SCRUBBED_CREDENTIAL
+
+    def test_a_real_token_glued_after_a_lookalike_still_refuses_locally(self):
+        """``eyJar.<jws>`` is ONE regex hit with header ``eyJar``; the rescan finds the token."""
+        jws = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+        assert gate_mod._holds_local_credential(f"honeyJar.{jws}") is True
+        assert gate_mod._holds_local_credential("honeyJar.atlassian.net") is False
+        # The spelling is unchanged; the narrowing is in the consumer.
+        assert jwt_header.JWT_RE.search("honeyJar.atlassian.net") is not None
+        # A key nested inside a rejected JWT span is the other alternation's catch.
+        assert gate_mod._holds_local_credential(f"eyJx.{_AWS_KEY_SAMPLES[0]}.y") is True
 
     def test_a_credential_nested_in_a_dict_state_is_found(self, install_impl, log_home):
         oracle = install_impl(_ExplodingOracle())
