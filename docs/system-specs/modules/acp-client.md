@@ -2783,3 +2783,25 @@ its index on first start, an accepted cost. A value the operator set, or one a
 cron or workflow `extra_env` carries, reaches the child as set. Without a scratch
 directory nothing is set and one warning is logged: the child gets codex's shared
 default rather than a refused spawn.
+
+### Native adapter compaction lifecycle
+
+Only the Codex and Claude handshakes advertise `session.compaction = {}`
+(`ACP_BACKENDS_NATIVE_COMPACTION`, via `acp_client_capabilities()` and the Codex
+harness); kiro-cli, KAS and every other backend send the shared set unchanged.
+`acp.client.ACP_CLIENT_CAPABILITIES` remains the shared capability mapping exported
+from `acp.types`; backend-specific handshakes use `acp_client_capabilities()`.
+Codex ACP 2.0.0 and Claude ACP 0.84.0 then emit native `compaction_update`
+frames, observed live on both. Both transports route these through the existing
+compaction event and context-reset handling. Native IDs deduplicate notices,
+retained per session in `NativeCompactionStates`: ids are truncated to
+`NATIVE_COMPACTION_ID_MAX_CHARS`, at most `NATIVE_COMPACTION_STATES_MAX` are
+kept, settled ids are evicted before in-flight ones, and each eviction is
+counted and logged. Failure preserves context counts and arms the bounded
+post-failure turn wait in both transports; its reason determines whether the
+existing transient-compaction retry applies. `cancelled` (a Stop
+mid-compaction) closes the lifecycle with no event, no failure streak and no
+synthesized failure at turn end.
+Legacy tool-marker/text paths remain available for older adapters. No AIR
+capability is advertised, so read, terminal and MCP output contracts remain
+unchanged. Unknown lifecycle statuses and summary chunks are tolerated.
