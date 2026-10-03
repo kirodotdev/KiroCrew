@@ -3102,7 +3102,12 @@ async def maybe_route_linked_thread(
     append_and_surface(
         _dashboard_state, _linked_slot, "user", _safe_text, "msg msg-u", broadcast_user=True  # type: ignore[arg-type]
     )
-    if not _linked_slot.running:
+    # The busy predicate every hand-off reads (not ``running`` alone: between two
+    # stages of a live plan a message must wait, not start a second turn).
+    # circular import: the dashboard pulls in Slack modules at module level.
+    from kiro_crew.dashboard.channel_handoff import slot_turn_in_progress
+
+    if not slot_turn_in_progress(_linked_slot):
         from kiro_crew.dashboard.chat import _run_chat
 
         _chat_task = asyncio.create_task(

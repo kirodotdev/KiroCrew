@@ -169,6 +169,7 @@ class TestLinkedThreadIntercept:
         ds = MagicMock()
         _slot = MagicMock(key="slot1")
         type(_slot).running = PropertyMock(return_value=False)
+        _slot._in_stage_execution = False  # a MagicMock attribute reads truthy
         ds.get_linked_slot = MagicMock(return_value=_slot)
         mock_sel_inst = MagicMock()
         orig_sel = handler.sel
@@ -201,6 +202,7 @@ class TestLinkedThreadIntercept:
         slack = _make_slack()
         slot = MagicMock()
         type(slot).running = PropertyMock(return_value=False)
+        slot._in_stage_execution = False  # a MagicMock attribute reads truthy
         slot.key = "slot1"
         slot._queue = []
         ds = MagicMock()
@@ -236,6 +238,7 @@ class TestLinkedThreadIntercept:
         slack = _make_slack()
         slot = MagicMock()
         type(slot).running = PropertyMock(return_value=False)
+        slot._in_stage_execution = False  # a MagicMock attribute reads truthy
         slot.key = "slot1"
         slot._queue = []
         ds = MagicMock()
@@ -316,6 +319,57 @@ class TestLinkedThreadIntercept:
             assert len(slot._queue) == 1
             mock_run_chat.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_a_message_landing_between_two_stages_of_a_live_plan_waits_in_the_queue(self):
+        """Between two stages of a live plan the slot's task is briefly clear while
+        ``_in_stage_execution`` holds; a thread message landing then waits in the queue
+        instead of starting a second turn over the plan's own and overwriting its task."""
+        from kiro_crew.slack import handler
+
+        slack = _make_slack()
+        slot = MagicMock()
+        type(slot).running = PropertyMock(return_value=False)
+        slot._in_stage_execution = True
+        slot.key = "slot1"
+        slot._queue = []
+        plan_task = object()
+        slot.task = plan_task
+
+        def queue_append(content, *, meta=None, directive_user_origin, directive_channel_origin):
+            slot._queue.append({"id": "q-1", "content": content, "meta": meta})
+            return "q-1"
+
+        slot.queue_append = queue_append
+        ds = MagicMock()
+        ds.get_linked_slot = MagicMock(return_value=slot)
+        ds.broadcast_ws = MagicMock()
+        ds.push_slots_update = MagicMock()
+
+        with (
+            patch.object(handler, "_dashboard_state", ds),
+            patch.object(handler, "is_allowed_user", return_value=True),
+            patch("kiro_crew.dashboard.chat._run_chat", new_callable=AsyncMock) as mock_run_chat,
+        ):
+            await handler.handle_message(
+                slack, MagicMock(), "C1", "between stages", "t1", "msg1", "U1"
+            )
+
+        mock_run_chat.assert_not_called()
+        assert [e["content"] for e in slot._queue] == ["between stages"]
+        assert slot.task is plan_task, "the plan's task was overwritten"
+
+    def test_the_intercept_reads_the_ladders_own_busy_predicate(self):
+        """One spelling: the intercept calls ``channel_handoff.slot_turn_in_progress``
+        and inlines no ``_in_stage_execution`` read of its own, so it cannot drift from
+        the hand-off ladder's reading."""
+        import inspect
+
+        from kiro_crew.slack import handler
+
+        src = inspect.getsource(handler.maybe_route_linked_thread)
+        assert "slot_turn_in_progress(_linked_slot)" in src
+        assert "_in_stage_execution" not in src
+
 
 # ── Linked thread intercept on the messaging-transport path ──
 
@@ -333,6 +387,7 @@ class TestTransportLinkedThreadIntercept:
         slack = _make_slack()
         slot = MagicMock()
         type(slot).running = PropertyMock(return_value=False)
+        slot._in_stage_execution = False  # a MagicMock attribute reads truthy
         slot.key = "slot1"
         slot._queue = []
         ds = MagicMock()
@@ -370,6 +425,7 @@ class TestTransportLinkedThreadIntercept:
         slack = _make_slack()
         _slot = MagicMock(key="slot1")
         type(_slot).running = PropertyMock(return_value=False)
+        _slot._in_stage_execution = False  # a MagicMock attribute reads truthy
         ds = MagicMock()
         ds.get_linked_slot = MagicMock(return_value=_slot)
         mock_sel_inst = MagicMock()
@@ -413,6 +469,7 @@ class TestSessionsKeywordFallThrough:
     def _linked_ds(self):
         slot = MagicMock()
         type(slot).running = PropertyMock(return_value=False)
+        slot._in_stage_execution = False  # a MagicMock attribute reads truthy
         slot.key = "slot1"
         slot._queue = []
         ds = MagicMock()

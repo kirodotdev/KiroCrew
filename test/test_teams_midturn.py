@@ -11,9 +11,25 @@ from __future__ import annotations
 
 import contextlib
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
+from kiro_crew.dashboard.channel_handoff import (
+    HANDOFF_QUEUED,
+    HANDOFF_REFUSED,
+    HANDOFF_STEERED,
+    QUEUED_BY_CLOSE,
+    RAN_ON_SUCCESSOR,
+    REFUSED_ATTACHMENTS,
+    REFUSED_IDLE,
+    REFUSED_MOVED,
+    REFUSED_NO_SLOT,
+    REFUSED_QUEUE_FULL,
+    REFUSED_UNSAVED_CLOSE,
+    ResumedBusyOutcome,
+)
+from kiro_crew.messaging.session_resume import RoutingDecision
 from kiro_crew.teams.client import TeamsInbound
 from kiro_crew.teams.commands import COMMAND_SPEC, build_help_text, parse_command
 from kiro_crew.teams.transport_dispatch import (
@@ -787,3 +803,142 @@ class _AddressedClient(_Client):
 
 async def _true() -> bool:
     return True
+
+
+class TestABusyResumedSession:
+    """The dashboard holds the resumed session's turn: the message goes to the slot's
+    own machinery, never to this channel's queue (base queued it THERE, to be replayed
+    into the native session by a later Teams turn), and the conversation is told."""
+
+    @staticmethod
+    def _resumed(d: TeamsDispatcher) -> None:
+        d._session_resume.route = AsyncMock(  # type: ignore[method-assign]
+            return_value=RoutingDecision(resumed_key="dashboard:chat-1")
+        )
+
+    @staticmethod
+    def _hand_off(monkeypatch, outcome, handed: list | None = None) -> None:
+        from kiro_crew.dashboard import channel_handoff
+
+        async def _hand(state, session_key, text, *, mode, has_attachments, **recipient):
+            if handed is not None:
+                handed.append((session_key, text, mode, has_attachments, recipient))
+            return outcome
+
+        monkeypatch.setattr(channel_handoff, "hand_to_resumed_slot", _hand)
+
+    @pytest.mark.asyncio
+    async def test_a_running_dashboard_turn_takes_the_message_instead(self, monkeypatch) -> None:
+        sessions = _Sessions(_Provider())
+        client = _Client()
+        d = _dispatcher(sessions, client)
+        self._resumed(d)
+        handed: list = []
+        self._hand_off(monkeypatch, ResumedBusyOutcome(HANDOFF_QUEUED), handed)
+
+        await d.handle_message(_inbound("and the weather?"))
+
+        assert handed == [
+            (
+                "dashboard:chat-1",
+                "and the weather?",
+                "steer",
+                False,
+                {"channel_type": "teams", "conversation_id": "CONV", "principal": _EMAIL},
+            )
+        ]
+        assert sessions.queues == {}
+        assert any("Queued for that session" in body for _, body, _ in client.sent)
+
+    @pytest.mark.parametrize(
+        ("outcome", "told"),
+        [
+            (ResumedBusyOutcome(HANDOFF_STEERED), "Steering that session"),
+            (ResumedBusyOutcome(HANDOFF_QUEUED), "Queued for that session"),
+            (
+                ResumedBusyOutcome(HANDOFF_QUEUED, QUEUED_BY_CLOSE),
+                "closed while your message was in flight",
+            ),
+            (ResumedBusyOutcome(HANDOFF_QUEUED, RAN_ON_SUCCESSOR), "Delivered to that session"),
+            (ResumedBusyOutcome(HANDOFF_REFUSED, REFUSED_QUEUE_FULL), "queue is full"),
+            (ResumedBusyOutcome(HANDOFF_REFUSED, REFUSED_ATTACHMENTS), "attachments cannot wait"),
+            (
+                ResumedBusyOutcome(HANDOFF_REFUSED, REFUSED_MOVED),
+                "changed while your message was in flight",
+            ),
+            (
+                ResumedBusyOutcome(HANDOFF_REFUSED, REFUSED_UNSAVED_CLOSE),
+                "had not been saved with it yet",
+            ),
+        ],
+        ids=lambda v: v if isinstance(v, str) else f"{v.kind}:{v.reason or '-'}",
+    )
+    @pytest.mark.asyncio
+    async def test_every_hand_off_outcome_is_told_to_the_conversation(
+        self, monkeypatch, outcome: ResumedBusyOutcome, told: str
+    ) -> None:
+        sessions = _Sessions(_Provider())
+        client = _Client()
+        d = _dispatcher(sessions, client)
+        self._resumed(d)
+        self._hand_off(monkeypatch, outcome)
+
+        await d.handle_message(_inbound("and the weather?"))
+
+        assert [body for _, body, _ in client.sent if told in body], client.sent
+        assert sessions.queues == {}
+
+    @pytest.mark.parametrize("reason", [REFUSED_IDLE, REFUSED_NO_SLOT])
+    @pytest.mark.asyncio
+    async def test_no_dashboard_turn_to_join_takes_the_channels_own_busy_path(
+        self, monkeypatch, reason: str
+    ) -> None:
+        """No dashboard turn is in progress to join -- an idle slot, or no open tab at
+        all -- because the turn ended in the window or Teams's own turn holds the
+        lease: the message takes the channel's busy path -- fresh turn, steer, or a
+        queued receipt that Teams's drain replays into the resumed key -- as it did
+        before the hand-off, never a refusal."""
+        sessions = _Sessions(_Provider())
+        client = _Client()
+        d = _dispatcher(sessions, client)
+        self._resumed(d)
+        self._hand_off(monkeypatch, ResumedBusyOutcome(HANDOFF_REFUSED, reason))
+        d._handle_busy = AsyncMock()  # type: ignore[method-assign]
+
+        await d.handle_message(_inbound("and the weather?"))
+
+        d._handle_busy.assert_awaited_once()
+        inbound, session_key, text, override_mode = d._handle_busy.await_args.args
+        assert (session_key, text, override_mode) == ("dashboard:chat-1", "and the weather?", None)
+        assert not any("busy with a turn started elsewhere" in body for _, body, _ in client.sent)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("reason", [REFUSED_IDLE, REFUSED_NO_SLOT])
+    async def test_a_fresh_turn_after_the_window_stays_in_the_captured_session(
+        self, monkeypatch, reason: str
+    ) -> None:
+        """The lease freed in the window AND the binding changed there too (activities
+        are concurrent tasks and ``/unlink`` is resume-exempt): the fresh turn runs
+        under the key resolved at admission, with the binding resolved exactly once,
+        never rerouted into the native session by a second ``handle_message``."""
+        sessions = _Sessions(_Provider())
+        client = _Client()
+        d = _dispatcher(sessions, client)
+        self._resumed(d)
+        route = d._session_resume.route
+
+        async def _hand(*a, **k) -> ResumedBusyOutcome:
+            sessions._busy = False  # the turn ended while the hand-off was scheduled
+            route.return_value = RoutingDecision()  # a concurrent /unlink landed
+            return ResumedBusyOutcome(HANDOFF_REFUSED, reason)
+
+        from kiro_crew.dashboard import channel_handoff
+
+        monkeypatch.setattr(channel_handoff, "hand_to_resumed_slot", _hand)
+        d._run_turn = AsyncMock()  # type: ignore[method-assign]
+
+        await d.handle_message(_inbound("and the weather?"))
+
+        d._run_turn.assert_awaited_once()
+        assert d._run_turn.await_args.kwargs["resumed_key"] == "dashboard:chat-1"
+        route.assert_awaited_once()

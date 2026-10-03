@@ -1495,8 +1495,13 @@ opening the dashboard:
 - A message queued while a native Telegram turn is busy keeps native affinity when
   it drains (`interpret_commands=False` skips resume resolution). A `/session` bind
   created after enqueue therefore cannot redirect already-queued text into the
-  selected dashboard conversation. Busy resumed sessions refuse a second message
-  instead of queuing it, so the exception cannot strand resumed work.
+  selected dashboard conversation. A message arriving while a RESUMED session is
+  busy never enters this queue: while a dashboard turn is in progress it is handed
+  to the slot's own machinery (see "A busy RESUMED dashboard session takes the
+  slot's own machinery"); when the slot has no dashboard turn to join (idle, or no
+  tab open) the message runs as a fresh turn if the lease is free and is refused
+  while the chat's own turn holds it; a closing or remote-bound slot refuses it
+  outright -- so the exception cannot strand resumed work.
 - Every `/model` picker records its exact target session and re-resolves the current
   binding on press. `/new`, `/unlink`, an agent switch, or any rebind invalidates the
   old picker before `session/set_model`; only a native picker stores the route-level
@@ -2082,7 +2087,7 @@ because a `/`-leading message the client did send is more likely a path than a
 command, and it defers to `parse_command` and the directive alias sets so a real
 command can never be answered with the card.
 
-### A busy RESUMED dashboard session takes the slot's own machinery (Discord)
+### A busy RESUMED dashboard session takes the slot's own machinery
 
 A DM bound to a dashboard session (`!sessions`, or the dashboard's mirror menu)
 that messages that session mid-turn cannot use the channel's steer/queue above:
@@ -2250,7 +2255,29 @@ that names them: `_session/steer` carries text only, and the slot's queue cannot
 carry Discord attachment material (temp files owned by the consuming turn, which
 the dashboard drain has no hook to own), so the files stay with the user instead
 of being dropped or answered without. Discord-native conversations keep
-`_handle_busy` unchanged; Telegram's resumed branch still refuses.
+`_handle_busy` unchanged. Telegram and Teams take the same hand-off for their
+resumed sessions (`_handle_resumed_busy` on each dispatcher; one receipt wording
+for every outcome, `channel_handoff.resumed_busy_reply`; the refusals for a slot
+that cannot take the message -- none open, closing, remote-bound, idle -- keep
+each surface's own wording, which names its unlink command). Telegram's busy
+refusal therefore remains for exactly those cases and no longer answers a
+dashboard-held turn. Teams no longer queues the message into its own queue while
+the dashboard drives: that queue drains only at the tail of a Teams-driven turn
+(its replay re-resolves the binding, so it runs in the resumed key), and a message
+queued there would wait for a Teams turn that may never come. When no dashboard
+turn is in progress to join (`REFUSED_IDLE`, or `REFUSED_NO_SLOT` when no tab is
+open: the lease is free, or the channel's own turn holds it) Teams takes its own
+busy path -- a free lease runs the message as a fresh turn, a held one steers or
+queues it as before this hand-off -- while Telegram runs the message as a fresh
+turn when the lease is free and refuses while its own turn holds it, because its
+queue replays natively. A fresh turn either channel starts there runs under the
+binding resolved at admission, never through a second resolution: updates run as
+concurrent tasks and `/unlink` is exempt from the busy gate, so a re-entry could
+route the message into the native session. The
+command intercept still precedes every busy check. The Slack linked-thread
+intercept asks the ladder's own busy predicate (`channel_handoff.
+slot_turn_in_progress`): a thread message landing between two stages of a live
+plan waits in the slot's queue instead of starting a second turn over the plan.
 
 ### Hard cancel: `/stop`
 
@@ -3628,7 +3655,7 @@ kind goes to it:
 |---|---|
 | `origin.py` | `_QueuedOrigin`, its sender key, owner token and queue-entry spelling, `_CHANNEL` |
 | `addressing.py` | forum activation (`_activation_outcome`, `_addresses_this_bot`) and `_reply_target` |
-| `midturn.py` | `_handle_busy`: steer or queue a mid-turn message, with its privacy reservation |
+| `midturn.py` | `_handle_busy`: steer or queue a mid-turn message, with its privacy reservation; `_handle_resumed_busy`: hand a message into a busy RESUMED dashboard session to that slot's own machinery |
 | `pickers.py` | the `/model` and `/agent` keyboards, the `_Picker` record, prune and consume, and their apply (the tables stay on the dispatcher) |
 | `callbacks.py` | `on_callback`: every inline-button prefix |
 | `spawn_approval.py` | `deliver_spawn_approval` and its destination checks |

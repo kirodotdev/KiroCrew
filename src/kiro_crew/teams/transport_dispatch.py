@@ -120,6 +120,8 @@ from kiro_crew.teams.session_resume import (
 from kiro_crew.teams.transport import TEAMS_CAPABILITIES, allowed_emails_from_config
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from kiro_crew.config.loader import KiroCrewConfig
     from kiro_crew.context import ContextBuilder
     from kiro_crew.history import ConversationLog
@@ -144,6 +146,18 @@ _MAX_COLLAPSED_ATTACHMENTS = IngestLimits().max_attachments
 #: user has been told the link is gone -- but a user whose link broke needs a way out,
 #: and `/sessions` is the way back in.
 _RESUME_EXEMPT_COMMANDS = frozenset({"new", "unlink", "sessions", "help"})
+
+#: What a typed message into a BUSY resumed dashboard session is told when the
+#: slot cannot take it; every other receipt is ``channel_handoff.resumed_busy_reply``'s.
+#: Here that is a closing or remote-bound slot only: no open tab, or a lease held
+#: by Teams's own turn on the resumed key, takes the channel's own busy path
+#: instead (``_handle_resumed_busy``). An incognito or temporary session is taken
+#: like any other: those modes keep their transcript and queue.
+_RESUMED_BUSY_REFUSAL = (
+    "⏳ That session is busy with a turn started elsewhere. Send your "
+    "message again once it finishes, or /unlink to return to your "
+    "Teams conversation."
+)
 
 #: A release that could not be made durable changes nothing and says so.
 _RELEASE_FAILURE = (
@@ -567,9 +581,53 @@ class TeamsDispatcher:
         # the single-decision shape exists to prevent.
         session_key = route.resumed_key or self._session_key(email)
         if self.sessions.is_busy(session_key):
+            if route.resumed_key is not None:
+                # NOT `_handle_busy` first: that queues into THIS dispatcher's queue,
+                # drained only at the tail of a TEAMS-driven turn -- so while the
+                # DASHBOARD drives, a message queued there waits for a Teams turn that
+                # may never come. The dashboard slot has its own steer path and queue;
+                # the channel's own path is taken only when no dashboard turn is in
+                # progress (see `_handle_resumed_busy`).
+                await self._handle_resumed_busy(
+                    inbound,
+                    session_key,
+                    text,
+                    override_mode,
+                    principal=email,
+                    inbound_route=inbound_route,
+                    drain=drain,
+                )
+                return
             await self._handle_busy(inbound, session_key, text, override_mode)
             return
 
+        await self._run_admitted(
+            inbound,
+            email,
+            text,
+            inbound_route=inbound_route,
+            drain=drain,
+            resumed_key=route.resumed_key,
+        )
+
+    async def _run_admitted(
+        self,
+        inbound: "TeamsInbound",
+        email: str,
+        text: str,
+        *,
+        inbound_route: InboundRoute,
+        drain: bool,
+        resumed_key: str | None,
+    ) -> None:
+        """Fetch the attachments and run one turn for a message already admitted.
+
+        The tail of :meth:`handle_message` once governance, the command intercept
+        and the busy check have passed, and the fresh-turn step of the resumed-busy
+        fallback (:meth:`_handle_resumed_busy`), which must start the turn under the
+        key resolved at admission rather than re-enter ``handle_message``.
+        """
+        assert self.client is not None, "TeamsDispatcher.client must be set"
         # Attachments are downloaded HERE -- after the governance gate, after the
         # command intercept, and after the busy check -- so nothing is fetched for a
         # message that ends up queued, and the temp files are unlinked by the same
@@ -587,7 +645,7 @@ class TeamsDispatcher:
                 text,
                 inbound_route=inbound_route,
                 drain=drain,
-                resumed_key=route.resumed_key,
+                resumed_key=resumed_key,
             )
         finally:
             if temp_paths:
@@ -736,12 +794,107 @@ class TeamsDispatcher:
         if drain:
             await self._drain_queue(session_key, inbound)
 
+    async def _handle_resumed_busy(
+        self,
+        inbound: "TeamsInbound",
+        session_key: str,
+        text: str,
+        override_mode: str | None,
+        *,
+        principal: str = "",
+        inbound_route: InboundRoute,
+        drain: bool,
+    ) -> None:
+        """A message arrived while the RESUMED dashboard session is mid-turn.
+
+        Same mode ladder as :meth:`_handle_busy` (the per-message override, else
+        ``messaging.queue_mode``), but the destination is the dashboard slot's own
+        machinery (``dashboard.channel_handoff.hand_to_resumed_slot``), never this
+        dispatcher's queue: that queue drains only at the tail of a TEAMS-driven
+        turn (its replay re-resolves the binding, so it runs in the resumed key),
+        so an entry made while the dashboard drives would wait for a Teams turn
+        that may never come. When no dashboard turn is in progress the channel's
+        own busy path takes the message instead, with any fresh turn it starts
+        pinned to *session_key* -- the binding ``handle_message`` resolved once --
+        rather than re-entering ``handle_message``, whose fresh resolution a
+        concurrent ``/unlink`` could change. Every outcome is confirmed in the
+        conversation; a silent hand-off reads as a drop.
+
+        *principal* is the Teams user admitted on inbound (the identity the turn
+        keys on); it rides the entry's recipient stamp so a drop notice can be
+        authorized against the roster. *inbound_route* and *drain* are what that
+        pinned turn needs from the admission.
+        """
+        # Deferred, like every dashboard import in this module: the dispatcher is on
+        # the gateway boot path and the dashboard package is not.
+        from kiro_crew.dashboard.channel_handoff import (
+            REFUSED_IDLE,
+            REFUSED_NO_SLOT,
+            hand_to_resumed_slot,
+            resumed_busy_reply,
+        )
+
+        link = self._session_resume.link_for(inbound.conversation_id)
+        mode = override_mode or str(self._live_cfg().messaging.queue_mode)
+        outcome = await hand_to_resumed_slot(
+            getattr(self._session_resume, "dashboard_state", None),
+            session_key,
+            text,
+            mode=mode,
+            has_attachments=bool(inbound.attachments),
+            # Where a drop notice goes if the drain later refuses a queued entry,
+            # and the principal the outbound recipient check needs: this user was
+            # authorized against the allow-list on inbound, and a dashboard slot's
+            # session key names no Teams peer of its own.
+            channel_type=link.channel_type,
+            conversation_id=link.channel_id or "",
+            principal=principal,
+        )
+        if outcome.refused:
+            logger.info(
+                "teams: message into busy resumed session %s refused (%s)",
+                session_key,
+                outcome.reason,
+            )
+            if outcome.reason in (REFUSED_IDLE, REFUSED_NO_SLOT):
+                # No dashboard turn is in progress to join -- the slot is idle, or
+                # the key resolves to no open tab at all (a Teams-driven resumed turn
+                # needs none): either the turn ended between this dispatcher's busy
+                # check and the hand-off's own read, or the lease is held by Teams's
+                # own turn on the resumed key. Both are what the channel's busy path
+                # already handles -- a
+                # free lease runs the message as a fresh turn; a held one steers it
+                # or queues it with a receipt, and Teams's drain replays into the
+                # resumed key -- so the message takes that path, as it did before
+                # this hand-off existed, instead of a refusal. The fresh turn is
+                # pinned to the key resolved at admission: activities run as
+                # concurrent tasks and `/unlink` is resume-exempt (the refusal even
+                # names it), so a re-entry through `handle_message` could resolve
+                # the binding afresh and land this message in the native session.
+                async def _pinned_turn() -> None:
+                    await self._run_admitted(
+                        inbound,
+                        principal,
+                        text,
+                        inbound_route=inbound_route,
+                        drain=drain,
+                        resumed_key=session_key,
+                    )
+
+                await self._handle_busy(
+                    inbound, session_key, text, override_mode, rerun=_pinned_turn
+                )
+                return
+        await self._reply(inbound, resumed_busy_reply(outcome, busy_refusal=_RESUMED_BUSY_REFUSAL))
+
     async def _handle_busy(
         self,
         inbound: "TeamsInbound",
         session_key: str,
         text: str,
         override_mode: str | None = None,
+        *,
+        rerun: "Callable[[], Awaitable[None]] | None" = None,
     ) -> None:
         """A message arrived mid-turn: steer the running turn, or queue for after.
 
@@ -749,12 +902,19 @@ class TeamsDispatcher:
         it -- losing it is the one outcome a queue exists to prevent. Teams can
         edit its own activities, so the held message gets the shared collapsing
         receipt bubble rather than a fire-and-forget notice.
+
+        *rerun* is how a message that turns out not to be mid-turn after all (the
+        lease freed in the window, or the queue would not take it) is run as a
+        fresh turn. The default re-enters :meth:`handle_message`; a caller that
+        resolved a resumed binding once passes a turn pinned to that key instead,
+        because a re-entry resolves the binding afresh and a concurrent ``/unlink``
+        would land the message in another session.
         """
         assert self.client is not None
         if not self.sessions.is_busy(session_key):
             # The turn finished inside the window; run it as a fresh turn rather
             # than stranding it.
-            await self.handle_message(inbound)
+            await (rerun() if rerun is not None else self.handle_message(inbound))
             return
         mode = override_mode or self._live_cfg().messaging.queue_mode
         # An attachment-bearing message is never steered: a steer carries TEXT into
@@ -784,7 +944,7 @@ class TeamsDispatcher:
                 return
         # queue mode, a /queue override, or steer unavailable.
         if not await self._enqueue_with_receipt(session_key, inbound, text):
-            await self.handle_message(inbound)
+            await (rerun() if rerun is not None else self.handle_message(inbound))
 
     # ── Adaptive Card clicks ───────────────────────────────────────────────
 

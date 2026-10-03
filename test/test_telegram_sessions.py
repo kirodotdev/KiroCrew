@@ -12,6 +12,20 @@ import pytest
 from chat_test_helpers import _make_state
 from test_telegram import FakeClient, FakeCtx, FakeProvider, _origin
 
+from kiro_crew.dashboard.channel_handoff import (
+    HANDOFF_QUEUED,
+    HANDOFF_REFUSED,
+    HANDOFF_STEERED,
+    QUEUED_BY_CLOSE,
+    RAN_ON_SUCCESSOR,
+    REFUSED_ATTACHMENTS,
+    REFUSED_IDLE,
+    REFUSED_MOVED,
+    REFUSED_NO_SLOT,
+    REFUSED_QUEUE_FULL,
+    REFUSED_UNSAVED_CLOSE,
+    ResumedBusyOutcome,
+)
 from kiro_crew.history import ConversationLog, transcript_stem
 from kiro_crew.messaging import auto_title
 from kiro_crew.messaging.link import UNBIND_REASON_UNSPECIFIED, ChannelLink
@@ -1119,19 +1133,130 @@ class TestTelegramInboundResumeRouting:
         assert settlements == [1]
 
     @pytest.mark.asyncio
-    async def test_busy_resumed_session_refuses_without_queue_or_steer(self, tmp_path: Any) -> None:
+    async def test_busy_resumed_session_hands_off_to_a_running_dashboard_turn(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        """The dashboard holds the resumed session's turn: the message goes to the slot's
+        own machinery (steer or queue there), never to this chat's queue, and the chat is
+        told. Base refused it ("busy with a turn started elsewhere")."""
+        from kiro_crew.dashboard import channel_handoff
+
+        dispatcher, client, sessions, _ = _dispatcher(tmp_path)
+        dispatcher._session_resume.route = AsyncMock(
+            return_value=RoutingDecision(resumed_key="dashboard:chat-1")
+        )
+        sessions.busy = True
+        handed: list[tuple[str, str, str, bool, dict[str, Any]]] = []
+
+        async def _hand(state, session_key, text, *, mode, has_attachments, **recipient):
+            handed.append((session_key, text, mode, has_attachments, recipient))
+            return channel_handoff.ResumedBusyOutcome(channel_handoff.HANDOFF_QUEUED)
+
+        monkeypatch.setattr(channel_handoff, "hand_to_resumed_slot", _hand)
+
+        await dispatcher.handle_message(_dm("and the weather?"))
+
+        # The chat rides along so a later drop notice can be addressed to it, with
+        # the user this dispatcher admitted.
+        assert handed == [
+            (
+                "dashboard:chat-1",
+                "and the weather?",
+                "steer",
+                False,
+                {"channel_type": "telegram", "conversation_id": "7", "principal": "7"},
+            )
+        ]
+        assert sessions.provider.steered == []
+        assert sessions.queued == []
+        assert sessions.last_key == ""
+        assert any("Queued for that session" in text for text, _ in client.sent)
+
+    @pytest.mark.parametrize(
+        ("outcome", "told"),
+        [
+            (ResumedBusyOutcome(HANDOFF_STEERED), "Steering that session"),
+            (ResumedBusyOutcome(HANDOFF_QUEUED), "Queued for that session"),
+            (
+                ResumedBusyOutcome(HANDOFF_QUEUED, QUEUED_BY_CLOSE),
+                "closed while your message was in flight",
+            ),
+            (ResumedBusyOutcome(HANDOFF_QUEUED, RAN_ON_SUCCESSOR), "Delivered to that session"),
+            (
+                ResumedBusyOutcome(HANDOFF_REFUSED, REFUSED_IDLE),
+                "busy with a turn started elsewhere",
+            ),
+            (ResumedBusyOutcome(HANDOFF_REFUSED, REFUSED_QUEUE_FULL), "queue is full"),
+            (ResumedBusyOutcome(HANDOFF_REFUSED, REFUSED_ATTACHMENTS), "attachments cannot wait"),
+            (
+                ResumedBusyOutcome(HANDOFF_REFUSED, REFUSED_MOVED),
+                "changed while your message was in flight",
+            ),
+            (
+                ResumedBusyOutcome(HANDOFF_REFUSED, REFUSED_UNSAVED_CLOSE),
+                "had not been saved with it yet",
+            ),
+        ],
+        ids=lambda v: v if isinstance(v, str) else f"{v.kind}:{v.reason or '-'}",
+    )
+    @pytest.mark.asyncio
+    async def test_every_hand_off_outcome_is_told_to_the_chat(
+        self, tmp_path: Any, monkeypatch: Any, outcome: ResumedBusyOutcome, told: str
+    ) -> None:
+        from kiro_crew.dashboard import channel_handoff
+
         dispatcher, client, sessions, _ = _dispatcher(tmp_path)
         dispatcher._session_resume.route = AsyncMock(
             return_value=RoutingDecision(resumed_key="dashboard:chat-1")
         )
         sessions.busy = True
 
-        await dispatcher.handle_message(_dm("continue"))
+        async def _hand(*a: Any, **k: Any) -> ResumedBusyOutcome:
+            return outcome
 
-        assert any("busy" in text.lower() for text, _ in client.sent)
-        assert sessions.queued == []
-        assert sessions.provider.steered == []
-        assert sessions.last_key == ""
+        monkeypatch.setattr(channel_handoff, "hand_to_resumed_slot", _hand)
+
+        await dispatcher.handle_message(_dm("and the weather?"))
+
+        assert [text for text, _ in client.sent if told in text], client.sent
+        assert sessions.queued == [] and sessions.last_key == ""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("reason", [REFUSED_IDLE, REFUSED_NO_SLOT])
+    @pytest.mark.parametrize("unlinked_meanwhile", [False, True], ids=["bound", "unlinked"])
+    async def test_a_free_lease_with_no_dashboard_turn_runs_as_a_fresh_turn(
+        self, tmp_path: Any, monkeypatch: Any, reason: str, unlinked_meanwhile: bool
+    ) -> None:
+        """The turn ended between this dispatcher's busy check and the hand-off's own
+        read (an idle slot, or no open tab): nothing holds the lease any more, so
+        the message runs instead of being refused. A lease still held (the chat's
+        own turn on the resumed key) keeps the refusal -- the REFUSED_IDLE row of
+        the table above.
+
+        The fresh turn runs under the key resolved at admission, never through a
+        second binding resolution: updates are concurrent tasks and ``/unlink`` is
+        exempt from the busy gate, so a binding that changed in the window
+        (``unlinked``) must not reroute the message into the native session."""
+        from kiro_crew.dashboard import channel_handoff
+
+        dispatcher, client, sessions, _ = _dispatcher(tmp_path)
+        route = AsyncMock(return_value=RoutingDecision(resumed_key="dashboard:chat-1"))
+        dispatcher._session_resume.route = route
+        sessions.busy = True
+
+        async def _hand(*a: Any, **k: Any) -> ResumedBusyOutcome:
+            sessions.busy = False  # the turn ended while the hand-off was scheduled
+            if unlinked_meanwhile:
+                route.return_value = RoutingDecision()  # a concurrent /unlink landed
+            return ResumedBusyOutcome(HANDOFF_REFUSED, reason)
+
+        monkeypatch.setattr(channel_handoff, "hand_to_resumed_slot", _hand)
+
+        await dispatcher.handle_message(_dm("and the weather?"))
+
+        assert sessions.last_key == "dashboard:chat-1", "the message did not run there"
+        route.assert_awaited_once()
+        assert not any("busy with a turn started elsewhere" in text for text, _ in client.sent)
 
     @pytest.mark.asyncio
     async def test_queue_drain_keeps_native_affinity_after_a_later_bind(
@@ -1691,9 +1816,10 @@ class TestTelegramRestrictedResumedSession:
 class TestResumedRefusalsCharacterization:
     """The refusals a RESUMED dashboard session gets, byte for byte, and their order.
 
-    Telegram's busy branch refuses a resumed session outright (it does not route the
-    message into the dashboard slot the way Discord does), and a privacy modifier on
-    a resumed session is refused before the busy check is even asked.
+    Telegram's busy branch hands a resumed session's message to the dashboard slot's
+    own machinery (as Discord does); with no dashboard attached the slot cannot take
+    it, so the refusal below is what the hand-off answers. A privacy modifier on a
+    resumed session is refused before the busy check is even asked.
     """
 
     _BUSY = (
