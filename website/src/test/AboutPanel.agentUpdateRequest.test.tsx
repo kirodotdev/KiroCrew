@@ -198,6 +198,22 @@ describe('AboutPanel with a pending agent request', () => {
     expect(spy).toHaveBeenCalledWith('r1')
   })
 
+  it('an install the main process refused does not re-fire on a later download', async () => {
+    // The freshness gate refuses a superseded stage and fetches the newer build.
+    // The dispatch latch resets for that refusal, so the request card's click
+    // must not still be armed when the newer build lands: that would install and
+    // quit the app with no click.
+    vi.spyOn(api, 'dismissUpdateArm').mockResolvedValue({ ok: true, armed: false, dismissed: true })
+    const { bridge, client } = setup(REQUEST, { state: 'downloaded', version: '0.6.0' })
+    fireEvent.click(await screen.findByTestId('agent-update-request-install'))
+    await waitFor(() => expect(bridge.install).toHaveBeenCalledTimes(1))
+    client.setQueryData(['update-state'], { state: 'downloaded', version: '0.7.0' })
+    await new Promise(r => setTimeout(r, 50))
+    expect(bridge.install).toHaveBeenCalledTimes(1)
+    // And the newer build's Install is the user's to click.
+    await waitFor(() => expect(screen.getByTestId('agent-update-request-install')).not.toBeDisabled())
+  })
+
   it('a refused download releases the click and shows the failure', async () => {
     const bridgeApi = desktopBridge()
     bridgeApi.download = vi.fn(async () => { throw new Error('ipc gone') })
@@ -212,6 +228,54 @@ describe('AboutPanel with a pending agent request', () => {
     await waitFor(() => expect(screen.getByTestId('agent-update-request-install')).not.toBeDisabled())
     expect(screen.getByTestId('agent-update-request-decline')).not.toBeDisabled()
   })
+
+  for (const [label, dropped] of [
+    ['a retraction', { state: 'not-available' }],
+    ['a channel switch', { state: 'checking' }],
+  ] as const) {
+    it(`a download the main process dropped for ${label} releases the click`, async () => {
+      // The download re-checks the feed before it starts and ends without an
+      // error when the offer is gone. A click left armed keeps both actions
+      // disabled and installs the next build that downloads with nobody clicking.
+      vi.spyOn(api, 'dismissUpdateArm').mockResolvedValue({ ok: true, armed: false, dismissed: true })
+      const { bridge, client } = setup(REQUEST, { state: 'found', version: '0.6.0' })
+      fireEvent.click(await screen.findByTestId('agent-update-request-install'))
+      await waitFor(() => expect(bridge.download).toHaveBeenCalledTimes(1))
+      client.setQueryData(['update-state'], { state: 'downloading', version: '0.6.0' })
+      await waitFor(() => expect(screen.getByTestId('agent-update-request-install')).toBeDisabled())
+      client.setQueryData(['update-state'], dropped)
+      await waitFor(() => expect(screen.getByTestId('agent-update-request-install')).not.toBeDisabled())
+      expect(screen.getByTestId('agent-update-request-decline')).not.toBeDisabled()
+      // A later download is not this click's to install.
+      client.setQueryData(['update-state'], { state: 'downloaded', version: '0.7.0' })
+      await new Promise(r => setTimeout(r, 50))
+      expect(bridge.install).not.toHaveBeenCalled()
+    })
+  }
+
+  for (const start of [{ state: 'not-available' }, { state: 'checking' }] as const) {
+    it(`a click made while the state is ${start.state} still installs the download it starts`, async () => {
+      // The card stays enabled through both states, and from either the main
+      // process discovers (or joins the running check) and then downloads. The
+      // state the click was made FROM is not a dropped download.
+      vi.spyOn(api, 'dismissUpdateArm').mockResolvedValue({ ok: true, armed: false, dismissed: true })
+      const { bridge, client } = setup(REQUEST, start)
+      fireEvent.click(await screen.findByTestId('agent-update-request-install'))
+      await waitFor(() => expect(bridge.download).toHaveBeenCalledTimes(1))
+      await new Promise(r => setTimeout(r, 30))
+      expect(screen.getByTestId('agent-update-request-install')).toBeDisabled()
+      for (const next of [
+        { state: 'checking' },
+        { state: 'found', version: '0.6.0' },
+        { state: 'downloading', version: '0.6.0' },
+      ]) {
+        client.setQueryData(['update-state'], next)
+        await new Promise(r => setTimeout(r, 10))
+      }
+      client.setQueryData(['update-state'], { state: 'downloaded', version: '0.6.0' })
+      await waitFor(() => expect(bridge.install).toHaveBeenCalledTimes(1))
+    })
+  }
 
   it('a poll that keeps failing is surfaced, and the card stays up', async () => {
     const bridgeApi = desktopBridge()

@@ -20,7 +20,9 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { i18nT } from '../../i18n/t'
 import { fmtDateTimeNumeric, fmtList, fmtRelative } from '../../i18n/format'
 import type { UpdateState } from '../../hooks/useUpdateSubscription'
+import { useInstallDispatch } from '../../hooks/useInstallDispatch'
 import { foldStableStamp, sameBuildVersion } from '../../utils/displayVersion'
+import { compareVersions } from '../../utils/releaseVersion'
 import { bytesAreTheStableRelease as followedLanePublishesRunningBytes } from '../../utils/laneMembership'
 
 /** Human-readable transfer rate for the progress label. */
@@ -312,6 +314,42 @@ export function resolveUnarmedPhase(deadlineMs: number, now: number): 'expired' 
   return now >= deadlineMs ? 'expired' : 'applying'
 }
 
+/**
+ * The structured `code` of a 409 arm refusal, or null for anything else.
+ *
+ * Read off the `code`, not the message: the message is human copy that gets
+ * reworded, and matching it would silently stop working the next time it is. The
+ * body is the raw response, so a non-JSON body (a proxy error page) must not throw
+ * here — an unreadable body simply carries no code. Any code is returned; which
+ * ones mean the offer is gone is staleArmRefusalText's call.
+ */
+function armRefusalCode(e: ApiError): string | null {
+  if (e.status !== 409) return null
+  try {
+    const code = (JSON.parse(e.body) as { code?: unknown })?.code
+    return typeof code === 'string' ? code : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The user-facing line for a refusal code that says the offer this arm was made
+ * against is gone, or null for any other code. `arm_no_longer_offered`: nothing
+ * newer is available. `arm_offer_withdrawn`: the clicked upgrade was withdrawn and
+ * the lane now sits below the running build, so "already up to date" would be
+ * contradicted by the channel-move offer the next status frame shows.
+ *
+ * A `switch` with a literal key per arm, so the i18n key gate can resolve every key.
+ */
+function staleArmRefusalText(code: string | null): string | null {
+  switch (code) {
+    case 'arm_no_longer_offered': return i18nT('pages.settings.aboutPanel.arm_no_longer_offered')
+    case 'arm_offer_withdrawn': return i18nT('pages.settings.aboutPanel.arm_offer_withdrawn')
+    default: return null
+  }
+}
+
 export function InAppUpdateFlow({
   version,
   manualCommand,
@@ -344,6 +382,21 @@ export function InAppUpdateFlow({
   const [phase, setPhase] = useState<'idle' | 'armed' | 'applying' | 'failed' | 'expired'>('idle')
   const [armed, setArmed] = useState<{
     approveCommand: string
+    /**
+     * What the gateway ACTUALLY armed, folded for display. Not the same as the
+     * `version` prop: the gateway re-checks the feed before arming, so a panel
+     * whose verdict is hours old can offer v1 and arm the newer v2. The armed
+     * copy names this one, or the approval installs a version the UI never
+     * mentioned. Empty for a gateway that predates the field.
+     */
+    versionDisplay: string
+    /**
+     * The version the button offered WHEN CLICKED. Captured rather than read
+     * from the `version` prop: the arm's own re-check refreshes the cached
+     * verdict, the next status frame moves the prop to the armed version, and a
+     * note comparing against the live prop would vanish while it is being read.
+     */
+    offered: string
     expiresIn: number
     // Absolute wall-clock deadline. The decremented counter is display-only:
     // a throttled background tab fires the 1s tick rarely, so the counter can
@@ -357,16 +410,52 @@ export function InAppUpdateFlow({
   useEffect(() => {
     armedRef.current = armed
   }, [armed])
+  // The armed version differs from the one the button offered, so the panel owes
+  // the user an explanation rather than a bare second number. Declared once
+  // because it decides BOTH armed lines: the explanatory note renders on it, and
+  // the plain "This installs v…" line renders on its negation — the note's own copy
+  // already opens by naming the armed version.
+  //
+  // Only an UPGRADE to a newer build gets the "a newer version was found" note:
+  // the re-check can also arm an older build than the button named (a pulled
+  // release, with an older one still ahead of the running build), and that note
+  // would then be false. Such an arm renders the plain line, which names what
+  // installs and claims nothing about why. A channel move's note is
+  // direction-neutral, so it renders on any difference.
+  const armedVersionChanged = Boolean(
+    armed?.versionDisplay && armed.offered && armed.versionDisplay !== armed.offered
+      && (isChannelMove || compareVersions(armed.versionDisplay, armed.offered) === 1),
+  )
   const [cmdCopied, setCmdCopied] = useState(false)
   const [cmdCopyFailed, setCmdCopyFailed] = useState(false)
   const [armError, setArmError] = useState('')
+  // The gateway refused to arm because the offer this panel is showing is gone.
+  // Local, not derived from the status push: the refusal is a FRESHER fact than the
+  // frame that produced the offer, and waiting for the push to catch up is exactly
+  // the window where the panel contradicts itself. Reset when a new version is
+  // offered (below) so one refusal cannot latch the control away for the session.
+  const [offerVoid, setOfferVoid] = useState(false)
+  // A NEW offer also retires an `arm_no_longer_offered` notice: it said nothing is
+  // available, and left up it would sit above the new offer's button contradicting
+  // it. Every other notice stays until the next click. `arm_offer_withdrawn`'s copy
+  // announces exactly that next offer ("…which appears here"), and any other
+  // failure (`arm_failed`, `arm_below_min_version`, …) can follow the arm's own
+  // re-check moving the offer, so retiring it would erase why the click failed.
+  const noticeRetiredByNextOffer = useRef(false)
+  useEffect(() => {
+    setOfferVoid(false)
+    if (noticeRetiredByNextOffer.current) setArmError('')
+    noticeRetiredByNextOffer.current = false
+  }, [version])
   // The gateway's apply narrates over the shared update-progress push; render
   // it inline so the armed copy's "progress appears here" is literally true.
   const progress = useAppSelector(st => st.dashboard.updateProgress)
   const dispatch = useAppDispatch()
   const arm = useMutation({
-    mutationFn: () => api.armUpdate(),
-    onSuccess: res => {
+    // The offered version rides as the mutation variable so `onSuccess` records
+    // what THIS click was made against (see `armed.offered`).
+    mutationFn: (_offered: string) => api.armUpdate(),
+    onSuccess: (res, offered) => {
       if (res.armed && res.approve_command) {
         setArmError('')
         // A fresh arm starts a fresh narrative: clear any progress left by a
@@ -377,6 +466,8 @@ export function InAppUpdateFlow({
         const expiresIn = res.expires_in ?? 600
         setArmed({
           approveCommand: res.approve_command,
+          versionDisplay: res.version_display || '',
+          offered,
           expiresIn,
           deadlineMs: Date.now() + expiresIn * 1000,
         })
@@ -385,9 +476,32 @@ export function InAppUpdateFlow({
         setArmError(res.error || i18nT('pages.settings.aboutPanel.update_failed'))
       }
     },
-    onError: (e: unknown) => setArmError(
-      e instanceof ApiError ? e.message : i18nT('pages.settings.aboutPanel.update_failed'),
-    ),
+    onError: (e: unknown) => {
+      // The withdrawn-offer refusal is a fact the panel can state in the user's
+      // language; every other refusal carries the gateway's own detail.
+      const code = e instanceof ApiError ? armRefusalCode(e) : null
+      const staleText = staleArmRefusalText(code)
+      noticeRetiredByNextOffer.current = code === 'arm_no_longer_offered'
+      setArmError(
+        staleText
+          ?? (e instanceof ApiError ? e.message : i18nT('pages.settings.aboutPanel.update_failed')),
+      )
+      // The refusal is itself proof the offer is void: the gateway sends this code
+      // only when its own verdict says nothing is available. So stop presenting the
+      // offer immediately (see the button below for why it must go) rather than
+      // leaving it up until a later status frame happens to unmount it.
+      if (staleText) setOfferVoid(true)
+      // NOT ALSO refetching the status here, though that would clear the page
+      // heading and the "Update available" badge in the same beat. Refetching
+      // (`api.status()` + `dispatch(sseStatus(...))`) makes the gateway's own verdict
+      // arrive early (it already says nothing is available — that is why this
+      // refusal fired), the whole offer unmounts, and the refusal NOTICE unmounts
+      // with it, because the notice lives inside the offer. The user's click would
+      // then remove the button and explain nothing, which is the report-as-a-bug
+      // failure; a heading that lags one status frame is not. Fixing both at once
+      // means hoisting the explanation above the offer's mount condition, which is
+      // a page-level change rather than a panel one.
+    },
   })
   // Countdown + liveness poll while ARMED. The count is cosmetic (the server
   // enforces the TTL); the poll is what notices the request being consumed —
@@ -464,7 +578,7 @@ export function InAppUpdateFlow({
       resetFailure()
       return
     }
-    if (phase !== 'applying') arm.mutate()
+    if (phase !== 'applying') arm.mutate(version)
   }
   const rootTestId = phase === 'armed'
     ? 'in-app-update-armed'
@@ -505,11 +619,23 @@ export function InAppUpdateFlow({
               {i18nT('pages.settings.aboutPanel.approval_window_expired')}
             </p>
           )}
-          <p className="text-[13px] text-muted">
-            {i18nT(isChannelMove
-              ? 'pages.settings.aboutPanel.in_app_channel_move_intro'
-              : 'pages.settings.aboutPanel.in_app_update_intro')}
-          </p>
+          {/* Once the gateway has said this offer no longer exists, the intro and the
+              button (below) are both describing something that cannot happen, so both
+              stand down and the notice is the only claim left. What this component
+              CANNOT reach is the "Update available" badge in the header and the
+              heading above this panel: those are rendered from the status push, so
+              they clear on its next frame rather than instantly. */}
+          {!offerVoid && (
+            <p className="text-[13px] text-muted">
+              {i18nT(isChannelMove
+                ? 'pages.settings.aboutPanel.in_app_channel_move_intro'
+                : 'pages.settings.aboutPanel.in_app_update_intro')}
+            </p>
+          )}
+          {/* askAgent on: arming persists nothing client-side. The button is still
+              there for a retry EXCEPT on a void offer, where retrying is the one
+              thing that cannot help — hence the manual command below, which is the
+              honest way out of that state. */}
           <ErrorNotice message={armError} askAgent={askAgent} onHandoff={onHandoff} testId="arm-error" />
           {manualCommand && (
             <details className="text-[12px] text-muted">
@@ -524,6 +650,52 @@ export function InAppUpdateFlow({
 
       {phase === 'armed' && armed && (
         <>
+          {/* The two lines below are mutually exclusive BY CONSTRUCTION, off one
+              boolean, because the note's own copy opens by naming the armed version
+              ("This installs v0.4.8…"). Rendering both would say the same number
+              twice, and keeping two independent conditions in sync is how they drift
+              into saying it twice again later.
+              Note this is NOT `armed.versionDisplay === version`: when nothing was
+              offered (`version` empty) there is no difference to explain, so the note
+              stays away AND the plain line has to render — that is the one case where
+              suppressing it would leave the panel naming no version at all. */}
+          {/* WHAT was armed, not what the button offered. The gateway re-checks the
+              feed as it arms, so on a panel whose verdict has gone stale these
+              differ — and the approval below installs this one.
+              DECLARATIVE, not the button's own `update_to_version` / `switch_to_version`
+              copy: reusing that copy would make the identical words a control in one
+              state and inert text in the next, which reads ambiguously to a screen
+              reader user. These open the same way
+              the changed-version note does, so the armed panel speaks one vocabulary
+              whether or not the number moved. */}
+          {armed.versionDisplay && !armedVersionChanged && (
+            <p className="text-[13px] text-text" data-testid="armed-version">
+              {i18nT(isChannelMove
+                ? 'pages.settings.aboutPanel.armed_switches_to_version'
+                : 'pages.settings.aboutPanel.armed_installs_version', { version: armed.versionDisplay })}
+            </p>
+          )}
+          {/* The number CHANGING is the whole point of the re-check, and it is the
+              one thing the plain "This installs v…" line cannot say. Without this, the
+              user reads "Update to v0.4.7" on the button and "This installs v0.4.8" here and
+              has to guess whether these are two updates or one of them is wrong —
+              seconds before running an approval command on another machine. Worth the
+              new string: only the difference needs explaining, so it is rendered only
+              when there is one, and it REPLACES the plain line rather than joining it.
+              BRANCHED on the lane move, because a channel move is a downgrade by
+              construction (see the `isChannelMove` prop): telling that user "a newer
+              version was found just now" would be false every time, about a number
+              that just went DOWN, seconds before they run a host command. The move
+              variant says what actually happened — the chosen channel serves this one
+              now — which is true whichever direction the version went. */}
+          {armedVersionChanged && (
+            <p className="text-[13px] text-text" data-testid="armed-version-changed">
+              {i18nT(isChannelMove
+                ? 'pages.settings.aboutPanel.armed_version_changed_channel_move'
+                : 'pages.settings.aboutPanel.armed_version_changed',
+              { version: armed.versionDisplay, offered: armed.offered })}
+            </p>
+          )}
           <p className="text-[13px] text-muted">
             {i18nT('pages.settings.aboutPanel.armed_run_on_host')}
           </p>
@@ -560,6 +732,12 @@ export function InAppUpdateFlow({
         </>
       )}
 
+      {/* "You're already up to date" under a live "Update to v0.4.7" button is two
+          contradictory statements on one screen, and the button is the dangerous
+          half: pressing it can only fail the same way again. So a void offer takes
+          the action away with the intro; the manual command above stays as the
+          way out of that state. */}
+      {!(canStart && offerVoid) && (
       <div>
         <Btn
           key="update-action"
@@ -576,6 +754,12 @@ export function InAppUpdateFlow({
               : i18nT('pages.settings.aboutPanel.copy_command')}</>
           ) : phase === 'failed' ? (
             i18nT('pages.settings.aboutPanel.try_again')
+          ) : arm.isPending ? (
+            /* Arming re-checks the feed before it answers, so this click can wait on
+               a network round trip. Disabled alone reads as a dead button, so say
+               what the wait is for -- the same spinner+label pair the status line
+               and the Download button already use. */
+            <><RefreshCw size={13} className="lucide-inline animate-spin" /> {i18nT('pages.settings.aboutPanel.checking_for_updates')}</>
           ) : (
             <>{isChannelMove
               ? <GitBranch size={13} className="lucide-inline" />
@@ -587,6 +771,7 @@ export function InAppUpdateFlow({
           )}
         </Btn>
       </div>
+      )}
     </div>
   )
 }
@@ -770,15 +955,9 @@ export function AboutPanel() {
   // Explicit consent actions (macOS Software Update semantics): downloading
   // and installing each happen only when the user clicks.
   const downloadMutation = useMutation({ mutationFn: () => desktopApi!.download!() })
-  const installMutation = useMutation({ mutationFn: () => desktopApi!.install() })
-  // Install is a ONE-WAY door, so the control must never become actionable
-  // again. Note isSuccess, not just isPending: `update:install` resolves as soon
-  // as the install is DISPATCHED, and on macOS the platform installer then works
-  // for several more seconds before the app quits. Keying `disabled` on
-  // isPending alone lets the button re-arm during that window, so the user sees
-  // a clickable install-and-restart action followed by an unexplained quit -- which reads
-  // as a crash.
-  const installDispatched = installMutation.isPending || installMutation.isSuccess
+  // Install-and-restart, with its one-way latch and the reset for a refused or
+  // aborted handoff (see useInstallDispatch).
+  const { installMutation, dispatched: installDispatched, dispatchInstall } = useInstallDispatch(updateState)
   // An agent's pending request for THIS packaged install. Polled while on
   // desktop; the poll is also how the card leaves — a decline, an expiry, or
   // the install itself (which quits the app under this tab) all end it.
@@ -798,6 +977,11 @@ export function AboutPanel() {
   // download and let the `downloaded` state's Install button (or the
   // deferred-on-quit install) finish it — exactly as a manual click would.
   const [agentInstallArmed, setAgentInstallArmed] = useState(false)
+  // The armed click has seen its download START (`downloading`, which the main
+  // process emits at once for a click it re-checks). What makes a later
+  // `checking` or `not-available` mean "that download was dropped" rather than
+  // the state the click was made from (see agentDownloadDropped).
+  const [agentArmSawDownload, setAgentArmSawDownload] = useState(false)
   // Before dispatching the install, retire the request by the id the card
   // showed. The install quits the app; on relaunch into the new version, a
   // request left on disk would put the card straight back up asking for a
@@ -808,11 +992,15 @@ export function AboutPanel() {
     if (id) void api.dismissUpdateArm(id).catch(() => {})
   }
   const installFromAgentRequest = () => {
-    setAgentInstallArmed(true)
     if (updateState?.state === 'downloaded') {
+      // Installs now, so nothing is armed: an armed click left standing would
+      // re-fire on the next `downloaded` once the dispatch latch resets after a
+      // refused or aborted handoff, installing with nobody clicking.
       retireAgentRequest()
-      installMutation.mutate()
+      dispatchInstall()
     } else {
+      setAgentArmSawDownload(false)
+      setAgentInstallArmed(true)
       downloadMutation.mutate()
     }
   }
@@ -824,7 +1012,7 @@ export function AboutPanel() {
     if (!agentDownloadLanded || installDispatched) return
     setAgentInstallArmed(false)
     retireAgentRequest()
-    installMutation.mutate()
+    dispatchInstall()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agentDownloadLanded, installDispatched])
   // A download the card started that then FAILED — the updater's own
@@ -832,9 +1020,26 @@ export function AboutPanel() {
   // both request actions stay disabled with no way forward.
   const agentDownloadFailed = agentInstallArmed
     && (downloadMutation.isError || (updateState?.state === 'error' && updateState.phase === 'download'))
+  // A download the card asked for that the main process then DROPS must release the
+  // click too: it re-checks the feed first, and a retraction (`not-available`) or a
+  // channel switch (a fresh `checking`) ends that click without an error. A click
+  // left armed keeps both request actions disabled and installs the next build that
+  // downloads, hours later, with nobody clicking.
+  //
+  // Only AFTER the click's `downloading`: both states are also ones a click is made
+  // FROM (the card stays enabled through them), and from there the main process
+  // discovers first and then downloads. Read off the current state alone, that
+  // click would be released on the next render and its download would land with
+  // nothing left to install it.
   useEffect(() => {
-    if (agentDownloadFailed) setAgentInstallArmed(false)
-  }, [agentDownloadFailed])
+    if (agentInstallArmed && updateState?.state === 'downloading') setAgentArmSawDownload(true)
+  }, [agentInstallArmed, updateState?.state])
+  const agentDownloadDropped = agentInstallArmed && agentArmSawDownload
+    && (updateState?.state === 'not-available' || updateState?.state === 'checking')
+  const agentDownloadEnded = agentDownloadFailed || agentDownloadDropped
+  useEffect(() => {
+    if (agentDownloadEnded) setAgentInstallArmed(false)
+  }, [agentDownloadEnded])
   // Failures the request card must SHOW (errors-use-error-notice): a poll that
   // keeps failing means an approval could land unseen; a refused download means
   // the click did nothing. The poll uses the same consecutive-failure threshold
@@ -1062,7 +1267,7 @@ export function AboutPanel() {
         </div>
         <div className="shrink-0">
           {ctaOwnedByRequest ? null : cardReady ? (
-            <Btn primary onClick={() => installMutation.mutate()} disabled={installDispatched}>
+            <Btn primary onClick={dispatchInstall} disabled={installDispatched}>
               <RefreshCw size={13} className={`lucide-inline ${installDispatched ? 'animate-spin' : ''}`} /> {installMutation.isSuccess
                 ? i18nT('pages.settings.aboutPanel.restarting')
                 : i18nT('pages.settings.aboutPanel.install_update_restart_app')}
