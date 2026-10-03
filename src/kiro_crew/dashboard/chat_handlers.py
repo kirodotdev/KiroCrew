@@ -40,7 +40,7 @@ from kiro_crew.config.loader import (
     published_autocompact_pct,
     resolve_agent_bindings,
 )
-from kiro_crew.dashboard import remote_mirror
+from kiro_crew.dashboard import fork_lineage, remote_mirror
 from kiro_crew.dashboard.channel_slots import channel_slot_name, note_slot_closed
 from kiro_crew.dashboard.chat_auto_tag import maybe_auto_tag
 from kiro_crew.dashboard.chat_delivery import (
@@ -139,6 +139,7 @@ from kiro_crew.dashboard.chat_utils import (
 from kiro_crew.dashboard.chat_utils import (
     tighten_replacement_to_restricted_original as _tighten_replacement_to_restricted_original,
 )
+from kiro_crew.dashboard.fork_lineage import MAX_SLOT_NAME_CHARS
 from kiro_crew.dashboard.handlers._shared import _owner_denial_response, read_bounded_json
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 from kiro_crew.dashboard.remote_adopt import (
@@ -479,6 +480,16 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         color_theme = ""
     if not isinstance(slot_name, str) and slot_name is not None:
         slot_name = None  # coerce non-string slot to auto-generate
+    if slot_name and len(slot_name) > MAX_SLOT_NAME_CHARS:
+        # Same bound as `api_chat_slot_create`: a chat message to a slot that does
+        # not exist yet MINTS it, and the slot key becomes the owner of every
+        # image copy the session registers. The store records an owner whole
+        # only up to this bound and refuses one past it, so a longer name is
+        # refused here rather than minted into a session whose pictures could
+        # never be made durable.
+        return web.json_response(
+            {"error": "session name too long", "code": "name_too_long"}, status=400
+        )
     _requested_key = _normalize_slot_key(slot_name) if slot_name else ""
     if request.get("app", "") and _requested_key.casefold().startswith(
         members_mod.DM_SLOT_KEY_PREFIX
@@ -3861,6 +3872,14 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         # this handler already goes through `str(...)`, so this closes the one
         # path that did not rather than adding a new rule.
         name = str(name)
+    if name and len(name) > MAX_SLOT_NAME_CHARS:
+        # The slot key becomes the owner of everything the session registers
+        # (image copies, lineage); the store records that owner whole up to this
+        # bound and compares it whole, so a longer name is refused at admission
+        # rather than truncated somewhere downstream.
+        return web.json_response(
+            {"error": "session name too long", "code": "name_too_long"}, status=400
+        )
     agent = body.get("agent", "")
     # The selection NAMESPACE, when the caller states one. "member" names a
     # configured crew, "template" a shared provider template; an omitted kind
@@ -13045,6 +13064,11 @@ def _hydrate_slot_from_history(
         state._restricted_keys.discard(f"dashboard:{slot.key}")
     if meta.get("forked_from") is not None:
         slot.forked_from = meta["forked_from"]
+    # The fork's materialized chain travels with `forked_from`: it is a
+    # slot-owned field, so a save after a resume that skipped it would rewrite
+    # the meta line without it and the fork would lose its ancestry.
+    slot.fork_ancestors = fork_lineage.admitted_chain(meta)
+    slot.fork_ancestors_unprovable = fork_lineage.chain_unprovable(meta)
     disk_total = len(all_messages)
     # ``window_limit`` is a fact about the data, not a caller switch: how many of
     # the newest rows to surface as the live window, given that any rows before

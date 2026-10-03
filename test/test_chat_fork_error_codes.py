@@ -69,10 +69,12 @@ def test_the_ratchet_can_actually_fail() -> None:
     is no ``slot_not_persistent`` site: an incognito or temporary session forks
     and the child inherits its mode. The one memory-mode refusal in the module is
     ``fork_source_memory_mode_invalid``, for a parent whose persisted mode is
-    outside the allowlist.
+    outside the allowlist. ``fork_ancestry_over_bound`` refuses a fork whose
+    materialized chain sits at the count bound that every reader treats as
+    unprovable.
     """
     coded = [f for f in _findings() if f.bucket == "compliant"]
-    assert len(coded) == 27, f"scanner reached {len(coded)} coded sites, expected 27"
+    assert len(coded) == 29, f"scanner reached {len(coded)} coded sites, expected 29"
     assert all(f.code_value for f in coded)
 
 

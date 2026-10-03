@@ -59,6 +59,7 @@ from kiro_crew.config.loader import (  # noqa: F401
     KiroCrewConfig,
     config_dir,
 )
+from kiro_crew.dashboard import fork_lineage
 from kiro_crew.dashboard.channel_slots import slot_closed_since
 from kiro_crew.dashboard.chat_delivery import (  # noqa: F401
     ATTACHMENT_LIST_MAX_ITEMS,
@@ -1450,6 +1451,8 @@ def _rehydrate_slot_from_history(
             state._restricted_keys.add(f"dashboard:{slot_name}")
         if meta.get("forked_from") is not None:
             slot.forked_from = meta["forked_from"]
+        slot.fork_ancestors = fork_lineage.admitted_chain(meta)
+        slot.fork_ancestors_unprovable = fork_lineage.chain_unprovable(meta)
         if meta.get("linked_session_key"):
             # Rebind the slot to the session its conversation actually runs on.
             # Skipped, the slot would answer from a dashboard-only session and the
@@ -2071,6 +2074,8 @@ def _apply_recent_session(
         state._restricted_keys.add(f"dashboard:{slot_name}")
     if meta.get("forked_from") is not None:
         slot.forked_from = meta["forked_from"]
+    slot.fork_ancestors = fork_lineage.admitted_chain(meta)
+    slot.fork_ancestors_unprovable = fork_lineage.chain_unprovable(meta)
     if meta.get("linked_session_key"):
         slot.linked_session_key = str(meta["linked_session_key"])
     elif is_channel_session_key(key) and state.sessions:

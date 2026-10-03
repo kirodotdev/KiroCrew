@@ -1,5 +1,6 @@
 import type React from 'react'
 import { createContext } from 'react'
+import type { ImageOrdinalMap } from '../../lib/imageArtifactSlug'
 
 /**
  * The React contexts the markdown pipeline's modules share.
@@ -43,6 +44,25 @@ export const CompactImagesCtx = createContext<boolean>(false)
  * Stable within a message, so re-renders and streaming do not re-request.
  */
 export const ImageVersionCtx = createContext<string | null>(null)
+
+/** Destination -> zero-based ordinal of every direct image in the RAW message,
+ * numbered as the backend numbers them (see buildImageOrdinalMap). `null` when
+ * unknown: images then never guess an artifact ordinal. */
+export const ImageOrdinalsCtx = createContext<ImageOrdinalMap | null>(null)
+
+/** The whole raw message text (what the backend scanned), for the image ordinal
+ * lookup to locate this block's raw slice. */
+export const RawMessageCtx = createContext<string | null>(null)
+
+/** This markdown block's [start, end) span in the raw message, when the block
+ * assembler recorded it. Lets an image prefer its exact raw ordinal. */
+export const RawBlockSpanCtx = createContext<{ start: number; end: number } | null>(null)
+
+/** The chat session (slot key) whose transcript is being rendered, so the image
+ * fallback can name its owner: image slugs derive from (message ts, ordinal)
+ * alone and two sessions can collide, so the asset endpoint refuses a copy that
+ * belongs to another session. `null` outside a chat transcript. */
+export const ImageSessionCtx = createContext<string | null>(null)
 
 /** The exact markdown string handed to ReactMarkdown, so components can map a
  *  node's source position back to the original text. ImgWithFallback uses it

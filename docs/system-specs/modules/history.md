@@ -544,6 +544,17 @@ no longer destroy older turns.
   `fork_source_memory_mode_invalid` (SEL `denied`), and no child exists.
   This refusal precedes execution-identity and database lookup, preserving the
   named mode error even when the source's other metadata is unavailable.
+- **Fork ancestry bound**: the child's materialized `fork_ancestors` chain is
+  checked against `fork_lineage.MAX_FORK_ANCESTORS` before any row is copied.
+  A chain at that bound reads back as unprovable to every lineage reader (the
+  asset owner check would refuse the child, the image reap would never treat it
+  as its source's descendant), so the fork answers 422
+  `fork_ancestry_over_bound` and the child is withdrawn rather than persisted
+  with an ancestry nothing can admit. Forking the root session instead yields a
+  one-entry chain. A pre-upgrade source whose legacy `forked_from` walk cannot
+  be completed (an unreadable link, a record over the shared bounds) answers
+  422 `fork_ancestry_unprovable` the same way: the readable prefix is never
+  persisted as if it were the whole chain.
 - **Member fork identity**: a V2 fork also inherits the parent's canonical
   execution context before the child receives copied history. The captured
   member/store identity must be valid; missing, damaged or mismatched identity

@@ -12,6 +12,7 @@ tracked separately by (Clean Up button).
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 from typing import Iterator
@@ -21,6 +22,7 @@ import pytest
 from aiohttp import web
 
 from kiro_crew.dashboard.handlers import api_sessions_clear
+from kiro_crew.dashboard.handlers.sessions import _ForkLineage
 
 
 def _history_key_for(key: str) -> str:
@@ -81,8 +83,13 @@ def _make_request(
     raising_keys = raising_keys or set()
 
     conv_log = MagicMock()
-    conv_log.list_sessions.return_value = sessions
-    conv_log.list_sessions_with_status.return_value = (sessions, True)
+
+    # Like the real catalog, a listing taken after a delete omits the deleted key.
+    def _live() -> list[dict]:
+        return [s for s in sessions if s.get("key") not in deleted_keys]
+
+    conv_log.list_sessions.side_effect = lambda *a, **kw: _live()
+    conv_log.list_sessions_with_status.side_effect = lambda *a, **kw: (_live(), True)
     conv_log.get_metadata.side_effect = lambda k: metadata.get(k, {})
 
     def _get_metadata_status(k: str) -> tuple[dict, bool]:
@@ -171,6 +178,13 @@ async def test_bulk_cleanup_uses_only_preunlink_claims() -> None:
         patch(
             "kiro_crew.dashboard.handlers.sessions._remove_slot_for_history_key",
             new=cleanup,
+        ),
+        # The image reap takes its own catalog listings (fork lineage before and
+        # after the unlink, covered by the lineage tests below); stub it so the
+        # count here stays about the claim path alone.
+        patch(
+            "kiro_crew.dashboard.handlers.sessions._fork_lineage",
+            new=lambda _log: _ForkLineage(),
         ),
         patch("kiro_crew.dashboard.handlers.sel"),
     ):
@@ -516,3 +530,888 @@ async def test_skips_session_with_transient_unreadable_metadata() -> None:
         "failed": 0,
         "undeletable": [{"id": k_pinned, "code": "cron_ownership_unknown"}],
     }
+
+
+@pytest.mark.asyncio
+async def test_bulk_clear_reaps_untouched_image_copies_of_deleted_sessions() -> None:
+    """Chat images are exempt from the widget sweep, so a permanent delete is their
+    only reclamation path — the bulk clear must take them with the transcript,
+    exactly like the single-session delete, and only for the sessions it removed."""
+    from unittest.mock import patch
+
+    k1, k2 = _history_key_for("chat-1"), _history_key_for("chat-2")
+    k_pinned = _history_key_for("chat-pinned")
+    sessions = [{"key": k1}, {"key": k2}, {"key": k_pinned}]
+    request, _state, deleted = _make_request(sessions, metadata={k_pinned: {"pinned": True}})
+
+    store = MagicMock()
+    with patch("kiro_crew.dashboard.handlers.sessions.get_default_store", return_value=store):
+        status, body = await _call_and_parse(request)
+
+    assert status == 200
+    assert body["cleared"] == 2 and set(deleted) == {k1, k2}
+    store.delete_auto_images_for_sessions.assert_called_once()
+    (keys,), _ = store.delete_auto_images_for_sessions.call_args
+    # The bare spelling of each deleted session is present; the pinned one is not.
+    assert {"chat-1", "chat-2"} <= keys
+    assert not any("chat-pinned" in k for k in keys)
+
+
+@pytest.mark.asyncio
+async def test_bulk_clear_with_nothing_deleted_does_not_touch_the_store() -> None:
+    from unittest.mock import patch
+
+    k_pinned = _history_key_for("chat-pinned")
+    request, _state, _deleted = _make_request(
+        [{"key": k_pinned}], metadata={k_pinned: {"pinned": True}}
+    )
+    with patch("kiro_crew.dashboard.handlers.sessions.get_default_store") as gds:
+        await _call_and_parse(request)
+    gds.assert_not_called()
+
+
+def test_every_permanent_delete_handler_reaps_image_copies() -> None:
+    """Chat images are exempt from the widget sweep, so the per-session reap is
+    their ONLY reclamation. This pins the invariant in code: every dashboard
+    function that unlinks a transcript — by calling ``delete_session`` on the
+    conversation log, or the locked funnel ``_delete_history_session`` that
+    wraps it — must also call ``_reap_session_images``, unless it is listed
+    below with the reason it owns no image copies. Adding a new permanent-delete
+    path without the reap (or without a reasoned entry here) fails this test."""
+    import ast
+    import inspect
+
+    from kiro_crew.dashboard import chat_fork
+    from kiro_crew.dashboard.handlers import session_storage, sessions
+
+    exempt = {
+        # The fork rollback removes a transcript that was never acknowledged and
+        # never ran a turn, so `register_images` never wrote a copy under its key.
+        "chat_fork.fork_slot",
+        # The unlink primitive itself: it binds cron ownership and unlinks under
+        # one lock, and every caller of it is a handler pinned below.
+        "sessions._delete_history_session",
+    }
+    # `empty_trash` destroys staged transcripts for good (the trash is the
+    # restorable stage; emptying it is the permanent delete).
+    unlinkers = {"delete_session", "_delete_history_session", "empty_trash"}
+
+    deleting: dict[str, bool] = {}
+    for mod in (sessions, chat_fork, session_storage):
+        tree = ast.parse(inspect.getsource(mod))
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef)):
+                continue
+            # `delete_session` is handed to asyncio.to_thread rather than called
+            # directly, so look at every name/attribute the body references.
+            names = {
+                n.attr if isinstance(n, ast.Attribute) else n.id
+                for n in ast.walk(node)
+                if isinstance(n, (ast.Attribute, ast.Name))
+            }
+            if names & unlinkers:
+                qual = f"{mod.__name__.rsplit('.', 1)[-1]}.{node.name}"
+                deleting[qual] = "_reap_session_images" in names or qual in exempt
+    assert set(deleting) == {
+        "sessions.api_session_delete",
+        "sessions.api_sessions_clear",
+        "sessions._delete_history_session",
+        "chat_fork.fork_slot",
+        "session_storage._run_empty_job",
+    }, deleting
+    assert all(deleting.values()), deleting
+
+
+def test_image_session_key_spellings_match_what_register_images_records() -> None:
+    """``register_images`` records the bare ``slot.key``; the delete handlers get
+    the transcript's history key or file stem. The lookup set must contain the
+    bare form for either input and nothing invented."""
+    from kiro_crew.dashboard.handlers.sessions import _image_artifact_session_keys
+
+    assert _image_artifact_session_keys({"dashboard:chat-1"}) == {
+        "dashboard:chat-1",
+        "chat-1",
+        "dashboard_chat-1",
+    }
+    assert _image_artifact_session_keys({"dashboard_chat-1"}) == {"dashboard_chat-1", "chat-1"}
+    assert _image_artifact_session_keys({"chat-1", ""}) == {"chat-1"}
+    # A cron transcript is `cron:<id>` / `cron_<id>`; its copies are owned by the
+    # tab, `cron-<id>`. Deleting the transcript must reach them.
+    assert "cron-42" in _image_artifact_session_keys({"cron:42"})
+    assert "cron-42" in _image_artifact_session_keys({"cron_42"})
+
+
+# --- fork lineage and the image reap -------------------------------------
+#
+# A fork copies messages with their ts intact and an image copy's slug derives
+# from ts alone, so a fork renders its source's artifacts. The reap must never
+# remove a copy a surviving descendant still renders, must fail closed when it
+# cannot know, and must eventually reclaim ancestors once their line dies out.
+
+
+def _catalog(
+    sessions: dict[str, str | list[str] | None],
+    unreadable: set[str] = frozenset(),
+    *,
+    materialized: bool = True,
+) -> MagicMock:
+    """A conversation-log stand-in: ``{bare_key: forked_from | full_chain | None}``.
+
+    A ``str`` value is the immediate source; the persisted chain is derived from
+    the dict while its links are present. A ``list`` value is the chain exactly
+    as the fork's own record carries it (nearest first) — the production shape
+    that survives deletion of an intermediate. With ``materialized=False`` only
+    ``forked_from`` is written, the shape of forks made before the chain was
+    recorded.
+    """
+    log = MagicMock()
+    log.list_sessions.return_value = [{"key": _history_key_for(k)} for k in sessions]
+    # The lineage snapshot enumerates the transcript DIRECTORY (raw file stems),
+    # not the catalog; a test that wants the two to disagree overrides this.
+    log.transcript_stems_on_disk.return_value = {
+        _history_key_for(k).replace(":", "_", 1) for k in sessions
+    }
+
+    def _parent(bare: str) -> str | None:
+        v = sessions.get(bare)
+        if isinstance(v, list):
+            return v[0] if v else None
+        return v
+
+    def _chain(bare: str) -> list[str]:
+        v = sessions.get(bare)
+        if isinstance(v, list):
+            return [_history_key_for(x) for x in v]
+        out: list[str] = []
+        cur = v
+        while cur and cur not in out:
+            out.append(cur)
+            cur = _parent(cur)
+        return [_history_key_for(x) for x in out]
+
+    def _status(key: str) -> tuple[dict, bool]:
+        bare = key.removeprefix("dashboard:").removeprefix("dashboard_")
+        if bare in unreadable:
+            return {}, False
+        parent = _parent(bare)
+        if not parent:
+            return {}, True
+        # The fork handler records `effective_session_key(source)`, i.e. the
+        # history key (`dashboard:<slot>`), never a bare slot name.
+        meta: dict = {"forked_from": _history_key_for(parent)}
+        if materialized:
+            meta["fork_ancestors"] = _chain(bare)
+        return meta, True
+
+    log.get_metadata_status.side_effect = _status
+    return log
+
+
+#: "no live table passed" for :func:`_reaped`; distinct from ``None`` (unreadable).
+_NO_LIVE = object()
+
+
+def _reaped(
+    before_log: MagicMock,
+    after_log: MagicMock,
+    deleted: set[str],
+    *,
+    staged: set[str] | dict[str, dict | None] | None = None,
+    trash_unreadable: bool = False,
+    live: set[str] | None | object = _NO_LIVE,
+) -> set[str] | None:
+    """Run the reap the way a handler does and return the bare keys it reaped
+    (``None`` when it did not touch the store). ``staged`` stands in for the
+    transcripts sitting in the session trash: a set of stems (no lineage) or a
+    ``{stem: lineage meta | None}`` mapping as the reader returns it. ``live``
+    stands in for the process's live session table (``None`` = unreadable);
+    left out, the reap runs the way a caller without a state does."""
+    import asyncio
+    from unittest.mock import patch
+
+    from kiro_crew.dashboard.handlers.sessions import _fork_lineage, _reap_session_images
+
+    def _staged() -> dict[str, dict | None]:
+        if trash_unreadable:
+            raise OSError("trash root unreadable")
+        if isinstance(staged, dict):
+            return dict(staged)
+        return {s: {} for s in (staged or ())}
+
+    before = _fork_lineage(before_log)
+    store = MagicMock()
+    kwargs: dict = {}
+    if live is not _NO_LIVE:
+        kwargs["live"] = lambda: live
+    with (
+        patch("kiro_crew.dashboard.handlers.sessions.get_default_store", return_value=store),
+        patch("kiro_crew.dashboard.handlers.sessions._staged_transcript_lineage", _staged),
+    ):
+        asyncio.run(
+            _reap_session_images(
+                after_log, before, {_history_key_for(k) for k in deleted}, **kwargs
+            )
+        )
+    if not store.delete_auto_images_for_sessions.called:
+        return None
+    (keys,), _ = store.delete_auto_images_for_sessions.call_args
+    # Reduce every spelling the store was handed to the bare session name.
+    return {k.removeprefix("dashboard:").removeprefix("dashboard_") for k in keys}
+
+
+def test_a_source_staged_in_the_trash_keeps_its_copies_when_its_last_fork_goes() -> None:
+    """A trashed transcript is restorable, so it is a survivor: deleting the last
+    live fork of a source that sits in the trash must not reap the source's
+    copies, or restoring it would render broken images. Emptying the trash is
+    what ends that protection (its own reap)."""
+    # `src` was moved to the trash earlier (gone from the catalog); `fork` is live.
+    before = _catalog({"fork": "src"})
+    after = _catalog({})
+    assert _reaped(before, after, {"fork"}, staged={"dashboard_src"}) == {"fork"}
+    # Without the trash protection the ancestor would go too (the stranded-
+    # ancestor rule); this is the case the survivor set now covers.
+    assert _reaped(before, after, {"fork"}) == {"fork", "src"}
+
+
+def test_a_fork_staged_in_the_trash_keeps_protecting_its_live_source() -> None:
+    """The trashed fork's `forked_from` lives in the staged file, not the catalog.
+    Deleting the live source must still keep the source's copies: the fork is
+    restorable and renders them. The reap follows the staged transcript's edges."""
+    before = _catalog({"src": None})  # `fork` is in the trash, not the catalog
+    after = _catalog({})
+    staged = {
+        "dashboard_fork": {"forked_from": "dashboard:src", "fork_ancestors": ["dashboard:src"]}
+    }
+    assert _reaped(before, after, {"src"}, staged=staged) is None
+    # A staged transcript with unreadable metadata fails the whole reap closed.
+    assert _reaped(before, after, {"src"}, staged={"dashboard_fork": None}) is None
+    # Without an edge (a staged transcript that is not a fork) the source goes.
+    assert _reaped(before, after, {"src"}, staged={"dashboard_other": {}}) == {"src"}
+
+
+def test_a_staged_fork_whose_stem_is_live_with_other_lineage_fails_the_reap_closed() -> None:
+    """A session recreated under a trashed fork's key and forked from a different
+    source gives one stem two lineages: the staged record says `s -> x`, the live
+    catalog says `s -> y`. Letting the live edge win the merge would drop `x`
+    from the walk and reap the copies the staged `s` renders once restored. The
+    decision fails closed instead. An AGREEING live record keeps the reap."""
+    staged = {"dashboard_s": {"forked_from": "dashboard:x", "fork_ancestors": ["dashboard:x"]}}
+    # Conflict: the live `s` descends from `y`, the staged `s` from `x`.
+    before = _catalog({"x": None, "y": None, "s": "y"})
+    after = _catalog({"y": None, "s": "y"})
+    assert _reaped(before, after, {"x"}, staged=staged) is None
+    # Agreement: the live `s` also descends from `x`; `x` is protected by the
+    # survivor `s` the ordinary way and the decision is made.
+    before = _catalog({"x": None, "s": "x"})
+    after = _catalog({"s": "x"})
+    assert _reaped(before, after, {"x"}, staged=staged) is None
+    before = _catalog({"x": None, "s": "x", "z": None})
+    after = _catalog({"s": "x"})
+    assert _reaped(before, after, {"z"}, staged=staged) == {"z"}
+
+
+def test_an_unreadable_trash_fails_the_reap_closed() -> None:
+    before = _catalog({"src": None, "fork": "src"})
+    after = _catalog({})
+    assert _reaped(before, after, {"src", "fork"}, trash_unreadable=True) is None
+
+
+def test_channel_transcript_stems_and_live_keys_fold_to_one_lineage() -> None:
+    """The catalog lists a channel transcript by its file stem (``slack_<ts>``)
+    while a fork's ``forked_from`` carries the live key (``slack:<ts>``). Both
+    must fold to the same lineage node, or the fork's protection is missed."""
+    import asyncio
+    from unittest.mock import patch
+
+    from kiro_crew.dashboard.handlers.sessions import _fork_lineage, _reap_session_images
+
+    def _log(entries: dict[str, str | None]) -> MagicMock:
+        log = MagicMock()
+        log.list_sessions.return_value = [{"key": k} for k in entries]
+        log.transcript_stems_on_disk.return_value = {k.replace(":", "_", 1) for k in entries}
+
+        def _status(key: str) -> tuple[dict, bool]:
+            parent = entries.get(key)
+            return ({"forked_from": parent} if parent else {}), True
+
+        log.get_metadata_status.side_effect = _status
+        return log
+
+    before = _log({"slack_1700.42": None, "dashboard_fork": "slack:1700.42"})
+    after = _log({"dashboard_fork": "slack:1700.42"})
+    store = MagicMock()
+    with patch("kiro_crew.dashboard.handlers.sessions.get_default_store", return_value=store):
+        asyncio.run(_reap_session_images(after, _fork_lineage(before), {"slack:1700.42"}))
+    store.delete_auto_images_for_sessions.assert_not_called()
+
+    # A Slack thread that predates the canonical key still logs under its bare
+    # thread_ts stem; the fork's `forked_from` names the canonical key. They
+    # must still meet as one lineage node.
+    before = _log({"1700.42": None, "dashboard_fork": "slack:1700.42"})
+    after = _log({"dashboard_fork": "slack:1700.42"})
+    store = MagicMock()
+    with patch("kiro_crew.dashboard.handlers.sessions.get_default_store", return_value=store):
+        asyncio.run(_reap_session_images(after, _fork_lineage(before), {"slack:1700.42"}))
+    store.delete_auto_images_for_sessions.assert_not_called()
+
+
+def test_deleting_a_fork_source_keeps_images_a_surviving_fork_still_renders() -> None:
+    before = _catalog({"src": None, "fork": "src"})
+    after = _catalog({"fork": "src"})
+    assert _reaped(before, after, {"src"}) is None
+
+
+def test_deleting_source_and_fork_together_reaps_both() -> None:
+    before = _catalog({"src": None, "fork": "src"})
+    after = _catalog({})
+    assert _reaped(before, after, {"src", "fork"}) == {"src", "fork"}
+
+
+def test_fork_chain_protects_the_grandparent_through_a_deleted_intermediate() -> None:
+    before = _catalog({"a": None, "b": "a", "c": "b"})
+    after = _catalog({"c": "b"})
+    assert _reaped(before, after, {"a", "b"}) is None
+
+
+def test_deleting_the_last_fork_reaps_the_ancestor_kept_for_it() -> None:
+    # `src` was deleted earlier while `fork` survived, so its copies were kept.
+    # Now `fork` goes: nothing descends from `src` any more -> reap both lines.
+    before = _catalog({"fork": "src"})  # src is already gone from the catalog
+    after = _catalog({})
+    assert _reaped(before, after, {"fork"}) == {"fork", "src"}
+
+
+def test_a_sibling_fork_keeps_the_shared_ancestor_alive() -> None:
+    before = _catalog({"f1": "src", "f2": "src"})  # src already gone
+    after = _catalog({"f2": "src"})
+    assert _reaped(before, after, {"f1"}) == {"f1"}
+
+
+def test_unreadable_fork_metadata_fails_closed() -> None:
+    # `fork` may descend from `src`; we cannot tell -> reap nothing.
+    before = _catalog({"src": None, "fork": None}, unreadable={"fork"})
+    after = _catalog({"fork": None}, unreadable={"fork"})
+    assert _reaped(before, after, {"src"}) is None
+
+
+def test_a_fork_acknowledged_after_the_snapshot_still_protects_its_source() -> None:
+    before = _catalog({"src": None})  # fork not yet in the catalog
+    after = _catalog({"fork": "src"})  # it landed between snapshot and delete
+    assert _reaped(before, after, {"src"}) is None
+
+
+def test_a_session_recreated_under_the_deleted_key_is_not_reaped() -> None:
+    """The post-delete read is authoritative: a stem back in the catalog was
+    recreated under the same key while the delete ran (a channel session that
+    received a new message), and the new incarnation's images must stay."""
+    before = _catalog({"chan": None, "other": None})
+    after = _catalog({"chan": None})  # recreated during cleanup
+    assert _reaped(before, after, {"chan", "other"}) == {"other"}
+
+
+def test_the_reap_snapshots_the_store_before_it_reads_who_is_live() -> None:
+    """The generation bound: the store's auto-image slugs are snapshotted FIRST,
+    then the live session table is sampled, then the post-delete catalog is read;
+    only slugs from that snapshot owned by a reaped spelling are handed to the
+    store. Sampling liveness before the snapshot would leave a window where an
+    incarnation born in between has copies in the snapshot but no survivor entry;
+    a copy registered after the snapshot is not in it and survives. No clock is
+    compared."""
+    from unittest.mock import MagicMock, patch
+
+    from kiro_crew.dashboard.handlers.sessions import _fork_lineage, _reap_session_images
+
+    order: list[str] = []
+    before = _catalog({"gone": None, "other": None})
+    after = _catalog({"other": None})
+    real_stems = after.transcript_stems_on_disk.return_value
+
+    def _scan():
+        order.append("catalog")
+        return real_stems
+
+    after.transcript_stems_on_disk.side_effect = _scan
+    store = MagicMock()
+
+    def _snapshot():
+        order.append("snapshot")
+        return {"old-copy": "gone", "later-copy": "gone", "theirs": "other"}
+
+    def _live() -> set[str]:
+        order.append("live")
+        return set()
+
+    store.auto_image_slugs.side_effect = _snapshot
+    with (
+        patch("kiro_crew.dashboard.handlers.sessions.get_default_store", return_value=store),
+        patch("kiro_crew.dashboard.handlers.sessions._staged_transcript_lineage", dict),
+    ):
+        asyncio.run(
+            _reap_session_images(
+                after, _fork_lineage(before), {_history_key_for("gone")}, live=_live
+            )
+        )
+    assert order[:3] == ["snapshot", "live", "catalog"]
+    (keys,), kwargs = store.delete_auto_images_for_sessions.call_args
+    assert "gone" in keys
+    # Only the snapshotted slugs owned by a reaped spelling; the survivor's copy
+    # is not handed over even though it is in the snapshot.
+    assert kwargs["only_slugs"] == {"old-copy", "later-copy"}
+
+
+def test_a_session_recreated_but_not_yet_saved_is_kept_via_the_live_table() -> None:
+    """The catalog lags a recreation: a slot re-registered under the deleted key
+    while the delete ran has not written its transcript yet (that happens at
+    the end of its first turn, AFTER the finalize that registers its images),
+    so it is absent from the post-delete read. The live session table is the
+    survivor source the catalog cannot be, and the recreated session's ancestry
+    is protected with it. An unreadable live table fails the reap closed."""
+    before = _catalog({"src": None, "chan": "src", "other": None})
+    after = _catalog({})  # nothing written yet by the new incarnation
+    # Live under the session-key and the history-key spellings.
+    assert _reaped(before, after, {"src", "chan", "other"}, live={"chan"}) == {"other"}
+    assert _reaped(before, after, {"src", "chan", "other"}, live={"dashboard:chan"}) == {"other"}
+    assert _reaped(before, after, {"src", "chan", "other"}, live=set()) == {
+        "src",
+        "chan",
+        "other",
+    }
+    assert _reaped(before, after, {"src", "chan", "other"}, live=None) is None
+
+
+def test_live_session_keys_cover_every_spelling_and_fail_closed() -> None:
+    """The reap's live survivor source reads the slot registry (registry key,
+    history key, effective session key) and the session manager's registry
+    (channel sessions have no slot); any read failure reads as unreadable."""
+    from kiro_crew.dashboard.handlers import sessions as mod
+
+    slot = MagicMock()
+    state = MagicMock()
+    state._slots = {"chat-a": slot}
+    state.sessions.session_keys.return_value = frozenset({"slack:1700.42"})
+    with (
+        patch.object(mod, "slot_history_key", return_value="dashboard:a"),
+        patch.object(mod, "effective_session_key", return_value="cron:job-1"),
+    ):
+        assert mod._live_session_keys(state) == {
+            "chat-a",
+            "dashboard:a",
+            "cron:job-1",
+            "slack:1700.42",
+        }
+    state.sessions.session_keys.side_effect = RuntimeError("registry torn down")
+    assert mod._live_session_keys(state) is None
+
+
+def test_reap_handles_a_forked_from_cycle_without_hanging() -> None:
+    before = _catalog({"a": "b", "b": "a", "c": None})
+    after = _catalog({"a": "b", "b": "a"})
+    assert _reaped(before, after, {"c"}) == {"c"}
+
+
+def test_a_very_deep_fork_chain_still_protects_its_root() -> None:
+    # root <- f1 <- f2 <- … <- f200 (only the leaf survives): deleting the root
+    # and every intermediate must reap nothing — no depth cap may cut the walk.
+    chain = {"root": None}
+    prev = "root"
+    for i in range(1, 201):
+        chain[f"f{i}"] = prev
+        prev = f"f{i}"
+    before = _catalog(chain)
+    after = _catalog({"f200": "f199"})
+    deleted = set(chain) - {"f200"}
+    assert _reaped(before, after, deleted) is None
+
+
+def test_a_walk_over_the_shared_bounds_fails_the_reap_closed() -> None:
+    """A snapshot whose edge walk runs past MAX_FORK_ANCESTORS nodes is
+    unprovable: the reap keeps everything rather than act on a cut walk."""
+    from kiro_crew.dashboard.fork_lineage import MAX_FORK_ANCESTORS
+
+    chain: dict[str, str | None] = {"root": None}
+    prev = "root"
+    for i in range(1, MAX_FORK_ANCESTORS + 2):
+        chain[f"f{i}"] = prev
+        prev = f"f{i}"
+    leaf = prev
+    before = _catalog(chain, materialized=False)
+    after = _catalog({leaf: f"f{MAX_FORK_ANCESTORS}"}, materialized=False)
+    store_touched = _reaped(before, after, set(chain) - {leaf})
+    assert store_touched is None
+    # And a deleted line with no survivor at all is still not reaped on a cut walk.
+    assert _reaped(before, _catalog({}), set(chain)) is None
+
+
+def test_root_kept_earlier_stays_protected_after_the_intermediate_is_gone() -> None:
+    # A <- B <- C. A was deleted earlier (kept for B/C). Now B is deleted while C
+    # survives. B's record is gone, but C's own `fork_ancestors` names A, so A
+    # remains protected and only B is reaped.
+    before = _catalog({"b": ["a"], "c": ["b", "a"]})  # a already absent
+    after = _catalog({"c": ["b", "a"]})
+    assert _reaped(before, after, {"b"}) is None  # b is c's ancestor too
+
+
+def test_legacy_forks_without_a_materialized_chain_still_use_the_snapshot() -> None:
+    # Forks made before `fork_ancestors` existed carry only `forked_from`; the
+    # pre-delete snapshot still links the chain for the delete that follows.
+    before = _catalog({"a": None, "b": "a", "c": "b"}, materialized=False)
+    after = _catalog({"c": "b"}, materialized=False)
+    assert _reaped(before, after, {"a", "b"}) is None
+
+
+def test_the_lineage_snapshot_enumerates_the_directory_and_fails_closed_on_it() -> None:
+    """The snapshot reads the transcript DIRECTORY (bounded, lazy) rather than the
+    catalog projection, which materializes every row before any bound and drops
+    a file whose ``stat`` failed mid-pass. A transcript on disk whose metadata
+    cannot be read is unreadable (reap keeps everything); an unlistable
+    directory is one unreadable marker; a complete, readable directory reaps."""
+    from unittest.mock import MagicMock
+
+    # On disk but unreadable metadata: fails closed.
+    before = _catalog({"src": None, "fork": "src"}, unreadable={"fork"})
+    after = _catalog({"fork": "src"}, unreadable={"fork"})
+    assert _reaped(before, after, {"src"}) is None
+
+    # A directory that cannot be listed at all (or is past its bounds) fails closed.
+    before = _catalog({"src": None, "fork": "src"})
+    after = _catalog({"fork": "src"})
+    after.transcript_stems_on_disk.side_effect = OSError("scan refused")
+    assert _reaped(before, after, {"src"}) is None
+
+    # A double with no directory scan contributes no keys (nothing to protect).
+    bare = MagicMock(spec=["get_metadata_status"])
+    bare.get_metadata_status.side_effect = lambda k: ({}, True)
+    assert _reaped(bare, bare, {"src"}) == {"src"}
+
+    # Complete and readable: the fork protects its source, the rest reaps.
+    before = _catalog({"src": None, "fork": "src", "other": None})
+    after = _catalog({"fork": "src"})
+    assert _reaped(before, after, {"src", "other"}) == {"other"}
+
+
+def test_a_fork_chain_over_the_shared_bound_fails_the_reap_closed() -> None:
+    from kiro_crew.dashboard import fork_lineage
+
+    huge = [_history_key_for(f"s{i}") for i in range(fork_lineage.MAX_FORK_ANCESTORS)]
+    before = _catalog({"src": None, "fork": huge + ["src"]})
+    after = _catalog({"fork": huge + ["src"]})
+    assert _reaped(before, after, {"src"}) is None
+
+
+def test_an_over_long_forked_from_key_fails_the_reap_closed() -> None:
+    """`forked_from` is agent-writable too: a parent key past the shared length
+    bound is not folded and retained; the record is unreadable and the reap
+    keeps everything."""
+    from unittest.mock import MagicMock
+
+    from kiro_crew.dashboard import fork_lineage
+
+    long_parent = "dashboard:" + "x" * fork_lineage.MAX_ANCESTOR_KEY_CHARS
+    log = MagicMock()
+    log.list_sessions.return_value = [{"key": "dashboard_src"}, {"key": "dashboard_fork"}]
+    log.transcript_stems_on_disk.return_value = {"dashboard_src", "dashboard_fork"}
+    log.get_metadata_status.side_effect = lambda k: (
+        ({"forked_from": long_parent}, True) if "fork" in k else ({}, True)
+    )
+    after = MagicMock()
+    after.list_sessions.return_value = [{"key": "dashboard_fork"}]
+    after.transcript_stems_on_disk.return_value = {"dashboard_fork"}
+    after.get_metadata_status.side_effect = log.get_metadata_status.side_effect
+    assert _reaped(log, after, {"src"}) is None
+
+
+def test_a_surviving_chat_that_claims_a_linked_tab_name_keeps_its_images() -> None:
+    """A linked session's tab (`task-review-<suffix>`, `cron-<id>`) is also a name
+    any dashboard chat can be given, and that chat's image copies are owned by
+    that very string. Deleting the linked session reaps its own spellings but
+    must withhold the tab spelling while a surviving transcript claims it."""
+    from unittest.mock import MagicMock, patch
+
+    from kiro_crew.dashboard.handlers.sessions import _fork_lineage, _reap_session_images
+
+    def _run(before_keys: list[str], after_keys: list[str], deleted: set[str]) -> set[str]:
+        before = MagicMock()
+        before.list_sessions.return_value = [{"key": k} for k in before_keys]
+        before.transcript_stems_on_disk.return_value = {k.replace(":", "_", 1) for k in before_keys}
+        before.get_metadata_status.side_effect = lambda k: ({}, True)
+        after = MagicMock()
+        after.list_sessions.return_value = [{"key": k} for k in after_keys]
+        after.transcript_stems_on_disk.return_value = {k.replace(":", "_", 1) for k in after_keys}
+        after.get_metadata_status.side_effect = lambda k: ({}, True)
+        store = MagicMock()
+        with (
+            patch("kiro_crew.dashboard.handlers.sessions.get_default_store", return_value=store),
+            patch("kiro_crew.dashboard.handlers.sessions._staged_transcript_lineage", dict),
+        ):
+            asyncio.run(_reap_session_images(after, _fork_lineage(before), deleted))
+        (keys,), _kw = store.delete_auto_images_for_sessions.call_args
+        return set(keys)
+
+    linked = "taskrunner:t-1:chat:abc123"
+    tab = "task-review-abc123"
+    # A plain chat named exactly like the linked session's tab survives: the
+    # tab spelling is withheld, the linked session's own spellings are reaped.
+    reaped = _run([linked, f"dashboard:{tab}"], [f"dashboard:{tab}"], {linked})
+    assert linked in reaped
+    assert tab not in reaped
+    # No such chat: the tab spelling is reaped with the session.
+    reaped = _run([linked], [], {linked})
+    assert {linked, tab} <= reaped
+
+
+def test_a_nested_forked_from_value_fails_the_reap_closed() -> None:
+    """A `forked_from` that is not a string (a planted list or dict) is never
+    materialized as text to have its length measured: the record is unreadable
+    on type alone and the reap keeps everything."""
+    from unittest.mock import MagicMock
+
+    nested = {"deep": [["x" * 64] * 64] * 64}
+    log = MagicMock()
+    log.list_sessions.return_value = [{"key": "dashboard_src"}, {"key": "dashboard_fork"}]
+    log.transcript_stems_on_disk.return_value = {"dashboard_src", "dashboard_fork"}
+    log.get_metadata_status.side_effect = lambda k: (
+        ({"forked_from": nested}, True) if "fork" in k else ({}, True)
+    )
+    after = MagicMock()
+    after.list_sessions.return_value = [{"key": "dashboard_fork"}]
+    after.transcript_stems_on_disk.return_value = {"dashboard_fork"}
+    after.get_metadata_status.side_effect = log.get_metadata_status.side_effect
+    assert _reaped(log, after, {"src"}) is None
+    # Same for an entry inside the recorded chain.
+    log.get_metadata_status.side_effect = lambda k: (
+        ({"forked_from": "dashboard:src", "fork_ancestors": ["dashboard:src", nested]}, True)
+        if "fork" in k
+        else ({}, True)
+    )
+    after.get_metadata_status.side_effect = log.get_metadata_status.side_effect
+    assert _reaped(log, after, {"src"}) is None
+
+
+def test_conversation_log_lists_transcript_stems_without_stat(tmp_path) -> None:
+    from kiro_crew.history import ConversationLog
+
+    d = tmp_path / "sessions"
+    d.mkdir()
+    (d / "dashboard_a.jsonl").write_text("{}\n")
+    (d / "slack_1.2.jsonl").write_text("{}\n")
+    (d / "notes.txt").write_text("")
+    (d / "alias.jsonl").symlink_to(d / "dashboard_a.jsonl")
+    log = ConversationLog(base_dir=d)
+    assert log.transcript_stems_on_disk() == {"dashboard_a", "slack_1.2"}
+    assert ConversationLog(base_dir=tmp_path / "missing").transcript_stems_on_disk() == set()
+
+
+def test_the_on_disk_stem_scan_is_bounded_before_it_retains(tmp_path, monkeypatch) -> None:
+    """The transcript directory is agent-writable, so the scan applies the shared
+    count and name bounds before keeping an entry and raises past them; the
+    lineage snapshot turns that raise into an unreadable marker (reap keeps all)."""
+    from kiro_crew import history
+    from kiro_crew.dashboard.handlers.sessions import _transcript_stems_on_disk
+    from kiro_crew.history import ConversationLog
+
+    d = tmp_path / "sessions"
+    d.mkdir()
+    for i in range(4):
+        (d / f"dashboard_s{i}.jsonl").write_text("{}\n")
+    log = ConversationLog(base_dir=d)
+    assert len(log.transcript_stems_on_disk()) == 4
+    monkeypatch.setattr(history, "MAX_TRANSCRIPT_DIRECTORY_ENTRIES", 3)
+    with pytest.raises(OSError):
+        log.transcript_stems_on_disk()
+    assert _transcript_stems_on_disk(log) == {"<unlistable>"}
+    monkeypatch.setattr(history, "MAX_TRANSCRIPT_DIRECTORY_ENTRIES", 200_000)
+    # The filesystem caps a name at 255 bytes, so the length bound is exercised
+    # by lowering it under the names present rather than by a longer file.
+    monkeypatch.setattr(history, "MAX_TRANSCRIPT_STEM_CHARS", len("dashboard_s0") - 1)
+    with pytest.raises(OSError):
+        log.transcript_stems_on_disk()
+    assert _transcript_stems_on_disk(log) == {"<unlistable>"}
+
+
+def test_the_lineage_snapshot_bounds_the_metadata_line_before_decoding_it(tmp_path) -> None:
+    """The transcript directory is agent-writable and `recorded_chain` bounds a
+    `fork_ancestors` array only after the JSON decoder has materialized it. The
+    snapshot therefore reads each first line with a bounded `readline` and
+    refuses to decode one past MAX_METADATA_LINE_BYTES: the transcript is marked
+    unreadable (the reap keeps everything) and its metadata is never parsed. A
+    line within the bound is read as before, whether or not it ends in a newline."""
+    import json
+
+    from kiro_crew.dashboard import fork_lineage
+    from kiro_crew.dashboard.handlers.sessions import _fork_lineage
+    from kiro_crew.history import ConversationLog
+
+    d = tmp_path / "sessions"
+    d.mkdir()
+    fine = {
+        "_type": "metadata",
+        "forked_from": "dashboard:src",
+        "fork_ancestors": ["dashboard:src"],
+    }
+    (d / "dashboard_src.jsonl").write_text("{}\n")
+    (d / "dashboard_fine.jsonl").write_text(json.dumps(fine) + "\n")
+    (d / "dashboard_nonewline.jsonl").write_text(json.dumps(fine))
+    huge = {
+        "_type": "metadata",
+        "forked_from": "dashboard:src",
+        "fork_ancestors": ["dashboard:" + "x" * 200]
+        * (fork_lineage.MAX_METADATA_LINE_BYTES // 100),
+    }
+    huge_line = json.dumps(huge)
+    assert len(huge_line) > fork_lineage.MAX_METADATA_LINE_BYTES
+    (d / "dashboard_huge.jsonl").write_text(huge_line + "\n")
+    log = ConversationLog(base_dir=d)
+
+    calls: list[str] = []
+    real = log.get_metadata_status
+
+    def counting(key):
+        calls.append(key)
+        return real(key)
+
+    log.get_metadata_status = counting  # type: ignore[method-assign]
+    lineage = _fork_lineage(log)
+    assert lineage.parent_of["fine"] == "src"
+    assert lineage.parent_of["nonewline"] == "src"
+    assert "huge" in lineage.unreadable
+    assert "dashboard_huge" not in calls, "an over-bound line must never reach the decoder"
+
+
+@pytest.mark.asyncio
+async def test_single_delete_quiesces_the_slot_before_draining_and_reaping() -> None:
+    """A turn that finalizes AFTER the drain snapshot would register a copy behind
+    the reap. Removing the slot first (which kills its kiro-cli session) closes
+    that window, so the order must be: remove slot -> drain -> reap."""
+    from unittest.mock import AsyncMock, patch
+
+    from kiro_crew.dashboard.handlers import api_session_delete
+
+    order: list[str] = []
+    conv_log = MagicMock()
+    conv_log.delete_session.return_value = True
+    conv_log.list_sessions.return_value = []
+    # The delete funnel reads the row's metadata under the transcript lock and
+    # refuses when it is unreadable; a readable, ownerless row lets it proceed.
+    conv_log.get_metadata_status.return_value = ({}, True)
+    state = MagicMock()
+    state.conversation_log = conv_log
+    state.crons = None  # no cron store: nothing to sweep or release
+    state._slots = {}  # no live slot claims this transcript
+    request = MagicMock(spec=web.Request)
+    request.app = {"state": state}
+    request.match_info = {"key": _history_key_for("chat-1")}
+
+    async def _remove(_state: object, _key: str, **_kw: object) -> None:
+        order.append("remove_slot")
+
+    async def _drain(_keys: set[str], **_kw: object) -> bool:
+        order.append("drain")
+        return True
+
+    store = MagicMock()
+    store.delete_auto_images_for_sessions.side_effect = lambda _k, **_kw: order.append("reap") or 0
+    with (
+        patch("kiro_crew.dashboard.handlers.sessions._remove_slot_for_history_key", new=_remove),
+        patch(
+            "kiro_crew.dashboard.handlers.sessions.drain_registrations",
+            new=AsyncMock(side_effect=_drain),
+        ),
+        patch("kiro_crew.dashboard.handlers.sessions.get_default_store", return_value=store),
+    ):
+        resp = await api_session_delete(request)
+    assert resp.status == 200
+    assert order == ["remove_slot", "drain", "reap"]
+
+
+@pytest.mark.asyncio
+async def test_a_slow_registration_defers_the_reap_instead_of_dropping_it(monkeypatch) -> None:
+    """If an image registration outlives the delete request's bounded wait, the
+    reap must run once it finishes — never be skipped — or the late copy would
+    outlive its deleted transcript for good."""
+    import asyncio
+    from unittest.mock import patch
+
+    from kiro_crew import image_artifacts as ia
+    from kiro_crew.dashboard.handlers import sessions as mod
+
+    gate = asyncio.Event()
+    task = asyncio.create_task(gate.wait())
+    ia.track_registration("chat-slow", task)
+
+    # First wait is capped very short so the delete path takes the deferred branch.
+    real_drain = ia.drain_registrations
+
+    async def _short_first(keys: set[str], *, timeout: float | None = 30.0) -> bool:
+        return await real_drain(keys, timeout=0.01 if timeout is not None else None)
+
+    monkeypatch.setattr(mod, "drain_registrations", _short_first)
+    store = MagicMock()
+    lineage = mod._fork_lineage(_catalog({"slow": None}))
+    with patch("kiro_crew.dashboard.handlers.sessions.get_default_store", return_value=store):
+        await mod._reap_session_images(_catalog({}), lineage, {_history_key_for("chat-slow")})
+        # Not reaped yet: the registration is still running.
+        store.delete_auto_images_for_sessions.assert_not_called()
+        assert mod._DEFERRED_REAPS, "no deferred reap was scheduled"
+        gate.set()
+        await asyncio.gather(*mod._DEFERRED_REAPS)
+    store.delete_auto_images_for_sessions.assert_called_once()
+    (keys,), _ = store.delete_auto_images_for_sessions.call_args
+    assert "chat-slow" in {k.removeprefix("dashboard:").removeprefix("dashboard_") for k in keys}
+
+
+@pytest.mark.asyncio
+async def test_a_wedged_registration_delays_the_reap_but_never_loses_it(monkeypatch) -> None:
+    """When even the deferred wait runs out, the reap is not abandoned: the leak
+    is logged loudly and the reap runs once the registration finally completes.
+    Abandoning it would let the copies outlive the deleted transcript for good."""
+    import asyncio
+    import logging
+    from unittest.mock import patch
+
+    from kiro_crew import image_artifacts as ia
+    from kiro_crew.dashboard.handlers import sessions as mod
+
+    gate = asyncio.Event()
+    task = asyncio.create_task(gate.wait())
+    ia.track_registration("chat-wedged", task)
+    real_drain = ia.drain_registrations
+    waits: list[float | None] = []
+
+    async def _tiny(keys: set[str], *, timeout: float | None = 30.0) -> bool:
+        waits.append(timeout)
+        return await real_drain(keys, timeout=0.01 if timeout is not None else None)
+
+    monkeypatch.setattr(mod, "drain_registrations", _tiny)
+    store = MagicMock()
+    lineage = mod._fork_lineage(_catalog({"wedged": None}))
+    with (
+        patch("kiro_crew.dashboard.handlers.sessions.get_default_store", return_value=store),
+        patch.object(mod.logger, "error") as err,
+    ):
+        await mod._reap_session_images(_catalog({}), lineage, {_history_key_for("chat-wedged")})
+        store.delete_auto_images_for_sessions.assert_not_called()
+        assert mod._DEFERRED_REAPS
+        # Let the deferred task hit its (tiny) second wait and go loud.
+        for _ in range(20):
+            await asyncio.sleep(0.01)
+            if err.called:
+                break
+        assert err.called, "the wedged registration must be reported loudly"
+        assert waits[-1] is None, "after going loud the reap waits for the registration itself"
+        store.delete_auto_images_for_sessions.assert_not_called()
+        gate.set()
+        await asyncio.gather(*mod._DEFERRED_REAPS)
+    store.delete_auto_images_for_sessions.assert_called_once()
+    assert logging.ERROR  # the level the loud report uses
+
+
+def test_an_over_long_transcript_name_fails_the_reap_closed() -> None:
+    """The lineage snapshot enumerates the transcript directory, whose scan is
+    bounded before it retains (see the on-disk scan test); a stem that somehow
+    reaches the snapshot over the shared key bound is unreadable on its own,
+    and the reap keeps everything."""
+    before = _catalog({"a": None, "b": None})
+    after = _catalog({"b": None})
+    assert _reaped(before, after, {"a"}) == {"a"}
+    before.transcript_stems_on_disk.return_value = {"dashboard_a", "dashboard_b", "x" * 600}
+    assert _reaped(before, after, {"a"}) is None

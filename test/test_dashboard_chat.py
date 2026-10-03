@@ -16461,6 +16461,194 @@ class TestForkSlot:
         assert [m["content"] for m in visible] == ["q1", "a1", "q2", "a2"]
 
     @pytest.mark.asyncio
+    async def test_a_source_that_moves_during_the_ancestry_walk_is_refused(self, tmp_path):
+        """A pre-upgrade fork (only `forked_from`, no `fork_ancestors`) makes the
+        fork path walk the catalog in a thread. That await is a suspension after
+        the source identity was frozen; a source whose workspace changes under it
+        must be refused, and since the walk runs before the mint no child is ever
+        born with the old bindings and the new project."""
+        state = _make_state(tmp_path)
+        root = state.get_or_create_slot("root")
+        root.append("user", "q1", "msg msg-u")
+        root.drain()
+        mid = state.get_or_create_slot("mid")
+        mid.forked_from = "dashboard:root"
+        mid.fork_ancestors = []  # legacy shape: the walk is what fills the chain
+        mid.append("user", "q2", "msg msg-u")
+        mid.drain()
+        before = set(state._slots)
+
+        from kiro_crew.dashboard import chat_fork as cf
+
+        real_chain = cf.ancestry_chain
+
+        def _drifting_chain(log, key):
+            mid.workspace = "elsewhere"  # the source moves while the walk runs
+            return real_chain(log, key)
+
+        app = _make_app(state)
+        with patch.object(cf, "ancestry_chain", _drifting_chain):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post("/api/chat/slots/mid/fork", json={})
+                assert resp.status == 503
+                assert (await resp.json())["code"] == "store_unavailable"
+
+        assert set(state._slots) == before, "no child may be born for a refused fork"
+
+    @pytest.mark.asyncio
+    async def test_a_fork_whose_chain_would_sit_at_the_bound_is_refused(self, tmp_path):
+        """A materialized chain AT `MAX_FORK_ANCESTORS` reads back as unprovable to
+        every lineage reader, so persisting it would mint a fork whose ancestry the
+        asset owner check refuses and the image reap never honours. The fork is
+        refused before any row is copied and the child withdrawn; the response
+        names the code so a caller can fork the root instead."""
+        from kiro_crew.dashboard.fork_lineage import MAX_FORK_ANCESTORS
+
+        state = _make_state(tmp_path)
+        root = state.get_or_create_slot("root")
+        root.append("user", "q1", "msg msg-u")
+        root.drain()
+        deep = state.get_or_create_slot("deep")
+        deep.forked_from = "dashboard:root"
+        # One short of the bound: adding the source itself lands exactly on it.
+        deep.fork_ancestors = ["dashboard:root"] + [
+            f"dashboard:a{i}" for i in range(MAX_FORK_ANCESTORS - 2)
+        ]
+        deep.append("user", "q2", "msg msg-u")
+        deep.drain()
+        before = set(state._slots)
+
+        app = _make_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/chat/slots/deep/fork", json={})
+            assert resp.status == 422
+            assert (await resp.json())["code"] == "fork_ancestry_over_bound"
+        assert set(state._slots) == before, "the child must be withdrawn, not persisted"
+
+    @pytest.mark.asyncio
+    async def test_a_fork_whose_chain_would_overflow_its_metadata_line_is_refused(self, tmp_path):
+        """Under the count bound a chain of long keys can still serialize past
+        MAX_FORK_ANCESTRY_BYTES, and a fork persisting it would write a metadata
+        line every lineage reader refuses (its inherited images 404). The fork is
+        refused before it exists, with the same code as the count bound."""
+        from kiro_crew.dashboard.fork_lineage import (
+            MAX_ANCESTOR_KEY_CHARS,
+            MAX_FORK_ANCESTORS,
+            MAX_FORK_ANCESTRY_BYTES,
+        )
+
+        state = _make_state(tmp_path)
+        root = state.get_or_create_slot("root")
+        root.append("user", "q1", "msg msg-u")
+        root.drain()
+        wide = state.get_or_create_slot("wide")
+        wide.forked_from = "dashboard:root"
+        stem = "dashboard:" + "w" * (MAX_ANCESTOR_KEY_CHARS - len("dashboard:") - 4)
+        chain = ["dashboard:root"] + [f"{stem}{i:04d}" for i in range(140)]
+        assert len(chain) < MAX_FORK_ANCESTORS
+        assert len(json.dumps(chain).encode()) > MAX_FORK_ANCESTRY_BYTES
+        wide.fork_ancestors = chain
+        wide.append("user", "q2", "msg msg-u")
+        wide.drain()
+        before = set(state._slots)
+
+        app = _make_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/api/chat/slots/wide/fork", json={})
+            assert resp.status == 422
+            assert (await resp.json())["code"] == "fork_ancestry_over_bound"
+        assert set(state._slots) == before, "the child must be withdrawn, not persisted"
+
+    @pytest.mark.asyncio
+    async def test_a_fork_whose_legacy_chain_cannot_be_walked_is_refused(self, tmp_path):
+        """A pre-upgrade source (only `forked_from`) has its chain walked through
+        the catalog. A walk that stops at an unreadable link would otherwise
+        persist the readable prefix as the fork's complete ancestry; the fork is
+        refused before the child is minted, so no slot is born and the survey's
+        user-session counter is never incremented for a fork that did not happen,
+        and the code names the reason."""
+        state = _make_state(tmp_path)
+        root = state.get_or_create_slot("root")
+        root.append("user", "q1", "msg msg-u")
+        root.drain()
+        mid = state.get_or_create_slot("mid")
+        mid.forked_from = "dashboard:root"
+        mid.fork_ancestors = []  # legacy shape: the walk is what fills the chain
+        mid.append("user", "q2", "msg msg-u")
+        mid.drain()
+        before = set(state._slots)
+
+        from kiro_crew.dashboard import chat_fork as cf
+
+        app = _make_app(state)
+        counted = MagicMock()
+        with (
+            patch.object(cf, "ancestry_chain", lambda log, key: None),
+            patch("kiro_crew.dashboard.state.increment_user_session_count_off_loop", counted),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post("/api/chat/slots/mid/fork", json={})
+                assert resp.status == 422
+                assert (await resp.json())["code"] == "fork_ancestry_unprovable"
+        assert set(state._slots) == before, "no child may be born for a refused fork"
+        counted.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_fork_whose_chain_cannot_be_recorded_whole_is_refused(self, tmp_path):
+        """`materialize_ancestors` reports `None` when an entry (the source key
+        itself included: `dashboard:<name>` can exceed the bound a bare name meets)
+        cannot be retained. The fork must refuse and withdraw the child rather than
+        persist a chain that omits its own source. Driven through the seam: the
+        filesystem's own name limit keeps a real over-bound transcript from
+        existing on disk, so the unit test on `materialize_ancestors` covers the
+        bound and this test covers the refusal."""
+        state = _make_state(tmp_path)
+        src = state.get_or_create_slot("src")
+        src.append("user", "q1", "msg msg-u")
+        src.drain()
+        before = set(state._slots)
+
+        from kiro_crew.dashboard import chat_fork as cf
+
+        app = _make_app(state)
+        with patch.object(cf, "materialize_ancestors", lambda *a, **kw: None):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post("/api/chat/slots/src/fork", json={})
+                assert resp.status == 422
+                assert (await resp.json())["code"] == "fork_ancestry_over_bound"
+        assert set(state._slots) == before, "the child must be withdrawn, not persisted"
+
+    @pytest.mark.asyncio
+    async def test_a_raise_during_the_ancestry_walk_leaves_no_child_behind(self, tmp_path):
+        """The legacy-chain walk is a suspension, so it runs BEFORE the child is
+        minted: a raise in flight (a cancellation lands the same way) finds no
+        half-created fork to withdraw. The caller sees the store-unavailable
+        refusal, not a 500, and no phantom slot exists at any point."""
+        state = _make_state(tmp_path)
+        root = state.get_or_create_slot("root")
+        root.append("user", "q1", "msg msg-u")
+        root.drain()
+        mid = state.get_or_create_slot("mid")
+        mid.forked_from = "dashboard:root"
+        mid.fork_ancestors = []  # legacy shape: the walk is what fills the chain
+        mid.append("user", "q2", "msg msg-u")
+        mid.drain()
+        before = set(state._slots)
+
+        from kiro_crew.dashboard import chat_fork as cf
+
+        def _explodes(log, key):
+            raise OSError("catalog vanished mid-walk")
+
+        app = _make_app(state)
+        with patch.object(cf, "ancestry_chain", _explodes):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post("/api/chat/slots/mid/fork", json={})
+                assert resp.status == 503
+                assert (await resp.json())["code"] == "store_unavailable"
+        assert set(state._slots) == before, "no child may be born for a refused fork"
+
+    @pytest.mark.asyncio
     async def test_fork_reads_full_history_from_disk_when_memory_capped(self, tmp_path):
         """M12: when in-memory snapshot is smaller than full history, fork reads from disk."""
         state = _make_state(tmp_path)

@@ -388,6 +388,130 @@ class TestEmpty:
         handler._empty_job = None
 
     @pytest.mark.asyncio
+    async def test_emptying_reaps_image_copies_of_the_destroyed_transcripts_only(
+        self, stores: tuple[Path, Path]
+    ) -> None:
+        """Emptying is the permanent delete of a staged transcript; its chat-image
+        copies live in the artifact store, so the job reads the batch's stems and
+        the fork lineage BEFORE the empty and reaps for the batches that are gone
+        afterwards. A batch the empty kept (refused) is still restorable and keeps
+        its copies."""
+        log = MagicMock()
+        stems = {"b-gone": {"dashboard_chat-1", "slack_1700.42"}, "b-kept": {"dashboard_chat-9"}}
+        from kiro_crew.dashboard.handlers.sessions import _ForkLineage
+
+        lineage = _ForkLineage(keys={"live"})  # snapshot stems are already folded
+        # The destroyed fork's `forked_from` lives only in its staged file; the
+        # catalog snapshot cannot carry it, so the job reads the staged lineage too
+        # and the reap sees the edge (its kept source becomes a candidate).
+        staged = {
+            "dashboard_chat-1": {"forked_from": "dashboard:old-src"},
+            "slack_1700.42": {},
+            "dashboard_chat-9": {"forked_from": "dashboard:other"},
+        }
+        reaped: list[tuple[object, object, set[str], object]] = []
+
+        async def _reap(passed_log, passed_lineage, keys, *, live=None):  # type: ignore[no-untyped-def]
+            reaped.append((passed_log, passed_lineage, set(keys), live))
+
+        def _empty(batch_ids, on_progress=None, on_skip=None, expect=None):  # type: ignore[no-untyped-def]
+            on_skip("SKIP_IDENTITY")
+            return 7
+
+        job = handler._EmptyJob(job_id="j-test")
+        with (
+            patch.object(handler, "_sel", return_value=_sel_stub()),
+            patch.object(handler, "staged_transcript_stems", return_value=stems),
+            patch.object(handler, "staged_transcript_lineage", return_value=staged),
+            patch.object(handler, "_fork_lineage", return_value=lineage),
+            patch.object(handler, "empty_trash", _empty),
+            patch.object(handler, "batch_is_gone", lambda bid: bid == "b-gone"),
+            patch.object(handler, "_reap_session_images", _reap),
+        ):
+            live = lambda: {"chat-9"}  # noqa: E731
+            await handler._run_empty_job(
+                job, ["b-gone", "b-kept"], "dashboard:ui", {}, log=log, live=live
+            )
+
+        assert job.done and job.freed_bytes == 7
+        assert len(reaped) == 1
+        passed_log, before, keys, passed_live = reaped[0]
+        assert passed_log is log and keys == {"dashboard_chat-1", "slack_1700.42"}
+        # The live session table reaches the reap: a slot recreated under one of
+        # these keys during the empty is a survivor the catalog cannot show.
+        assert passed_live is live
+        assert before.keys == {"live", "chat-1", "slack_1700.42"}
+        assert before.parent_of == {"chat-1": "old-src"}
+        assert not before.unreadable
+
+    @pytest.mark.asyncio
+    async def test_a_batch_whose_absence_cannot_be_proved_keeps_its_images(
+        self, stores: tuple[Path, Path]
+    ) -> None:
+        """`list_trash` omits a batch it cannot offer and answers empty on a root
+        it cannot read, so it must not decide what was destroyed: a retained batch
+        would read as gone and lose its transcripts' images. Absence is proved per
+        batch by `batch_is_gone`; a batch it cannot prove absent is remaining and
+        nothing of it is reaped."""
+        from kiro_crew.dashboard.handlers.sessions import _ForkLineage
+
+        log = MagicMock()
+        stems = {"b-kept": {"dashboard_chat-9"}, "b-gone": {"dashboard_chat-1"}}
+        reaped: list[set[str]] = []
+
+        async def _reap(passed_log, passed_lineage, keys, *, live=None):  # type: ignore[no-untyped-def]
+            reaped.append(set(keys))
+
+        def _empty(batch_ids, on_progress=None, on_skip=None, expect=None):  # type: ignore[no-untyped-def]
+            on_skip("SKIP_IDENTITY")
+            return 0
+
+        def _gone(batch_id: str) -> bool:
+            if batch_id == "b-kept":
+                raise OSError("stat failed")
+            return True
+
+        job = handler._EmptyJob(job_id="j-test")
+        with (
+            patch.object(handler, "_sel", return_value=_sel_stub()),
+            patch.object(handler, "staged_transcript_stems", return_value=stems),
+            patch.object(handler, "staged_transcript_lineage", return_value={}),
+            patch.object(handler, "_fork_lineage", return_value=_ForkLineage()),
+            patch.object(handler, "empty_trash", _empty),
+            patch.object(handler, "list_trash", side_effect=OSError("root unreadable")),
+            patch.object(handler, "batch_is_gone", _gone),
+            patch.object(handler, "_reap_session_images", _reap),
+        ):
+            await handler._run_empty_job(job, ["b-kept", "b-gone"], "dashboard:ui", {}, log=log)
+
+        assert job.done
+        assert reaped == [{"dashboard_chat-1"}]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_ownership_snapshot_still_empties_and_reaps_nothing(
+        self, stores: tuple[Path, Path]
+    ) -> None:
+        """The snapshot protects image copies; it must never protect the trash. If
+        it cannot be taken, the delete the user asked for still runs and the copies
+        are kept (a logged leak), rather than reaped on a guess."""
+        reaped: list[object] = []
+
+        async def _reap(*args):  # type: ignore[no-untyped-def]
+            reaped.append(args)
+
+        job = handler._EmptyJob(job_id="j-test")
+        with (
+            patch.object(handler, "_sel", return_value=_sel_stub()),
+            patch.object(handler, "staged_transcript_stems", side_effect=OSError("boom")),
+            patch.object(handler, "empty_trash", return_value=3),
+            patch.object(handler, "_reap_session_images", _reap),
+        ):
+            await handler._run_empty_job(job, ["b-gone"], "dashboard:ui", {}, log=MagicMock())
+
+        assert job.done and job.freed_bytes == 3 and not job.error
+        assert reaped == []
+
+    @pytest.mark.asyncio
     async def test_a_job_left_running_is_awaited_by_teardown_not_abandoned(
         self, stores: tuple[Path, Path]
     ) -> None:

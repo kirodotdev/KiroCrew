@@ -19,6 +19,7 @@ from collections.abc import Iterable
 from itertools import chain
 from typing import TYPE_CHECKING
 
+from kiro_crew.dashboard import fork_lineage
 from kiro_crew.dashboard.chat_utils import slot_history_key
 from kiro_crew.dashboard.slot_buffers import serialize_deferred_notes, union_deferred_notes
 from kiro_crew.dashboard.slot_queue_repository import queue_persist_signature
@@ -445,6 +446,11 @@ def merge_empty_window(
             fields["channel_origin"] = True
         if slot.forked_from is not None:
             fields["forked_from"] = slot.forked_from
+        chain_record = fork_lineage.chain_record_for_save(
+            slot.fork_ancestors, getattr(slot, "fork_ancestors_unprovable", False)
+        )
+        if chain_record is not None:
+            fields["fork_ancestors"] = chain_record
         # CLEARABLE: the merge cannot delete a key and rehydrate reads
         # zero as "no local turn outstanding", so the current value is
         # written either way -- a forced save after a turn's teardown
@@ -927,6 +933,11 @@ def build_full_line(
     retired_drop_ids = dropped_note_ids if not rows_only else set()
     if slot.forked_from is not None:
         meta_line["forked_from"] = slot.forked_from
+    chain_record = fork_lineage.chain_record_for_save(
+        slot.fork_ancestors, getattr(slot, "fork_ancestors_unprovable", False)
+    )
+    if chain_record is not None:
+        meta_line["fork_ancestors"] = chain_record
     if slot.linked_session_key:
         # The slot's conversation lives on another session (a channel
         # thread, a cron job). Nothing recreates that binding on

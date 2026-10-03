@@ -31,6 +31,7 @@ from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write, atomic_write_at
 from kiro_crew.chat_attachments import persist_inline_images, same_text_modulo_images
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
+from kiro_crew.constants import SESSION_KEY_MAX_CHARS
 from kiro_crew.executors import run_in_embed_pool  # noqa: F401 - facade re-export
 from kiro_crew.frontmatter import (  # noqa: F401 - facade re-exports
     SKILL_UPDATE,
@@ -250,6 +251,7 @@ SLOT_OWNED_META_KEYS: frozenset[str] = frozenset(
         "color_theme",
         "tags",
         "forked_from",
+        "fork_ancestors",
         "linked_session_key",
         "tab_id",
     }
@@ -1441,6 +1443,19 @@ def can_hold_tab_id_index_entry(key: str) -> bool:
     one rather than an invalidation.
     """
     return transcript_stem(key).startswith(_TAB_ID_INDEX_STEM_PREFIX)
+
+
+#: Bounds every reader of the transcript directory and of anything derived from
+#: it (the lineage catalog snapshot, the staged-trash stem readers) applies at the
+#: point of retention: at most this many entries, none named longer than this.
+#: One population, one policy; a listing past either bound is unprovable and the
+#: reader fails closed. The stem bound IS the session-key bound
+#: (``constants.SESSION_KEY_MAX_CHARS``, the one ``artifacts.MAX_SESSION_KEY_CHARS``
+#: and ``fork_lineage.MAX_ANCESTOR_KEY_CHARS`` re-export): a stem is a folded
+#: session key, so a key admitted by slot creation must list here, or the
+#: lineage snapshot would read as unreadable for an admitted session.
+MAX_TRANSCRIPT_DIRECTORY_ENTRIES = 200_000
+MAX_TRANSCRIPT_STEM_CHARS = SESSION_KEY_MAX_CHARS
 
 
 def transcript_stems(key: str) -> tuple[str, ...]:
@@ -3474,6 +3489,44 @@ class ConversationLog:
 
     def list_sessions(self) -> list[dict]:
         return self._catalog_projection.list_sessions()
+
+    def transcript_stems_on_disk(self) -> set[str]:
+        """Stems of every ``*.jsonl`` in the transcript directory, by name alone.
+
+        :meth:`list_sessions` needs a ``stat`` per file and DROPS a file whose
+        ``stat`` fails, so a caller that must know the catalog is complete
+        compares against this list, which needs no per-file call: a directory
+        listing is one syscall and ``d_type`` answers the symlink question
+        without touching the file. A symlink (handoff alias) is skipped only
+        when that answer is certain; anything unsure is reported, since the
+        caller uses a surplus stem to fail closed.
+        """
+        out: set[str] = set()
+        try:
+            with os.scandir(self._dir) as it:
+                for entry in it:
+                    if not entry.name.endswith(".jsonl"):
+                        continue
+                    try:
+                        if entry.is_symlink():
+                            continue
+                    except OSError:
+                        pass
+                    stem = entry.name[: -len(".jsonl")]
+                    # Bounded at retention: the directory is agent-writable, so
+                    # the count and each name are checked before anything is
+                    # kept. Past either bound nothing about the listing is
+                    # provable, and the error is what the caller fails closed on.
+                    if len(stem) > MAX_TRANSCRIPT_STEM_CHARS:
+                        raise OSError(f"transcript name over {MAX_TRANSCRIPT_STEM_CHARS} chars")
+                    if len(out) >= MAX_TRANSCRIPT_DIRECTORY_ENTRIES:
+                        raise OSError(
+                            f"transcript directory over {MAX_TRANSCRIPT_DIRECTORY_ENTRIES} entries"
+                        )
+                    out.add(stem)
+        except FileNotFoundError:
+            return out
+        return out
 
     def agent_usage(self) -> dict[str, tuple[int, float]]:
         return self._catalog_projection.agent_usage()

@@ -199,3 +199,67 @@ async def test_slot_projection_carries_the_selection_namespace(tmp_path, monkeyp
     slots = rows if isinstance(rows, list) else rows.get("slots", rows)
     row = next(s for s in slots if s["key"] == "projected")
     assert row["agent_kind"] == "template"
+
+
+@pytest.mark.asyncio
+async def test_an_over_bound_session_name_is_refused_at_admission(tmp_path, monkeypatch):
+    """The slot key becomes the owner of the session's image copies and lineage,
+    and the artifact store records that owner whole only up to its bound; a
+    longer name is refused here, before any slot is minted, rather than being
+    truncated downstream into a key that cannot match itself."""
+    from kiro_crew.dashboard.fork_lineage import MAX_SLOT_NAME_CHARS
+
+    state = _turn_state(tmp_path, monkeypatch)
+    app = _make_app_with_agent_routes(state)
+    async with TestClient(TestServer(as_owner(app))) as client:
+        response = await client.post(
+            "/api/chat/slots", json={"name": "n" * (MAX_SLOT_NAME_CHARS + 1)}
+        )
+        assert response.status == 400
+        assert (await response.json())["code"] == "name_too_long"
+        assert not any(len(k) > MAX_SLOT_NAME_CHARS for k in state._slots)
+
+
+@pytest.mark.asyncio
+async def test_a_chat_message_cannot_mint_a_slot_with_an_over_bound_name(tmp_path, monkeypatch):
+    """`POST /api/chat` to a slot that does not exist yet MINTS it, so it is a
+    second admission path for the slot key that owns every image copy the session
+    registers; it applies the same bound as `api_chat_slot_create`, refusing
+    before the mint rather than minting a session whose pictures could never be
+    made durable (the store refuses an over-bound owner)."""
+    from chat_test_helpers import _make_app
+
+    from kiro_crew.dashboard.fork_lineage import MAX_SLOT_NAME_CHARS
+
+    state = _turn_state(tmp_path, monkeypatch)
+    app = _make_app(state)
+    async with TestClient(TestServer(as_owner(app))) as client:
+        response = await client.post(
+            "/api/chat", json={"slot": "n" * (MAX_SLOT_NAME_CHARS + 1), "message": "hi"}
+        )
+        assert response.status == 400
+        assert (await response.json())["code"] == "name_too_long"
+        assert not any(len(k) > MAX_SLOT_NAME_CHARS for k in state._slots)
+
+
+def test_the_slot_name_bound_keeps_the_transcript_lock_sidecar_a_legal_filename(tmp_path):
+    """An admitted name must not only fit the store's owner-key bound; the
+    transcript it names, `dashboard_<slot>.jsonl`, carries a `.jsonl.lock`
+    sidecar that the history layer opens on every save, and a filesystem name
+    component is capped at 255 bytes. A bound that admits a longer name would
+    let one ordinary POST create a session whose every save fails with
+    ENAMETOOLONG, swallowed by the best-effort saver. The bound is pinned to
+    the sidecar's real path, not to a copied constant."""
+    from kiro_crew.dashboard import fork_lineage
+    from kiro_crew.history import ConversationLog
+
+    longest = "n" * fork_lineage.MAX_SLOT_NAME_CHARS
+    log = ConversationLog(tmp_path / "sessions")
+    lock_path = log._lock_path(f"dashboard:{longest}")
+    assert lock_path.name.endswith(".jsonl.lock")
+    assert len(lock_path.name.encode()) == fork_lineage.MAX_FILENAME_COMPONENT_BYTES
+    # One more character and the sidecar name would be over the limit.
+    over = log._lock_path(f"dashboard:{longest}n")
+    assert len(over.name.encode()) > fork_lineage.MAX_FILENAME_COMPONENT_BYTES
+    # The owner-key bound still holds for a fork's source key.
+    assert len(f"dashboard:{longest}") <= fork_lineage.MAX_ANCESTOR_KEY_CHARS

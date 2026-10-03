@@ -22,12 +22,18 @@ import json
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 from aiohttp import web
 
 from kiro_crew.config.paths import config_dir
 from kiro_crew.dashboard.handlers._shared import _is_restricted_session, _read_session_key
+from kiro_crew.dashboard.handlers.sessions import (
+    _fork_lineage,
+    _live_session_keys,
+    _reap_session_images,
+    with_staged_lineage,
+)
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.history import transcript_stems
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -40,6 +46,7 @@ from kiro_crew.session_storage import (
     SessionIndex,
     SessionStorageError,
     SessionUnit,
+    batch_is_gone,
     empty_trash,
     list_trash,
     list_units,
@@ -48,6 +55,8 @@ from kiro_crew.session_storage import (
     restore,
     select_reclaimable,
     staged_targets,
+    staged_transcript_lineage,
+    staged_transcript_stems,
 )
 
 logger = logging.getLogger(__name__)
@@ -524,6 +533,9 @@ async def _run_empty_job(
     batch_ids: list[str],
     caller: str,
     identities: dict[str, BatchIdentity] | None = None,
+    *,
+    log: Any = None,
+    live: Callable[[], set[str] | None] | None = None,
 ) -> None:
     """Run one empty to completion, then audit it.
 
@@ -534,6 +546,14 @@ async def _run_empty_job(
     the delete can refuse a directory swapped into an approved name during this
     handoff. An id alone would have the worker delete whatever now answers to it.
 
+    ``log`` is the conversation log. A transcript destroyed here is permanently
+    deleted, and its chat-image copies live in the artifact store, not in the batch,
+    so this is one of the permanent-delete paths that must reap them (the spec
+    names every such path). The stems and the fork-lineage snapshot are taken
+    BEFORE the empty — the manifest goes with the batch — and the reap runs only
+    for batches that are actually gone afterwards; a kept (skipped) batch keeps
+    its copies, since it is still restorable.
+
     Deliberately not tied to the request that started it: the delete is minutes of
     filesystem work, and a user who closes the tab or walks to another page must
     not be able to abandon it half-done. That was already true by accident (aiohttp
@@ -541,6 +561,25 @@ async def _run_empty_job(
     record is what lets the screen pick the run back up when it returns.
     """
     outcome = "success"
+    stems_by_batch: dict[str, set[str]] = {}
+    lineage = None
+    staged_lineage: dict[str, dict[str, Any] | None] = {}
+    if log is not None:
+        try:
+            stems_by_batch = await asyncio.to_thread(staged_transcript_stems, batch_ids)
+            lineage = await asyncio.to_thread(_fork_lineage, log)
+            # The trashed transcripts' own edges: the catalog walk cannot see a
+            # staged fork's `forked_from`, and once the fork is destroyed those
+            # edges are what makes its kept ancestors reap candidates.
+            staged_lineage = await asyncio.to_thread(staged_transcript_lineage)
+        except Exception:
+            # The empty proceeds regardless: a failed snapshot means the copies of
+            # these sessions are kept (leaked, logged), never that data is not
+            # deleted the user asked to have deleted.
+            logger.warning(
+                "could not snapshot image ownership before emptying trash", exc_info=True
+            )
+            stems_by_batch, lineage, staged_lineage = {}, None, {}
     try:
         job.freed_bytes = await asyncio.to_thread(
             empty_trash,
@@ -573,6 +612,24 @@ async def _run_empty_job(
     finally:
         job.finished_at = time.time()
         job.done = True
+
+    if lineage is not None and stems_by_batch:
+        # Only the batches that are POSITIVELY gone: a kept batch is still
+        # restorable, and `list_trash` omits a batch it cannot offer (or answers
+        # empty on a root it cannot read), so absence is proved per batch by
+        # `batch_is_gone`; anything it cannot prove is treated as remaining.
+        gone: set[str] = set()
+        for batch_id, stems in stems_by_batch.items():
+            try:
+                absent = await asyncio.to_thread(batch_is_gone, batch_id)
+            except Exception:
+                logger.warning("could not confirm batch %r is gone; keeping image copies", batch_id)
+                absent = False
+            if absent:
+                gone |= stems
+        if gone:
+            before = with_staged_lineage(lineage, {stem: staged_lineage.get(stem) for stem in gone})
+            await _reap_session_images(log, before, gone, live=live)
 
     _sel().log_api_access(
         caller=caller,
@@ -703,7 +760,14 @@ async def api_session_storage_empty(request: web.Request) -> web.Response:
         )
         return web.json_response(_empty_job_payload(job), status=202)
     job.task = asyncio.create_task(
-        _run_empty_job(job, targets, _read_session_key(request), identities)
+        _run_empty_job(
+            job,
+            targets,
+            _read_session_key(request),
+            identities,
+            log=getattr(request.app["state"], "conversation_log", None),
+            live=lambda: _live_session_keys(request.app["state"]),
+        )
     )
     return web.json_response(_empty_job_payload(job), status=202)
 

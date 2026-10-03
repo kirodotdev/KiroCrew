@@ -1553,6 +1553,18 @@ MAX_BANNER_CHARS = 500
 # ``validation``. ``artifacts.MAX_CONTENT_BYTES`` is this name, re-exported.
 ARTIFACT_MAX_CONTENT_BYTES = 26_214_400  # 25 MiB
 
+# Longest session key / transcript stem the gateway admits, records and compares.
+# ONE literal for ONE population: the artifact store's owner key
+# (``artifacts.MAX_SESSION_KEY_CHARS``), the fork-lineage ancestor key
+# (``fork_lineage.MAX_ANCESTOR_KEY_CHARS``) and the transcript directory's stem
+# bound (``history.MAX_TRANSCRIPT_STEM_CHARS``) are all this name, re-exported,
+# so a key admitted by one reader is never refused by another: a stem bound that
+# drifted below the owner-key bound would make the lineage snapshot unreadable
+# for an admitted session and switch chat-image reclamation off process-wide.
+# Lives here, in a leaf, because ``history`` and ``artifacts`` cannot import
+# each other.
+SESSION_KEY_MAX_CHARS = 256
+
 #: Why a tool call was denied, for the in-band notice's cause-specific wording
 #: (``dashboard.state.build_refusal_steer_notice``). Defined in this leaf rather
 #: than in ``dashboard.state`` because the messaging core (``messaging.driver``
