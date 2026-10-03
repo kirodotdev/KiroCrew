@@ -28,6 +28,14 @@ const newFolderTab = (rootPath = '/', label = ''): FolderTab => ({
   showSearch: false,
 })
 
+// `p` is root `r` itself or a path below it. Windows drive/UNC paths compare
+// with either separator and case-insensitively.
+const normPath = (x: string) => /^([a-z]:|[\\/]{2})/i.test(x) ? x.replace(/\\/g, '/').toLowerCase() : x
+const underRoot = (p: string, r: string) => {
+  const [a, b] = [normPath(p), normPath(r).replace(/\/+$/, '')]
+  return a === b || a.startsWith(b + '/') || b === ''
+}
+
 const newFileTab = (path: string, folderId: string): FileTab => ({
   id: `of-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
   path, folderId,
@@ -54,6 +62,8 @@ export default function FileExplorerPage() {
   const treeFull = isMobile && treeOpen
   const [contextNode, setContextNode] = useState<TreeEntry | null>(null)
   const [initialized, setInitialized] = useState(false)
+  // The health-derived default root, for tabs opened after initialization.
+  const defaultRootRef = useRef('/')
 
   const activeFolder = useMemo(() => folderTabs.find((t) => t.id === activeFolderId) || folderTabs[0] || null, [folderTabs, activeFolderId])
   const activeFile = useMemo(() => fileTabs.find((t) => t.id === activeFileId) || null, [fileTabs, activeFileId])
@@ -76,9 +86,17 @@ export default function FileExplorerPage() {
       (healthData.home && roots.includes(healthData.home) ? healthData.home : undefined) ??
       roots.find((r) => r.includes('/home/') || r.startsWith('/Users/'))
     const defaultRoot = home || roots[0] || '/'
+    defaultRootRef.current = defaultRoot
     const saved = loadState()
     if (saved && saved.folderTabs?.length) {
-      const ft = saved.folderTabs.map((t: Partial<FolderTab>) => ({ ...newFolderTab(t.rootPath, t.label), id: t.id!, expanded: t.expanded || { [t.rootPath!]: true } }))
+      const ft = saved.folderTabs.map((t: Partial<FolderTab>) => {
+        // A tab outside every allowed root (e.g. the old '/' default) can only
+        // 403, so it reopens at the default root instead.
+        const ok = !!t.rootPath && (!roots.length || roots.some((r) => underRoot(t.rootPath!, r)))
+        return ok
+          ? { ...newFolderTab(t.rootPath, t.label), id: t.id!, expanded: t.expanded || { [t.rootPath!]: true } }
+          : { ...newFolderTab(defaultRoot, t.label), id: t.id! }
+      })
       setFolderTabs(ft)
       setActiveFolderId(saved.activeFolderId || ft[0].id)
       if (saved.fileTabs?.length) {
@@ -209,7 +227,7 @@ export default function FileExplorerPage() {
 
   // ── Tab management ──
   const newFolderTabAction = useCallback(() => {
-    const root = activeFolder?.rootPath || '/'
+    const root = activeFolder?.rootPath || defaultRootRef.current
     const t = newFolderTab(root)
     setFolderTabs((tabs) => [...tabs, t])
     setActiveFolderId(t.id); setActiveFileId(null)
@@ -224,7 +242,7 @@ export default function FileExplorerPage() {
     })
     setFolderTabs((tabs) => {
       const remaining = tabs.filter((t) => t.id !== id)
-      if (remaining.length === 0) { const fresh = newFolderTab('/'); setActiveFolderId(fresh.id); return [fresh] }
+      if (remaining.length === 0) { const fresh = newFolderTab(defaultRootRef.current); setActiveFolderId(fresh.id); return [fresh] }
       setActiveFolderId((cur) => cur === id ? remaining[0].id : cur)
       return remaining
     })
