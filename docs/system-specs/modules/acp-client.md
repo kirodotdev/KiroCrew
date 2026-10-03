@@ -211,11 +211,17 @@ dead predecessor gateway. It never probes the liveness of a pid another process
 wrote to decide a deletion, and it never judges a directory marked by another
 data home. The provider factory marks a work directory it DERIVED from an exact
 generated one-run key -- `subagent:<16 hex>` from `SubagentManager._mint_agent_id`
-(eight hex on the shipped builds whose directories the sweep also recognises), or
-`cron:<8 hex job>:<8 hex run>` from `build_cron_session_context` -- never a
-caller-supplied `cwd`. The key predicate and corresponding directory-name regex
-come from one shared shape table; stable `cron:<job>:<agent>` keys are not
-one-run directories. `AcpProvider.start` writes a `.kirocrew-run-dir` marker before
+(eight hex on the shipped builds whose directories the sweep also recognises),
+`cron:<8 hex job>:<8 hex run>` from `build_cron_session_context`, or
+`memory-consolidation:<store>:<32 hex>` from `llm_helpers.background_turn`, which
+discards the key when the call ends -- never a caller-supplied `cwd`. That key
+counts as one-run only where the walk holds `.kiro` open; on the by-name walk
+(Windows) its folder is never marked, so neither the shutdown reclaim nor the sweep
+removes it, and its name is no sweep candidate. The doctor's census below still
+counts it with the unmarked folders, since counting deletes nothing. The key
+predicate and corresponding directory-name regex come from one shared shape table;
+stable `cron:<job>:<agent>` keys are not one-run directories.
+`AcpProvider.start` writes a `.kirocrew-run-dir` marker before
 any other writer: two ASCII lines, the data-home identity (`data_home_id()`, the
 digest of the resolved `config_dir()`) and the gateway pid. That marker is the
 directory's only provenance: a name under the workspace root is not one (a person
@@ -231,8 +237,12 @@ and the pid in the kernel range; any other shape keeps the directory.
 `AcpProvider.shutdown` removes a marked-by-flag directory only after its client
 positively confirms the root and every tracked child exited (`process_tree_confirmed_dead`),
 and when it holds only Crew's own residue (`.kiro/settings/` with `cli.json` and
-its lock sidecar, plus the marker). The factory flag permits an absent marker on
-this path, so a refused marker write never makes the directory unreclaimable; a
+its lock sidecar, plus the marker) and the `.kiro/agents` folder kiro-cli creates
+in the folder it starts in, while that folder is empty. On platforms without
+descriptor-relative opens (Windows) the by-name walk keeps a tree that holds that
+folder, since it cannot pin `.kiro` against a junction swapped in after the check.
+The factory flag permits an absent marker on this path, so a refused marker write
+never makes the directory unreclaimable; a
 present marker must name this data home AND this process exactly, and anything
 else refuses. The flag says the directory was derived from a one-run KEY, not
 that this instance is the one the registry kept for it, so registration installs
