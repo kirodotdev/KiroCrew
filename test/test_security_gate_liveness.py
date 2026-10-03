@@ -158,7 +158,15 @@ def _url_payload_command(n: int) -> str:
 #: added here fails this gate and has to be re-pinned deliberately, with its reason
 #: written above. The guards that detect a monolith growing back are the per-file cap
 #: and the facade's share below, and both must stay untouched.
-_PACKAGE_LINE_BUDGET = 28_399
+#: Re-pinned for notification-bridge B1 over main's advanced base (28_399): the two
+#: leaves added to ``_CREW_SECRET_LEAVES`` in ``paths.py`` (``notification_settings.json``
+#: and its ``notification-settings-staging`` directory) and the reviewed security
+#: rationale documenting why that egress-authorizing preference is fenced from agent
+#: file tools on macOS/Windows, where the sandbox bind-mount plane does not exist. Two
+#: list entries and their justification comments, not machinery -- disjoint from main's
+#: own growth, so the total is main's base plus this delta. Value set BY MEASUREMENT
+#: after the rebase, not arithmetic.
+_PACKAGE_LINE_BUDGET = 28_432
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

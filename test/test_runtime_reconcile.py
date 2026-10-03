@@ -2277,7 +2277,7 @@ async def test_the_reconcile_calls_a_marker_only_finished_run_orphaned_not_cut_o
     unfinished fragment"), and the terminal ``recovery_action`` written to the
     tombstone must be ``result_available``.
     """
-    from unittest.mock import MagicMock, patch
+    from unittest.mock import AsyncMock, MagicMock, patch
 
     from kiro_crew.subagent import SubagentManager
     from kiro_crew.subagent_persistence import (
@@ -2289,7 +2289,9 @@ async def test_the_reconcile_calls_a_marker_only_finished_run_orphaned_not_cut_o
     )
 
     ro._reset_for_tests()
-    manager = SubagentManager(sessions=MagicMock(), ctx_builder=MagicMock())
+    manager = SubagentManager(
+        sessions=MagicMock(), ctx_builder=MagicMock(), on_orphan_dm=AsyncMock(return_value=True)
+    )
     create_agent_folder("window-orphan", task="a finished answer caught by a restart")
     write_result_chunk("window-orphan", "the whole answer, written minutes before the crash")
     mark_result_complete("window-orphan")
@@ -2301,8 +2303,11 @@ async def test_the_reconcile_calls_a_marker_only_finished_run_orphaned_not_cut_o
 
     captured: list[str] = []
 
-    async def _capture_dm(digest: str) -> None:
+    async def _capture_dm(digest: str) -> bool:
         captured.append(digest)
+        # The owner was reached: under the delivery-gated tombstone contract the
+        # digest DM must report delivery (True) for the orphan to be tombstoned.
+        return True
 
     with (
         patch.object(manager, "_is_pid_alive", return_value=False),

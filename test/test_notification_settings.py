@@ -31,19 +31,19 @@ def settings(monkeypatch, tmp_path) -> ChannelSettings:
 def _make_state(monkeypatch, tmp_path) -> DashboardState:
     monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
     monkeypatch.setattr("kiro_crew.notifications.settings.config_dir", lambda: tmp_path)
-    return DashboardState(
+    state = DashboardState(
         sessions=MagicMock(count=0),
         crons=MagicMock(),
         lessons=MagicMock(),
         start_time=0.0,
     )
+    state.owner_id = "U1"
+    return state
 
 
 class TestChannelSettingsStore:
     def test_mute_persists_and_reloads(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(
-            "kiro_crew.notifications.settings.config_dir", lambda: tmp_path
-        )
+        monkeypatch.setattr("kiro_crew.notifications.settings.config_dir", lambda: tmp_path)
         s = ChannelSettings()
         s.update("system.heartbeat", muted=True)
         # Fresh instance reads back from disk
@@ -75,9 +75,7 @@ class TestChannelSettingsStore:
         settings.update("system.approval", priority="critical")
 
     def test_corrupt_file_falls_back_to_defaults(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(
-            "kiro_crew.notifications.settings.config_dir", lambda: tmp_path
-        )
+        monkeypatch.setattr("kiro_crew.notifications.settings.config_dir", lambda: tmp_path)
         (tmp_path / "notification_settings.json").write_text("{not json", encoding="utf-8")
         s = ChannelSettings()
         assert s.all_settings() == {}
@@ -109,12 +107,24 @@ class TestSinkIntegration:
         state = _make_state(monkeypatch, tmp_path)
         state.notification_channel_settings.update("system.heartbeat", muted=True)
         state._deliver_note(
-            {"ts": "t1", "kind": "heartbeat", "channel": "system.heartbeat",
-             "priority": "default", "title": "hb", "body": "b"}
+            {
+                "ts": "t1",
+                "kind": "heartbeat",
+                "channel": "system.heartbeat",
+                "priority": "default",
+                "title": "hb",
+                "body": "b",
+            }
         )
         state._deliver_note(
-            {"ts": "t2", "kind": "cron", "channel": "system.cron",
-             "priority": "default", "title": "job", "body": "b"}
+            {
+                "ts": "t2",
+                "kind": "cron",
+                "channel": "system.cron",
+                "priority": "default",
+                "title": "job",
+                "body": "b",
+            }
         )
         assert state._unread_count == 1  # only the cron note counts
         hb = state._notification_log[0]
@@ -125,8 +135,14 @@ class TestSinkIntegration:
     def test_passive_priority_never_counts_toward_badge(self, monkeypatch, tmp_path):
         state = _make_state(monkeypatch, tmp_path)
         state._deliver_note(
-            {"ts": "t1", "kind": "subagent", "channel": "system.subagent",
-             "priority": "passive", "title": "s", "body": "b"}
+            {
+                "ts": "t1",
+                "kind": "subagent",
+                "channel": "system.subagent",
+                "priority": "passive",
+                "title": "s",
+                "body": "b",
+            }
         )
         assert state._unread_count == 0
 
@@ -137,8 +153,14 @@ class TestSinkIntegration:
         # Simulate a hand-edited settings file muting approval
         state.notification_channel_settings._settings["system.approval"] = {"muted": True}
         state._deliver_note(
-            {"ts": "t1", "kind": "approval", "channel": "system.approval",
-             "priority": "critical", "title": "a", "body": "b"}
+            {
+                "ts": "t1",
+                "kind": "approval",
+                "channel": "system.approval",
+                "priority": "critical",
+                "title": "a",
+                "body": "b",
+            }
         )
         note = state._notification_log[0]
         assert "silenced" not in note
@@ -147,20 +169,27 @@ class TestSinkIntegration:
 
 
 def _make_app(state) -> web.Application:
+    # The owner gate on the two routing fields reads both token claims, so the
+    # double sets both: ``app == ""`` plus the state's owner as the subject is
+    # what the middleware puts on a dashboard-owner request.
     app = web.Application()
     app["state"] = state
+
+    @web.middleware
+    async def _as_owner(request, handler):
+        request["app"] = ""
+        request["user"] = str(getattr(state, "owner_id", "") or "")
+        return await handler(request)
+
+    app.middlewares.append(_as_owner)
     app.router.add_get("/api/notifications/channels", api_notification_channels)
-    app.router.add_put(
-        "/api/notifications/channels/settings", api_notification_channel_settings
-    )
+    app.router.add_put("/api/notifications/channels/settings", api_notification_channel_settings)
     return app
 
 
 class TestChannelSettingsApi:
     @pytest.mark.asyncio
-    async def test_list_channels_includes_settings_and_protection(
-        self, monkeypatch, tmp_path
-    ):
+    async def test_list_channels_includes_settings_and_protection(self, monkeypatch, tmp_path):
         state = _make_state(monkeypatch, tmp_path)
         state.notification_bus.register_channel("my-app.alerts", "default")
         state.notification_channel_settings.update("my-app.alerts", muted=True)
@@ -198,9 +227,7 @@ class TestChannelSettingsApi:
             body = await resp.json()
         assert resp.status == 200
         assert body["settings"] == {"muted": True}
-        assert state.notification_channel_settings.get("system.heartbeat") == {
-            "muted": True
-        }
+        assert state.notification_channel_settings.get("system.heartbeat") == {"muted": True}
         state.broadcast_ws.assert_called_once()
 
     @pytest.mark.asyncio
@@ -232,9 +259,7 @@ class TestChannelSettingsApi:
     async def test_put_validation_errors(self, monkeypatch, tmp_path):
         state = _make_state(monkeypatch, tmp_path)
         async with TestClient(TestServer(_make_app(state))) as client:
-            r1 = await client.put(
-                "/api/notifications/channels/settings", json={"muted": True}
-            )
+            r1 = await client.put("/api/notifications/channels/settings", json={"muted": True})
             r2 = await client.put(
                 "/api/notifications/channels/settings",
                 json={"channel": "a.b", "priority": "urgent"},
@@ -257,6 +282,11 @@ class TestChannelSettingsApi:
                 json={"channel": "a.b", "muted": True},
             )
         data = json.loads((tmp_path / "notification_settings.json").read_text(encoding="utf-8"))
+        # Exact at both levels, because this is the persistence ratchet: naming the whole
+        # document is what makes an unintended field a failure here. An owner mute stores
+        # just the field -- no provenance bookkeeping is kept, so a stray internal key
+        # reaching disk is the defect this assertion catches. The empty MONITOR_CHANNEL
+        # row is the seed record every write keeps (see _seed_monitor_from_agent).
         assert data == {
             "channel_settings": {
                 "a.b": {"muted": True},
@@ -289,13 +319,19 @@ class TestReviewRegressions:
 
     def test_persist_failure_leaves_memory_unchanged(self, settings, monkeypatch):
         """A failed write must not leave the rejected setting active in
-        memory: persist the candidate first, commit only on success."""
+        memory: persist the candidate first, commit only on success.
+
+        The seam is ``_write_settings_staged``, which is this module's whole writer: the
+        settings write stages inside a masked directory instead of beside the target.
+        Patching any other name leaves the real write intact, and the test then passes
+        without exercising the ordering it exists for.
+        """
         settings.update("a.b", muted=True)
 
         def boom(*args, **kwargs):
             raise OSError("disk full")
 
-        monkeypatch.setattr("kiro_crew.notifications.settings.atomic_write", boom)
+        monkeypatch.setattr("kiro_crew.notifications.settings._write_settings_staged", boom)
         with pytest.raises(OSError):
             settings.update("a.b", muted=False)
         # Memory still reflects the last successfully persisted state
@@ -341,15 +377,11 @@ class TestReviewRegressions:
 
 def _write_settings(tmp_path, channel_settings) -> None:
     data = {"channel_settings": channel_settings}
-    (tmp_path / "notification_settings.json").write_text(
-        json.dumps(data), encoding="utf-8"
-    )
+    (tmp_path / "notification_settings.json").write_text(json.dumps(data), encoding="utf-8")
 
 
 def _read_settings(tmp_path) -> dict:
-    return json.loads(
-        (tmp_path / "notification_settings.json").read_text(encoding="utf-8")
-    )
+    return json.loads((tmp_path / "notification_settings.json").read_text(encoding="utf-8"))
 
 
 class TestSeedMonitorFromAgent:
@@ -357,9 +389,7 @@ class TestSeedMonitorFromAgent:
 
     @pytest.fixture(autouse=True)
     def _config_dir(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(
-            "kiro_crew.notifications.settings.config_dir", lambda: tmp_path
-        )
+        monkeypatch.setattr("kiro_crew.notifications.settings.config_dir", lambda: tmp_path)
 
     def test_agent_mute_seeds_monitor_without_writing_at_load(self, tmp_path):
         _write_settings(tmp_path, {"system.agent": {"muted": True}})
@@ -374,6 +404,9 @@ class TestSeedMonitorFromAgent:
         _write_settings(tmp_path, {"system.agent": {"muted": True}})
         ChannelSettings().update("a.b", muted=True)
         data = _read_settings(tmp_path)
+        # No provenance bookkeeping is stored: an owner mute persists as just the field.
+        # The seeded MONITOR_CHANNEL copy and the raw pre-written system.agent row are
+        # each written through their own path this call.
         assert data == {
             "channel_settings": {
                 "system.agent": {"muted": True},
@@ -429,6 +462,8 @@ class TestSeedMonitorFromAgent:
 
         settings.update("system.agent", muted=True)
         data = _read_settings(tmp_path)
+        # system.agent is written through update() as an owner mute, stored as just the
+        # field; the empty MONITOR_CHANNEL sentinel (the seed record) carries nothing.
         assert data["channel_settings"] == {
             "system.agent": {"muted": True},
             MONITOR_CHANNEL: {},

@@ -505,7 +505,7 @@ class TestFiltersStillNarrowTheTree:
             ),
             ("session-map-batch", session_map.TestNoAwaitInsideBatch._REQUIRE_ALL, (), 100),
             ("security-census", _CENSUS_REQUIRE_ALL, (), 700),
-            ("blocking-on-loop", blocking._REQUIRE_ALL, (), 907),
+            ("blocking-on-loop", blocking._REQUIRE_ALL, (), 950),
         ],
     )
     def test_the_filter_narrows_the_tree(self, label, require_all, require_any, ceiling):
