@@ -162,8 +162,10 @@ def _turn(note: str = "Turn ordinal.") -> Field:
 #: The four billed token dimensions, each required INSIDE the mapping.
 #: ``on_turn_completed`` builds the whole mapping in one literal, defaulting each
 #: dimension to zero, so a present ``tokens`` always carries all four. The parent
-#: field stays optional: the crash-repair closer omits ``tokens`` altogether, and a
-#: nested requirement is checked only once its object is there.
+#: field stays optional: the crash-repair closer omits ``tokens`` altogether, so does
+#: a measured closer whose provider reported no count on any dimension (four zeros
+#: would be an absence written as a measurement), and a nested requirement is
+#: checked only once its object is there.
 _TOKEN_FIELDS: tuple[Field, ...] = (
     Field("input", JSON_INT, required=True),
     Field("output", JSON_INT, required=True),
@@ -797,13 +799,21 @@ _SESSION_TYPES: tuple[EntryType, ...] = (
             Field(
                 "credits",
                 JSON_FLOAT,
-                note="Present on a provider-reported completion; absent on a synthesized close.",
+                note=(
+                    "Present only when the provider billed credits, positive and "
+                    "finite; absent on a synthesized close and on a measured one the "
+                    "provider did not bill in credits."
+                ),
             ),
             Field(
                 "tokens",
                 JSON_OBJECT,
                 fields=_TOKEN_FIELDS,
-                note="Present with credits; absent on a synthesized close.",
+                note=(
+                    "Present only when the provider reported a count above zero on some "
+                    "dimension, then with all four; absent on a synthesized close and on "
+                    "a measured one that reported no count."
+                ),
             ),
             Field(
                 "context",

@@ -109,11 +109,17 @@ file's bytes. An unknown identity never matches, so an older bundle without the
 field falls back to a full rebuild.
 
 **Absent is never read as zero.** `turn/completed` carries `credits` and `tokens`
-only on a provider-reported close, so a synthesized closer omits them. A total
-that counted those turns as costing nothing would state a measurement nobody
-made, so every total in `usage` rides beside the count of turns that contributed
-to it (`turns.credits_reported`, `turns.tokens_reported`), and a caller comparing
-the two learns what the total covers.
+only when the provider reported them, so a synthesized closer omits both and a
+measured one omits whichever the provider did not report. A total that counted
+those turns as costing nothing would state a measurement nobody made, so every total
+in `usage` rides beside the count of turns that contributed to it
+(`turns.credits_reported`, `turns.tokens_reported`), and a caller comparing the two
+learns what the total covers. `tokens_reported` counts a block only when some
+dimension is above zero: logs on disk carry four zeros on closers whose provider
+sent no counts, and a completed turn cannot have cost zero tokens, so an all-zero
+block is read as the absence it is. `credits_reported` does not get the same rule --
+a recorded `0.0` cannot be told from a turn genuinely billed at nothing, and the
+writer omits an unbilled charge instead.
 
 **A session's bill is not only its turns.** Three entry types carry a `credits`
 charge -- `turn/completed`, the two subagent closers, and `background/completed` --

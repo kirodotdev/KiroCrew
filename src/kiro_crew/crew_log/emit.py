@@ -4231,6 +4231,17 @@ def on_turn_completed(
     turn over a window size from another describes no turn at all, and a model switch
     moves the window. Both are absent when the provider reports neither, so an
     unmeasured turn reads as unmeasured rather than as an empty window.
+
+    ``tokens`` and ``credits`` follow the same rule, one field at a time: each is
+    written only when the provider actually reported it. ``TurnUsage`` zero-fills
+    every dimension a provider does not report, so at this seam a zero is "nothing
+    was reported", not a measurement of nothing -- and a zero written as a
+    measurement is what the ``usage`` fold would count as a reporting turn, putting
+    a measured ``0 tokens`` beside a real bill. A present ``tokens`` keeps all FOUR
+    dimensions, zeros included, because its schema requires each member and a zero
+    INSIDE a reported block is a real zero; ``background/completed`` drops the zero
+    members instead. The two writers agree on what an unreported count looks like
+    -- absent -- and differ only in the shape of a reported one.
     """
     data = _turn_closer(
         turn,
@@ -4240,13 +4251,21 @@ def on_turn_completed(
         provider=provider,
         depth=depth,
     )
-    data["credits"] = float(credits)
-    data["tokens"] = {
+    # Positive and finite, or absent: the guard the two subagent closers use. A
+    # provider that does not bill in credits reports 0.0 through ``TurnUsage``,
+    # which is indistinguishable here from a free turn, so the zero is dropped and
+    # absent keeps meaning unmetered.
+    charge = float(credits)
+    if charge > 0 and math.isfinite(charge):
+        data["credits"] = charge
+    tokens = {
         "input": int(input_tokens),
         "output": int(output_tokens),
         "cache_read": int(cache_read_tokens),
         "cache_write": int(cache_write_tokens),
     }
+    if any(count > 0 for count in tokens.values()):
+        data["tokens"] = tokens
     # Written only when the provider actually reported them. ``read_context_tokens``
     # answers (0, 0) for a provider without the accessors, and a stored zero would
     # be indistinguishable from a window of nothing.
@@ -4285,8 +4304,9 @@ def on_turn_failed(
 
     ``tokens`` and ``credits`` are ABSENT rather than zeroed, and that absence is
     the record: no usage event arrived, so nothing was measured, and a turn that
-    streamed real text does not get a durable line claiming it cost nothing. Their
-    absence also tells this synthesized closer from a provider-reported one.
+    streamed real text does not get a durable line claiming it cost nothing. The
+    measured closer omits them too when its provider reported nothing, so absence
+    does not tell this closer from a provider-reported one; ``stop_reason`` does.
     ``duration_ms`` IS measured -- the turn's own elapsed time -- and ``error``
     names the exception CLASS when one was caught, never its message, which can
     carry a path or a credential.
