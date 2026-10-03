@@ -405,6 +405,104 @@ def test_defer_keeps_row_queued_but_ineligible_until_clock_passes(
     assert [e.kind for e in store.events("d")] == ["accepted", "deferred"]
 
 
+def test_deferred_longer_than_counts_the_time_a_row_was_parked(
+    store: TaskStore, clock: Clock
+) -> None:
+    """The memory wait's max-wait read: a re-check does not restart the clock, a
+    claim does, a deferral that lapsed is not a wait any more, and the time a
+    row spent eligible between two deferrals (queued for a slot) is not counted."""
+    kind = model.KIND_SUBAGENT
+    store.accept([_rec("w"), _rec("fresh"), _rec("lapsed"), _rec("slot")])
+    for rid in ("w", "lapsed", "slot"):
+        store.defer(rid, clock.t + 30, reason="low memory")
+    clock.t += 30
+    store.defer("w", clock.t + 30, reason="low memory")  # a re-check, same wait
+    store.defer("fresh", clock.t + 30, reason="low memory")
+    clock.t += 10  # "lapsed" and "slot" are eligible again; "w" is still parked
+    assert [r.id for r in store.deferred_longer_than(kind, 40)] == ["w"]
+    assert store.deferred_longer_than(kind, 41) == []
+    both = store.deferred_longer_than(kind, 10)
+    assert sorted(r.id for r in both) == ["fresh", "w"]
+    assert store.deferred_longer_than(kind, 10, exclude_ids=["w", "fresh"]) == []
+    # "slot" queued 600 s for a slot after its deferral lapsed, then is parked
+    # again: only its 30 + 5 s parked count, not the 610 s since it was first.
+    clock.t += 600
+    store.defer("slot", clock.t + 30, reason="low memory")
+    clock.t += 5
+    assert "slot" not in [r.id for r in store.deferred_longer_than(kind, 36)]
+    assert "slot" in [r.id for r in store.deferred_longer_than(kind, 35)]
+    # A claim ends the wait; a deferral after the re-queue starts a new one.
+    claimed = store.claim("w")
+    assert claimed is not None
+    assert store.transition("w", model.QUEUED, generation=claimed.generation)
+    clock.t += 5
+    store.defer("w", clock.t + 30, reason="low memory")
+    clock.t += 3
+    assert "w" not in [r.id for r in store.deferred_longer_than(kind, 4)]
+    assert "w" in [r.id for r in store.deferred_longer_than(kind, 3)]
+
+
+def test_an_owed_report_outlives_the_process_that_owed_it(
+    store: TaskStore, clock: Clock, tmp_path: Path
+) -> None:
+    """``finish(report_owed=True)`` leaves the row named by ``owed_reports`` -- in
+    a LATER incarnation only -- until ``mark_reported`` clears it."""
+    kind = model.KIND_SUBAGENT
+    store.accept([_rec("owed"), _rec("plain"), _rec("cleared")])
+    assert store.finish("owed", model.FAILED, error="x", report_owed=True)
+    assert store.finish("plain", model.FAILED, error="x")
+    assert store.finish("cleared", model.FAILED, error="x", report_owed=True)
+    store.mark_reported("cleared")
+    # Its own incarnation's rows are in flight in this process, never named.
+    assert store.owed_reports(kind) == []
+    # A refused finish owes nothing: the row is already terminal.
+    assert store.finish("plain", model.FAILED, error="x", report_owed=True) is False
+    store.close()
+    later = TaskStore(store.path, window=4, clock=clock, network_fs=False).open()
+    try:
+        assert [r.id for r in later.owed_reports(kind)] == ["owed"]
+        assert later.owed_reports(model.KIND_CRON) == []
+        later.mark_reported("owed")
+        assert later.owed_reports(kind) == []
+    finally:
+        later.close()
+
+
+def test_owed_reports_pages_after_a_cursor(store: TaskStore, clock: Clock) -> None:
+    """``after`` names only the rows ordered after the previous page's last one, so
+    a reader pages through every owed row, ties on ``updated_at`` included, and
+    never re-reads one whose ``reported`` clear has not landed. Accepted out of
+    id order, so insertion (``rowid``) order would break each tie the other way."""
+    kind = model.KIND_SUBAGENT
+    store.accept([_rec("b"), _rec("a"), _rec("d"), _rec("c")])
+    for task_id in ("b", "a"):  # one tick: a tie broken by id
+        assert store.finish(task_id, model.FAILED, error="x", report_owed=True)
+    clock.advance(1.0)
+    for task_id in ("d", "c"):
+        assert store.finish(task_id, model.FAILED, error="x", report_owed=True)
+    store.close()
+    later = TaskStore(store.path, window=4, clock=clock, network_fs=False).open()
+    try:
+        first = later.owed_reports(kind, limit=3)
+        assert [r.id for r in first] == ["a", "b", "c"]
+        cursor = (first[-1].updated_at, first[-1].id)
+        assert [r.id for r in later.owed_reports(kind, limit=3, after=cursor)] == ["d"]
+        mid = (first[0].updated_at, first[0].id)
+        assert [r.id for r in later.owed_reports(kind, after=mid)] == ["b", "c", "d"]
+    finally:
+        later.close()
+
+
+def test_oldest_unstarted_by_session(store: TaskStore, clock: Clock) -> None:
+    store.accept([_rec("a1", session_key="a"), _rec("b1", session_key="b")])
+    clock.t += 10
+    store.accept([_rec("a2", session_key="a")])
+    assert store.finish("b1", model.FAILED)
+    created = store.get("a1").created_at
+    assert store.oldest_unstarted_by_session(model.KIND_SUBAGENT, ["a", "b", "c"]) == {"a": created}
+    assert store.oldest_unstarted_by_session(model.KIND_SUBAGENT, []) == {}
+
+
 def test_defer_on_terminal_row_is_a_noop(store: TaskStore, clock: Clock) -> None:
     store.accept([_rec("t")])
     assert store.cancel("t") == model.QUEUED

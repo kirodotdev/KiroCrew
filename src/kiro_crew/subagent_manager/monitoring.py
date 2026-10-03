@@ -21,7 +21,9 @@ _glue_logger = _logging.getLogger(__name__)
 #: Longest a start may spend queued for start permits, in total, before it is reaped
 #: as never started. The startup clock pauses while a start is queued, so without a
 #: bound a start parked behind holders that no watchdog bounds would wait forever.
-#: Shares one owner with ``agent.subagent_queue_max_wait_secs`` once that lands.
+#: Not ``agent.subagent_queue_max_wait_secs``: that key bounds a spawn deferred for
+#: memory before it starts, and this caps a started run's wait for permits, which is
+#: a capacity wait and is deliberately not counted as a memory wait.
 _START_QUEUE_MAX_SECS = 1800.0
 
 
@@ -996,6 +998,12 @@ class OrphanStallMonitor(ManagerComponent):
                 self._manager._admission.taskq_reopen_if_due()
             except Exception:
                 logger.debug("Reaper: task-store re-open failed", exc_info=True)
+            # An owed-report replay the store refused is retried here; a no-op
+            # once one replay has read every owed row.
+            try:
+                self._manager._admission.taskq_schedule_owed_replay()
+            except Exception:
+                logger.debug("Reaper: owed-report replay failed", exc_info=True)
             try:
                 compact_cost_log()  # periodic FIFO trim (also bounds a long-running gateway)
             except Exception:

@@ -26,7 +26,7 @@ Files:
 | Module | Owns |
 |---|---|
 | `model.py` | `TaskRecord`, the state vocabulary (`STATES`), the one validated `TRANSITIONS` table, `check_transition`, side-effect classes, lease/backoff constants. |
-| `store.py` | `TaskStore`: open/journal selection, write-before-ack `accept`, atomic `claim`, generation-fenced writes, `cancel` (from anywhere non-terminal, or conditional on `only_from` / `generation`), `defer`, `task_events`, the window reads. `TaskStoreUnavailable`. Network-filesystem detection. |
+| `store.py` | `TaskStore`: open/journal selection, write-before-ack `accept`, atomic `claim`, generation-fenced writes, `cancel` (from anywhere non-terminal, or conditional on `only_from` / `generation`), `defer` and `deferred_longer_than`, the owed-report reads (`finish(report_owed=)`, `mark_reported`, `owed_reports`), `task_events`, the window reads. `TaskStoreUnavailable`. Network-filesystem detection. |
 | `migrate.py` | Schema versioning (`SCHEMA_VERSION`, `apply_schema`) and the idempotent legacy import. |
 | `reconcile.py` | `reconcile_on_boot`: settle every row a dead incarnation still owned. |
 | `__init__.py` | `open_default_store(home)`: open, import, reconcile, in that order. |
@@ -894,6 +894,32 @@ posture tier off entirely. The macOS kernel memory-pressure hold is not a deferr
 is a capacity-style wait in the window (subagent.md), and the runner lane,
 cron and workflow `ctx.agent` gates deliberately do not read the kernel level;
 only the subagent gate acts on it.
+
+The wait is finite. `deferred_longer_than(kind, bound, *, exclude_ids, limit)`
+is the one read that measures it: `queued` rows still parked (`next_run_at` in
+the future) that have spent *bound* seconds parked in their current wait, oldest
+first. The current wait is the `deferred` events after the row's last `claimed`
+or `transition` event (the closers the queued listing applies); each one parks
+the row from its `ts` to its `until`, cut short by the next deferral or by now,
+and a gap between a lapsed deferral and the next one (the row eligible, waiting
+to be picked) is not counted. Every re-check appends one more `deferred` event,
+so a re-check never restarts the clock, and the newest event alone says nothing
+about how long the row has waited. The subagent adapter fails each row it returns past
+`agent.subagent_queue_max_wait_secs` with a generation-fenced `finish` and
+reports `never started: waiting for memory`
+([subagent.md](subagent.md) § Durable task queue).
+
+That `finish` passes `report_owed=True`: the terminal `transition` event then
+carries `report_owed_by` (the writing incarnation) in the same transaction, so
+the report the commit still owes is durable. `mark_reported(task_id)` appends the
+`reported` event that clears it, and `owed_reports(kind, *, limit, after)` names
+the terminal rows whose owing incarnation is NOT this one and that have no
+`reported` event after that transition, oldest terminal first (`updated_at`,
+then `id`): what a later start has to report. `after` is the `(updated_at, id)`
+of the previous page's last row, so a reader pages through every owed row
+without re-reading one whose clear has not landed yet. `oldest_unstarted_by_session(kind, session_keys)` is the
+`created_at` of each key's oldest unstarted row, which the adapter uses to keep
+a retired parent's stamp exactly as long as a row it gates still waits.
 
 ## Journal mode and network filesystems
 

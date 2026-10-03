@@ -145,6 +145,10 @@ class _PumpMixin(ManagerComponent):
             loop = None
         if loop is None or store is None or not SpawnAdmissionCoordinator.pump_off_loop:
             self._drain_queue_sync_impl(refill=self._manager._admission.taskq_refill_window)
+            # After the pass, like the coroutine pump: the rows it re-parked are
+            # the ones whose wait may now be past the bound.
+            if store is not None:
+                self._manager._admission.taskq_expire_memory_waits()
             return
         pending = getattr(self._manager, "_drain_task", None)
         if pending is not None and not pending.done():
@@ -308,6 +312,10 @@ class _PumpMixin(ManagerComponent):
                     )
                     self._unmark_dispatching(params, retained=retained)
                 self._after_dispatch_impl(params, drained, refill=lambda **_kw: 0)
+            # Last, so a row this pass re-checked and re-parked for memory is
+            # already parked again when its wait is measured against the bound.
+            if store is not None:
+                await admission.taskq_expire_memory_waits_async()
         except Exception:
             logger.error("drain pump failed", exc_info=retain_error_detail)
         finally:

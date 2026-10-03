@@ -6535,7 +6535,7 @@
         "adaptive_cap_zero": "waiting to start — starts are paused while this computer is low on memory or overloaded; they resume on their own once it recovers",
         "low_memory": "waiting to start — needs {{required}} of free memory, {{available}} free now; free up memory to continue",
         "low_memory_no_figures": "waiting to start — not enough free memory; free up memory to continue",
-        "memory_pressure": "waiting to start — macOS reports memory pressure; the starts resume on their own once it eases or the running agents finish; starts give up once the pressure has lasted 30 minutes",
+        "memory_pressure": "waiting to start — macOS reports memory pressure; the starts resume on their own once it eases or the running agents finish; starts give up once the pressure outlasts the wait limit",
         "posture_critical": "waiting to start — this computer's memory is critically low ({{available}} free); free up memory to continue",
         "posture_critical_no_figures": "waiting to start — this computer's memory is critically low; free up memory to continue"
       },

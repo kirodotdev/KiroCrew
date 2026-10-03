@@ -80,6 +80,7 @@ from kiro_crew.constants import (  # noqa: F401 - DENY_CAUSE_* resolved by run.p
     DEFAULT_SPAWN_MIN_MEMORY_GB,
     DEFAULT_SUBAGENT_COST_GB,
     DEFAULT_SUBAGENT_MAX_TURNS,
+    DEFAULT_SUBAGENT_QUEUE_MAX_WAIT_SECS,
     DENY_CAUSE_APPROVAL_UNDELIVERABLE,
     DENY_CAUSE_HOOK_ERROR,
     DENY_CAUSE_POLICY,
@@ -1177,13 +1178,12 @@ _RECOVERY_SLOT_WAIT_SECS = 60.0
 _DEDICATED_TOPUP_WAIT_SECS = 60.0
 _DEDICATED_TOPUP_POLL_SECS = 2.0
 # The most one root start waits on the macOS kernel memory-pressure hold, clocked
-# from its first hold; past it the start is ended, never started. A named
-# constant because main has no ``agent.subagent_queue_max_wait_secs`` yet; it
-# carries that key's planned default.
-_PRESSURE_HOLD_MAX_WAIT_SECS = 1800.0
-# A held row's clock older than this belongs to a row that left without a
+# from its first hold, is ``agent.subagent_queue_max_wait_secs`` (read live off
+# the manager, 0 for no bound); past it the start is ended, never started.
+# A held row's clock older than this many times that bound (the key's default
+# when the bound is lower or off) belongs to a row that left without a
 # registration or a refusal (cancelled in the store by another process); dropped.
-_PRESSURE_HOLD_PRUNE_SECS = 4 * _PRESSURE_HOLD_MAX_WAIT_SECS
+_PRESSURE_HOLD_PRUNE_FACTOR = 4
 # The longest gap between two pressure-hold reads still taken as one continuous
 # episode: a few recheck intervals, the cadence its timer keeps while it applies.
 _PRESSURE_EPISODE_MAX_GAP_SECS = 4.0 * MEMORY_PRESSURE_RECHECK_SECS
@@ -3855,6 +3855,15 @@ class SubagentManager:
         # through admission.
         self._taskq: Any = None
         self._taskq_admit_wait_secs: float = 30.0
+        #: ``agent.subagent_queue_max_wait_secs``: how long a memory-deferred row
+        #: may wait before the pump ends it (``taskq_expire_memory_waits``); 0 is
+        #: no bound. Live: :meth:`apply_limits` adopts a rewrite.
+        try:
+            self._subagent_queue_max_wait_secs = max(
+                0, int(KiroCrewConfig.load().agent.subagent_queue_max_wait_secs)
+            )
+        except Exception:
+            self._subagent_queue_max_wait_secs = DEFAULT_SUBAGENT_QUEUE_MAX_WAIT_SECS
         #: Set when ``agent.task_queue_enabled`` is on but the store could not
         #: be opened: every spawn is then REFUSED (typed, ``task_store_unavailable``)
         #: instead of accepted into an in-memory queue that a restart forgets.
@@ -3929,6 +3938,7 @@ class SubagentManager:
             self._taskq_unavailable = None
             self._taskq_reopen_attempts = 0
             if self._reaper_task is not None and not self._reaper_task.done():
+                self._admission.taskq_schedule_owed_replay()
                 self._drain_queue()
 
     async def wait_taskq_ready(self) -> None:
@@ -3979,6 +3989,7 @@ class SubagentManager:
         "agent.subagent_result_ttl_secs",
         "agent.completion_keep",
         "agent.completion_keep_chars",
+        "agent.subagent_queue_max_wait_secs",
     )
 
     #: The subset of ``LIVE_CONFIG_PATHS`` that actually feeds
@@ -4087,6 +4098,10 @@ class SubagentManager:
             pass
         try:
             self._result_ttl_secs = int(agent.subagent_result_ttl_secs)
+        except (TypeError, ValueError):
+            pass
+        try:
+            self._subagent_queue_max_wait_secs = max(0, int(agent.subagent_queue_max_wait_secs))
         except (TypeError, ValueError):
             pass
         # ``agent.approval_mode`` is deliberately NOT adopted here: it is
@@ -6502,8 +6517,8 @@ class SubagentManager:
     def _unqueue(self, agent_id: str, **kwargs: Any) -> dict | None:
         return self._cancellation._unqueue_impl(agent_id, **kwargs)
 
-    def _report_queued_stop(self, params: dict) -> None:
-        return self._cancellation._report_queued_stop_impl(params)
+    def _report_queued_stop(self, params: dict, *, error: str = "") -> "asyncio.Task[bool] | None":
+        return self._cancellation._report_queued_stop_impl(params, error=error)
 
     async def cancel(self, agent_id: str) -> bool:
         return await self._cancellation.cancel_impl(agent_id)

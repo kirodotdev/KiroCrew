@@ -10737,7 +10737,7 @@
         "adaptive_cap_zero": "wartet auf den Start — Starts sind pausiert, solange dieser Computer wenig Speicher hat oder überlastet ist; sie laufen von selbst weiter, sobald er sich erholt",
         "low_memory": "wartet auf den Start — benötigt {{required}} freien Speicher, aktuell {{available}} frei; gib Speicher frei, um fortzufahren",
         "low_memory_no_figures": "wartet auf den Start — nicht genug freier Speicher; gib Speicher frei, um fortzufahren",
-        "memory_pressure": "wartet auf den Start — macOS meldet Speicherdruck; die Starts laufen von selbst weiter, sobald er nachlässt oder die laufenden Agenten fertig sind; Starts geben auf, sobald der Druck 30 Minuten anhält",
+        "memory_pressure": "wartet auf den Start — macOS meldet Speicherdruck; die Starts laufen von selbst weiter, sobald er nachlässt oder die laufenden Agenten fertig sind; Starts geben auf, sobald der Druck länger als das Wartelimit anhält",
         "posture_critical": "wartet auf den Start — der Speicher dieses Computers ist kritisch knapp ({{available}} frei); gib Speicher frei, um fortzufahren",
         "posture_critical_no_figures": "wartet auf den Start — der Speicher dieses Computers ist kritisch knapp; gib Speicher frei, um fortzufahren"
       },

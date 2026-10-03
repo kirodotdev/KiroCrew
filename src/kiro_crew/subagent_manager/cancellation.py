@@ -363,13 +363,23 @@ class CancellationCoordinator(ManagerComponent):
             break
         return row
 
-    def _report_queued_stop_impl(self, params: dict) -> None:
-        """Publish a neutral terminal record for work stopped before startup.
+    def _report_queued_stop_impl(
+        self, params: dict, *, error: str = ""
+    ) -> "asyncio.Task[bool] | None":
+        """Publish the terminal record of work that ended before startup.
 
-        Every stop of a waiting row ends here, whichever path removed it, so
+        A neutral stop by default. With *error* it is the failure that ended the
+        wait instead -- the memory wait's max-wait expiry
+        (``taskq_expire_memory_waits``) -- reported through the same synthetic
+        record, so batch accounting and delivery are the stop's.
+
+        Every end of a waiting row lands here, whichever path removed it, so
         this is where the parent's queued depth is asked for -- once per row,
         each under its own wave; a bulk stop's requests share one read -- and
         the terminal record itself asks for nothing (``queued=True``).
+
+        Returns the report task, or None when no report runs here (no id, or
+        the finalize claim is already another path's).
         """
         self._republish_queue_depth(
             str(params.get("parent_session_key") or ""), str(params.get("batch_id") or "")
@@ -380,13 +390,14 @@ class CancellationCoordinator(ManagerComponent):
             parent_session_key=str(params.get("parent_session_key") or ""),
             _stage_boundary_owner=str(params.get("_stage_boundary_owner") or ""),
             agent=str(params.get("agent") or ""),
-            user_stopped=True,
+            user_stopped=not error,
+            error=error,
             queued=True,
             batch_id=str(params.get("batch_id") or ""),
             batch_total=max(0, int(params.get("batch_total") or 0)),
         )
         if not info.id:
-            return
+            return None
         # The row will never start: drop what this process kept for its start.
         self._manager._forget_pending_start(info.id)
         # Queued runs have no `_agents` record yet. Register every synthetic
@@ -397,11 +408,15 @@ class CancellationCoordinator(ManagerComponent):
         self._manager._agents[info.id] = info
         if not self._manager._claim_finalize(info):
             self._manager._agents.pop(info.id, None)
-            return
-        self._manager._spawn_terminal_report(
+            return None
+        return self._manager._spawn_terminal_report(
             info,
-            source="Queued stop",
-            injection_timeout_reason="delivery timed out after queued subagent stop",
+            source="Queued expiry" if error else "Queued stop",
+            injection_timeout_reason=(
+                "delivery timed out after queued subagent expiry"
+                if error
+                else "delivery timed out after queued subagent stop"
+            ),
             mark_delivered_on_success=False,
             settle_digest=True,
         )
@@ -497,6 +512,16 @@ class CancellationCoordinator(ManagerComponent):
         self._manager._teardown_cancelled_ids.update(
             agent_id for agent_id in approval_parked if agent_id
         )
+        # Rows of this parent that wait in the STORE alone are in neither list, so
+        # the parent's end is stamped too: a later end of one of them (the memory
+        # wait's max-wait expiry) then reports it without injecting into the
+        # conversation this teardown retires. After the gates above, so nothing
+        # here can cost the teardown its snapshot; a manager without admission
+        # (a minimal facade) has no store rows to stamp. The stamp lives in this
+        # process only; a restart forgets it.
+        admission = getattr(self._manager, "_admission", None)
+        if admission is not None:
+            admission.taskq_mark_parent_retired(parent_session_key)
         # A follow-up watcher is a SECOND announce path for the same run, and the id gate
         # cannot see it: when a queued follow-up cannot be delivered the watcher announces a
         # SYNTHETIC failure built with a fresh id, so it walks past a gate keyed on the run
