@@ -1881,6 +1881,7 @@
         "inject_lessons": true,
         "inject_lessons_per_turn": false,
         "inject_activity": true,
+        "essential_max_chars": 64000,
         "migrated": false
       }
     },
@@ -2308,6 +2309,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
+    },
+    {
+      "path": "memory.essential_max_chars",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Essential Context Limit",
+      "help": "Characters a crew member's essential context (identity, persona, preferences, projects and declared guides) may use. When the guides do not fit, whole guides are left out from the end of the agent's resources list and named in an in-band notice; the turn still runs. A member whose identity, persona and profile alone exceed the limit is refused. The session's model window caps the value in force (one eighth of the window at four characters per token, never below 99,000); a session whose model window is unknown is capped as a 1M window, at 500,000. Clamped to [16000, 500000].",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 64000
     },
     {
       "path": "memory.migrated",

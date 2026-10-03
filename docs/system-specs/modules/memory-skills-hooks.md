@@ -1598,20 +1598,38 @@ on a schedule or turn count, and does not assert that every native trim path
 emits a notification; which paths do is recorded per backend in
 [providers](providers.md#native-harness-notifications-relied-on).
 
-They have a separate 64,000-character envelope, including wrappers and identity;
-an over-budget or refused essential aborts context construction with a named
-reason rather than truncating its tail. Ordinary session context yields space
-first. On a small model window, this envelope can exceed the smaller ordinary
-context allocation; it is not a promise that arbitrary-size documents fit any
-model. No query embedding or episodic/semantic search runs during construction.
+They have a separate envelope, including wrappers and identity, of
+`memory.essential_max_chars` characters (default 64,000; clamped to
+16,000-500,000) capped by the session's model window at the protected-context
+ceiling `max(99_000, window * 4 * 0.125)`; a session whose window is unknown
+is capped as the 1M reference window, at 500,000. The envelope is split into a core -- identity,
+the template persona prompt, `SOUL.md`, the template context settings, a
+guide-not-loaded note, `preferences.md`, `projects.md` and the on-demand memory
+note -- and guides: `AGENTS.md`, global and project always-steering, the
+conditional-guide index and declared `file://` resources. An over-budget
+envelope drops whole guides from the tail of declaration order and names each
+one, with its size, in one in-band `essential-context#omitted` notice whose cost
+is reserved before the last guide is admitted, logging a warning; a guide whose
+exact body the harness already loads itself (kiro-cli's declared resources) is
+named there as not repeated and still in force, never as not loaded; an envelope
+that fits renders byte-identical to one that never needed fitting. Folder
+steering is then fitted into what is left, as before. Only a core that alone
+exceeds the envelope, or a refused source, aborts context construction with a
+named reason; nothing is ever truncated mid-document. Ordinary session context
+yields space first. On a small model window, this envelope can exceed the
+smaller ordinary context allocation; it is not a promise that arbitrary-size
+documents fit any model. No query embedding or episodic/semantic search runs
+during construction.
 Owner profile saves validate the candidate preferences/projects together with
-the member persona and configured workspace guides before replacing a file.
+the member persona and configured workspace guides before replacing a file,
+against the smallest envelope any session renders against: the setting capped at
+the 99,000-character protected-context floor.
 Both profile documents share a save lock, preventing concurrent saves from each
 assuming the other's old size. An invalid save keeps the current files intact.
 If the store disappears from configuration during validation, the save returns
 `503 store_unavailable` and preserves the current document.
 Turn-time validation still catches subsequently edited project files and names
-the three largest sources when the complete envelope is too large.
+the three largest remaining sources when the core alone is too large.
 Current member preferences/projects are included when memory context is
 allowed. Explicit memory/project context exclusions and temporary-session read
 restrictions continue to withhold their respective materials; permanent conduct

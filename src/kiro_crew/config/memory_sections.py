@@ -17,6 +17,21 @@ from kiro_crew.effort import EFFORT_LEVELS
 
 logger = logging.getLogger("kiro_crew.config.loader")
 
+# ``memory.essential_max_chars`` -- the configured size of a V2 member's
+# essential-context envelope, in characters. The default is the historical fixed
+# envelope. The floor keeps room for the largest member identity section (the
+# working protocol plus the 4,000-character rules and briefing layers, about
+# 12,000 characters) and the envelope frame, so a lowered setting alone cannot
+# refuse a member whose persona and profile are empty; a larger core still
+# needs a larger setting. The ceiling is the window-scaled
+# protected-context ceiling at the 1M reference window (``1_000_000 * 4.0 *
+# 0.125``): no model window can admit more, so a larger value only ever loads as
+# this one. The value a turn uses is further capped by the session's model
+# window (``member_essential_context.effective_essential_max_chars``).
+ESSENTIAL_MAX_CHARS_DEFAULT = 64_000
+ESSENTIAL_MAX_CHARS_MIN = 16_000
+ESSENTIAL_MAX_CHARS_MAX = 500_000
+
 
 @dataclass
 class MemoryConfig:
@@ -268,6 +283,21 @@ class MemoryConfig:
             "budgeted background block. Off: only preferences and the activity index "
             "ship at session start and older material is read through memory_recall. "
             "Requires inject_memory.",
+        ),
+    )
+    essential_max_chars: int = field(
+        default=ESSENTIAL_MAX_CHARS_DEFAULT,
+        metadata=_meta(
+            "Essential Context Limit",
+            "Characters a crew member's essential context (identity, persona, "
+            "preferences, projects and declared guides) may use. When the guides do "
+            "not fit, whole guides are left out from the end of the agent's resources "
+            "list and named in an in-band notice; the turn still runs. A member whose "
+            "identity, persona and profile alone exceed the limit is refused. The "
+            "session's model window caps the value in force (one eighth of the "
+            "window at four characters per token, never below 99,000); a session "
+            "whose model window is unknown is capped as a 1M window, at 500,000. "
+            "Clamped to [16000, 500000].",
         ),
     )
     migrated: bool = field(

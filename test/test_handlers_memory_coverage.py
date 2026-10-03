@@ -433,6 +433,7 @@ def _cfg(idle: float = 6.0, days: int = 30, migrated: bool = False) -> Any:
     cfg.memory.history_idle_hours = idle
     cfg.memory.history_max_days = days
     cfg.memory.migrated = migrated
+    cfg.memory.essential_max_chars = 64_000
     return cfg
 
 
@@ -539,6 +540,7 @@ class TestMemorySettings:
             "history_idle_hours": 2.5,
             "history_max_days": 14,
             "migrated": True,
+            "essential_max_chars": 64_000,
         }
 
     @pytest.mark.asyncio
@@ -576,6 +578,44 @@ class TestMemorySettings:
         assert data["memory"]["migrated"] is True
         # Unrelated sections survive the read-modify-write.
         assert data["agent"]["provider"] == "acp"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "sent, stored", [(1_000, 16_000), (128_000, 128_000), (9_000_000, 500_000)]
+    )
+    async def test_put_clamps_the_essential_limit_into_its_load_range(
+        self, tmp_path: Path, sent: int, stored: int
+    ) -> None:
+        """The write path stores what the load path would clamp a hand edit to."""
+        cfg_path = tmp_path / "config.json"
+        cfg_path.write_text("{}", encoding="utf-8")
+        state = _make_state()
+        state.consolidator = None
+        req = _make_request(state, method="PUT", json_body={"essential_max_chars": sent})
+        with (
+            patch(f"{_MOD}.KiroCrewConfig.load", return_value=_cfg()),
+            patch(f"{_MOD}.config_path", return_value=cfg_path),
+        ):
+            resp = await mem_mod.api_memory_settings(req)
+        assert _body(resp) == {"ok": True}
+        data = json.loads(cfg_path.read_text(encoding="utf-8"))
+        assert data["memory"]["essential_max_chars"] == stored
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("sent", ["128000", True, 1.5, None])
+    async def test_put_rejects_a_non_integer_essential_limit(self, tmp_path: Path, sent) -> None:
+        cfg_path = tmp_path / "config.json"
+        state = _make_state()
+        req = _make_request(state, method="PUT", json_body={"essential_max_chars": sent})
+        with (
+            patch(f"{_MOD}.KiroCrewConfig.load", return_value=_cfg()),
+            patch(f"{_MOD}.config_path", return_value=cfg_path),
+        ):
+            resp = await mem_mod.api_memory_settings(req)
+        assert resp.status == 400
+        assert "essential_max_chars" in _body(resp)["error"]
+        assert _body(resp)["code"] == "invalid_essential_max_chars"
+        assert not cfg_path.exists()
 
     @pytest.mark.asyncio
     async def test_put_rejects_non_numeric_idle_hours(self, tmp_path: Path) -> None:

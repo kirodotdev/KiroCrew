@@ -200,12 +200,22 @@ def test_tail_and_updated_soul_survive_small_ordinary_context_budget(env):
     env.forbidden.assert_not_called()
 
 
-def test_oversized_essential_refuses_with_source_name_instead_of_partial_prompt(env):
+def test_oversized_guide_is_left_out_by_name_instead_of_refusing_the_turn(env):
+    """An over-budget guide drops out whole and is named; the turn still runs.
+
+    This replaced ``test_oversized_essential_refuses_with_source_name_instead_of_
+    partial_prompt``: the source is still named and never cut mid-body, but the
+    member's core keeps working instead of every turn refusing.
+    """
     (env.project / "AGENTS.md").write_text("x" * 64_001, encoding="utf-8")
-    with pytest.raises(MemberEssentialContextError, match="AGENTS.md"):
-        env.builder.build_message(
-            "Continue", False, memory_store=env.store, member=env.member, project=str(env.project)
-        )
+    message, _ = env.builder.build_message(
+        "Continue", False, memory_store=env.store, member=env.member, project=str(env.project)
+    )
+    assert "x" * 1_000 not in message
+    assert "[Essential source: essential-context#omitted]" in message
+    assert f"{env.project / 'AGENTS.md'} (64,001 characters)" in message
+    assert "Bound Soul: preserve the user's voice." in message
+    assert "Preference anchor: 请保留中文原文。" in message
 
 
 @pytest.mark.asyncio

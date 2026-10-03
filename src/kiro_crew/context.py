@@ -2138,6 +2138,8 @@ class ContextBuilder:
         steering_dirs: tuple[str, ...] = (),
         desk_withheld: bool = False,
         provider_type: str = PROVIDER_ACP,
+        model_window: int | None = None,
+        essential_max_chars: int | None = None,
     ) -> str:
         """Refresh complete member essentials without opening learned memory.
 
@@ -2162,6 +2164,8 @@ class ContextBuilder:
             steering_dirs=steering_dirs,
             desk_withheld=desk_withheld,
             provider_type=provider_type,
+            model_window=model_window,
+            essential_max_chars=essential_max_chars,
         )
 
     def build_session_context(
@@ -2259,6 +2263,7 @@ class ContextBuilder:
                 steering_dirs=steering_dirs,
                 desk_withheld=_desk_withheld(execution_context, desk_member),
                 provider_type=provider_type,
+                model_window=model_window,
             )
 
         # Minimal V1 stays date/time + agent identity. Private V2 also carries
@@ -2918,6 +2923,7 @@ class ContextBuilder:
                 steering_dirs=steering_dirs,
                 desk_withheld=_desk_withheld(execution_context, desk_member),
                 provider_type=provider_type,
+                model_window=model_window,
             )
         if _essentials and not is_new_session:
             parts.append(_essentials)

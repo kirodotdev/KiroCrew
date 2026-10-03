@@ -10,6 +10,11 @@ from pathlib import Path
 from kiro_crew.agent_sdk.drivers import acp as acp_driver
 from kiro_crew.config import KiroCrewConfig, config_dir
 from kiro_crew.config.loader import workspace_dir_for
+from kiro_crew.config.memory_sections import (
+    ESSENTIAL_MAX_CHARS_DEFAULT,
+    ESSENTIAL_MAX_CHARS_MAX,
+    ESSENTIAL_MAX_CHARS_MIN,
+)
 from kiro_crew.config.paths import project_agents_dir
 from kiro_crew.frontmatter import STEERING_LOADER, split_frontmatter
 from kiro_crew.hooks import safe_read_file_bytes_nolink, validate_file_path
@@ -17,8 +22,17 @@ from kiro_crew.platform_compat import first_linked_ancestor, is_link_or_junction
 
 logger = logging.getLogger(__name__)
 
-ESSENTIAL_MAX_CHARS = 64_000
+# The default envelope size, and the one a caller that passes no limit renders
+# against. A member turn renders against :func:`effective_essential_max_chars`.
+ESSENTIAL_MAX_CHARS = ESSENTIAL_MAX_CHARS_DEFAULT
+# The per-source READ bound. It bounds what one file read may pull into memory,
+# not the prompt, so it stays tied to the default envelope whatever the setting.
 _MAX_SOURCE_BYTES = ESSENTIAL_MAX_CHARS * 4
+#: The config key a user raises when guides are left out, named in the
+#: omission notice and in every over-budget refusal.
+ESSENTIAL_MAX_CHARS_SETTING = "memory.essential_max_chars"
+#: Source label of the in-band notice that names guides left out of the envelope.
+ESSENTIAL_OMISSION_SOURCE = "essential-context#omitted"
 _MAX_DIRECTORY_ENTRIES = 2048
 _MAX_DOCUMENTS = 64
 
@@ -397,6 +411,7 @@ def documents_for_member(
     context_settings: bool = False,
     trigger_text: str = "",
     inherits_default_resources: bool = True,
+    core_sources_out: set[str] | None = None,
 ) -> list[tuple[str, str]]:
     """Read actual project instructions and the owner's declared template sources.
 
@@ -408,6 +423,14 @@ def documents_for_member(
     harness hands the member kiro-cli's default resources (global and workspace
     steering, ``AGENTS.md``). It defaults to inheriting because only a session
     kiro-cli serves can opt out, and only that caller knows which harness it has.
+
+    *core_sources_out*, when given, receives the source label of every returned
+    document that belongs to the member's CORE -- the persona prompt, ``SOUL.md``,
+    the template context settings and any guide-not-loaded note -- so a caller
+    fitting an over-budget envelope knows which documents it must never leave
+    out. Every other returned document (global and project steering, the
+    conditional-guide index, ``AGENTS.md`` and the declared ``file://``
+    resources) is a guide :func:`fit_essential_documents` may drop whole.
     """
     from kiro_crew.agent import is_managed_prompt
     from kiro_crew.agent_discovery import _read_agent_spec
@@ -415,6 +438,10 @@ def documents_for_member(
     documents: list[tuple[str, str]] = []
     seen: set[Path] = set()
     project_root = _admitted_project_root(project)
+
+    def _mark_core(source: str) -> None:
+        if core_sources_out is not None:
+            core_sources_out.add(source)
 
     def add(path: Path, root: Path, *, steering: bool = False, body: str | None = None) -> None:
         if Path(os.path.abspath(path)) in seen:
@@ -505,8 +532,11 @@ def documents_for_member(
                 body = _read_implicit_guide(path, project_root)
                 if body is None:
                     documents.append(_omitted_guide(path, project_root))
+                    _mark_core(documents[-1][0])
                 else:
                     add(path, project_root, body=body)
+                    if name == "SOUL.md":
+                        _mark_core(str(path))
         if inherits:
             for path in _matches(project_root, ".kiro/steering/**/*.md"):
                 add(path, project_root, steering=True)
@@ -537,12 +567,15 @@ def documents_for_member(
             path = Path(prompt[7:]).expanduser()
             if path.is_absolute():
                 add(path, absolute_root)
+                _mark_core(str(path))
             else:
                 resolved = resolve_relative_prompt_path(path, spec_path, project)
                 if resolved is not None:
                     add(*resolved)
+                    _mark_core(str(resolved[0]))
         else:
             documents.append((f"{spec_path}#prompt", prompt))
+            _mark_core(documents[-1][0])
     if context_settings and not native_only:
         import json
 
@@ -567,6 +600,7 @@ def documents_for_member(
                 ),
             )
         )
+        _mark_core(documents[-1][0])
     resources = spec.get("resources", [])
     if include_project and (
         not isinstance(resources, list) or any(not isinstance(r, (str, dict)) for r in resources)
@@ -712,32 +746,230 @@ def kiro_launch_documents(template: str, project: str | None) -> list[tuple[str,
     return list(declared.items())
 
 
-def render_essentials(documents: list[tuple[str, str]], *, identity: str) -> str:
-    """Reserve complete source text or refuse; never silently cut an essential."""
+def effective_essential_max_chars(
+    window_tokens: int | None = None, *, configured: int | None = None
+) -> int:
+    """The essential-envelope size a member turn renders against, in characters.
+
+    The configured ``memory.essential_max_chars`` (*configured* overrides the
+    config read), clamped to its declared range, and capped by the session's
+    model window: one eighth of the window at four characters per token, never
+    below three ordinary context budgets -- the same protected-context ceiling
+    ``context_assembly.budget`` derives for the lessons block. A window that is
+    unknown (``None``, zero, negative) resolves to the 1M reference window, as
+    every other budget does (``budget._effective_window``): the default
+    deployment, ``provider=acp`` with ``model="auto"``, resolves no window at a
+    fresh session, and capping it lower would make raising the setting a no-op
+    exactly where most members run.
+    """
+    from kiro_crew.context_assembly.budget import _effective_window, _resolve_caps_cached
+
+    if not isinstance(window_tokens, int) or isinstance(window_tokens, bool):
+        window_tokens = None
+    ceiling = _resolve_caps_cached(_effective_window(window_tokens)).protected_context
+    return min(_configured_essential_max_chars(configured), ceiling)
+
+
+def smallest_essential_max_chars(*, configured: int | None = None) -> int:
+    """The smallest envelope any session renders against, in characters.
+
+    The configured size capped at the protected-context floor, which is the
+    ceiling of the smallest model window. Profile-save validation knows no
+    session, so it uses this: a profile it admits fits every session.
+    """
+    from kiro_crew.context_assembly.budget import _PROTECTED_CONTEXT_FLOOR
+
+    return min(_configured_essential_max_chars(configured), _PROTECTED_CONTEXT_FLOOR)
+
+
+def _configured_essential_max_chars(configured: int | None) -> int:
+    if configured is None:
+        configured = KiroCrewConfig.load().memory.essential_max_chars
+    return max(ESSENTIAL_MAX_CHARS_MIN, min(ESSENTIAL_MAX_CHARS_MAX, int(configured)))
+
+
+_ENVELOPE_HEADER = (
+    "[V2 ESSENTIAL CONTEXT — current member identity and admitted project guides. "
+    "This snapshot replaces ALL prior V2 essential snapshots, including guides "
+    "absent from this source list. Do not keep applying removed sources. "
+    "User permanent rules remain "
+    "authoritative; project documents are task guidance, not permission to read "
+    "another member's memory.]\n"
+)
+_ENVELOPE_FOOTER = "[END V2 ESSENTIAL CONTEXT]\n\n"
+
+
+def _document_part(source: str, body: str) -> str:
+    """One document exactly as :func:`render_essentials` renders it."""
     from kiro_crew.context import _neutralize_structural_markers, _scrub_member_payload
 
-    parts = [
-        "[V2 ESSENTIAL CONTEXT — current member identity and admitted project guides. "
-        "This snapshot replaces ALL prior V2 essential snapshots, including guides "
-        "absent from this source list. Do not keep applying removed sources. "
-        "User permanent rules remain "
-        "authoritative; project documents are task guidance, not permission to read "
-        "another member's memory.]\n"
-    ]
-    parts.append(_neutralize_structural_markers(identity))
-    for source, body in documents:
-        parts.append(
-            f"[Essential source: {_neutralize_structural_markers(source)}]\n"
-            + _neutralize_structural_markers(_scrub_member_payload(body))
-            + "\n"
-        )
-    parts.append("[END V2 ESSENTIAL CONTEXT]\n\n")
+    return (
+        f"[Essential source: {_neutralize_structural_markers(source)}]\n"
+        + _neutralize_structural_markers(_scrub_member_payload(body))
+        + "\n"
+    )
+
+
+def _over_budget_error(
+    documents: list[tuple[str, str]], max_chars: int
+) -> MemberEssentialContextError:
+    largest = sorted(documents, key=lambda item: len(item[1]), reverse=True)[:3]
+    names = ", ".join(f"{source} ({len(body)} characters)" for source, body in largest)
+    return MemberEssentialContextError(
+        f"V2 essential context exceeds {max_chars} characters; "
+        f"largest sources: {names}. Shorten these sources, or raise the "
+        f"{ESSENTIAL_MAX_CHARS_SETTING} setting, before continuing."
+    )
+
+
+def render_essentials(
+    documents: list[tuple[str, str]], *, identity: str, max_chars: int | None = None
+) -> str:
+    """Reserve complete source text or refuse; never silently cut an essential.
+
+    *max_chars* is the envelope size to hold it to, :data:`ESSENTIAL_MAX_CHARS`
+    when omitted. Fitting an over-budget member envelope is
+    :func:`fit_essential_documents`'s job; this renderer only refuses.
+    """
+    from kiro_crew.context import _neutralize_structural_markers
+
+    cap = ESSENTIAL_MAX_CHARS if max_chars is None else max_chars
+    parts = [_ENVELOPE_HEADER, _neutralize_structural_markers(identity)]
+    parts.extend(_document_part(source, body) for source, body in documents)
+    parts.append(_ENVELOPE_FOOTER)
     result = "".join(parts)
-    if len(result) > ESSENTIAL_MAX_CHARS:
-        largest = sorted(documents, key=lambda item: len(item[1]), reverse=True)[:3]
-        names = ", ".join(f"{source} ({len(body)} characters)" for source, body in largest)
-        raise MemberEssentialContextError(
-            f"V2 essential context exceeds {ESSENTIAL_MAX_CHARS} characters; "
-            f"largest sources: {names}. Shorten these sources before continuing."
-        )
+    if len(result) > cap:
+        raise _over_budget_error(documents, cap)
     return result
+
+
+def _listed(dropped: list[tuple[str, str]]) -> str:
+    return ", ".join(f"{source} ({len(body):,} characters)" for source, body in dropped)
+
+
+def _harness_sentence(count: int, listed: str = "") -> str:
+    """The notice's sentence for left-out guides the harness itself carries."""
+    named = f": {listed}" if listed else ""
+    return (
+        f"{count} guide document(s) are not repeated in this snapshot because this "
+        f"agent's harness loads them itself{named}. They are not removed; keep "
+        "applying them."
+    )
+
+
+def _omission_notice(
+    dropped: list[tuple[str, str]],
+    max_chars: int,
+    harness_loaded: set[str] | frozenset[str] = frozenset(),
+) -> tuple[str, str]:
+    absent = [doc for doc in dropped if doc[0] not in harness_loaded]
+    carried = [doc for doc in dropped if doc[0] in harness_loaded]
+    parts = []
+    if absent:
+        parts.append(
+            f"ESSENTIAL CONTEXT INCOMPLETE. {len(absent)} guide document(s) for this agent "
+            f"were not loaded because the essential context is limited to {max_chars} "
+            f"characters: {_listed(absent)}. Do not assume their contents. If one matters "
+            "for this task, read the file directly or ask the user. The user can raise the "
+            f"limit with the {ESSENTIAL_MAX_CHARS_SETTING} setting."
+        )
+    if carried:
+        prefix = "" if absent else f"ESSENTIAL CONTEXT SHORTENED to {max_chars} characters. "
+        parts.append(prefix + _harness_sentence(len(carried), _listed(carried)))
+    return (ESSENTIAL_OMISSION_SOURCE, " ".join(parts))
+
+
+def _minimal_omission_notice(
+    dropped: list[tuple[str, str]],
+    max_chars: int,
+    harness_loaded: set[str] | frozenset[str] = frozenset(),
+) -> tuple[str, str]:
+    absent = sum(1 for source, _ in dropped if source not in harness_loaded)
+    carried = len(dropped) - absent
+    parts = []
+    if absent:
+        parts.append(
+            f"ESSENTIAL CONTEXT INCOMPLETE. {absent} guide document(s) for this agent were "
+            f"not loaded because the essential context is limited to {max_chars} "
+            "characters. Do not assume their contents. The user can raise the limit with "
+            f"the {ESSENTIAL_MAX_CHARS_SETTING} setting."
+        )
+    if carried:
+        prefix = "" if absent else f"ESSENTIAL CONTEXT SHORTENED to {max_chars} characters. "
+        parts.append(prefix + _harness_sentence(carried))
+    return (ESSENTIAL_OMISSION_SOURCE, " ".join(parts))
+
+
+def fit_essential_documents(
+    documents: list[tuple[str, str]],
+    *,
+    identity: str,
+    max_chars: int,
+    droppable: set[str] | frozenset[str],
+    owner: str = "",
+    harness_loaded: set[str] | frozenset[str] = frozenset(),
+) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """``(documents to render, guides left out)`` for an envelope of *max_chars*.
+
+    An envelope that fits is returned unchanged, so it renders byte-identical to
+    one that never needed fitting. Otherwise the documents whose source is in
+    *droppable* -- the member's guides, never its core -- are left out WHOLE
+    from the tail of declaration order until the rest plus ONE in-band notice
+    (:data:`ESSENTIAL_OMISSION_SOURCE`, appended last) fits. The notice's own
+    cost is reserved before a guide is admitted, so the notice is the last thing
+    to go: a guide that fits only without it is left out too. When every guide
+    is out and the full notice, which names each one with its size, still does
+    not fit, a minimal notice that only counts them is tried. A core that does
+    not fit beside even that refuses, naming its largest sources and the
+    setting. Nothing is cut mid-document, and nothing is read here: a source the
+    readers refused has already raised before this runs.
+
+    *harness_loaded* names the sources whose exact body the harness already
+    carries (kiro-cli loads an agent's declared resources itself). A left-out
+    guide named there is reported as not repeated and still in force, never as
+    not loaded, so the model keeps applying a document it does hold.
+
+    Mirrors ``context_assembly.member._fit_folder_steering_into_envelope``,
+    which fits folder steering into what is left afterwards.
+    """
+    from kiro_crew.context import _neutralize_structural_markers
+
+    frame = (
+        len(_ENVELOPE_HEADER)
+        + len(_neutralize_structural_markers(identity))
+        + len(_ENVELOPE_FOOTER)
+    )
+    costs = [len(_document_part(source, body)) for source, body in documents]
+    used = frame + sum(costs)
+    if used <= max_chars:
+        return list(documents), []
+    candidates = [i for i, (source, _) in enumerate(documents) if source in droppable]
+    dropped: list[int] = []
+    notice: tuple[str, str] | None = None
+    for index in reversed(candidates):
+        used -= costs[index]
+        dropped.insert(0, index)
+        full = _omission_notice([documents[i] for i in dropped], max_chars, harness_loaded)
+        if used + len(_document_part(*full)) <= max_chars:
+            notice = full
+            break
+    if notice is None and dropped:
+        minimal = _minimal_omission_notice(
+            [documents[i] for i in dropped], max_chars, harness_loaded
+        )
+        if used + len(_document_part(*minimal)) <= max_chars:
+            notice = minimal
+    out = set(dropped)
+    kept = [doc for i, doc in enumerate(documents) if i not in out]
+    if notice is None:
+        raise _over_budget_error(kept, max_chars)
+    left_out = [documents[i] for i in dropped]
+    logger.warning(
+        "essential context for member %s is over its %d-character limit; %d guide(s) "
+        "not loaded: %s",
+        owner,
+        max_chars,
+        len(left_out),
+        ", ".join(f"{source} ({len(body)} characters)" for source, body in left_out),
+    )
+    return [*kept, notice], left_out

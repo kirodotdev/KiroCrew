@@ -62,6 +62,9 @@ from kiro_crew.config.integration_sections import (
 )
 from kiro_crew.config.memory_sections import (
     DEFAULT_AUTO_INGEST_ARTIFACT_KINDS,
+    ESSENTIAL_MAX_CHARS_DEFAULT,
+    ESSENTIAL_MAX_CHARS_MAX,
+    ESSENTIAL_MAX_CHARS_MIN,
     KnowledgeConfig,
     MemoryConfig,
     SessionSummaryConfig,
@@ -256,6 +259,12 @@ def _build_memory_config(memory_data: dict) -> MemoryConfig:
             memory_data.get("inject_lessons_per_turn", False), False
         ),
         inject_activity=_safe_bool(memory_data.get("inject_activity", True), True),
+        essential_max_chars=_safe_int(
+            memory_data.get("essential_max_chars", ESSENTIAL_MAX_CHARS_DEFAULT),
+            ESSENTIAL_MAX_CHARS_DEFAULT,
+            ESSENTIAL_MAX_CHARS_MIN,
+            ESSENTIAL_MAX_CHARS_MAX,
+        ),
         migrated=memory_data.get("migrated", False),
     )
 

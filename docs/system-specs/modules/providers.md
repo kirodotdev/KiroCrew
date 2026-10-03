@@ -248,7 +248,10 @@ those source versions to the direct `AcpSessionProvider`; other agents' definiti
 cannot supply its ownership. Resource URIs and their order remain unchanged on
 the wire, and conditional, skill and knowledge resources keep native selection.
 Exact template and body matches omit initial manual copies. The complete-envelope
-budget is checked BEFORE omission: 64,000 characters including wrappers; reads
+budget is checked BEFORE omission: `memory.essential_max_chars` characters
+(default 64,000) including wrappers, capped by the model window, with whole
+guides left out and named when it is exceeded
+([memory-skills-hooks](memory-skills-hooks.md)); reads
 refuse above 256,000 bytes per source, and resource expansion is bounded to 64
 unique documents. KAS's existing registration ceiling is 50 custom agents, not a
 file-body budget. An id in `agent_files.KAS_RESERVED_AGENT_IDS` (`default` and

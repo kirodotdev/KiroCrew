@@ -2311,6 +2311,7 @@ class MemoryConfig:
     inject_lessons: bool = True      # inject the [Learned corrections] + [USER PROFILE] blocks into new-session context
     inject_lessons_per_turn: bool = False  # on follow-up messages, add up to 3 matching lessons the session was not shown; requires inject_lessons
     inject_activity: bool = True     # inject the budgeted [Memory activity] block (projects, daily history (14 full days, then decayed summaries and counts to day 180), task facts, relevant episodes); requires inject_memory
+    essential_max_chars: int = 64000 # V2 essential-context envelope, chars; clamped [16000, 500000], capped per turn by the model window (unknown window: as 1M, 500000)
 
 @dataclass
 class KnowledgeConfig:

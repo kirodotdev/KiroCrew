@@ -326,11 +326,17 @@ def _validate_private_profile_update(
     from datetime import datetime
 
     from kiro_crew.config.loader import resolve_agent_bindings
-    from kiro_crew.member_essential_context import ESSENTIAL_MAX_CHARS, MemberEssentialContextError
+    from kiro_crew.member_essential_context import (
+        MemberEssentialContextError,
+        smallest_essential_max_chars,
+    )
 
-    if len(content) > ESSENTIAL_MAX_CHARS:
+    # No session, so no model window: check against the smallest envelope any
+    # session renders against, so a profile admitted here fits every one.
+    max_chars = smallest_essential_max_chars()
+    if len(content) > max_chars:
         raise MemberEssentialContextError(
-            f"{filename} exceeds the {ESSENTIAL_MAX_CHARS}-character essential context budget"
+            f"{filename} exceeds the {max_chars}-character essential context budget"
         )
 
     builder = state.context_builder
@@ -349,6 +355,7 @@ def _validate_private_profile_update(
         member=record.owner_member_id,
         project=str(bindings.workspace_dir),
         profile_overrides={filename: content},
+        essential_max_chars=max_chars,
     )
 
 
@@ -628,6 +635,25 @@ async def api_memory_settings(request: web.Request) -> web.Response:
                 )
         if "migrated" in body:
             updates["migrated"] = bool(body["migrated"])
+        if "essential_max_chars" in body:
+            from kiro_crew.config.memory_sections import (
+                ESSENTIAL_MAX_CHARS_MAX,
+                ESSENTIAL_MAX_CHARS_MIN,
+            )
+
+            raw = body["essential_max_chars"]
+            if isinstance(raw, bool) or not isinstance(raw, int):
+                return web.json_response(
+                    {
+                        "error": "essential_max_chars must be an integer",
+                        "code": "invalid_essential_max_chars",
+                    },
+                    status=400,
+                )
+            # Same range the load path clamps a hand-edited value into.
+            updates["essential_max_chars"] = max(
+                ESSENTIAL_MAX_CHARS_MIN, min(ESSENTIAL_MAX_CHARS_MAX, raw)
+            )
 
         def _apply(data: dict) -> dict | None:
             # Nothing recognised in the body: skip the write rather than reach
@@ -663,6 +689,7 @@ async def api_memory_settings(request: web.Request) -> web.Response:
             "history_idle_hours": cfg.memory.history_idle_hours,
             "history_max_days": cfg.memory.history_max_days,
             "migrated": cfg.memory.migrated,
+            "essential_max_chars": cfg.memory.essential_max_chars,
         }
     )
 

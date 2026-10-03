@@ -39,8 +39,12 @@ def _fit_folder_steering_into_envelope(
     *,
     identity: str,
     owner: str,
+    max_chars: int | None = None,
 ) -> list[tuple[str, str]]:
     """The prefix of *folder_docs* that fits the essentials envelope beside *documents*.
+
+    *max_chars* is the envelope size the turn renders against
+    (``effective_essential_max_chars``); ``ESSENTIAL_MAX_CHARS`` when omitted.
 
     ``render_essentials`` REFUSES an envelope over ``ESSENTIAL_MAX_CHARS`` or
     ``_MAX_DOCUMENTS`` -- correct for a member's own essentials, which must
@@ -64,6 +68,7 @@ def _fit_folder_steering_into_envelope(
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
 
+    cap = ctx.ESSENTIAL_MAX_CHARS if max_chars is None else max_chars
     if isinstance(folder_docs, ctx.SteeringCollection):
         candidates = folder_docs.documents
         ceilings = folder_docs.omissions
@@ -71,7 +76,7 @@ def _fit_folder_steering_into_envelope(
         candidates = folder_docs
         ceilings = []
     try:
-        used = len(ctx.render_essentials(documents, identity=identity))
+        used = len(ctx.render_essentials(documents, identity=identity, max_chars=cap))
     except ctx.MemberEssentialContextError:
         # The member's own essentials already exceed the envelope; the caller's
         # render raises with its own diagnostic. Folder steering adds nothing.
@@ -96,7 +101,7 @@ def _fit_folder_steering_into_envelope(
         # scrubbed spelling is what the envelope carries.
         source = _markers._scrub_member_payload(source)
         cost = _cost(source, body)
-        if used + cost > ctx.ESSENTIAL_MAX_CHARS:
+        if used + cost > cap:
             break
         used += cost
         fitted.append((source, body))
@@ -119,7 +124,7 @@ def _fit_folder_steering_into_envelope(
         # fill every slot would lose folder steering with no trace in the
         # envelope that replaces every prior snapshot. Folder DOCUMENTS still
         # respect the count room above; only the notice is exempt.
-        if used + _cost(*notice) <= ctx.ESSENTIAL_MAX_CHARS:
+        if used + _cost(*notice) <= cap:
             logger.debug(
                 "folder steering truncated for member %s: %d of %d documents fit the envelope",
                 owner,
@@ -136,7 +141,7 @@ def _fit_folder_steering_into_envelope(
                 "[FOLDER STEERING OMISSION: this folder declares steering that does not fit "
                 "beside this member's own essentials; none of it is loaded.]",
             )
-            if used + _cost(*minimal) <= ctx.ESSENTIAL_MAX_CHARS:
+            if used + _cost(*minimal) <= cap:
                 logger.warning(
                     "folder steering omitted entirely for member %s: only the minimal notice fits",
                     owner,
@@ -435,6 +440,8 @@ def build_v2_essentials(
     steering_dirs: tuple[str, ...],
     desk_withheld: bool,
     provider_type: str,
+    model_window: int | None = None,
+    essential_max_chars: int | None = None,
 ) -> str:
     """Refresh complete member essentials without opening learned memory.
 
@@ -447,11 +454,22 @@ def build_v2_essentials(
     (:data:`PROVIDER_ACP`) honours ``chat.disableInheritingDefaultResources``,
     so its verdict is read once here, where the harness is known, and handed
     to every consumer; no consumer reads the setting itself.
+
+    ``model_window`` is the session's model window in tokens, ``None`` when
+    unknown. With ``memory.essential_max_chars`` it sets the envelope size
+    (``effective_essential_max_chars``). An envelope over that size keeps the
+    member's core whole and leaves guides out from the tail with an in-band
+    notice (``fit_essential_documents``); only a core that alone does not fit
+    refuses the turn. ``essential_max_chars``, when given, replaces that size;
+    profile-save validation passes ``smallest_essential_max_chars()`` so a
+    profile it admits fits every session.
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
     from kiro_crew.member_essential_context import (
         MemberEssentialContextError,
         documents_for_member,
+        effective_essential_max_chars,
+        fit_essential_documents,
         member_context_identity,
         render_essentials,
     )
@@ -494,6 +512,10 @@ def build_v2_essentials(
     inherits_default_resources = True
     if profile_overrides is None and include_project and provider_type == ctx.PROVIDER_ACP:
         inherits_default_resources = ctx.member_inherits_default_resources(project)
+    # The member's CORE (persona prompt, SOUL.md, context settings, the
+    # profile anchors and recall note appended below) is never left out; every
+    # other document the readers return is a guide the fit below may drop whole.
+    core_sources: set[str] = set()
     documents = documents_for_member(
         template,
         project,
@@ -502,6 +524,7 @@ def build_v2_essentials(
         trigger_text=trigger_text,
         include_project=include_project,
         inherits_default_resources=inherits_default_resources,
+        core_sources_out=core_sources,
     )
     if execution_template and execution_template != template:
         sources = dict(documents)
@@ -513,6 +536,7 @@ def build_v2_essentials(
             trigger_text=trigger_text,
             include_project=include_project,
             inherits_default_resources=inherits_default_resources,
+            core_sources_out=core_sources,
         ):
             if source in sources and sources[source] != body:
                 raise MemberEssentialContextError(
@@ -545,6 +569,7 @@ def build_v2_essentials(
     # opt-out a folder document whose canonical path the template already
     # delivered is not collected again. Same verdict as the snapshot, read
     # once above.
+    guide_sources = frozenset(source for source, _ in documents) - core_sources
     folder_docs: SteeringCollection = ctx.SteeringCollection()
     folder_insert_at = len(documents)
     if steering_dirs and include_project:
@@ -591,12 +616,35 @@ def build_v2_essentials(
                 "current conversation already answers the question.",
             )
         )
+    # Guides first, folder steering into what is left, as before. Every guide
+    # sits before ``folder_insert_at`` and the notice is appended last, so the
+    # insertion point moves back by exactly the number left out.
+    max_chars = (
+        effective_essential_max_chars(model_window)
+        if essential_max_chars is None
+        else essential_max_chars
+    )
+    # A guide whose exact body the harness already carries (kiro-cli loads an
+    # agent's declared resources itself) is named as not repeated, never as not
+    # loaded; the same byte match blanks it from the native envelope below.
+    native_bodies = native_documents or {}
+    documents, left_out = fit_essential_documents(
+        documents,
+        identity=identity,
+        max_chars=max_chars,
+        droppable=guide_sources,
+        owner=owner,
+        harness_loaded=frozenset(
+            source for source, body in documents if native_bodies.get(source) == body
+        ),
+    )
+    folder_insert_at -= len(left_out)
     if folder_docs:
         fitted = _fit_folder_steering_into_envelope(
-            documents, folder_docs, identity=identity, owner=owner
+            documents, folder_docs, identity=identity, owner=owner, max_chars=max_chars
         )
         documents[folder_insert_at:folder_insert_at] = fitted
-    envelope = render_essentials(documents, identity=identity)
+    envelope = render_essentials(documents, identity=identity, max_chars=max_chars)
     if native_envelope_out is not None:
         native = native_documents or {}
         native_envelope_out.append(
@@ -611,6 +659,7 @@ def build_v2_essentials(
                     for source, body in documents
                 ],
                 identity=identity,
+                max_chars=max_chars,
             )
         )
     return envelope

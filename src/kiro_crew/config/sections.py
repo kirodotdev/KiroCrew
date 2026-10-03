@@ -79,6 +79,9 @@ from kiro_crew.config.integration_sections import (  # noqa: F401
 )
 from kiro_crew.config.memory_sections import (  # noqa: F401
     DEFAULT_AUTO_INGEST_ARTIFACT_KINDS,
+    ESSENTIAL_MAX_CHARS_DEFAULT,
+    ESSENTIAL_MAX_CHARS_MAX,
+    ESSENTIAL_MAX_CHARS_MIN,
     KnowledgeConfig,
     MemoryConfig,
     MemoryStoreConfig,
