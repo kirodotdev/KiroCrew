@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from kiro_crew.agent import SharedAgentHomeRefused
 from kiro_crew.agent_spec_format import (
     is_agent_spec_name,
     is_markdown_spec,
@@ -70,6 +71,9 @@ def _census_source_name(label: str) -> str:
 class DisconnectScope:
     """What one Disconnect did, decided and acted on inside a single lock."""
 
+    # Whether the configured entry is actually GONE. False when no scope configured
+    # it and false when the purge was refused, because both end with the file in the
+    # state the caller asked to change -- and the dashboard renders this as "removed".
     entry_removed: bool
     grant_shared_with: tuple[str, ...]
     grant_removed: tuple[str, ...]
@@ -558,12 +562,32 @@ async def remove_provider_entry(
         owned_scopes, sharers_by_key, unprovable, owned_urls = _judge(configured, specs)
         census_gap = bool(unreadable or unprovable)
         shared = tuple(sorted({name for names in sharers_by_key.values() for name in names}))
+        # Whether the config purge was REFUSED. The revoke below proceeds either way
+        # -- a live credential is worse than a stale entry -- but a refusal means the
+        # entry is still mounted, and ``entry_removed`` is what the dashboard renders
+        # as "removed". Reporting the removal this transaction was not allowed to make
+        # tells the operator to stop looking at the one thing still needing a fix.
+        purge_refused = False
         if owned_scopes:
             # Shielded, not a bare to_thread: a cancelled request task would release
             # the MCP lock while the worker is still rewriting the store, letting a
             # concurrent purge interleave with this stale snapshot. mcp.py ships this
             # helper for exactly that, and its docstring names the hazard.
-            await _offload_config_write(_purge_server_config, slug, scopes=owned_scopes)
+            try:
+                await _offload_config_write(_purge_server_config, slug, scopes=owned_scopes)
+            except SharedAgentHomeRefused:
+                # The config purge is cleanup; the grant revoke below is the
+                # security half of a disconnect, and it is local to this data
+                # home. Letting the refusal propagate would skip the revoke and
+                # leave the credential live, which is strictly worse than a
+                # config entry this instance was never allowed to rewrite.
+                purge_refused = True
+                logger.warning(
+                    "Disconnect could not purge the %r entry: another data home owns the "
+                    "shared agent specs, so that entry stays until its owner rewrites it; "
+                    "revoking the grant anyway",
+                    slug,
+                )
         else:
             logger.info(
                 "Disconnect left the %r entry alone: no scope configures it at this endpoint",
@@ -658,7 +682,7 @@ async def remove_provider_entry(
         rearm_invalidated_provider(slug)
 
     return DisconnectScope(
-        entry_removed=bool(owned_scopes),
+        entry_removed=bool(owned_scopes) and not purge_refused,
         grant_shared_with=shared,
         grant_removed=tuple(removed),
         census_incomplete=census_gap,

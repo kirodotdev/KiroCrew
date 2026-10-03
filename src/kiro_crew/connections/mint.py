@@ -433,7 +433,12 @@ def _write_mint_agent_spec(slug: str) -> tuple[str, str]:
     # what it must never do is miss one that exists.
     if not _record_mint_spec(str(path)):
         raise OSError(f"could not record mint spec {name}")
-    _agent._atomic_json_write(
+    # ``write_owner_derived_spec``: this body is one entry copied verbatim out of
+    # the OWNER's on-disk spec, in a uniquely named file this flow deletes at
+    # release, so it pins nothing of this instance into the shared agents dir
+    # and the ownership guard must not refuse it -- otherwise every Connect
+    # fails on a relocated or worktree-booted instance.
+    _agent.write_owner_derived_spec(
         path,
         _mint_spec_body(name, {alias: entry}, f"Ephemeral OAuth approval-URL mint for {alias}."),
     )

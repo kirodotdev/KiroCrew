@@ -35,7 +35,9 @@ from kiro_crew.acp_backends import (
 from kiro_crew.agent import (
     AGENT_FILENAME,
     OWNED_KIRO_AGENT_FILES,
+    SharedAgentHomeRefused,
     _atomic_json_write,
+    _declined_foreign_spec_write,
     _refresh_forked_templates,
     _spec_path_is_safe,
     agents_spec_lock,
@@ -1858,6 +1860,16 @@ async def api_capability_mcp_install(request: web.Request) -> web.Response:
     server_id = body.get("server_id", "").strip()
     if not server_id:
         return web.json_response({"error": "server_id required"}, status=400)
+    # Ownership BEFORE the first mutation: the package manager runs ahead of
+    # the spec write, so a refusal reached only at the write leaves the
+    # package installed while the spec still declares none of it.
+    from kiro_crew.dashboard.handlers.mcp import (  # noqa: E402 circular
+        _agent_home_not_owned,
+    )
+
+    not_owned = await asyncio.to_thread(_agent_home_not_owned, server_id)
+    if not_owned is not None:
+        return not_owned
     mgr = _capability_manager()
     if not mgr.available():
         return web.json_response({"error": _CAPABILITY_UNAVAILABLE}, status=503)
@@ -1874,7 +1886,17 @@ async def api_capability_mcp_install(request: web.Request) -> web.Response:
             # _mcp_lock and does a full RMW of kirocrew.json. If a concurrent app
             # registration holds that lock, a direct call would block the gateway
             # loop until it releases. Every other caller offloads — match it.
-            await asyncio.to_thread(_sync_mcp_to_agent, server_id, True)
+            try:
+                await asyncio.to_thread(_sync_mcp_to_agent, server_id, True)
+            except SharedAgentHomeRefused:
+                # Reached only when ownership flipped DURING the package call
+                # above: the preflight ran before it. Answered as the refusal it
+                # is, like every other write failure on this path.
+                from kiro_crew.dashboard.handlers.mcp import (  # noqa: E402 circular
+                    _agent_home_not_owned_response,
+                )
+
+                return _agent_home_not_owned_response(server_id)
         state: DashboardState = request.app["state"]
         state.push_refresh("agents")
         return web.json_response({"ok": True, "server_id": server_id})
@@ -1894,6 +1916,16 @@ async def api_capability_mcp_uninstall(request: web.Request) -> web.Response:
     server_id = body.get("server_id", "").strip()
     if not server_id:
         return web.json_response({"error": "server_id required"}, status=400)
+    # Ownership BEFORE the first mutation: the package manager runs ahead of
+    # the spec write, so a refusal reached only at the write leaves the
+    # package uninstalled while the spec still mounts it.
+    from kiro_crew.dashboard.handlers.mcp import (  # noqa: E402 circular
+        _agent_home_not_owned,
+    )
+
+    not_owned = await asyncio.to_thread(_agent_home_not_owned, server_id)
+    if not_owned is not None:
+        return not_owned
     mgr = _capability_manager()
     if not mgr.available():
         return web.json_response({"error": _CAPABILITY_UNAVAILABLE}, status=503)
@@ -1910,7 +1942,17 @@ async def api_capability_mcp_uninstall(request: web.Request) -> web.Response:
         async with _get_config_lock():
             # Off the loop for the same reason as install: the synchronous
             # _mcp_lock RMW must not block the gateway if app registration holds it.
-            await asyncio.to_thread(lambda: _sync_mcp_to_agent(server_id, False, remove=True))
+            try:
+                await asyncio.to_thread(lambda: _sync_mcp_to_agent(server_id, False, remove=True))
+            except SharedAgentHomeRefused:
+                # Reached only when ownership flipped DURING the package call
+                # above: the preflight ran before it. Answered as the refusal it
+                # is, like every other write failure on this path.
+                from kiro_crew.dashboard.handlers.mcp import (  # noqa: E402 circular
+                    _agent_home_not_owned_response,
+                )
+
+                return _agent_home_not_owned_response(server_id)
         state: DashboardState = request.app["state"]
         state.push_refresh("agents")
         return web.json_response({"ok": True, "server_id": server_id})
@@ -4345,6 +4387,17 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                         # _write_spec_file and the PUT handler). Returns the
                         # skills the WRITTEN spec maps, for the reply.
                         with agents_spec_lock(f.parent):
+                            # Ownership BEFORE any bookkeeping, and inside this
+                            # lock: the model branch below writes a per-home
+                            # sidecar, and the spec write that can refuse comes
+                            # after it. Refusing only there answered 409 with
+                            # the sidecar already flipped, so the pin recorded a
+                            # model the spec on disk never carried. Asked here
+                            # the request mutates nothing at all.
+                            if _declined_foreign_spec_write(f):
+                                raise SharedAgentHomeRefused(
+                                    f"{f} belongs to another Kiro Crew data home"
+                                )
                             # The pre-lock ambiguity check re-run where it
                             # decides: a second claimant that landed after the
                             # scan (a package install) must refuse, not let
@@ -4419,6 +4472,25 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                                 "error": f"'{name}' matches more than one template file; "
                                 "rename one first.",
                                 "code": "ambiguous_template_name",
+                            },
+                            status=409,
+                        )
+                    except SharedAgentHomeRefused:
+                        # The edit was DISCARDED, so it must not be reported as
+                        # saved. This instance's data home does not own the
+                        # agents directory the template lives in, so writing
+                        # would re-pin another gateway's spec to this one's venv
+                        # and home. 409: the state on disk belongs to a
+                        # different owner, which retrying cannot change —
+                        # the remedy is to give this instance its own
+                        # KIRO_HOME, and the gateway log names the directory.
+                        return web.json_response(
+                            {
+                                "error": (
+                                    f"'{name}' is owned by another Kiro Crew data home; "
+                                    "this instance will not rewrite it."
+                                ),
+                                "code": "agent_home_not_owned",
                             },
                             status=409,
                         )
