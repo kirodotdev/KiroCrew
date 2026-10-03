@@ -77,6 +77,7 @@ import {
 import { useImeGuard } from '../../hooks/useImeGuard'
 import { usePreviewFlag } from '../../hooks/usePreviewFlag'
 import { PREVIEW_CREW } from '../../utils/previewFlags'
+import { invalidateFoldersWhenIdle } from '../../api/chatFoldersWrite'
 
 /**
  * Command Bar — the ⌘K launcher.
@@ -1592,7 +1593,9 @@ export default function CommandBarOverlay({
                   // WebSocket push that would seed it is not guaranteed to arrive. Left
                   // uninvalidated, the sidebar can keep rendering a tree without the new
                   // folder and the next run reads the same stale list.
-                  () => queryClient.invalidateQueries({ queryKey: ['chat-folders'] }),
+                  // Through the idle gate so the refetch cannot land inside a
+                  // pending optimistic folder write in the sidebar.
+                  () => invalidateFoldersWhenIdle(queryClient),
                 )
               }
             } finally {

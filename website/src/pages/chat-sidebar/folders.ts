@@ -7,6 +7,7 @@ import { useOptimisticConfigPaths, setConfigPathValue } from '../settings/useOpt
 import { useFolderSortRead, type FolderSortConfigBody } from '../../hooks/useFolderSortMode'
 import { type FolderSortMode, folderComparator, coveredByHiddenAncestor, collectFolderSubtreeIds } from '../../utils/folderTree'
 import { api } from '../../api/client'
+import { CHAT_FOLDERS_WRITE_KEY, invalidateFoldersWhenIdle } from '../../api/chatFoldersWrite'
 import { errMessage } from '../../utils/thunkError'
 import { i18nT } from '../../i18n/t'
 import { computeActiveSubtree, folderIsHidden } from '../../utils/folderVisibility'
@@ -385,15 +386,20 @@ export function useFolderMutations({ queryClient, setFolderActionError, folders 
         tags: v.tags && v.tags.length > 0 ? v.tags : undefined,
         steering_dirs: v.steeringDirs && v.steeringDirs.length > 0 ? v.steeringDirs : undefined,
       }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['chat-folders'] }),
+    // Through the idle gate, not a direct invalidate: a refetch here would
+    // land inside a still-pending update's optimistic window.
+    onSuccess: () => invalidateFoldersWhenIdle(queryClient),
     onError: (e) => setFolderActionError((errMessage(e) || i18nT('components.errorBoundary.something_went_wrong'))),
   })
   const deleteFolderMutation = useMutation({
     mutationFn: (id: string) => api.deleteChatFolder(id),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['chat-folders'] }),
+    // Through the idle gate, not a direct invalidate: a refetch here would
+    // land inside a still-pending update's optimistic window.
+    onSuccess: () => invalidateFoldersWhenIdle(queryClient),
     onError: (e) => setFolderActionError((errMessage(e) || i18nT('components.errorBoundary.something_went_wrong'))),
   })
   const updateFolderMutation = useMutation({
+    mutationKey: CHAT_FOLDERS_WRITE_KEY,
     mutationFn: ({ id, body }: { id: string; body: object; onCommitted?: () => void }) => api.updateChatFolder(id, body),
     onMutate: async ({ id, body }) => {
       await queryClient.cancelQueries({ queryKey: ['chat-folders'] })
@@ -430,7 +436,11 @@ export function useFolderMutations({ queryClient, setFolderActionError, folders 
         return cur as unknown as ChatFolder
       }))
     },
-    onSettled: () => queryClient.invalidateQueries({ queryKey: ['chat-folders'] }),
+    // Refetch once the LAST overlapping write settles (see
+    // invalidateFoldersWhenIdle). An earlier write's settle would otherwise
+    // refetch while a later one is still unacknowledged, and that reply would
+    // paint the later write's pre-PATCH value over its optimistic one.
+    onSettled: () => invalidateFoldersWhenIdle(queryClient),
   })
   const toggleCollapse = useCallback((id: string) => {
     const f = folders.find(x => x.id === id)

@@ -88,6 +88,28 @@ interface DashboardState {
    *  reply travelled and the reply is older than the screen for that key.
    *  Entries leave when the request settles. */
   slotFetchWriteMark: Record<string, number>
+  /** Per key (indexed through `stampKey`), the value of `slotWriteSeq` when the
+   *  row JOINED `slots` -- from a live frame, a create, a resume or a fork. A
+   *  `fetchSlots` reply whose mark is below it was dispatched before the row
+   *  existed here, so its omission of the key says nothing about the key and
+   *  must not remove it. A row introduced by an HTTP reply is not stamped:
+   *  another overlapping reply may authoritatively omit it, and treating the
+   *  HTTP observation as a local addition would preserve a removed row. Kept
+   *  apart from `slotWrittenAt` on purpose: a row that was merely PATCHED
+   *  mid-flight and is absent from the reply was removed on the server, and
+   *  that omission is authoritative. Pruned with `slotWrittenAt`. */
+  slotAddedAt: Record<string, number>
+  /** Keys (indexed through `stampKey`) the most recent full live `slots` frame
+   *  listed. Frames on one socket arrive in the order the server serialized
+   *  them, so a frame that omits a key an earlier frame listed reports a real
+   *  removal, and `sseSlots` fences in-flight `fetchSlots` replies for that key.
+   *  A key no frame has listed yet -- a row that is here only through
+   *  `addSlotOptimistic`, a create, or an HTTP reply -- is not fenced: the
+   *  omitting frame may have been serialized before the row existed, and a
+   *  reply that lists it is then newer than the frame, not stale. Replaced by
+   *  each full frame; cleared when any authoritative list drops the key or a
+   *  non-frame writer adds it. */
+  slotListedLive: Record<string, true>
   // Slot keys in the order the session sidebar actually DISPLAYS them
   // (pinned-first + the user's sort, flat-view aware). Published by
   // ChatSidebar; consumed by the chat-jump / chat-cycle keyboard shortcuts and
@@ -300,6 +322,8 @@ const initialState: DashboardState = {
   slotWriteSeq: 0,
   slotWrittenAt: {},
   slotFetchWriteMark: {},
+  slotAddedAt: {},
+  slotListedLive: {},
   sidebarOrder: [],
   approvalMode: 'normal',
   channelTrusted: false,
@@ -387,6 +411,15 @@ const reconcileSlots = (state: DashboardState, liveKeys: Set<string>, evictStale
     state.unreadSlots = drained
     persistSharedUnread({}, unread.filter(k => !liveKeys.has(k)))
     _relayUnreadToParent(JSON.stringify(state.unreadSlots))
+  }
+  // Dropping either membership record only disables a later restore/fence, so
+  // stale HTTP lists may safely prune them even though their other irreversible
+  // eviction must wait. `liveKeys` includes rows restored as newer than a reply.
+  for (const stamped of Object.keys(state.slotListedLive ?? {})) {
+    if (!liveKeys.has(slotKeyOfStamp(stamped))) delete state.slotListedLive[stamped]
+  }
+  for (const stamped of Object.keys(state.slotAddedAt ?? {})) {
+    if (!liveKeys.has(slotKeyOfStamp(stamped))) delete state.slotAddedAt[stamped]
   }
   // Eviction is NOT recoverable, so it is skipped when the caller cannot vouch
   // for the list's freshness: an HTTP reply in flight can be older than the live
@@ -619,6 +652,63 @@ const stampSlotWrite = (state: DashboardState, key: string): void => {
   state.slotWrittenAt[stampKey(key)] = seq
 }
 
+/** Record that `key` just JOINED `slots` (see `DashboardState.slotAddedAt`).
+ *  Shares `slotWriteSeq` with `stampSlotWrite`, so both compare against the
+ *  same `fetchSlots` mark. */
+const stampSlotAdd = (state: DashboardState, key: string): void => {
+  const seq = (state.slotWriteSeq ?? 0) + 1
+  state.slotWriteSeq = seq
+  if (!state.slotAddedAt) state.slotAddedAt = {}
+  state.slotAddedAt[stampKey(key)] = seq
+}
+
+/** Put back the rows a `fetchSlots` reply omitted only because it predates them.
+ *
+ *  A row that joined `slots` after the request was dispatched (its `slotAddedAt`
+ *  is above the request's mark) cannot be in a reply the server serialized
+ *  before it existed, so its absence is not a removal. Without this every poll
+ *  that crossed a create blinked the new row out and the next live frame put
+ *  it back, re-flowing the whole folder each time -- continuously while an
+ *  agent creating sessions through the dashboard MCP keeps the lineage poll
+ *  running. A real removal still arrives as its own frame (`slot_patch`
+ *  `removed`, or a full list that omits the key), and those are applied as-is.
+ *
+ *  Each kept row goes back after the nearest row that preceded it on screen and
+ *  is in the result, so it keeps its place rather than dropping to one end; the
+ *  row object itself is the one on screen, so `applySlots` reuses its identity.
+ *
+ *  This holds even for a key a live frame fenced this reply on: the fence is
+ *  about the row that existed when it fired, and a row whose `slotAddedAt` is
+ *  above the mark was (re)created after the request, so the reply cannot
+ *  describe it either way. */
+const restoreRowsNewerThanReply = (
+  state: DashboardState,
+  requestId: string | undefined,
+  rows: ChatSlot[],
+): ChatSlot[] => {
+  if (requestId === undefined) return rows
+  const mark = state.slotFetchWriteMark?.[requestId]
+  if (mark === undefined) return rows
+  const addedAt = state.slotAddedAt ?? {}
+  const present = new Set(rows.map(s => s.key))
+  const current = state.slots ?? []
+  const keep = current.filter(s => !present.has(s.key) && (addedAt[stampKey(s.key)] ?? 0) > mark) // row-read: membership, rows are carried over unchanged
+  if (!keep.length) return rows
+  const out = [...rows]
+  const keepKeys = new Set(keep.map(s => s.key))
+  let anchor: string | null = null
+  for (const slot of current) { // row-read: order only
+    if (keepKeys.has(slot.key)) {
+      const at = anchor === null ? 0 : out.findIndex(s => s.key === anchor) + 1
+      out.splice(at, 0, slot)
+      anchor = slot.key
+      continue
+    }
+    if (present.has(slot.key)) anchor = slot.key
+  }
+  return out
+}
+
 /** A single-slot mutation. Returning `false` means the writer's own guard
  *  declined and the row was left alone, so no write is stamped. */
 type RowPatch = (slot: ChatSlot) => boolean | void
@@ -698,7 +788,7 @@ const localWritesOutranking = (state: DashboardState, requestId: string | undefi
   return outranked
 }
 
-const applySlots = (state: DashboardState, incomingRows: ChatSlot[]): void => {
+const applySlots = (state: DashboardState, incomingRows: ChatSlot[], stampAdds = true): void => {
   // `durablyRemoved` is the durable fast path for browser-history rewrites: a
   // full list naming the key proves it is live again and clears that evidence.
   // This does not change slot-list visibility; the hold and frame budget below
@@ -764,6 +854,7 @@ const applySlots = (state: DashboardState, incomingRows: ChatSlot[]): void => {
   let changed = prev.length !== next.length
   const merged = next.map((incoming, i) => {
     const existing = byKey.get(incoming.key)
+    if (existing === undefined && stampAdds) stampSlotAdd(state, incoming.key)
     // Reusing a draft row inside a freshly assigned array is fine: Immer
     // finalizes drafts found in the assigned value within the same scope, so an
     // untouched row resolves back to its base object and keeps its identity.
@@ -849,6 +940,32 @@ const dashboardSlice = createSlice({
       // the sidebar until restoration finishes, and marking it loaded would
       // claim a snapshot arrived when none has.
       if (action.payload.length === 0 && !state.slotsLoaded) return
+      // A row this full list omits has left the server's registry, so a
+      // `fetchSlots` reply already in flight -- serialized before it left -- must
+      // not put it back. Same pairing the `removed` branch of `sseSlotPatch`
+      // records; without it a reply crossing the omission restores the row and
+      // the next frame removes it again. Not gated on `slotsLoaded`: a reconnect
+      // clears that flag while leaving the rows in place and dispatches the
+      // catch-up fetch, which is exactly the reply this fence must cover. The
+      // ambiguous empty pre-snapshot frame has already returned above, and a
+      // cold boot has no rows to mark.
+      //
+      // Only a key an earlier live frame listed is fenced (`slotListedLive`).
+      // A row that is here through `addSlotOptimistic` or a create alone may
+      // be newer than this frame: the POST resolved, the row was pushed, and a
+      // frame serialized just before the server registered the key is still
+      // travelling. Fencing that key would make the reply that DOES list it
+      // drop it, and the new row would stay missing until the next frame.
+      if (state.slotFetchesInFlight?.length) {
+        const listed = new Set(action.payload.map(s => s.key))
+        const listedLive = state.slotListedLive ?? {}
+        for (const slot of state.slots ?? []) { // row-read: membership only
+          if (!listed.has(slot.key) && !isUnsafeKey(slot.key) && listedLive[stampKey(slot.key)]) {
+            markStaleSlotFetches(state, slot.key, [...state.slotFetchesInFlight])
+          }
+        }
+      }
+      state.slotListedLive = Object.fromEntries(action.payload.map(s => [stampKey(s.key), true as const]))
       applySlots(state, action.payload)
       state.slotsGeneration = (state.slotsGeneration ?? 0) + 1
       state.slotsLoaded = true
@@ -983,6 +1100,8 @@ const dashboardSlice = createSlice({
       }
       if (!state.slots.find(s => s.key === action.payload.key)) { // row-read: membership test, adds a row rather than changing one
         state.slots.push(action.payload)
+        stampSlotAdd(state, action.payload.key)
+        delete state.slotListedLive?.[stampKey(action.payload.key)]
       }
     },
     /** Drop a close tombstone (see `applySlots`). `deleteSlot` dispatches this in
@@ -1394,6 +1513,10 @@ const dashboardSlice = createSlice({
             return staleKeys.has(s.key) ? [] : [s]
           })
           : action.payload
+        // A row that joined the list after this request was dispatched is
+        // missing from the reply because the server had not created it yet, not
+        // because it left; keep it where it is on screen.
+        const withNewer = restoreRowsNewerThanReply(state, requestId, rows)
         // A reply in flight can be older than the live frames that arrived while
         // it travelled, so it may omit a slot the stream has since created. The
         // unread drain still runs — that is this path's documented job, and a
@@ -1408,10 +1531,10 @@ const dashboardSlice = createSlice({
           const hold = state.closingSlots[key]
           if (hold.awaitingOutcome && replyKeys.has(key)) delete state.closingSlots[key]
         }
-        applySlots(state, rows)
+        applySlots(state, withNewer, false)
         state.slotsGeneration = (state.slotsGeneration ?? 0) + 1
         state.slotsLoaded = true
-        reconcileSlots(state, new Set(rows.map((s: { key: string }) => s.key)), fresh)
+        reconcileSlots(state, new Set(withNewer.map((s: { key: string }) => s.key)), fresh)
         settleSlotFetch(state, requestId)
       })
       .addCase(fetchSlots.rejected, (state, action) => {
@@ -1437,6 +1560,8 @@ const dashboardSlice = createSlice({
           }
           if (!state.slots.find(s => s.key === action.payload.key)) { // row-read: membership test, adds a row rather than changing one
             state.slots.push(action.payload)
+            stampSlotAdd(state, action.payload.key)
+            delete state.slotListedLive?.[stampKey(action.payload.key)]
           }
         },
       )
