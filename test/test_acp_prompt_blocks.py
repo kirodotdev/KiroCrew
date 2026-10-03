@@ -145,6 +145,37 @@ class TestBuildPromptBlocks:
     def test_default_cap_is_ten_mib(self):
         assert MAX_IMAGE_BYTES == 10 * 1024 * 1024
 
+    def test_overlong_name_is_not_probed_and_does_not_raise(self, tmp_path):
+        """A 400-char single-segment token ending in .png names nothing: the
+        probe would raise ENAMETOOLONG and fail the whole turn. It must stay
+        plain text, while a real image in the same message still inlines."""
+        p = _png(tmp_path)
+        token = "/" + "a" * 400 + ".png"
+        message = f"see {token} and {p}"
+
+        blocks = build_prompt_blocks(message)
+
+        assert [b["type"] for b in blocks] == ["text", "image"]
+        assert token in blocks[0]["text"]
+        assert f"[image: {p.name}]" in blocks[0]["text"]
+
+    def test_probe_oserror_is_treated_as_not_a_file(self, tmp_path, monkeypatch):
+        """Any OSError from the is_file() probe means "not a file", not a
+        failed turn -- the reference stays in the text."""
+        p = _png(tmp_path)
+        real_is_file = Path.is_file
+
+        def flaky_is_file(self):
+            if self == p:
+                raise OSError(5, "I/O error", str(self))
+            return real_is_file(self)
+
+        monkeypatch.setattr(Path, "is_file", flaky_is_file)
+        blocks = build_prompt_blocks(f"see {p}")
+
+        assert [b["type"] for b in blocks] == ["text"]
+        assert str(p) in blocks[0]["text"]
+
 
 class TestMediaTypeFromContent:
     def test_content_wins_over_a_misleading_suffix(self, tmp_path):
