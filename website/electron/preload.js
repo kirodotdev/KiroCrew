@@ -3,6 +3,25 @@ const { contextBridge, ipcRenderer, webUtils } = require("electron");
 // Live `watchCursorAway` subscriptions in this renderer; see that method.
 let cursorAwaySubscribers = 0;
 
+// ── Reading main-process values in a SANDBOXED preload ──
+//
+// This preload runs sandboxed: `webPreferences` sets `nodeIntegration: false` and
+// never sets `sandbox`, and since Electron 20 that means the sandbox is on. A
+// sandboxed preload's `require` is a polyfill limited to `electron`, `events`,
+// `timers` and `url` — a relative `require("./display-media")` would throw
+// "module not found" and take THIS ENTIRE FILE down with it, so `window.kirocrew`,
+// `electronAPI`, `zoomAPI` and `updateAPI` would all vanish from the renderer.
+//
+// So values computed in the main process (window-lifecycle.js) arrive as
+// `additionalArguments`, which Electron appends to the renderer's `process.argv`
+// for exactly this purpose. `process` is one of the globals the sandboxed preload
+// does polyfill.
+const argvValue = (flag, fallback) => {
+  const prefix = `--${flag}=`;
+  const hit = (process.argv || []).find((a) => typeof a === "string" && a.startsWith(prefix));
+  return hit ? hit.slice(prefix.length) : fallback;
+};
+
 contextBridge.exposeInMainWorld("kirocrew", {
   platform: process.platform,
   isElectron: true,
@@ -32,6 +51,16 @@ contextBridge.exposeInMainWorld("kirocrew", {
   // are validated in the main process (handleWindowControl /
   // applyWindowControl).
   windowControl: (action) => ipcRenderer.send("window-control", String(action || "")),
+  // Which audio-capture tier this desktop build gets, so the meeting UI can tell
+  // the user what to expect BEFORE they click Record rather than explaining a
+  // failure afterwards. window-lifecycle.js derives it with `display-media.js`'s
+  // `describeAudioTier` — the same module whose handler decides the ACTUAL grant
+  // (installed by runtime/window/session-security.js), so the guidance and the
+  // behaviour cannot drift apart.
+  //
+  // A plain browser has no `window.kirocrew` at all, which is the "browser" tier;
+  // the renderer treats an unrecognised value the same way (see captureTier.ts).
+  audioTier: argvValue("kirocrew-audio-tier", ""),
 });
 
 contextBridge.exposeInMainWorld("electronAPI", {

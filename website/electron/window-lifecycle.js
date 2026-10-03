@@ -1,6 +1,7 @@
 "use strict";
 
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 
 const { createTokenRetryHandler, dashboardRetryPath } = require("./token-retry");
@@ -58,6 +59,7 @@ const {
 } = require("./runtime/window/chrome");
 const { createWindowPrompts } = require("./runtime/window/prompts");
 const { createSessionSecurity } = require("./runtime/window/session-security");
+const { describeAudioTier, supportsSystemPicker } = require("./display-media");
 const { injectLinuxCaptionControls } = require("./runtime/window/linux-captions");
 const { attachBrowserPanels, dispatchBrowserOp } = require("./runtime/window/browser-panels");
 
@@ -99,6 +101,7 @@ function createWindowLifecycle(options) {
     // ticking or un-ticking it takes effect without a relaunch.
     syncTunnel = () => {},
     platform = process.platform,
+    release = os.release(),
     env = process.env,
   } = options || {};
 
@@ -148,6 +151,18 @@ function createWindowLifecycle(options) {
     ? decideLinuxFrame({ env, override: store.get("linuxFrameless") })
     : null;
   const LINUX_FRAMELESS = !!(LINUX_FRAME_DECISION && LINUX_FRAME_DECISION.frameless);
+  // Which system-audio tier this build can actually deliver to a meeting. Constant
+  // for the process (it depends only on the platform, OS release and picker flag),
+  // and handed to the renderer through `additionalArguments` because the preload is
+  // sandboxed and cannot require display-media.js itself -- see the note at the
+  // top of preload.js. The SAME host-specific picker decision is passed to
+  // session-security.js so guidance cannot drift from Electron's actual option.
+  const USE_SYSTEM_PICKER = supportsSystemPicker({ platform, release });
+  const AUDIO_TIER = describeAudioTier({
+    platform,
+    release,
+    useSystemPicker: USE_SYSTEM_PICKER,
+  });
 
   let mainWindow = null;
   let tray = null;
@@ -210,6 +225,7 @@ function createWindowLifecycle(options) {
     dialog,
     shell,
     isMac: IS_MAC,
+    useSystemPicker: USE_SYSTEM_PICKER,
     partition: BROWSER_PARTITION,
   });
 
@@ -274,9 +290,15 @@ function createWindowLifecycle(options) {
         preload: path.join(__dirname, "preload.js"),
         contextIsolation: true,
         nodeIntegration: false,
-        // Frameless Linux is a launch-time decision, not a platform constant.
-        // The preload reads this argument to reserve caption-control space.
-        additionalArguments: LINUX_FRAMELESS ? ["--kc-linux-frameless"] : [],
+        // The sandboxed preload cannot require our modules, so main-process-derived
+        // values are appended to the renderer's process.argv instead. Frameless
+        // Linux is a launch-time decision, not a platform constant; the preload
+        // reads this argument to reserve caption-control space. The audio tier
+        // tells the meeting UI what system-audio capture this shell can deliver.
+        additionalArguments: [
+          ...(LINUX_FRAMELESS ? ["--kc-linux-frameless"] : []),
+          `--kirocrew-audio-tier=${AUDIO_TIER}`,
+        ],
       },
     });
     view.setBackgroundColor("#00000000");

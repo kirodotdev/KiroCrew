@@ -36,6 +36,7 @@ function validOptions(overrides = {}) {
     connectWindow: async () => {},
     // Keep construction independent of the host running the suite.
     platform: "test",
+    release: "24.0.0",
     ...overrides,
   };
 }
@@ -196,7 +197,7 @@ describe("window lifecycle module boundary", () => {
 const DASH_ORIGIN = "http://localhost:5476";
 const PANE_ORIGIN = "http://localhost:7778";
 
-function securityHarness() {
+function securityHarness({ platform = "win32", release = "24.0.0" } = {}) {
   const calls = {
     display: [],
     defaultRequest: [],
@@ -259,12 +260,23 @@ function securityHarness() {
   };
   const lifecycle = createWindowLifecycle(validOptions({
     electron,
-    platform: "win32",
+    platform,
+    release,
   }));
   return { calls, lifecycle, dashboardMain, paneFrame };
 }
 
 describe("session security registration", () => {
+  it("enables the native picker only on macOS 15 and newer", () => {
+    const modern = securityHarness({ platform: "darwin", release: "24.0.0" });
+    modern.lifecycle.security.configureSession();
+    assert.deepEqual(modern.calls.display[0].options, { useSystemPicker: true });
+
+    const legacy = securityHarness({ platform: "darwin", release: "23.6.0" });
+    legacy.lifecycle.security.configureSession();
+    assert.deepEqual(legacy.calls.display[0].options, { useSystemPicker: false });
+  });
+
   it("registers every default and browser-partition policy exactly once", async () => {
     const { calls, lifecycle, dashboardMain, paneFrame } = securityHarness();
 
@@ -272,7 +284,7 @@ describe("session security registration", () => {
     lifecycle.security.configureSession();
 
     assert.equal(calls.display.length, 1);
-    assert.deepEqual(calls.display[0].options, { useSystemPicker: true });
+    assert.deepEqual(calls.display[0].options, { useSystemPicker: false });
     assert.equal(calls.defaultRequest.length, 1);
     assert.equal(calls.defaultCheck.length, 1);
     assert.deepEqual(calls.fromPartition, [BROWSER_PARTITION]);
@@ -943,7 +955,7 @@ function recordingEmitter(label, log) {
   };
 }
 
-function dashboardWindowHarness({ platform, frameless = false } = {}) {
+function dashboardWindowHarness({ platform, release = "24.0.0", frameless = false } = {}) {
   const log = [];
   const firstLine = (text) => String(text).split("\n").map((line) => line.trim()).find(Boolean);
   const viewEvents = recordingEmitter("view", log);
@@ -1020,6 +1032,7 @@ function dashboardWindowHarness({ platform, frameless = false } = {}) {
     },
     store: { get: (key) => (key === "linuxFrameless" ? frameless : null) },
     platform,
+    release,
     env: {},
   }));
   return { lifecycle, win, viewContents, log, panelViews };
@@ -1037,12 +1050,26 @@ async function wireDashboardWindow(t, options) {
   return { ...harness, wiring, onLoad };
 }
 
+// The renderer's process.argv carries the system-audio capture tier the shell can
+// deliver (see display-media.js `describeAudioTier`): macOS 15+ credits the
+// native picker, Windows the loopback device, and everything else is video-only.
 const COMMON_WIRING_HEAD = [
-  "new WebContentsView:[]",
+  'new WebContentsView:["--kirocrew-audio-tier=system-picker"]',
   "win.addChildView",
 ];
 
 describe("dashboard window wiring order", () => {
+  it("reports video-only on macOS 14 where Electron has no system picker", async (t) => {
+    const { wiring } = await wireDashboardWindow(t, {
+      platform: "darwin",
+      release: "23.6.0",
+    });
+    assert.deepEqual(wiring.slice(0, 2), [
+      'new WebContentsView:["--kirocrew-audio-tier=video-only"]',
+      "win.addChildView",
+    ]);
+  });
+
   it("a macOS window positions traffic lights and tracks zoom before its load handlers", async (t) => {
     const { wiring, onLoad } = await wireDashboardWindow(t, { platform: "darwin" });
     assert.deepEqual(wiring.slice(0, 2), COMMON_WIRING_HEAD);
@@ -1101,7 +1128,10 @@ describe("dashboard window wiring order", () => {
 
   it("a frameless Linux window injects caption controls after the drag band", async (t) => {
     const { wiring, onLoad, win } = await wireDashboardWindow(t, { platform: "linux", frameless: true });
-    assert.equal(wiring[0], "new WebContentsView:[\"--kc-linux-frameless\"]");
+    assert.equal(
+      wiring[0],
+      'new WebContentsView:["--kc-linux-frameless","--kirocrew-audio-tier=video-only"]',
+    );
     assert.ok(!wiring.includes("view.on:zoom-changed"), "zoom tracking is macOS/Windows only");
     assert.deepEqual(onLoad, [
       "view.send:fullscreen-changed",

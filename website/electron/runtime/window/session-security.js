@@ -25,6 +25,7 @@ function createSessionSecurity({
   dialog,
   shell,
   isMac: IS_MAC,
+  useSystemPicker = false,
   partition: BROWSER_PARTITION,
 }) {
   let micDialogOpen = false;
@@ -95,6 +96,14 @@ function createSessionSecurity({
     // screen is decided by identity in capture-trust.js: a registered surface,
     // its own main frame, still on its registered origin. Without this dep the
     // handler denies everything, so the wiring is not optional.
+    //
+    // The handler also grants a loopback AUDIO device when the renderer asked for
+    // audio and the platform supports one, which is what lets a meeting capture the
+    // other participants (see display-media.js). Note the asymmetry this creates and
+    // that the renderer's guidance is derived from: when the native picker is used,
+    // Electron does not invoke this handler at all, so on macOS the picker decides
+    // whether audio is shared. `useSystemPicker` is the host-specific decision
+    // shared with window-lifecycle.js's tier computation so the two cannot disagree.
     session.defaultSession.setDisplayMediaRequestHandler(
       createDisplayMediaHandler({
         isTrustedRequest: createCaptureTrust({
@@ -123,7 +132,7 @@ function createSessionSecurity({
           }
         },
       }),
-      { useSystemPicker: true },
+      { useSystemPicker },
     );
 
     // The dashboard receives only the media grant it needs. Untrusted browser

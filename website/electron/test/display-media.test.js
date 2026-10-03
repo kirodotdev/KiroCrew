@@ -1,8 +1,11 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const {
+  chooseAudioGrant,
   chooseDisplaySource,
   createDisplayMediaHandler,
+  describeAudioTier,
+  supportsSystemPicker,
 } = require("../display-media");
 
 // WHO may capture is capture-trust.js's decision, covered by its own suite. Here
@@ -202,5 +205,143 @@ describe("createDisplayMediaHandler", () => {
       granted = streams;
     });
     assert.deepEqual(granted, { video: screenSrc });
+  });
+
+  // The audio grant sits AFTER the identity gate: every request below is a
+  // trusted one, so what is being tested is the audio decision, not admission.
+  const trustAll = () => true;
+
+  it("grants a loopback audio device on Windows when audio was requested", async () => {
+    // The meeting-capture win: the handler auto-selects the source, so on Windows
+    // the other participants' audio arrives with no picker at all.
+    let granted;
+    const handler = createDisplayMediaHandler({
+      getSources: async () => [screenSrc],
+      platform: "win32",
+      isTrustedRequest: trustAll,
+    });
+    await handler({ audioRequested: true }, (streams) => {
+      granted = streams;
+    });
+    assert.deepEqual(granted, { video: screenSrc, audio: "loopback" });
+  });
+
+  it("does NOT attach audio to a video-only request", async () => {
+    // This handler is shared with the chat input's screen-snip tool, which asks for
+    // video only. Attaching a loopback device there would start capturing the
+    // user's system audio to take a screenshot.
+    let granted;
+    const handler = createDisplayMediaHandler({
+      getSources: async () => [screenSrc],
+      platform: "win32",
+      isTrustedRequest: trustAll,
+    });
+    await handler({ audioRequested: false }, (streams) => {
+      granted = streams;
+    });
+    assert.deepEqual(granted, { video: screenSrc });
+  });
+
+  it("treats a request with no audioRequested field as video-only", async () => {
+    // Every existing caller (and every existing test) passes a bare request.
+    let granted;
+    const handler = createDisplayMediaHandler({
+      getSources: async () => [screenSrc],
+      platform: "win32",
+      isTrustedRequest: trustAll,
+    });
+    await handler({}, (streams) => {
+      granted = streams;
+    });
+    assert.deepEqual(granted, { video: screenSrc });
+  });
+
+  it("does not offer loopback audio where Electron cannot supply it", async () => {
+    // electron.d.ts (43.2.0) states a loopback device is currently Windows-only.
+    for (const platform of ["darwin", "linux"]) {
+      let granted;
+      const handler = createDisplayMediaHandler({
+        getSources: async () => [screenSrc],
+        getScreenAccessStatus: () => "granted",
+        platform,
+        isTrustedRequest: trustAll,
+      });
+      await handler({ audioRequested: true }, (streams) => {
+        granted = streams;
+      });
+      assert.deepEqual(granted, { video: screenSrc }, platform);
+    }
+  });
+
+  it("an untrusted requester gets no audio either, even on Windows", async () => {
+    // Asking for audio must not be a way around the identity gate: a pane or a
+    // browsed page that requests audio is refused before any grant is composed.
+    const { handler, calls } = countingHandler({ platform: "win32" });
+    let granted;
+    await handler({ audioRequested: true }, (streams) => {
+      granted = streams;
+    });
+    assert.deepEqual(granted, {});
+    assert.equal(calls.getSources, 0);
+  });
+});
+
+describe("chooseAudioGrant", () => {
+  it("requires BOTH an audio request and a supporting platform", () => {
+    assert.equal(chooseAudioGrant({ audioRequested: true, platform: "win32" }), "loopback");
+    assert.equal(chooseAudioGrant({ audioRequested: false, platform: "win32" }), undefined);
+    assert.equal(chooseAudioGrant({ audioRequested: true, platform: "darwin" }), undefined);
+    assert.equal(chooseAudioGrant({ audioRequested: true, platform: "linux" }), undefined);
+  });
+
+  it("tolerates a missing or empty options object", () => {
+    assert.equal(chooseAudioGrant(), undefined);
+    assert.equal(chooseAudioGrant({}), undefined);
+  });
+});
+
+describe("describeAudioTier", () => {
+  it("detects native picker availability from the Darwin kernel release", () => {
+    assert.equal(supportsSystemPicker({ platform: "darwin", release: "24.0.0" }), true);
+    assert.equal(supportsSystemPicker({ platform: "darwin", release: "23.6.0" }), false);
+    assert.equal(supportsSystemPicker({ platform: "win32", release: "24.0.0" }), false);
+    assert.equal(supportsSystemPicker({ platform: "linux", release: "24.0.0" }), false);
+    assert.equal(supportsSystemPicker({ platform: "darwin", release: "unknown" }), false);
+  });
+
+  it("reports loopback where the handler grants a device itself", () => {
+    assert.equal(describeAudioTier({
+      platform: "win32",
+      release: "10.0.0",
+      useSystemPicker: false,
+    }), "loopback");
+  });
+
+  it("credits the native picker only on macOS 15 and newer", () => {
+    assert.equal(describeAudioTier({
+      platform: "darwin",
+      release: "24.1.0",
+      useSystemPicker: true,
+    }), "system-picker");
+    assert.equal(describeAudioTier({
+      platform: "darwin",
+      release: "23.6.0",
+      useSystemPicker: true,
+    }), "video-only");
+    assert.equal(describeAudioTier({
+      platform: "darwin",
+      release: "24.1.0",
+      useSystemPicker: false,
+    }), "video-only");
+  });
+
+  it("reports video-only where the picker flag is inert", () => {
+    assert.equal(describeAudioTier({
+      platform: "linux",
+      release: "6.8.0",
+      useSystemPicker: true,
+    }), "video-only");
+    assert.equal(describeAudioTier({ platform: "freebsd" }), "video-only");
+    assert.equal(describeAudioTier(), "video-only");
   });
 });

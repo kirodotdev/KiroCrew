@@ -238,6 +238,7 @@ from kiro_crew.dashboard import loop_watchdog, revocation_gen, token_auth, token
 from kiro_crew.dashboard.handlers import updates as dashboard_updates
 from kiro_crew.platform import bootstrap as platform_bootstrap
 from kiro_crew.platform import context as platform_context
+from kiro_crew.recording import recovery as recording_recovery
 from kiro_crew.testing import fake_acp_backend
 
 try:  # POSIX only; the layer is Linux-only in CI, but keep the import honest.
@@ -714,6 +715,7 @@ def _reset_home_bound_globals() -> None:
     revocation_gen._gen = None
     crash_guard._CRASH_LOG = None
     config_live.reset_for_tests()
+    recording_recovery._store = None
     embeddings.reset_shared_embedder()
     embeddings.reset_download_manager()
     crew_log_emit.reset_caches()
@@ -746,6 +748,7 @@ def home_bound_globals_are_clear() -> bool:
         and revocation_gen._gen is None
         and not token_auth._app_perms_cache
         and crash_guard._CRASH_LOG is None
+        and recording_recovery._store is None
         and autonudge._INSTANCE is None
         and platform_context._ACTIVE is None
         and safety_override._singleton is None

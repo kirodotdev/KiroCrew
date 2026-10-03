@@ -24,6 +24,8 @@ import {
   type TranscriptSegment,
   type TranslationLine,
 } from '../api'
+import type { SystemAudioFailure } from '../audio/systemAudio'
+import { useMeetingRecording, type RecordingErrorCode } from './useMeetingRecording'
 import { useMeetingTranscription } from './useMeetingTranscription'
 
 /** Transcript segments arrive with overlap; a repeat inside this window is dropped. */
@@ -58,6 +60,37 @@ const STT_ERROR_KEY = {
   connection: 'apps.meetings.session.sttConnectionFailed',
   disconnected: 'apps.meetings.session.sttDisconnected',
 } as const
+
+/**
+ * Recording failure code -> catalog key. FILE SCOPE for the same reason as
+ * `STT_ERROR_KEY`: `check-i18n-keys.mjs` only resolves file-scope consts, so a map
+ * declared inside the handler would leave every key here unverified.
+ */
+const RECORDING_ERROR_KEY: Record<RecordingErrorCode, string> = {
+  unsupported: 'apps.meetings.session.recUnsupported',
+  // The upgrade was refused before it opened. In practice this is the one-session
+  // concurrency cap, so the message names that rather than being generic.
+  unavailable: 'apps.meetings.session.recUnavailable',
+  disconnected: 'apps.meetings.session.recDisconnected',
+  server: 'apps.meetings.session.recFailed',
+}
+
+/**
+ * System-audio failure code -> catalog key. File scope, as above.
+ *
+ * None of these are errors in the recording: they all mean "the microphone is
+ * captured, the other participants are not", so they are reported as info rather
+ * than blocking the recording.
+ */
+const SYSTEM_AUDIO_KEY: Record<SystemAudioFailure, string> = {
+  unsupported: 'apps.meetings.session.sysAudioUnsupported',
+  // Nothing was attempted: this platform's desktop build cannot capture system
+  // audio, so the advice is to use the browser rather than to share differently.
+  'no-loopback': 'apps.meetings.session.sysAudioNoLoopback',
+  cancelled: 'apps.meetings.session.sysAudioCancelled',
+  'no-audio': 'apps.meetings.session.sysAudioNoAudio',
+  unavailable: 'apps.meetings.session.sysAudioUnavailable',
+}
 
 /** True when *text* repeats, contains, or is contained by the previous segment. */
 export function isDuplicateSegment(
@@ -252,6 +285,7 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
   const scope = ['meetings', meetingId] as const
 
   const [caption, setCaption] = useState('')
+  const [recordingError, setRecordingError] = useState<string | null>(null)
   const [partialTranscript, setPartialTranscript] = useState('')
   const [fullMeetingId, setFullMeetingId] = useState('')
   const transcriptFullNoticeRef = useRef('')
@@ -562,6 +596,30 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
     [markTranscriptFull, notify],
   )
 
+  const onRecordingError = useCallback(
+    (code: RecordingErrorCode) => {
+      const message = i18nT(RECORDING_ERROR_KEY[code])
+      setRecordingError(message)
+      notify(message, { type: 'error' })
+    },
+    [notify],
+  )
+
+  const detachSystemAudioRef = useRef<() => void>(() => {})
+
+  // Instantiated BEFORE transcription: transcription owns the capture pipeline and
+  // tees PCM into `recording.pushPcm`, so the recording hook has to exist first.
+  // The dependency runs one way only — recording never touches the microphone.
+  const recording = useMeetingRecording({
+    meetingId,
+    onPreReadyFailure: () => detachSystemAudioRef.current(),
+    onError: onRecordingError,
+  })
+
+  const onSystemAudioEnded = useCallback(() => {
+    notify(i18nT('apps.meetings.session.sysAudioEnded'), { type: 'info' })
+  }, [notify])
+
   const transcription = useMeetingTranscription({
     meetingId,
     onCaption,
@@ -569,7 +627,10 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
     onPartial: setPartialTranscript,
     onCommitted: commitTranscriptSegment,
     onError: onTranscriptionError,
+    onPcm: recording.pushPcm,
+    onSystemAudioEnded,
   })
+  detachSystemAudioRef.current = transcription.detachSystemAudio
 
   // Bind the microphone to the meeting's status: recording exactly while active
   // AND dispatch-ready — see `canOpenTranscription` for why `active` alone is not
@@ -599,6 +660,62 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
       transcriptionRef.current.stop()
     }
   }, [status, ingressReady, transcriptFull, transcriptionActive])
+
+  // ── recording ─────────────────────────────────────────────────────────────
+
+  // Bind the recording to the meeting's lifecycle.
+  //
+  // A meeting pause PAUSES the recording rather than stopping it. Stopping
+  // finalizes the WAV and the next start opens a NEW file (`audio-2.wav`, …), so
+  // a pause-resume would split the meeting across two files.
+  const recordingRef = useRef(recording)
+  recordingRef.current = recording
+
+  const stopRecording = useCallback(async () => {
+    // The worklet emits 100 ms batches. Drain its current short batch first so
+    // STOP cannot overtake the last captured samples on the recording socket.
+    await transcriptionRef.current.flushPcm()
+    recordingRef.current.stop()
+    transcriptionRef.current.detachSystemAudio()
+  }, [])
+  const stopRecordingRef = useRef(stopRecording)
+  stopRecordingRef.current = stopRecording
+
+  const recordingActive = recording.active
+  useEffect(() => {
+    const rec = recordingRef.current
+    if (!rec.active) return
+    if (status === 'active') {
+      if (rec.paused) rec.resume()
+      return
+    }
+    if (status === 'paused') {
+      if (!rec.paused) rec.pause()
+      return
+    }
+    // idle / reviewing / ended — drain the final short batch, finalize the WAV,
+    // then release display capture.
+    void stopRecordingRef.current()
+  }, [status, recordingActive])
+
+  const startRecording = useCallback(async () => {
+    if (!transcriptionRef.current.active) {
+      const message = i18nT('apps.meetings.session.sttUnavailable')
+      setRecordingError(message)
+      notify(message, { type: 'error' })
+      return
+    }
+    setRecordingError(null)
+    // Ask for the meeting's audio BEFORE opening the socket. The share picker can be
+    // cancelled, and doing it first means a cancellation never leaves a registered
+    // recording session behind — the server's cap is one session, so a stale one
+    // would refuse the next attempt.
+    const failure = await transcriptionRef.current.attachSystemAudio()
+    // Reported as info, not an error: every one of these still leaves a working
+    // microphone recording. Only the remote side is missing.
+    if (failure) notify(i18nT(SYSTEM_AUDIO_KEY[failure]), { type: 'info' })
+    await recordingRef.current.start()
+  }, [notify])
 
   // ── mutations ─────────────────────────────────────────────────────────────
 
@@ -846,6 +963,10 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
       loading: translationQuery.isFetching && translationQuery.data === undefined,
     },
     setTranslationOpen,
+    recording,
+    recordingError,
+    /** True while display-capture audio is mixed into the transcript and the recording. */
+    systemAudio: transcription.systemAudio,
     loading: initQuery.isLoading || metaQuery.isLoading,
     error: (initQuery.error ?? metaQuery.error) as Error | null,
     agentsPaused: Boolean(live?.agents_paused),
@@ -864,6 +985,8 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
       mute: (agentId: string, muted: boolean) => muteMutation.mutate({ agentId, muted }),
       toggleAgent: (agentId: string, enable: boolean) =>
         toggleAgentMutation.mutate({ agentId, enable }),
+      startRecording,
+      stopRecording,
       broadcast: (text: string) => broadcastMutation.mutate(text),
       messageAgent: (agentId: string, text: string) =>
         agentMessageMutation.mutate({ agentId, text }),

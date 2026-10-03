@@ -84,6 +84,7 @@ class MockWorkletNode {
 }
 
 let workletFails = false
+let systemWireFails = false
 
 class MockAudioContext {
   static closed = 0
@@ -91,7 +92,12 @@ class MockAudioContext {
     addModule: () =>
       workletFails ? Promise.reject(new Error('no worklet')) : Promise.resolve(),
   }
-  createMediaStreamSource() { return { connect() {}, disconnect() {} } }
+  createMediaStreamSource(stream: MediaStream) {
+    if (systemWireFails && (stream as unknown as { _label?: string })._label === 'system') {
+      throw new Error('cannot wire system audio')
+    }
+    return { connect() {}, disconnect() {} }
+  }
   close() { MockAudioContext.closed += 1; return Promise.resolve() }
 }
 
@@ -99,11 +105,19 @@ const stoppedTracks: string[] = []
 
 function makeStream(label = 'mic') {
   const track = {
+    kind: 'audio',
     stop: () => { stoppedTracks.push(label) },
     readyState: 'live',
     getSettings: () => ({ deviceId: 'dev-1' }),
+    addEventListener: vi.fn(),
   }
-  return { getAudioTracks: () => [track], getTracks: () => [track] } as unknown as MediaStream
+  return {
+    _label: label,
+    getAudioTracks: () => [track],
+    getVideoTracks: () => [],
+    getTracks: () => [track],
+    removeTrack: vi.fn(),
+  } as unknown as MediaStream
 }
 
 let getUserMedia: ReturnType<typeof vi.fn>
@@ -115,6 +129,7 @@ beforeEach(() => {
   nodes.length = 0
   stoppedTracks.length = 0
   workletFails = false
+  systemWireFails = false
   MockSocket.failNextOpen = false
   MockAudioContext.closed = 0
   getUserMedia = vi.fn().mockResolvedValue(makeStream())
@@ -122,7 +137,11 @@ beforeEach(() => {
   vi.stubGlobal('AudioContext', MockAudioContext as unknown as typeof AudioContext)
   vi.stubGlobal('AudioWorkletNode', MockWorkletNode as unknown as typeof AudioWorkletNode)
   Object.defineProperty(navigator, 'mediaDevices', {
-    value: { getUserMedia, enumerateDevices: vi.fn().mockResolvedValue([]) },
+    value: {
+      getUserMedia,
+      getDisplayMedia: vi.fn().mockResolvedValue(makeStream('system')),
+      enumerateDevices: vi.fn().mockResolvedValue([]),
+    },
     configurable: true,
     writable: true,
   })
@@ -445,6 +464,23 @@ describe('useMeetingTranscription — server frames', () => {
     await act(async () => { staleClose?.() })
     expect(h.errors()).toHaveLength(errorsBefore)
     expect(h.hook.result.current.active).toBe(true)
+  })
+})
+
+describe('useMeetingTranscription — system audio', () => {
+  it('reports a wiring failure and stops the granted display stream', async () => {
+    const h = await mount()
+    await startCapture(h)
+    systemWireFails = true
+
+    let failure: string | null | undefined
+    await act(async () => {
+      failure = await h.hook.result.current.attachSystemAudio()
+    })
+
+    expect(failure).toBe('unavailable')
+    expect(stoppedTracks).toContain('system')
+    expect(h.hook.result.current.systemAudio).toBe(false)
   })
 })
 

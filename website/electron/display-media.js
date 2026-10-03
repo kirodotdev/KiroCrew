@@ -45,6 +45,8 @@
 // permission handlers are additionally deny-all.
 "use strict";
 
+const os = require("node:os");
+
 /**
  * Pick the best capture source from desktopCapturer.getSources().
  * Prefers a whole-screen source ("screen:*") over a window, since the snip
@@ -74,6 +76,71 @@ function chooseDisplaySource(sources) {
  * @param {string} [deps.platform] - process.platform (defaults to the running platform)
  * @returns {(request: object, callback: (streams: object) => void) => Promise<void>}
  */
+/**
+ * Platforms where Electron's `Streams.audio: 'loopback'` actually captures system
+ * audio.
+ *
+ * Windows only, and that is Electron's own statement, not a guess — see the
+ * `Streams.audio` doc comment in `electron.d.ts` for the version in
+ * `node_modules` (43.2.0): a loopback device "is currently only supported on
+ * Windows". Granting it elsewhere would be asking for a device the platform
+ * cannot provide, on a handler the chat screen-snip tool also depends on.
+ *
+ * macOS 15+ does not need this path: `setDisplayMediaRequestHandler` is
+ * installed with `{ useSystemPicker: true }`, and Electron uses the native
+ * picker without invoking this handler. Older macOS releases still run the
+ * handler, which deliberately grants video only.
+ *
+ * Deliberately NOT `electron-audio-loopback`. That package documents itself as
+ * required for Electron >= 31 and < 39, and states that from Electron 39 on it is
+ * unnecessary; this app is on 43.2.0, so adding it would be a dependency its own
+ * author says is not needed here.
+ */
+const LOOPBACK_AUDIO_PLATFORMS = new Set(["win32"]);
+
+/** Darwin 24 is macOS 15, the first release Electron supports here. */
+const MACOS_SYSTEM_PICKER_MIN_DARWIN_MAJOR = 24;
+
+/**
+ * Whether Electron's native macOS screen picker exists on this host.
+ *
+ * Electron 43.2.0 documents `useSystemPicker` as macOS 15+ only. Darwin's
+ * kernel major is stable for that mapping (24.x = macOS 15), so malformed or
+ * unavailable releases fail closed to the handler path.
+ *
+ * @param {{platform?: string, release?: string}} opts
+ * @returns {boolean}
+ */
+function supportsSystemPicker(opts) {
+  const {
+    platform = process.platform,
+    release = os.release(),
+  } = opts || {};
+  if (platform !== "darwin") return false;
+  const match = /^(\d+)(?:\.|$)/.exec(String(release));
+  return match !== null && Number(match[1]) >= MACOS_SYSTEM_PICKER_MIN_DARWIN_MAJOR;
+}
+
+/**
+ * Decide what to put in `Streams.audio`, or `undefined` for "grant no audio".
+ *
+ * Two gates, both load-bearing:
+ *
+ * 1. `audioRequested` — this handler is SHARED with the chat input's screen-snip
+ *    tool, which asks for video only. Attaching a loopback audio device to a snip
+ *    would start capturing the user's system audio for a screenshot.
+ * 2. platform — see LOOPBACK_AUDIO_PLATFORMS.
+ *
+ * @param {{audioRequested?: boolean, platform?: string}} opts
+ * @returns {"loopback"|undefined}
+ */
+function chooseAudioGrant(opts) {
+  const { audioRequested, platform } = opts || {};
+  if (!audioRequested) return undefined;
+  if (!LOOPBACK_AUDIO_PLATFORMS.has(platform)) return undefined;
+  return "loopback";
+}
+
 function createDisplayMediaHandler(deps) {
   if (!deps || typeof deps.getSources !== "function") {
     throw new Error("getSources is required");
@@ -116,7 +183,17 @@ function createDisplayMediaHandler(deps) {
         callback({});
         return;
       }
-      callback({ video: source });
+      // Meeting capture asks for audio as well as video; the snip tool does not.
+      // Where Electron can supply a loopback device, granting it here means the
+      // meeting gets the other participants' voices with NO picker at all, since
+      // this handler already auto-selects the source.
+      const streams = { video: source };
+      const audio = chooseAudioGrant({
+        audioRequested: request && request.audioRequested,
+        platform,
+      });
+      if (audio) streams.audio = audio;
+      callback(streams);
     } catch (err) {
       // Never throw out of the handler: a rejection here would crash the
       // request. Deny gracefully so the renderer's catch path runs.
@@ -126,4 +203,40 @@ function createDisplayMediaHandler(deps) {
   };
 }
 
-module.exports = { chooseDisplaySource, createDisplayMediaHandler };
+/**
+ * Which audio-capture tier this platform gets, as a string the renderer can
+ * branch its guidance on.
+ *
+ * Derived from the same two facts the handler uses, so the message the user reads
+ * and the grant they actually get cannot disagree:
+ *
+ * - `loopback`      — this handler grants a loopback device, no picker, system
+ *                     audio just arrives (Windows).
+ * - `system-picker` — Electron uses the native macOS 15+ picker instead of this
+ *                     handler, so whether audio arrives is the user's pick.
+ * - `video-only`    — this handler runs but cannot grant audio, and it
+ *                     auto-selects a source, so there is no picker in which the
+ *                     user could offer audio either. Microphone only (macOS 14
+ *                     and older, and Linux).
+ *
+ * @param {{platform?: string, release?: string, useSystemPicker?: boolean}} opts
+ * @returns {"loopback"|"system-picker"|"video-only"}
+ */
+function describeAudioTier(opts) {
+  const { platform, release, useSystemPicker } = opts || {};
+  if (LOOPBACK_AUDIO_PLATFORMS.has(platform)) return "loopback";
+  if (useSystemPicker && supportsSystemPicker({ platform, release })) {
+    return "system-picker";
+  }
+  return "video-only";
+}
+
+module.exports = {
+  chooseDisplaySource,
+  chooseAudioGrant,
+  createDisplayMediaHandler,
+  describeAudioTier,
+  supportsSystemPicker,
+  LOOPBACK_AUDIO_PLATFORMS,
+  MACOS_SYSTEM_PICKER_MIN_DARWIN_MAJOR,
+};
