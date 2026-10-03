@@ -25,6 +25,7 @@ from kiro_crew import shutdown_event
 from kiro_crew.autonudge_service.gate import _WAKE_FOLLOWUP_TICKS
 from kiro_crew.autonudge_service.maintenance import _release_mutation_lock
 from kiro_crew.autonudge_service.model import (
+    _SCHEDULED_MESSAGE_MAX_ATTEMPTS,
     _START_FAILURE_BACKOFF_AFTER,
     _START_FAILURE_STANDDOWN_AFTER,
     APPROVAL_STALL_REASON,
@@ -32,6 +33,7 @@ from kiro_crew.autonudge_service.model import (
     SESSION_START_FAILURE_REASON,
     NudgeLoop,
     is_channel_key,
+    is_scheduled_message,
     is_structured_monitor_loop,
     runtime_budget_exceeded,
 )
@@ -39,6 +41,7 @@ from kiro_crew.autonudge_service.timers import (
     _REARM_BACKOFF_MAX_SHIFT,
     _REARM_BACKOFF_SECS,
     _REARM_MAX_BACKOFF_SECS,
+    _retire_scheduled_message,
 )
 from kiro_crew.monitoring.models import MonitorOutcome
 
@@ -55,6 +58,10 @@ async def _timer(self: AutoNudgeService, loop: NudgeLoop, delay: float | None = 
     except asyncio.CancelledError:
         return
     if shutdown_event.is_set():
+        return
+    if is_scheduled_message(loop) and loop.cycle_count == 0 and time.time() < loop.scheduled_at:
+        loop.next_due_ts = loop.scheduled_at
+        self._arm_from_deadline(loop)
         return
     # Whether THIS tick is one a worker's push armed. Moved off the armed-timer mark
     # the moment the tick starts, so a push landing from here on is news this tick may
@@ -97,8 +104,13 @@ async def _timer(self: AutoNudgeService, loop: NudgeLoop, delay: float | None = 
             ):
                 self._arm_from_deadline(loop)
         return
-    # Kill switch: sentinel file present?
-    if loop.stop_sentinel_path and Path(loop.stop_sentinel_path).exists():
+    # Kill switch: scheduled messages are user-owned and never honor this
+    # agent-creatable legacy field.
+    if (
+        not is_scheduled_message(loop)
+        and loop.stop_sentinel_path
+        and Path(loop.stop_sentinel_path).exists()
+    ):
         logger.info("AutoNudge: stop sentinel found for %s — removing loop", loop.id)
         await self.remove(loop.id, stop_reason="stop_sentinel")
         return
@@ -111,8 +123,70 @@ async def _timer(self: AutoNudgeService, loop: NudgeLoop, delay: float | None = 
             loop.id,
         )
         return
+    # Read ONCE for the whole terminal ladder below. No await separates this
+    # from any guard that reads it on the fall-through path, so one reading
+    # cannot disagree with another — and a scheduled record's identity is
+    # immutable anyway (``scheduled_message`` is never cleared in place).
+    #
+    # WHY EVERY LEGACY BOUND BELOW IS GATED ON IT. The four bounds after the
+    # cap are the legacy CONTROLLER's: they stop or slow a loop that keeps
+    # waking. A scheduled message is not that shape — it is a one-shot the
+    # user composed for an exact time, with its own completion state machine
+    # (``cleanup_completed_scheduled_message`` / ``_settle_scheduled_turn``),
+    # and three of those bounds settle through the protected ``update()``,
+    # which REFUSES a scheduled record (``MonitorUpdateConflict``: "protected
+    # scheduled messages require an authenticated dashboard user"). That
+    # refusal escapes ``_timer``, whose task is created bare by
+    # :meth:`_arm_timer` with no handler — so the traceback is swallowed, the
+    # timer dies, and the message the user scheduled is never delivered AND
+    # never retired. Deferring (the fourth) is milder but still wrong: it
+    # postpones a send whose whole contract is its exact time.
+    #
+    # And none of the three fields is this record's OWN evidence. All of them
+    # are recorded per SLOT (``notify_approval_stalled`` /
+    # ``notify_cycle_start_failed`` resolve through ``_find_by_slot``), so a
+    # one-shot inherits whatever the slot's HUMAN turns left behind: an
+    # approval the user walked away from, a streak of turns that could not
+    # start. ``max_runtime_secs`` is worse than inherited — ``add`` passes it
+    # straight through for a scheduled record while anchoring ``created_ts``
+    # at arm time, so a schedule set further out than the budget is spent
+    # before its own deadline arrives, every time.
+    #
+    # Bypassing them does not leave a scheduled record unbounded. ``max_cycles``
+    # is forced to 1, so one DELIVERED send is the whole budget and the cap
+    # guard below routes it into its own retirement -- but a dispatched turn
+    # that never lands is settled back to ``cycle_count == 0`` and replayed, so
+    # the cycle cap alone bounds nothing on a slot whose turns keep failing.
+    # That replay is what ``scheduled_attempts`` bounds: each unlanded dispatch
+    # is charged durably, the attempt that reaches
+    # ``_SCHEDULED_MESSAGE_MAX_ATTEMPTS`` retires the record instead of
+    # replaying it (``_settle_scheduled_turn``), and the pre-dispatch fence at
+    # the delivery lock below refuses to start a turn for a record already at
+    # the cap.
+    scheduled_one_shot = is_scheduled_message(loop)
+    if scheduled_one_shot and (
+        runtime_budget_exceeded(loop) or loop.approval_stalled or loop.consecutive_start_failures
+    ):
+        # One line, and only when inherited controller state is actually
+        # present, so the ordinary scheduled send logs nothing extra. Without
+        # it the bypass is invisible: a slot whose human turns stalled an
+        # approval looks identical to one that never did.
+        logger.info(
+            "AutoNudge: scheduled message %s is proceeding past the legacy "
+            "controller bounds it inherited from slot %s (runtime_budget_spent=%s, "
+            "approval_stalled=%s, consecutive_start_failures=%d) — a one-shot "
+            "settles through its own completion path",
+            loop.id,
+            loop.slot_key,
+            runtime_budget_exceeded(loop),
+            loop.approval_stalled,
+            loop.consecutive_start_failures,
+        )
     # Cycle cap reached?
     if loop.max_cycles and loop.cycle_count >= loop.max_cycles:
+        if scheduled_one_shot:
+            await self.cleanup_completed_scheduled_message(loop.id)
+            return
         logger.info("AutoNudge: loop %s reached max_cycles — deactivating", loop.id)
         await self.update(loop.id, active=False, stopped_reason="cycle_cap")
         # Signal the cap. Reaching max_cycles is NOT a successful finish —
@@ -137,7 +211,7 @@ async def _timer(self: AutoNudgeService, loop: NudgeLoop, delay: float | None = 
     # removed) and emit ``expired`` so the existing observer raises a
     # user-visible notification — a budget that stops a loop silently
     # would be indistinguishable from the agent stopping on its own.
-    if runtime_budget_exceeded(loop):
+    if not scheduled_one_shot and runtime_budget_exceeded(loop):
         logger.info(
             "AutoNudge: loop %s exceeded max_runtime_secs=%d — deactivating",
             loop.id,
@@ -161,7 +235,7 @@ async def _timer(self: AutoNudgeService, loop: NudgeLoop, delay: float | None = 
     # emit ``expired`` so the notifier tells them it stopped rather than
     # finished. Without this the loop keeps waking, dispatching, being
     # declined and spending its cap on cycles that were never able to work.
-    if loop.approval_stalled:
+    if not scheduled_one_shot and loop.approval_stalled:
         logger.info(
             "AutoNudge: loop %s cannot obtain tool approval — deactivating "
             "instead of firing cycle %d",
@@ -186,7 +260,7 @@ async def _timer(self: AutoNudgeService, loop: NudgeLoop, delay: float | None = 
     # past the threshold and is capped by the loop's own interval, so a loop
     # under a briefly-loaded host slows to a poll instead of adding its own
     # retries to the contention.
-    if loop.consecutive_start_failures >= _START_FAILURE_STANDDOWN_AFTER:
+    if not scheduled_one_shot and loop.consecutive_start_failures >= _START_FAILURE_STANDDOWN_AFTER:
         logger.warning(
             "AutoNudge: loop %s stood down — %d consecutive cycles never got "
             "a model session, so cycle %d would spend a turn to fail the same "
@@ -200,7 +274,7 @@ async def _timer(self: AutoNudgeService, loop: NudgeLoop, delay: float | None = 
         await self.update(loop.id, active=False, stopped_reason=SESSION_START_FAILURE_REASON)
         self._emit("expired", loop)
         return
-    if loop.consecutive_start_failures >= _START_FAILURE_BACKOFF_AFTER:
+    if not scheduled_one_shot and loop.consecutive_start_failures >= _START_FAILURE_BACKOFF_AFTER:
         # ONE deferral per streak value, then fire again. The streak only
         # grows on a DELIVERED cycle that fails, so deferring every wake at
         # the same value would freeze it below the stand-down threshold and
@@ -313,11 +387,65 @@ async def _timer(self: AutoNudgeService, loop: NudgeLoop, delay: float | None = 
             self._persist_soon()
             self._arm_from_deadline(loop)
         return
+    delivery_lock: asyncio.Lock | None = None
+    if is_scheduled_message(loop):
+        delivery_lock = await self._acquire_mutation_lock(loop.id)
+        if delivery_lock is None:
+            return
+        if self._loops.get(loop.id) is not loop or not loop.active or loop.cycle_count > 0:
+            _release_mutation_lock(delivery_lock)
+            return
+        if loop.scheduled_attempts >= _SCHEDULED_MESSAGE_MAX_ATTEMPTS:
+            # The dispatch-site fence for the attempt cap. The settlement that
+            # charges the final attempt retires the record itself, so the only
+            # way a PENDING record reaches here at the cap is a reload that
+            # normalised an interrupted turn back to pending (or a store edit),
+            # and either way the next thing must not be another turn: a
+            # dispatch is the side effect the cap exists to stop repeating.
+            # Released before retiring because the cleanup takes this same lock.
+            _release_mutation_lock(delivery_lock)
+            logger.warning(
+                "AutoNudge: scheduled message %s on slot %s is standing down before "
+                "dispatch — its %d attempts are spent",
+                loop.id,
+                loop.slot_key,
+                loop.scheduled_attempts,
+            )
+            try:
+                await _retire_scheduled_message(self, loop, charge_attempt=False)
+            except Exception:
+                # ``_timer`` runs as a bare task: an escaping exception would be
+                # swallowed with the row left pending and no timer on it. Retry
+                # on the overdue beat instead, the cadence a failed settlement
+                # already retries at -- never by falling through to a dispatch.
+                logger.warning(
+                    "AutoNudge: standing down scheduled message %s failed; retrying "
+                    "on the overdue beat",
+                    loop.id,
+                    exc_info=True,
+                )
+                if loop.active and self._loops.get(loop.id) is loop:
+                    # Read through the facade so a test's patched beat is honoured.
+                    from kiro_crew import autonudge as seams  # circular: facade imports us
+
+                    self._arm_timer(loop, delay=float(seams._OVERDUE_REARM_SECS))
+            return
+        if time.time() < loop.scheduled_at:
+            loop.next_due_ts = loop.scheduled_at
+            self._arm_from_deadline(loop)
+            _release_mutation_lock(delivery_lock)
+            return
     self._firing.add(loop.id)
     try:
         await self._run_fire_cycle(loop)
     finally:
         self._firing.discard(loop.id)
+        scheduled_outcome = self._scheduled_turn_outcomes.get(loop.id)
+        if scheduled_outcome is not None and loop.id in self._loops:
+            turn_task, completed = scheduled_outcome
+            self._schedule_scheduled_settlement(loop.id, turn_task, completed)
+        if delivery_lock is not None:
+            _release_mutation_lock(delivery_lock)
         # A re-arm requested DURING the fire window (a dashboard turn that
         # completed while we were still persisting) was deferred rather than
         # applied, because applying it would have cancelled this very task
@@ -651,7 +779,21 @@ async def _run_fire_cycle(self: AutoNudgeService, loop: NudgeLoop) -> None:
     # deactivating here instead of on the next idle timer closes the
     # window where notify_turn_complete arms another full idle cycle for
     # a loop that is already over budget.
-    if runtime_budget_exceeded(loop) and loop.active and loop.id in self._loops:
+    # Gated on the same reading as the pre-fire bounds, and for a sharper
+    # reason: this site settles through ``_update_unserialized``, which carries
+    # the SAME protected-record refusal as ``update()``. A scheduled one-shot
+    # that reached here has already DELIVERED, so the refusal would raise out
+    # of the fire cycle AFTER the send -- past the ``cycle_count`` bump, into
+    # the caller's ``finally``, which would still schedule the settlement and
+    # then let the exception escape ``_timer``'s bare task unlogged. The
+    # one-shot has nothing left to stop in any case: its own settlement, armed
+    # by that ``finally``, is what retires it.
+    if (
+        not is_scheduled_message(loop)
+        and runtime_budget_exceeded(loop)
+        and loop.active
+        and loop.id in self._loops
+    ):
         logger.info(
             "AutoNudge: loop %s exceeded max_runtime_secs=%d during its turn "
             "— deactivating post-delivery",
@@ -762,6 +904,8 @@ async def fire_now(
         return None, "loop not found", 404
     if not loop.active:
         return None, "loop is not active", 409
+    if is_scheduled_message(loop):
+        return None, "scheduled messages send only at their scheduled time", 409
     if loop_id in self._firing:
         if defer_if_firing:
             # The refusal still STANDS as this call's answer -- nothing is armed now, and

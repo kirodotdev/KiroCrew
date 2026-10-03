@@ -20,7 +20,16 @@ from kiro_crew.preview_text import drop_format_chars
 
 SESSION_RELOAD_KIND = "session_reload"
 
-SYSTEM_NOTICE_KINDS: frozenset[str] = frozenset({"compaction", SESSION_RELOAD_KIND})
+# A scheduled composer message that was not delivered. The notice deliberately
+# does not encode a cause; its card asks the user to re-type and reschedule.
+# Emitted by ``slack/gateway.py::_notify_scheduled_message_dropped``, both for a
+# pre-dispatch refusal and, through the service's ``notify_scheduled_message_dropped``
+# hook, for a one-shot stood down at its attempt cap.
+SCHEDULED_MESSAGE_DROPPED_KIND = "scheduled_message_dropped"
+
+SYSTEM_NOTICE_KINDS: frozenset[str] = frozenset(
+    {"compaction", SESSION_RELOAD_KIND, SCHEDULED_MESSAGE_DROPPED_KIND}
+)
 
 
 def is_system_notice(role: object, meta: object) -> bool:

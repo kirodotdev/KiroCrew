@@ -358,6 +358,96 @@ class TestDeliverCrossSurfaceReply:
             assert len(c.args[1]) <= 100
 
 
+async def _deliver_multipart_reply_with_transition(tmp_path, transition=None):
+    """Deliver three parts, applying *transition* after the first send returns."""
+    state = _make_state(tmp_path)
+    tp = _fake_transport("telegram")
+    tp.capabilities.max_message_chars = 100
+    state.register_channel_transport(tp)
+    live = {
+        "link": ChannelLink("telegram", channel_id="123"),
+        "paused": False,
+        "unreadable": False,
+        "composition_error": False,
+    }
+
+    def _get_link(_session_key):
+        if live["composition_error"]:
+            from kiro_crew.platform.context import PlatformCompositionError
+
+            raise PlatformCompositionError("ceiling weakened during delivery")
+        if live["unreadable"]:
+            raise RuntimeError("mirror store unreadable")
+        return live["link"]
+
+    state.sessions.get_mirror_link = MagicMock(side_effect=_get_link)
+    state.sessions.is_mirror_paused = MagicMock(
+        side_effect=lambda _session_key, *, origin=False: live["paused"]
+    )
+
+    async def _send(_channel_id, _part, *, thread_id=None):
+        if tp.send_message.await_count == 1 and transition is not None:
+            transition(live)
+        return "mid-1"
+
+    tp.send_message = AsyncMock(side_effect=_send)
+    slot = SimpleNamespace(_steer_audience_fences={})
+    await _deliver_cross_surface_reply(state, "k", "x" * 250, slot=slot)
+    return tp, state
+
+
+class TestMultipartReplyRevocation:
+    @pytest.mark.asyncio
+    async def test_unlink_after_first_part_stops_the_remainder(self, tmp_path):
+        tp, _ = await _deliver_multipart_reply_with_transition(
+            tmp_path, lambda live: live.update(link=None)
+        )
+
+        assert tp.send_message.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_retarget_after_first_part_stops_the_remainder(self, tmp_path):
+        tp, _ = await _deliver_multipart_reply_with_transition(
+            tmp_path,
+            lambda live: live.update(link=ChannelLink("telegram", channel_id="456")),
+        )
+
+        assert tp.send_message.await_count == 1
+        assert {call.args[0] for call in tp.send_message.await_args_list} == {"123"}
+
+    @pytest.mark.asyncio
+    async def test_pause_after_first_part_stops_the_remainder(self, tmp_path):
+        tp, _ = await _deliver_multipart_reply_with_transition(
+            tmp_path, lambda live: live.update(paused=True)
+        )
+
+        assert tp.send_message.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_unreadable_link_after_first_part_stops_the_remainder(self, tmp_path):
+        tp, _ = await _deliver_multipart_reply_with_transition(
+            tmp_path, lambda live: live.update(unreadable=True)
+        )
+
+        assert tp.send_message.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_composition_error_after_first_part_propagates(self, tmp_path):
+        from kiro_crew.platform.context import PlatformCompositionError
+
+        with pytest.raises(PlatformCompositionError, match="ceiling weakened during delivery"):
+            await _deliver_multipart_reply_with_transition(
+                tmp_path, lambda live: live.update(composition_error=True)
+            )
+
+    @pytest.mark.asyncio
+    async def test_unchanged_link_sends_every_part(self, tmp_path):
+        tp, state = await _deliver_multipart_reply_with_transition(tmp_path)
+
+        assert tp.send_message.await_count == 3
+        assert state.sessions.get_mirror_link.call_count >= 4
+
+
 class TestDeliverCrossSurfaceUserMessage:
     @pytest.mark.asyncio
     async def test_delivers_with_prefix(self, tmp_path):

@@ -10,6 +10,30 @@ import {
 import { useAppSelector, type AppDispatch } from '../../../store'
 import { selectAutomationForSlot, sseAutomation } from '../../../store/chatSlice'
 
+/** Keep live liveness/counters while filling only protected scheduled text that
+ * a reduced projection cannot carry. Identity equality is the merge boundary:
+ * an older sibling record must never enrich or resurrect a newer automation. */
+export function reconcileAutomationSources(
+  live: AutomationRecord | null,
+  snapshot: AutomationRecord | null | undefined,
+): AutomationRecord | null {
+  const full = snapshot ?? null
+  if (!live) return full
+  if (
+    live.kind === 'legacy_goal_loop'
+    && live.scheduledMessage === true
+    && live.message === ''
+    && full?.kind === 'legacy_goal_loop'
+    && full.scheduledMessage === true
+    && full.id === live.id
+    && full.slotKey === live.slotKey
+    && full.message !== ''
+  ) {
+    return { ...live, message: full.message }
+  }
+  return live
+}
+
 /**
  * The active session's automation (a structured monitor or a legacy goal loop):
  * the live Redux record, the cold REST snapshot that stands in for it, whether
@@ -63,7 +87,7 @@ export function useSessionAutomation({ activeSlot, queryClient, dispatch }: {
   // invalidate this query before clearing Redux. That ordering keeps creation
   // disabled while absence is being re-proved and prevents a stale snapshot
   // from replacing or resurrecting a live record.
-  const automation = liveAutomation ?? automationSnapshot.data ?? null
+  const automation = reconcileAutomationSources(liveAutomation, automationSnapshot.data)
   const automationId = automation?.id
   const automationCreationReady = !!automation
     || (automationSnapshot.isSuccess && !automationSnapshot.isFetching)

@@ -53,6 +53,26 @@ def backfill_content(row: dict[str, Any]) -> str:
     return str(row.get("content") or "")
 
 
+def _is_scheduled_message_user(row: dict[str, Any]) -> bool:
+    """Whether *row* is a durable deferred composer message.
+
+    Send-later delivery keeps the ordinary ``user`` role and exact content in
+    the transcript, but stamps this gateway-owned metadata after strict
+    persistence. Replaying that row into a newly linked channel would turn a
+    deferred private send into channel history without a fire-time audience
+    decision. Assistant rows and malformed or unrelated metadata remain
+    ordinary conversational history.
+    """
+    meta = row.get("meta")
+    scheduled = meta.get("scheduled_message") if isinstance(meta, dict) else None
+    return (
+        row.get("role") == "user"
+        and isinstance(scheduled, dict)
+        and isinstance(scheduled.get("loop_id"), str)
+        and bool(scheduled["loop_id"])
+    )
+
+
 def _is_conversational(row: object) -> bool:
     """True when *row* is a human-readable message worth replaying.
 
@@ -66,6 +86,8 @@ def _is_conversational(row: object) -> bool:
     if role not in _CONVERSATIONAL_ROLES:
         return False
     if not backfill_content(row):
+        return False
+    if _is_scheduled_message_user(row):
         return False
     meta = row.get("meta")
     if is_system_notice(role, meta):

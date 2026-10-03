@@ -54,6 +54,7 @@ module does do about it (see :func:`relay_remote_turn` and
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import logging
 from typing import TYPE_CHECKING, Any, AsyncIterator, Iterator
@@ -109,7 +110,11 @@ class RemoteTurnError(Exception):
     """
 
 
-async def ensure_version_parity(mgr: Any, instance_id: str) -> None:
+class _RemoteTurnRefused(RemoteTurnError):
+    """The peer explicitly refused a turn before dispatching it."""
+
+
+async def ensure_version_parity(mgr: Any, instance_id: str, *, exact: bool = False) -> None:
     """Raise :class:`RemoteTurnError` unless the peer runs a compatible build.
 
     Remote execution is fenced by ``major.minor`` version parity, not full-string
@@ -126,6 +131,16 @@ async def ensure_version_parity(mgr: Any, instance_id: str) -> None:
     actionable message rather than optimistically attempted. A version string
     that is not semver-shaped on EITHER end (a packaging build id) also cannot be
     proven compatible by series, so it falls back to strict full-string equality.
+
+    *exact* tightens the fence to full-string equality, on top of the series
+    rule. A SCHEDULED relay needs it: its settlement accepts only the peer's
+    explicit ``turn_landed`` verdict, which a same-series peer one patch behind
+    cannot emit, so admitting that peer would let it run the message in full while
+    this side classifies the turn as unlanded and replays it up to the attempt
+    cap. Refusing BEFORE the proxy ``POST`` keeps the refusal pre-acceptance:
+    the peer never receives the message and the one-shot is re-armed uncharged.
+    Interactive relays keep the series rule — their terminator-only success path
+    still interoperates with an older patch.
     """
     ok, value = await mgr.peer_version(instance_id)
     local = kiro_crew.__version__
@@ -141,13 +156,23 @@ async def ensure_version_parity(mgr: Any, instance_id: str) -> None:
             "not dispatched to it. Reconnect the crew and try again."
         )
     # The capability response and the dispatch fence use the same rule.
-    if not versions_compatible(local, value):
+    compatible = versions_compatible(local, value)
+    if not compatible or (exact and value != local):
         # The peer's reported version is an ARBITRARY string: the transport proves
         # only that ``/api/version`` answered with a non-empty str. Redact BEFORE
         # bounding — truncating first could split a credential across the cut and
         # leave the tail unmatched — so a compromised or misconfigured peer cannot
         # use this mismatch message as an echo channel into the user's transcript.
         shown = redact_peer_text(value)[:64]
+        if compatible:
+            # Refused by the exact fence alone: a same-series patch skew that an
+            # interactive session would run on. Say why a scheduled one will not.
+            raise RemoteTurnError(
+                f"This crew runs Kiro Crew {shown} but this machine runs {local}. "
+                f"A scheduled message only runs on a crew at exactly this version, "
+                f"because an older build cannot report that the turn landed — "
+                f"update whichever end is behind."
+            )
         raise RemoteTurnError(
             f"This crew runs Kiro Crew {shown} but this machine runs {local}. "
             f"A session only runs on a crew at the same major.minor version — "
@@ -720,18 +745,60 @@ def _drop_unsent_user_row(slot: "_ChatSlot", message: str) -> None:
     slot._dirty = True
 
 
+@dataclasses.dataclass
+class RemoteTurnOutcome:
+    """Where one relayed turn ended, for a caller that must tell two failures apart.
+
+    :func:`relay_remote_turn` returns a single bool -- did the turn land -- and
+    every interactive caller needs nothing more. A scheduled send does: a peer
+    that REFUSED the turn before accepting it (busy or version skew) never
+    received the message, so the one-shot owes no attempt and its staged user row
+    must be rolled back, while a turn the peer accepted and then failed or whose
+    response was lost IS a spent attempt whose row stays. A transport failure
+    after dispatch is ambiguous and therefore takes the bounded spent-attempt
+    path rather than risking duplicate execution. The bool alone cannot say
+    which, so the relay fills this record in when the caller passes one.
+
+    ``peer_accepted`` is written on EVERY exit, cancellation included; ``landed``
+    only when the relay returns, and it mirrors the returned bool.
+    """
+
+    peer_accepted: bool = False
+    landed: bool = False
+
+
 async def relay_remote_turn(
     state: "DashboardState",
     slot: "_ChatSlot",
     message: str,
     *,
     chunks: AsyncIterator[bytes] | None = None,
-) -> None:
-    """Run one turn for *slot* on its bound peer, replaying the result locally.
+    containment_admission: dict[str, Any] | None = None,
+    outcome: RemoteTurnOutcome | None = None,
+) -> bool:
+    """Replay one peer turn and return whether it authoritatively landed.
+
+    A current peer sends a relay-only ``done`` row with its ``turn_landed``
+    verdict immediately before the ordinary SSE terminator. A same-series peer
+    from an older patch may send only ``[DONE]``. Interactive relays keep that
+    legacy terminator-only success behavior. Scheduled relays, identified by a
+    supplied *outcome*, require an explicit strict ``turn_landed=True`` row plus
+    the terminator; a missing outcome is accepted but unlanded so the scheduled
+    message remains retryable. A relayed error row is unlanded for both callers.
 
     *chunks* exists for tests: pass an async byte iterator to drive the replay
     without a tunnel. In production it is ``None`` and the stream comes from the
     instance manager's proxy.
+
+    *outcome*, when given, is filled in with whether the peer ACCEPTED the turn
+    (see :class:`RemoteTurnOutcome`) and opts into the scheduled caller's strict
+    settlement rule. Because that rule needs the peer's explicit verdict, a
+    scheduled relay also tightens the pre-dispatch version gate to exact equality
+    (``ensure_version_parity(exact=True)``): a same-series peer one patch behind
+    would run the message in full and still be settled as unlanded, so it is
+    refused before the POST and the refusal stays pre-acceptance. A refused turn
+    and an accepted-but-unlanded turn both return ``False``, and only the record
+    distinguishes them.
 
     Errors reach the user as an ``error`` transcript row and a ``chat_done``, the
     same shape a failed local turn takes, so the composer unblocks and the
@@ -767,21 +834,32 @@ async def relay_remote_turn(
     # marker cleared. Cancellation is NOT terminal: it leaves this flag set.
     cancelled = False
     # Flips true once the peer ACCEPTS the turn — i.e. the stream yields anything
-    # at all, INCLUDING the empty acceptance sentinel ``_peer_turn_chunks`` emits
-    # the instant the peer answers 2xx. A refusal RAISED BEFORE that (version-parity
-    # skew, a non-2xx status, a connection error) means the peer never received this
-    # turn, so the user row appended before dispatch must be rolled back or a retry
-    # duplicates local history the peer never saw. Once the peer is
-    # reached, a zero-byte OR truncated stream KEEPS the row: the peer owns the turn
-    # and may still be running it, so dropping the prompt would erase a message the
-    # peer accepted — including when a 2xx response closes before emitting a single
-    # byte.
+    # at all. For scheduled relays, ``_peer_turn_chunks`` emits an empty acceptance
+    # sentinel after exact-version preflight and before awaiting response headers:
+    # the peer starts its detached turn before preparing that response, so a reset
+    # in that gap is accepted-but-ambiguous and must consume one bounded attempt.
+    # An explicit non-2xx refusal resets the mark below. Interactive relays retain
+    # their legacy timing and emit the sentinel only after a 2xx response. Once the
+    # peer is reached, a zero-byte OR truncated stream KEEPS the row: the peer owns
+    # the turn and may still be running it.
     peer_reached = False
     try:
         if chunks is None:
-            chunks = _peer_turn_chunks(state, slot, message)
+            chunks = _peer_turn_chunks(
+                state,
+                slot,
+                message,
+                containment_admission=containment_admission,
+                # A scheduled caller settles on the peer's explicit verdict, so
+                # a same-series peer too old to send one is refused here, before
+                # the POST, where the refusal is still pre-acceptance.
+                exact_version=outcome is not None,
+            )
         buffer = bytearray()
         saw_terminator = False
+        saw_turn_outcome = False
+        saw_error_row = False
+        peer_turn_landed = False
         async for chunk in chunks:
             peer_reached = True
             for record in iter_sse_records(buffer, chunk):
@@ -790,7 +868,29 @@ async def relay_remote_turn(
                     continue
                 if row.get("__done__"):
                     saw_terminator = True
+                    # Older same-series peers omitted the relay-only outcome row.
+                    # Their successful transcript + terminator remains compatible,
+                    # but an error transcript + terminator is a failed turn. Treat
+                    # only that legacy shape as an implicit false outcome; a current
+                    # peer's explicit strict verdict remains authoritative.
+                    if saw_error_row and not saw_turn_outcome:
+                        saw_turn_outcome = True
+                        peer_turn_landed = False
                     break
+                if row.get("type") == "done":
+                    # A status-bearing done row is private relay protocol, never a
+                    # transcript row. Exactly one strict bool is authoritative;
+                    # malformed or conflicting duplicates fail safe as unlanded.
+                    meta = row.get("meta")
+                    landed = meta.get("turn_landed") if isinstance(meta, dict) else None
+                    if saw_turn_outcome or type(landed) is not bool:
+                        peer_turn_landed = False
+                    else:
+                        peer_turn_landed = landed
+                    saw_turn_outcome = True
+                    continue
+                if row.get("type") == "error":
+                    saw_error_row = True
                 _apply_row(state, slot, row, sequencer)
             if saw_terminator:
                 break
@@ -817,6 +917,13 @@ async def relay_remote_turn(
         # re-raise so cancellation still propagates.
         cancelled = True
         raise
+    except _RemoteTurnRefused as e:
+        # The scheduled path marks transport ambiguity as accepted before waiting
+        # for headers. A concrete non-2xx is the opposite: the peer handler refused
+        # before its dispatch point, so hand the reservation back uncharged.
+        peer_reached = False
+        _drop_unsent_user_row(slot, message)
+        slot.append("error", str(e), "msg msg-err")
     except RemoteTurnError as e:
         if not peer_reached:
             _drop_unsent_user_row(slot, message)
@@ -832,6 +939,12 @@ async def relay_remote_turn(
             "msg msg-err",
         )
     finally:
+        # Reported on every exit, cancellation included, and BEFORE the terminal
+        # branch below: the caller's own ``finally`` reads it to decide whether
+        # this turn was an attempt at all, and a cancelled relay must still say
+        # whether the peer had the message when the cancel arrived.
+        if outcome is not None:
+            outcome.peer_accepted = peer_reached
         # Persist BEFORE unblocking the composer, mirroring the local turn path's
         # explicit ``await save_slot_off_loop(state, slot)`` in ``chat_runner``.
         # Every row this turn produced was appended to the in-memory window only;
@@ -871,15 +984,44 @@ async def relay_remote_turn(
     # executor-aware queue dispatcher (routing ANY non-local executor, not just
     # this one), a change to the shared local turn path and a decision of its own
     # rather than a tail-call here — so the honest 409 stands until then.
+    # Current peers prove settlement with the relay-only status row. A missing
+    # row is the wire shape of an older patch in the same compatible series:
+    # interactive callers retain its historical terminator-only result, while a
+    # scheduled caller (one supplying ``outcome``) treats it as accepted but
+    # unlanded. Once a peer attempts the new record, malformed/false/duplicate
+    # status is deliberately fail-safe for every caller.
+    landed = saw_terminator and (peer_turn_landed if saw_turn_outcome else outcome is None)
+    if outcome is not None:
+        outcome.landed = landed
+    return landed
 
 
 async def _peer_turn_chunks(
-    state: "DashboardState", slot: "_ChatSlot", message: str
+    state: "DashboardState",
+    slot: "_ChatSlot",
+    message: str,
+    *,
+    containment_admission: dict[str, Any] | None = None,
+    exact_version: bool = False,
 ) -> AsyncIterator[bytes]:
-    """Stream the peer's SSE response for one turn, chunk by chunk."""
+    """Stream the peer's SSE response for one turn, chunk by chunk.
+
+    *exact_version* asks :func:`ensure_version_parity` for full-string equality
+    rather than series parity; see there for why a scheduled relay needs it.
+    """
     mgr = await _require_manager(state)
-    await ensure_version_parity(mgr, slot.instance_id)
-    body = json.dumps({"message": message, "slot": slot.remote_slot}).encode()
+    await ensure_version_parity(mgr, slot.instance_id, exact=exact_version)
+    payload: dict[str, Any] = {"message": message, "slot": slot.remote_slot}
+    if containment_admission is not None:
+        payload["containment_admission"] = containment_admission
+    body = json.dumps(payload).encode()
+    if exact_version:
+        # The peer dispatches its detached turn before preparing the SSE response.
+        # Once preflight passes, failure to obtain response headers cannot prove
+        # that it did not run. Mark that ambiguity as accepted before entering the
+        # request context; a concrete non-2xx below raises ``_RemoteTurnRefused``
+        # so the consumer resets the mark and preserves uncharged busy retries.
+        yield b""
     # ``relay=1`` asks the peer to mirror its WebSocket frames onto this stream;
     # without it the reply carries the prose and none of the tool activity.
     async with mgr.proxy_request(
@@ -891,16 +1033,15 @@ async def _peer_turn_chunks(
         content_type="application/json",
     ) as upstream:
         if not 200 <= upstream.status < 300:
-            raise RemoteTurnError(
+            raise _RemoteTurnRefused(
                 f"The crew refused the turn (HTTP {upstream.status}). "
                 f"It may have restarted — reconnect it and try again."
             )
-        # The peer ACCEPTED the turn (2xx) and now owns it. Emit an empty
-        # acceptance sentinel BEFORE the content loop so the consumer marks the
-        # peer reached even when the body carries zero bytes before the tunnel
-        # closes — that is a truncation of a turn the peer is running, not a
-        # pre-acceptance refusal, so the user row must be KEPT, not rolled back
-        # ``iter_sse_records`` treats the empty chunk as a no-op.
-        yield b""
+        # The peer ACCEPTED the turn (2xx) and now owns it. Interactive relays
+        # mark acceptance here, preserving their legacy response-based timing.
+        # A scheduled relay emitted the conservative marker before the request
+        # context because its attempt accounting must bound ambiguous execution.
+        if not exact_version:
+            yield b""
         async for chunk in upstream.content.iter_any():
             yield chunk

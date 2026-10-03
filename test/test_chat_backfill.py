@@ -200,6 +200,56 @@ class TestBackfillSelection:
         selection = select_backfill_messages(state, slot)
         assert [row["content"] for row in selection.messages] == ["hi", "hello", "odd"]
 
+    @pytest.mark.parametrize(
+        ("role", "meta", "included"),
+        [
+            ("user", None, True),
+            ("user", {"kind": "ordinary"}, True),
+            ("user", {"scheduled_message": "malformed"}, True),
+            ("user", {"scheduled_message": {}}, True),
+            (
+                "user",
+                {"scheduled_message": {"at": 2_000.0, "loop_id": "scheduled-1"}},
+                False,
+            ),
+            (
+                "assistant",
+                {"scheduled_message": {"at": 2_000.0, "loop_id": "scheduled-1"}},
+                True,
+            ),
+        ],
+        ids=(
+            "ordinary-user",
+            "unrelated-user-metadata",
+            "malformed-marker",
+            "incomplete-marker",
+            "durable-scheduled-user",
+            "assistant-with-same-metadata",
+        ),
+    )
+    def test_only_durable_scheduled_user_rows_are_excluded(
+        self,
+        tmp_path,
+        role,
+        meta,
+        included,
+    ):
+        state = _state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.append(role, "private deferred text", meta=meta)
+        slot.drain()
+
+        selection = select_backfill_messages(state, slot)
+
+        assert [row["content"] for row in selection.messages] == (
+            ["private deferred text"] if included else []
+        )
+        assert slot.messages[0]["role"] == role
+        stored_meta = dict(slot.messages[0].get("meta") or {})
+        assert isinstance(stored_meta.pop("mid"), str)
+        assert stored_meta == (meta or {})
+        assert slot.messages[0]["content"] == "private deferred text"
+
     @pytest.mark.asyncio
     async def test_empty_slot_posts_nothing(self, tmp_path):
         state = _state(tmp_path)
@@ -351,9 +401,9 @@ class TestBackfillFormatting:
         content = filler + split_secret + ("z" * 200)
 
         assert len(content) > boundary, "no split would happen at all"
-        assert len(filler) < cut < len(filler) + len(split_secret), (
-            "the credential must straddle the cut for this test to mean anything"
-        )
+        assert (
+            len(filler) < cut < len(filler) + len(split_secret)
+        ), "the credential must straddle the cut for this test to mean anything"
         _seed(slot, [("user", "paste"), ("assistant", content)])
 
         posted = await _drain(state, slot)
@@ -498,9 +548,7 @@ class TestBackfillOffWindowFirstTurn:
     async def test_transcript_read_failure_degrades_to_memory(self, tmp_path):
         state = _state(tmp_path)
         slot = state.get_or_create_slot("s1")
-        state.conversation_log.read_messages_chained = MagicMock(
-            side_effect=OSError("disk gone")
-        )
+        state.conversation_log.read_messages_chained = MagicMock(side_effect=OSError("disk gone"))
         rows = []
         for i in range(1, 8):
             rows.append(("user", f"q{i}"))
@@ -571,9 +619,7 @@ class TestBackfillHandlerWiring:
         assert "Session linked from dashboard" in sent[0], "anchor must be posted first"
         # sent[0] is the anchor, whose title legitimately quotes the first user
         # prompt — so only the posts AFTER it can evidence a completed backfill.
-        assert sent[1:] == [], (
-            "the request waited for the backfill instead of backgrounding it"
-        )
+        assert sent[1:] == [], "the request waited for the backfill instead of backgrounding it"
 
         pending = [t for t in state._background_tasks if not t.done()]
         assert pending, "link did not register a background drain"

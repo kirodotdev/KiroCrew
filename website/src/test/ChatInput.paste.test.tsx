@@ -167,12 +167,15 @@ describe('ChatInput optimize: forwards paste content', () => {
         value={value}
         onChange={vi.fn()}
         onSend={vi.fn()}
+        onUploadFiles={vi.fn()}
         connected={true}
         pasteBlocks={pasteBlocks}
         onPasteBlocksChange={vi.fn()}
       />,
     )
-    fireEvent.click(screen.getByRole('button', { name: 'Optimize prompt' }))
+    // Optimize is hosted by the "+" drop-up, not the action row.
+    fireEvent.click(screen.getByRole('button', { name: 'Add files & options' }))
+    fireEvent.click(screen.getByTestId('plus-menu-optimize'))
 
     // The optimize request must carry the full paste content keyed by seq, so
     // the backend can forward it to the model without expanding the token.

@@ -36,7 +36,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from chat_test_helpers import _make_state
 
-from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK
+from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK, STOP_REASON_CANCELLED
 from kiro_crew.dashboard import chat_runner as cr
 from kiro_crew.dashboard import session_control as sc
 from kiro_crew.dashboard.chat_utils import SUBAGENT_COMPLETION_KIND
@@ -261,10 +261,12 @@ async def _async_iter(items):
 
 
 @pytest.mark.asyncio
-async def test_two_turn_frame_sequence_has_finalize_between_chunks(tmp_path):
+async def test_two_turn_frame_sequence_binds_done_to_final_successor(tmp_path):
     """Through the real ``_run_chat`` tail: with a queued user message, the
     client sees ``chat_segment`` after turn N's last chunk and before turn
     N+1's first chunk, and exactly one ``chat_done`` (after the final turn).
+    The first turn lands while its queued successor ends cancelled, proving the
+    terminal ``done`` row describes the successor rather than its predecessor.
     Records BOTH egress channels -- ``broadcast_ws`` AND the ``_broadcast``
     path that carries ``chat_message`` frames -- so the boundary's full frame
     pair is pinned: the conditional ``chat_message{role:assistant}`` from the
@@ -309,7 +311,7 @@ async def test_two_turn_frame_sequence_has_finalize_between_chunks(tmp_path):
     ]
     turn2 = [
         LLMEvent(kind=EVENT_TEXT_CHUNK, text="Second turn reply."),
-        LLMEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+        LLMEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_CANCELLED),
     ]
     calls = {"n": 0}
 
@@ -359,6 +361,10 @@ async def test_two_turn_frame_sequence_has_finalize_between_chunks(tmp_path):
     # the boundary did not double-finalize the ordinary end-of-cycle path.
     assert kinds.count("chat_done") == 1
     assert kinds.index("chat_done") > seg
+    state.sessions.record_success.assert_called_once()
+    done_rows = [m for m in slot.messages if m.get("role") == "done"]
+    assert len(done_rows) == 1
+    assert done_rows[0]["meta"] == {"turn_landed": False}
 
     # Reload correctness (the reporter's prediction, confirmed): the backend
     # persisted a SEPARATE assistant row per turn, first one ending line-final

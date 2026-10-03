@@ -57,7 +57,7 @@ def echo_state(tmp_path, monkeypatch):
 
     async def reply(st, slot, message, *, _directive_user_origin):
         slot.append("assistant", "reply")
-        slot.append("done", "", "done", broadcast=False)
+        slot.append("done", "", "done", broadcast=False, meta={"turn_landed": True})
 
     monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", reply)
     monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._maybe_auto_title", AsyncMock())
@@ -201,10 +201,12 @@ async def test_in_band_send_keeps_its_existing_stream_contract(echo_state, monke
             for line in body.splitlines()
             if line.startswith("data: ") and line != "data: [DONE]"
         ]
-        assert [row["type"] for row in rows] == ["assistant"]
+        expected_types = ["assistant", "done"] if relay else ["assistant"]
+        assert [row["type"] for row in rows] == expected_types
         assert rows[0]["content"] == "reply"
         if relay:
             assert rows[0]["meta"]["mid"]
+            assert rows[1]["meta"] == {"turn_landed": True}
         else:
             assert "meta" not in rows[0]
         users = [row for row in echo_state.get_slot(_SLOT).messages if row["role"] == "user"]

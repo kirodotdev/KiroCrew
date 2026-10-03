@@ -16,6 +16,7 @@ import math
 import secrets
 import time
 from dataclasses import dataclass, field
+from typing import Any
 
 from kiro_crew.monitoring.models import MonitorOutcome, MonitorState, retained_outcome_blocks_rearm
 
@@ -31,6 +32,18 @@ MONITOR_TERMINAL_REASON = "monitor_terminal"
 
 _MIN_IDLE_SECS = 15
 _MAX_IDLE_SECS = 86400  # 24h
+MAX_SCHEDULE_AHEAD_SECS = 30 * 86400
+_SCHEDULED_MESSAGE_BEAT_SECS = 3600
+# How many times a scheduled one-shot may be DISPATCHED (a turn actually
+# started on its slot) before it stands down for good. A dispatched turn that
+# then fails, is cancelled, or never lands is replayed on the record's own
+# deadline, and without this bound a slot whose turns start but never land
+# replays the same send every overdue beat forever -- the composer text would be
+# re-injected, and every side effect of starting that turn repeated, with no
+# end. Pre-dispatch refusals (a busy slot, provenance not yet due) never start a
+# turn and are not attempts. Small on purpose: the message was composed for one
+# exact time, so a third failed start is already well past that time.
+_SCHEDULED_MESSAGE_MAX_ATTEMPTS = 3
 
 
 # Persisted source category for a deliberate ``autonudge_stop`` directive.
@@ -503,6 +516,50 @@ class NudgeLoop:
     # concurrency framework. Absent in a store written before this field ->
     # decodes to 0, and a first fire simply captures 0.
     config_generation: int = 0
+    # Positive kind discriminator for composer-authored one-shots. Timing alone
+    # is agent-writable and never establishes user provenance.
+    scheduled_message: bool = False
+    # Authoritative process-memory provenance must agree with this metadata.
+    scheduled_at: float = 0.0
+    # Inspection-only completion mirror; protected provenance authorizes cleanup.
+    scheduled_completed: bool = False
+    # Durable count of dispatched deliveries that did NOT land (the turn failed,
+    # was cancelled, or was interrupted by a restart), so the replay a
+    # ``completed=False`` settlement arms is bounded by
+    # ``_SCHEDULED_MESSAGE_MAX_ATTEMPTS``. Charged in the same durable write as
+    # the settlement of an unlanded turn -- the reset to ``cycle_count == 0``
+    # that re-opens a dispatch, or the retirement that replaces that reset once
+    # the cap is reached -- and by the reload that normalises an interrupted turn
+    # back to pending. A refused fire never reaches any of those and costs
+    # nothing. Absent in a store written before this field -> decodes to 0. Like
+    # every other field here it is agent-writable: a forged value can at most
+    # retire the one-shot early, never replay it past the cap.
+    scheduled_attempts: int = 0
+
+
+@dataclass(frozen=True)
+class SlotNudgeRetirement:
+    """A retired loop plus process-local authority needed only for rollback."""
+
+    loop: NudgeLoop
+    scheduled_provenance: Any | None = None
+
+
+def scheduled_message_trust_id(loop_id: str) -> str:
+    """Return the disjoint process-memory key for composer provenance."""
+    return f"scheduled-message:{loop_id}"
+
+
+def is_scheduled_message(loop: NudgeLoop) -> bool:
+    """Whether *loop* positively declares a valid scheduled-composer record."""
+    value = getattr(loop, "scheduled_at", 0.0)
+    return (
+        getattr(loop, "scheduled_message", False) is True
+        and isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+        and value > 0
+    )
 
 
 def is_structured_monitor_loop(loop: NudgeLoop) -> bool:
@@ -527,6 +584,10 @@ def terminal_notification_delivery_matches(
 
 class MonitorUpdateConflict(ValueError):
     """A structured mutation would break active action correlation."""
+
+
+class ScheduledMessageInFlight(MonitorUpdateConflict):
+    """Raised when slot retirement races an accepted scheduled turn."""
 
 
 def runtime_budget_exceeded(loop: "NudgeLoop", now: float | None = None) -> bool:
