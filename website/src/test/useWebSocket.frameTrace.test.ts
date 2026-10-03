@@ -1254,6 +1254,7 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
   ],
   "chat_status and variant switch": [
     'action chat/setSlotStatusDetail {"slot":"slot-a","kind":"thinking","label":"Compacting","ts":"<clock>"}',
+    'action chat/markLoadedRowsChanged {"slot":"slot-a"}',
     'action chat/refreshSlot/pending',
   ],
   "chat_done in the active slot": [

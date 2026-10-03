@@ -492,6 +492,34 @@ class TestServedBundleId:
         assert "bundle_id" in snap
         assert isinstance(snap["bundle_id"], str)
 
+    def test_snapshot_carries_the_redaction_allow_list_token(
+        self, state: DashboardState, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The token a tab compares across status pushes to learn it missed an
+        # allow or revoke while its socket was down. The funnel computes it off
+        # the event loop (it stats a config file) and the snapshot emits it as given.
+        import asyncio
+        import threading
+
+        from kiro_crew.dashboard import status_counts
+
+        assert state.status_snapshot(redaction_hosts_gen="tok-1")["redaction_hosts_gen"] == "tok-1"
+        loop_thread: list[int] = []
+        seen: list[int] = []
+
+        def _gen() -> str:
+            seen.append(threading.get_ident())
+            return "tok-2"
+
+        monkeypatch.setattr(status_counts, "serving_generation", _gen)
+
+        async def _run() -> dict:
+            loop_thread.append(threading.get_ident())
+            return await status_counts.cached_status_snapshot(state)
+
+        assert asyncio.run(_run())["redaction_hosts_gen"] == "tok-2"
+        assert seen and seen[0] != loop_thread[0]
+
 
 class TestGatewayMemoryFields:
     """`/api/status` publishes the gateway's own RSS and the session ceiling so

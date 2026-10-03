@@ -19,6 +19,7 @@ allowed", which means more redaction, the safe direction.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -72,6 +73,7 @@ def valid_host(host: object) -> bool:
 # whole. The snapshot is keyed by the file it was read from, so a different
 # config home reads afresh.
 _snapshot: tuple[Path, dict[str, list[str]]] | None = None
+_writes = 0  # list writes this process; see list_fingerprint
 _loading = False
 _load_thread: threading.Thread | None = None
 
@@ -154,14 +156,26 @@ def _write(data: dict[str, list[str]]) -> None:
     tmp.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
     os.chmod(tmp, 0o600)
     os.replace(tmp, path)
-    global _snapshot
+    global _snapshot, _writes
     _snapshot = (path, {ws: list(hosts) for ws, hosts in data.items()})
+    _writes += 1
 
 
 def allowed_hosts_for(workspace: str | None) -> frozenset[str]:
     """The hosts allowed in ``workspace``; empty on any read failure."""
     ws = normalize_workspace(workspace)
     return frozenset(_current().get(ws, ())) if ws is not None else frozenset()
+
+
+def list_fingerprint() -> str:
+    """Value that moves with every write of the list (an unloaded list serves as
+    empty), so a list written back to an earlier state still reads as changed. A
+    hash, so never publish it as-is: the dashboard keys it
+    (``serving_gen.serving_generation``) since the list is owner-only."""
+    snap = _snapshot
+    data = snap[1] if snap is not None and snap[0] == _path() else {}
+    body = json.dumps([_writes, data], sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(body).hexdigest()[:16]
 
 
 def list_allowed() -> dict[str, list[str]]:

@@ -16,14 +16,15 @@ import { recentErrors, recordError, redactSecrets, type ErrorReport } from '../.
 import { chatSlotDetailPath } from '../../api/chatSlotPaths'
 import type { ChatState } from './state'
 import { fetchSlotDetail, isUnsafeKey, safeKey } from './wire'
-import { deduplicateByMid, floorForGen, olderHeadAbovePage, raiseChunkSeq, sameTranscript, serverRowCount, snapshotChunkGen, snapshotChunkSeq } from './transcript'
+import { deduplicateByMid, floorForGen, hasOpenOAuthRow, hasUnplaceableDurableRow, olderHeadAbovePage, raiseChunkSeq, sameTranscript, serverRowCount, snapshotChunkGen, snapshotChunkSeq } from './transcript'
 import { abortActiveOlderFetch, pagingCursorAfterKeptHead, slotCoverageShortfall, slotSwitchFetchLimit } from './paging'
 import { mergePreservedThinking, reinsertThinkingOrphans, type ThinkingAnchor } from './thinking'
 import { bumpRunEpoch, enterActiveSlot, pushHistory } from './runState'
-import { parkActiveTranscript, retainServerTotal, seedContextUsage, setPagingCursor, writeSlotPage } from './slotCache'
+import { clearVerifiedHead, isObsoleteReadRejection, markedSince, parkActiveTranscript, renewUntilCurrent, retainServerTotal, seedRedactionHostsGen, seedContextUsage, setPagingCursor, writeSlotPage } from './slotCache'
 import { hydrateQueuedBubbles } from './queue'
 import { loadSlotActivity } from './activity'
 import { walkWindowBackTo } from './windowWalk'
+import { withReplayedPatches } from './rowPatch'
 
 /** `switchSlot`'s argument. The plain-string spelling is the overwhelmingly
  *  common one; the object form exists for caller classes that must opt out of a
@@ -190,17 +191,72 @@ export const switchSlot = createAsyncThunk<
       // chatSlice.boundedRefetchShrink.test.ts that the pair has to satisfy.
       // Measured 6.2MB/~1s unbounded against 0.7MB/57ms bounded.
       const state = (getState() as { chat: ChatState }).chat
+      /* Patches to rows already on screen (a sign-in banner retired by a child's
+       * teardown) can land while this read is in flight; the read's copies predate
+       * them, so every one numbered past this point is replayed onto what the
+       * switch installs (`withReplayedPatches`). */
+      const patchAtStart = state.rowPatchSeq ?? 0
+      const replayed = <T extends { messages: ChatMessage[] }>(read: T): T =>
+        withReplayedPatches((getState() as { chat: ChatState }).chat, key, patchAtStart, read)
       const cachedRows = state.slotMessages?.[safeKey(key)] ?? []
       const cached = cachedRows.length
       const limit = slotSwitchFetchLimit({ cached })
+      /* The change epoch this switch reads under. A change marking this slot while
+       * the read is in flight (a variant switch, an allow or revoke) outdates its
+       * rows, and the refresh that change dispatched may already have installed
+       * fresh ones: the fence re-reads the whole transcript instead of handing the
+       * outdated rows to the reducer, the switch counterpart of the `markedSince`
+       * drop in refresh and warm (a switch cannot simply be dropped: its reducer
+       * finishes the switch). */
+      let since = state.loadedRowsEpoch ?? 0
+      const fence = {
+        outdated: () => markedSince((getState() as { chat: ChatState }).chat, key, since),
+        rearm: () => {
+          const now = (getState() as { chat: ChatState }).chat
+          since = now.loadedRowsEpoch ?? 0
+          // The whole re-read re-serves every row, so it verifies the mark it
+          // starts under; the reducer clears that mark if no newer one arrives.
+          headUnverified = now.slotHeadUnverified?.[safeKey(key)]
+        },
+      }
       const first = await fetchSlotDetail(key, limit)
+      /* A read that landed after an allow-list change it predates, or after a
+       * change marked this slot, carries rows the change outdated: re-read
+       * instead of writing them. */
+      const renewIfObsolete = <T extends { redactionGen?: string }>(read: T) =>
+        renewUntilCurrent(read, () => fetchSlotDetail(key), () => (getState() as { chat: ChatState }).chat.redactionHostsGen, fence)
+      /* A cache WIDER than the clamp -- a long chat paged back through "load
+       * earlier" -- can never be covered by a clamped window as a whole, so
+       * measuring it whole reported a shortfall on every switch back in and took
+       * the unbounded read: the whole transcript each time. The fulfilled reducer
+       * keeps every cached row above the window's first row as a head (the shared
+       * `olderHeadAbovePage` cut), so only the rows from that cut on are replaced,
+       * and only those need covering. No cut (the window moved past the whole
+       * cache, or an ambiguous anchor) leaves the whole cache to measure, which is
+       * the unbounded read exactly as before. */
+      let coverageRows = cachedRows
+      /* A cache the server now serves differently (`slotHeadUnverified`) keeps no
+       * head: every cached row must be in the window, else the whole read. */
+      let headUnverified = state.slotHeadUnverified?.[safeKey(key)]
+      if (limit !== undefined && cached > limit && headUnverified === undefined) {
+        const priorRows = cachedRows.filter(m => m.role !== 'thinking')
+        const { cutIdx, olderHead } = olderHeadAbovePage(priorRows, first.messages)
+        // A head still offering a sign-in link is not kept: read whole (`hasOpenOAuthRow`).
+        if (cutIdx > 0 && !hasOpenOAuthRow(olderHead)) coverageRows = priorRows.slice(cutIdx)
+      }
       // Coverage, MEASURED from the rows the window returned against the rows this
       // tab already holds. The older count-based check had to assume a hole whenever
       // it had no earlier server total to subtract -- true on every first visit to a
       // slot -- and closed that assumed hole with an UNBOUNDED read, which is how a
       // 110-message tab became 2,645 (the whole transcript) on a slot whose window
       // already covered its cache exactly. See slotCoverageShortfall.
-      const shortfall = slotCoverageShortfall({ cached: cachedRows, window: first.messages })
+      //
+      // A marked cache must have EVERY row re-served, and the measure skips rows it
+      // cannot place (no readable `ts`), so it cannot vouch for them: one of those
+      // left above a bounded window would survive as a head, served under the old
+      // list, after the mark is cleared. Such a cache takes the whole read.
+      const unprovable = headUnverified !== undefined && limit !== undefined && hasUnplaceableDurableRow(cachedRows)
+      const shortfall = unprovable ? 1 : slotCoverageShortfall({ cached: coverageRows, window: first.messages })
       if (shortfall > 0) {
         // A hole was OBSERVED between the cache and the window, not merely assumed
         // for want of an earlier total. Close it by extending the window OLDER
@@ -214,18 +270,29 @@ export const switchSlot = createAsyncThunk<
         if (inspectorOn()) {
           devLog('SWITCH', `short=${shortfall} lim=${limit ?? '-'} cached=${cached} total=${first.total ?? '?'}`)
         }
-        const walked = await walkWindowBackTo(key, first, cachedRows)
+        /* A marked cache keeps no head, so every row must be re-served: the walk
+         * keeps the cache above its anchor verbatim, which a serving change has
+         * outdated -- read whole instead. A walked window whose kept head still
+         * offers a sign-in link reads whole too (`hasOpenOAuthRow`). */
+        const keepsNoHead = headUnverified !== undefined
+        const walked = keepsNoHead ? await fetchSlotDetail(key) : await walkWindowBackTo(key, first, cachedRows)
+        const keptHead = olderHeadAbovePage(cachedRows.filter(m => m.role !== 'thinking'), walked.messages).olderHead
+        const wide = !keepsNoHead && walked.hasMore && hasOpenOAuthRow(keptHead) ? await fetchSlotDetail(key) : walked
         // Emit only while this request still owns the slot switch: a rapid
         // A->B switch leaves A's fetch resolving after B took over, and A's
         // transcript never rendered — relaying its read would clear sibling
         // badges for messages nobody displayed. `pending` assigns activeSlot
         // atomically before this thunk body runs, so a superseded request
         // observes someone else's key here.
+        // Renewed FIRST: a renewal that gives up throws, and rows never shown must
+        // not clear sibling badges. A current read renews without a round trip.
+        const renewedWide = replayed(await renewIfObsolete(wide))
         if ((getState() as { chat: ChatState }).chat.activeSlot === key) emitSlotRead(key, _newestSlotTs())
-        return { ...walked, comparableTotal: first.total }
+        return { ...renewedWide, comparableTotal: first.total, headUnverified }
       }
+      const renewed = replayed(await renewIfObsolete(first))
       if ((getState() as { chat: ChatState }).chat.activeSlot === key) emitSlotRead(key, _newestSlotTs())
-      return first
+      return { ...renewed, headUnverified }
     } catch (e) {
       // A thrown error crosses the thunk boundary as `miniSerializeError(e)`,
       // which keeps string fields only -- `ApiError.status` (a number) never
@@ -347,8 +414,11 @@ export const switchSlot = createAsyncThunk<
       // boundary as miniSerializeError. The same announced-gesture contract
       // applies: say the open failed where the user is looking — gated on the
       // live claim like the numeric branch above, so a superseded rejection
-      // cannot overwrite the current gesture's notice.
+      // cannot overwrite the current gesture's notice. A read refused as outdated
+      // by allow-list changes is no failure to report: the newest change's own
+      // refresh of this (now active) slot fills the pane.
       if (typeof arg === 'object' && arg !== null && arg.announceOnMissing === true
+          && !isObsoleteReadRejection(e)
           && (getState() as RootState).chat.slotSwitchRequestId === requestId) {
         const name = (getState() as RootState).dashboard?.slots?.find(s => s.key === key)?.title
         dispatch(setSwitchSlotGone({
@@ -478,6 +548,8 @@ export function addSlotSwitchCases(builder: ActionReducerMapBuilder<ChatState>):
       const { key, messages, running, hasMore, queue, nextBefore } = action.payload
       if (isUnsafeKey(key)) return
       if (state.activeSlot !== key) return  // user switched away during fetch
+      clearVerifiedHead(state, key, (action.payload as { headUnverified?: number }).headUnverified)
+      seedRedactionHostsGen(state, action.payload.redactionGen)
       // A payload carrying `comparableTotal` came from the coverage walk: the
       // carried count is the first bounded read's settled one, and only that
       // may become the baseline.
@@ -714,6 +786,11 @@ export function addSlotSwitchCases(builder: ActionReducerMapBuilder<ChatState>):
         }
         return
       }
+      // A read refused as outdated by allow-list changes (ObsoleteReadError) is
+      // not a failure of this slot: the newest change's own refresh of it -- the
+      // active slot since `pending` -- re-serves the rows, and may already have.
+      // Wiping here would erase exactly those rows.
+      if (isObsoleteReadRejection(action.error)) { state.slotLoading = false; return }
       state.messages = []
       state.slotRunning = false
       state.slotStopping = false

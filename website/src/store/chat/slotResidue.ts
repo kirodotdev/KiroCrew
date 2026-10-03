@@ -33,7 +33,9 @@ const slotKeyedMaps = (state: ChatState) => [
   // server count belongs with them: kept past an eviction it would read as a
   // fall against a recreated slot's first fetch and drop a legitimate tail.
   state.slotPaneHasMore, state.slotPaneBounded, state.slotServerTotal,
-  state.slotServerTotalSeq,
+  state.slotServerTotalSeq, state.slotServerTotalRaw, state.slotHeadUnverified,
+  // A failed-heal notice and a change stamp outlive nothing they describe.
+  state.slotHealFailed, state.slotRowsChangedAt, state.slotVariantSeq,
   state.thinkingOrphans,
 ].filter(Boolean)
 

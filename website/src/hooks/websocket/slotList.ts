@@ -3,10 +3,16 @@
  *  generations), and one-row `slot_patch` frames. */
 import { useMemo, useRef } from 'react'
 import type { QueryClient } from '@tanstack/react-query'
-import { store, type AppDispatch } from '../../store'
+import { store, type AppDispatch, type RootState } from '../../store'
 import { sseSlots, sseYolo, setChannelTrusted, sseSlotPatch, fetchSlots, type SlotPatchFrame } from '../../store/dashboardSlice'
 import type { ChatSlot, ChatFolder } from '../../types'
+import { noteSlotVariantSeqs } from '../../store/chatSlice'
 import type { FrameData } from './frames'
+
+/** Read slot-list rows for `variant_seq` against the store this dispatch reaches
+ *  (a thunk, so the state read and the marks written are the same store). */
+const seenVariantSeqs = (rows: Parameters<typeof noteSlotVariantSeqs>[2]) =>
+  (dispatch: (action: unknown) => unknown, getState: () => RootState) => { noteSlotVariantSeqs(dispatch, getState, rows) }
 
 export interface SlotListSync {
   /** A new connection: forget the last-seen generations and raw frame. */
@@ -52,6 +58,9 @@ export function useSlotListSync(dispatch: AppDispatch, queryClient: QueryClient)
       // Query keys this frame has made stale; flushed once at the end.
       const staleKeys = new Set<'chat-folders' | 'dashboardConfig'>()
       dispatch(sseSlots(data))
+      // A reply variant switch this tab missed (socket down) shows here as a
+      // moved count: re-serve that slot's loaded rows.
+      dispatch(seenVariantSeqs(data))
       lastSlotsArrayRef.current = store.getState().dashboard.slots
       if (msg.yolo !== undefined) {
         dispatch(sseYolo(msg.yolo))
@@ -175,6 +184,7 @@ export function useSlotListSync(dispatch: AppDispatch, queryClient: QueryClient)
       if (hasUnknownRow) dispatch(fetchSlots())
       dispatch(sseSlotPatch(frame))
       notifyAppsSlotsChanged()
+      dispatch(seenVariantSeqs(frame.slots))
     },
   }), [dispatch, queryClient])
 }

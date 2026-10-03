@@ -328,7 +328,7 @@ MAX_LIVE_SLOTS = 500
 
 #: Fields whose dashboard-user projection is identical for every slot-patch
 #: audience. Per-audience fields such as ``source_links`` require a full frame.
-_SLOT_PATCH_FIELDS = frozenset({"pinned", "title", "folder_id"})
+_SLOT_PATCH_FIELDS = frozenset({"pinned", "title", "folder_id", "variant_seq"})
 
 #: The most live slots ONE creator may hold, as a sub-ceiling under
 #: :data:`MAX_LIVE_SLOTS`. The global ceiling alone bounds the total but not the
@@ -2788,6 +2788,7 @@ class _ChatSlot:
         "_folder_changed",
         "_folder_suggested",
         "pinned",
+        "variant_seq",
         "tags",
         "tags_revision",
         "_pending_subagent_failures",
@@ -3501,6 +3502,12 @@ class _ChatSlot:
         # and a reset flag cannot produce a second card.
         self._folder_suggested: bool = False
         self.pinned: bool = False  # pinned to top of sidebar
+        # Reply-variant revision. A switch rewrites a row a tab may hold above its
+        # newest page; the slot list carries this, so a tab whose socket missed the
+        # switch frame sees it move on reconnect and re-serves this slot alone.
+        # Minted like ``tags_revision`` (``mint_tags_revision``), so a restarted
+        # gateway never hands a tab a value it already holds.
+        self.variant_seq: str = mint_tags_revision()
         self.tags: list[str] = []  # assigned tag ids (see DashboardState._tags)
         # Change identity for tag snapshots. Orderable (see mint_tags_revision):
         # equality identifies a specific frame, and the sequence prefix lets a
@@ -6884,6 +6891,7 @@ class DashboardState:
         update_bundled_by_app: bool = False,
         version_display: str = "",
         bundle_id: str = "",
+        redaction_hosts_gen: str | None = None,
     ) -> dict[str, Any]:
         """Core status fields shared by /api/status, SSE, and WebSocket pushes.
 
@@ -7009,6 +7017,16 @@ class DashboardState:
             # which the SPA treats as unknown, never as a change.
             # Read off the loop by ``cached_status_snapshot``.
             "bundle_id": bundle_id,
+            # Opaque value that moves whenever the redaction allow list does
+            # (``serving_gen.serving_generation``, computed off-loop by the caller
+            # and passed in; None from a caller that did not). The server applies allowed
+            # hosts when it serves a transcript, so a change alters rows every
+            # tab already holds; a tab compares this across status pushes to
+            # learn of an allow or revoke made in another tab, from Settings, or
+            # while its socket was down (the tab that made the change also gets
+            # the value in the allow/revoke response and the DOM event it fires).
+            # An unloaded list serves as empty, so its value is the empty list's.
+            "redaction_hosts_gen": redaction_hosts_gen,
             # Which release lane these bytes came from: "nightly", "insider" or
             # "stable". Shipped as a RESOLVED ANSWER rather than leaving the
             # dashboard to parse `version` itself, because the rule is not

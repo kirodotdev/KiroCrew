@@ -437,7 +437,27 @@ def _valid_oauth_extension_path(path: str) -> bool:
 _OAUTH_EXTENSION_MEMO: dict[tuple[str, tuple[int, int] | None], frozenset[tuple[str, str]]] = {}
 
 
+# Changes to the set below this process has returned: a served value reading it
+# never returns to an earlier one, whatever the file's stat can tell apart. A
+# race between renders can only add a count, never lose the move.
+_oauth_extension_changes = 0
+_oauth_extension_last: frozenset[tuple[str, str]] | None = None
+
+
+def oauth_extension_changes() -> int:
+    return _oauth_extension_changes
+
+
 def _load_operator_oauth_endpoints() -> frozenset[tuple[str, str]]:
+    global _oauth_extension_changes, _oauth_extension_last
+    approved = _read_operator_oauth_endpoints()
+    if _oauth_extension_last is not None and approved != _oauth_extension_last:
+        _oauth_extension_changes += 1
+    _oauth_extension_last = approved
+    return approved
+
+
+def _read_operator_oauth_endpoints() -> frozenset[tuple[str, str]]:
     """Load the operator's OAuth-endpoint extension set (fail-soft to EMPTY).
 
     Reads ``<config_dir>/oauth_endpoints.json`` and returns the validated

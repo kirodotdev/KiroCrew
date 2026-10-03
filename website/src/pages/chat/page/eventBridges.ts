@@ -6,8 +6,8 @@ import { normalizeUrl, setSessionPreviewPending } from '../../../components/WebP
 import { addTab as addDockTerminal, removeTab as removeDockTerminal, hasTab as hasDockTerminal, reuseCurrentTab as reuseDockTerminal } from '../../../hooks/useBottomTerminal'
 import type { usePanelTabs } from '../../../hooks/usePanelTabs'
 import { i18nT } from '../../../i18n/t'
-import type { AppDispatch } from '../../../store'
-import { openActivityPanel, refreshSlot, setPendingInput } from '../../../store/chatSlice'
+import type { AppDispatch, RootState } from '../../../store'
+import { noteRedactionHostsGen, openActivityPanel, setPendingInput } from '../../../store/chatSlice'
 import type { ChatMessage, ChatSlot } from '../../../types'
 import { mergeIntoDraft } from '../../../utils/chatDrafts'
 import { copyToClipboard } from '../../../utils/clipboard'
@@ -433,13 +433,26 @@ export function useChatEventBridges({
     window.addEventListener('mc:prefill-composer', handler)
     return () => window.removeEventListener('mc:prefill-composer', handler)
   }, [dispatch, inputRef])
-  // A redaction card's "Allow for this host": the reply was saved with the
-  // link removed, and the server shows allowed hosts' links again when it
-  // serves the slot, so reload it to show the link in place of the chip.
+  // A redaction card's "Allow for this host" (or its Undo): the reply was saved
+  // with the link removed, and the server shows allowed hosts' links again when
+  // it serves the slot, so reload it to show the link in place of the chip.
+  // The status frame carries the same change to every tab a few seconds later;
+  // adopting the write's token here keeps this tab from handling it twice.
   useEffect(() => {
     const handler = (e: Event) => {
-      const slot: unknown = (e as CustomEvent).detail?.slot
-      if (typeof slot === 'string' && slot) void dispatch(refreshSlot(slot))
+      const detail = (e as CustomEvent).detail as { slot?: unknown; gen?: unknown } | undefined
+      const slot = detail?.slot
+      if (typeof slot === 'string' && slot) {
+        // The allow is workspace-wide, so every loaded session's rows, this
+        // one's included, are now served differently: the store marks them
+        // all and re-reads the open one (a background pane showing this card
+        // re-reads itself once marked), unless a status frame already carried
+        // this same change here.
+        // As a thunk, so it reads the state of the store it is dispatched to.
+        void dispatch(((d: AppDispatch, getState: () => RootState) => {
+          noteRedactionHostsGen(d as (action: unknown) => unknown, getState, detail?.gen, 'write')
+        }) as never)
+      }
     }
     window.addEventListener('mc:redaction-hosts-changed', handler)
     return () => window.removeEventListener('mc:redaction-hosts-changed', handler)

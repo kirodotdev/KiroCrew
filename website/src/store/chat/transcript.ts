@@ -475,6 +475,28 @@ export function hasUnidentifiedDurableRow(rows: ChatMessage[]): boolean {
   return rows.some(m => isDurableRow(m) && !(typeof m.meta?.mid === 'string' && m.meta.mid.length > 0))
 }
 
+/** Is there a row the server PERSISTS whose `ts` cannot be read?
+ *
+ *  A coverage measure cannot place such a row, so it cannot say whether a window
+ *  re-served it (see `slotCoverageShortfall`). A row streamed this session is the
+ *  ordinary case: it is minted with only a client timestamp and stays that way
+ *  until a read replaces it. */
+export function hasUnplaceableDurableRow(rows: ChatMessage[]): boolean {
+  return rows.some(m => isDurableRow(m) && transcriptTsMs(m.ts) === null)
+}
+
+/** Is there an `mcp_oauth` row still offering its Authorize link?
+ *
+ *  The server withdraws a link whose minting child has exited, but only as it
+ *  SERVES the row (`_expire_dead_child_oauth_meta`) or when it observes the
+ *  teardown. A row kept on screen above a bounded page is never re-served, so an
+ *  open one there could still send the user into a dead consent flow; a head
+ *  holding one is read whole instead. Same open-state test as the server's. */
+export function hasOpenOAuthRow(rows: ChatMessage[]): boolean {
+  return rows.some(m => m.role === 'mcp_oauth' && !!m.meta?.oauth_url
+    && !(m.meta?.completed || m.meta?.failed || m.meta?.superseded || m.meta?.expired))
+}
+
 /** Carry the client-stamped `meta.clientTs` from the current messages onto the
  *  server copies returned by a slot-detail reload (the refreshSlot fired on
  *  chat_done). A message STREAMED this session is born with only

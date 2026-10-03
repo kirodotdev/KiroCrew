@@ -5,6 +5,7 @@ import logging
 import time
 from typing import Any
 
+from kiro_crew.dashboard.serving_gen import serving_generation
 from kiro_crew.dashboard.state import DashboardState
 
 logger = logging.getLogger(__name__)
@@ -237,6 +238,8 @@ async def cached_status_snapshot(state: DashboardState) -> dict[str, Any]:
     await prime_status_auto_update_effect()
     # stat + read of the served index.html: one worker hop, never on the loop.
     bundle_id = await asyncio.to_thread(DashboardState.served_bundle_id)
+    # Stats the OAuth extension file: the same off-loop hop.
+    redaction_hosts_gen = await asyncio.to_thread(serving_generation)
     # ``status_update_fields()`` is typed ``dict[str, object]``; spreading it
     # into the keyword-only ``status_snapshot`` signature is sound at runtime
     # (every key is a real parameter —
@@ -246,5 +249,6 @@ async def cached_status_snapshot(state: DashboardState) -> dict[str, Any]:
         cron_jobs=crons,
         lessons=lessons,
         bundle_id=bundle_id,
+        redaction_hosts_gen=redaction_hosts_gen,
         **status_update_fields(),  # type: ignore[arg-type]
     )

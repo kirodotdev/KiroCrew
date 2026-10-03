@@ -2,18 +2,25 @@
  *  the open pane (reconnect, turn end, variant switch) and `warmSlotCache` for
  *  a background pane, each with the reducer that merges its count-matched page
  *  onto what the tab already holds. */
-import { createAsyncThunk, isDraft, original, type ActionReducerMapBuilder } from '@reduxjs/toolkit'
+import { createAction, createAsyncThunk, isDraft, original, type ActionReducerMapBuilder } from '@reduxjs/toolkit'
 import type { ChatMessage } from '../../types'
 import { mergePreservedPastes } from '../../utils/pasteTokens'
 import type { ChatState } from './state'
 import { fetchSlotDetail, isUnsafeKey, safeKey } from './wire'
-import { deduplicateByMid, floorForGen, hasUnidentifiedDurableRow, idAnchorsOneRow, isDurableRow, mergePreservedClientTs, midOccurrences, olderHeadAbovePage, raiseChunkSeq, rowIdentities, serverRowCount, snapshotChunkGen, snapshotChunkSeq, tailNotInPage, transcriptTsMs, tsEpoch } from './transcript'
+import { deduplicateByMid, floorForGen, hasOpenOAuthRow, hasUnidentifiedDurableRow, idAnchorsOneRow, isDurableRow, mergePreservedClientTs, midOccurrences, olderHeadAbovePage, raiseChunkSeq, rowIdentities, serverRowCount, snapshotChunkGen, snapshotChunkSeq, tailNotInPage, transcriptTsMs, tsEpoch } from './transcript'
 import { PANE_HYDRATE_LIMIT, REFRESH_LIMIT_CEILING, SLOT_DETAIL_MAX_LIMIT, countMatchedFetchLimit, pagingCursorAfterKeptHead, slotCoverageShortfall } from './paging'
 import { mergePreservedThinking, reinsertThinkingOrphans } from './thinking'
 import { applyWarmRunState, bumpRunEpoch } from './runState'
-import { retainServerTotal, seedContextUsage, setPagingCursor, writeSlotPage } from './slotCache'
+import { clearVerifiedHead, isObsoleteReadRejection, markedSince, renewUntilCurrent, retainServerTotal, seedRedactionHostsGen, seedContextUsage, setPagingCursor, writeSlotPage } from './slotCache'
 import { hydrateQueuedBubbles } from './queue'
 import { walkWindowBackTo } from './windowWalk'
+import { withReplayedPatches } from './rowPatch'
+
+/** Adopt a redaction allow-list value as this document's baseline. Dispatched
+ *  only by `noteRedactionHostsGen` (chatSlice), which owns the decision. */
+export const redactionHostsGenAdopted = createAction<string>('chat/redactionHostsGenAdopted')
+/** A slot's `variant_seq` as this document now holds it (see `slotVariantSeq`). */
+export const slotVariantSeqSeen = createAction<{ slot: string; seq: string | number }>('chat/slotVariantSeqSeen')
 
 /** Re-fetch messages for a slot without changing activeSlot. Only applies if still active. */
 let refreshSeqCounter = 0
@@ -27,8 +34,64 @@ export const refreshSlot = createAsyncThunk(
     // Sampled before the first await: the walk below declines when a live frame
     // reduced into the view at any point since (see `liveFrameSeq`).
     const liveAtStart = state.liveFrameSeq ?? 0
+    /* A whole-transcript read takes as long as the transcript is big, so a live
+     * chunk landing inside it is near-certain on a streaming slot. Its rows are no
+     * newer than the request, and the fulfilled reducer rebuilds `messages` from
+     * them, so installing it as-is would erase streamed text already on screen.
+     * Discarding it instead would leave a revoked link clickable until the turn
+     * ends, which is what the read exists to stop. So a whole read that a live
+     * frame raced keeps its re-served rows and carries the live tail over
+     * (`withLiveTail`): the view's rows after the newest row the read also holds,
+     * which the read lacks, and the view's streaming row in place of the read's
+     * older copy of it (live frames only ever extend that row). Every read this
+     * thunk installs passes through it, bounded pages included. A switch away
+     * still drops it.
+     *
+     * A patch to a row already on screen (a sign-in banner settling, a tool row's
+     * result) moves no live-frame count, and the read's copy of that row predates
+     * it, so installing the read would put a settled Authorize link back. Every
+     * patch numbered past dispatch (`rowPatchLog`) is replayed onto the read's
+     * rows first; a read that outlived the log's cap is refused as a failure (the
+     * slot keeps its mark, and a marked slot shows its notice with Retry). */
+    const patchAtStart = state.rowPatchSeq ?? 0
+    const liveMoved = (): boolean =>
+      ((getState() as { chat: ChatState }).chat.liveFrameSeq ?? 0) !== liveAtStart
+    const withLiveTail = <T extends { messages: ChatMessage[] }>(read: T): T | null => {
+      const now = (getState() as { chat: ChatState }).chat
+      if (now.activeSlot !== key) return null
+      // More patches landed than the log keeps, so some cannot be replayed:
+      // `withReplayedPatches` refuses the read loudly rather than install it or
+      // drop it silently. A marked slot's rejection raises its "Couldn't refresh"
+      // notice with Retry.
+      const patched = withReplayedPatches(now, key, patchAtStart, read)
+      const rows = patched.messages
+      if (!liveMoved()) return patched
+      const view = now.messages.filter(m => m.role !== 'thinking' && m.role !== 'permission' && !m.meta?.queued)
+      const readIds = new Set(rows.flatMap(rowIdentities))
+      let anchorIdx = -1
+      for (let i = view.length - 1; i >= 0; i--) {
+        if (rowIdentities(view[i]).some(id => readIds.has(id))) { anchorIdx = i; break }
+      }
+      const tail = anchorIdx >= 0
+        ? tailNotInPage(view.slice(anchorIdx + 1), rows)
+        : view.filter(m => m.role === 'streaming')
+      if (!tail.length) return patched
+      const liveStreams = tail.some(m => m.role === 'streaming')
+      const kept = liveStreams ? rows.filter(m => m.role !== 'streaming') : rows
+      return { ...read, messages: [...kept, ...tail] }
+    }
     // Dispatch order, captured before any await (see `refreshAppliedSeq`).
     const refreshSeq = nextRefreshSeq()
+    /* A view the server now serves differently (`slotHeadUnverified`: a redaction
+     * host changed, a variant switched) needs every loaded row re-served: a page
+     * that only overlaps it would keep its stale copy of every row above. So a
+     * marked view takes a count-matched page only where it spans the view, and
+     * the whole read otherwise; the read that re-serves it clears the mark. */
+    const headUnverified = state.slotHeadUnverified?.[safeKey(key)]
+    const whole = headUnverified !== undefined
+    /* The change epoch this read starts under: a change marking this slot while it
+     * is in flight outdates its rows, so `refreshSlot.fulfilled` drops it. */
+    const epochAtDispatch = state.loadedRowsEpoch ?? 0
     // COUNT-MATCHED bound, not a fixed one. The recurring refresh (reconnect,
     // chat_done, variant switch) REPLACES `messages` wholesale, so a fixed
     // bound would delete scrollback the user paged in. Asking for at least as
@@ -72,6 +135,17 @@ export const refreshSlot = createAsyncThunk(
     ).length
     const want = matched ?? Math.min(Math.max(held, PANE_HYDRATE_LIMIT), REFRESH_LIMIT_CEILING)
     const spanIsTrustworthy = !(want > held && hasUnidentifiedDurableRow(view))
+    /* No re-read for a read that landed after an allow-list change it predates:
+     * every such change marks the open slot, so `refreshSlot.fulfilled` drops this
+     * read (`markedSince`), and the refresh that change dispatched heals the view. */
+    /* A marked view past the ceiling has no page that re-serves every row it
+     * holds, so it reads whole at once rather than after a page it must refuse. An
+     * empty view has nothing to re-serve and takes the floor page like any other. */
+    if (whole && matched === undefined && view.some(isDurableRow)) {
+      const wide = await fetchSlotDetail(key)
+      const live = withLiveTail(wide)
+      return live && { ...live, refreshSeq, headUnverified, epochAtDispatch }
+    }
     const page = await fetchSlotDetail(key, want)
     /* Is this page safe to hand a reducer that REPLACES the transcript with it?
      * It is, on any one of three counts -- and each is a different relationship
@@ -126,7 +200,32 @@ export const refreshSlot = createAsyncThunk(
      * anchor is guarded rather than indexed blind. */
     const spansView = spanIsTrustworthy && serverRowsNow.length > 0 && anchors(serverRowsNow[0].meta?.mid)
     const overlapsView = anchors(page.messages[0]?.meta?.mid)
-    if (!page.hasMore || spansView || overlapsView) return { ...page, refreshSeq }
+    /* A marked (`whole`) view accepts only a page that re-serves every row it
+     * holds: an overlapping page keeps the view's own stale copy of every row
+     * above it, and so does a page "spanning" the view from its oldest IDENTIFIED
+     * row while id-less durable rows (history read off disk without a `mid`) sit
+     * above that anchor, where the reducer keeps them verbatim. Anything less reads
+     * whole: rare (a serving change), and the read that re-serves it clears the mark. */
+    if (whole) {
+      const reservesAll = !page.hasMore || (spansView && !hasUnidentifiedDurableRow(viewNow))
+      const fresh = reservesAll ? page : await fetchSlotDetail(key)
+      const live = withLiveTail(fresh)
+      return live && { ...live, refreshSeq, headUnverified, epochAtDispatch }
+    }
+    /* A page accepted by overlapping, or walked until it anchors, keeps every view
+     * row above it verbatim, so a still-open sign-in link there would never be
+     * re-checked against its child (`hasOpenOAuthRow`): read whole instead. */
+    const keptHeadHoldsOpenOAuth = (window: ChatMessage[]): boolean =>
+      hasOpenOAuthRow(olderHeadAbovePage(viewNow.filter(m => m.role !== 'thinking'), window).olderHead)
+    if (!page.hasMore || spansView) {
+      const live = withLiveTail(page)
+      return live && { ...live, refreshSeq, headUnverified, epochAtDispatch }
+    }
+    if (overlapsView) {
+      const fresh = keptHeadHoldsOpenOAuth(page.messages) ? await fetchSlotDetail(key) : page
+      const live = withLiveTail(fresh)
+      return live && { ...live, refreshSeq, headUnverified, epochAtDispatch }
+    }
     const walked = await walkWindowBackTo(key, page, viewNow)
     /* The walk adds up to `WINDOW_WALK_MAX_PAGES` more awaits, and every row it
      * returns is no newer than the FIRST page. A live chunk or a new row that
@@ -145,7 +244,9 @@ export const refreshSlot = createAsyncThunk(
     const settled = (getState() as { chat: ChatState }).chat
     if (settled.activeSlot !== key) return null
     if ((settled.liveFrameSeq ?? 0) !== liveAtStart) return null
-    return { ...walked, refreshSeq }
+    const fresh = walked.hasMore && keptHeadHoldsOpenOAuth(walked.messages) ? await fetchSlotDetail(key) : walked
+    const live = withLiveTail(fresh)
+    return live && { ...live, refreshSeq, headUnverified, epochAtDispatch }
   },
 )
 
@@ -175,6 +276,9 @@ export const warmSlotCache = createAsyncThunk(
     // first chunk) wins over the snapshot that predates it (see
     // `ChatState.slotRun`).
     const runTickAtDispatch = state.slotRun?.[safeKey(key)]?.tick ?? 0
+    // And the patch log's position: patches to this pane's rows landing while the
+    // read is in flight are replayed onto it by the fulfilled reducer.
+    const patchAtStart = state.rowPatchSeq ?? 0
     /* A populated cache is COUNT-MATCHED, by the same rule and the same owner
      * `refreshSlot` uses: ask for the span this pane already holds, never for the
      * whole chained transcript.
@@ -202,6 +306,21 @@ export const warmSlotCache = createAsyncThunk(
      * coverage check. Exempting streaming would apply the unbounded shape to the
      * panes most likely to be mid-turn when a socket drops. */
     const cache = state.slotMessages?.[safeKey(key)] ?? []
+    /* A cache the server now serves differently keeps no unverified head: a
+     * coverage miss reads it whole rather than walking, since the walk keeps the
+     * rows above its anchor as-is. */
+    const headUnverified = state.slotHeadUnverified?.[safeKey(key)]
+    /* See `refreshSlot`: a change marking this slot mid-flight drops this warm. */
+    const epochAtDispatch = state.loadedRowsEpoch ?? 0
+    /* A read that landed after an allow-list change it predates carries rows the
+     * change outdated: re-read instead of writing them (`servedUnderObsoleteGen`).
+     * Only for a slot the change did NOT mark -- one this tab had not loaded when
+     * it landed, so `markedSince` cannot fence it. A marked one is dropped by the
+     * reducer anyway, so re-reading it would be a wasted (often whole) fetch. */
+    const renewIfObsolete = async <T extends { redactionGen?: string }>(read: T) =>
+      markedSince((getState() as { chat: ChatState }).chat, key, epochAtDispatch)
+        ? read
+        : renewUntilCurrent(read, () => fetchSlotDetail(key), () => (getState() as { chat: ChatState }).chat.redactionHostsGen)
     const running = (state.slotRun[safeKey(key)]?.state ?? 'idle') !== 'idle'
     /* One guard this path needs beyond the shared rule, because it is the only one of
      * the three with no post-fetch validation in front of its reducer: a durable row
@@ -253,6 +372,14 @@ export const warmSlotCache = createAsyncThunk(
      * bounded, so the totals all count the same collapsed corpus and the walk's
      * own `total` is the comparable one. */
     if (limit !== undefined && slotCoverageShortfall({ cached: cache, window: first.messages }) > 0) {
+      /* A cache the server now serves differently (an allow-list change, a reply
+       * variant switch) keeps no unverified head: the walk would keep the rows
+       * above its anchor as they are, links the change revoked included. Read it
+       * whole instead, carrying the bounded read's total, as below. */
+      if (headUnverified !== undefined) {
+        const wide = await fetchSlotDetail(key)
+        return { ...(await renewIfObsolete(wide)), comparableTotal: first.total, warmSeq, runTickAtDispatch, patchAtStart, headUnverified, epochAtDispatch }
+      }
       const walked = await walkWindowBackTo(key, first, cache)
       /* A hole the walk cannot close: the window anchors the cache, yet the cache
        * holds a row at or after that anchor which the window lacks. Walking older
@@ -269,7 +396,7 @@ export const warmSlotCache = createAsyncThunk(
         const { cutIdx } = olderHeadAbovePage(prior, first.messages)
         if (cutIdx >= 0 && slotCoverageShortfall({ cached: prior.slice(cutIdx), window: first.messages }) > 0) {
           const fresh = await fetchSlotDetail(key, limit)
-          return { ...fresh, warmSeq, runTickAtDispatch }
+          return { ...(await renewIfObsolete(fresh)), warmSeq, runTickAtDispatch, patchAtStart, headUnverified, epochAtDispatch }
         }
       }
       /* A walk that paged older yet still does not anchor the cache spent its page
@@ -290,15 +417,53 @@ export const warmSlotCache = createAsyncThunk(
         midOccurrences(anchorRows), midOccurrences(walked.messages))
       const walkUnanchored = paged && !coversCache
         && olderHeadAbovePage(priorRows, walked.messages).cutIdx < 0
-      return { ...walked, warmSeq, runTickAtDispatch,
+      /* A window that anchors nothing in a cache whose retained baseline is a RAW
+       * count (left by an unbounded read): only a fall in the server's count tells
+       * a remote clear from a disconnect there, and the walk's collapsed count is
+       * not in the raw baseline's units, so the reducer would decline the shrink
+       * and keep the cleared rows. One whole read carries a raw count, and re-bases
+       * the pane so the next warm walks. */
+      if (state.slotServerTotalRaw?.[safeKey(key)] === true && !walkUnanchored
+        && olderHeadAbovePage(priorRows, walked.messages).cutIdx < 0) {
+        const wide = await fetchSlotDetail(key)
+        return { ...(await renewIfObsolete(wide)), comparableTotal: walked.total, warmSeq, runTickAtDispatch, patchAtStart, headUnverified, epochAtDispatch }
+      }
+      /* The head kept above the walked window holds a sign-in link still open:
+       * its state is re-checked against its child only on a read that serves it
+       * (`hasOpenOAuthRow`), so read whole, as `refreshSlot` does. */
+      if (walked.hasMore && !walkUnanchored
+        && hasOpenOAuthRow(olderHeadAbovePage(priorRows, walked.messages).olderHead)) {
+        const wide = await fetchSlotDetail(key)
+        return { ...(await renewIfObsolete(wide)), comparableTotal: walked.total, warmSeq, runTickAtDispatch, patchAtStart, headUnverified, epochAtDispatch }
+      }
+      return { ...(await renewIfObsolete(walked)), warmSeq, runTickAtDispatch, patchAtStart, headUnverified, epochAtDispatch,
         ...(walkUnanchored ? { walkUnanchored: true, cacheAtDispatch: cache } : {}) }
     }
-    return { ...first, warmSeq, runTickAtDispatch }
+    return { ...(await renewIfObsolete(first)), warmSeq, runTickAtDispatch, patchAtStart, headUnverified, epochAtDispatch }
   },
 )
 
+function noteHealFailed(state: ChatState, key: string, error: { name?: string }): void {
+  if (isUnsafeKey(key) || isObsoleteReadRejection(error)) return
+  if (state.slotHeadUnverified?.[safeKey(key)] === undefined) return
+  ;(state.slotHealFailed ??= {})[safeKey(key)] = true
+}
+
 export function addSlotRefreshCases(builder: ActionReducerMapBuilder<ChatState>): void {
   builder
+    .addCase(redactionHostsGenAdopted, (state, action) => { state.redactionHostsGen = action.payload })
+    .addCase(slotVariantSeqSeen, (state, action) => {
+      const { slot, seq } = action.payload
+      if (!isUnsafeKey(slot)) (state.slotVariantSeq ??= {})[safeKey(slot)] = seq
+    })
+    // A re-read of a marked slot that fails leaves rows the change outdated on
+    // screen (a revoked link still clickable) with nothing scheduled to replace
+    // them; say so with a Retry rather than fail silently (`slotHealFailed`). An
+    // outdated read refused by a newer change is not a failure: that change's
+    // own read is coming. The notice ends only when a re-read lands and verifies
+    // the mark (`clearVerifiedHead`), never when a retry starts.
+    .addCase(refreshSlot.rejected, (state, action) => { noteHealFailed(state, action.meta.arg, action.error) })
+    .addCase(warmSlotCache.rejected, (state, action) => { noteHealFailed(state, action.meta.arg, action.error) })
     .addCase(refreshSlot.fulfilled, (state, action) => {
       if (!action.payload) return
       const { key, messages, running, hasMore, queue, nextBefore } = action.payload
@@ -312,6 +477,12 @@ export function addSlotRefreshCases(builder: ActionReducerMapBuilder<ChatState>)
         if ((applied[safeKey(key)] ?? 0) > refreshSeq) return
         applied[safeKey(key)] = refreshSeq
       }
+      // Dispatched before a change that has since marked this slot (a variant
+      // switch, an allow or revoke): its rows predate the change, and the read the
+      // change dispatched may already have installed fresh ones.
+      if (markedSince(state, key, action.payload.epochAtDispatch)) return
+      clearVerifiedHead(state, key, action.payload.headUnverified)
+      seedRedactionHostsGen(state, action.payload.redactionGen)
       retainServerTotal(state, key, action.payload.total, running, undefined, action.payload.boundedRead)
       // Merge permission messages: prefer state perms (have frontend resolved flags)
       // but include API perms for any we don't have locally (e.g. arrived while disconnected)
@@ -425,13 +596,29 @@ export function addSlotRefreshCases(builder: ActionReducerMapBuilder<ChatState>)
     })
     .addCase(warmSlotCache.fulfilled, (state, action) => {
       if (!action.payload) return
-      const { key, messages, queue, hasMore, total, running, warmSeq } = action.payload
+      const { key, messages: served, queue, hasMore, total, running, warmSeq } = action.payload
       // Set when the thunk's window walk paged older without anchoring the cache.
       const walkUnanchored = (action.payload as { walkUnanchored?: boolean }).walkUnanchored === true
       if (isUnsafeKey(key)) return
       // Slot became active between dispatch and fulfilment — switchSlot now
       // owns its messages, so leave the cache for it to manage.
       if (state.activeSlot === key) return
+      // Same fence as refreshSlot.fulfilled: outdated by a change made mid-flight.
+      if (markedSince(state, key, action.payload.epochAtDispatch)) return
+      /* A patch to a cached row (a sign-in banner retired, a tool row's result)
+       * that landed while this read was in flight is replayed onto it, so the
+       * read's older copy cannot put it back. A read that outlived the log's cap
+       * is not written: the pane keeps its current rows until its next warm. */
+      let messages: typeof served
+      try {
+        messages = withReplayedPatches(state, key, action.payload.patchAtStart, { messages: served }).messages
+      } catch {
+        // Not written, so a marked pane is still unhealed: say so, with Retry.
+        if (state.slotHeadUnverified?.[safeKey(key)] !== undefined) (state.slotHealFailed ??= {})[safeKey(key)] = true
+        return
+      }
+      clearVerifiedHead(state, key, action.payload.headUnverified)
+      seedRedactionHostsGen(state, action.payload.redactionGen)
       if (!state.slotMessages) state.slotMessages = {}
       if (!state.slotPaneHasMore) state.slotPaneHasMore = {}
       // Preserve permission flags resolved client-side but not yet reflected
@@ -501,11 +688,33 @@ export function addSlotRefreshCases(builder: ActionReducerMapBuilder<ChatState>)
       const priorSeq = state.slotServerTotalSeq?.[safeKey(key)]
       const staleTotal = typeof warmSeq === 'number' && typeof priorSeq === 'number'
         && warmSeq < priorSeq
-      // Bounded pages and their coverage walks report the same collapsed corpus
-      // count. Compare and retain the payload's total directly; boundedRead still
-      // governs whether a running snapshot can establish a retained baseline.
-      const serverShrank = typeof priorTotal === 'number' && typeof total === 'number'
-        && total < priorTotal && !staleTotal
+      // The payload's own `total` counts the RAW window: a coverage retry answers
+      // with the unbounded read, whose count includes every per-turn `done` row
+      // and every unfolded chunk run, running or idle. The retained baseline is
+      // the settled collapsed count, so a comparison against it must use the
+      // collapsed count the retry carries (`comparableTotal`). ONE value, read
+      // at every comparison site below and at the retain call: a raw count at
+      // any one of them reads a rewind as growth and a same-count rewrite as a
+      // newer row, restoring discarded rows and rendering a reply twice.
+      const comparable = (action.payload as { comparableTotal?: number }).comparableTotal
+      const cmpTotal = comparable ?? total
+      /* The shrink and same-count checks compare against the retained baseline, so
+       * they need a count in THAT baseline's units. An unbounded read counts raw rows
+       * (every per-turn `done` row included) where a bounded read counts after
+       * collapsing them. So a raw baseline (left by an unbounded read) is compared
+       * against the payload's own raw `total` whenever the payload has one: the
+       * unbounded read itself, or the coverage retry, whose `total` is the wide read's
+       * while `comparableTotal` is the bounded probe's. Only a bounded page with no
+       * raw count at all leaves nothing comparable, and there the checks decline --
+       * the same "keep the rescue" answer an absent baseline gets -- rather than read
+       * the collapsed count's fall as a shrink and drop the pane's live tail. The
+       * collapsed count then becomes the baseline the next warm compares against. */
+      const payloadHasRaw = comparable !== undefined || action.payload.boundedRead !== true
+      const shrinkTotal = state.slotServerTotalRaw?.[safeKey(key)] === true
+        ? (payloadHasRaw ? total : undefined)
+        : cmpTotal
+      const serverShrank = typeof priorTotal === 'number' && typeof shrinkTotal === 'number'
+        && shrinkTotal < priorTotal && !staleTotal
       const anchorIds = anchorIdx >= 0 ? rowIdentities(prior[anchorIdx]) : []
       const warmAnchorIdx = warmed.findIndex(m => rowIdentities(m).some(id => anchorIds.includes(id)))
       // A `streaming` row is minted client-side by the first chunk and carries
@@ -552,7 +761,7 @@ export function addSlotRefreshCases(builder: ActionReducerMapBuilder<ChatState>)
       // A rewrite REPLACES a reply, so the count holds while the post-anchor rows
       // differ. Equal tail LENGTH is what separates that from a real newer row.
       const sameCountRewrite = rescuable.length > 0 && warmAnchorIdx >= 0 && !staleTotal
-        && typeof priorTotal === 'number' && typeof total === 'number' && total === priorTotal
+        && typeof priorTotal === 'number' && typeof shrinkTotal === 'number' && shrinkTotal === priorTotal
         && prior.length - anchorIdx === warmed.length - warmAnchorIdx
       const newerTail = sameCountRewrite ? [] : rescuable
       // A confirmed shrink means those rows were REMOVED, so the disjoint branches
@@ -602,12 +811,18 @@ export function addSlotRefreshCases(builder: ActionReducerMapBuilder<ChatState>)
       // A changed cache keeps its rows AND paging markers until the next warm.
       const cacheAtFulfil = state.slotMessages[safeKey(key)]
       const cacheUnchanged = (isDraft(cacheAtFulfil) ? original(cacheAtFulfil) : cacheAtFulfil)
-        === action.payload.cacheAtDispatch
+        === (action.payload as { cacheAtDispatch?: ChatMessage[] }).cacheAtDispatch
       if (!walkUnanchored || cacheUnchanged) {
         writeSlotPage(state, key, revived, warmIsPrefix ? hasMore : undefined,
           warmIsPrefix && hasMore ? boundedLen : undefined)
       }
-      retainServerTotal(state, key, total, running, warmSeq, action.payload.boundedRead)
+      // The baseline retained for the next warm is the same collapsed count the
+      // comparisons above read (`cmpTotal`), never the raw wide count: the raw
+      // one is not comparable with the collapsed counts later pages report.
+      retainServerTotal(
+        state, key, cmpTotal, running, warmSeq,
+        comparable !== undefined || action.payload.boundedRead,
+      )
       // The run-state write is ORDERED against the live frame writers by the
       // entry's receipt tick (`ChatState.slotRun`). The warm is a
       // point-in-time snapshot, and the frame writers (chunk -> streaming,

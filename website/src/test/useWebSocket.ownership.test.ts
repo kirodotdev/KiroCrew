@@ -52,6 +52,7 @@ const OWNER_MODULES = [
   'connection.ts',
   'frames.ts',
   'reconnectCatchUp.ts',
+  'redactionHostsHeal.ts',
   'retiredIds.ts',
   'serverState.ts',
   'sessionProjection.ts',

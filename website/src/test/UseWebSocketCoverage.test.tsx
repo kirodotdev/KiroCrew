@@ -27,7 +27,7 @@ import {
 } from '../hooks/useWebSocket'
 import { api } from '../api/client'
 import { store as globalStore } from '../store'
-import chatReducer, { PANE_HYDRATE_LIMIT, setActiveSlot, clearMessages, sseChatMessage, sseActivityEvent, setQuestionCard, resolveQuestionCard, sseAutomation, resolveByApprovalId } from '../store/chatSlice'
+import chatReducer, { PANE_HYDRATE_LIMIT, setActiveSlot, clearMessages, sseChatMessage, sseActivityEvent, setQuestionCard, resolveQuestionCard, sseAutomation, resolveByApprovalId, refreshSlot } from '../store/chatSlice'
 import { sseSlots, addSlotOptimistic, armConfirmedCloseHold, removeSlotOptimistic } from '../store/dashboardSlice'
 import { addNotification, removeNotificationByTs } from '../store/notificationsSlice'
 import type { ChatSlot } from '../types'
@@ -1698,6 +1698,101 @@ describe('useWebSocket frame router', () => {
     act(() => { ws.simulateMessage({ type: 'chat_variant_switch', data: { slot: ACTIVE } }) })
     // An empty view asks for the floor-sized page, never the whole transcript.
     expect(api.chatSlotDetail).toHaveBeenCalledWith(ACTIVE, PANE_HYDRATE_LIMIT)
+  })
+
+  it('re-reads the WHOLE transcript on a variant switch even for a view past the refresh ceiling', async () => {
+    // The switched reply can be any loaded row; a newest-rows page would keep the
+    // old variant above it, so the switch must not take the bounded refresh.
+    const { ws } = mount()
+    const rows = Array.from({ length: 600 }, (_, i) => ({
+      role: i % 2 ? 'assistant' : 'user', content: `row ${i}`, cls: '',
+      ts: new Date(Date.UTC(2026, 8, 1) + i * 1000).toISOString(), meta: { mid: `m-${i}` },
+    }))
+    act(() => {
+      testStore.dispatch(refreshSlot.fulfilled(
+        { key: ACTIVE, running: false, hasMore: false, total: 600, nextBefore: 0, queue: [], messages: rows } as never,
+        'seed', ACTIVE,
+      ))
+    })
+    expect(chat().messages.length).toBeGreaterThan(500)
+    ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockClear()
+    await act(async () => { ws.simulateMessage({ type: 'chat_variant_switch', data: { slot: ACTIVE } }) })
+    expect((api.chatSlotDetail as ReturnType<typeof vi.fn>).mock.calls).toEqual([[ACTIVE]])
+  })
+
+  it('marks a BACKGROUND slot on a variant switch, whose refresh cannot run while it is not open', () => {
+    const { ws } = mount()
+    act(() => { ws.simulateMessage({ type: 'chat_variant_switch', data: { slot: 'bg-slot' } }) })
+    expect(chat().slotHeadUnverified['bg-slot']).toBeDefined()
+  })
+
+  it('re-serves only the slot whose variant count moved while this tab was not listening', () => {
+    // A switch made while the socket was down never reaches this tab as a frame;
+    // the slot list it receives on reconnect carries the moved count.
+    const { ws } = mount()
+    act(() => { ws.simulateMessage({ type: 'slots', data: [{ key: 'bg-a', variant_seq: 1 }, { key: 'bg-b', variant_seq: 0 }] }) })
+    expect(chat().slotHeadUnverified).toEqual({})
+    act(() => { ws.simulateMessage({ type: 'slots', data: [{ key: 'bg-a', variant_seq: 2 }, { key: 'bg-b', variant_seq: 0 }] }) })
+    expect(Object.keys(chat().slotHeadUnverified)).toEqual(['bg-a'])
+    // A patch is read the same way.
+    act(() => { ws.simulateMessage({ type: 'slot_patch', data: { slots: [{ key: 'bg-b', variant_seq: 1 }] } }) })
+    expect(Object.keys(chat().slotHeadUnverified).sort()).toEqual(['bg-a', 'bg-b'])
+  })
+
+  it('takes a live switch frame\'s count as seen, so the slot list repeating it re-serves nothing more', () => {
+    const { ws } = mount()
+    act(() => { ws.simulateMessage({ type: 'slots', data: [{ key: 'bg-a', variant_seq: 1 }] }) })
+    act(() => { ws.simulateMessage({ type: 'chat_variant_switch', data: { slot: 'bg-a', seq: 2 } }) })
+    const epoch = chat().loadedRowsEpoch
+    act(() => { ws.simulateMessage({ type: 'slot_patch', data: { slots: [{ key: 'bg-a', variant_seq: 2 }] } }) })
+    expect(chat().loadedRowsEpoch).toBe(epoch)
+  })
+
+  it('an allow-list change carried by a status frame marks background caches and re-reads the open chat whole', async () => {
+    // The status frame reaches every tab, so it is how a SECOND tab (or one whose
+    // socket was down) learns of an allow made elsewhere: without it that tab
+    // keeps its loaded rows, blocked-link chips included.
+    const { ws } = mount()
+    const rows = Array.from({ length: 600 }, (_, i) => ({
+      role: i % 2 ? 'assistant' : 'user', content: `row ${i}`, cls: '',
+      ts: new Date(Date.UTC(2026, 8, 1) + i * 1000).toISOString(), meta: { mid: `m-${i}` },
+    }))
+    act(() => {
+      testStore.dispatch(refreshSlot.fulfilled(
+        { key: ACTIVE, running: false, hasMore: false, total: 600, nextBefore: 0, queue: [], messages: rows } as never,
+        'seed', ACTIVE,
+      ))
+      testStore.dispatch({ type: 'chat/hydrateSlotMessages', payload: { slot: 'bg-slot', messages: rows.slice(0, 3), hasMore: false } })
+    })
+    act(() => { ws.simulateMessage({ type: 'dashboard', data: { redaction_hosts_gen: 'g-1' } }) })
+    ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockClear()
+    await act(async () => { ws.simulateMessage({ type: 'dashboard', data: { redaction_hosts_gen: 'g-2' } }) })
+    const reads = (api.chatSlotDetail as ReturnType<typeof vi.fn>).mock.calls
+    // The open chat re-reads whole; the background cache is marked for its next
+    // read (a pane on screen would re-read itself), not re-read from here.
+    expect(reads[0]).toEqual([ACTIVE])
+    expect(chat().slotHeadUnverified['bg-slot']).toBeDefined()
+    expect(reads.some(c => c[0] === 'bg-slot')).toBe(false)
+  })
+
+  it('a status frame whose allow-list generation moved heals, and its first and empty generations do not', async () => {
+    // The generation moving between two status frames is how a tab learns of an
+    // allow or revoke it did not make.
+    const { ws } = mount()
+    act(() => {
+      testStore.dispatch({ type: 'chat/hydrateSlotMessages', payload: { slot: 'bg-slot', messages: [], hasMore: false } })
+    })
+    act(() => { ws.simulateMessage({ type: 'dashboard', data: { redaction_hosts_gen: 'aaaa' } }) })
+    expect(chat().slotHeadUnverified['bg-slot']).toBeUndefined()
+    // An empty token is unknown (the list has not loaded), never a change.
+    act(() => { ws.simulateMessage({ type: 'dashboard', data: { redaction_hosts_gen: '' } }) })
+    act(() => { ws.simulateMessage({ type: 'dashboard', data: { redaction_hosts_gen: 'aaaa' } }) })
+    expect(chat().slotHeadUnverified['bg-slot']).toBeUndefined()
+    ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockClear()
+    await act(async () => { ws.simulateMessage({ type: 'dashboard', data: { redaction_hosts_gen: 'bbbb' } }) })
+    // The open chat is re-read (its view is empty here, so the floor page re-serves it).
+    expect((api.chatSlotDetail as ReturnType<typeof vi.fn>).mock.calls.some(c => c[0] === ACTIVE)).toBe(true)
+    expect(chat().slotHeadUnverified['bg-slot']).toBeDefined()
   })
 
   it('chimes once when a turn completes', () => {

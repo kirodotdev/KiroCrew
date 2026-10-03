@@ -58,8 +58,8 @@ import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useKirocrewConfigReader } from '../hooks/useKirocrewConfigReader'
 import { useImeGuard } from '../hooks/useImeGuard'
 import { useScrollEdgesY } from '../hooks/useScrollEdges'
-import { useAppSelector, useAppDispatch, store } from '../store'
-import { PANE_HYDRATE_LIMIT, capturePendingAskId, confirmOptimisticSend, resolveOptimisticSteer, selectSlotMessages, selectSendConfirmed, selectSlotStreamState, selectSlotRunEpoch, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, requestStop, syncSlotRunningFromServer, setAgentSwitchNotice, pendingQuestionFor } from '../store/chatSlice'
+import { useAppSelector, useAppDispatch, useAppStore, store } from '../store'
+import { PANE_HYDRATE_LIMIT, capturePendingAskId, confirmOptimisticSend, resolveOptimisticSteer, selectSlotMessages, selectSendConfirmed, selectSlotStreamState, selectSlotRunEpoch, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, requestStop, syncSlotRunningFromServer, setAgentSwitchNotice, pendingQuestionFor, refreshSlot, renewUntilCurrent, warmSlotCache } from '../store/chatSlice'
 import { handleStopPress, isEscalationState } from '../utils/stopDebounce'
 import { deriveFollowUpOptions } from '../app-sdk/protocol'
 import { appendFollowUpOption, removeFollowUpOption, type OwnedSuffix } from '../lib/followUpToggle'
@@ -751,9 +751,87 @@ export default function ChatPane({
     queryFn: () => api.chatSlotDetail(slotKey, hydrateLimit),
     staleTime: Infinity,
   })
+  const boundStore = useAppStore()
+  // A change that outdates this slot's loaded rows (an allow or revoke, a variant
+  // switch) marks it. The open chat is re-read by whoever marked it; a background
+  // pane ON SCREEN re-reads itself here, since nothing else re-reads it before its
+  // own turn ends, and a revoked link would stay clickable in it until then. A
+  // cache no longer on screen keeps its mark and heals on its next read, so one
+  // change re-reads only what is visible. The mark's value is the change that set
+  // it, so a later change re-fires this and a warm that clears it ends it.
+  const headMarked = useAppSelector(s => s.chat.slotHeadUnverified?.[slotKey])
+  const healFailed = useAppSelector(s => !!s.chat.slotHealFailed?.[slotKey])
+  const paneHydrated = useAppSelector(s => !!s.chat.slotHydrated?.[slotKey])
   useEffect(() => {
-    if (slotDetail?.messages) dispatch(hydrateSlotMessages({ slot: slotKey, messages: slotDetail.messages, hasMore: slotDetail.has_more, bounded: hydrateLimit !== undefined, total: slotDetail.total, running: slotDetail.running }))
-  }, [slotDetail, slotKey, dispatch, hydrateLimit])
+    if (headMarked === undefined || slotKey === activeSlot || !paneHydrated) return
+    void dispatch(warmSlotCache(slotKey))
+  }, [headMarked, slotKey, activeSlot, paneHydrated, dispatch])
+  // Keyed by the slot it failed for: the pane can be rebound to another slot, and
+  // a failure must not outlive the transcript it was about.
+  const [renewFailedFor, setRenewFailedFor] = useState<string | null>(null)
+  const renewFailed = renewFailedFor === slotKey
+  const [renewAttempt, setRenewAttempt] = useState(0)
+  // A renew Retry in flight: cleared by the re-read it asked for, either way.
+  const [renewRetrying, setRenewRetrying] = useState(false)
+  // A heal Retry in flight: the notice stays up, so the button says it is busy.
+  const [healRetrying, setHealRetrying] = useState(false)
+  // Bumped as each heal Retry settles: re-keying the notice re-mounts it, so a
+  // retry that failed again is announced again rather than reading as ignored.
+  // Back to 0 once the heal is over, so a later failure reads as a first one.
+  const [healAttempts, setHealAttempts] = useState(0)
+  useEffect(() => { if (!healFailed) setHealAttempts(0) }, [healFailed])
+  const retrying = healRetrying || renewRetrying
+  // The renewed answer, written back into the query cache so a remount reads it
+  // instead of the outdated one (and re-reading it again). Its own effect run is
+  // skipped: it is already installed, and re-checking a re-read that disagrees
+  // with an unchanged value would re-read forever.
+  const renewedDetail = useRef<unknown>(undefined)
+  useEffect(() => {
+    if (!slotDetail?.messages || slotDetail === renewedDetail.current) { setRenewRetrying(false); return }
+    type Detail = NonNullable<typeof slotDetail>
+    const genOf = (d: Detail): string | undefined => {
+      const served = (d as { redaction_gen?: unknown }).redaction_gen
+      return typeof served === 'string' && served !== '' ? served : undefined
+    }
+    const install = (d: Detail) => dispatch(hydrateSlotMessages({ slot: slotKey, messages: d.messages, hasMore: d.has_more, bounded: hydrateLimit !== undefined, total: d.total, running: d.running, redactionGen: genOf(d) }))
+    // Rows served under an allow-list value this document has since moved past
+    // (an allow or revoke landed while the read was in flight, or this is a
+    // cached answer from before one) are outdated: re-read instead of installing
+    // them, or a revoked host's links would stay clickable here. The re-read is
+    // held to the same check, so a change landing during it re-reads again
+    // (`renewUntilCurrent`); a re-read that disagrees with an UNCHANGED value is
+    // the server's current answer and installs, so it never loops. It reads under
+    // its own key, scoped to the value it re-reads for, rather than refetching the
+    // pane's query, whose new data would re-run this effect and race the answer
+    // being checked; two panes re-reading one slot for one change share a request.
+    const currentGen = () => boundStore.getState().chat.redactionHostsGen
+    const servedGen = genOf(slotDetail)
+    const heldGen = currentGen()
+    if (servedGen && heldGen && servedGen !== heldGen) {
+      let cancelled = false
+      void renewUntilCurrent({ ...slotDetail, redactionGen: servedGen }, () => queryClient.fetchQuery({
+        queryKey: [...slotMessagesQueryKey(slotKey, hydrateLimit), 'renew', currentGen() ?? ''],
+        queryFn: () => api.chatSlotDetail(slotKey, hydrateLimit),
+        staleTime: 0,
+      }).then(d => ({ ...d, redactionGen: genOf(d) })), currentGen)
+        .then(fresh => {
+          if (cancelled || !fresh.messages) return
+          setRenewRetrying(false)
+          setRenewFailedFor(null)
+          install(fresh)
+          // The cache keeps its own (structurally shared) copy: remember that one.
+          renewedDetail.current = queryClient.setQueryData(slotMessagesQueryKey(slotKey, hydrateLimit), fresh)
+        })
+        // The outdated rows are never installed, so a failed re-read shows the
+        // pane's load error and its Retry rather than a blank pane.
+        .catch(() => { if (!cancelled) { setRenewRetrying(false); setRenewFailedFor(slotKey) } })
+      return () => { cancelled = true }
+    }
+    // A read installed without a re-read is current: any earlier failure is over.
+    setRenewRetrying(false)
+    setRenewFailedFor(null)
+    install(slotDetail)
+  }, [slotDetail, slotKey, dispatch, hydrateLimit, boundStore, renewAttempt, queryClient])
 
   // Scroll follow (auto-pin, release, jump pill) is owned by the virtualizer
   // inside ChatMessageList — growth on EARLIER rows (a tool result updating, a
@@ -1662,16 +1740,36 @@ export default function ChatPane({
             scrollerStyle: { paddingTop: 12, paddingBottom: 12, minHeight: 0 },
             aboveRows: (
               <>
-                {slotDetailFailed && (
+                {(slotDetailFailed || renewFailed || healFailed) && (
                   <div className="mx-4 my-2 flex items-start gap-2">
                     {/* No hand-off: the composer draft (`input`) in this pane is unsaved local
                         state. The retry is the recovery path for the hydration read. */}
                     <ErrorNotice
-                      className="flex-1"
+                      key={`heal-${healAttempts}`}
+                      className="flex-1 animate-rise"
                       testId="chat-pane-hydrate-error"
-                      message={i18nT('components.chatPane.history_load_failed')}
+                      message={i18nT(healFailed ? (healAttempts > 0 ? 'components.chatPane.heal_failed_again' : 'components.chatPane.heal_failed') : 'components.chatPane.history_load_failed')}
                     />
-                    <Btn onClick={() => { void refetchSlotDetail() }}>{i18nT('components.chatPane.retry')}</Btn>
+                    {/* `aria-disabled`, not `disabled`: a disabled button drops keyboard
+                        focus. This button is outside the re-keyed notice, so it survives. */}
+                    <Btn aria-disabled={retrying} aria-busy={retrying} className={retrying ? 'opacity-60 cursor-not-allowed' : undefined} onClick={() => {
+                      if (retrying) return
+                      // A failed re-read of outdated rows re-runs that check; the cached
+                      // read it would re-check is unchanged, so refetching it alone
+                      // would not. A failed re-read after a serving change (a
+                      // revoked link may still be clickable) re-runs that read: the
+                      // open chat's refresh when this pane shows the open chat (a
+                      // warm skips it), the pane's warm otherwise.
+                      if (healFailed) {
+                        setHealRetrying(true)
+                        const reread = slotKey === activeSlot ? dispatch(refreshSlot(slotKey)) : dispatch(warmSlotCache(slotKey))
+                        void Promise.resolve(reread).finally(() => { setHealRetrying(false); setHealAttempts(n => n + 1) })
+                      }
+                      // The notice stays until that re-read lands, so it never reads as
+                      // healed early; the button is busy until it does.
+                      else if (renewFailed) { setRenewRetrying(true); setRenewAttempt(n => n + 1) }
+                      else void refetchSlotDetail()
+                    }}>{i18nT(retrying ? 'components.chatPane.heal_retrying' : 'components.chatPane.retry')}</Btn>
                   </div>
                 )}
                 {/* A crewmate whose whole history is machinery (a patroller that

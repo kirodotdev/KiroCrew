@@ -365,10 +365,10 @@ export function createSecurityEndpoints({ get, post, put, del, patch, j }: Clien
     redactionAllowedHosts: () =>
       get('/api/redaction/allowed-hosts').then(j) as Promise<{ workspaces: Record<string, string[]> }>,
     redactionAllowHost: (slot: string, host: string) =>
-      post('/api/redaction/allowed-hosts', { slot, host }).then(j) as Promise<{ ok: boolean; workspace: string }>,
+      post('/api/redaction/allowed-hosts', { slot, host }).then(j) as Promise<{ ok: boolean; workspace: string; gen?: string }>,
     redactionRevokeHost: (workspace: string, host: string) =>
       del(`/api/redaction/allowed-hosts?workspace=${encodeURIComponent(workspace)}&host=${encodeURIComponent(host)}`)
-        .then(j) as Promise<{ ok: boolean; removed: boolean }>,
+        .then(j) as Promise<{ ok: boolean; removed: boolean; gen?: string }>,
     // Third-party app trust (Settings → Security). Like denied-commands, every
     // endpoint returns the full refreshed snapshot so callers can seed the query
     // cache from the mutation response instead of re-fetching.

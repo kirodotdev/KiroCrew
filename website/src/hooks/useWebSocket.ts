@@ -1,11 +1,11 @@
 import { useEffect, useRef, useCallback } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { useAppDispatch } from '../store'
+import { useAppDispatch, useAppStore } from '../store'
 import { sseTodoUpdate, sseMcpReportUpdate, sseSlotTitle, triggerRefresh, fetchSlots, remoteSlotRead, sseSubagentStatus, sseSubagentText, type SubagentDetail } from '../store/dashboardSlice'
 import { addNotification, ackNotificationByTs, unackNotificationByTs, clearAllNotifications } from '../store/notificationsSlice'
 import { dispatchMcNotification, dispatchLiveNotification } from './notificationEvent'
 import {
-  fetchHistory, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, refreshSlot, sseContextUsage, clearMessages, clearSlotCache, sseSubagentPending, sseSubagentSpawn, sseSubagentQueued, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentSnapshot, sseSubagentBatchUpdate, sseSubagentBatchChunks, sseToolResult, sseActivityEvent, sseSideResult, sseWorkflowEvent, setSlotStatusDetail, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages, sseMcpAppRender, sseSideQueue, queueEntryAttachments, isTerminalWorkflowStatus,
+  fetchHistory, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, noteVariantSwitch, sseContextUsage, clearMessages, clearSlotCache, sseSubagentPending, sseSubagentSpawn, sseSubagentQueued, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentSnapshot, sseSubagentBatchUpdate, sseSubagentBatchChunks, sseToolResult, sseActivityEvent, sseSideResult, sseWorkflowEvent, setSlotStatusDetail, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages, sseMcpAppRender, sseSideQueue, queueEntryAttachments, isTerminalWorkflowStatus,
 } from '../store/chatSlice'
 import { store } from '../store'
 import { TAB_ID } from '../api/tabId'
@@ -35,6 +35,7 @@ import { useAutomationSeed } from './websocket/automationSeed'
 import { useWorkflowRunReconcile } from './websocket/workflowRuns'
 import { useSlotListSync } from './websocket/slotList'
 import { useBundleReload, handleUpdateProgress } from './websocket/bundleReload'
+import { useRedactionHostsHeal } from './websocket/redactionHostsHeal'
 import {
   handleArtifactUpdate,
   handleCredentialRedactionChanged,
@@ -99,6 +100,8 @@ export const WS_SILENCE_MAX_MS = 300_000
 /** Single multiplexed WebSocket replacing all SSE + polling connections. */
 export function useWebSocket() {
   const dispatch = useAppDispatch()
+  // The allow-list heal reads the store it dispatches to (the Provider's).
+  const boundStore = useAppStore()
   const queryClient = useQueryClient()
   const socket = useSocketConnection()
   const { reconnectingRef } = socket
@@ -120,6 +123,7 @@ export function useWebSocket() {
   const buffers = useStreamBuffers({ dispatch, socket, onActiveSlotFlushed: voice.speakStreamedDelta })
   const slotList = useSlotListSync(dispatch, queryClient)
   const bundle = useBundleReload(dispatch)
+  const redactionHosts = useRedactionHostsHeal(dispatch, boundStore.getState)
   const chatStream = useChatStream({ dispatch, buffers, voice, reconnectingRef })
   const turnCompletion = useTurnCompletion({ dispatch, queryClient, reconnectingRef })
 
@@ -193,6 +197,7 @@ export function useWebSocket() {
         switch (type) {
           case 'dashboard':
             bundle.onDashboardStatus(data)
+            redactionHosts.onStatusGen((data as { redaction_hosts_gen?: unknown } | undefined)?.redaction_hosts_gen)
             break
           case 'slots':
             slotList.onSlots(msg, data, e.data as string)
@@ -711,7 +716,10 @@ export function useWebSocket() {
             }
             break
           case 'chat_variant_switch':
-            if (data.slot) dispatch(refreshSlot(data.slot))
+            // The switched reply is applied in place where this tab holds it; a
+            // slot whose rewritten row it cannot find is marked, so no read keeps
+            // its old variant as part of an unverified head. Re-read if open.
+            noteVariantSwitch(dispatch as (a: unknown) => unknown, store.getState, data)
             break
           case 'chat_done': {
             buffers.flushChunks()
@@ -782,7 +790,7 @@ export function useWebSocket() {
     ws.onclose = () => socket.handleClose(ws, dispatch, voice.releaseVoiceOnSocketLoss, connect)
 
     ws.onerror = () => { /* onclose will fire */ }
-  }, [dispatch, queryClient, socket, reconnectingRef, voice, automations, approvals, cards, syncWorkflowRuns, buffers, slotList, bundle, chatStream, turnCompletion, syncPendingApprovals])
+  }, [dispatch, queryClient, socket, reconnectingRef, voice, automations, approvals, cards, syncWorkflowRuns, buffers, slotList, bundle, redactionHosts, chatStream, turnCompletion, syncPendingApprovals])
 
   /** Replace the socket now (see `SocketConnection.forceReconnect`): the
    *  health probe's recovery path and the silence watchdog's remedy. */

@@ -46,6 +46,23 @@ const seedSlotActivity = (): ChatState['slotActivity'] =>
 
 export type SlotState = 'idle' | 'streaming' | 'tool_running' | 'stopping' | 'compacting'
 
+/** One patch to a row the active view held (see `ChatState.rowPatchLog`). A row
+ *  is found by `tool_call_id` (a tool row), else by `mid`, else by `ts`. */
+export interface RowPatch {
+  seq: number
+  slot: string
+  tcid?: string
+  mid?: string
+  ts?: string
+  content?: string
+  meta?: Record<string, unknown>
+  /** A reply variant switch: the variant now shown (`variant_idx`). */
+  variantIdx?: number
+}
+
+/** The most patches `rowPatchLog` keeps. */
+export const ROW_PATCH_LOG_CAP = 200
+
 /** Live progress entry for a dynamic-workflow run. Folded from workflow_run_event
  *  WS messages so the chat can show status while a run executes. */
 export interface WorkflowRunProgress {
@@ -211,6 +228,15 @@ export interface ChatState {
    *  was away", where any structural comparison of the array either misses an
    *  in-place chunk on a non-tail row or trips on an unrelated nested write. */
   liveFrameSeq: number
+  /** Patches to rows a view or cache already holds (`chat_message_update`: a
+   *  sign-in banner flipping to authenticated or retired, a tool row's result),
+   *  for every slot, newest last, each numbered. They change no row count and move no
+   *  `liveFrameSeq`, so a read that was in flight across one would put the row
+   *  back as it was before; refresh, switch and warm replay the ones numbered
+   *  past their dispatch onto what they install. Capped: a read that outlived the
+   *  cap's worth of patches is not installed. */
+  rowPatchLog: RowPatch[]
+  rowPatchSeq: number
   /** Per slot, the dispatch order (`refreshSeq`) of the newest `refreshSlot`
    *  whose payload was applied. A refresh's payload describes the transcript as
    *  of its own reads, and a walking one reads for several round trips, so two
@@ -403,6 +429,45 @@ export interface ChatState {
    *  only when that count came from a warm carrying one, so an absent entry
    *  means the ordering is unknown and the merge must not act on it. */
   slotServerTotalSeq: Record<string, number>
+  /** `true` when the retained `slotServerTotal` came from an UNBOUNDED read, whose
+   *  handler counts raw rows (every per-turn `done` row included) where a bounded
+   *  read counts after collapsing them. Only the direction that manufactures a false
+   *  signal is acted on: a raw baseline is inflated, so a collapsed count from a
+   *  later bounded page reads as a fall -- a server shrink -- that never happened,
+   *  and the warm then drops the pane's live identity-less tail. Absent means the
+   *  count came from a bounded read, the units every other count is compared in. */
+  slotServerTotalRaw: Record<string, boolean>
+  /** Background caches whose loaded rows the server now serves DIFFERENTLY -- a
+   *  workspace-wide change such as a redaction host being allowed. Valued by the
+   *  `loadedRowsEpoch` that marked it. A bounded read keeps every row above its
+   *  page as a head without comparing it to the server, so while a slot is marked
+   *  its next switch or warm must re-serve every loaded row; the read that does
+   *  clears the mark, but only if no newer change marked it in the meantime. */
+  slotHeadUnverified: Record<string, number>
+  /** Counter for `slotHeadUnverified`, raised on every change that marks it. */
+  loadedRowsEpoch: number
+  /** The `loadedRowsEpoch` of the newest change that marked each slot, kept after
+   *  the mark clears. A refresh or warm dispatched before that change answers with
+   *  rows it outdated, and reads carry no ordering, so one resolving after the
+   *  read that cleared the mark would put the outdated rows back; such a read is
+   *  dropped instead (`markedSince`). */
+  slotRowsChangedAt: Record<string, number>
+  /** Slots whose re-read after a serving change FAILED while they were still
+   *  marked: their rows may show content the change revoked (a link no longer
+   *  allowed), and nothing re-reads them until a turn ends, the socket drops or
+   *  the slot is switched to. Shown as the pane's load error with a Retry, so the
+   *  failure is never silent; cleared by the next verified read that lands. */
+  slotHealFailed: Record<string, boolean>
+  /** Each slot's reply-variant revision (`variant_seq` on the slot list, minted
+   *  like `tags_revision`, so a gateway restart never repeats
+   *  one) as this document last saw it. The first value seen is a baseline; a later
+   *  different one means a switch this tab did not see live (its socket was
+   *  down), so that slot's loaded rows are marked and re-served. */
+  slotVariantSeq: Record<string, string | number>
+  /** The redaction allow-list generation (`redaction_hosts_gen`) this document
+   *  last acted on or took as its baseline; null before the first. See
+   *  `noteRedactionHostsGen`. */
+  redactionHostsGen: string | null
   /** Reasoning blocks whose anchoring row is above the loaded window, per slot.
    *  Client-only, so this is their only copy until the anchor pages back in. */
   thinkingOrphans: Record<string, Array<ParkedThinking<ChatMessage>>>
@@ -518,6 +583,8 @@ export const initialState: ChatState = {
   lastChunkGen: undefined,
   _wsChunkedDuringFetch: false,
   liveFrameSeq: 0,
+  rowPatchLog: [],
+  rowPatchSeq: 0,
   refreshAppliedSeq: {},
   _redeliveredFramesDropped: 0,
   history: [],
@@ -555,6 +622,13 @@ export const initialState: ChatState = {
   slotPaneBounded: {},
   slotServerTotal: {},
   slotServerTotalSeq: {},
+  slotServerTotalRaw: {},
+  slotHeadUnverified: {},
+  loadedRowsEpoch: 0,
+  slotRowsChangedAt: {},
+  slotHealFailed: {},
+  slotVariantSeq: {},
+  redactionHostsGen: null,
   thinkingOrphans: {},
   slotRun: {},
   slotHydrated: {},

@@ -14,7 +14,7 @@
  */
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { createTestStore } from './helpers'
-import { switchSlot, refreshSlot, loadOlderMessages, clearMessages, deleteSlot, OLDER_PAGE_LIMIT, OLDER_WALK_PAGE_LIMIT } from '../store/chatSlice'
+import { switchSlot, refreshSlot, loadOlderMessages, markLoadedRowsChanged, clearMessages, deleteSlot, OLDER_PAGE_LIMIT, OLDER_WALK_PAGE_LIMIT } from '../store/chatSlice'
 import { shouldPaginateOlder } from '../pages/chat/pagination'
 import { api } from '../api/client'
 
@@ -72,6 +72,28 @@ describe('bounded initial fetch leaves older history reachable', () => {
     expect(chat.messages[4].content).toBe('m2')
     // Server reported the start of history, so the affordance retires.
     expect(chat.slotHasMore).toBe(false)
+  })
+
+  it('does not prepend an older page read before a change marked the chat', async () => {
+    // An allow/revoke (or variant switch) landing while the page is in flight:
+    // the page was served under the old list, and the change's own re-read may
+    // already have healed the rows below it. Prepending it would put a revoked
+    // link back above them; it is dropped like a cancellation instead.
+    const detail = vi.spyOn(api, 'chatSlotDetail').mockResolvedValue(page(rows(3, 'm'), true, 240) as never)
+    const { store } = await open(detail)
+    let land: (v: unknown) => void = () => {}
+    detail.mockImplementationOnce(() => new Promise(r => { land = r }) as never)
+    const older = store.dispatch(loadOlderMessages())
+    await vi.waitFor(() => expect(detail).toHaveBeenCalledTimes(2))
+    store.dispatch(markLoadedRowsChanged())
+    land(page(rows(2, 'pre-revoke'), false, 0))
+    await older
+    const chat = store.getState().chat
+    expect(chat.messages.map(m => m.content)).toEqual(['m0', 'm1', 'm2'])
+    expect(chat.loadingOlder).toBe(false)
+    // Not a failure: paging stays available, so the next climb reads again.
+    expect(chat.slotOlderError).toBe(false)
+    expect(chat.slotHasMore).toBe(true)
   })
 
   it('does not offer paging when the bounded page is the whole history', async () => {

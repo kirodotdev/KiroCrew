@@ -4296,6 +4296,14 @@ def _prepare_messages(
     ``workspace`` is the slot's workspace: the display redaction relaxes the
     hosts a reader allowed there, the same hosts the segment flush relaxed, so
     an allowed link reaches the page it was kept for.
+
+    INVARIANT for any NEW input that conditions what this returns for rows a
+    client already holds (a toggle, a per-workspace list, anything but the rows
+    themselves): it must be registered in ``serving_gen.SERVING_INPUTS`` (the
+    ``redaction_gen`` / ``redaction_hosts_gen`` value) or have the dashboard
+    dispatch ``markLoadedRowsChanged``. A long chat keeps the rows above its
+    newest page as served, and only that value moving tells it to re-read them;
+    an input that changes rows without it leaves stale rows on screen.
     """
     with scoped_exempt_hosts(allowed_hosts_for(workspace)):
         return _prepare_messages_scoped(messages, running, live_child=live_child)

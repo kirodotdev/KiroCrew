@@ -85,7 +85,7 @@ function renderPane(slotKey: string, opts: { onOpenFull?: (slot: string) => void
       </QueryClientProvider>
     </Provider>,
   )
-  return { ...view, store }
+  return { ...view, store, qc }
 }
 
 beforeEach(() => {
@@ -469,5 +469,211 @@ describe('the bounded-length record marks the active view as provisional', () =>
       meta: { arg: slot },
     })
     expect(store.getState().chat.slotPaneBounded[slot]).toBeUndefined()
+  })
+})
+
+/* A pane whose first read was served under an allow-list value this document has
+ * since moved past (an allow or revoke landed mid-read) must not install it. */
+describe('ChatPane hydrate under an outdated allow-list value', () => {
+  const row = (id: string, content: string) => ({ role: 'assistant', content, cls: '', ts: '2026-09-01T00:00:00Z', meta: { mid: id } })
+
+  it('re-reads instead of installing rows served under an outdated value', async () => {
+    let n = 0
+    ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+      n += 1
+      return n === 1
+        ? { messages: [row('m-1', 'stale link')], running: false, has_more: false, total: 1, redaction_gen: 'g-old' }
+        : { messages: [row('m-1', 'chip')], running: false, has_more: false, total: 1, redaction_gen: 'g-new' }
+    })
+    const slot = 'pane-gen-1'
+    const { store } = renderPane(slot, { activeSlot: 'other-slot' })
+    act(() => { store.dispatch({ type: 'chat/redactionHostsGenAdopted', payload: 'g-new' }) })
+    await waitFor(() => expect(store.getState().chat.slotMessages[slot]?.[0]?.content).toBe('chip'))
+    expect(n).toBe(2)
+  })
+
+  it('writes the renewed answer back to the query cache, so a remount does not re-read it', async () => {
+    let n = 0
+    ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+      n += 1
+      return n === 1
+        ? { messages: [row('m-1', 'stale link')], running: false, has_more: false, total: 1, redaction_gen: 'g-old' }
+        : { messages: [row('m-1', 'chip')], running: false, has_more: false, total: 1, redaction_gen: 'g-new' }
+    })
+    const slot = 'pane-gen-5'
+    const { store, qc } = renderPane(slot, { activeSlot: 'other-slot' })
+    act(() => { store.dispatch({ type: 'chat/redactionHostsGenAdopted', payload: 'g-new' }) })
+    await waitFor(() => expect(store.getState().chat.slotMessages[slot]?.[0]?.content).toBe('chip'))
+    const cached = qc.getQueryCache().getAll().map(q => (q.state.data as { messages?: { content: string }[] } | undefined)?.messages?.[0]?.content)
+    expect(cached).toContain('chip')
+    expect(cached).not.toContain('stale link')
+    // The re-read itself ran under its own key, scoped to the value it re-read for,
+    // so another pane re-reading this slot for the same change shares the request.
+    expect(qc.getQueryCache().getAll().some(q => q.queryKey.includes('renew') && q.queryKey.includes('g-new'))).toBe(true)
+  })
+
+  it('holds the re-read to the same check when a revoke lands during it', async () => {
+    let n = 0
+    let adopt: (gen: string) => void = () => {}
+    ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+      n += 1
+      if (n === 1) return { messages: [row('m-1', 'stale link')], running: false, has_more: false, total: 1, redaction_gen: 'g-old' }
+      if (n === 2) {
+        // A revoke lands while this re-read is in flight: its rows predate it.
+        adopt('g-newer')
+        return { messages: [row('m-1', 'pre-revoke link')], running: false, has_more: false, total: 1, redaction_gen: 'g-new' }
+      }
+      return { messages: [row('m-1', 'chip')], running: false, has_more: false, total: 1, redaction_gen: 'g-newer' }
+    })
+    const slot = 'pane-gen-3'
+    const { store } = renderPane(slot, { activeSlot: 'other-slot' })
+    adopt = gen => { store.dispatch({ type: 'chat/redactionHostsGenAdopted', payload: gen }) }
+    act(() => { adopt('g-new') })
+    await waitFor(() => expect(store.getState().chat.slotMessages[slot]?.[0]?.content).toBe('chip'))
+    expect(n).toBe(3)
+  })
+
+  it('shows the load error, not a blank pane, when the re-read fails, and Retry recovers', async () => {
+    let n = 0
+    ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+      n += 1
+      if (n === 1) return { messages: [row('m-1', 'stale link')], running: false, has_more: false, total: 1, redaction_gen: 'g-old' }
+      if (n === 2) throw new Error('network')
+      await retryLanded
+      return { messages: [row('m-1', 'chip')], running: false, has_more: false, total: 1, redaction_gen: 'g-new' }
+    })
+    let land: () => void = () => {}
+    const retryLanded = new Promise<void>(r => { land = r })
+    const slot = 'pane-gen-4'
+    const view = renderPane(slot, { activeSlot: 'other-slot' })
+    act(() => { view.store.dispatch({ type: 'chat/redactionHostsGenAdopted', payload: 'g-new' }) })
+    await waitFor(() => expect(view.getByTestId('chat-pane-hydrate-error')).toBeTruthy())
+    // The outdated rows were never installed.
+    expect(view.store.getState().chat.slotMessages[slot]?.[0]?.content).not.toBe('stale link')
+    fireEvent.click(view.getByText(/retry/i))
+    // The notice stays while the retry is in flight: nothing is healed yet.
+    await waitFor(() => expect(n).toBe(3))
+    expect(view.getByTestId('chat-pane-hydrate-error')).toBeTruthy()
+    // ...and its Retry says so, rather than reading as a dead click.
+    const busy = view.getByText(/retrying/i).closest('button')!
+    expect(busy.getAttribute('aria-disabled')).toBe('true')
+    land()
+    await waitFor(() => expect(view.store.getState().chat.slotMessages[slot]?.[0]?.content).toBe('chip'))
+    expect(view.queryByTestId('chat-pane-hydrate-error')).toBeNull()
+  })
+
+  it('clears a failed re-read once the cached read is current, rather than showing the error over it', async () => {
+    let n = 0
+    ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+      n += 1
+      if (n === 1) return { messages: [row('m-1', 'served')], running: false, has_more: false, total: 1, redaction_gen: 'g-old' }
+      throw new Error('network')
+    })
+    const slot = 'pane-gen-6'
+    const view = renderPane(slot, { activeSlot: 'other-slot' })
+    act(() => { view.store.dispatch({ type: 'chat/redactionHostsGenAdopted', payload: 'g-new' }) })
+    await waitFor(() => expect(view.getByTestId('chat-pane-hydrate-error')).toBeTruthy())
+    // The change is undone: the cached read now matches, and installs without a re-read.
+    act(() => { view.store.dispatch({ type: 'chat/redactionHostsGenAdopted', payload: 'g-old' }) })
+    fireEvent.click(view.getByText(/retry/i))
+    await waitFor(() => expect(view.store.getState().chat.slotMessages[slot]?.[0]?.content).toBe('served'))
+    expect(view.queryByTestId('chat-pane-hydrate-error')).toBeNull()
+  })
+
+  it('installs a re-read that answers with the same value again, rather than looping', async () => {
+    let n = 0
+    ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+      n += 1
+      return { messages: [row('m-1', 'current')], running: false, has_more: false, total: 1, redaction_gen: 'g-server' }
+    })
+    const slot = 'pane-gen-2'
+    const { store } = renderPane(slot, { activeSlot: 'other-slot' })
+    act(() => { store.dispatch({ type: 'chat/redactionHostsGenAdopted', payload: 'g-before-restart' }) })
+    await waitFor(() => expect(store.getState().chat.slotMessages[slot]?.[0]?.content).toBe('current'))
+    expect(n).toBe(2)
+  })
+})
+
+/* An allow, revoke or variant switch marks every loaded slot; only a pane that is
+ * on screen re-reads itself, so one change never re-reads caches nobody sees. */
+describe('ChatPane re-reads itself when its slot is marked', () => {
+  const row = (id: string, content: string) => ({ role: 'assistant', content, cls: '', ts: '2026-09-01T00:00:00Z', meta: { mid: id } })
+
+  it('warms a hydrated background pane once its slot is marked', async () => {
+    ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockResolvedValue({ messages: [row('m-1', 'link')], running: false, has_more: false, total: 1 })
+    const slot = 'pane-mark-1'
+    const { store } = renderPane(slot, { activeSlot: 'other-slot' })
+    await waitFor(() => expect(store.getState().chat.slotHydrated[slot]).toBe(true))
+    const before = (api.chatSlotDetail as ReturnType<typeof vi.fn>).mock.calls.length
+    ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockResolvedValue({ messages: [row('m-1', 'chip')], running: false, has_more: false, total: 1 })
+    act(() => { store.dispatch({ type: 'chat/markLoadedRowsChanged', payload: undefined }) })
+    await waitFor(() => expect(store.getState().chat.slotMessages[slot]?.[0]?.content).toBe('chip'))
+    expect((api.chatSlotDetail as ReturnType<typeof vi.fn>).mock.calls.length).toBe(before + 1)
+    // The warm that re-served it cleared the mark, so nothing re-fires.
+    expect(store.getState().chat.slotHeadUnverified[slot]).toBeUndefined()
+  })
+
+  it('shows the load error with a Retry when its marked re-read fails, and Retry re-reads', async () => {
+    ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockResolvedValue({ messages: [row('m-1', 'link')], running: false, has_more: false, total: 1 })
+    const slot = 'pane-mark-3'
+    const view = renderPane(slot, { activeSlot: 'other-slot' })
+    await waitFor(() => expect(view.store.getState().chat.slotHydrated[slot]).toBe(true))
+    ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('network'))
+    act(() => { view.store.dispatch({ type: 'chat/markLoadedRowsChanged', payload: undefined }) })
+    await waitFor(() => expect(view.getByTestId('chat-pane-hydrate-error')).toBeTruthy())
+    let land: () => void = () => {}
+    const landed = new Promise<void>(r => { land = r })
+    ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockImplementation(async () => { await landed; return { messages: [row('m-1', 'chip')], running: false, has_more: false, total: 1 } })
+    fireEvent.click(view.getByText(/retry/i))
+    // In flight: the notice stays and its Retry is busy, not dead.
+    await waitFor(() => expect(view.getByText(/retrying/i).closest('button')!.getAttribute('aria-disabled')).toBe('true'))
+    // Still focusable while busy, so a keyboard user keeps their place.
+    expect((view.getByText(/retrying/i).closest('button') as HTMLButtonElement).disabled).toBe(false)
+    land()
+    await waitFor(() => expect(view.store.getState().chat.slotMessages[slot]?.[0]?.content).toBe('chip'))
+    expect(view.queryByTestId('chat-pane-hydrate-error')).toBeNull()
+  })
+
+  it('announces the pane notice again when its heal Retry fails again', async () => {
+    ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockResolvedValue({ messages: [row('m-1', 'link')], running: false, has_more: false, total: 1 })
+    const slot = 'pane-mark-5'
+    const view = renderPane(slot, { activeSlot: 'other-slot' })
+    await waitFor(() => expect(view.store.getState().chat.slotHydrated[slot]).toBe(true))
+    ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('network'))
+    act(() => { view.store.dispatch({ type: 'chat/markLoadedRowsChanged', payload: undefined }) })
+    await waitFor(() => expect(view.getByTestId('chat-pane-hydrate-error')).toBeTruthy())
+    const first = view.getByTestId('chat-pane-hydrate-error')
+    fireEvent.click(view.getByText(/retry/i))
+    await waitFor(() => expect(view.getByTestId('chat-pane-hydrate-error')).not.toBe(first))
+    expect(view.getByText(/^retry$/i)).toBeTruthy()
+    // Said in words, not only by the re-mount's motion (reduced motion shows none).
+    expect(view.getByText(/still couldn't refresh this session/i)).toBeTruthy()
+  })
+
+  it('re-reads the OPEN chat with its refresh when the pane showing it retries a failed heal', async () => {
+    ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockResolvedValue({ messages: [row('m-1', 'link')], running: false, has_more: false, total: 1 })
+    const slot = 'pane-mark-4'
+    const view = renderPane(slot, { activeSlot: slot })
+    await waitFor(() => expect(api.chatSlotDetail).toHaveBeenCalled())
+    act(() => {
+      view.store.dispatch({ type: 'chat/markLoadedRowsChanged', payload: { slot } })
+      view.store.dispatch({ type: 'chat/refreshSlot/rejected', meta: { arg: slot }, error: { name: 'Error', message: 'network' } })
+    })
+    await waitFor(() => expect(view.getByTestId('chat-pane-hydrate-error')).toBeTruthy())
+    ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockClear()
+    fireEvent.click(view.getByText(/retry/i))
+    // A warm exits for the open chat without reading; the refresh re-reads it.
+    await waitFor(() => expect((api.chatSlotDetail as ReturnType<typeof vi.fn>).mock.calls.some(c => c[0] === slot)).toBe(true))
+  })
+
+  it('leaves the open chat to its own refresh', async () => {
+    ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockResolvedValue({ messages: [row('m-1', 'link')], running: false, has_more: false, total: 1 })
+    const slot = 'pane-mark-2'
+    const { store } = renderPane(slot, { activeSlot: slot })
+    await waitFor(() => expect(api.chatSlotDetail).toHaveBeenCalled())
+    const before = (api.chatSlotDetail as ReturnType<typeof vi.fn>).mock.calls.length
+    act(() => { store.dispatch({ type: 'chat/markLoadedRowsChanged', payload: undefined }) })
+    await new Promise(r => setTimeout(r, 20))
+    expect((api.chatSlotDetail as ReturnType<typeof vi.fn>).mock.calls.length).toBe(before)
   })
 })

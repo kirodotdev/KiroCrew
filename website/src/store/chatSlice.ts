@@ -26,11 +26,11 @@ import { SOFT_STOP_DEBOUNCE_MS } from '../pages/chat/types'
 import { mergePreservedPastes } from '../utils/pasteTokens'
 import { initialState, type ChatState } from './chat/state'
 import { filterMessages, isUnsafeKey, safeKey } from './chat/wire'
-import { ensureMsgId, finalizeTrailingStreaming, floorForGen, isRedeliveredMessage, mintMsgId, reconcileOptimisticEcho } from './chat/transcript'
+import { ensureMsgId, finalizeTrailingStreaming, floorForGen, isDurableRow, isRedeliveredMessage, mintMsgId, reconcileOptimisticEcho } from './chat/transcript'
 import { OLDER_PAGE_LIMIT, OLDER_WALK_PAGE_LIMIT, claimOlderFetchAbort, isSupersededPagingRejection, releaseOlderFetchAbort } from './chat/paging'
 import { reinsertThinkingOrphans } from './chat/thinking'
 import { bumpRunEpoch, runStateReducers, setRunState, syncOriginRun } from './chat/runState'
-import { setPagingCursor, slotCacheReducers } from './chat/slotCache'
+import { markedSince, setPagingCursor, slotCacheReducers } from './chat/slotCache'
 import { composerCardReducers } from './chat/composerCards'
 import { messageReducers } from './chat/messages'
 import { queueReducers } from './chat/queue'
@@ -42,7 +42,7 @@ import { workflowReducers } from './chat/workflows'
 import { mcpAppReducers } from './chat/mcpApps'
 import { addSlotListCases, evictSlotState } from './chat/slotResidue'
 import { addSlotSwitchCases, switchSlot } from './chat/slotSwitch'
-import { addSlotRefreshCases } from './chat/slotRefresh'
+import { addSlotRefreshCases, redactionHostsGenAdopted, refreshSlot as refreshSlotThunk, slotVariantSeqSeen } from './chat/slotRefresh'
 import { addLifecycleCases, historyNoticeReducers } from './chat/lifecycle'
 
 /** Frame roles that retire a slot's pending STATELESS question card.
@@ -661,6 +661,11 @@ export const loadOlderMessages = createAsyncThunk(
     if (!state.activeSlot || !state.slotHasMore) return null
     if (state.slotOldestIndex <= 0) return null
     const slot = state.activeSlot
+    // A change that outdates loaded rows (an allow or revoke, a variant switch)
+    // marks the slot; a page read before it was served under the old list and
+    // must not be prepended, or a revoked link would land clickable above the
+    // rows the change's own re-read just healed.
+    const epochAtDispatch = state.loadedRowsEpoch ?? 0
     const controller = new AbortController()
     const abort = () => controller.abort()
     claimOlderFetchAbort(abort)
@@ -683,6 +688,10 @@ export const loadOlderMessages = createAsyncThunk(
       // pauses still gets the page (see scrollQuiet.ts).
       await whenScrollQuiet(controller.signal)
       if (controller.signal.aborted) throw new DOMException('Aborted', 'AbortError')
+      // Superseded like a cancellation: the next scroll to the top reads again.
+      if (markedSince((getState() as { chat: ChatState }).chat, slot, epochAtDispatch)) {
+        throw new DOMException('Outdated by a serving change', 'AbortError')
+      }
       return { slot, nextBefore: d.next_before || 0, messages: filterMessages(d.messages || []), hasMore: d.has_more || false, total: d.total || 0 }
     } catch (e) {
       // Rethrow a cancellation so the reducer can tell it from a real failure;
@@ -857,7 +866,7 @@ const chatSlice = createSlice({
 
 export const {
   setActiveSlot, clearSlotState, setPendingInput, setAgentSwitchNotice, clearUnresumableResume, clearUndeletableHistory, setQuestionCard, clearQuestionCard, setQuestionDraft, resolveQuestionCard, setFollowupCard, clearFollowupCard, dismissFollowupItem, setFolderSuggestion, clearFolderSuggestion, ageFolderSuggestion, appendMessage, appendSlotMessage, updateStreamingMessage, finalizeAssistant,
-  removeThinking, confirmOptimisticSend, markSendUnconfirmed, resolveOptimisticSteer, removeByApprovalId, resolveByApprovalId, clearPendingPermissions, setSlotRunning, setSlotStopping, settleStopNotRunning, startLocalTurn, endLocalTurn, syncSlotRunningFromServer, setSlotState, setSlotStatusDetail, setStopPressedAt, clearMessages, clearSlotCache, truncateAfterIndex, replaceMessages, hydrateSlotMessages, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages,
+  removeThinking, confirmOptimisticSend, markSendUnconfirmed, resolveOptimisticSteer, removeByApprovalId, resolveByApprovalId, clearPendingPermissions, setSlotRunning, setSlotStopping, settleStopNotRunning, startLocalTurn, endLocalTurn, syncSlotRunningFromServer, setSlotState, setSlotStatusDetail, setStopPressedAt, clearMessages, clearSlotCache, truncateAfterIndex, replaceMessages, markLoadedRowsChanged, hydrateSlotMessages, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseVariantSwitch, sseThinkingChunk, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages,
   sseContextUsage, setVoicePlaying, setVoiceAudio,
   toggleActivity, openActivityToTab, openActivityPanel, openActivityToTool, clearFocusToolCallId, requestSlotReveal, clearSlotReveal, requestFolderReveal, clearSubagentsForSnapshot, sseSubagentPending, markSubagentApproving, sseSubagentSpawn, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentQueued,
   sseSubagentBatchUpdate, sseSubagentBatchChunks, selectSubagent, clearTerminalSubagents,
@@ -869,6 +878,7 @@ export const {
 } = chatSlice.actions
 
 export { clampToolOutput, TOOL_OUTPUT_MAX_CHARS, queueEntryAttachments, type QueueEntryAttachments } from './chat/wire'
+export { renewUntilCurrent } from './chat/slotCache'
 export { floorForGen, raiseChunkSeq, snapshotChunkGen, snapshotChunkSeq, transcriptTsMs } from './chat/transcript'
 export {
   OLDER_PAGE_LIMIT, OLDER_WALK_PAGE_LIMIT, SLOT_DETAIL_MAX_LIMIT, PANE_HYDRATE_LIMIT, REFRESH_LIMIT_CEILING,
@@ -891,8 +901,135 @@ export {
   selectTurnInterrupted,
 } from './chat/selectors'
 export { clearSwitchSlotGone, switchSlot, switchSlotNoticeCopy, type SwitchSlotArg } from './chat/slotSwitch'
-export { refreshSlot, warmSlotCache } from './chat/slotRefresh'
+export { refreshSlot, slotVariantSeqSeen, warmSlotCache } from './chat/slotRefresh'
 export { WINDOW_WALK_MAX_PAGES } from './chat/windowWalk'
+
+/** Whether this document holds any server row, open or cached. */
+function holdsLoadedRows(chat: ChatState): boolean {
+  return chat.messages.some(isDurableRow)
+    || Object.values(chat.slotMessages ?? {}).some(rows => rows.some(isDurableRow))
+}
+
+/** Whether this document holds any server row of one slot, open or cached. */
+function slotHoldsLoadedRows(chat: ChatState, slot: string): boolean {
+  if (chat.activeSlot === slot && chat.messages.some(isDurableRow)) return true
+  return (chat.slotMessages?.[safeKey(slot)] ?? []).some(isDurableRow)
+}
+
+/** One redaction allow-list change, however this document learned of it: a
+ *  status frame's `redaction_hosts_gen` (`status`: every tab, on every connect
+ *  and every few seconds) or this tab's own allow or revoke answering
+ *  (`write`). The server applies allowed hosts when it serves a transcript, so
+ *  a change alters rows every loaded session holds: mark them all, the open one
+ *  included, and re-read the open one (background panes on screen re-read
+ *  themselves when marked). One generation per
+ *  document keeps the two sources from handling one change twice. A status
+ *  frame's first generation is a baseline; '' or a non-string is unknown, never
+ *  a change -- except that this tab's own write is handled even without one (a
+ *  gateway that sends none). Returns whether the change was handled here. */
+export function noteRedactionHostsGen(
+  dispatch: (action: unknown) => unknown,
+  getState: () => { chat: ChatState },
+  gen: unknown,
+  source: 'status' | 'write',
+): boolean {
+  let changed: boolean
+  if (typeof gen !== 'string' || gen === '') {
+    changed = source === 'write'
+  } else {
+    const prev = getState().chat.redactionHostsGen
+    if (prev === gen) return false
+    dispatch(redactionHostsGenAdopted(gen))
+    // A first value is a baseline only for a document holding no rows yet. Rows
+    // loaded before any value arrived came by a path that reports none (a
+    // history resume), so nothing vouches they were served under this one: a
+    // revoke landing in between would otherwise be adopted as the baseline and
+    // leave its link clickable in them.
+    changed = source === 'write' || prev !== null || holdsLoadedRows(getState().chat)
+  }
+  if (!changed) return false
+  dispatch(chatSlice.actions.markLoadedRowsChanged())
+  const chatNow = getState().chat
+  // The open chat always re-reads itself: a change made from a card in a
+  // background pane outdates the open chat's rows just as much, and the status
+  // frame will not report it here, since this tab's own write already adopted the
+  // value. Background panes are NOT re-read from here: a pane on screen re-reads
+  // itself when its slot is marked (ChatPane), and a cache no longer on screen
+  // keeps the mark and heals on its next natural read, so one click never fans out
+  // whole-transcript reads to every session hydrated this visit.
+  if (chatNow.activeSlot) dispatch(refreshSlotThunk(chatNow.activeSlot))
+  return true
+}
+
+/** A `chat_variant_switch` frame. The server rewrote the newest assistant row
+ *  carrying variants; where this document holds that row (open or cached) the
+ *  frame's text is applied to it in place (`sseVariantSwitch`, logged so a read
+ *  in flight replays it), which keeps the open chat's re-read bounded. Only a
+ *  slot whose rewritten row it cannot find is marked, so its next read re-serves
+ *  every loaded row. Returns whether the slot was marked. */
+export function noteVariantSwitch(
+  dispatch: (action: unknown) => unknown,
+  getState: () => { chat: ChatState },
+  frame: { slot?: unknown; index?: unknown; content?: unknown; seq?: unknown },
+): boolean {
+  const slot = frame.slot
+  if (typeof slot !== 'string' || !slot) return false
+  // The frame's count is now this tab's baseline, so the slot list's patch
+  // carrying the same count does not re-serve the slot again.
+  if (typeof frame.seq === 'string' || typeof frame.seq === 'number') {
+    dispatch(slotVariantSeqSeen({ slot, seq: frame.seq }))
+  }
+  const chat = getState().chat
+  const rows = chat.activeSlot === slot ? chat.messages : (chat.slotMessages?.[safeKey(slot)] ?? [])
+  let target: ChatMessage | undefined
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const m = rows[i]
+    if (m.role === 'assistant' && Array.isArray(m.variants) && m.variants.length) { target = m; break }
+  }
+  const index = frame.index
+  const content = frame.content
+  const mid = typeof target?.meta?.mid === 'string' && target.meta.mid ? target.meta.mid : undefined
+  const placed = target !== undefined && typeof index === 'number' && Number.isInteger(index)
+    && index >= 0 && index < (target.variants?.length ?? 0) && typeof content === 'string'
+    && (mid !== undefined || typeof target.ts === 'string')
+  if (placed) {
+    dispatch(chatSlice.actions.sseVariantSwitch({ slot, mid, ts: mid ? undefined : target!.ts, index: index as number, content: content as string }))
+  } else {
+    dispatch(chatSlice.actions.markLoadedRowsChanged({ slot }))
+  }
+  if (getState().chat.activeSlot === slot) dispatch(refreshSlotThunk(slot))
+  return !placed
+}
+
+/** Slot-list rows (a `slots` frame or a `slot_patch`), read for `variant_seq`.
+ *  A reply variant switch rewrites a row a tab may hold above its newest page;
+ *  the tab that saw the `chat_variant_switch` frame already adopted the count it
+ *  carries, so a count that differs from the held one here is a switch this tab
+ *  missed (its socket was down through it). Mark that slot alone and re-read it
+ *  if it is the open chat (a pane on screen re-reads itself when marked). The
+ *  first count seen for a slot is a baseline. Returns the slots marked. */
+export function noteSlotVariantSeqs(
+  dispatch: (action: unknown) => unknown,
+  getState: () => { chat: ChatState },
+  rows: ReadonlyArray<{ key?: unknown; variant_seq?: unknown }> | undefined,
+): string[] {
+  const marked: string[] = []
+  for (const row of rows ?? []) {
+    if (typeof row?.key !== 'string') continue
+    if (typeof row.variant_seq !== 'string' && typeof row.variant_seq !== 'number') continue
+    const held = getState().chat.slotVariantSeq?.[safeKey(row.key)]
+    if (held === row.variant_seq) continue
+    dispatch(slotVariantSeqSeen({ slot: row.key, seq: row.variant_seq }))
+    // The first count is a baseline only for a slot holding no rows yet: rows
+    // loaded before any count was seen (a resume, a read racing the first list)
+    // carry nothing that vouches they predate no switch, so re-serve them once.
+    if (held === undefined && !slotHoldsLoadedRows(getState().chat, row.key)) continue
+    dispatch(chatSlice.actions.markLoadedRowsChanged({ slot: row.key }))
+    if (getState().chat.activeSlot === row.key) dispatch(refreshSlotThunk(row.key))
+    marked.push(row.key)
+  }
+  return marked
+}
 export { createSlot, deleteHistorySession, fetchHistory, forkSlot, resumeFromHistory } from './chat/lifecycle'
 
 export default chatSlice.reducer

@@ -19,6 +19,7 @@ def _store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     path = tmp_path / "redaction-allow" / "hosts.json"
     monkeypatch.setattr(redaction_allow, "_path_override", path)
     monkeypatch.setattr(redaction_allow, "_snapshot", None)
+    monkeypatch.setattr(redaction_allow, "_writes", 0)
     monkeypatch.setattr(redaction_allow, "_loading", False)
     monkeypatch.setattr(redaction_allow, "_load_thread", None)
     yield path
@@ -38,6 +39,29 @@ def test_allow_list_and_revoke_round_trip(_store: Path) -> None:
         assert oct(_store.stat().st_mode & 0o777) == "0o600"
     assert redaction_allow.revoke_host("ws1", "reviews.corp.example")
     assert redaction_allow.list_allowed() == {}
+
+
+def test_the_list_fingerprint_moves_with_every_write_and_never_returns(_store: Path) -> None:
+    # An unloaded list serves as empty (``allowed_hosts_for`` answers nothing), so
+    # its value is the empty list's: rows served before the load compare equal to
+    # an empty list and differ from any list that allows a host.
+    unloaded = redaction_allow.list_fingerprint()
+    redaction_allow.preload()
+    empty = redaction_allow.list_fingerprint()
+    assert empty and empty == unloaded == redaction_allow.list_fingerprint()
+    assert redaction_allow.allow_host("ws1", "reviews.corp.example")
+    allowed = redaction_allow.list_fingerprint()
+    assert allowed != empty
+    # Revoking back to the empty list is NOT the empty list's value again: a
+    # render that read the value before the allow and finished after the revoke
+    # may hold rows prepared under the allow, so it must read as outdated.
+    assert redaction_allow.revoke_host("ws1", "reviews.corp.example")
+    revoked = redaction_allow.list_fingerprint()
+    assert revoked not in (empty, allowed)
+    # A process that loads the same list afresh (a gateway restart) starts from
+    # the empty list's value again: no write happened in it.
+    redaction_allow._writes = 0
+    assert redaction_allow.list_fingerprint() == empty
 
 
 def test_the_workspace_count_is_capped_on_insert_and_on_load(_store: Path) -> None:

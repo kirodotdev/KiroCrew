@@ -1441,6 +1441,55 @@ class TestFlushSegment:
             call.args[0] == "chat_variant_switch" for call in state.broadcast_ws.call_args_list
         )
 
+    def test_a_finalized_variant_is_counted_on_the_slot_list(self, tmp_path):
+        # A tab whose socket missed the variant frame learns of it from the slot
+        # list's ``variant_seq`` on reconnect, so finalizing a variant moves it.
+        state, slot = _state(tmp_path), _slot()
+        state.push_slot_patch = MagicMock()
+        slot._pending_variants = [{"content": "older draft", "ts": "1"}]
+        before = slot.variant_seq
+        chat_runner._flush_segment(state, slot, "newest draft")
+        assert slot.variant_seq != before
+        frame = next(
+            c.args[1]
+            for c in state.broadcast_ws.call_args_list
+            if c.args[0] == "chat_variant_switch"
+        )
+        assert frame["seq"] == slot.variant_seq
+        state.push_slot_patch.assert_called_with(slot.key, ("variant_seq",))
+
+    def test_a_regenerate_finalized_without_a_broadcast_still_moves_the_revision(self, tmp_path):
+        # A regenerate's terminal flush is `broadcast=False` (its finalize rides
+        # `chat_done`), so no variant frame goes out; the slot list's revision is
+        # then the only thing that tells a reconnecting tab its row is stale.
+        state, slot = _state(tmp_path), _slot()
+        state.push_slot_patch = MagicMock()
+        slot._pending_variants = [{"content": "older draft", "ts": "1"}]
+        before = slot.variant_seq
+        chat_runner._flush_segment(state, slot, "newest draft", broadcast=False)
+        assert slot.variant_seq != before
+        state.push_slot_patch.assert_called_with(slot.key, ("variant_seq",))
+        assert not any(
+            c.args[0] == "chat_variant_switch" for c in state.broadcast_ws.call_args_list
+        )
+
+    def test_a_broadcast_variant_frame_goes_out_before_the_slot_patch(self, tmp_path):
+        # The live tab adopts the revision from the frame; a patch sent first would
+        # read as a moved revision there and re-read the slot once per message.
+        state, slot = _state(tmp_path), _slot()
+        order = MagicMock()
+        state.broadcast_ws = order.broadcast_ws
+        state.push_slot_patch = order.push_slot_patch
+        slot._pending_variants = [{"content": "older draft", "ts": "1"}]
+        chat_runner._flush_segment(state, slot, "newest draft", broadcast=True)
+        names = [
+            "patch" if c[0] == "push_slot_patch" else "frame"
+            for c in order.mock_calls
+            if (c[0] == "push_slot_patch" and c[1] == (slot.key, ("variant_seq",)))
+            or (c[0] == "broadcast_ws" and c[1][:1] == ("chat_variant_switch",))
+        ]
+        assert names == ["frame", "patch"]
+
     def test_credentials_in_the_segment_are_redacted(self, tmp_path):
         state, slot = _state(tmp_path), _slot()
 

@@ -14,6 +14,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from dashboard_owner_helpers import as_owner
 
+from kiro_crew.dashboard import serving_gen
 from kiro_crew.dashboard.handlers import redaction as handlers
 from kiro_crew.security import redaction_allow
 
@@ -56,16 +57,48 @@ async def test_allow_list_and_revoke_through_the_routes() -> None:
             "/api/redaction/allowed-hosts", json={"slot": "s1", "host": "Reviews.Corp.Example"}
         )
         assert res.status == 200
-        assert await res.json() == {"ok": True, "workspace": "ws1"}
+        assert {k: v for k, v in (await res.json()).items() if k != "gen"} == {
+            "ok": True,
+            "workspace": "ws1",
+        }
         res = await client.get("/api/redaction/allowed-hosts")
         assert (await res.json())["workspaces"] == {"ws1": ["reviews.corp.example"]}
         res = await client.delete(
             "/api/redaction/allowed-hosts",
             params={"workspace": "ws1", "host": "reviews.corp.example"},
         )
-        assert await res.json() == {"ok": True, "removed": True}
+        assert {k: v for k, v in (await res.json()).items() if k != "gen"} == {
+            "ok": True,
+            "removed": True,
+        }
         res = await client.get("/api/redaction/allowed-hosts")
         assert (await res.json())["workspaces"] == {}
+
+
+@pytest.mark.asyncio
+async def test_allow_and_revoke_answer_with_the_list_token_they_left() -> None:
+    """The tab that made the change adopts the token, so the status frame that
+    carries the same token later is not read as a second change. A write that
+    changed nothing (re-allowing, revoking an absent host) leaves it unmoved."""
+    async with _client() as client:
+        res = await client.post(
+            "/api/redaction/allowed-hosts", json={"slot": "s1", "host": "a.example"}
+        )
+        after_allow = (await res.json())["gen"]
+        assert after_allow and after_allow == serving_gen.serving_generation()
+        res = await client.post(
+            "/api/redaction/allowed-hosts", json={"slot": "s1", "host": "a.example"}
+        )
+        assert (await res.json())["gen"] == after_allow
+        res = await client.delete(
+            "/api/redaction/allowed-hosts", params={"workspace": "ws1", "host": "a.example"}
+        )
+        after_revoke = (await res.json())["gen"]
+        assert after_revoke != after_allow
+        res = await client.delete(
+            "/api/redaction/allowed-hosts", params={"workspace": "ws1", "host": "a.example"}
+        )
+        assert (await res.json())["gen"] == after_revoke
 
 
 @pytest.mark.asyncio

@@ -232,6 +232,7 @@ from kiro_crew.dashboard.state import (
     build_tool_stall_recovery_prompt,
     context_entry_expired,
     durable_row_count,
+    mint_tags_revision,
     parse_hook_continuations,
     row_mid,
     should_queue_hook_continuation,
@@ -6099,6 +6100,7 @@ def _flush_segment(
         interrupted=interrupted,
     )
     last_msg: dict = slot.messages[-1]
+    variant_moved = False
     # If a regenerate is pending, attach the stashed variants to this fresh assistant message.
     if slot._pending_variants:
         pending_list = []
@@ -6124,6 +6126,13 @@ def _flush_segment(
         last_msg["variants"] = pending_list
         last_msg["variant_idx"] = len(pending_list) - 1
         slot._pending_variants = []
+        # A fresh revision per slot, carried on the slot list (``variant_seq``), so
+        # a tab that missed this change re-serves this slot on reconnect. Moved on
+        # every attach, broadcast or not: a regenerate's terminal flush is
+        # `broadcast=False` (its finalize rides `chat_done`), and it rewrites a row
+        # a tab may hold above its newest page just the same.
+        slot.variant_seq = mint_tags_revision()
+        variant_moved = True
     # Re-append any stop_event that belongs to this segment's trailing run,
     # placed AFTER the finalized assistant message so the UI shows
     # prose → stop card.
@@ -6136,10 +6145,22 @@ def _flush_segment(
         # Use last_msg (the assistant message) not slot.messages[-1] which may be a
         # trailing stop_event appended after the assistant message.
         if last_msg.get("variants"):
+            # Carries the slot's current revision (moved where the variants were
+            # attached, above), so the tab that sees this frame live adopts it.
             state.broadcast_ws(
                 "chat_variant_switch",
-                {"slot": slot.key, "index": last_msg.get("variant_idx", 0), "content": redacted},
+                {
+                    "slot": slot.key,
+                    "index": last_msg.get("variant_idx", 0),
+                    "content": redacted,
+                    "seq": slot.variant_seq,
+                },
             )
+    # Patched AFTER the variant frame: a live tab adopts the revision from the
+    # frame, so the patch then reads as no change; patched first, that tab would
+    # see a moved revision, re-read the slot, and re-read it again for the frame.
+    if variant_moved:
+        state.push_slot_patch(slot.key, ("variant_seq",))
     # Auto-register any <mcwidget> in this segment as an (unpinned) artifact so
     # it appears in the session's Artifacts tab and the star becomes a pure
     # metadata flip. Registered from the REDACTED text — the artifact is a

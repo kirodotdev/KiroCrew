@@ -1,4 +1,4 @@
-import type { Dispatch, SetStateAction } from 'react'
+import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import { X } from 'lucide-react'
 
 import ErrorNotice from '../../../components/ErrorNotice'
@@ -6,8 +6,8 @@ import VoicePlaybackNotice from '../../../components/VoicePlaybackNotice'
 import { Btn } from '../../../components/ui'
 import { i18nT } from '../../../i18n/t'
 import type { useProvider } from '../../../providers'
-import type { AppDispatch, RootState } from '../../../store'
-import { clearSwitchSlotGone, clearUndeletableHistory, clearUnresumableResume, switchSlotNoticeCopy } from '../../../store/chatSlice'
+import { useAppSelector, type AppDispatch, type RootState } from '../../../store'
+import { clearSwitchSlotGone, clearUndeletableHistory, clearUnresumableResume, refreshSlot, switchSlotNoticeCopy } from '../../../store/chatSlice'
 import { findSurfaceBySlotMode, surfaceLabel } from '../../../surfaces/registry'
 import { slotChannelLabel } from '../../../utils/channelOrigin'
 import { historyDeleteRefusalMessage } from '../../../utils/historyDeleteRefusal'
@@ -83,6 +83,8 @@ interface ChatPaneNoticesProps {
   dismissPinStatus: () => void
   unresumableResume: RootState['chat']['unresumableResume']
   undeletableHistory: RootState['chat']['undeletableHistory']
+  /** Split view is showing: each grid pane carries its own failed-heal notice. */
+  gridShown: boolean
   dispatch: AppDispatch
 }
 
@@ -112,8 +114,26 @@ export default function ChatPaneNotices({
   dismissPinStatus,
   unresumableResume,
   undeletableHistory,
+  gridShown,
   dispatch,
 }: ChatPaneNoticesProps) {
+  // The open chat's re-read after a serving change (an allow or revoke) failed
+  // while its rows were still marked: some may show content the change revoked,
+  // so say so with a Retry rather than leave a revoked link silently clickable.
+  const activeHealFailed = useAppSelector(s => !!(s.chat.activeSlot && s.chat.slotHealFailed?.[s.chat.activeSlot]))
+  // The notice stays up while its Retry is in flight, so the button says it is busy.
+  const [healRetrying, setHealRetrying] = useState(false)
+  // Bumped as each Retry settles: re-keying the notice re-mounts it, so a retry
+  // that failed again is announced again rather than reading as an ignored click.
+  // Back to 0 once the heal is over, so a later failure reads as a first one.
+  const [healAttempts, setHealAttempts] = useState(0)
+  useEffect(() => { if (!activeHealFailed) setHealAttempts(0) }, [activeHealFailed])
+  // The re-mount above destroys the Retry button; a keyboard user who pressed it
+  // must not be dropped to <body> on every attempt. Set on press, read by the new
+  // button's ref as it mounts, and cleared once that commit has run.
+  const healRetryFocusRef = useRef(false)
+  useEffect(() => { healRetryFocusRef.current = false }, [healAttempts])
+  const showHeal = !!activeSlot && activeHealFailed && !gridShown
   return (
     <>
       {/* Pane-level notices above the composer. Every ErrorNotice here has the
@@ -140,6 +160,38 @@ export default function ChatPaneNotices({
         askAgent
         className="mx-4 mt-2 mb-0 animate-rise"
         testId="sid-error"
+      />
+      {/* No hand-off: navigating away would discard the unsent composer draft;
+          the Retry is the recovery for the failed re-read. Not in split view:
+          each grid pane shows its own slot's notice and Retry, so this banner
+          would repeat the open chat's beside it. */}
+      <ErrorNotice
+        key={`heal-${healAttempts}`}
+        message={showHeal ? i18nT(healAttempts > 0 ? 'components.chatPane.heal_failed_again' : 'components.chatPane.heal_failed') : ''}
+        footer={showHeal && activeSlot
+          // `aria-disabled`, not `disabled`: a disabled button drops keyboard focus.
+          // Dimmed less than a disabled button, so "Retrying…" stays legible.
+          ? <Btn
+              // One-shot: this inline ref re-attaches on every commit, so a flag left
+              // set would pull focus back here on each re-render (a keystroke in the
+              // composer re-renders this) for as long as the retry is in flight.
+              ref={el => { if (el && healRetryFocusRef.current) { healRetryFocusRef.current = false; el.focus() } }}
+              aria-disabled={healRetrying}
+              aria-busy={healRetrying}
+              className={healRetrying ? 'opacity-60 cursor-not-allowed' : undefined}
+              onClick={e => {
+                if (healRetrying) return
+                // Armed only as the retry settles, right before the re-mount it
+                // targets, so the re-renders during the retry cannot consume it.
+                const hadFocus = document.activeElement === e.currentTarget
+                setHealRetrying(true)
+                void Promise.resolve(dispatch(refreshSlot(activeSlot))).finally(() => { healRetryFocusRef.current = hadFocus; setHealRetrying(false); setHealAttempts(n => n + 1) })
+              }}
+              data-testid="heal-retry"
+            >{i18nT(healRetrying ? 'components.chatPane.heal_retrying' : 'components.chatPane.retry')}</Btn>
+          : undefined}
+        className="mx-4 mt-2 mb-0 animate-rise"
+        testId="heal-error"
       />
       {/* No hand-off: navigating away would discard the unsent composer draft. */}
       <ErrorNotice

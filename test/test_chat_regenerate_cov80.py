@@ -28,6 +28,7 @@ from kiro_crew.dashboard.chat_regenerate import (
     api_chat_slot_regenerate,
     api_chat_slot_switch_variant,
 )
+from kiro_crew.dashboard.state import _ChatSlot
 
 # Ceiling for the cross-thread gates below. Generous rather than tight: it is a
 # deadlock backstop, never a synchronisation point, so a slow shared runner must
@@ -377,6 +378,39 @@ async def test_switch_variant_broadcasts_redacted_content(state) -> None:
     # The stored row keeps the real content; only the wire copy is redacted.
     assert slot.messages[-1]["content"] == "the key is AKIAIOSFODNN7EXAMPLE"
     assert slot.messages[-1]["ts"] == "t1"
+
+
+@pytest.mark.asyncio
+async def test_switch_variant_counts_on_the_slot_and_patches_the_slot_list(state) -> None:
+    """A tab whose socket missed the switch frame learns of it from the slot
+    list's ``variant_seq`` on reconnect, so the switch must move it and publish
+    it; the frame carries the same count, so the tab that saw it live does not
+    re-serve the slot a second time when the patch lands."""
+    slot = state.get_or_create_slot("s1")
+    slot.append("user", "q")
+    slot.append("assistant", "v2")
+    slot.messages[-1]["variants"] = [{"content": "v1", "ts": "t1"}, {"content": "v2", "ts": "t2"}]
+    state.push_slot_patch = MagicMock()
+    before = slot.variant_seq
+    async with _client(state) as client:
+        resp = await client.post("/api/chat/slots/s1/switch-variant", json={"index": 0})
+        assert resp.status == 200
+    revision = slot.variant_seq
+    assert revision != before
+    msg_type, payload = state.broadcast_ws.call_args.args
+    assert (msg_type, payload["seq"]) == ("chat_variant_switch", revision)
+    state.push_slot_patch.assert_called_with("s1", ("variant_seq",))
+    assert state.serialize_slot(slot, dashboard_user=True)["variant_seq"] == revision
+
+
+def test_a_restarted_gateway_never_repeats_a_variant_revision() -> None:
+    """A tab compares the slot list's value against the one it holds, so a restarted
+    gateway must never hand back a value a tab already has while the switch it missed
+    went unseen. Revisions are minted like ``tags_revision``: each one is new, the
+    one a slot is created with (as after a restart) included."""
+    first, recreated = _ChatSlot("s1"), _ChatSlot("s1")
+    assert first.variant_seq != recreated.variant_seq
+    assert isinstance(first.variant_seq, str) and first.variant_seq
 
 
 @pytest.mark.asyncio

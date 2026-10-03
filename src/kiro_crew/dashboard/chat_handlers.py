@@ -163,6 +163,7 @@ from kiro_crew.dashboard.remote_relay import (
     relay_remote_turn,
     remote_bound_refusal,
 )
+from kiro_crew.dashboard.serving_gen import serving_generation
 from kiro_crew.dashboard.slot_buffers import (
     MAX_DEFERRED_NOTE_CHARS,
     MAX_DEFERRED_NOTES,
@@ -3379,6 +3380,13 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
             {"error": "limit must be >= 1", "code": "limit_out_of_range"}, status=400
         )
 
+    # The serving value these rows go out under, read BEFORE any row is read: a
+    # change landing after it (an allow or revoke, a write to the OAuth file) can
+    # then only leave the rows newer than the value, never older, so a tab
+    # comparing it later re-reads too much rather than keeping a stale row.
+    # Off-loop: it stats the OAuth file and may load the persisted secret.
+    redaction_gen = await asyncio.to_thread(serving_generation)
+
     # No limit → load ALL messages (chained across gateway restarts).
     # In-memory slot.messages is authoritative for the current session.
     # _disk_older_count gates whether to read disk AND provides the stable
@@ -3770,6 +3778,12 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
     context_fields = await _context_snapshot_fields(state, slot)
 
     def _render(live_child: str) -> str:
+        # INVARIANT (see _prepare_messages): every input that changes what these
+        # rows look like must move ``redaction_gen`` or have the client mark its
+        # loaded rows changed. A tab keeps older rows above its newest page and
+        # re-serves them only then, so a serving change made HERE that does
+        # neither leaves those rows stale with nothing to say so.
+        # ``redaction_gen`` was read before any row was (see above).
         # Off-loop on purpose. _prepare_messages applies a regex-heavy
         # redaction battery to the ENTIRE history; on a multi-MB session that
         # blocked the event loop past the loop-stall watchdog's exit budget
@@ -3791,6 +3805,11 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
                 "total": total,
                 "has_more": has_more,
                 "next_before": next_before,
+                # The redaction allow-list value these rows were served under
+                # (``serving_gen.serving_generation``): a tab's first read seeds
+                # its baseline, so a change made before its first status frame is
+                # still seen as a change.
+                "redaction_gen": redaction_gen,
                 # Seeds the context meter on open. Turn-scoped WS frames alone
                 # leave it empty for a session reopened in a new tab; omitted
                 # entirely (not zeroed) when genuinely unknown, so the frontend

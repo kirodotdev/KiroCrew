@@ -20,6 +20,7 @@ from kiro_crew.dashboard.handlers._shared import (
     read_bounded_json,
     require_owner_dashboard_request,
 )
+from kiro_crew.dashboard.serving_gen import serving_generation
 from kiro_crew.security.redaction_allow import (
     allow_host,
     list_allowed,
@@ -89,7 +90,11 @@ async def api_redaction_allow_host(request: web.Request) -> web.Response:
     _audit("redaction.allowed_hosts.add", "allowed" if ok else "refused", request, host.lower())
     if not ok:
         return _bad("the allowed-host list is full", "allow_list_full")
-    return web.json_response({"ok": True, "workspace": workspace})
+    # ``gen`` names the list this write left; the tab that made it adopts it,
+    # so the status frame carrying the same token is not read as a second change.
+    return web.json_response(
+        {"ok": True, "workspace": workspace, "gen": await asyncio.to_thread(serving_generation)}
+    )
 
 
 async def api_redaction_revoke_host(request: web.Request) -> web.Response:
@@ -105,4 +110,6 @@ async def api_redaction_revoke_host(request: web.Request) -> web.Response:
     _audit(
         "redaction.allowed_hosts.revoke", "removed" if removed else "absent", request, host.lower()
     )
-    return web.json_response({"ok": True, "removed": removed})
+    return web.json_response(
+        {"ok": True, "removed": removed, "gen": await asyncio.to_thread(serving_generation)}
+    )

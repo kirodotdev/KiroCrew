@@ -614,6 +614,18 @@ describe('ChatPage row callbacks — quote and ask', () => {
     expect(store.getState().chat.activeSlot).toBe('chat-1')
     expect(store.getState().chat.activityTab).not.toBe('side')
   })
+
+  it('leaves a failed heal of the open chat to its grid pane, rather than repeating it above the grid', async () => {
+    const { store } = await renderSplit()
+    const slot = store.getState().chat.activeSlot!
+    act(() => {
+      store.dispatch({ type: 'chat/markLoadedRowsChanged', payload: { slot } })
+      store.dispatch({ type: 'chat/refreshSlot/rejected', meta: { arg: slot }, error: { name: 'Error', message: 'network' } })
+    })
+    // The flag is set, so the pane shows the notice; the page banner stays empty.
+    expect(store.getState().chat.slotHealFailed[slot]).toBe(true)
+    expect(screen.queryByText(/couldn't refresh this session/i)).toBeNull()
+  })
 })
 
 describe('ChatPage row callbacks — regenerate and speak', () => {

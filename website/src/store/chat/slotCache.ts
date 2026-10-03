@@ -1,6 +1,29 @@
 /** What every slot-detail reducer writes besides the transcript itself: the
  *  active paging cursor, a pane's page with its has-more and bounded markers,
- *  the retained server-count baseline, and the context meter. */
+ *  the retained server-count baseline, and the context meter.
+ *
+ *  It also owns the kept-head staleness protocol. A long chat keeps rows above
+ *  its newest page, so those rows must be re-served whenever the server would now
+ *  serve them differently. The state, and the one rule each field carries:
+ *
+ *  - `redactionHostsGen`: the serving value (`serving_gen.py`) this document's
+ *    rows were served under. A read reporting another value is outdated and is
+ *    re-read (`servedUnderObsoleteGen`, `renewUntilCurrent`, at most
+ *    `MAX_OBSOLETE_REREADS`, then `ObsoleteReadError`, never installed).
+ *  - `loadedRowsEpoch`: bumped by every change that outdates loaded rows
+ *    (`markLoadedRowsChanged`); `slotRowsChangedAt[slot]` is the epoch of the
+ *    newest such change for that slot. A read dispatched before it is dropped
+ *    (`markedSince`), since the change's own read may already have landed.
+ *  - `slotHeadUnverified[slot]`: the mark. A marked slot keeps no head: its next
+ *    read must re-serve every loaded row, and only a read that did so, under the
+ *    same mark, clears it (`clearVerifiedHead`).
+ *  - `slotHealFailed[slot]`: that read failed; the notice stays until a re-read
+ *    lands and clears the mark.
+ *  - `slotServerTotalRaw[slot]`: whether the retained count came from an
+ *    unbounded read, whose units differ from a bounded page's.
+ *
+ *  Refresh, warm and switch all consult the same helpers here, so a fourth read
+ *  path has one place to learn the protocol from. */
 import type { PayloadAction } from '@reduxjs/toolkit'
 import type { ChatMessage } from '../../types'
 import type { ChatState } from './state'
@@ -114,6 +137,112 @@ export function parkActiveTranscript(state: ChatState): void {
  *
  *  `boundedRead` absent still refuses while running, so a caller that cannot say
  *  keeps the conservative answer. */
+/** Whether a read's rows were served under a redaction allow-list value other
+ *  than the one this document now holds as current. A read in flight when an
+ *  allow or revoke landed answers with rows the change has already outdated;
+ *  its caller re-reads rather than write them over the fresh read the change
+ *  itself asked for. Unknown on either side is never obsolete. */
+export function servedUnderObsoleteGen(page: { redactionGen?: string }, currentGen: string | null | undefined): boolean {
+  return typeof page.redactionGen === 'string' && page.redactionGen !== ''
+    && typeof currentGen === 'string' && currentGen !== '' && page.redactionGen !== currentGen
+}
+
+/** How many re-reads one read may spend chasing allow-list changes that keep
+ *  landing while it is in flight. Each one needs a fresh allow or revoke inside
+ *  one round trip, so the cap is a runaway backstop, not a tuned budget. */
+export const MAX_OBSOLETE_REREADS = 3
+
+/** A read still served under an outdated allow-list value once the re-read cap
+ *  is spent. Thrown rather than returned: its rows must never be installed, and
+ *  installs carry no ordering, so a late one could overwrite the fresh rows the
+ *  newest change's own read already put on screen. That read is what heals the
+ *  view -- every change dispatches one -- so rejecting this one loses nothing. */
+export class ObsoleteReadError extends Error {
+  constructor() {
+    super('read outdated by an allow-list change that kept moving')
+    this.name = 'ObsoleteReadError'
+  }
+}
+
+/** Whether a rejection is a read outdated by allow-list changes: benign, since the
+ *  newest change's own read heals the view, so callers must not report it. */
+export function isObsoleteReadRejection(err: unknown): boolean {
+  return !!err && typeof err === 'object' && (err as { name?: unknown }).name === 'ObsoleteReadError'
+}
+
+/** An extra "this read is outdated" test for `renewUntilCurrent`, for a caller
+ *  that cannot simply drop an outdated read (a switch must finish): `outdated`
+ *  says a change has marked the slot since the current read started, and `rearm`
+ *  is called just before each re-read starts, so the next `outdated` measures
+ *  from it. */
+export interface ReadFence {
+  outdated: () => boolean
+  rearm: () => void
+}
+
+/** Re-read until the rows answer under the allow-list value this document holds
+ *  (and, with a `fence`, until no change has marked the slot since the read began).
+ *
+ *  A re-read is checked again only when something moved WHILE it was in flight
+ *  (an allow or revoke landed, or the fence's slot was marked), since its rows
+ *  predate that change too. A re-read that still disagrees with an UNCHANGED
+ *  value is the server's current answer -- this document has simply not seen that
+ *  value's status frame yet, e.g. right after a gateway restart -- so it is kept
+ *  rather than looped on. One owner for "re-read until current, cap, refuse". */
+export async function renewUntilCurrent<T extends { redactionGen?: string }, U extends { redactionGen?: string }>(
+  read: T,
+  reRead: () => Promise<U>,
+  currentGen: () => string | null | undefined,
+  fence?: ReadFence,
+): Promise<T | U> {
+  const outdated = (page: T | U, gen: string | null | undefined) => servedUnderObsoleteGen(page, gen) || (fence?.outdated() ?? false)
+  let page: T | U = read
+  for (let i = 0; i < MAX_OBSOLETE_REREADS; i++) {
+    const asked = currentGen()
+    if (!outdated(page, asked)) return page
+    fence?.rearm()
+    page = await reRead()
+    if (currentGen() === asked && !(fence?.outdated() ?? false)) return page
+  }
+  // The cap is spent with the value still moving: a page that is still outdated
+  // is refused, never installed (see ObsoleteReadError).
+  if (outdated(page, currentGen())) throw new ObsoleteReadError()
+  return page
+}
+
+/** Seed the redaction allow-list baseline from the value a read's rows were
+ *  served under, if nothing has set one yet. Without this a tab whose first
+ *  transcript read lands before its first status frame would take that frame's
+ *  value as the baseline -- and a revoke landing between the two would never
+ *  count as a change, leaving the revoked host's links live in the loaded rows.
+ *  Only a baseline: a later read never moves it (see `noteRedactionHostsGen`). */
+export function seedRedactionHostsGen(state: ChatState, gen: unknown): void {
+  if (state.redactionHostsGen == null && typeof gen === 'string' && gen !== '') state.redactionHostsGen = gen
+}
+
+/** Clear a slot's `slotHeadUnverified` mark after a read that re-served every
+ *  loaded row -- but only the mark that read saw at dispatch. A change marking
+ *  the slot again while the read was in flight leaves the newer mark standing. */
+export function clearVerifiedHead(state: ChatState, key: string, seen: number | undefined): void {
+  if (seen === undefined || !state.slotHeadUnverified) return
+  const k = safeKey(key)
+  if (state.slotHeadUnverified[k] !== seen) return
+  delete state.slotHeadUnverified[k]
+  // The re-read that failed has now landed: the notice saying the rows may be
+  // out of date ends here, not when a retry starts, so it stays on screen for as
+  // long as an outdated (possibly revoked) link may still be.
+  if (state.slotHealFailed?.[k]) delete state.slotHealFailed[k]
+}
+
+/** Whether a read dispatched at `epochAtDispatch` predates a change that has
+ *  marked `key` since: its rows are outdated by that change, and the read the
+ *  change dispatched may already have installed fresh ones, so it is dropped. */
+export function markedSince(state: ChatState, key: string, epochAtDispatch: number | undefined): boolean {
+  if (typeof epochAtDispatch !== 'number') return false
+  const at = state.slotRowsChangedAt?.[safeKey(key)]
+  return typeof at === 'number' && at > epochAtDispatch
+}
+
 export function retainServerTotal(state: ChatState, key: string, total: number | undefined, running?: boolean, seq?: number, boundedRead?: boolean): void {
   if (running && !boundedRead) return
   if (typeof total !== 'number' || !Number.isFinite(total)) return
@@ -124,6 +253,12 @@ export function retainServerTotal(state: ChatState, key: string, total: number |
   // the next warm compares against a count that was never the newest view.
   if (typeof seq === 'number' && typeof priorSeq === 'number' && seq < priorSeq) return
   state.slotServerTotal[safeKey(key)] = total
+  // Which units that count is in, written with it so the two cannot disagree. Only a
+  // read that SAYS it was unbounded is marked raw; a caller that does not say keeps
+  // the units every count was assumed to be in before the marker existed.
+  if (!state.slotServerTotalRaw) state.slotServerTotalRaw = {}
+  if (boundedRead === false) state.slotServerTotalRaw[safeKey(key)] = true
+  else delete state.slotServerTotalRaw[safeKey(key)]
   // Only an ORDERED response moves the order: clearing it on an unordered write
   // erased the field the staleness check reads, so a late warm read as a truncation.
   if (typeof seq === 'number') state.slotServerTotalSeq[safeKey(key)] = seq

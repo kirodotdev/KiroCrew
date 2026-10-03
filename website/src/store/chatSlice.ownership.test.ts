@@ -139,7 +139,8 @@ describe('reducer families', () => {
     const exported = Object.keys(facade)
       .filter(n => typeof surface[n]?.type === 'string' && surface[n]?.typePrefix === undefined)
       // The switch-notice pair is a createAction owned by slotSwitch, handled in its extra reducers.
-      .filter(n => n !== 'clearSwitchSlotGone')
+      // slotVariantSeqSeen is the same shape: a createAction slotRefresh owns.
+      .filter(n => n !== 'clearSwitchSlotGone' && n !== 'slotVariantSeqSeen')
       .sort()
     expect(wired).toEqual(exported)
     for (const name of wired) expect(surface[name].type, name).toBe(`chat/${name}`)
@@ -176,13 +177,14 @@ const REEXPORTS: Array<[string, Record<string, unknown>, string[]]> = [
     'selectTurnInterrupted',
   ]],
   ['slotSwitch', slotSwitch, ['clearSwitchSlotGone', 'switchSlot', 'switchSlotNoticeCopy']],
-  ['slotRefresh', slotRefresh, ['refreshSlot', 'warmSlotCache']],
+  ['slotRefresh', slotRefresh, ['refreshSlot', 'slotVariantSeqSeen', 'warmSlotCache']],
   ['windowWalk', windowWalk, ['WINDOW_WALK_MAX_PAGES']],
+  ['slotCache', slotCache, ['renewUntilCurrent']],
   ['lifecycle', lifecycle, ['createSlot', 'deleteHistorySession', 'fetchHistory', 'forkSlot', 'resumeFromHistory']],
 ]
 
 /** Names the facade itself defines rather than re-exports. */
-const FACADE_OWN = ['batchedTextAboveFloor', 'default', 'deleteSlot', 'loadOlderMessages', 'missedChunkMarker', 'requestStop']
+const FACADE_OWN = ['batchedTextAboveFloor', 'default', 'deleteSlot', 'loadOlderMessages', 'missedChunkMarker', 'noteRedactionHostsGen', 'noteSlotVariantSeqs', 'noteVariantSwitch', 'requestStop']
 
 describe('facade re-exports', () => {
   const surface = facade as unknown as Record<string, unknown>

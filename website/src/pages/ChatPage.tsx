@@ -5422,6 +5422,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           dismissPinStatus={dismissPinStatus}
           unresumableResume={unresumableResume}
           undeletableHistory={undeletableHistory}
+          gridShown={splitMode && splitFeatureEnabled}
           dispatch={dispatch}
         />
         {/* Floating sessions opener — mobile only, and only on a chat with

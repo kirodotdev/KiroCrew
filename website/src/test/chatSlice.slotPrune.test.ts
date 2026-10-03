@@ -182,6 +182,9 @@ describe('slot teardown parity', () => {
       automations: Object.fromEntries(keys.map(k => [k, terminalMonitor(k)])),
       slotPaneHasMore: Object.fromEntries(keys.map(k => [k, true])),
       slotPaneBounded: Object.fromEntries(keys.map(k => [k, 50])),
+      slotHeadUnverified: Object.fromEntries(keys.map(k => [k, 3])),
+      slotHealFailed: Object.fromEntries(keys.map(k => [k, true])),
+      slotRowsChangedAt: Object.fromEntries(keys.map(k => [k, 3])),
       thinkingOrphans: Object.fromEntries(keys.map(k => [k, [{ msg: { role: 'thinking', content: `reasoning for ${k}`, cls: '' } as ChatMessage, anchor: { text: 'OLD ANSWER' } }]])),
     }
   }
@@ -192,6 +195,8 @@ describe('slot teardown parity', () => {
     'stopPressedAt', 'followups', 'folderSuggestions', 'subagentQueued',
     'automations',
     'slotPaneHasMore', 'slotPaneBounded',
+    // A resumed session must not show an earlier session's failed-heal notice.
+    'slotHeadUnverified', 'slotHealFailed', 'slotRowsChangedAt',
     // Client-only and unrecoverable, so a slot that leaves has to take it with it.
     'thinkingOrphans',
   ] as const

@@ -153,12 +153,24 @@ def _url_payload_command(n: int) -> str:
 #: Windows file too large to hash on the gate is never served, so a dotless target
 #: there is pending, and the ssh self-target refusal note says so.
 #:
+#: Raised again, from 28,399, for ``redaction_allow.list_fingerprint``: a hash of
+#: the in-memory allow-list snapshot and a count of this process's writes to it,
+#: which the dashboard keys and carries so a tab knows its loaded rows are now
+#: served under a different list (the count keeps a list written back to an earlier
+#: state from reading as unchanged). Fourteen lines -- one import, the write counter
+#: and a read-only function over state the module already holds. No new control
+#: logic, no change to what the list allows, and nothing a run can write. Twenty
+#: more for ``exfil.oauth_extension_changes``: a count of changes to the OAuth
+#: extension set the loader returns, so the same served value cannot vouch for rows
+#: prepared under a set since restored (a Windows restore can reproduce the file's
+#: whole stat). The loader body is unchanged, only renamed behind the counter.
+#:
 #: The number IS the package's measured total, carrying no spare room: a ratchet with
 #: headroom admits exactly the unreviewed growth it exists to catch, so the next line
 #: added here fails this gate and has to be re-pinned deliberately, with its reason
 #: written above. The guards that detect a monolith growing back are the per-file cap
 #: and the facade's share below, and both must stay untouched.
-_PACKAGE_LINE_BUDGET = 28_399
+_PACKAGE_LINE_BUDGET = 28_433
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

@@ -272,4 +272,112 @@ describe('ChatPage follow-up worktree orchestration', () => {
     await waitFor(() => expect(composer().value).toContain('Please rotate the key.'))
     expect(composer().value).toBe('half-written thought\n\nPlease rotate the key.')
   })
+
+  it('an "Allow for this host" reload re-reads the whole transcript, not a newest-rows page', async () => {
+    // The allowed link can sit in any loaded row. Past the refresh ceiling a
+    // bounded refresh keeps the view's own copy of every row above its page,
+    // so an older card's blocked-link chip would survive the reload meant to lift it.
+    const store = makeStore()
+    const rows = Array.from({ length: 600 }, (_, i) => ({
+      role: i % 2 ? 'assistant' : 'user', content: `row ${i}`, cls: '',
+      ts: new Date(Date.UTC(2026, 8, 1) + i * 1000).toISOString(), meta: { mid: `m-${i}` },
+    }))
+    await renderPage(store)
+    act(() => {
+      store.dispatch({ type: 'chat/refreshSlot/fulfilled', meta: { arg: 'chat-1', requestId: 'seed' }, payload: { key: 'chat-1', running: false, hasMore: false, total: 600, nextBefore: 0, queue: [], messages: rows } })
+    })
+    expect(store.getState().chat.messages.length).toBeGreaterThan(500)
+    // A background session's cache, so the workspace-wide mark has something to mark.
+    act(() => {
+      store.dispatch({ type: 'chat/hydrateSlotMessages', payload: { slot: 'bg-slot', messages: rows.slice(0, 3), hasMore: false } })
+    })
+    ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockClear()
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('mc:redaction-hosts-changed', { detail: { slot: 'chat-1' } }))
+    })
+    await waitFor(() => expect(api.chatSlotDetail).toHaveBeenCalled())
+    const reads = (api.chatSlotDetail as ReturnType<typeof vi.fn>).mock.calls
+    expect(reads[0]).toEqual(['chat-1'])
+    // The allow is workspace-wide: the other session's cache is marked, so its
+    // next read re-serves every row; nothing re-reads it now, since no pane shows it.
+    expect(store.getState().chat.slotHeadUnverified['bg-slot']).toBeDefined()
+    expect(reads.some(c => c[0] === 'bg-slot')).toBe(false)
+  })
+
+  it('says so with a Retry when the open chat\'s re-read after an allow fails', async () => {
+    // A revoke's re-read that fails would otherwise leave the revoked link
+    // clickable in the open chat with nothing on screen to say why.
+    const store = makeStore()
+    await renderPage(store)
+    ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('network'))
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('mc:redaction-hosts-changed', { detail: { slot: 'chat-1' } }))
+    })
+    await waitFor(() => expect(screen.getByTestId('heal-error')).toBeTruthy())
+    ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockClear()
+    let land: () => void = () => {}
+    const landed = new Promise<void>(r => { land = r })
+    const settled = (api.chatSlotDetail as ReturnType<typeof vi.fn>).getMockImplementation()
+    ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockImplementationOnce(async (...a: unknown[]) => { await landed; return settled?.(...a) })
+    fireEvent.click(screen.getByTestId('heal-retry'))
+    await waitFor(() => expect(api.chatSlotDetail).toHaveBeenCalledWith('chat-1'))
+    // In flight: the notice stays, and its Retry says it is busy rather than reading as dead.
+    expect(screen.getByTestId('heal-retry').getAttribute('aria-disabled')).toBe('true')
+    expect(screen.getByTestId('heal-retry').textContent).toMatch(/retrying/i)
+    land()
+    await waitFor(() => expect(screen.queryByTestId('heal-error')).toBeNull())
+  })
+
+  it('leaves focus in the composer when the user types there during a Retry', async () => {
+    // The Retry's inline ref re-attaches on every commit; a focus restore left armed
+    // through the retry would pull each keystroke's re-render back onto the button.
+    const store = makeStore()
+    await renderPage(store)
+    ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('network'))
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('mc:redaction-hosts-changed', { detail: { slot: 'chat-1' } }))
+    })
+    await waitFor(() => expect(screen.getByTestId('heal-retry')).toBeTruthy())
+    let land: () => void = () => {}
+    const landed = new Promise<void>(r => { land = r })
+    ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => { await landed; throw new Error('network') })
+    const pressed = screen.getByTestId('heal-retry')
+    pressed.focus()
+    fireEvent.click(pressed)
+    await waitFor(() => expect(screen.getByTestId('heal-retry').getAttribute('aria-disabled')).toBe('true'))
+    const composer = screen.getAllByRole('textbox').find(el => el.tagName === 'TEXTAREA')!
+    composer.focus()
+    fireEvent.change(composer, { target: { value: 'h' } })
+    fireEvent.change(composer, { target: { value: 'hi' } })
+    expect(document.activeElement).toBe(composer)
+    land()
+    await waitFor(() => expect(screen.getByTestId('heal-retry').getAttribute('aria-disabled')).toBe('false'))
+  })
+
+  it('announces the notice again when a Retry fails again', async () => {
+    // Without a fresh announcement, "Retrying…" reverting to "Retry" beside the
+    // same notice reads as a click that did nothing.
+    const store = makeStore()
+    await renderPage(store)
+    ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('network'))
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('mc:redaction-hosts-changed', { detail: { slot: 'chat-1' } }))
+    })
+    await waitFor(() => expect(screen.getByTestId('heal-error')).toBeTruthy())
+    const first = screen.getByTestId('heal-error')
+    ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('network'))
+    const pressed = screen.getByTestId('heal-retry')
+    pressed.focus()
+    fireEvent.click(pressed)
+    await waitFor(() => expect(screen.getByTestId('heal-retry').getAttribute('aria-disabled')).toBe('false'))
+    // A new alert node: screen readers read a mounted `role="alert"` again.
+    const again = screen.getByTestId('heal-error')
+    expect(again).not.toBe(first)
+    expect(again.getAttribute('role') ?? again.querySelector('[role="alert"]')).toBeTruthy()
+    // Said in words too, not only by the re-mount's motion.
+    expect(again.textContent).toMatch(/still couldn't refresh this session/i)
+    // The re-mount replaced the button the keyboard user pressed; focus follows it.
+    expect(screen.getByTestId('heal-retry')).not.toBe(pressed)
+    expect(document.activeElement).toBe(screen.getByTestId('heal-retry'))
+  })
 })

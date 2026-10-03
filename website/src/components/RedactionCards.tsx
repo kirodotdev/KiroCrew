@@ -1237,7 +1237,7 @@ function BlockedLinkEntry({ record, showTarget }: { record: BlockedLink; showTar
       // The reply reloads with this host's links shown as links again; the
       // hold keeps this card open over them with its Undo.
       if (replyKey) setAllowHold(replyKey, record.domain, { workspace: res.workspace, records: blockedLinksForDomain(blockedLinks, record.domain), outcome: 'allowed' })
-      window.dispatchEvent(new CustomEvent('mc:redaction-hosts-changed', { detail: { slot: slotKey } }))
+      window.dispatchEvent(new CustomEvent('mc:redaction-hosts-changed', { detail: { slot: slotKey, gen: res.gen } }))
     } catch {
       setError(i18nT('components.redaction.link_allow_failed'))
     }
@@ -1245,11 +1245,11 @@ function BlockedLinkEntry({ record, showTarget }: { record: BlockedLink; showTar
   }
   const undo = async (workspace: string) => {
     try {
-      await api.redactionRevokeHost(workspace, record.domain)
+      const res = await api.redactionRevokeHost(workspace, record.domain)
       setError(null)
       setFeedback({ kind: 'undone' })
       if (replyKey && hold) setAllowHold(replyKey, record.domain, { ...hold, outcome: 'undone' })
-      if (slotKey) window.dispatchEvent(new CustomEvent('mc:redaction-hosts-changed', { detail: { slot: slotKey } }))
+      if (slotKey) window.dispatchEvent(new CustomEvent('mc:redaction-hosts-changed', { detail: { slot: slotKey, gen: res.gen } }))
       setTimeout(() => setFeedback(null), 1600)
     } catch {
       setError(i18nT('components.redaction.link_undo_failed'))

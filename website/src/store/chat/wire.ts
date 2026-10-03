@@ -7,6 +7,9 @@ import { api } from '../../api/client'
 import type { ChatMessage, ToolPayloadCut } from '../../types'
 
 const SKIP_ROLES = new Set(['chunk', 'done'])
+/** Rows a read installs. INVARIANT: a change to what this keeps must be paired with
+ *  `markLoadedRowsChanged` (or a server-side `redaction_gen` move), because rows a
+ *  tab holds above its newest page are only re-served when one of those says so. */
 export const filterMessages = (msgs: ChatMessage[]) => msgs.filter(m => !SKIP_ROLES.has(m.role))
 
 /** The three keys that can pollute `Object.prototype` when used to index a
@@ -139,8 +142,10 @@ export async function fetchSlotDetail(key: string, limit?: number) {
 
 /** One slot-detail response in the store's shape. Shared by `fetchSlotDetail`
  *  and the coverage walk, so a walked page reports its run state, queue and
- *  context meter exactly as a first page does. */
+ *  context meter exactly as a first page does. `redactionGen` is the serving
+ *  generation the page was rendered under (absent from an older gateway). */
 export function normalizeSlotDetail(key: string, d: Awaited<ReturnType<typeof api.chatSlotDetail>>, boundedRead: boolean) {
   type QueueItem = string | { content: string; id: string; meta?: unknown }
-  return { key, boundedRead, nextBefore: d.next_before || 0, messages: filterMessages(d.messages || []), running: d.running || false, stopping: d.stopping || false, hasMore: d.has_more || false, total: d.total || 0, queue: ((d.queue || []) as QueueItem[]).map((q: QueueItem) => typeof q === 'string' ? { content: q, queueId: crypto.randomUUID(), ts: new Date().toISOString() } : { content: q.content, queueId: q.id, ts: new Date().toISOString(), ...(typeof (q.meta as Record<string, unknown> | undefined)?.kind === 'string' ? { kind: (q.meta as Record<string, unknown>).kind as string } : {}), ...(typeof (q.meta as Record<string, unknown> | undefined)?.appLabel === 'string' ? { appLabel: (q.meta as Record<string, unknown>).appLabel as string } : {}), ...queueEntryAttachments(q.meta) }), context: d.context_pct != null ? { pct: d.context_pct, used: d.context_used_tokens ?? undefined, window: d.context_window_tokens ?? undefined } : undefined }
+  const redactionGen = (d as { redaction_gen?: unknown }).redaction_gen
+  return { key, redactionGen: typeof redactionGen === 'string' ? redactionGen : undefined, boundedRead, nextBefore: d.next_before || 0, messages: filterMessages(d.messages || []), running: d.running || false, stopping: d.stopping || false, hasMore: d.has_more || false, total: d.total || 0, queue: ((d.queue || []) as QueueItem[]).map((q: QueueItem) => typeof q === 'string' ? { content: q, queueId: crypto.randomUUID(), ts: new Date().toISOString() } : { content: q.content, queueId: q.id, ts: new Date().toISOString(), ...(typeof (q.meta as Record<string, unknown> | undefined)?.kind === 'string' ? { kind: (q.meta as Record<string, unknown>).kind as string } : {}), ...(typeof (q.meta as Record<string, unknown> | undefined)?.appLabel === 'string' ? { appLabel: (q.meta as Record<string, unknown>).appLabel as string } : {}), ...queueEntryAttachments(q.meta) }), context: d.context_pct != null ? { pct: d.context_pct, used: d.context_used_tokens ?? undefined, window: d.context_window_tokens ?? undefined } : undefined }
 }

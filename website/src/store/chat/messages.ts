@@ -10,8 +10,18 @@ import type { ChatState } from './state'
 import { isUnsafeKey, safeKey } from './wire'
 import { RECONCILE_WINDOW, ensureMsgId, finalizeTrailingStreaming, mintMsgId, tailNotInPage } from './transcript'
 import { isOutOfBandRow, isTurnBoundaryUser, mergePreservedThinking } from './thinking'
-import { retainServerTotal, setPagingCursor, writeSlotPage } from './slotCache'
+import { retainServerTotal, seedRedactionHostsGen, setPagingCursor, writeSlotPage } from './slotCache'
 import { evictMcpApps } from './mcpApps'
+import { applyRowPatch, logRowPatch } from './rowPatch'
+
+/** The `boundedRead` a background hydrate hands `retainServerTotal`. A SETTLED
+ *  hydrate says which read it was, so the retained count carries its units (an
+ *  unbounded hydrate counts raw rows). A RUNNING hydrate says nothing: its count is
+ *  refused whichever read it was, so a later collapse at turn end is not read as a
+ *  rewind. */
+function hydrateBoundedRead(running: boolean | undefined, bounded: boolean | undefined): boolean | undefined {
+  return running ? undefined : bounded
+}
 
 export const messageReducers = {
   appendMessage(state: ChatState, action: PayloadAction<ChatMessage>) {
@@ -337,6 +347,25 @@ export const messageReducers = {
   },
   truncateAfterIndex(state: ChatState, action: PayloadAction<number>) { state.messages = state.messages.slice(0, action.payload) },
   replaceMessages(state: ChatState, action: PayloadAction<ChatMessage[]>) { state.messages = action.payload },
+  /** The server now serves already-loaded rows differently: for every slot (a
+   *  redaction host allowed or revoked, workspace-wide) or for the named ones (a
+   *  reply's variant switched). Every affected slot is marked, the OPEN one
+   *  included, so no later refresh, switch or warm can keep an unverified head
+   *  (see `slotHeadUnverified`). The open slot is marked rather than trusted to a
+   *  re-read in flight: switching away drops that re-read's answer and caches the
+   *  view it would have replaced. */
+  markLoadedRowsChanged(state: ChatState, action: PayloadAction<{ slot?: string } | undefined>) {
+    state.loadedRowsEpoch = (state.loadedRowsEpoch ?? 0) + 1
+    if (!state.slotHeadUnverified) state.slotHeadUnverified = {}
+    const named = action.payload?.slot
+    const keys = named !== undefined
+      ? (isUnsafeKey(named) ? [] : [named])
+      : [...Object.keys(state.slotMessages ?? {}), ...(state.activeSlot ? [state.activeSlot] : [])]
+    for (const k of keys) {
+      state.slotHeadUnverified[safeKey(k)] = state.loadedRowsEpoch
+      ;(state.slotRowsChangedAt ??= {})[safeKey(k)] = state.loadedRowsEpoch
+    }
+  },
   /** Path B: seed a non-active slot's message history into the per-slot store
    *  (one-time hydrate on pane mount). Prepends the server history BEFORE any
    *  frames that already arrived live: applyNonActiveFrame seeds slotMessages
@@ -351,8 +380,8 @@ export const messageReducers = {
    *  unbounded one. The reverse is refused, and a superseded slot cannot upgrade
    *  again, so this cannot loop.
    *  No-op for the active slot (its mirror is already live). */
-  hydrateSlotMessages(state: ChatState, action: PayloadAction<{ slot: string; messages: ChatMessage[]; hasMore?: boolean; bounded?: boolean; total?: number; running?: boolean }>) {
-    const { slot, messages, hasMore, bounded, total, running } = action.payload
+  hydrateSlotMessages(state: ChatState, action: PayloadAction<{ slot: string; messages: ChatMessage[]; hasMore?: boolean; bounded?: boolean; total?: number; running?: boolean; redactionGen?: string }>) {
+    const { slot, messages, hasMore, bounded, total, running, redactionGen } = action.payload
     if (isUnsafeKey(slot)) return
     if (slot === state.activeSlot) return
     const k = safeKey(slot)
@@ -370,7 +399,8 @@ export const messageReducers = {
       // Reasoning is broadcast-only so the wider page never carries it back.
       // Scoped to the REPLACED region: `tail` already keeps the live tail's own.
       writeSlotPage(state, slot, mergePreservedThinking(prior.slice(0, boundedLen), [...messages, ...tail], messages), hasMore)
-      retainServerTotal(state, slot, total, running)
+      retainServerTotal(state, slot, total, running, undefined, hydrateBoundedRead(running, bounded))
+      seedRedactionHostsGen(state, redactionGen)
       return
     }
     const cur = state.slotMessages[slot] ?? []
@@ -382,39 +412,19 @@ export const messageReducers = {
     // Seeded frames are NEWER rows appended after the page, so the page's
     // has-more still describes what precedes it; dropping it hid the marker.
     writeSlotPage(state, slot, [...messages, ...cur], hasMore, bounded ? messages.length : undefined)
-    retainServerTotal(state, slot, total, running)
+    retainServerTotal(state, slot, total, running, undefined, hydrateBoundedRead(running, bounded))
+    seedRedactionHostsGen(state, redactionGen)
   },
   sseChatMessageUpdate(state: ChatState, action: PayloadAction<{ slot: string; tool_call_id?: string; ts?: string; content?: string; meta?: Record<string, unknown> }>) {
     const { slot, tool_call_id: tcid, ts, content, meta } = action.payload
     if (!slot) return
-
-    if (tcid) {
-      const updateByTcid = (msgs: ChatMessage[]) => {
-        for (let i = msgs.length - 1; i >= 0; i--) {
-          const m = msgs[i]
-          const mMeta = m.meta as Record<string, unknown> | undefined
-          if (m.role === 'tool' && mMeta?.tool_call_id === tcid) {
-            if (content !== undefined) m.content = content
-            if (meta) m.meta = { ...(mMeta || {}), ...meta }
-            break
-          }
-        }
-      }
-      if (slot === state.activeSlot) updateByTcid(state.messages)
-      const cached = state.slotMessages[slot]
-      if (cached) updateByTcid(cached)
-    } else if (ts) {
-      const apply = (msgs: ChatMessage[]) => {
-        const idx = msgs.findIndex(m => m.ts === ts)
-        if (idx < 0) return
-        const target = msgs[idx]
-        if (meta) target.meta = { ...(target.meta || {}), ...meta }
-        if (content !== undefined) target.content = content
-      }
-      if (slot === state.activeSlot) apply(state.messages)
-      const cached = state.slotMessages[slot]
-      if (cached) apply(cached)
-    }
+    if (!tcid && !ts) return
+    const patch = { slot, tcid, ts: tcid ? undefined : ts, content, meta }
+    if (slot === state.activeSlot) applyRowPatch(state.messages, patch)
+    const cached = state.slotMessages[slot]
+    if (cached) applyRowPatch(cached, patch)
+    // Logged for every slot: a read of it in flight, open or background, replays it.
+    logRowPatch(state, patch)
   },
   /** Patch an existing message, identified by `mid` when the server sends one and
    * by `ts` otherwise. Used by the `chat_message_update` server event to flip an
@@ -433,18 +443,24 @@ export const messageReducers = {
   sseChatMessagePatchByTs(state: ChatState, action: PayloadAction<{ slot: string; ts: string; mid?: string; meta?: Record<string, unknown>; content?: string }>) {
     const { slot, ts, mid, meta, content } = action.payload
     if (!slot || (!ts && !mid)) return
-    const apply = (msgs: ChatMessage[]) => {
-      const idx = mid
-        ? msgs.findIndex(m => m.meta?.mid === mid)
-        : msgs.findIndex(m => m.ts === ts)
-      if (idx < 0) return
-      const target = msgs[idx]
-      if (meta) target.meta = { ...(target.meta || {}), ...meta }
-      if (content !== undefined) target.content = content
-    }
-    if (slot === state.activeSlot) apply(state.messages)
+    const patch = { slot, mid, ts: mid ? undefined : ts, content, meta }
+    if (slot === state.activeSlot) applyRowPatch(state.messages, patch)
     const cached = state.slotMessages[slot]
-    if (cached) apply(cached)
+    if (cached) applyRowPatch(cached, patch)
+    logRowPatch(state, patch)
+  },
+  /** A reply variant switch (`chat_variant_switch`) applied to the one row it
+   *  rewrote, found by the caller (`noteVariantSwitch`): its shown text and
+   *  variant index, in the open view and the cache, logged like any row patch so
+   *  a read in flight across it replays it. */
+  sseVariantSwitch(state: ChatState, action: PayloadAction<{ slot: string; mid?: string; ts?: string; index: number; content: string }>) {
+    const { slot, mid, ts, index, content } = action.payload
+    if (!slot || (!mid && !ts)) return
+    const patch = { slot, mid, ts: mid ? undefined : ts, content, variantIdx: index }
+    if (slot === state.activeSlot) applyRowPatch(state.messages, patch)
+    const cached = state.slotMessages[slot]
+    if (cached) applyRowPatch(cached, patch)
+    logRowPatch(state, patch)
   },
   /** Accumulate streamed model reasoning (`chat_thinking` WS event) into a
    *  content-bearing `thinking`-role message — ONE BLOCK PER REASONING BURST.
