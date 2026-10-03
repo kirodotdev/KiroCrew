@@ -283,26 +283,37 @@ class TestParkedRunIsVisibleOnBothReadPaths:
             "shared _awaiting_spawn_approval predicate"
         )
         assert src.count('"awaiting_approval"] = True') == 2
+        # The in-run tool wait has its own predicate, used by both paths too.
+        assert src.count("elif _awaiting_tool_approval(info):") == 2
         # No bare flag read may creep back into a payload builder: that is the
-        # exact drift that mislabels an in-run tool approval.
-        assert 'getattr(info, "_awaiting_approval", False) is True' not in src.replace(
-            'getattr(info, "_awaiting_approval", False) is True\n        and getattr(info, "_exec_started", None) is None',
-            "<predicate>",
-        )
+        # exact drift that mislabels an in-run tool approval. The two predicates
+        # are the only readers.
+        flag = 'getattr(info, "_awaiting_approval", False) is True'
+        assert src.count(flag) == 2
+        for predicate in ("def _awaiting_spawn_approval(", "def _awaiting_tool_approval("):
+            body = src.split(predicate, 1)[1].split("\ndef ", 1)[0]
+            assert flag in body, f"{predicate} no longer reads the flag itself"
 
-    def test_cli_poll_announces_the_wait_once(self) -> None:
-        """The blocking CLI must tell the user, and only once per run."""
-        from pathlib import Path
+    def test_cli_poll_announces_the_wait_once(self, monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
+        """The blocking CLI must tell the user, and only once per prompt."""
+        from types import SimpleNamespace
+
+        from spawn_cli_fakes import MINTED, install
 
         import kiro_crew.cli_commands as cli
 
-        src = Path(cli.__file__).read_text(encoding="utf-8")
-        assert 'status.get("awaiting_approval")' in src, (
-            "the blocking spawn-run poll does not consult awaiting_approval, so "
-            "a parked run still reports nothing to the waiting caller"
+        parked = {"id": "run-1", "done": False, "awaiting_approval": True}
+        install(
+            monkeypatch,
+            MINTED,
+            {"id": "run-1", "task": "t"},
+            parked,
+            parked,
+            parked,
+            {"id": "run-1", "done": True, "result": "ok", "outcome": "completed"},
         )
-        # Guarded by a one-shot flag rather than printing on every 2s poll.
-        assert "told_awaiting" in src
+        cli._spawn(SimpleNamespace(spawn_action="run", task="t", port=7, fire_and_forget=False))
+        assert capsys.readouterr().err.count("Waiting for spawn approval") == 1
 
     def test_mcp_spawn_list_does_not_call_a_parked_run_running(self, monkeypatch) -> None:  # type: ignore[no-untyped-def]
         """The MCP roster is the 4th read surface, and an LLM's one.

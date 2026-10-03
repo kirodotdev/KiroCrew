@@ -529,9 +529,13 @@ class TestContinuationAgentInheritance:
                 assert not followup.error
                 call = sessions.get_or_create.call_args
                 assert call.args[0] == f"subagent:{target.id}"
-                assert call.kwargs["agent"] == (override or original_agent or None)
+                assert call.kwargs["agent"] == (override or original_agent or "kirocrew")
                 state = await asyncio.to_thread(sp.read_state, followup.id)
-                assert state is not None and state["agent"] == (override or original_agent)
+                # Diagnostics name the agent that ran; the protected selection
+                # below keeps the default as "nothing named".
+                assert state is not None and state["agent"] == (
+                    override or original_agent or "kirocrew"
+                )
                 # Writable diagnostics cannot replace either protected identity.
                 await asyncio.to_thread(sp.update_state, followup.id, agent="forged-worker")
                 target = followup
@@ -625,8 +629,11 @@ class TestContinuationAgentInheritance:
             followup = manager.continue_conversation(
                 override.id, "next task", parent_session_key="dashboard:owner"
             )
-            assert followup is not None and not followup.error
-            await asyncio.wait_for(manager._tasks[followup.id], timeout=10)
+            assert followup is not None
+            # A policy refusal lands at admission (the gate checks the inherited
+            # template); a removed template is still found only when it runs.
+            if not followup.done:
+                await asyncio.wait_for(manager._tasks[followup.id], timeout=10)
         assert sessions.get_or_create.await_count == 1
         if refusal == "removed-template":
             assert followup.error_code == "agent_not_found"
@@ -767,8 +774,9 @@ class TestContinuationAgentInheritance:
                 )
             else:
                 info = manager.spawn("task", parent_session_key="dashboard:owner", keep=True)
-            assert info is not None and not info.error
-            await asyncio.wait_for(manager._tasks[info.id], timeout=10)
+            # Refused at admission: the gate checks the agent the run resolves to,
+            # the same name the run-time re-check would.
+            assert info is not None and info.done
         assert "worker denied" in info.error
         governance.assert_any_call("dashboard:owner", "worker", app="")
         sessions.get_or_create.assert_not_awaited()
@@ -866,7 +874,7 @@ class TestContinuationAgentInheritance:
             assert info is not None and not info.error
             await asyncio.wait_for(manager._tasks[info.id], timeout=10)
         assert not info.error
-        assert sessions.get_or_create.call_args.kwargs["agent"] is None
+        assert sessions.get_or_create.call_args.kwargs["agent"] == "kirocrew"
 
     @pytest.mark.asyncio
     async def test_unavailable_recorded_template_refuses_allocation(self) -> None:
@@ -1774,7 +1782,7 @@ class TestContinuationTemplateNamespace:
                 await asyncio.wait_for(manager._tasks[followup.id], timeout=10)
                 assert not followup.error
                 assert sessions.get_or_create.call_args.kwargs["agent"] == (
-                    override or legacy or None
+                    override or legacy or "kirocrew"
                 )
                 assert await asyncio.to_thread(sp.read_run_agent_selection, followup.id) == (
                     "template",

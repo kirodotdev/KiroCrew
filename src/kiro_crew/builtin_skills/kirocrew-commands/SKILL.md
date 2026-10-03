@@ -223,6 +223,9 @@ writes.
 | `kirocrew spawn run --async "task"` | Fire-and-forget subagent |
 | `kirocrew spawn list` | List active subagents |
 
+These are the owner's terminal commands: they authenticate as the dashboard owner
+over the dashboard's unix socket. An agent spawns with the `spawn_run` tool instead.
+
 ## Cron Jobs
 
 | Command | Description |

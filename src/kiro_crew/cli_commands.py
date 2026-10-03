@@ -111,6 +111,7 @@ from kiro_crew.embeddings import (
 from kiro_crew.eval.judge import LLMJudge
 from kiro_crew.eval.runner import EvalRunner, format_results, score_by_dimension
 from kiro_crew.eval.scenario import AssertionType, load_scenario, load_scenarios
+from kiro_crew.execution_context import CLI_ORIGIN
 from kiro_crew.external_text import external_text_requires_redaction
 from kiro_crew.history import ConversationLog
 from kiro_crew.hooks import safe_read_file
@@ -138,6 +139,7 @@ from kiro_crew.memory_stores import (
     resolve_declared_store,
     retire_unpublished_allocation,
 )
+from kiro_crew.owner_gateway_client import OwnerGatewayError, mint_owner_token, owner_call
 from kiro_crew.platform import redact_log_via_context
 from kiro_crew.port_resolution import resolve_client_port_ex
 from kiro_crew.project_scope import scope_is_admissible, scope_selector_is_inadmissible
@@ -313,8 +315,8 @@ def _internal_secret(port: int) -> str:
     """Read the per-session IPC secret written by the gateway.
 
     The gateway writes ``~/.kiro/crew/.local_secret`` (mode 0600) after a
-    successful port bind. CLI commands that hit internal API paths (e.g.
-    ``/api/spawn``) send this value as ``X-Internal-Secret`` so the
+    successful port bind. CLI commands that hit internal API paths (``kirocrew artifact``,
+    say) send this value as ``X-Internal-Secret`` so the
     dashboard's ``token_auth_middleware`` accepts the request without a
     browser cookie. Mirrors `kiro_crew.mcp_core._internal_secret`.
 
@@ -331,28 +333,82 @@ def _internal_secret(port: int) -> str:
     return read_local_secret(port, dial_host="127.0.0.1")
 
 
+#: Lifetime of the owner token ``kirocrew spawn`` mints, in ``/api/token/local``'s
+#: ``ttl`` syntax. Short, because it lives only in this process's memory.
+_SPAWN_TOKEN_TTL = "2m"
+
+#: How long before its expiry a held token is replaced. Larger than a request's
+#: 5 s timeout, so a token is never presented in its last moments.
+_SPAWN_TOKEN_RENEW_MARGIN_SECS = 20.0
+
+#: Polls in a row a blocking ``kirocrew spawn run`` repeats when the gateway
+#: answers a 5xx (its ``taskq_unavailable`` says "retry shortly") or the answer to
+#: the GET is lost, before it gives up.
+_SPAWN_POLL_RETRIES = 2
+
+#: The longest ``Retry-After`` the poll honours, in seconds.
+_SPAWN_POLL_RETRY_AFTER_CAP_SECS = 10.0
+
+
+class _SpawnGateway:
+    """``kirocrew spawn``'s owner credential, held for one command.
+
+    The transport and the peer check are ``owner_gateway_client``'s; this keeps
+    the token, mints it again shortly before it expires (on both clocks, so a
+    host resumed from suspend renews instead of presenting an expired token), and
+    answers one 403 with one fresh mint, since a logout or a clock step can end a
+    token the clocks still call live.
+    """
+
+    def __init__(self, port: int) -> None:
+        self.port = port
+        self._token = ""
+        self._renew_wall = 0.0
+        self._renew_mono = 0.0
+
+    def call(
+        self, path: str, body: dict[str, object] | None = None, *, timeout: float = 5.0
+    ) -> dict:
+        token = self._credential()  # a refused mint is its own, final answer
+        try:
+            return owner_call(self.port, path, token=token, body=body, timeout=timeout)
+        except OwnerGatewayError as exc:
+            if exc.status != 403:
+                raise
+        self._token = ""
+        return owner_call(self.port, path, token=self._credential(), body=body, timeout=timeout)
+
+    def _credential(self) -> str:
+        if self._token and _time.time() < self._renew_wall and _time.monotonic() < self._renew_mono:
+            return self._token
+        self._token, lifetime = mint_owner_token(self.port, ttl=_SPAWN_TOKEN_TTL, origin=CLI_ORIGIN)
+        usable = max(0.0, lifetime - _SPAWN_TOKEN_RENEW_MARGIN_SECS)
+        self._renew_wall = _time.time() + usable
+        self._renew_mono = _time.monotonic() + usable
+        return self._token
+
+
+def _spawn_unreachable(exc: OwnerGatewayError, port: int) -> str:
+    """The first-contact error line, naming why a socket can be absent."""
+    if exc.kind != "no_socket":
+        return str(exc)
+    return (
+        f"{exc}. The gateway on port {port} is not running, or it serves no dashboard "
+        "socket (its bind failed, see gateway.log, or it runs on Windows). kirocrew "
+        "spawn reaches the gateway over that socket only; spawn from the dashboard "
+        "instead."
+    )
+
+
 def _spawn(args: argparse.Namespace) -> None:
     """Dispatch spawn subcommands: run, list."""
-    base = f"http://127.0.0.1:{args.port}"
     action = getattr(args, "spawn_action", None)
 
     if action == "list":
-        req = urllib.request.Request(
-            f"{base}/api/spawn?queued=1",
-            headers={"X-Internal-Secret": _internal_secret(args.port)},
-        )
         try:
-            with loopback_urlopen(req, timeout=5) as resp:
-                data = json.loads(resp.read())
-        except urllib.error.HTTPError as e:
-            try:
-                body = json.loads(e.read())
-                print(f"Error: {body.get('error', e.reason)}")
-            except Exception:
-                print(f"Error: {e.code} {e.reason}")
-            sys.exit(1)
-        except (urllib.error.URLError, OSError):
-            print("Error: gateway not running (cannot reach dashboard on port %d)" % args.port)
+            data = _SpawnGateway(args.port).call("/api/spawn?queued=1")
+        except OwnerGatewayError as exc:
+            print(f"Error: {_spawn_unreachable(exc, args.port)}")
             sys.exit(1)
         agents = data.get("agents", [])
         queued = [q for q in data.get("queued") or [] if isinstance(q, dict) and q.get("id")]
@@ -365,7 +421,8 @@ def _spawn(args: argparse.Namespace) -> None:
             # so this is never read as a run in progress.
             tag = "resuming" if q.get("resuming") is True else "queued, not started"
             print(
-                f"  🕒 {q['id']}  {str(q.get('task') or '')[:60]}  — {tag}: {queued_wait_text(q)}"
+                f"  🕒 {_spawn_list_cell(q['id'])}  {_spawn_list_cell(q.get('task'))}"
+                f"  — {tag}: {safe_terminal_line(queued_wait_text(q))}"
             )
         if partial:
             print("  (the queued list is partial; more spawns may be queued)")
@@ -376,41 +433,44 @@ def _spawn(args: argparse.Namespace) -> None:
                 # A distinct icon from the executing hourglass, so `spawn list`
                 # answers "is this working or waiting for me?".
                 status, note = "🔐", "  — waiting for spawn approval"
+            elif a.get("awaiting_tool_approval"):
+                status, note = "🔐", "  — waiting for a tool approval"
             else:
                 status, note = "⏳", ""
-            print(f"  {status} {a['id']}  {a.get('task', '')[:60]}{note}")
+            print(
+                f"  {status} {_spawn_list_cell(a.get('id'))}  {_spawn_list_cell(a.get('task'))}{note}"
+            )
         return
 
     if action == "run":
-        _spawn_run(args, base)
+        _spawn_run(args)
         return
 
     print("Usage: kirocrew spawn {run|list}")
 
 
-def _spawn_run(args: argparse.Namespace, base: str) -> None:
-    """Spawn a subagent via the dashboard API."""
-    data = json.dumps({"task": args.task}).encode()
-    req = urllib.request.Request(
-        f"{base}/api/spawn",
-        data=data,
-        headers={
-            "Content-Type": "application/json",
-            "X-Internal-Secret": _internal_secret(args.port),
-        },
-    )
+def _spawn_list_cell(value: object) -> str:
+    """One field of a ``spawn list`` row, confined to its line and cut to 60 chars.
+
+    A task is model-written text, so a newline or carriage return in it could
+    otherwise print a forged row.
+    """
+    return safe_terminal_line(str(value or ""))[:60]
+
+
+def _spawn_run(args: argparse.Namespace) -> None:
+    """Spawn a subagent as the dashboard owner, from the terminal."""
+    gateway = _SpawnGateway(args.port)
     try:
-        with loopback_urlopen(req, timeout=5) as resp:
-            result = json.loads(resp.read())
-    except urllib.error.HTTPError as e:
-        try:
-            body = json.loads(e.read())
-            print(f"Error: {body.get('error', e.reason)}")
-        except Exception:
-            print(f"Error: {e.code} {e.reason}")
-        sys.exit(1)
-    except (urllib.error.URLError, OSError):
-        print("Error: gateway not running (cannot reach dashboard on port %d)" % args.port)
+        result = gateway.call("/api/spawn", {"task": args.task}, timeout=15.0)
+    except OwnerGatewayError as exc:
+        if exc.kind == "outcome_unknown":
+            print(
+                f"Error: {exc}; the subagent may or may not have started. Check the "
+                "dashboard or `kirocrew spawn list` before running this again."
+            )
+        else:
+            print(f"Error: {_spawn_unreachable(exc, args.port)}")
         sys.exit(1)
 
     agent_id = result["id"]
@@ -439,36 +499,84 @@ def _spawn_run(args: argparse.Namespace, base: str) -> None:
         )
     else:
         print(f"Spawned subagent {agent_id}, waiting for result...", file=sys.stderr)
-    poll_url = f"{base}/api/spawn/{agent_id}"
-    secret = _internal_secret(args.port)
-    told_awaiting = False
+    announced: dict[str, str] = {}
+    retries = 0
     while True:
         _time.sleep(2)
-        poll_req = urllib.request.Request(poll_url, headers={"X-Internal-Secret": secret})
         try:
-            with loopback_urlopen(poll_req, timeout=5) as resp:
-                status = json.loads(resp.read())
-        except Exception:
-            print("Error: lost connection to gateway", file=sys.stderr)
-            sys.exit(1)
-        # Say WHY the wait is not progressing. A spawn with no parent session
-        # raises its approval prompt unowned, so it appears only on the global
-        # approvals surface -- not in any chat tab -- and this loop would
-        # otherwise sit on "waiting for result..." indefinitely with nothing to
-        # act on. Announced once, not every 2s poll.
-        if status.get("awaiting_approval") and not told_awaiting:
-            told_awaiting = True
+            status = gateway.call(f"/api/spawn/{agent_id}")
+        except OwnerGatewayError as exc:
+            # The gateway's own "retry shortly", or a GET whose answer was lost:
+            # asked again a bounded number of times, after its Retry-After.
+            if retries < _SPAWN_POLL_RETRIES and (
+                exc.kind == "outcome_unknown" or exc.status >= 500
+            ):
+                retries += 1
+                _time.sleep(min(exc.retry_after, _SPAWN_POLL_RETRY_AFTER_CAP_SECS))
+                continue
+            # The run is the gateway's, not this process's: losing the poll does
+            # not stop it, so say how to find it again.
+            print(f"Error: {exc}", file=sys.stderr)
             print(
-                "Waiting for spawn approval: approve it in the dashboard "
-                "(Approvals) to start this run.",
+                f"Subagent {agent_id} may still be running or queued; check the "
+                "dashboard or `kirocrew spawn list`.",
                 file=sys.stderr,
             )
+            sys.exit(1)
+        retries = 0
+        # Say WHY the wait is not progressing, once per prompt. A run parked on a
+        # prompt would otherwise sit on "waiting for result..." with nothing to
+        # act on. A tool prompt is keyed on the tool the run last named, so the
+        # next tool's prompt is announced even when no poll lands between them.
+        for kind, waiting, note in (
+            (
+                "spawn",
+                status.get("awaiting_approval"),
+                "Waiting for spawn approval: approve it in the dashboard (Approvals).",
+            ),
+            (
+                "tool",
+                status.get("awaiting_tool_approval"),
+                "Waiting for a tool approval: answer it in the dashboard (Approvals).",
+            ),
+        ):
+            subject = f"{kind}:{status.get('last_tool', '')}" if kind == "tool" else kind
+            if not waiting:
+                announced.pop(kind, None)
+            elif announced.get(kind) != subject:
+                announced[kind] = subject
+                print(note, file=sys.stderr)
         if status.get("done"):
+            outcome = status.get("outcome")
+            if "outcome" not in status and "stopped" not in status:
+                # A gateway older than this CLI: its live answer carries no
+                # outcome, and its rule was "an error fails". The persistence
+                # fallback's answer with no recorded ending always says
+                # ``stopped``, so it is not mistaken for this one.
+                outcome = "failed" if status.get("error") else "completed"
+            if outcome == "completed":
+                print(status.get("result", ""))
+                return
+            # Anything else is not a success, so a script chaining on the exit
+            # status does not go on as if the task had been done.
             if status.get("error"):
                 print(f"Error: {status['error']}", file=sys.stderr)
-                sys.exit(1)
-            print(status.get("result", ""))
-            return
+            elif outcome == "stopped":
+                # A stop records no error: the run was stopped from the dashboard
+                # or cancelled while it waited in the queue.
+                print(f"Error: subagent {agent_id} was stopped.", file=sys.stderr)
+            elif not outcome:
+                # A record with no ending: the gateway stopped mid-run, and its
+                # recovery has not settled this run yet.
+                print(
+                    f"Error: subagent {agent_id} ended with no recorded outcome; the "
+                    "gateway may have stopped mid-run. Check the dashboard or "
+                    "`kirocrew spawn list`.",
+                    file=sys.stderr,
+                )
+            else:
+                print(f"Error: subagent {agent_id} ended as {outcome}.", file=sys.stderr)
+            sys.exit(1)
 
 
 class _CliConflict(Exception):

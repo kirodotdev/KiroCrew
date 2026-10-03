@@ -21,6 +21,7 @@ from concurrent.futures import Executor
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
+from kiro_crew.constants import DEFAULT_AGENT_NAME
 from kiro_crew.kiro_prerequisite import pre_spawn_identity, spawn_pid, stamp_spawn_identity
 
 if TYPE_CHECKING:
@@ -552,8 +553,10 @@ class WarmSessionPool:
         """Claim a provider only when the requested and pooled agents match."""
         if self._warm_pool.empty():
             return None
-        requested = agent if agent else (self._pool_agent or "")
-        pool_agent = self._pool_agent or ""
+        # Both sides name the agent that runs: a pool filled for no agent runs the
+        # default, so a run that asks for ``kirocrew`` by name takes it.
+        pool_agent = self._pool_agent or DEFAULT_AGENT_NAME
+        requested = agent or pool_agent
         if requested != pool_agent:
             return None
         try:

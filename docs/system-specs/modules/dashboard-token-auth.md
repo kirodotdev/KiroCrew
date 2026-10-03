@@ -544,8 +544,25 @@ sel_audit_middleware`. It generates and persists the same
 `~/.kiro/crew/.local_secret` (or the explicit `KIROCREW_HOME`), sets
 `app["local_secret"]`, and builds
 `app["allowed_origins"]`. `spa_shell_handler=None` because there is no UI — a
-request with no token is denied outright. Every in-repo caller (mcp-core, cron)
-already sends `X-Internal-Secret`, so the change is purely additive.
+request with no token is denied outright. The MCP callers (mcp-core, cron) send
+`X-Internal-Secret`. `_register_mcp_routes` also mounts the local owner-token
+mint, `GET /api/token/local`, so `kirocrew spawn` and `kirocrew app` reach a
+headless gateway the way they reach the dashboard: they mint an owner token there
+with the local secret and present it, with no internal secret, on their calls.
+
+#### `GET /api/token/local?origin=cli` — the terminal's owner token
+
+`kirocrew spawn` mints with `origin=cli` (any other value is 400
+`invalid_origin`). The token carries a signed `origin: "cli"` claim and is minted
+with `register_nonce=False`: it is only ever presented on the API, so it takes no
+one-time-link nonce slot (a burst of CLI calls cannot evict a pending login or
+channel challenge link), and with no registered nonce it cannot be opened as a
+link. The mint's own gates are unchanged. A handler reads the claim with
+`token_auth.validated_token_origin(request)`, which decodes
+`request["auth_token"]`, the credential the middleware validated, and answers ""
+for an absent token, an unreadable payload or a non-string claim. What the claim
+changes for a spawn is
+[subagent.md § CLI](subagent.md#cli-kirocrew-spawn-run-task).
 
 The `sel_audit_middleware` **alone is not a security boundary** — it only logs.
 Any minimal/alternate server that calls `_register_mcp_routes` MUST mount the

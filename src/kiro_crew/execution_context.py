@@ -15,6 +15,12 @@ from typing import Any, Literal, Mapping, overload
 from kiro_crew.validation import MAX_SHORT_STRING
 
 EXECUTION_CONTEXT_KEY = "execution_context"
+
+#: ``ExecutionContext.origin`` of a run the dashboard owner started from the
+#: terminal (``kirocrew spawn run``). Only ``/api/token/local?origin=cli`` mints a
+#: token claiming it and only ``POST /api/spawn`` records it, for the owner
+#: principal; subagent.md § "CLI: kirocrew spawn run" states what it changes.
+CLI_ORIGIN = "cli"
 MEMORY_MODES = ("persistent", "incognito", "temporary")
 # Restricted sessions own their record in memory for their lifetime.
 _LIVE_EXECUTIONS: dict[tuple[str, str], ExecutionContext] = {}
@@ -286,6 +292,10 @@ class ExecutionContext:
     app: str = ""
     selection_name: str = ""
     selection_revision: str = ""
+    #: Who asked for the run when that is not its parent session: ``CLI_ORIGIN``
+    #: or "". Carried with the record, so a retry, a continuation and a start
+    #: from the task row are governed as their first admission was.
+    origin: str = ""
 
     def __post_init__(self) -> None:
         if not isinstance(self.store, MemoryStoreRef) or self.store.member_id != self.member_id:
@@ -300,12 +310,18 @@ class ExecutionContext:
             not isinstance(self.app, str)
             or not isinstance(self.selection_name, str)
             or not isinstance(self.selection_revision, str)
+            or self.origin not in ("", CLI_ORIGIN)
         ):
             raise _unavailable("invalid execution attribution")
         stricter_memory_mode(self.memory_mode)
 
     def to_record(self) -> dict[str, Any]:
-        return asdict(self)
+        record = asdict(self)
+        if not self.origin:
+            # Absent rather than "", so every record without an origin stays
+            # byte-identical to one written before the field existed.
+            del record["origin"]
+        return record
 
     def with_mode(self, mode: str) -> ExecutionContext:
         return replace(self, memory_mode=stricter_memory_mode(self.memory_mode, mode))
@@ -370,6 +386,7 @@ def execution_from_record(
             app=payload["app"],
             selection_name=payload.get("selection_name", ""),
             selection_revision=payload.get("selection_revision", ""),
+            origin=payload.get("origin", ""),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise _unavailable("malformed execution context") from exc
@@ -558,10 +575,15 @@ def derive_execution(
     config: Any = None,
     requested_mode: str | None = None,
 ) -> ExecutionContext:
-    """Inherit by default; an explicit target is resolved by the admitted caller."""
+    """Inherit by default; an explicit target is resolved by the admitted caller.
+
+    ``origin`` is never inherited: a child is asked for by its parent session, not
+    by whoever asked for the parent, so a run the owner started from the terminal
+    passes no CLI governance to the runs its model spawns.
+    """
     mode = stricter_memory_mode(parent.memory_mode, requested_mode or parent.memory_mode)
     if target_member is None:
-        return parent.with_mode(mode)
+        return replace(parent.with_mode(mode), origin="")
     if not target_member:
         raise _unavailable("target member must be explicit")
     if config is None:

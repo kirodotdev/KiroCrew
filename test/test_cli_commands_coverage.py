@@ -34,6 +34,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
 
 import pytest
+from spawn_cli_fakes import MINTED, http_error, install
 
 from kiro_crew import cli_commands as cc
 from kiro_crew import sel as sel_mod
@@ -211,183 +212,162 @@ class TestWorkspaceDirGuard:
 
 
 class TestSpawnCli:
+    """``kirocrew spawn`` through the shared scripted gateway (``spawn_cli_fakes``)."""
+
     def test_list_prints_agents_with_status_glyphs(
-        self, capsys: pytest.CaptureFixture[str]
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         payload = {
             "agents": [{"id": "a1", "task": "do x", "done": True}, {"id": "a2", "task": "y"}]
         }
-        with (
-            patch("kiro_crew.cli_commands._internal_secret", return_value="s"),
-            patch("kiro_crew.cli_commands.loopback_urlopen", return_value=_FakeResponse(payload)),
-        ):
-            cc._spawn(_ns(spawn_action="list", port=1234))
+        install(monkeypatch, MINTED, payload)
+        cc._spawn(_ns(spawn_action="list", port=1234))
         out = capsys.readouterr().out
         assert "a1" in out and "a2" in out and "✅" in out and "⏳" in out
 
-    def test_list_empty_says_so(self, capsys: pytest.CaptureFixture[str]) -> None:
-        with (
-            patch("kiro_crew.cli_commands._internal_secret", return_value=""),
-            patch(
-                "kiro_crew.cli_commands.loopback_urlopen",
-                return_value=_FakeResponse({"agents": []}),
-            ),
-        ):
-            cc._spawn(_ns(spawn_action="list", port=1234))
+    def test_list_confines_a_task_to_its_own_row(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A task is model-written: a CR or LF in it must not print a forged row."""
+        payload = {
+            "agents": [
+                {"id": "a1", "task": "x\r  ✅ deadbeef  benign", "done": False},
+                {"id": "a2", "task": "real\n  ✅ cafef00d  injected", "done": False},
+            ]
+        }
+        install(monkeypatch, MINTED, payload)
+        cc._spawn(_ns(spawn_action="list", port=1234))
+        out = capsys.readouterr().out
+        assert "\r" not in out and out.count("\n") == 2
+        assert "✅" not in out.splitlines()[0][:6] and "✅" not in out.splitlines()[1][:6]
+
+    def test_list_says_which_runs_wait_on_the_user_or_the_queue(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        payload = {
+            "agents": [{"id": "a1", "task": "x", "awaiting_tool_approval": True}],
+            "queued": [{"id": "q1", "task": "later", "done": False, "queued": True}],
+        }
+        install(monkeypatch, MINTED, payload)
+        cc._spawn(_ns(spawn_action="list", port=1234))
+        out = capsys.readouterr().out
+        assert "waiting for a tool approval" in out
+        assert "q1" in out and "queued" in out
+
+    def test_list_empty_says_so(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        install(monkeypatch, MINTED, {"agents": []})
+        cc._spawn(_ns(spawn_action="list", port=1234))
         assert "No subagents." in capsys.readouterr().out
 
     def test_list_http_error_with_json_body_prints_server_error(
-        self, capsys: pytest.CaptureFixture[str]
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        err = _http_error(400, json.dumps({"error": "bad spawn"}).encode())
-        with (
-            patch("kiro_crew.cli_commands._internal_secret", return_value=""),
-            patch("kiro_crew.cli_commands.loopback_urlopen", side_effect=err),
-            pytest.raises(SystemExit) as exc,
-        ):
+        install(monkeypatch, MINTED, http_error(400, {"error": "bad spawn"}))
+        with pytest.raises(SystemExit) as exc:
             cc._spawn(_ns(spawn_action="list", port=1234))
         assert exc.value.code == 1
         assert "bad spawn" in capsys.readouterr().out
 
     def test_list_http_error_with_opaque_body_prints_status(
-        self, capsys: pytest.CaptureFixture[str]
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        with (
-            patch("kiro_crew.cli_commands._internal_secret", return_value=""),
-            patch(
-                "kiro_crew.cli_commands.loopback_urlopen", side_effect=_http_error(503, b"<html>")
-            ),
-            pytest.raises(SystemExit),
-        ):
+        install(monkeypatch, MINTED, http_error(503))
+        with pytest.raises(SystemExit):
             cc._spawn(_ns(spawn_action="list", port=1234))
         assert "503" in capsys.readouterr().out
 
     def test_list_unreachable_gateway_reports_port(
-        self, capsys: pytest.CaptureFixture[str]
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        with (
-            patch("kiro_crew.cli_commands._internal_secret", return_value=""),
-            patch(
-                "kiro_crew.cli_commands.loopback_urlopen",
-                side_effect=urllib.error.URLError("refused"),
-            ),
-            pytest.raises(SystemExit) as exc,
-        ):
+        install(monkeypatch, urllib.error.URLError(ConnectionRefusedError(111, "refused")))
+        with pytest.raises(SystemExit) as exc:
             cc._spawn(_ns(spawn_action="list", port=4321))
         assert exc.value.code == 1
         assert "4321" in capsys.readouterr().out
+
+    def test_no_local_secret_says_the_gateway_is_not_running(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        install(monkeypatch, secret="")
+        with pytest.raises(SystemExit):
+            cc._spawn(_ns(spawn_action="list", port=4321))
+        assert "gateway not running" in capsys.readouterr().out
 
     def test_unknown_action_prints_usage(self, capsys: pytest.CaptureFixture[str]) -> None:
         cc._spawn(_ns(spawn_action="bogus", port=1))
         assert "Usage: kirocrew spawn" in capsys.readouterr().out
 
     def test_run_fire_and_forget_prints_id_and_returns(
-        self, capsys: pytest.CaptureFixture[str]
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        with (
-            patch("kiro_crew.cli_commands._internal_secret", return_value=""),
-            patch(
-                "kiro_crew.cli_commands.loopback_urlopen",
-                return_value=_FakeResponse({"id": "ag1", "task": "t"}),
-            ) as uo,
-        ):
-            cc._spawn(_ns(spawn_action="run", port=1, task="t", fire_and_forget=True))
+        gateway = install(monkeypatch, MINTED, {"id": "ag1", "task": "t"})
+        cc._spawn(_ns(spawn_action="run", port=1, task="t", fire_and_forget=True))
         assert "Spawned subagent ag1" in capsys.readouterr().out
-        assert uo.call_count == 1
+        assert len(gateway.calls) == 2
 
     def test_run_fire_and_forget_says_queued_when_the_gate_deferred_it(
-        self, capsys: pytest.CaptureFixture[str]
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         """A deferred row is accepted under its id but not running; the CLI
         relays the gateway's ``queued`` answer and reason instead of a start."""
-        with (
-            patch("kiro_crew.cli_commands._internal_secret", return_value=""),
-            patch(
-                "kiro_crew.cli_commands.loopback_urlopen",
-                return_value=_FakeResponse(
-                    {
-                        "id": "ag1",
-                        "task": "t",
-                        "status": "queued",
-                        "reason": "low_memory",
-                        "reason_detail": "low memory: 3.2 GB available, need 4 GB",
-                    }
-                ),
-            ),
-        ):
-            cc._spawn(_ns(spawn_action="run", port=1, task="t", fire_and_forget=True))
+        deferred = {
+            "id": "ag1",
+            "task": "t",
+            "status": "queued",
+            "reason": "low_memory",
+            "reason_detail": "low memory: 3.2 GB available, need 4 GB",
+        }
+        install(monkeypatch, MINTED, deferred)
+        cc._spawn(_ns(spawn_action="run", port=1, task="t", fire_and_forget=True))
         out = capsys.readouterr().out
         assert "Queued subagent ag1" in out
         assert "low memory: 3.2 GB available, need 4 GB" in out
         assert "Spawned" not in out
 
     def test_run_blocking_polls_until_done_then_prints_result(
-        self, capsys: pytest.CaptureFixture[str]
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        responses = [
-            _FakeResponse({"id": "ag2", "task": "t"}),
-            _FakeResponse({"done": False}),
-            _FakeResponse({"done": True, "result": "final answer"}),
-        ]
-        with (
-            patch("kiro_crew.cli_commands._internal_secret", return_value=""),
-            patch.object(cc._time, "sleep") as slept,
-            patch("kiro_crew.cli_commands.loopback_urlopen", side_effect=responses),
-        ):
-            cc._spawn(_ns(spawn_action="run", port=1, task="t", fire_and_forget=False))
+        install(
+            monkeypatch,
+            MINTED,
+            {"id": "ag2", "task": "t"},
+            {"done": False},
+            {"done": True, "result": "final answer", "outcome": "completed"},
+        )
+        cc._spawn(_ns(spawn_action="run", port=1, task="t", fire_and_forget=False))
         assert "final answer" in capsys.readouterr().out
-        assert slept.call_count == 2
 
     def test_run_blocking_surfaces_agent_error_as_exit_1(
-        self, capsys: pytest.CaptureFixture[str]
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        responses = [
-            _FakeResponse({"id": "ag3", "task": "t"}),
-            _FakeResponse({"done": True, "error": "agent blew up"}),
-        ]
-        with (
-            patch("kiro_crew.cli_commands._internal_secret", return_value=""),
-            patch.object(cc._time, "sleep"),
-            patch("kiro_crew.cli_commands.loopback_urlopen", side_effect=responses),
-            pytest.raises(SystemExit) as exc,
-        ):
+        install(
+            monkeypatch,
+            MINTED,
+            {"id": "ag3", "task": "t"},
+            {"done": True, "error": "agent blew up"},
+        )
+        with pytest.raises(SystemExit) as exc:
             cc._spawn(_ns(spawn_action="run", port=1, task="t", fire_and_forget=False))
         assert exc.value.code == 1
         assert "agent blew up" in capsys.readouterr().err
 
-    def test_run_lost_connection_during_poll_exits_1(
-        self, capsys: pytest.CaptureFixture[str]
+    def test_run_create_http_error_exits_1(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        with (
-            patch("kiro_crew.cli_commands._internal_secret", return_value=""),
-            patch.object(cc._time, "sleep"),
-            patch(
-                "kiro_crew.cli_commands.loopback_urlopen",
-                side_effect=[_FakeResponse({"id": "ag4", "task": "t"}), OSError("gone")],
-            ),
-            pytest.raises(SystemExit),
-        ):
-            cc._spawn(_ns(spawn_action="run", port=1, task="t", fire_and_forget=False))
-        assert "lost connection" in capsys.readouterr().err
-
-    def test_run_create_http_error_exits_1(self, capsys: pytest.CaptureFixture[str]) -> None:
-        err = _http_error(422, json.dumps({"error": "task too long"}).encode())
-        with (
-            patch("kiro_crew.cli_commands._internal_secret", return_value=""),
-            patch("kiro_crew.cli_commands.loopback_urlopen", side_effect=err),
-            pytest.raises(SystemExit),
-        ):
+        install(monkeypatch, MINTED, http_error(422, {"error": "task too long"}))
+        with pytest.raises(SystemExit):
             cc._spawn(_ns(spawn_action="run", port=1, task="t", fire_and_forget=True))
         assert "task too long" in capsys.readouterr().out
 
-    def test_run_unreachable_gateway_exits_1(self, capsys: pytest.CaptureFixture[str]) -> None:
-        with (
-            patch("kiro_crew.cli_commands._internal_secret", return_value=""),
-            patch("kiro_crew.cli_commands.loopback_urlopen", side_effect=OSError("no route")),
-            pytest.raises(SystemExit),
-        ):
+    def test_run_unreachable_gateway_exits_1(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        install(monkeypatch, urllib.error.URLError(FileNotFoundError(2, "no such file")))
+        with pytest.raises(SystemExit):
             cc._spawn(_ns(spawn_action="run", port=9, task="t", fire_and_forget=True))
-        assert "gateway not running" in capsys.readouterr().out
+        assert "is not running, or it serves no dashboard socket" in capsys.readouterr().out
 
 
 # ── app subcommands ──

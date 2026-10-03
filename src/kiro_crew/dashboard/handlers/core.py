@@ -86,6 +86,7 @@ from kiro_crew.dashboard.token_auth import (
     parse_duration,
 )
 from kiro_crew.effort import EFFORT_LEVELS
+from kiro_crew.execution_context import CLI_ORIGIN
 from kiro_crew.executors import discovery_executor
 from kiro_crew.external_text import redact_external_text as _redact_external
 from kiro_crew.gateway_identity import gateway_id
@@ -3519,7 +3520,24 @@ async def api_token_local(request: web.Request) -> web.Response:
     epp = request.query.get("embed_parent_port", "")
     if epp.isdigit() and 1 <= int(epp) <= 65535:
         extra["embed_parent_port"] = str(int(epp))
-    token = generate_token(owner_id or "local-app", ttl_seconds=ttl, extra=extra or None)
+    # ``origin=cli`` is ``kirocrew spawn``'s mint: the signed claim marks the
+    # owner's terminal (subagent.md § "CLI: kirocrew spawn run"), and the token is
+    # only ever presented on the API, so it takes no one-time-link nonce slot (a
+    # burst of CLI calls must not evict a pending login or channel challenge link)
+    # and cannot be opened as a link.
+    origin = request.query.get("origin", "")
+    if origin not in ("", CLI_ORIGIN):
+        return web.json_response(
+            {"error": "origin must be 'cli' when given", "code": "invalid_origin"}, status=400
+        )
+    if origin:
+        extra["origin"] = origin
+    token = generate_token(
+        owner_id or "local-app",
+        ttl_seconds=ttl,
+        extra=extra or None,
+        register_nonce=not origin,
+    )
     _sel().log_api_access(
         caller=request.remote or "unknown",
         operation="token.local",
