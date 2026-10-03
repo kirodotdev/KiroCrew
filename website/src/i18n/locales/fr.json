@@ -11527,6 +11527,7 @@
       "model_auto_jev_description": "Laisser Jev évaluer chaque tour et l'exécuter sur le modèle de ce niveau",
       "run_in_terminal_copy_failed_error": "La commande n'a pas pu être copiée, donc rien n'a été envoyé au terminal. Copie-la depuis le bloc de code et colle-la toi-même.",
       "run_in_terminal_no_tab_error": "La commande n'a pas pu s'exécuter : impossible d'ouvrir un nouveau terminal, car trop de terminaux sont déjà ouverts. Fermes-en un et réessaie.",
+      "run_in_terminal_cwd_pending_error": "La commande n'a pas pu s'exécuter : le répertoire de travail de ce chat n'est pas encore chargé. Réessaie dans un instant.",
       "run_in_terminal_config_read_failed_error": "Tes paramètres de terminal n'ont pas pu être lus ; « réutiliser le terminal actuel » a donc été ignoré et la commande a été ouverte dans un nouveau terminal. Recharge pour réessayer."
     },
     "chatSidebar": {

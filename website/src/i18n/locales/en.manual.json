@@ -4991,6 +4991,7 @@
       "model_auto_jev_description": "Let Jev judge each turn and run it on the model for that tier",
       "run_in_terminal_copy_failed_error": "The command couldn't be copied, so nothing was sent to the terminal. Copy it from the code block and paste it yourself.",
       "run_in_terminal_no_tab_error": "The command couldn't run: no new terminal could be opened because too many are already open. Close one and try again.",
+      "run_in_terminal_cwd_pending_error": "The command couldn't run: this chat's working directory hasn't loaded yet. Try again in a moment.",
       "run_in_terminal_config_read_failed_error": "Your terminal settings couldn't be read, so \"reuse the current terminal\" was skipped and the command opened a new terminal instead. Reload to try again."
     },
     "chatSidebar": {

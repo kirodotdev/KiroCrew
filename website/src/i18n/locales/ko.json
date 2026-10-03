@@ -11213,6 +11213,7 @@
       "model_auto_jev_description": "Jev가 각 대화의 난이도를 판단해 해당 등급의 모델로 실행합니다",
       "run_in_terminal_copy_failed_error": "명령을 복사하지 못해 터미널로 아무것도 전송되지 않았습니다. 코드 블록에서 복사하여 직접 붙여 넣으세요.",
       "run_in_terminal_no_tab_error": "명령을 실행할 수 없습니다: 이미 열린 터미널이 너무 많아 새 터미널을 열 수 없습니다. 하나를 닫고 다시 시도하세요.",
+      "run_in_terminal_cwd_pending_error": "명령을 실행할 수 없습니다: 이 채팅의 작업 디렉터리가 아직 로드되지 않았습니다. 잠시 후 다시 시도하세요.",
       "run_in_terminal_config_read_failed_error": "터미널 설정을 읽지 못해 \"현재 터미널 재사용\"을 건너뛰고 명령을 새 터미널에서 열었습니다. 다시 시도하려면 새로 고치세요."
     },
     "chatSidebar": {

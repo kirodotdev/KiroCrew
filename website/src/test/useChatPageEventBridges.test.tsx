@@ -259,6 +259,24 @@ describe('redaction-card bridges', () => {
   })
 })
 
+describe('Run-in-terminal scope', () => {
+  it('returns the page scope, answers it and unscoped requests, and leaves another host\'s alone', () => {
+    const dock = renderHook(() => useBottomTerminal())
+    const { hook } = harness()
+    const scope = hook.result.current.runInTerminalScope
+    expect(scope).toEqual(expect.any(String))
+    act(() => {
+      window.dispatchEvent(new CustomEvent('mc:run-in-terminal', { detail: { code: 'a', reqId: 'r1', scope: `${scope}-other` } }))
+    })
+    expect(dock.result.current.tabs).toHaveLength(0)
+    act(() => {
+      window.dispatchEvent(new CustomEvent('mc:run-in-terminal', { detail: { code: 'b', reqId: 'r2', scope } }))
+      window.dispatchEvent(new CustomEvent('mc:run-in-terminal', { detail: { code: 'c', reqId: 'r3' } }))
+    })
+    expect(dock.result.current.tabs).toHaveLength(2)
+  })
+})
+
 describe('Run-in-terminal liveness probe', () => {
   async function probeWith(body: unknown) {
     vi.useFakeTimers({ shouldAdvanceTime: true })

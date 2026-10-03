@@ -11527,6 +11527,7 @@
       "model_auto_jev_description": "Deja que Jev evalúe cada turno y lo ejecute en el modelo de ese nivel",
       "run_in_terminal_copy_failed_error": "No se pudo copiar el comando, por lo que no se envió nada al terminal. Cópialo desde el bloque de código y pégalo tú mismo.",
       "run_in_terminal_no_tab_error": "No se pudo ejecutar el comando: no se pudo abrir un terminal nuevo porque ya hay demasiados abiertos. Cierra uno e inténtalo de nuevo.",
+      "run_in_terminal_cwd_pending_error": "No se pudo ejecutar el comando: el directorio de trabajo de este chat aún no se ha cargado. Inténtalo de nuevo en un momento.",
       "run_in_terminal_config_read_failed_error": "No se pudieron leer los ajustes del terminal, así que se omitió «reutilizar el terminal actual» y el comando se abrió en un terminal nuevo. Vuelve a cargar para intentarlo de nuevo."
     },
     "chatSidebar": {
