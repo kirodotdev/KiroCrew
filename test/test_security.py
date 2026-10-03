@@ -2798,6 +2798,351 @@ class TestBuiltinDenyPatterns:
         assert is_denied("git`echo`push origin main") is not None
         assert is_denied("git$()push origin") is not None
 
+    def test_substitution_span_survives_expansion_and_comment_parens(self) -> None:
+        """A literal ``)`` inside ``${...}`` or a ``#`` comment must not close
+        the substitution span.
+
+        ``_substitution_bodies`` feeds the nested-payload extractor: truncating
+        at such a paren hands every downstream scan a fragment while bash runs
+        the whole body, so a nested publish hides below the truncation point.
+        """
+        from kiro_crew.security import _substitution_bodies
+
+        # ``${v:-)}`` prints a literal ``)``; the span must cover the rest.
+        assert _substitution_bodies("kill $(echo ${v:-)}; pgrep -f kirocrew)") == [
+            "echo ${v:-)}; pgrep -f kirocrew"
+        ]
+        # The ``)`` after ``# `` is comment text; the span runs past the newline.
+        assert _substitution_bodies("kill $(echo x # )\npgrep -f kirocrew)") == [
+            "echo x # )\npgrep -f kirocrew"
+        ]
+        # A ``#`` mid-word is literal (``echo a#b`` is one word), not a comment.
+        assert _substitution_bodies("echo a#b") == []
+        # Nested expansion still extracts whole.
+        assert _substitution_bodies("kill $(echo ${a:-${b}} done)") == ["echo ${a:-${b}} done"]
+
+    def test_expansion_close_ignores_quoted_braces(self) -> None:
+        """A quoted ``}`` inside ``${...}`` is literal per POSIX 2.6.2 and must
+        not close the expansion (Design + Opus blocking findings on the
+        frozen-quote interior loop).
+
+        Closing early desyncs the outer walk from bash: the stray quote flips
+        the walker into a quote state bash never enters, hiding the ``;`` and
+        the ``git`` word that follow -- an allow-direction miss.
+        """
+        from kiro_crew.security import _iter_shell_chars, _substitution_bodies
+
+        # Double-quoted ``}``: the expansion closes at the second brace, so
+        # the ``;`` separator stays active and visible to the segment split.
+        steps = list(_iter_shell_chars(': ${v:-"}"}; git push origin main'))
+        semi = next(s for s in steps if s.char == ";")
+        assert semi.active
+        # Single-quoted ``}`` around a quoted paren: the full outer body
+        # survives instead of truncating at the quoted ``)``.
+        assert _substitution_bodies("kill $(echo ${v:-'}X)Y'} ; git push origin main)") == [
+            "echo ${v:-'}X)Y'} ; git push origin main"
+        ]
+
+    def test_expansion_interior_reports_its_own_quote_state(self) -> None:
+        """A quoted ``$(`` inside ``${...}`` is reported with the span's quote
+        state, not the outer state.
+
+        The program-anchor walk tells single-quoted data (``'$('``) from an
+        unquoted substitution by ``step.state``, not by ``step.active``. An
+        interior char carrying the outer state reads a single-quoted ``$`` as
+        unquoted, so the anchor treats quoted data as a live ``$(...)`` and a
+        self-kill hidden behind it slips the denial -- an allow-direction miss.
+        """
+        from kiro_crew.security import _iter_shell_chars
+
+        # ``'$('`` inside the expansion: the ``$`` and ``(`` report state 1.
+        steps = {s.offset: s for s in _iter_shell_chars("a=${v:-'$('}b")}
+        assert steps[8].char == "$" and steps[8].state == 1
+        assert steps[9].char == "(" and steps[9].state == 1
+        # ``"$("`` reports state 2; a following unquoted char returns to 0.
+        steps = {s.offset: s for s in _iter_shell_chars('a=${v:-"$("}b')}
+        assert steps[8].char == "$" and steps[8].state == 2
+        assert steps[9].char == "(" and steps[9].state == 2
+
+    def test_expansion_nests_only_on_dollar_brace(self) -> None:
+        """A bare ``{`` inside ``${...}`` is an ordinary character; only ``${``
+        nests. Bumping depth on a bare ``{`` runs the span past the ``}`` bash
+        closes at, so the closer and the structure after it read as interior --
+        an allow-direction miss of the following command.
+        """
+        from kiro_crew.security import _iter_shell_chars
+
+        # ``${v:-{}`` closes at the first ``}``; the trailing `` z`` is OUTSIDE.
+        steps = {s.offset: s for s in _iter_shell_chars("a=${v:-{} z")}
+        assert steps[8].char == "}" and steps[8].active  # the closer
+        assert steps[10].char == "z" and steps[10].active  # outside, visible
+        # A genuine ``${`` still nests: the inner and outer both close.
+        steps = list(_iter_shell_chars("a=${v:-${w}} z"))
+        closer = [s for s in steps if s.char == "}"]
+        assert closer[-1].active and closer[-1].offset == 11
+        assert steps[-1].char == "z" and steps[-1].active
+
+    def test_expansion_walk_handles_every_reviewed_nesting(self) -> None:
+        """Table-driven cover of every construct the ``${...}`` walk models, so
+        a regression on any one fails a named row.
+
+        The interior is read by self-contained span scanners that skip a nested
+        ``$(...)`` / backtick whole, so each row pins the property a downstream
+        consumer relies on:
+
+        * ``bodies`` -- ``_substitution_bodies`` extracts the FULL body, never
+          truncated at a ``)`` / ``}`` that belongs to a nested construct, a
+          comment, or a quote (Opus findings on quote-state and nested
+          ``$(...)``; the extractor feeds the recursive ``is_denied`` scan).
+        * ``paren`` -- ``_shell_quote_walk`` counts an unclosed nested ``$(``'s
+          ``(`` (Opus :2162 finding: an expansion cut by a token boundary must
+          not zero ``paren_delta`` and break ``_protected_name_in_substitution``
+          a token early).
+        """
+        from kiro_crew.security import _shell_quote_walk, _substitution_bodies
+
+        body_cases = [
+            # (label, command, expected _substitution_bodies)
+            # F1: quoted ``$(`` interior is data, body survives whole.
+            (
+                "single-quoted interior",
+                "kill $(echo ${v:-'$('} ; git push origin main)",
+                ["echo ${v:-'$('} ; git push origin main"],
+            ),
+            # F2: bare ``{`` does not nest; the first ``}`` closes ``${``.
+            (
+                "bare brace no-nest",
+                "kill $(echo ${v:-{} ; git push origin main)",
+                ["echo ${v:-{} ; git push origin main"],
+            ),
+            # F3: a ``}`` inside a nested ``$(...)`` is NOT the ``${`` closer.
+            (
+                "nested subst brace",
+                "kill $(echo ${v:-$(echo })} tail)",
+                ["echo ${v:-$(echo })} tail"],
+            ),
+            # F3 (backtick spelling): backtick-nested ``}`` is inert too.
+            (
+                "nested backtick brace",
+                "kill $(echo ${v:-`echo }`} tail)",
+                ["echo ${v:-`echo }`} tail"],
+            ),
+            # ``${x:-$(...)}`` -- POSIX default with a nested substitution.
+            (
+                "default with substitution",
+                "kill $(echo ${x:-$(printf y)} done)",
+                ["echo ${x:-$(printf y)} done"],
+            ),
+            # Nested expansion (``${...${...}...}``) extracts whole.
+            (
+                "nested expansion",
+                "kill $(echo ${a:-${b}} done)",
+                ["echo ${a:-${b}} done"],
+            ),
+            # ``#`` inside a double-quoted string is literal, not a comment.
+            (
+                "hash inside quotes",
+                'kill $(echo "a # )" done)',
+                ['echo "a # )" done'],
+            ),
+            # ``#`` inside an expansion default is literal expansion text.
+            (
+                "hash inside expansion",
+                "kill $(echo ${v:-a # )} done)",
+                ["echo ${v:-a # )} done"],
+            ),
+        ]
+        for label, command, expected in body_cases:
+            assert _substitution_bodies(command) == expected, label
+
+        # F4 (:2162): an expansion cut by a token boundary before it closes
+        # must leave its nested ``$(``'s ``(`` counted, not swallowed inactive.
+        walk = _shell_quote_walk("x=${v:-$(printf")
+        assert walk.paren_delta == 1
+        # A CLOSED expansion contributes nothing to the paren delta.
+        walk = _shell_quote_walk("x=${v:-a}")
+        assert walk.paren_delta == 0
+
+    def test_expansion_scanner_does_not_recurse_or_loop_on_deep_nesting(self) -> None:
+        """Deeply nested ``$(`` inside a ``${...}`` is scanned by a bounded loop
+        with a ``depth`` counter, not per-level recursion.
+
+        2000 levels of ``$(`` is well past the interpreter's default recursion
+        limit (1000), so a per-frame walk would raise ``RecursionError`` out of
+        ``is_denied`` -- a gate that must return a DECISION, never raise. A
+        counter returns an index instead. The scanners are O(n), so this runs in
+        milliseconds; the suite's own ``--timeout`` is the backstop against a
+        genuine non-advancing loop (this test adds no signal handler of its own,
+        which would clash with ``pytest-timeout``'s signal method under xdist).
+        """
+        from kiro_crew.security import is_denied
+        from kiro_crew.security import shell_normalizer as sn
+
+        # The exact recursion site Opus flagged: the nested-substitution skip.
+        depth = 2000
+        deep = "$(" * depth + "x" + ")" * depth
+        assert sn._skip_nested_substitution(deep, 0) == len(deep)
+        # An unbalanced open terminates too (returns None, does not spin).
+        assert sn._skip_nested_substitution("$(" * depth, 0) is None
+        # The expansion-span scan over the same nesting terminates at the ``}``.
+        span_in = "${v:-" + "$(" * depth + "x" + ")" * depth + "}"
+        assert sn._expansion_span(span_in, 0) == len(span_in) - 1
+
+        # End to end through the real gate at a modest depth: ``is_denied``
+        # routes this ``${...}`` through the scanners and returns a decision
+        # (here None -- not a publish) without raising ``RecursionError``. A
+        # small depth keeps this off an unrelated, pre-existing super-linear
+        # cost in the wider ``is_denied`` pipeline on very deep ``$(`` (present
+        # on main, out of this change's scope) -- the recursion this fix removes
+        # is proven above at depth 2000 on the scanner itself.
+        small = "echo hi ${v:-" + "$(" * 120 + "x" + ")" * 120 + "}"
+        assert is_denied(small) is None
+
+    def test_ansi_c_quote_shared_across_all_four_walks(self) -> None:
+        """ANSI-C ``$'...'`` (where ``\\'`` is an ESCAPED quote, not a closer)
+        must be read identically by the boundary walk and all three ``${...}``
+        scanners.
+
+        The Design BLOCK: the three interior scanners kept their own quote loop
+        that modelled ``'``/``"`` but NOT ``$'...'``. Inside ``$'\\''`` the
+        scanner read the ``\\`` as literal (a plain single quote does not
+        escape) and the next ``'`` as a CLOSER, ending the quoted run early,
+        then read a later ``}`` / ``)`` bash sees as quoted as a structural
+        closer -- truncating the span in the ALLOW direction. One shared
+        transition (:func:`_advance_quote` / :func:`_backslash_escapes`) removes
+        the second opinion. This pins that the four walks agree on the exact
+        ``}`` bash closes at.
+        """
+        from kiro_crew.security import _iter_shell_chars, _substitution_bodies
+        from kiro_crew.security import shell_normalizer as sn
+
+        # ``${v:-$'\\''}`` -- an ANSI-C default whose ``\\'`` is an escaped
+        # quote; the run stays single-quoted until the SECOND ``'``, so the
+        # FIRST ``}`` after that closes the expansion. A scanner without ANSI-C
+        # awareness would close at the escaped quote and read the wrong ``}``.
+        span = "${v:-$'\\''}xY}"
+        # PATH 2 -- _expansion_span: closes at the brace after the ANSI-C run.
+        close = sn._expansion_span(span, 0)
+        assert close is not None and span[close] == "}"
+        assert span[: close + 1] == "${v:-$'\\''}"
+        # PATH 1 -- the boundary walk agrees: that same ``}`` is the active
+        # closer and the trailing ``xY`` is OUTSIDE the span (visible).
+        steps = list(_iter_shell_chars(span))
+        closer = next(s for s in steps if s.offset == close)
+        assert closer.char == "}" and closer.active
+        outside = [s for s in steps if s.offset > close and s.char in "xY"]
+        assert outside and all(s.active for s in outside)
+
+        # PATH 3 -- _skip_nested_substitution: a ``)`` inside an ANSI-C string
+        # in a ``$(...)`` is escaped/quoted data, so it does NOT close the
+        # subshell early; the real ``)`` after the quote does.
+        sub = "$(echo $'\\')' )tail"
+        end = sn._skip_nested_substitution(sub, 0)
+        assert end is not None and sub[end - 1] == ")"
+        assert sub[:end] == "$(echo $'\\')' )"
+
+        # PATH 4 -- _yield_expansion (via the boundary walk, which calls it):
+        # an interior ANSI-C ``'`` reports ansi=True on its own char, matching
+        # how the outer walk labels the same character.
+        steps = {s.offset: s for s in _iter_shell_chars("a=${v:-$'x'}b")}
+        x = next(s for s in steps.values() if s.char == "x")
+        assert x.state == 1 and x.ansi is True
+
+        # End to end: all four paths agree, so _substitution_bodies extracts the
+        # whole body of a ``$(...)`` whose ``${...}`` default holds an ANSI-C
+        # string with an escaped quote -- no truncation at the escaped ``'``.
+        assert _substitution_bodies("kill $(echo ${v:-$'\\''} ; pgrep -f kirocrew)") == [
+            "echo ${v:-$'\\''} ; pgrep -f kirocrew"
+        ]
+
+    def test_ansi_c_hidden_self_kill_is_denied(self) -> None:
+        """A self-kill target hidden behind an ANSI-C ``$'\\''`` inside a
+        ``${...}`` default must still be DENIED.
+
+        Before the shared quote model, the interior scanner closed the span at
+        the escaped quote and handed the deny scan a truncated body, so the
+        ``pkill -f kirocrew`` past it was never seen -- an allow-direction miss.
+        bash parses the command whole (verified with ``bash -n``: the ``$'\\''``
+        keeps the quote balanced and the trailing clause runs).
+        """
+        from kiro_crew.security import is_denied
+
+        # The trailing self-target clause is hidden behind the ANSI-C escaped
+        # quote; the gate must reach it and deny.
+        assert is_denied("kill $(true ${v:-$'\\''}x) ; pkill -f kirocrew") is not None
+        # Control: the SAME shape without the ANSI-C obfuscation is denied too,
+        # so the test pins the obfuscated path, not an unrelated allow.
+        assert is_denied("kill $(true ${v:-y}x) ; pkill -f kirocrew") is not None
+
+    def test_prior_findings_survive_through_all_paths(self) -> None:
+        """Re-run each earlier Opus/Design finding through the scanner paths, so
+        a regression on any one is a named failure.
+
+        Consolidates the reviewed constructs -- quoted braces, bare ``{``
+        no-nest, nested ``$(...)`` / backtick inertness, ``#`` inside an
+        expansion, and the token-cut paren-delta -- and confirms each reads the
+        same after the quote model was unified.
+        """
+        from kiro_crew.security import _shell_quote_walk, _substitution_bodies
+        from kiro_crew.security import shell_normalizer as sn
+
+        rows = [
+            (
+                "single-quoted paren survives",
+                "kill $(echo ${v:-'}X)Y'} ; git push origin main)",
+                ["echo ${v:-'}X)Y'} ; git push origin main"],
+            ),
+            (
+                "bare brace no-nest",
+                "kill $(echo ${v:-{} ; git push origin main)",
+                ["echo ${v:-{} ; git push origin main"],
+            ),
+            (
+                "nested subst brace inert",
+                "kill $(echo ${v:-$(echo })} tail)",
+                ["echo ${v:-$(echo })} tail"],
+            ),
+            (
+                "nested backtick brace inert",
+                "kill $(echo ${v:-`echo }`} tail)",
+                ["echo ${v:-`echo }`} tail"],
+            ),
+            (
+                "hash inside expansion literal",
+                "kill $(echo ${v:-a # )} done)",
+                ["echo ${v:-a # )} done"],
+            ),
+        ]
+        for label, command, expected in rows:
+            assert _substitution_bodies(command) == expected, label
+
+        # Opus :2162 -- a token-cut expansion leaves its nested ``$(``'s ``(``
+        # counted (does not zero the paren delta).
+        assert _shell_quote_walk("x=${v:-$(printf").paren_delta == 1
+        assert _shell_quote_walk("x=${v:-a}").paren_delta == 0
+
+        # Opus O(n^2) -- an all-opener ``"${" * k`` flood never closes, so the
+        # scan reports None (fall-through, scan-MORE) rather than rescanning to
+        # end-of-text at every opener. The shared work budget keeps it linear;
+        # see ``test_is_denied_single_trailing_brace_flood_is_fast`` for timing.
+        flood = "${" * 4096
+        assert sn._expansion_span(flood, 0) is None
+
+        # Opus finding #2 -- a ``)`` inside a nested ``${...}`` must NOT close an
+        # enclosing ``$(...)`` early, and vice versa: the ONE context-stack scan
+        # closes each at its true delimiter. A ``$(``-only skipper with no ``${``
+        # branch truncates here; the one scan has a ``${`` frame everywhere.
+        assert _substitution_bodies("echo $(printf hi ${x:-)}C ${y:-)}D)") == [
+            "printf hi ${x:-)}C ${y:-)}D"
+        ]
+        assert sn._skip_nested_substitution("$(A${x:-$(B${y:-)}C)}D)", 0) == len(
+            "$(A${x:-$(B${y:-)}C)}D)"
+        )
+        # The complement: a ``}`` inside a nested ``$(...)`` is inert to a ``${``
+        # brace frame, so the ``${`` closes at its own ``}`` (index 14 -- the
+        # ``}`` at 12 is inside the subshell, the ``)`` at 13 closes it).
+        assert sn._expansion_span("${v:-$(echo })}tail", 0) == 14
+
     def test_blocks_background_operator_bypass(self) -> None:
         """``&`` (single ampersand, the bash background operator) must split
         segments like ``;`` and ``&&``.
@@ -10973,6 +11318,38 @@ class TestSubstitutionCloserReadsCommandGrammar:
         command = f"T=$(: \\\n# )\nprintf {self.VERB}); {self.NAME} $T"
         (body,) = security._substitution_bodies(command)
         assert f"printf {self.VERB}" in body, body
+        assert security.is_denied(command) is not None
+
+    def test_a_hash_right_after_an_empty_substitution_is_a_word_not_a_comment(self) -> None:
+        """``kill$()#x`` is one WORD to bash -- the ``#`` opens no comment.
+
+        ``argv_floor`` jumps the empty ``$()`` and re-enters the shared quote
+        walk on the REST of the line, where bash reads the ``#`` glued to the
+        word as data (comments are lexed before expansion). A per-slice
+        ``at_word_start`` flag in the walk read that resumed ``#`` as a comment
+        opener, so every later character went inert, the ``;`` never split the
+        segment, the whole line fused into one word, and the trailing self-kill
+        -- whose ``)`` is quoted by ``printf`` -- was never anchored: ``is_denied``
+        returned None where main denies. Comment folding now lives only in
+        ``_matching_close_paren`` (``_opens_comment``), which reads the real
+        preceding character, so this denies again.
+        """
+        command = f"kill$()#x ; kill $(printf ')' ; pgrep -f {self.NAME})"
+        assert security.is_denied(command) is not None
+
+    def test_an_interior_quote_opener_is_syntax_not_a_quoted_run(self) -> None:
+        """``${v:-k'ill'}`` reconstructs as ``kill`` -- the quotes are stripped.
+
+        The ``${...}`` interior reported each char's POST-transition quote state,
+        so an interior opening ``'`` carried ``state=1`` while its closer carried
+        ``state=0``. A consumer keying on ``active or state == 0`` (``argv_floor``'s
+        quote-syntax test) then DROPPED the opener and KEPT the closer, rebuilding
+        the word as ``${v:-k'ill}``: ``_resolve_param_defaults`` yielded ``k'ill``,
+        ``resolves_to_kill`` failed, and the self-kill (its ``)`` quoted by
+        ``printf``) was allowed where main denies. An interior quote DELIMITER now
+        reports the ENCLOSING state, so opener and closer are both read as syntax.
+        """
+        command = f"${{v:-k'ill'}} $(printf ')' ; pgrep -f {self.NAME})"
         assert security.is_denied(command) is not None
 
     @pytest.mark.parametrize(

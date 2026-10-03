@@ -2039,6 +2039,113 @@ def _redirect_consumes_next(token: str) -> "tuple[bool, bool]":
 _SHELL_OPERATOR_CHARS = "()&;|<>"
 
 
+class _QuoteState(NamedTuple):
+    """The shell's quote/escape reading state between two characters.
+
+    ONE reading of bash's quoting, shared by every walk in this module -- the
+    boundary walk :func:`_iter_shell_chars` and the three self-contained
+    ``${...}`` scanners (:func:`_skip_nested_substitution`, :func:`_expansion_span`,
+    :func:`_yield_expansion`). Before this existed each scanner kept its own
+    quote loop that modelled ``'``/``"``/``` ` ``` but NOT ANSI-C ``$'...'``, so
+    an escaped quote ``\\'`` inside a ``$'...'`` string desynced the scanner from
+    bash: the scanner read the ``\\`` as literal (a plain single quote does not
+    escape) and the following ``'`` as a CLOSER, ending the quoted run early and
+    then reading a later ``}`` / ``)`` that bash sees as quoted as a structural
+    closer -- truncating the extracted span in the ALLOW direction (a self-kill
+    target hidden past the false closer). Sharing this one transition removes
+    that second opinion by construction; it is the SAME machine, so the four
+    walks cannot drift.
+    """
+
+    #: 0 unquoted, 1 single-quoted, 2 double-quoted.
+    qstate: int
+    #: True only when an open single quote is an ANSI-C ``$'...'`` (a backslash
+    #: escapes there rather than standing for itself).
+    ansi: bool
+    #: An UNPAIRED literal ``$`` immediately precedes -- so a ``'`` now opens
+    #: ANSI-C (``$'...'``) and a ``{`` now opens a nested ``${``. This is the
+    #: parity of the ``$`` run, not merely "the last char was ``$``": the shell
+    #: pairs a run of dollars off (``$$`` is the PID parameter, so only an ODD
+    #: run leaves one unpaired), which is the ``dollar_run % 2 == 1`` rule the
+    #: boundary walk has always used. Tracking the parity HERE is what lets the
+    #: ``$'`` and ``${`` look-behinds read identically in every walk.
+    prev_dollar: bool
+
+
+#: The neutral starting quote state: unquoted, not ANSI-C, no pending ``$``.
+_QUOTE_START = _QuoteState(0, False, False)
+
+
+def _backslash_escapes(st: _QuoteState) -> bool:
+    """True where a backslash escapes the next character.
+
+    Bash's rule, in one place: a backslash escapes outside quotes, inside double
+    quotes, and inside ANSI-C ``$'...'`` -- but is LITERAL inside a plain single
+    quote. This is the single predicate every walk uses to decide whether a
+    ``\\x`` pair is one escaped character or two ordinary ones, so the ANSI-C
+    case (``\\'`` inside ``$'...'`` is an escaped quote, not a closer) is read
+    identically everywhere.
+    """
+    return st.qstate != 1 or st.ansi
+
+
+def _advance_quote(c: str, st: _QuoteState) -> _QuoteState:
+    """Advance the shared quote/escape state by one NON-escaped character *c*.
+
+    The caller consumes a backslash escape pair itself (guided by
+    :func:`_backslash_escapes`) and calls this only for a character that is not
+    the escaped member of such a pair. This walks bash's quote transitions and
+    the ``$`` look-behind ONCE:
+
+    * an unquoted ``'`` opens single-quote -- ANSI-C when an unpaired ``$``
+      (an odd run) precedes it (``$'...'``);
+    * a single-quote ``'`` (plain or ANSI-C) closes it and clears ``ansi``;
+    * an unquoted ``"`` opens double-quote, a double-quote ``"`` closes it;
+    * ``prev_dollar`` tracks the PARITY of the current ``$`` run: an unquoted
+      ``$`` TOGGLES it (so ``$`` -> unpaired, ``$$`` -> paired PID, ``$$$`` ->
+      unpaired), and any other char clears it. So the NEXT ``'`` / ``{`` reads
+      whether a literal unpaired ``$`` sits before it -- the ``$$`` pairing rule,
+      shared by every walk.
+
+    Structural characters (``{``, ``}``, ``(``, ``)``, ``` ` ```) are left to
+    the caller: only the quote/escape/``$`` bookkeeping is shared, because that
+    is the piece the scanners disagreed on. The caller reads ``result.qstate``
+    to know whether such a structural char at this position is quoted (data) or
+    unquoted (a live delimiter).
+    """
+    qstate, ansi = st.qstate, st.ansi
+    if qstate == 0 and c == "'":
+        qstate = 1
+        ansi = st.prev_dollar
+    elif qstate == 1 and c == "'":
+        qstate = 0
+        ansi = False
+    elif qstate == 0 and c == '"':
+        qstate = 2
+    elif qstate == 2 and c == '"':
+        qstate = 0
+    # ``$`` toggles the run parity (``$$`` pairs off as the PID); any other char
+    # ends the run. A ``$`` inside a quote is data and starts no run.
+    prev_dollar = (not st.prev_dollar) if (qstate == 0 and c == "$") else False
+    return _QuoteState(qstate, ansi, prev_dollar)
+
+
+def _interior_quote(st: _QuoteState, outer_state: int, outer_ansi: bool) -> "tuple[int, bool]":
+    """The ``(state, ansi)`` a ``${...}`` interior char reports to consumers.
+
+    An interior single/double quote is what the char is inside; when the
+    interior is unquoted, the char still sits inside the ENCLOSING quote context
+    (``${...}`` can appear inside a double-quoted word), so it reports the outer
+    ``state``/``ansi``. ANSI-C is reported only for an interior single quote that
+    is itself ANSI-C, matching how the boundary walk labels the same character.
+    """
+    if st.qstate == 1:
+        return 1, st.ansi
+    if st.qstate == 2:
+        return 2, False
+    return outer_state, outer_ansi
+
+
 class _ShellChar(NamedTuple):
     """One step of the shell's quote/escape state machine."""
 
@@ -2064,6 +2171,221 @@ class _ShellChar(NamedTuple):
     trailing_escape: bool
 
 
+def _skip_nested_substitution(text: str, start: int) -> "int | None":
+    """Index just past a nested ``$(...)`` or ``` `...` ``` opened at *start*,
+    or ``None`` when it never balances before the text ends.
+
+    A thin caller of :func:`_scan_substitution_close`, the ONE scan that reads
+    every ``${`` / ``$(`` / ``` `...` ``` form in this module (see its
+    docstring). This spelling returns the index just PAST the closer, which is
+    what a span-SKIPPER wants.
+    """
+    close = _scan_substitution_close(text, start)
+    return None if close is None else close + 1
+
+
+# A ``${...}`` / ``$(...)`` body is attacker-controlled text on the gate's own
+# path (``is_denied`` applies no size ceiling before the self-protection floor
+# descends here), so the scan below carries a per-call work budget: the TOTAL
+# characters it may examine across all openers in one top-level walk. Past the
+# budget a span reads as "never closes", which is the fall-through the unclosed
+# case already takes (interior walks as ordinary chars -- the fail-closed,
+# scan-MORE direction), so the cap changes cost, never a verdict. The number is
+# generous (a real command is a few hundred chars; a legitimate ``${...}`` a few
+# dozen) and exists only to bound a pathological ``"${" * k`` whose every opener
+# would otherwise rescan to end-of-text -- an O(n^2) a lone trailing ``}``
+# re-enables for any opener guard that keys on a ``}`` existing somewhere after
+# the opener.
+_SCAN_BUDGET_CHARS = 20_000
+
+
+def _scan_substitution_close(
+    text: str, start: int, budget: "list[int] | None" = None
+) -> "int | None":
+    """Index of the character that CLOSES the substitution opened at *start*
+    (the ``}`` of a ``${``, the ``)`` of a ``$(``/``(``, the backtick of a
+    ``` ` ```), or ``None`` when it never closes before the text ends or the
+    shared work *budget* is exhausted.
+
+    THE one nesting-aware substitution scan. A single explicit CONTEXT STACK of
+    frames -- ``"{"`` for a ``${``, ``"("`` for a ``$(`` or bare ``(``, ``"`"``
+    for a backtick -- means a ``}`` only closes a brace frame and a ``)`` only
+    closes a paren frame, so neither can close the other's span: in
+    ``$(A${x:-$(B${y:-)}C)}D)`` the ``)`` inside ``${y:-)}`` is data to the
+    enclosing subshell, exactly as bash reads it. One scan with a ``${`` branch
+    everywhere, so a ``$(``-only skipper cannot exist to disagree. One stack, not
+    one Python frame per level, so attacker-chosen nesting depth costs a list
+    ``append`` rather than a ``RecursionError`` on the gate's must-not-raise
+    path. Quote / escape / ``$``-pairing is the SHARED transition
+    (:func:`_advance_quote` / :func:`_backslash_escapes`), so ANSI-C ``$'...'``
+    reads here exactly as in the boundary walk -- no second opinion.
+
+    POSIX 2.6.2: quote state runs THROUGH a ``${...}`` (an unquoted, unescaped
+    ``}`` closes it; a quoted one is data); only ``${`` nests a brace (a bare
+    ``{`` is ordinary); inside a backtick, parens and ``${`` are inert and only
+    an unescaped backtick closes. *budget* is a one-element list the top-level
+    walk threads through every opener so the TOTAL work is bounded across a line;
+    a lone call (the tests) allocates its own.
+    """
+    n = len(text)
+    if budget is None:
+        budget = [_SCAN_BUDGET_CHARS]
+    opener = text[start]
+    # Seed the stack from the opener. ``${`` and ``$(`` are two characters; a
+    # bare ``(`` and a backtick are one.
+    if opener == "`":
+        stack = ["`"]
+        j = start + 1
+    elif opener == "$" and start + 1 < n and text[start + 1] == "{":
+        stack = ["{"]
+        j = start + 2
+    elif opener == "$" and start + 1 < n and text[start + 1] == "(":
+        stack = ["("]
+        j = start + 2
+    elif opener == "(":
+        stack = ["("]
+        j = start + 1
+    else:  # pragma: no cover - callers only open on the forms above
+        return None
+    st = _QUOTE_START
+    while j < n:
+        budget[0] -= 1
+        if budget[0] < 0:
+            # Work cap hit: report "never closes" -- the same fall-through the
+            # genuinely-unclosed case takes, so behaviour is the fail-closed
+            # scan-MORE direction, only cheaper.
+            return None
+        c = text[j]
+        if c == "\\" and _backslash_escapes(st) and j + 1 < n:
+            st = _QuoteState(st.qstate, st.ansi, False)
+            j += 2
+            continue
+        if stack[-1] == "`":
+            # Inside a backtick: only an unescaped backtick closes it; quotes,
+            # parens and ``${`` are all inert while it is open. (The escape case
+            # above already consumed ``\\`` pairs in the enclosing quote state;
+            # a backtick body's own ``\\``` is handled by that same rule.)
+            if c == "`":
+                stack.pop()
+                st = _QuoteState(0, False, False)
+                if not stack:
+                    return j
+            j += 1
+            continue
+        if st.qstate == 0 and c == "`":
+            stack.append("`")
+            st = _QuoteState(0, False, False)
+        elif st.qstate == 0 and c == "$" and j + 1 < n and text[j + 1] == "(":
+            stack.append("(")
+            st = _QuoteState(0, False, False)
+            j += 2
+            continue
+        elif st.qstate == 0 and c == "(":
+            # A bare ``(`` inside a ``$(...)`` subshell is another paren frame.
+            stack.append("(")
+            st = _QuoteState(0, False, False)
+        elif st.qstate == 0 and c == "{" and st.prev_dollar:
+            # ``${`` nests a brace frame; a bare ``{`` is ordinary (no frame).
+            stack.append("{")
+            st = _QuoteState(0, False, False)
+        elif st.qstate == 0 and c == ")" and stack[-1] == "(":
+            stack.pop()
+            st = _QuoteState(0, False, False)
+            if not stack:
+                return j
+        elif st.qstate == 0 and c == "}" and stack[-1] == "{":
+            stack.pop()
+            st = _QuoteState(0, False, False)
+            if not stack:
+                return j
+        else:
+            # A ``)`` whose top frame is a brace, or a ``}`` whose top frame is a
+            # paren, is DATA for this span (bash passes it through) -- it falls
+            # here and only advances the quote state.
+            st = _advance_quote(c, st)
+        j += 1
+    return None
+
+
+def _expansion_span(text: str, start: int, budget: "list[int] | None" = None) -> "int | None":
+    """Index of the ``}`` that closes the ``${`` opened at *start*, or ``None``
+    when the expansion never closes before the text ends (or the work *budget*
+    is exhausted).
+
+    A thin caller of :func:`_scan_substitution_close` (the one nesting-aware
+    scan). This spelling returns the index OF the closing ``}`` itself, which is
+    what :func:`_iter_shell_chars` passes to :func:`_yield_expansion`.
+    """
+    return _scan_substitution_close(text, start, budget)
+
+
+def _yield_expansion(
+    text: str, start: int, close: int, state: int, ansi: bool
+) -> "Iterator[_ShellChar]":
+    """Yield the chars of a ``${...}`` span [*start*, *close*] that is KNOWN to
+    close at *close* (from :func:`_expansion_span`).
+
+    The ``${`` delimiters and the closing ``}`` are ``active`` (they ARE the
+    expansion boundary); every interior char is ``active=False`` so a ``)``
+    inside cannot close a ``$(...)`` span. Each interior char reports its own
+    single/double-quote state, so a consumer keying on ``step.state`` reads a
+    single-quoted ``'$('`` as quoted data, not a live substitution. A nested
+    ``$(...)`` / backtick is emitted inactive as a block.
+    """
+    yield _ShellChar(start, "$", "$", True, state, ansi, False)
+    yield _ShellChar(start + 1, "{", "{", True, state, ansi, False)
+    j = start + 2
+    st = _QUOTE_START
+    while j < close:
+        c = text[j]
+        if c == "\\" and _backslash_escapes(st) and j + 1 < close:
+            # The escape pair reports the quote context it sits in: an interior
+            # single/double quote wins, otherwise the enclosing ``state``/``ansi``.
+            istate, iansi = _interior_quote(st, state, ansi)
+            yield _ShellChar(j, text[j : j + 2], text[j + 1], False, istate, iansi, False)
+            st = _QuoteState(st.qstate, st.ansi, False)
+            j += 2
+            continue
+        if st.qstate == 0 and c == "`":
+            inner = _skip_nested_substitution(text, j)
+            end = inner if inner is not None else close
+            for off in range(j, end):
+                yield _ShellChar(off, text[off], text[off], False, state, ansi, False)
+            j = end
+            st = _QuoteState(0, False, False)
+            continue
+        if st.qstate == 0 and c == "$" and j + 1 < close and text[j + 1] == "(":
+            inner = _skip_nested_substitution(text, j)
+            end = inner if inner is not None else close
+            for off in range(j, end):
+                yield _ShellChar(off, text[off], text[off], False, state, ansi, False)
+            j = end
+            st = _QuoteState(0, False, False)
+            continue
+        prev = st
+        st = _advance_quote(c, st)
+        if c in "'\"" and st.qstate != prev.qstate:
+            # A quote DELIMITER is syntax of the frame it opens from or closes
+            # back to, not data inside the quote -- so it reports the ENCLOSING
+            # (less-nested) context, the one of {prev, st} that is NOT inside
+            # this quote: ``prev`` when this ``c`` OPENS the quote, ``st`` when it
+            # CLOSES. Reporting the post-transition state instead labelled an
+            # interior opening ``'`` as quoted (``state=1``) while its closer read
+            # ``state=0``, so a consumer keying on ``active or state == 0``
+            # (argv_floor) KEPT the closer and DROPPED the opener -- reconstructing
+            # ``k'ill`` as the word ``k'ill`` and missing the self-kill bash runs
+            # as ``kill`` (found in review). The enclosing frame makes opener and
+            # closer BOTH read as syntax, matching how the boundary walk's
+            # ``active`` flag labels the same two marks.
+            frame = prev if st.qstate > prev.qstate else st
+            istate, iansi = _interior_quote(frame, state, ansi)
+        else:
+            istate, iansi = _interior_quote(st, state, ansi)
+        yield _ShellChar(j, c, c, False, istate, iansi, False)
+        j += 1
+    yield _ShellChar(close, "}", "}", True, state, ansi, False)
+
+
 def _iter_shell_chars(text: str, state: int = 0, ansi: bool = False) -> "Iterator[_ShellChar]":
     """THE shell quote/escape state machine. Every push-path reading of shell
     quoting walks through this one generator.
@@ -2087,45 +2409,115 @@ def _iter_shell_chars(text: str, state: int = 0, ansi: bool = False) -> "Iterato
     program anchor read this state in the allow direction: a walk that ends
     "still open" where bash closed hides a separator or a ``git`` word.
 
+    One more bash rule lives here, because a literal ``)`` inside it used
+    to arrive ``active`` and truncate every substitution span
+    (``$(echo ${v:-)}; ...)`` extracted ``echo ${v:-`` while bash runs the
+    rest): ``${...}`` parameter expansion, whose interior is data as far as
+    paren counting goes, so it yields its interior ``active=False``.
+
+    A ``#`` comment is NOT modelled here. A ``#`` opens a comment only at the
+    start of a word, and that word-position depends on where this generator was
+    ENTERED: a resumed walk (``argv_floor`` re-enters mid-command right after an
+    empty ``$()``, where bash reads a following ``#`` as a WORD, not a comment)
+    begins at an offset this generator cannot tell apart from a true word start.
+    So the one consumer that must fold a comment away, the boundary walker
+    :func:`_matching_close_paren`, decides it with :func:`_opens_comment` against
+    the full text and the real preceding character -- not from a per-slice
+    ``at_word_start`` flag that a resumed entry would read wrong (found in
+    review: ``kill$()#x ; kill $(printf ')' ; pgrep -f kirocrew)`` had the ``#``
+    open a comment on the resumed slice, fusing the line into one word so the
+    self-kill went unseen -- allowed where main denies).
+
+    The ``${...}`` interior is read by three small self-contained scanners
+    rather than by re-counting parens and quotes inline: :func:`_expansion_span`
+    finds the closing ``}`` (quote-aware, nesting only on ``${``),
+    :func:`_skip_nested_substitution` skips a nested ``$(...)`` or ``` `...` ```
+    whole, and :func:`_yield_expansion` emits the span. Nesting is handled by
+    construction: a ``}`` inside a nested substitution is inert to this
+    expansion's brace depth, and a ``}`` inside a quote is literal (POSIX
+    2.6.2). These scanners stay independent of the boundary walker
+    :func:`_matching_close_paren`, which is a CONSUMER of this generator --
+    calling it from here recurses without bound. An expansion that never closes
+    is walked as ordinary chars (not suppressed), so an unclosed nested ``$(``
+    reaches the outer walk ``active`` and its ``(`` is counted -- scanning MORE.
+
     *state* and *ansi* resume a walk, which is what lets a quoted word spanning
     whitespace be read without desyncing.
     """
     i = 0
     n = len(text)
-    dollar_run = 0  # consecutive LITERAL ``$`` immediately before this char
+    # A ``${...}`` body is attacker text on the gate's own path, and
+    # ``is_denied`` applies no size ceiling before the self-protection floor
+    # descends here, so the span scans share ONE work budget across this whole
+    # walk: :func:`_scan_substitution_close` decrements it per character and
+    # reports "never closes" once it is spent. That bounds the pathological
+    # ``"${" * k`` (every opener, zero or one ``}``): without a work bound its
+    # per-opener rescan to end-of-text is Σ ≈ O(n^2), a DoS that a lone trailing
+    # ``}`` keeps alive against any guard keying only on a ``}`` existing after
+    # the opener. A spent budget takes the SAME fall-through the
+    # genuinely-unclosed case takes (interior walks as ordinary chars,
+    # scan-MORE), so it changes cost, never a verdict. The cap is generous next
+    # to any real command, so a legitimate expansion is never cut short.
+    budget = [_SCAN_BUDGET_CHARS]
+    # Resume the SHARED quote state from the caller's *state* / *ansi* (a walk
+    # can continue a quoted word split across whitespace). ``prev_dollar`` starts
+    # False -- a resumed walk never begins mid ``$`` run.
+    st = _QuoteState(state, ansi, False)
     while i < n:
         ch = text[i]
-        if ch == "\\" and (state != 1 or ansi):
-            dollar_run = 0  # an escaped ``$`` is data and introduces nothing
+        if ch == "\\" and _backslash_escapes(st):
+            st = _QuoteState(st.qstate, st.ansi, False)  # an escaped ``$`` is data
             if i + 1 >= n:
-                yield _ShellChar(i, ch, ch, False, state, ansi, True)
+                yield _ShellChar(i, ch, ch, False, st.qstate, st.ansi, True)
                 return
-            yield _ShellChar(i, text[i : i + 2], text[i + 1], False, state, ansi, False)
+            yield _ShellChar(i, text[i : i + 2], text[i + 1], False, st.qstate, st.ansi, False)
             i += 2
             continue
-        was_unquoted = state == 0
-        if state == 0:
-            if ch == "'":
-                state = 1
-                # ``$'`` opens an ANSI-C string only when the ``$`` is itself
-                # literal and unpaired: an escaped ``\$`` is data, and in a run
-                # of dollars the shell pairs them off (``$$`` is the PID
-                # parameter), so only an ODD run leaves a ``$`` to introduce the
-                # quote. The plain ``text[i - 1] == "$"`` lookback read
-                # ``\$'foo\'`` as ANSI-C, kept the quote open across a ``;``, and
-                # hid the publish behind it -- with the segment split and the
-                # program anchor now reading this state, a false "still open" is
-                # an ALLOW-direction error, not a mere over-flag.
-                ansi = dollar_run % 2 == 1
-            elif ch == '"':
-                state = 2
-        elif state == 1:
-            if ch == "'":
-                state = 0
-        elif ch == '"':
-            state = 0
-        dollar_run = dollar_run + 1 if was_unquoted and ch == "$" else 0
-        yield _ShellChar(i, ch, ch, was_unquoted, state, ansi, False)
+        was_unquoted = st.qstate == 0
+        if st.qstate == 0:
+            if ch == "$" and i + 1 < n and text[i + 1] == "{" and not st.prev_dollar:
+                # ``${...}`` parameter expansion: THIS ``$`` is unpaired -- no
+                # unpaired ``$`` precedes it (``st.prev_dollar`` is False), so it
+                # is not the second half of a ``$$`` PID pairing -- and opens an
+                # expansion closed by the matching ``}``. Its interior is data as
+                # far as paren counting goes -- a ``)`` inside must not count as a
+                # substitution closer.
+                #
+                # Whether this expansion CLOSES is decided up front by
+                # :func:`_expansion_span` -> :func:`_scan_substitution_close`,
+                # the ONE nesting-aware scan: it shares this module's quote model
+                # (:func:`_advance_quote`) and tracks ``${`` / ``$(`` / backtick
+                # nesting on a single CONTEXT STACK, so a ``}`` inside a nested
+                # ``$(...)`` and a ``)`` inside a nested ``${...}`` are each inert
+                # to the other's span. It must NOT be the boundary walker
+                # ``_matching_close_paren`` -- that is a CONSUMER of this
+                # generator, so calling it here recurses without bound.
+                #
+                # * CLOSES -> yield ``${`` and the interior ``active=False`` (a
+                #   ``)`` inside cannot close a ``$(...)`` span) with each char's
+                #   own quote state, then the closing ``}`` active. Nested
+                #   substitutions are yielded inactive as a block.
+                # * NEVER CLOSES (malformed input bash would not run, or the
+                #   shared work budget is spent) -> do NOT suppress: fall through
+                #   so ``${`` and its interior walk as ordinary chars. An unclosed
+                #   nested ``$(`` then reaches the outer walk ACTIVE, so
+                #   ``paren_delta`` counts it and ``_protected_name_in_substitution``
+                #   does not break a token early -- the scan-MORE (fail-closed)
+                #   direction.
+                close = _expansion_span(text, i, budget)
+                if close is not None:
+                    yield from _yield_expansion(text, i, close, st.qstate, st.ansi)
+                    i = close + 1
+                    st = _QuoteState(st.qstate, st.ansi, False)
+                    continue
+                # No closer for this ``${`` (the scan ran off the end or the
+                # budget was spent): fall through to the ordinary transition
+                # below, so the interior walks as ordinary chars (scan-MORE).
+        # The quote / escape / ``$``-parity transition is the SHARED one, so the
+        # outer walk and the three ``${...}`` scanners read ``$'...'`` and the
+        # ``$$`` pairing identically -- there is no second quote opinion to drift.
+        st = _advance_quote(ch, st)
+        yield _ShellChar(i, ch, ch, was_unquoted, st.qstate, st.ansi, False)
         i += 1
 
 
