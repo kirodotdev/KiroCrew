@@ -1586,6 +1586,18 @@ class ConversationLog:
     _flock_state: dict[str, list[int]] = {}
     _flock_guard = threading.Lock()
 
+    # Permanent deletes in flight in THIS process, keyed by store directory and
+    # transcript lock stem (see ``_delete_in_flight_marks``) and counted so nested windows (the session-delete
+    # handler's window around ``delete_session``'s own) release cleanly. A
+    # delete holds the transcript lock across its whole transaction, so a
+    # lock-free existence probe made inside it still sees the file and cannot
+    # tell "present" from "about to be unlinked". Resume consults this before
+    # it publishes a slot (see :meth:`delete_in_flight`). Cross-process deletes
+    # (the CLI) are not visible here; the slot save's delete-won guard is the
+    # backstop for those.
+    _deletes_in_flight: dict[str, int] = {}
+    _deletes_in_flight_guard = threading.Lock()
+
     # Monotonic count of cross-process flock RELEASES per lock_key, bumped
     # under ``_flock_guard`` when a deferred release actually retires a held
     # flock. Part of the unlocked-fill publish witness
@@ -3590,6 +3602,48 @@ class ConversationLog:
     def note_tab_id(self, key: str, tab_id: str | None) -> None:
         self._read_projection.note_tab_id(key, tab_id)
 
+    @contextlib.contextmanager
+    def delete_in_flight_window(self, key: str) -> Iterator[None]:
+        """Mark *key*'s transcript as being permanently deleted for the block.
+
+        Non-blocking bookkeeping only, so it is safe on the event loop. Held by
+        ``delete_session`` for its whole transaction, and by callers whose
+        delete spans more than that call (the session-delete handler captures
+        which slot to remove before its first await, so the window has to open
+        there for a slot published after that capture to be refused).
+        """
+        marks = self._delete_in_flight_marks(key)
+        with ConversationLog._deletes_in_flight_guard:
+            for mark in marks:
+                ConversationLog._deletes_in_flight[mark] = (
+                    ConversationLog._deletes_in_flight.get(mark, 0) + 1
+                )
+        try:
+            yield
+        finally:
+            with ConversationLog._deletes_in_flight_guard:
+                for mark in marks:
+                    depth = ConversationLog._deletes_in_flight.get(mark, 0) - 1
+                    if depth > 0:
+                        ConversationLog._deletes_in_flight[mark] = depth
+                    else:
+                        ConversationLog._deletes_in_flight.pop(mark, None)
+
+    def delete_in_flight(self, key: str) -> bool:
+        """True while a permanent delete of *key* is in flight in this process."""
+        marks = self._delete_in_flight_marks(key)
+        with ConversationLog._deletes_in_flight_guard:
+            return any(mark in ConversationLog._deletes_in_flight for mark in marks)
+
+    def _delete_in_flight_marks(self, key: str) -> tuple[str, ...]:
+        # The transcript lock stems, not ``_path``: ``_path`` stats the disk and
+        # picks the legacy Slack file only while it exists, so a mark taken
+        # before the unlink and a probe made after it would name different
+        # files. The stems are pure string math and every spelling of one
+        # session maps to the same set, exactly as the transcript lock does.
+        base = str(self._dir)
+        return tuple(f"{base}{os.sep}{stem}" for stem in transcript_lock_stems(key))
+
     @overload
     def delete_session(self, key: str, *, skip_pinned: Literal[False] = ...) -> bool: ...
 
@@ -3597,10 +3651,11 @@ class ConversationLog:
     def delete_session(self, key: str, *, skip_pinned: Literal[True]) -> bool | None: ...
 
     def delete_session(self, key: str, *, skip_pinned: bool = False) -> bool | None:
-        if skip_pinned:
-            deleted = self._metadata_projection.delete_session(key, skip_pinned=True)
-        else:
-            deleted = self._metadata_projection.delete_session(key, skip_pinned=False)
+        with self.delete_in_flight_window(key):
+            if skip_pinned:
+                deleted = self._metadata_projection.delete_session(key, skip_pinned=True)
+            else:
+                deleted = self._metadata_projection.delete_session(key, skip_pinned=False)
         if deleted:
             # A deleted session's restart-surviving vouch goes with it, so the
             # vouched-executions/ files track live sessions, not every one ever made.

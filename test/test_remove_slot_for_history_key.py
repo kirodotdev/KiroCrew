@@ -1942,6 +1942,11 @@ class _FakeTranscriptStore:
         with self._locked(ordered[0] if ordered else ""):
             yield
 
+    @contextlib.contextmanager
+    def delete_in_flight_window(self, key: str) -> Iterator[None]:
+        """No-op stand-in: nothing in these tests races a resume."""
+        yield
+
     def get_metadata_status(self, key: str) -> tuple[Any, bool]:
         self.calls.append(f"get_metadata:{key}")
         if key in self._meta:

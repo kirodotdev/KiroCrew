@@ -1663,16 +1663,12 @@ def test_a_cancellation_during_the_deferred_clear_still_discards_the_build(tmp_p
     assert log.get_metadata(f"dashboard:{key}").get("closed") is True
 
 
-def test_a_history_click_that_loses_the_race_after_its_eager_clear_restores_the_marker(
-    tmp_path, monkeypatch
-):
-    """The hook-less History path clears ``closed`` eagerly. A click that passes
-    the early construction guard, clears, and then finds the key under
+def test_a_history_click_that_loses_the_race_leaves_the_marker_untouched(tmp_path, monkeypatch):
+    """The hook-less History path clears ``closed`` only after it publishes. A
+    click that passes the early construction guard and then finds the key under
     construction (a revive retracted its build inside the click's read window)
-    is refused ``resume_in_progress``; if that revive is then refused too, the
-    click's clear would be the only durable change left, and the archived
-    session would come back as a sidebar row at the next start. The click puts
-    the marker back before answering."""
+    is refused ``resume_in_progress`` with the marker exactly as it found it, so
+    if that revive is then refused too, the archived session stays archived."""
     from kiro_crew.dashboard import chat_handlers
 
     state = _make_state(tmp_path)
@@ -1682,8 +1678,8 @@ def test_a_history_click_that_loses_the_race_after_its_eager_clear_restores_the_
     real_agent = chat_handlers._restored_agent_name
 
     def _agent_then_contend(*a, **kw):
-        # Runs after the eager clear and before the post-clear guard: another
-        # resume of the same key takes the construction mark meanwhile.
+        # Runs inside the click's read window, before the post-read guard:
+        # another resume of the same key takes the construction mark meanwhile.
         state.begin_slot_construction(key)
         return real_agent(*a, **kw)
 
@@ -1699,42 +1695,44 @@ def test_a_history_click_that_loses_the_race_after_its_eager_clear_restores_the_
     assert log.get_metadata(f"dashboard:{key}").get("closed") is True
 
 
-def test_a_history_click_that_loses_the_race_and_cannot_restore_answers_rollback_failed(
-    tmp_path, monkeypatch
-):
-    """Same race as above, but the marker restore keeps raising and the re-read
-    shows the marker absent: the click must not answer an ordinary
-    ``resume_in_progress`` that a retry would clear, because the durable session
-    is now reopened. Same ``reopen_rollback_failed`` 503 the hooked discard gives."""
+def test_a_history_click_refused_by_an_in_flight_delete_writes_nothing(tmp_path, monkeypatch):
+    """A delete of the session is in flight when the click reaches its last
+    check. The click refuses with a retryable ``resume_conflict`` before any
+    durable write: the ``closed`` marker is still set, and neither the reopen
+    clear nor a marker restore was attempted, so there is nothing a failed
+    rollback could leave half-done."""
     from kiro_crew.dashboard import chat_handlers
 
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
     key = _archive(state, caller, _slot(state, "chat-2"))
     log = state.conversation_log
-    real_agent = chat_handlers._restored_agent_name
+    writes = []
+    real_clear = log.clear_closed
     real_update = log.update_metadata_if
 
-    def _agent_then_contend(*a, **kw):
-        state.begin_slot_construction(key)
-        return real_agent(*a, **kw)
+    def _record_clear(*a, **kw):
+        writes.append("clear_closed")
+        return real_clear(*a, **kw)
 
-    def _restore_fails(k, fields, guard, **kw):
-        if "closed" in fields:
-            raise OSError(errno.EIO, "injected")
-        return real_update(k, fields, guard, **kw)
+    def _record_update(*a, **kw):
+        writes.append("update_metadata_if")
+        return real_update(*a, **kw)
 
-    monkeypatch.setattr(chat_handlers, "_restored_agent_name", _agent_then_contend)
-    monkeypatch.setattr(log, "update_metadata_if", _restore_fails)
+    monkeypatch.setattr(log, "clear_closed", _record_clear)
+    monkeypatch.setattr(log, "update_metadata_if", _record_update)
 
-    outcome = asyncio.run(
-        chat_handlers.resume_slot_from_history(state, name=key, history_key=f"dashboard:{key}")
-    )
-    state.end_slot_construction(key)
+    with log.delete_in_flight_window(f"dashboard:{key}"):
+        outcome = asyncio.run(
+            chat_handlers.resume_slot_from_history(state, name=key, history_key=f"dashboard:{key}")
+        )
 
     assert outcome.refusal is not None
-    assert outcome.refusal.code == "reopen_rollback_failed" and outcome.refusal.status == 503
+    assert outcome.refusal.code == "resume_conflict" and outcome.refusal.status == 409
+    assert writes == [], f"a refused resume wrote durable state: {writes}"
+    assert log.get_metadata(f"dashboard:{key}").get("closed") is True
     assert key not in state._slots
+    assert key not in state._slots_under_construction
 
 
 def test_a_concurrent_resume_during_the_hook_gets_a_coded_conflict_not_a_500(tmp_path):

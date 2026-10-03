@@ -306,6 +306,22 @@ Per-thread JSONL files at `~/.kiro/crew/sessions/{safe_key}.jsonl`. First line i
   reversible, while deleting a successor's state is not. The teardown contract
   is specified in [session.md](session.md) under **Permanent history deletion
   keeps ownership exact**.
+- `delete_in_flight_window(key)` / `delete_in_flight(key)` — process-local
+  marker for a permanent delete in progress, keyed by store directory and
+  transcript lock stem (every spelling of one session shares it). Non-blocking,
+  so it is safe on the event loop. `delete_session` holds it for its whole
+  transaction, and `DELETE /api/sessions/{key}` opens it before it captures the
+  slot to remove. History resume does not publish while it is held: the
+  resume's lock-free existence re-check cannot see a delete that has the
+  transcript lock but has not unlinked yet, and a slot published then is in no
+  delete claim, so it would survive as a tab of a deleted conversation. Resume
+  instead refuses with a retryable `resume_conflict` (409): it cannot know yet
+  whether the delete goes through (a bulk clear skips a pinned row), and a retry
+  after the delete ends finds the session gone or opens it. The refusal leaves
+  the session as it found it: a hook-less resume clears the `closed` marker only
+  after it publishes, and a hooked one only after its hook passes. A
+  delete in another process is not visible here; the save's delete-won guard
+  below still keeps that case from rewriting the file.
 
 ### MCP chat-history tools (`mcp_core.py`)
 
