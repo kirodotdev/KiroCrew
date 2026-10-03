@@ -251,7 +251,11 @@ async def api_status(request: web.Request) -> web.Response:
             "os_type": static_info.get("os", ""),
             "arch": static_info.get("arch", ""),
             "cpu_count": static_info.get("cpu_count", 0),
-            "mem_total_gb": static_info.get("mem_total_gb", 0),
+            # ``None`` (JSON ``null``) when the static probe could not measure
+            # the host's memory — the same "unknown, never a fake 0" signal
+            # ``cron_jobs``/``lessons`` use — so a reader can tell a failed
+            # probe apart from a host that genuinely reports 0 GB.
+            "mem_total_gb": static_info.get("mem_total_gb"),
         }
     )
     # Frontend RUM config blob (PlatformContext telemetry).  The Default
@@ -297,13 +301,19 @@ def _get_static_system_info() -> dict[str, object]:
         "cwd": os.getcwd(),
     }
 
-    # Total memory (static) — cross-platform
+    # Total memory (static) — cross-platform. A probe that comes up empty leaves
+    # ``mem_total_gb`` OUT of the dict (readers use ``.get`` and ``/api/status``
+    # projects the gap as ``null``) and says so once: this dict is cached for
+    # the life of the process, so a silent miss here would otherwise be served
+    # as an unexplained "unknown" until restart.
     if sys.platform == "darwin":
         try:
             out = subprocess.check_output([_SYSCTL, "-n", "hw.memsize"], timeout=2).decode().strip()
             info["mem_total_gb"] = round(int(out) / (1024**3), 1)
         except Exception:
-            pass
+            logger.warning(
+                "could not read sysctl hw.memsize; mem_total_gb unavailable", exc_info=True
+            )
     elif sys.platform == "linux":
         try:
             with open("/proc/meminfo") as f:
@@ -312,12 +322,18 @@ def _get_static_system_info() -> dict[str, object]:
                         kb = int(line.split()[1])
                         info["mem_total_gb"] = round(kb / (1024**2), 1)
                         break
+                else:
+                    logger.warning("/proc/meminfo has no MemTotal line; mem_total_gb unavailable")
         except Exception:
-            pass
+            logger.warning("could not read /proc/meminfo; mem_total_gb unavailable", exc_info=True)
     elif sys.platform == "win32":
         mem = platform_compat.system_memory()
         if mem:
             info["mem_total_gb"] = round(mem[0] / (1024**3), 1)
+        else:
+            # system_memory() folds every failure into None, so there is no
+            # exception to attach here.
+            logger.warning("GlobalMemoryStatusEx returned nothing; mem_total_gb unavailable")
 
     _STATIC_SYSTEM_INFO = info
     return info

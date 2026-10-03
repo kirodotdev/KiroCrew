@@ -61,7 +61,6 @@ src/kiro_crew/conpty.py 27.9   # 12/43
 src/kiro_crew/dashboard/_types.py 0.0   # 0/3
 src/kiro_crew/dashboard/handlers/weixin_qr.py 47.0   # 119/253
 src/kiro_crew/dashboard/handlers_channel.py 40.4   # 84/208
-src/kiro_crew/dashboard/handlers_system.py 75.2   # 354/471
 src/kiro_crew/dashboard/ws.py 64.4   # 130/202
 src/kiro_crew/diagnostics.py 69.1   # 143/207
 src/kiro_crew/discord/gateway.py 19.6   # 10/51
