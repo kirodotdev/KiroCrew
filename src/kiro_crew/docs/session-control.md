@@ -1,16 +1,16 @@
 # Session Control — driving another session
 
-One chat session can open, fork, seed, watch, stop, close and revive another one,
+One chat session can open, fork, seed, watch, stop, retry, close and revive another one,
 change its model, reload its agent process, and take another one under itself in
 the sidebar. The tools come from the
 `kirocrew-dashboard` MCP server, so an agent that does not mount that server
 never has them — exactly like any other MCP server. This page is the reference
-for all 29 of its tools, written for the agent that is about to use them.
+for all 30 of its tools, written for the agent that is about to use them.
 
 The server is defined in `src/kiro_crew/mcp_dashboard.py`. Two halves:
 
 - **Session control** — `session_create`, `session_fork`, `session_send`,
-  `session_read_message`, `session_summary`, `session_stop`, `session_end_wait`,
+  `session_read_message`, `session_summary`, `session_stop`, `session_end_wait`, `session_retry`,
   `session_set_model`, `session_reload`, `session_close`, `session_revive`, `session_broadcast`,
   `session_status`, `session_adopt`, `session_release`. These reach another session.
 - **Sidebar shape** — `chat_folder_tree`, `chat_folder_create`,
@@ -479,6 +479,31 @@ If the old process fails while shutting down after it was removed, the reload
 still counts as done: the notice is written, the process starts again, and the
 reply carries a `warning`. A failure before anything was removed answers
 `reload_failed`, and nothing was torn down.
+
+### `session_retry`
+
+| Argument | Required | Meaning |
+|---|---|---|
+| `target` | yes | Session key or exact title |
+
+Re-runs a session's last turn when it failed, the same way the Resume button in
+that tab does. The target gets the same recovery row a Resume press leaves, and
+its most recent request runs again. No second copy of the user's message is
+added, which is the difference from re-sending the prompt with `session_send`.
+
+The target must be idle and its last turn must have failed: it ended in an error
+row, or the request got no reply at all. A target whose last turn finished, or
+was ended with Stop, is refused with `turn_not_failed`, so this tool cannot make
+another session produce a fresh answer on top of a good one. The other refusals
+are Resume's own: `slot_running`, `slot_orchestrating`, `slot_stopping`,
+`slot_queue_pending`, `slot_approval_pending`, `slot_subagents_running` and
+`slot_empty`. After two failed session starts in a row the call is refused too. A third
+identical start will not go differently, so the host needs attention first
+(the refusal says to restart the gateway). A target bound to a remote crew is
+refused with `remote_target_unsupported`.
+
+The session-control audit line records your session key as the caller, and the
+target's own `dashboard_continue` line records `via=session_control`.
 
 ### `session_revive`
 

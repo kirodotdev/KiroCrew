@@ -3572,6 +3572,13 @@ SESSION_END_WAIT_SCHEMA = ToolSchema(
     ],
 )
 
+SESSION_RETRY_SCHEMA = ToolSchema(
+    tool_name="session_retry",
+    fields=[
+        FieldSpec("target", str, required=True, max_len=MAX_SHORT_STRING),
+    ],
+)
+
 SESSION_SET_MODEL_SCHEMA = ToolSchema(
     tool_name="session_set_model",
     fields=[
@@ -3925,6 +3932,7 @@ MCP_DASHBOARD_SCHEMAS: dict[str, ToolSchema] = {
     "session_fork": SESSION_FORK_SCHEMA,
     "session_stop": SESSION_STOP_SCHEMA,
     "session_end_wait": SESSION_END_WAIT_SCHEMA,
+    "session_retry": SESSION_RETRY_SCHEMA,
     "session_set_model": SESSION_SET_MODEL_SCHEMA,
     "session_reload": SESSION_RELOAD_SCHEMA,
     "session_close": SESSION_CLOSE_SCHEMA,
