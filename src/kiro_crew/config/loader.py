@@ -2732,6 +2732,10 @@ def _store_validated_data(
 #: Sidecar key under which the loader caches the pre-overlay base values of the
 #: top-level sections config.local.json touches. See ``_shadowed_base_sections``.
 _SIDECAR_BASE_SHADOW = "base_shadow"
+#: Whether the load that filled this cache entry found ``config.json`` present but
+#: unparseable. A cache hit carries it forward so :meth:`KiroCrewConfig.save` can
+#: refuse to publish a snapshot built without the base file.
+_SIDECAR_BASE_UNREADABLE = "base_unreadable"
 
 
 def _shadowed_base_sections(base: dict, overlay: dict) -> dict:
@@ -4288,6 +4292,13 @@ class KiroCrewConfig:
         compare=False,
     )
 
+    #: True when the load that built this instance found ``config.json`` present
+    #: but unparseable, so every base setting here is a DEFAULT, not the user's.
+    #: Describes this read, like ``_degraded_sections``; never serialized.
+    #: :meth:`save` refuses such an instance even if the file has been repaired
+    #: since, because publishing it would still replace the repaired settings.
+    _base_unreadable: bool = field(default=False, repr=False, compare=False)
+
     @property
     def degraded_sections(self) -> frozenset[str]:
         """Sections this load discarded (see ``_degraded_sections``)."""
@@ -4466,9 +4477,11 @@ class KiroCrewConfig:
         # therefore the correct answer on the hot path, not a missing one -- the load
         # that populated the cache already adopted.
         adoptable: list[SupersededDefault] = []
+        base_unreadable = False
         if cached is not None:
             data, sidecar = cached
             base_shadow = sidecar.get(_SIDECAR_BASE_SHADOW, {})
+            base_unreadable = bool(sidecar.get(_SIDECAR_BASE_UNREADABLE, False))
         else:
             # Capture the invalidation generation BEFORE disk I/O. A successful
             # write advances it, so this read cannot repopulate pre-write data
@@ -4491,10 +4504,12 @@ class KiroCrewConfig:
                         loaded_base = True
                     else:
                         config_source_unreadable = True
+                        base_unreadable = True
                         logger.warning("Config is not a JSON object, using defaults")
                         _mark_file_degraded(path)
                 except (json.JSONDecodeError, OSError) as e:
                     config_source_unreadable = True
+                    base_unreadable = True
                     logger.warning("Failed to load config from %s: %s", path, e)
                     _mark_file_degraded(path)
 
@@ -4571,6 +4586,7 @@ class KiroCrewConfig:
                 # could not read what they configured". Carry the observation
                 # through so the caller can tell them apart.
                 cfg = cls(_degraded_sections=frozenset(_OBSERVED_DEGRADED_SECTIONS))
+                cfg._base_unreadable = base_unreadable
                 if (
                     DEGRADED_WHOLE_CONFIG in _OBSERVED_DEGRADED_SECTIONS
                     or "dashboard" in _OBSERVED_DEGRADED_SECTIONS
@@ -4664,7 +4680,7 @@ class KiroCrewConfig:
             _store_validated_data(
                 data,
                 pre_read_fp,
-                {_SIDECAR_BASE_SHADOW: base_shadow},
+                {_SIDECAR_BASE_SHADOW: base_shadow, _SIDECAR_BASE_UNREADABLE: base_unreadable},
                 expected_generation=read_generation,
             )
 
@@ -5225,6 +5241,7 @@ class KiroCrewConfig:
             if adopt_keys and not adoption_landed and not cfg._degraded_sections:
                 _invalidate_config_cache()
 
+        cfg._base_unreadable = base_unreadable
         return cfg, ticket
 
     def to_dict(self) -> dict:
@@ -5368,6 +5385,10 @@ class KiroCrewConfig:
         calls ``save()`` at all (``TestNoInlineSaveOnTheEventLoop`` pins that
         structurally).
 
+        **Fails closed on an unreadable file.** If ``config.json`` exists but does
+        not parse, this raises :class:`ConfigReadError` and writes nothing: an
+        instance loaded from such a file holds defaults, not the user's settings.
+
         **Async callers must offload.** A contended POSIX ``flock`` blocks
         the calling thread for as long as the holder keeps it, which on the
         event-loop thread stalls the whole gateway.
@@ -5444,6 +5465,18 @@ class KiroCrewConfig:
         except OSError:
             pass
         with _config_write_lock(p):
+            # Never publish over a file that does not parse. load() answers such a
+            # file with DEFAULTS, so this snapshot would replace every setting the
+            # user has with them -- silently, and with the endpoint reporting
+            # success. Same fail-closed rule as update_config_locked; a missing
+            # file (the create-default callers) is still written.
+            if self._base_unreadable:
+                raise ConfigReadError(
+                    f"refusing to save over {p}: this snapshot was loaded while the "
+                    "file did not parse, so it holds defaults, not the saved settings"
+                )
+            if p.exists():
+                read_config_for_update(p)
             write_config_atomically(p, stamp_config_meta(d))
         # Drop the validated-data cache so the next load() re-reads this write.
         # mtime-keying already detects the change; this makes it immediate even

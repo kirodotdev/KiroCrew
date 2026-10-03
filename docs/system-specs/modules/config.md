@@ -1339,6 +1339,18 @@ Writes current config to `~/.kiro/crew/config.json` via `to_dict()`, through
 `write_config_atomically()` (see below). Invalidates the `load()` validated-data
 cache so the next load reflects the write immediately.
 
+It **fails closed** and writes nothing (raises `ConfigReadError`) in two cases:
+
+- The instance was built by a load that found `config.json` present but
+  unparseable (`_base_unreadable`). Such a snapshot holds defaults rather than
+  the user's settings, and that holds even if the file has been repaired since.
+- `config.json` exists now and does not parse (read through
+  `read_config_for_update()` under the same lock).
+
+A missing file is still created, which is what the create-default callers rely
+on. `PUT /api/config/theme` answers the refusal with
+`500 {"code": "config_unreadable"}` and leaves the file as it was.
+
 ### Partial config updates: `read_config_for_update()` / `write_config_atomically()`
 
 Many callers do not hold a whole `KiroCrewConfig` — they flip one toggle
