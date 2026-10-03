@@ -2086,7 +2086,11 @@ self-contained file with no WAL to pair.
   Manual dashboard backups use the same configured retention in their worker.
 - **Enumeration**: the heartbeat and the `kirocrew memory backup` command share one
   helper that visits the default store, declared named V1 stores and actively owned
-  V2 stores. Neither uses a glob of `memory_stores/`: a glob
+  V2 stores. The command passes `force=True`, like the dashboard's "back up now" and
+  the pre-update copy, so an operator asking for a copy gets one; only the heartbeat
+  keeps the interval guard. Its summary line prints all four counters, `skipped`
+  included, so a pass that copied nothing says so rather than reading as three zeros.
+  Neither uses a glob of `memory_stores/`: a glob
   would adopt an abandoned or restored directory the operator never declared and then
   copy it forever. Each resolved path is confirmed to belong to the store that asked for
   it, independently of strict binding resolution.
