@@ -98,6 +98,17 @@ describe('store/chat owners', () => {
   })
 })
 
+describe('historyKeyToSlot', () => {
+  it.each([
+    ['dashboard_chat-1', 'chat-1'],
+    ['dashboard_dashboard_chat-1', 'chat-1'],
+    ['dashboard:chat-1', 'chat-1'],
+    ['slack:C1:123', 'slack:C1:123'],
+  ])('maps %s to %s', (key, expected) => {
+    expect(wire.historyKeyToSlot(key)).toBe(expected)
+  })
+})
+
 /** Reducers the facade wires inline next to the families: small UI flags and the live frame reducer. */
 const INLINE_REDUCERS = [
   'setPendingInput', 'setAgentSwitchNotice', 'setVoicePlaying', 'setVoiceAudio',

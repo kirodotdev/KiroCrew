@@ -246,5 +246,12 @@
   "pages.overview.memoryTab.consolidate_failed_session",
   "pages.overview.memoryTab.skipped_temporary_count",
   "pages.overview.memoryTab.skipped_incognito_count",
-  "pages.chat.crewLog.subagents_unmatched"
+  "pages.chat.crewLog.subagents_unmatched",
+  "components.promptStash.badge",
+  "components.promptStash.stashed",
+  "components.promptStash.stashed_touch",
+  "components.promptStash.restored",
+  "components.promptStash.menu_restore_desc",
+  "components.promptStash.menu_restore_desc_touch",
+  "components.promptStash.swapped"
 ]

@@ -30,6 +30,18 @@ export const isUnsafeKey = (key: string): boolean =>
  *  reach the prototype. Real keys pass through unchanged. */
 export const safeKey = (key: string): string => (isUnsafeKey(key) ? `unsafe-key:${key}` : key)
 
+/** Slot key for a history row's session key. `/api/sessions` rows carry the
+ *  file-stem spelling (`dashboard_<slot>`); other callers may pass the session
+ *  key (`dashboard:<slot>`). Match the backend loop in `session_resume.py` and
+ *  the duplicate-key handling in `history_search.py` by removing every stacked
+ *  file-stem prefix. Channel-origin keys pass through unchanged. */
+export const historyKeyToSlot = (key: string): string => {
+  if (key.startsWith('dashboard:')) return key.slice('dashboard:'.length)
+  let slot = key
+  while (slot.startsWith('dashboard_')) slot = slot.slice('dashboard_'.length)
+  return slot
+}
+
 /** Per-entry ceiling on a tool result, and on its input, held in the live
  *  tool log. The server caps either at 1 MB (`_redact_tool_field`), and the
  *  log keeps 100 entries per open pane until the next user message — which in

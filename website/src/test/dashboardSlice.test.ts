@@ -1,4 +1,6 @@
+import { configureStore } from '@reduxjs/toolkit'
 import { describe, it, expect, vi } from 'vitest'
+import { api } from '../api/client'
 import reducer, {
   sseStatus,
   setYoloDuration,
@@ -38,6 +40,25 @@ describe('dashboardSlice', () => {
     expect(initial.approvalMode).toBe('normal')
     expect(initial.refreshTrigger).toBe(0)
     expect(initial.unreadSlots).toEqual([])
+  })
+
+  it('fetchSlots leaves localStorage untouched', async () => {
+    vi.mocked(api.chatSlots).mockResolvedValue([slot1])
+    localStorage.setItem('sentinel', 'keep')
+    const getItem = vi.spyOn(Storage.prototype, 'getItem')
+    const setItem = vi.spyOn(Storage.prototype, 'setItem')
+    const removeItem = vi.spyOn(Storage.prototype, 'removeItem')
+    try {
+      const store = configureStore({ reducer: { dashboard: reducer } })
+      await store.dispatch(fetchSlots())
+      expect(getItem).not.toHaveBeenCalled()
+      expect(setItem).not.toHaveBeenCalled()
+      expect(removeItem).not.toHaveBeenCalled()
+    } finally {
+      getItem.mockRestore()
+      setItem.mockRestore()
+      removeItem.mockRestore()
+    }
   })
 
   describe('sseStatus', () => {

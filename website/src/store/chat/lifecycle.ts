@@ -13,8 +13,9 @@ import { isChatPageSurface } from '../../utils/channelOrigin'
 import { mergePreservedPastes } from '../../utils/pasteTokens'
 import { findReport, parseErrorCode } from '../../utils/errorReport'
 import type { HistoryDeleteRefusal } from '../../utils/historyDeleteRefusal'
+import { clearPromptStash } from '../../utils/promptStash'
 import type { ChatState } from './state'
-import { filterMessages, safeKey } from './wire'
+import { filterMessages, historyKeyToSlot, safeKey } from './wire'
 import { enterActiveSlot, pushHistory } from './runState'
 import { parkActiveTranscript, setPagingCursor } from './slotCache'
 
@@ -226,8 +227,15 @@ export const deleteHistorySession = createAsyncThunk<
 >(
   'chat/deleteHistorySession',
   async (key, { getState, rejectWithValue }) => {
+    const slot = historyKeyToSlot(key)
     try {
-      await api.deleteSession(key)
+      const response = await api.deleteSession(key) as { ok?: unknown; code?: unknown }
+      if (response?.ok !== true) {
+        const title = (getState() as { chat: ChatState }).chat.history.find(s => s.key === key)?.title ?? ''
+        const code = typeof response?.code === 'string' ? response.code : ''
+        return rejectWithValue({ key, title, code })
+      }
+      await clearPromptStash(slot)
       return key
     } catch (e) {
       // Duck-typed on `body`, not `instanceof ApiError`, so a mocked transport

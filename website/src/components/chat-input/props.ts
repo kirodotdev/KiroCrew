@@ -361,6 +361,12 @@ export interface ChatInputProps {
    */
   promptOptimizer?: boolean
   /**
+   * Persisted prompt stash. Defaults on for ordinary on-record composers.
+   * Off-record composers whose drafts intentionally live only in memory must
+   * opt out so their text cannot cross that persistence boundary.
+   */
+  promptStash?: boolean
+  /**
    * The user-driven collapse: the "put the message box away while I read" entry
    * point, the bar that replaces it, and the persisted preference.
    *
