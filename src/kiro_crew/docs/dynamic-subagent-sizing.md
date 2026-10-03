@@ -277,6 +277,15 @@ A start is never priced at a whole-run peak or a whole-tree p90: those measure
 the whole process subtree, including the test suites and builds a run launched,
 not what a runtime holds once it is up.
 
+On macOS the floor also reads the kernel's memory-pressure level
+(`kern.memorystatus_vm_pressure_level`). While it is WARN or CRITICAL and a
+dedicated subagent of this gateway is running, a start waits even when the
+reclaimable figure clears the floor, for at most 30 minutes, after which it ends
+without starting; with none running
+it is judged on the figure alone. The level lags (it can read NORMAL on a Mac
+that is already swapping), so it backs the figure up rather than replacing it.
+It never changes the auto-sized cap.
+
 ## Notes
 
 - Stdlib only — no new dependencies. Memory/CPU are read per platform:

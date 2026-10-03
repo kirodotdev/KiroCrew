@@ -493,6 +493,13 @@ class _TaskqBridgeMixin(ManagerComponent):
         answer: a queued handle for a row no dispatch will ever pick is a spawn
         the requester never hears about again.
 
+        A write the store could not take at all (``TaskStoreUnavailable``) gave
+        neither answer, so the row is answered as still queued and re-checked by
+        the next pass: it is almost certainly a stored row still QUEUED and due,
+        and a refusal now would be followed by the pump starting it. A
+        storeless entry cannot reach here while a store is attached, because
+        spawns are refused when the queue is on and its store is not.
+
         A row that EXISTS and is past ``CLAIMABLE`` was cancelled while this
         awaited, and its stop has already been announced by the canceller. So the
         answer is the shape ``_after_dispatch_impl`` recognises and swallows
@@ -522,7 +529,21 @@ class _TaskqBridgeMixin(ManagerComponent):
             try:
                 ok, existing = await store.run(_defer_then_read, store)
             except _taskq.TaskStoreUnavailable:
-                _glue_logger.warning("taskq: defer of %s failed", point.agent_id, exc_info=True)
+                # Neither answer is known: the row may well still be QUEUED and
+                # due, and a refusal announced now would be followed by the
+                # pump starting it, one id with two terminal events. So it is
+                # answered as still queued, unlabelled, and re-checked by the
+                # next pass, which the timer below arms.
+                _glue_logger.warning(
+                    "taskq: defer of %s failed; left queued for the next pass",
+                    point.agent_id,
+                    exc_info=True,
+                )
+                try:
+                    _asyncio.get_event_loop().call_later(wait, self._manager._drain_queue)
+                except RuntimeError:
+                    pass
+                return point.queued
         if not ok:
             if existing is not None:
                 return _replace(point.queued, done=True, user_stopped=True)
@@ -1332,8 +1353,15 @@ class _TaskqBridgeMixin(ManagerComponent):
         if getattr(sessions, "admission_closed", False) is True:
             return
         present = {p.get("_preassigned_id") for p in self._manager._queue}
+        held_modes = getattr(self._manager, "_held_approval_modes", {})
         for rec in rows:
             entry = self._window_entry(rec)
+            if rec.id in held_modes:
+                # This process accepted the row with that mode and is the one
+                # starting it: the same request's consent, not a replay
+                # (``spawn_impl`` records it; ``_window_entry`` says why the store
+                # never carries it).
+                entry["approval_mode"] = held_modes[rec.id]
             if self._manager._boundary_cancellation_pending(entry):
                 continue
             if rec.id not in present:

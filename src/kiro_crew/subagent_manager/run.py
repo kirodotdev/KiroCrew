@@ -90,6 +90,7 @@ if TYPE_CHECKING:
         kill_set,
         logger,
         name_grant,
+        platform_compat,
         process_survived_async,
         provider_fallback_active,
         read_tombstone,
@@ -916,7 +917,8 @@ class RunEventCoordinator(ManagerComponent):
 
         *wait* is the gate's label for WHY the rows wait (``reason`` one of the
         ``QUEUED_REASON_*`` kinds, plus ``available_gb`` / ``required_gb`` for the
-        memory kinds). The gate passes it on the emit that follows its verdict;
+        memory kinds; ``memory_pressure`` carries no figures). The gate passes it
+        on the emit that follows its verdict;
         it is remembered per parent and rides on every later emit for that
         parent -- the drain's, the claim path's (once a claimed row registers, so
         a started row leaves the count) and the cancel path's re-emits carry no
@@ -3228,8 +3230,12 @@ class RunEventCoordinator(ManagerComponent):
         here with its start clock frozen (it holds its slot, so it is still
         counted), one such start at a time so waiters do not each count the
         others and all hold, for at most ``_DEDICATED_TOPUP_WAIT_SECS``; past
-        that it starts anyway and says so. A capacity verdict never fails a run
-        that was admitted. A row not admitted at the shared price returns at once;
+        that it starts anyway and says so. A root start also waits here while the
+        macOS kernel memory-pressure hold applies (subagent.md, *macOS: the
+        kernel memory-pressure hold*), under the same bound: it is an admitted
+        run already starting, not a held start, so it is not ended. A capacity verdict
+        never fails a run that was admitted. A row not admitted at the shared
+        price returns at once;
         the flag that marks it clears only once the check passed or the wait ran
         out, so a cancel during the wait leaves the respawn to re-check.
         """
@@ -3271,14 +3277,44 @@ class RunEventCoordinator(ManagerComponent):
                     claim_prices=[price for price, _ in self._manager._claim_prices.values()],
                 )
 
+            # A nested child is never held by the kernel pressure hold; this row
+            # itself does not count as a runtime of ours while it waits, since it
+            # is still flagged shared-priced.
+            root = not self._manager._admission.entry_is_child(
+                {"parent_session_key": info.parent_session_key}
+            )
             while True:
                 asked = _need()
                 avail = await _host_available_gb_off_loop(asked)
                 # Decided here, on the loop, against what the reserve owes NOW:
                 # other rows may have started or settled while the read ran.
                 need = max(asked, _need())
-                if avail < 0 or avail >= need:
-                    # -1 is the reader's "unmeasurable": fail open, as the gate does.
+                pressure = self._manager._memory_pressure_hold(floor_gb=floor) if root else None
+                # -1 is the reader's "unmeasurable": fail open, as the gate does.
+                fits = avail < 0 or avail >= need
+                if fits and pressure is None:
+                    info._start_priced_shared = False
+                    break
+                if time.monotonic() >= deadline and fits:
+                    waited = time.monotonic() - started
+                    logger.warning(
+                        "Subagent %s: starting a dedicated process under macOS memory "
+                        "pressure (%s); waited %.0fs",
+                        info.id,
+                        platform_compat.memory_pressure_name(pressure),
+                        waited,
+                    )
+                    sel().log_tool_invocation(
+                        session_key=info.parent_session_key or "",
+                        source="subagent",
+                        tool_name="spawn_run",
+                        outcome="dedicated_start_under_memory_pressure",
+                        metadata={
+                            "memory_pressure_level": pressure,
+                            "waited_secs": round(waited, 1),
+                            "subagent_id": info.id,
+                        },
+                    )
                     info._start_priced_shared = False
                     break
                 if time.monotonic() >= deadline:

@@ -6878,6 +6878,26 @@ def _prewarm_allowance() -> int:
     return resource_status.prewarm_allowance()
 
 
+def _pressure_hold_blocks_prewarm(state: "DashboardState") -> bool:
+    """Whether the subagent gate's macOS kernel memory-pressure hold applies now.
+
+    Read at a pre-warm's ADMISSION only, never on the re-probe after one
+    registered: a speculative runtime must not take the memory held user starts
+    wait for, but one that already finished its handshake is not evicted for a
+    level that crossed WARN meanwhile. On the loop: the manager's state is
+    loop-owned, and the read is a sysctl (plus a cached config read only while
+    the level is held).
+    """
+    subagents = getattr(state, "subagents", None)
+    if subagents is None:
+        return False
+    try:
+        return subagents.memory_pressure_hold_active() is True
+    except Exception:
+        logger.debug("Eager spawn: pressure-hold read failed", exc_info=True)
+        return False
+
+
 async def _evict_prefetches_beyond(
     sessions: Any,
     limit: int,
@@ -7433,6 +7453,16 @@ async def _eager_spawn(
             # is made first (oldest unclaimed evicted) so the population never
             # overshoots during the handshake. Off the loop: it reads procfs.
             allowance = await asyncio.to_thread(_prewarm_allowance)
+            if allowance > 0 and _pressure_hold_blocks_prewarm(state):
+                # No new speculative runtime, but the idle ones already live are
+                # not evicted: they hold no more memory than they did, and the
+                # host bands below, not the hold, decide when those must go.
+                logger.info(
+                    "Eager spawn: the subagent memory-pressure hold applies; leaving "
+                    "slot %s to first turn",
+                    slot.key,
+                )
+                return
             if not await _admit_prefetch(
                 sessions, session_key, allowance, signal_generation=signal_generation
             ):

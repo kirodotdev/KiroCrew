@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from kiro_crew import platform_compat
 from kiro_crew import resource_status as rs
 
 
@@ -664,3 +665,126 @@ class TestSliceOwnership:
             "readable": True,
             "healthy": False,
         }
+
+
+# ── macOS kernel memory pressure: reported beside the posture, never in it ────
+
+
+def _pressure(monkeypatch: pytest.MonkeyPatch, level: int | None) -> None:
+    monkeypatch.setattr(platform_compat, "memory_pressure_level", lambda: level)
+
+
+def test_probe_carries_the_level_without_moving_the_posture(monkeypatch) -> None:
+    monkeypatch.setattr(rs, "_read_available_gb", lambda: 8.0)
+    _pressure(monkeypatch, platform_compat.MEMORY_PRESSURE_WARN)
+    status = rs.probe(_cfg(4.0, 2.0))
+    assert status.memory_pressure_level == platform_compat.MEMORY_PRESSURE_WARN
+    assert status.memory_pressure_held is True
+    assert status.posture == rs.POSTURE_AMPLE
+
+
+def test_ample_figure_under_pressure_still_injects_a_line(monkeypatch) -> None:
+    monkeypatch.setattr(rs, "_read_available_gb", lambda: 8.0)
+    _pressure(monkeypatch, platform_compat.MEMORY_PRESSURE_WARN)
+    line = rs.probe(_cfg(4.0, 2.0)).context_line()
+    assert line.startswith("[RESOURCES] Host memory reads ~8.0 GB free")
+    assert "macOS reports memory pressure (WARN)" in line
+    assert rs.PRESSURE_QUEUE_NOTE in line
+
+
+def test_pressure_rides_a_tight_line_as_a_clause(monkeypatch) -> None:
+    monkeypatch.setattr(rs, "_read_available_gb", lambda: 3.0)
+    _pressure(monkeypatch, platform_compat.MEMORY_PRESSURE_CRITICAL)
+    line = rs.probe(_cfg(4.0, 2.0)).context_line()
+    assert line.startswith("[RESOURCES] Host memory is tight")
+    assert "macOS reports memory pressure (CRITICAL)" in line
+
+
+@pytest.mark.parametrize("level", [None, 1])
+def test_no_pressure_line_without_pressure(monkeypatch, level) -> None:
+    monkeypatch.setattr(rs, "_read_available_gb", lambda: 8.0)
+    _pressure(monkeypatch, level)
+    assert rs.probe(_cfg(4.0, 2.0)).context_line() == ""
+
+
+def test_the_off_switch_also_silences_the_pressure_line(monkeypatch) -> None:
+    monkeypatch.setattr(rs, "_read_available_gb", lambda: 8.0)
+    _pressure(monkeypatch, platform_compat.MEMORY_PRESSURE_WARN)
+    assert rs.probe(_cfg(0.0, 2.0)).context_line() == ""
+
+
+def test_summary_reports_the_level_only_where_it_is_read(monkeypatch) -> None:
+    monkeypatch.setattr(rs, "_read_available_gb", lambda: 8.0)
+    _pressure(monkeypatch, platform_compat.MEMORY_PRESSURE_WARN)
+    lines = rs.probe(_cfg(4.0, 2.0)).summary_lines()
+    assert f"  Kernel memory pressure: WARN — {rs.PRESSURE_QUEUE_NOTE}" in lines
+    _pressure(monkeypatch, platform_compat.MEMORY_PRESSURE_NORMAL)
+    assert "  Kernel memory pressure: NORMAL" in rs.probe(_cfg(4.0, 2.0)).summary_lines()
+    _pressure(monkeypatch, None)
+    lines = rs.probe(_cfg(4.0, 2.0)).summary_lines()
+    assert not any("Kernel memory pressure" in line for line in lines)
+
+
+def test_tool_guidance_never_says_heavy_work_is_fine_under_pressure(monkeypatch) -> None:
+    from kiro_crew import mcp_core
+
+    fake = rs.ResourceStatus(
+        available_gb=8.0,
+        cpu_count=8,
+        load_per_cpu=0.5,
+        posture=rs.POSTURE_AMPLE,
+        pressure_gb=4.0,
+        critical_gb=2.0,
+        memory_pressure_level=platform_compat.MEMORY_PRESSURE_WARN,
+    )
+    monkeypatch.setattr(rs, "probe", lambda cfg=None: fake)
+    out = mcp_core._call_tool_inner("resource_status", {})
+    assert "Posture: AMPLE" in out
+    assert "Kernel memory pressure: WARN" in out
+    assert "Guidance: macOS reports memory pressure — prefer the lighter path" in out
+    # The queue note is said once, on the level line, not again in the guidance.
+    assert out.count(rs.PRESSURE_QUEUE_NOTE) == 1
+    assert "heavy work is fine" not in out
+
+
+@pytest.mark.parametrize("level", [2, 4])
+def test_prewarm_bands_ignore_the_level(monkeypatch, level: int) -> None:
+    """The hold is the subagent gate's rule, read at the eager-spawn admission
+    with its other conditions (``chat_runner._pressure_hold_blocks_prewarm``);
+    the host-derived allowance itself stays figure-based."""
+    monkeypatch.setattr(rs, "_read_available_gb", lambda: 32.0)
+    _pressure(monkeypatch, level)
+    assert rs.prewarm_allowance(cfg=_cfg(4.0, 2.0)) == rs.PREWARM_MAX_LIVE
+
+
+def test_an_unreadable_figure_under_pressure_still_injects_a_line(monkeypatch) -> None:
+    monkeypatch.setattr(rs, "_read_available_gb", lambda: -1.0)
+    _pressure(monkeypatch, platform_compat.MEMORY_PRESSURE_WARN)
+    line = rs.probe(_cfg(4.0, 2.0)).context_line()
+    assert line.startswith("[RESOURCES] Host memory reads an unreadable figure")
+    assert "macOS reports memory pressure (WARN)" in line
+
+
+def test_an_unreadable_level_on_macos_is_reported_once(monkeypatch, caplog) -> None:
+    """None fails open, so a sysctl macOS stopped answering would silently turn
+    the hold off; it must be said, once per process."""
+    monkeypatch.setattr(rs, "_read_available_gb", lambda: 8.0)
+    monkeypatch.setattr(rs, "_pressure_unreadable_reported", False)
+    monkeypatch.setattr(platform_compat, "IS_MACOS", True)
+    _pressure(monkeypatch, None)
+    with caplog.at_level("WARNING", logger="kiro_crew.resource_status"):
+        rs.probe(_cfg(4.0, 2.0))
+        rs.probe(_cfg(4.0, 2.0))
+        rs.read_memory_pressure_level()
+    said = [r for r in caplog.records if "memory-pressure level is unreadable" in r.getMessage()]
+    assert len(said) == 1
+
+
+def test_an_unknown_level_off_macos_says_nothing(monkeypatch, caplog) -> None:
+    monkeypatch.setattr(rs, "_read_available_gb", lambda: 8.0)
+    monkeypatch.setattr(rs, "_pressure_unreadable_reported", False)
+    monkeypatch.setattr(platform_compat, "IS_MACOS", False)
+    _pressure(monkeypatch, None)
+    with caplog.at_level("WARNING", logger="kiro_crew.resource_status"):
+        rs.probe(_cfg(4.0, 2.0))
+    assert not any("memory-pressure level" in r.getMessage() for r in caplog.records)

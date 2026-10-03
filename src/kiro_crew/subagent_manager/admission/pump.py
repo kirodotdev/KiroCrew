@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 
     from ...subagent import (
         _RELEASE_REPUMP_SECS,
+        MEMORY_PRESSURE_NEVER_STARTED,
         SpawnAdmissionCoordinator,
         SpawnApprovalUnreachable,
         Stats,
@@ -43,6 +44,9 @@ class _PumpMixin(ManagerComponent):
         async def taskq_child_registered_async(self, info: "SubagentInfo") -> None: ...
 
         def _record_crew_log_spawn_started(self, info: "SubagentInfo") -> None: ...
+
+        @staticmethod
+        def entry_is_child(params: "Mapping[str, Any]") -> bool: ...
 
     def _should_stagger_queue_impl(self, now: float) -> tuple[bool, bool]:
         """Decide whether a spawn arriving at *now* must be queued.
@@ -286,9 +290,18 @@ class _PumpMixin(ManagerComponent):
         # shadowing the fresh read. ``params`` itself stays whole: it is the
         # row's identity for the stop path below.
         spawn_params = {k: v for k, v in params.items() if k != "_parent_spawn_policy"}
+        # The drain's agent re-validation, off the loop for the same reason.
+        agent_check = await self._manager._check_agent_off_loop(
+            str(params.get("agent") or ""),
+            str(params.get("cwd") or ""),
+            app=str(params.get("app") or ""),
+            execution_context=params.get("_execution_context"),
+            prevalidated=bool(params.get("_agent_prevalidated")),
+        )
         first: Any = self._manager.spawn(
             **spawn_params,
             _parent_spawn_policy=policy,
+            _agent_check=agent_check,
             _from_queue=True,
             _stop_before_claim=store is not None,
             _child_registration=store is None,
@@ -314,6 +327,7 @@ class _PumpMixin(ManagerComponent):
             lambda claimed: self._manager.spawn(
                 **spawn_params,
                 _parent_spawn_policy=policy,
+                _agent_check=agent_check,
                 _from_queue=True,
                 _claimed=claimed,
                 _child_registration=False,
@@ -548,10 +562,35 @@ class _PumpMixin(ManagerComponent):
         # eligible entries (resumes were granted above). When only the child
         # reserve is left, roots are not eligible; the window is topped up
         # with nested rows so the reserve can be used.
-        index = self._manager._admission.pick_window_index(view, lanes=lanes)
+        # The kernel memory-pressure hold keeps root entries out of the pick, the
+        # way the child reserve does; read once per pass, and only if a root
+        # entry is considered at all.
+        pressure: list[int | None] = []
+
+        def _root_held(params: Mapping[str, Any]) -> bool:
+            if not pressure:
+                pressure.append(self._manager._memory_pressure_hold())
+            level = pressure[0]
+            # An expired row is picked: the gate's re-check ends it, never started.
+            return (
+                level is not None
+                and self._manager._memory_pressure_holds(
+                    str(params.get("_preassigned_id") or ""),
+                    level,
+                    parent_session_key=str(params.get("parent_session_key") or ""),
+                    batch_id=str(params.get("batch_id") or ""),
+                    relabel=True,
+                    commit_expiry=False,
+                )
+                == "held"
+            )
+
+        index = self._manager._admission.pick_window_index(view, lanes=lanes, root_held=_root_held)
         if index is None:
             if refill(children_only=True) > 0:
-                index = self._manager._admission.pick_window_index(view, lanes=lanes)
+                index = self._manager._admission.pick_window_index(
+                    view, lanes=lanes, root_held=_root_held
+                )
         if index is None:
             return
         params = self._manager._queue.pop(index)
@@ -842,6 +881,18 @@ class _PumpMixin(ManagerComponent):
             if self._manager._on_done and self._manager._claim_finalize(info):
                 await self._manager._safe_announce(info)
             return
+        if outcome == "never_started":
+            # The macOS pressure hold kept it past its bound: ended, never
+            # started, with the same terminal bookkeeping as a refusal here.
+            info.done = True
+            info.error = MEMORY_PRESSURE_NEVER_STARTED
+            if self._manager._release_slot(info):
+                self._manager._running_count -= 1
+                self._manager._drain_queue()
+            self._manager._tasks.pop(info.id, None)
+            if self._manager._on_done and self._manager._claim_finalize(info):
+                await self._manager._safe_announce(info)
+            return
         if outcome != "admitted":
             # A user stop or a reap landed while the start waited for the bound.
             # Neither is a rejection: ``_force_reap`` owns that run's terminal
@@ -927,7 +978,7 @@ class _PumpMixin(ManagerComponent):
             self._manager._drain_queue()
             if not fut.done():
                 repump = loop.call_later(_RELEASE_REPUMP_SECS, _repump)
-            granted = bool(await fut)
+            granted = await fut
         finally:
             if repump is not None:
                 repump.cancel()
@@ -944,6 +995,9 @@ class _PumpMixin(ManagerComponent):
                     break
         if info.done or info.user_stopped or info.reaped or info._reap_started:
             return "ended"
+        if granted == "never_started":
+            # The pressure hold ended it (``_release_admitted_start_impl``).
+            return "never_started"
         return "admitted" if granted else "ended"
 
     def _release_admitted_start_impl(self) -> str:
@@ -1003,7 +1057,69 @@ class _PumpMixin(ManagerComponent):
             # Held; the next edge out of startup pumps again (see the same
             # hold on the spawn side below).
             return "held"
+        # The kernel memory-pressure hold re-checked at release, so a prompt
+        # answered after the hold began does not launch past it. It is decided
+        # per entry (roots only, each with its own clock), so a held root is
+        # passed over rather than blocking the nested starts queued behind it.
+        # Its recheck timer and ``_RELEASE_REPUMP_SECS`` both pump again.
+        # An entry that ended while it waited is retired here as in the head
+        # scan above, wherever it sits: behind a held root it would otherwise
+        # stay counted, and its waiter parked, for as long as that root is held.
+        pressure: list[int | None] = []
+        held = False
+        index = 0
+        while index < len(queue):
+            params = queue[index]
+            if not params.get("_startup_release"):
+                index += 1
+                continue
+            info = params.get("_start_info")
+            fut = getattr(info, "_start_release", None) if info is not None else None
+            if (
+                info is None
+                or fut is None
+                or fut.done()
+                or info.done
+                or info.user_stopped
+                or info.reaped
+                or info._reap_started
+            ):
+                queue.pop(index)
+                if fut is not None and not fut.done():
+                    fut.set_result(False)
+                if info is not None:
+                    self._manager._forget_pending_start(info.id)
+                continue
+            if self.entry_is_child(params):
+                break
+            if not pressure:
+                pressure.append(self._manager._memory_pressure_hold())
+            verdict = (
+                "release"
+                if pressure[0] is None
+                else self._manager._memory_pressure_holds(
+                    info.id,
+                    pressure[0],
+                    parent_session_key=info.parent_session_key,
+                    batch_id=info.batch_id,
+                    relabel=True,
+                )
+            )
+            if verdict == "expired":
+                # Ended, never started: the waiter answers it as such.
+                queue.pop(index)
+                fut.set_result("never_started")
+                self._manager._forget_pending_start(info.id)
+                self._manager._emit_queue_depth(info.parent_session_key, info.batch_id)
+                continue
+            if verdict != "held":
+                break
+            held = True
+            index += 1
+        else:
+            return "held" if held else ""
         queue.pop(index)
+        self._manager._forget_pending_start(info.id)
         # This start begins NOW. Stamp the stagger clock as every direct
         # dispatch does at ``create_task``: ``_run_inner`` writes
         # ``_exec_started`` on its first step, one loop iteration from here,

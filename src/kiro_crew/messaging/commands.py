@@ -710,6 +710,15 @@ async def spawn_task_reply(
         return f"⚠️ {_redact(str(exc))}"
     if not info:
         return f"⚠️ Subagent capacity reached ({manager.max_concurrent}). Try again later."
+    # A refusal comes back as a terminal record, not as None: it never ran, and
+    # a non-batch refusal is announced nowhere else, so this reply is the only
+    # place the user learns why.
+    refusal = str(getattr(info, "error", "") or "")
+    if getattr(info, "done", False) is True and refusal:
+        # A refusal's own leading verdict ("spawn refused: ", "never started: ")
+        # would stack a second clause on "was not started: ".
+        reason = refusal.removeprefix("spawn refused: ").removeprefix("never started: ")
+        return f"⚠️ Subagent `{info.id}` was not started: {_redact(reason)}"
     # A row the gate DEFERRED (memory floor, critical posture, paused cap) is
     # accepted under its id but not running, and may not run for a long time;
     # say so with the gate's own sentence instead of announcing a start. The
