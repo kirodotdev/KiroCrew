@@ -2977,7 +2977,7 @@ def _self_tokens(text_lower: str) -> "list[str]":
         return []
 
 
-def _protected_name_in_substitution(tokens: "list[str]", start: int) -> str:
+def _protected_name_in_substitution(tokens: "list[str]", start: int, resolve: bool = False) -> str:
     """The protected program name a substitution starting at *start* could produce.
 
     Scans forward until the substitution closes (``shlex`` splits it across tokens
@@ -2989,7 +2989,7 @@ def _protected_name_in_substitution(tokens: "list[str]", start: int) -> str:
     can span one. A private ``str.count`` walk closed the substitution at a QUOTED
     ``)`` and stopped scanning there, so a name hidden after it was never seen --
     an UNDER-deny for this rule, not the over-deny a previous audit of this line
-    recorded.
+    recorded.  ``resolve=True`` searches each token's resolved view, bare first.
     """
     depth = 0
     state = 0
@@ -2998,11 +2998,12 @@ def _protected_name_in_substitution(tokens: "list[str]", start: int) -> str:
         walk = _shell_quote_walk(token, state=state, ansi=ansi)
         depth += walk.paren_delta
         state, ansi = walk.end_state, walk.end_ansi
-        m = _SELF_NAME_RE.search(token)
+        text = _resolved_word_view(token) if resolve else token
+        m = _SELF_NAME_RE.search(text)
         if m:
             return m.group(0)
         for verb in _KILL_BY_NAME_PROGRAMS:
-            if verb in token:
+            if verb in text:
                 return verb
         if depth <= 0 and state == 0 and token is not tokens[start]:
             break
@@ -3081,6 +3082,16 @@ def _mint_verb_in_substitution(tokens: "list[str]", idx: int) -> bool:
     return False
 
 
+def _computed_substitution_binding(tokens: "list[str]", idx: int) -> str:
+    """Bind a computed ``X=$(...)``: untransformed scan, else mint verb, else view."""
+    raw = _protected_name_in_substitution(tokens, idx, resolve=False)
+    if raw:
+        return raw
+    if _mint_verb_in_substitution(tokens, idx):
+        return "token"
+    return _protected_name_in_substitution(tokens, idx, resolve=True)
+
+
 def _resolve_local_assignments(tokens: "list[str]") -> "list[str]":
     """Substitute ``$VAR`` uses with a literal assigned earlier in the same command.
 
@@ -3129,11 +3140,12 @@ def _resolve_local_assignments(tokens: "list[str]") -> "list[str]":
                     lambda m: values.get(m.group(1) or m.group(2), m.group(0)), tail
                 )
             if _is_computed_value(tail):
-                # No literal to concatenate. Over-approximate exactly as the assignment
-                # path does: the value only matters where it is later used as a program,
-                # so a wrong guess there is a refusal rather than a bypass.
-                produced = _protected_name_in_substitution(tokens, idx)
-                if produced:
+                # bash ``+=`` keeps the prefix (computed output may be empty), so
+                # a protected value already bound must not be REPLACED.
+                produced = _computed_substitution_binding(tokens, idx)
+                prior = values.get(name, "")
+                keep = _is_self_program(prior) or _program_basename(prior) in _KILL_BY_NAME_PROGRAMS
+                if produced and not keep:
                     values[name] = produced
                 out.append(token)
                 continue
@@ -3157,21 +3169,9 @@ def _resolve_local_assignments(tokens: "list[str]") -> "list[str]":
                 token = f"{assign.group(1)}={expanded}"
                 assign = _LOCAL_ASSIGN_RE.match(token)
         if assign and _is_computed_value(assign.group(2)):
-            # ``X=$(printf <name>); $X <verb>`` COMPUTES the value, so there is no
-            # literal to carry forward.  Resolve it conservatively instead: if the
-            # substitution that produces it names a protected program anywhere, treat
-            # the variable as holding that name.  Over-approximating here is the safe
-            # direction -- the value only matters when ``$X`` is later used as a
-            # program, and a wrong guess there is a refusal, not a bypass.
-            produced = _protected_name_in_substitution(tokens, idx)
+            produced = _computed_substitution_binding(tokens, idx)
             if produced:
                 values[assign.group(1)] = produced
-            elif _mint_verb_in_substitution(tokens, idx):
-                # ``T=$(printf <verb>); <name> $T`` computes the VERB rather than the
-                # program.  Same reasoning as the program case: the value only matters
-                # where it is later used, so binding it to the verb is the safe
-                # over-approximation.
-                values[assign.group(1)] = "token"
             out.append(token)
             continue
         if assign and assign.group(2):

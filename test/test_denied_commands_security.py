@@ -5234,6 +5234,349 @@ class TestSelfKillRawWindowSearchesDequotedView:
         assert _denied_by(cmd.format(n=_NAME, q=self._SPLICED)) is None
 
 
+class TestAssignedSubstitutionSearchesResolvedView:
+    """An ASSIGNED substitution is searched through the same composed transform
+    as an inline one.
+
+    ``_protected_name_in_substitution`` decides whether a computed assignment
+    (``P=$(pgrep -f <pattern>)``) carries the protected name, so that a later
+    ``kill $P`` reads as a kill of our own processes.  It searches each token
+    bare AND through ``_resolved_word_view`` (parameter defaults resolved,
+    empty substitutions collapsed, bracket classes removed) -- the same view
+    the inline twin ``kill $(pgrep -f <pattern>)`` searches each word through.
+    So the two-step spelling of a pattern that needs a transform is denied
+    exactly as its inline twin is: ``'kiro''[c]rew'``, ``'kiro'${x:-crew}`` and
+    ``kiro$()crew`` are each denied through an assignment and inline alike, and
+    bash runs the kill for every one.
+
+    The view is searched IN ADDITION to the bare token, like every other user
+    of it: a pattern-substitution expansion DESTROYS a visible name, so the
+    bare search must stay.  The by-name kill verbs the helper also recognises
+    get the same view, since ``v=$(which pk$()ill); $v -f <name>`` is the
+    identical seam one token over.
+
+    The helper is shared with the credential-mint resolver: the SAME binding is
+    consulted when ``$X`` is later used as the product CLI or as its verb.  A
+    substitution that prints BOTH the name and the mint verb expands, unquoted,
+    to both words, so the resolver binds both halves of such a value: a bare
+    use emits the verb and the program together, the program position seeing
+    the name and an operand position seeing the verb, so neither the mint check
+    nor the kill check loses the half it needs.  Monotone in the deny
+    direction: every spelling the single-token search denies, the widened
+    search denies too.
+    """
+
+    _PG = "p" + "grep"
+    # The three transforms, each with its quoted and unquoted spelling.  ``{n}``
+    # is spliced from two quoted halves in the tests that pin the quote-removal
+    # composition.
+    _PATTERNS = [
+        "'kiro''[c]rew'",  # bracket class, quote-spliced (the issue's spelling)
+        "kiro[c]rew",  # bracket class, bare
+        "'[k]iro''crew'",  # bracket class on the first letter
+        "'kiro'${x:-crew}",  # parameter default, quoted head
+        "kiro${x:-crew}",  # parameter default, bare
+        "${x:-kiro}'crew'",  # parameter default in head position
+        "$'kiro'${x:-crew}",  # ANSI-C head + parameter default
+        "kiro$()crew",  # statically empty command substitution
+        "kiro``crew",  # ... in its backtick spelling
+        "kiro${}crew",  # ... and the empty brace form
+        "'[k]iro'$()${x:-crew}",  # all three transforms at once
+        "'zz|kiro'${x:-crew}",  # ERE alternation prefix: an operand view would truncate
+        "'>kiro''crew'",  # redirect-looking ERE prefix: part of the TARGET
+    ]
+
+    @pytest.mark.parametrize("pattern", _PATTERNS)
+    def test_two_step_kill_through_an_assignment_is_denied(self, pattern):
+        # The issue's shape: the lookup is ASSIGNED, the kill uses the variable.
+        assert _denied_by(f"p=$({self._PG} -f {pattern}); kill $p") == _RULE_KILL
+
+    @pytest.mark.parametrize("pattern", _PATTERNS)
+    def test_inline_twin_stays_denied(self, pattern):
+        # The control that pins the symmetry: every pattern above is denied
+        # inline on main, and must stay so.
+        assert _denied_by(f"kill $({self._PG} -f {pattern})") == _RULE_KILL
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # the braced use, a flag before the operand, and ``-9``
+            "p=$({pg} -f {q}); kill -9 ${{p}}",
+            # the assignment glued to its use by ``;``
+            "p=$({pg} -f {q});kill $p",
+            # the APPEND path: the same helper is consulted for ``NAME+=``
+            "p=; p+=$({pg} -f {q}); kill $p",
+            "p=$({pg} -f {q}) && kill $p",
+        ],
+    )
+    def test_sibling_assignment_shapes_are_denied(self, cmd):
+        assert _denied_by(cmd.format(pg=self._PG, q=self._PATTERNS[0])) == _RULE_KILL
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # The by-name kill verbs the helper also recognises, hidden the same
+            # three ways and used as the program of the later command.
+            "v=$(which pk$()ill); $v -f {n}",
+            "v=$(which pk${{x:-i}}ll); $v -f {n}",
+            "v=$(which pk[i]ll); $v -f {n}",
+            "v=$(which k$()illall); $v {n}",
+            "v=$(which k${{x:-i}}llall); $v {n}",
+        ],
+    )
+    def test_a_hidden_by_name_kill_verb_is_resolved_too(self, cmd):
+        assert _denied_by(cmd.format(n=_NAME)) == _RULE_KILL
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # the pattern-substitution expansion the inline leg keeps a bare
+            # search for: the view resolves it to an empty default, so the
+            # bare search is what still catches the de-quote-visible name
+            "p=$({pg} -f ${{PATH/usr/|kiro''crew|zz-}}); kill $p",
+            # the plain spellings denied on main: no narrowing
+            "p=$({pg} -f {n}); kill $p",
+            "p=$({pg} -f 'kiro''crew'); kill $p",
+        ],
+    )
+    def test_spellings_denied_on_main_stay_denied(self, cmd):
+        assert _denied_by(cmd.format(pg=self._PG, n=_NAME)) == _RULE_KILL
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # another program's PIDs, through the same three transforms
+            "p=$({pg} -f nginx); kill $p",
+            "p=$({pg} -f 'ngi''[n]x'); kill $p",
+            "p=$({pg} -f ngi${{x:-nx}}); kill $p",
+            "p=$({pg} -f ngi$()nx); kill $p",
+            # the resolved name used as DATA, not as a kill operand
+            "p=$({pg} -f 'kiro''[c]rew'); echo $p",
+            "p=$({pg} -f 'kiro'${{x:-crew}}); echo $p",
+            "p=$({pg} -f kiro$()crew); echo $p",
+            # a kill of a literal PID next to the assignment
+            "p=$({pg} -f 'kiro''[c]rew'); kill 4242",
+        ],
+    )
+    def test_other_names_and_data_uses_stay_allowed(self, cmd):
+        assert _denied_by(cmd.format(pg=self._PG)) is None
+
+    # ── the shared caller: the credential-mint resolver ─────────────────────
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # A legitimate computed value carrying each construct: the widened
+            # view resolves them to something that is NOT the name, so the
+            # variable stays unbound and the later use is judged on its own.
+            "X=$(echo ${{EDITOR:-vim}}); $X {v}",
+            "X=$(ls /tmp/[a]pp); $X {v}",
+            "X=$(echo ap$()p); $X {v}",
+            "X=$(printf ${{HOME:-/root}}/bin/tool); $X {v}",
+            # the product CLI legitimately used with a computed operand
+            "D=$(echo ${{VERBOSE:--v}}); {n} $D doctor",
+        ],
+    )
+    def test_mint_side_legitimate_values_stay_allowed(self, cmd):
+        assert _denied_by(cmd.format(n=_NAME, v=_TOK)) is None
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # The mint twin of the issue: the NAME is computed, hidden the same
+            # three ways, and used as the program of a verb call.  Each inline
+            # twin (``kiro[c]rew <verb>`` ...) is denied on main.
+            "X=$(printf kiro[c]rew); $X {v}",
+            "X=$(printf kiro${{x:-crew}}); $X {v}",
+            "X=$(printf kiro$()crew); $X {v}",
+            "X=$(printf 'kiro''[c]rew'); $X {v}",
+        ],
+    )
+    def test_mint_program_computed_through_a_transform_is_denied(self, cmd):
+        assert _denied_by(cmd.format(v=_TOK)) == _RULE_MINT
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # the subcommand floor consumes the same binding
+            "X=$(printf kiro[c]rew); $X restart",
+            "X=$(printf kiro$()crew); $X restart",
+        ],
+    )
+    def test_subcommand_floor_sees_the_resolved_binding(self, cmd):
+        # The subcommand floor is argv-structural, so it names its own id on the
+        # first line (there is no catalog pattern for ``_denied_by`` to map).
+        reason = is_denied(cmd)
+        assert reason
+        assert reason.splitlines()[0] == (security.DENY_REASON_PREFIX + "self-protection-restart")
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # The value is COMPUTED and resolves to the product name; a later use
+            # as the product CLI with the verb mints.  Transform-hidden name:
+            "X=$(printf kiro[c]rew); $X {v}",
+            "X=$(printf kiro${{x:-crew}}); $X {v}",
+            "X=$(printf kiro$()crew); $X {v}",
+            # The value is COMPUTED and resolves to the verb; a later use as an
+            # operand of the product CLI mints (the un-widened verb binding).
+            "X=$(printf {v}); {n} $X",
+            # Both printed in one substitution, name hidden raw -> the verb binds
+            # (matching the un-widened resolver), so ``<name> $X`` mints.
+            "X=$(echo {v}; echo kiro[c]rew); {n} $X",
+        ],
+    )
+    def test_a_computed_value_that_resolves_to_a_mint_is_denied(self, cmd):
+        assert _denied_by(cmd.format(n=_NAME, v=_TOK)) == _RULE_MINT
+
+    def test_a_substitution_printing_both_halves_as_data_stays_allowed(self):
+        assert _denied_by(f"X=$(echo {_TOK}; echo kiro[c]rew); echo $X") is None
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # The mint-verb binding is a PLAIN LITERAL ("token"), so it survives a
+            # copy and a value-preserving append the same way any literal does --
+            # no side metadata to propagate.  A substitution printing the verb and
+            # a transform-hidden name binds the verb; the copy carries it, and the
+            # product CLI invoked with the copy mints.  (GPT 6.1 F2.)
+            "X=$(echo {v}; echo kiro[c]rew >/dev/null); Y=$X; {n} $Y",
+            "X=$(echo {v}; echo kiro[c]rew); Y=${{X}}; {n} $Y",
+            "X=$(printf {v}); Y=$X; {n} $Y",
+            "X=$(printf {v}); Z=; Z+=$X; {n} ${{Z}}",
+        ],
+    )
+    def test_a_mint_verb_binding_survives_a_copy_or_append(self, cmd):
+        assert _denied_by(cmd.format(n=_NAME, v=_TOK)) == _RULE_MINT
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # A computed ``+=`` append must not ERASE an existing protected
+            # binding: bash keeps the prefix and the computed output can be
+            # empty (``>/dev/null``), so the prior value stays reachable.  A
+            # newly-seen transform-hidden name must not replace the tracked kill
+            # program.
+            "v={pk}; v+=$(printf kiro$()crew >/dev/null); $v -f {n}",
+            "v={pk}; v+=$(printf 'kiro''[c]rew'); $v -f {n}",
+            # a non-protected prefix with a computed kill program still binds it
+            "v=/usr/bin/; v+=$(printf {pk}); $v -f {n}",
+        ],
+    )
+    def test_a_computed_append_does_not_erase_a_self_kill_binding(self, cmd):
+        assert _denied_by(cmd.format(n=_NAME, pk=_PK)) == _RULE_KILL
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # A legitimate computed value whose later use is NOT a product
+            # invocation stays allowed, binding exactly what the un-widened scan
+            # bound (the product name from a path, or nothing) -- never a
+            # fabricated name->verb adjacency.
+            "X=$(echo {v}; echo {n}); echo $X",
+            "X=$(echo {v}; echo {n}); {n} x$X",
+            "X=$(printf doctor); {n} $X",
+        ],
+    )
+    def test_a_computed_value_used_as_data_stays_allowed(self, cmd):
+        assert _denied_by(cmd.format(n=_NAME, v=_TOK)) is None
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # The mint-verb check uses the SAME grammar-aware body extraction the
+            # un-widened resolver used, so a verb hidden behind a ``case``
+            # pattern's ``)`` or a ``#`` comment inside the computed value is
+            # still found -- a depth-only walk stops at the first ``)`` and would
+            # let these mint.  Base denies all of these; this change must not
+            # regress them.
+            "T=$(case x in x) printf {v};; esac); {n} $T",
+            "T=`printf %s {v}`; {n} $T",
+            "T=$(case y in y) echo {v};; esac); {n} $T",
+        ],
+    )
+    def test_a_mint_verb_behind_a_case_pattern_stays_denied(self, cmd):
+        assert _denied_by(cmd.format(n=_NAME, v=_TOK)) == _RULE_MINT
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # RESIDUAL, pinned at its current answer: a both-halves variable
+            # used with text glued to it is not a bare use, so only the name is
+            # substituted and the ``<name> $X`` spelling stays allowed when the
+            # glue hides the verb.  Not a new class -- the unglued use above is
+            # denied, and the raw spelling of this was allowed on main too.
+            "X=$(echo {v}; echo {n}); {n} x$X",
+        ],
+    )
+    def test_residual_glued_both_halves_use_stays_allowed(self, cmd):
+        assert _denied_by(cmd.format(n=_NAME, v=_TOK)) is None
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # RESIDUAL, pinned at its current (ALLOWED) answer -- pre-existing
+            # seams this change deliberately does NOT widen, because each is a
+            # DIFFERENT class whose RAW-name twin is already allowed (measured),
+            # so neither is the single-transform gap this change closes:
+            #
+            # (1) a BACKTICK substitution in an assignment: the helper tracks
+            # substitution depth by paren delta, and a backtick is not a paren,
+            # so the scan ends at the first whitespace token -- raw
+            # ``p=`pgrep -f kirocrew`; kill $p`` is allowed on main too.  Closing
+            # it is a depth-tracking change, not a transform one.
+            "p=`{pg} -f 'kiro''[c]rew'`; kill $p",
+            # (2) a name ASSEMBLED from another tracked variable INSIDE the
+            # substitution body (``${{h}}'crew'``): the helper has no access to
+            # the assignment table, so it cannot expand ``${{h}}`` -- raw
+            # ``h=kiro; p=$(pgrep -f ${{h}}crew); kill $p`` is allowed on main
+            # too.  Flowing values into the helper is a separate seam.
+            "h=kiro; p=$({pg} -f ${{h}}'[c]rew'); kill $p",
+        ],
+    )
+    def test_residual_out_of_scope_seams_stay_at_their_current_answer(self, cmd):
+        assert _denied_by(cmd.format(pg=self._PG)) is None
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # A computed value that produces a by-name kill program is bound to
+            # that verb, so a later ``$p -f <product>`` runs the self-kill and is
+            # denied.  The untransformed scan already binds the verb when it is
+            # raw, which the raw-first precedence preserves ...
+            "p=$({pg} -f harmless; echo {pk}); $p -f {n}",
+            "p=$(echo {pk}); $p -f {n}",
+            "p=$(echo {pk}); $p -f kiro[c]rew",
+            # ... a transform-hidden kill verb is caught by the resolved view ...
+            "v=$(which pk$()ill); $v -f {n}",
+            "v=$(which 'pk''ill'); $v -f {n}",
+            # ... and the decoy case GPT 6.1 flagged (F1): a transform-hidden
+            # NAME inside the pgrep pattern, whose output is discarded, followed
+            # by an echoed kill verb.  Bash drops the PIDs and runs ``pkill -f
+            # <product>``; the raw-first precedence binds the raw ``pkill`` rather
+            # than letting the resolved name decoy win, so it is denied.
+            "p=$({pg} -f kiro[c]rew >/dev/null; echo {pk}); $p -f {n}",
+            "p=$({pg} -f kiro[c]rew >/dev/null; echo {pk}); $p -f kiro[c]rew",
+        ],
+    )
+    def test_reachable_computed_pkill_self_kill_stays_denied(self, cmd):
+        assert _denied_by(cmd.format(pg=self._PG, pk=_PK, n=_NAME)) == _RULE_KILL
+
+    def test_pgrep_name_plus_echoed_verb_kill_matches_main(self):
+        # RESIDUAL pinned at main's answer (ALLOWED): a substitution with a
+        # transform-hidden name in the pgrep pattern AND an echoed raw kill verb,
+        # used as ``kill $p``.  The raw-first precedence binds the raw ``pkill``
+        # (so ``kill $p`` -> ``kill pkill`` is allowed), exactly as the
+        # un-widened resolver does -- the raw kill verb is found before the
+        # resolved name, so the widening changes nothing here.  bash would kill
+        # the pgrep PIDs, but main allows this too; it is a pre-existing hole,
+        # not one this change opens, and the issue's actual shape
+        # (``p=$(pgrep -f <transformed-name>); kill $p`` with NO echoed verb) is
+        # denied by test_two_step_kill_through_an_assignment_is_denied.
+        cmd = f"p=$({self._PG} -f kiro[c]rew; echo {_PK}); kill $p"
+        assert _denied_by(cmd) is None
+
+
 class TestStdinProgramTextScoping:
     """A stdin-reading interpreter is judged on its PROGRAM, not on its neighbours.
 
