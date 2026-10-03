@@ -744,19 +744,57 @@ def program_names(command: str) -> list[str] | None:
     treat as a refusal rather than as "no programs found".
     """
 
+    try:
+        return _walk_program_names(command)
+    except _Unmodelled:
+        return None
+
+
+class _Unmodelled(Exception):
+    """The walk met a part it does not model; ``str()`` names that part."""
+
+
+#: The two messages ``shlex`` raises, as the person at the approval card reads them.
+#: Each names this walk's limit, not a shell rule: the shell lets both span lines.
+_SHLEX_REASONS = {
+    "No closing quotation": "an unclosed quote; this check tokenizes one line at a time",
+    "No escaped character": "a trailing backslash; this check does not follow a line continuation",
+}
+
+_SHOWN_LIMIT = 40
+
+
+def _shown(part: str) -> str:
+    """*part* quoted for the approval card, cut so a long token cannot bury the notice.
+
+    Nothing after an ``=`` is shown: an assignment's value can be a secret.
+    """
+
+    name, equals, _ = part.partition("=")
+    part = name + equals
+    return repr(part if len(part) <= _SHOWN_LIMIT else part[: _SHOWN_LIMIT - 3] + "...")
+
+
+def _walk_program_names(command: str) -> list[str]:
+    """:func:`program_names`, raising :class:`_Unmodelled` with the part it gave up on."""
+
+    lines = command.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    numbered = sum(1 for line in lines if line.strip()) > 1
     names: list[str] = []
-    for line in command.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+    for number, line in enumerate(lines, start=1):
         if not line.strip():
             continue
-        found = _program_names_line(line)
-        if found is None:
-            return None
-        names.extend(found)
+        try:
+            names.extend(_program_names_line(line))
+        except _Unmodelled as exc:
+            if not numbered:
+                raise
+            raise _Unmodelled(f"line {number}: {exc}") from None
     return names
 
 
-def _program_names_line(command: str) -> list[str] | None:
-    """:func:`program_names` for a single line."""
+def _program_names_line(command: str) -> list[str]:
+    """:func:`program_names` for a single line; raises :class:`_Unmodelled`."""
 
     lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
@@ -769,7 +807,7 @@ def _program_names_line(command: str) -> list[str] | None:
         # runs, and it closes the pin path too -- `pin_human_approval` reads
         # this same walk, so a name a comment merely mentions is never recorded
         # as the file a human approved.
-        return None
+        raise _Unmodelled("a PowerShell <# ... #> block comment")
     if windows:
         # PowerShell's escape character is the backtick, which `_UNENUMERABLE`
         # refuses wholesale; a backslash is a PATH SEPARATOR. In POSIX mode the
@@ -791,8 +829,9 @@ def _program_names_line(command: str) -> list[str] | None:
     lexer.commenters = ""
     try:
         tokens = list(lexer)
-    except ValueError:
-        return None
+    except ValueError as exc:
+        reason = _SHLEX_REASONS.get(str(exc), "text the tokenizer could not split")
+        raise _Unmodelled(reason) from None
     names: list[str] = []
     expect_program = True
     index = 0
@@ -818,7 +857,9 @@ def _program_names_line(command: str) -> list[str] | None:
                 and tokens[index]
                 and tokens[index][0] in _POWERSHELL_EXPRESSION_HEADS
             ):
-                return None
+                raise _Unmodelled(
+                    f"the call operator '&' before the expression {_shown(tokens[index])}"
+                )
             continue
         # A REDIRECT may appear anywhere in a simple command, INCLUDING BEFORE
         # the program: `2>/dev/null head x` runs `head`. So consume the operator
@@ -837,7 +878,7 @@ def _program_names_line(command: str) -> list[str] | None:
             # a run of it into one token, so `;(` and `;>out` arrive whole and
             # match no operator. Skipping such a token loses the command it
             # introduces, so report "unknown" instead.
-            return None
+            raise _Unmodelled(f"the operator {_shown(token)}")
         if not expect_program:
             continue
         # On Windows, PowerShell's dot-source operator invokes an expression's
@@ -854,7 +895,9 @@ def _program_names_line(command: str) -> list[str] | None:
             and tokens[index]
             and tokens[index][0] in _POWERSHELL_EXPRESSION_HEADS
         ):
-            return None
+            raise _Unmodelled(
+                f"the dot-source operator '.' before the expression {_shown(tokens[index])}"
+            )
         # A bare scriptblock (`{...}`) or a variable reference (`$var`,
         # `$env:x`) sitting in a command position dispatches through a VALUE,
         # not a literal name -- PowerShell invokes the scriptblock body or the
@@ -864,12 +907,12 @@ def _program_names_line(command: str) -> list[str] | None:
         # `{calc}`, `$env:COMSPEC`, `$prog` -- rather than being caught only
         # incidentally when the token happens to name nothing that resolves.
         if windows and token[:1] in ("{", "$"):
-            return None
+            raise _Unmodelled(f"the expression {_shown(token)} in a command position")
         if token in _RESERVED_WORDS or (windows and token.lower() in _POWERSHELL_KEYWORDS):
             # Grammar this walk does not model. The program is elsewhere in a
             # shape it cannot follow, so report "unknown" rather than the subset
             # it managed to see.
-            return None
+            raise _Unmodelled(f"the shell keyword {_shown(token)}")
         # `VAR=value cmd` assigns into the environment; the program follows it.
         # Only a STRICT `NAME=` prefix is skipped, and only for a variable that
         # does not decide what runs. Anything else carrying `=` in a command
@@ -882,10 +925,12 @@ def _program_names_line(command: str) -> list[str] | None:
         # command position is refused rather than skipped.
         if "=" in token:
             if windows:
-                return None
+                raise _Unmodelled(f"{_shown(token)}, which PowerShell reads as a command")
             head = token.split("=", 1)[0]
-            if _decides_execution(head) or not _ASSIGN_NAME_RE.fullmatch(head):
-                return None
+            if _decides_execution(head):
+                raise _Unmodelled(f"the assignment {_shown(token)}, which changes what runs")
+            if not _ASSIGN_NAME_RE.fullmatch(head):
+                raise _Unmodelled(f"the assignment-like word {_shown(token)}")
             continue
         names.append(token)
         expect_program = False
@@ -2216,11 +2261,12 @@ def name_grant_refusal(command: str) -> Refusal | None:
                 UNENUMERABLE,
                 f"the command line contains {construct!r}, whose programs cannot be enumerated",
             )
-    names = program_names(command)
-    if names is None:
+    try:
+        names = _walk_program_names(command)
+    except _Unmodelled as exc:
         return Refusal(
             UNTOKENIZABLE,
-            "the command line could not be reduced to a known set of program names",
+            f"the command line could not be reduced to a known set of program names ({exc})",
         )
     for name in names:
         refusal = _program_refusal(name)

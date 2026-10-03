@@ -492,6 +492,47 @@ class TestUnenumerableConstructs:
         assert name_grant.name_grant_refusal("./*.sh") is not None
 
 
+class TestUntokenizableDetail:
+    """The refusal names the part of the line the walk could not model."""
+
+    @pytest.mark.parametrize(
+        "command,part",
+        [
+            ("for f in a b; do head x; done", "the shell keyword 'for'"),
+            ("head x | { grep y; }", "the shell keyword '{'"),
+            ("head 'unbalanced", "an unclosed quote; this check tokenizes one line at a time"),
+            ("head x \\", "a trailing backslash; this check does not follow a line continuation"),
+            ("head x;(grep y)", "the operator ';('"),
+            ("PATH=/writable/bin head x", "the assignment 'PATH=', which changes what runs"),
+            ("PATH+=:. head x", "the assignment-like word 'PATH+='"),
+        ],
+    )
+    def test_detail_names_the_part(self, world, command, part):
+        refusal = name_grant.name_grant_refusal(command)
+        assert refusal is not None
+        assert refusal.code == name_grant.UNTOKENIZABLE
+        assert part in refusal.detail
+        assert "line 1:" not in refusal.detail
+        # The part is display-only: a log sink still gets the constant.
+        assert refusal.log_text == name_grant._REFUSAL_LOG_TEXT[name_grant.UNTOKENIZABLE]
+
+    def test_a_multi_line_command_names_the_line(self, world):
+        refusal = name_grant.name_grant_refusal("head x\n\nfor f in a; do head x; done")
+        assert refusal is not None
+        assert "(line 3: the shell keyword 'for')" in refusal.detail
+
+    def test_an_assignment_value_is_never_shown(self, world):
+        refusal = name_grant.name_grant_refusal("LD_PRELOAD=/tmp/secret-value.so head x")
+        assert refusal is not None
+        assert "'LD_PRELOAD='" in refusal.detail
+        assert "secret-value" not in refusal.detail
+        assert name_grant._shown("{$p=s3cret}") == repr("{$p=")
+
+    def test_a_part_is_cut_past_forty_characters(self):
+        assert name_grant._shown("a" * 40) == repr("a" * 40)
+        assert name_grant._shown("a" * 41) == repr("a" * 37 + "...")
+
+
 class TestNonRegularFiles:
     """A program name that resolves to something unreadable must never be read."""
 
