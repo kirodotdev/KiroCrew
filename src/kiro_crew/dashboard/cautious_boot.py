@@ -15,10 +15,21 @@ cautious mode is active and is a no-op otherwise — the burst becomes a
 sequence of small groups separated by breathing room, giving the host (and
 the kernel's reclaim machinery) time between spikes.
 
-The delay is scaled by the CURRENT resource posture (``resource_status``):
+Three signals pick the delay: how recent the dump is, the CURRENT resource
+posture (``resource_status``), and whether the instance that WROTE the dump
+ever reached a serving state:
 
 * recent dump + ``tight``/``critical`` host → maximum caution (longer pauses)
 * recent dump + ``ample``/``unknown`` host  → mild stagger only
+* …but if that instance had finished starting up, one step gentler: mild on a
+  still-pressured host, none at all on a calm one.
+
+The third signal exists because the stagger protects the startup BATTERY. An
+instance that reached a serving state got the whole battery away before it
+stalled, so the battery is not what wedged it — and staggering the next boot
+makes the recovery boot the slowest one, on the host that most needs to come
+back up. It is a downgrade rather than an off-switch: a host that is still
+tight keeps a mild stagger, because current pressure is its own signal.
 
 Everything fails OPEN: an unreadable dump store, a config error, or a probe
 failure means a normal, un-staggered boot. ``pause_before`` called without a
@@ -34,7 +45,11 @@ from pathlib import Path
 
 from kiro_crew import resource_status
 from kiro_crew.config import KiroCrewConfig
-from kiro_crew.dashboard.crash_dump_store import dump_age_seconds, newest_dump_with_stacks
+from kiro_crew.dashboard.crash_dump_store import (
+    dump_age_seconds,
+    dump_owner_reached_healthy,
+    newest_dump_with_stacks,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -97,18 +112,40 @@ def _evaluate(
         # says whether the pressure is STILL here. Both signals together pick
         # the delay. probe() never raises (returns "unknown" on failure).
         posture = resource_status.probe(cfg).posture
-        if posture in (resource_status.POSTURE_TIGHT, resource_status.POSTURE_CRITICAL):
-            delay = MAX_DELAY_SECS
-        else:
+        pressured = posture in (
+            resource_status.POSTURE_TIGHT,
+            resource_status.POSTURE_CRITICAL,
+        )
+        # Third signal: did the instance that wrote this dump ever finish
+        # starting up? The stagger exists to protect the startup battery from a
+        # host that wedges while it runs. An instance that reached a serving
+        # state got the whole battery away before it stalled, so the battery is
+        # not what wedged it - and staggering the next boot only makes the
+        # recovery boot the slowest one, on the host that most needs to come
+        # back. Downgraded rather than switched off: a host that is STILL tight
+        # keeps a mild stagger, because current pressure is its own signal.
+        if dump_owner_reached_healthy(dump, dumps_dir):
+            if not pressured:
+                return CautiousBootDecision(
+                    False,
+                    0.0,
+                    (
+                        f"prior instance reached a serving state before stalling "
+                        f"({dump.name}); host posture is {posture}"
+                    ),
+                )
             delay = MILD_DELAY_SECS
-        return CautiousBootDecision(
-            True,
-            delay,
-            (
+            reason = (
+                f"prior loop-stall crash dump {dump.name} is {age / 60.0:.1f} min old, "
+                f"but that instance reached a serving state; host posture is {posture}"
+            )
+        else:
+            delay = MAX_DELAY_SECS if pressured else MILD_DELAY_SECS
+            reason = (
                 f"prior loop-stall crash dump {dump.name} is {age / 60.0:.1f} min old; "
                 f"current host posture is {posture}"
-            ),
-        )
+            )
+        return CautiousBootDecision(True, delay, reason)
     except Exception:
         # Fail OPEN — a broken evaluation must never delay or block a boot.
         logger.warning("cautious-boot evaluation failed; booting normally", exc_info=True)
@@ -153,9 +190,7 @@ async def pause_before(group: str) -> None:
     decision = _decision
     if decision is None or not decision.active:
         return
-    logger.info(
-        "cautious boot: pausing %.0fs before starting %s", decision.delay_secs, group
-    )
+    logger.info("cautious boot: pausing %.0fs before starting %s", decision.delay_secs, group)
     await asyncio.sleep(decision.delay_secs)
 
 
