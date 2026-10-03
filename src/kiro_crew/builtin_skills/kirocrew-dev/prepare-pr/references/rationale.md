@@ -328,12 +328,18 @@ that issue plans against stale information.
 
 `statusCheckRollup` needs Checks read access, which a fine-grained PAT structurally
 cannot grant, and GitHub resolves each `gh ... --json` request atomically. Both
-scripts therefore fetch the rollup in its own `gh pr view` call. On failure they
-print `NOTICE: CI check status UNAVAILABLE ...` and continue with an empty rollup
-rather than aborting. The rollup read re-fetches `headRefOid` and is discarded
-(`NOTICE: CI check status DISCARDED ...`) when a concurrent push moved the head
-between the two reads, so one head's metadata is never paired with another head's
-checks.
+scripts therefore fetch the rollup in its own call. That call is a GraphQL read of the
+head commit's rollup rather than `gh pr view --json statusCheckRollup`: the rows `gh`
+returns name the workflow by its display label and nothing else about the run, while
+`collapse_superseded` keys on the run itself -- its id, its triggering event, its
+workflow definition's id and its own conclusion -- which only the check suite exposes.
+On failure the scripts print `NOTICE: CI check status UNAVAILABLE ...` and continue
+with an empty rollup rather than aborting. Every page of the read re-fetches
+`headRefOid` and names the commit the rollup hangs off, and the whole read is
+discarded (`NOTICE: CI check status DISCARDED ...`) when either disagrees with the
+core read's head, so one head's metadata is never paired with another head's checks.
+A board past the read's page cap is reported UNAVAILABLE rather than in part, since a
+partial read could keep a displaced row whose successor was never fetched.
 
 Both states are deliberately distinct from a genuine "no checks yet":
 `pr_status.py` still fails closed at exit 20 but with a `CI status unreadable ...`
