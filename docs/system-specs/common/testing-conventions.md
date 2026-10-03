@@ -1582,6 +1582,17 @@ tests; the classes below are what the rest was made of.
   that module's collection report. Pytest/xdist therefore fails the job on every
   file shard, independently of where `TestNoMetricIsEmittedAtImport` runs. That
   test also asserts the record is empty. Build such values inside the test or fixture.
+- **A test writes `config.json` through the config lock, never around it.** Any load
+  of a document that still needs a migration writes it back as a locked
+  read-modify-write, and a load runs on threads the test does not own: the telemetry
+  consent recheck starts one from the first metric call after its window lapses,
+  which in a long-lived worker is a database query in the test's own setup. A plain
+  `write_text` or `atomic_write` lands between that migration's read and its write and
+  is replaced by the migrated pre-write document, so the next load answers field
+  defaults with no warning (`assert 7 == 3` on `memory.backup_keep` in
+  `test_memory_store_dashboard.py`). Write a setting with
+  `await asyncio.to_thread(update_config_locked, path, mutate=...)`, reading the
+  document inside `mutate`, which is how the dashboard writes one.
 - **A maintenance-pool job resolved its path when it RAN.** `cleanup_stale_sandbox_profiles`
   ran on the `mc-maint` executor and called `config_dir()` there; the test that queued
   it had torn down its pin by the time the thread was scheduled, so the sweep `mkdir`ed
