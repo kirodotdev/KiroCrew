@@ -295,6 +295,14 @@ that patches a store read and then inspects the index does it inside
 `_eager_folder_held()` (drain, then `eager.paused()`), the way the two unprovable-header
 tests in `test_issue_radar_crew_store.py` do.
 
+**A fixture that changes an input a worker thread reads publishes each value as a new
+file.** `os.replace` onto a file another thread holds open fails on Windows with
+`[WinError 5]`, and an `open` that races the rename fails too, which a lenient reader
+such as `check_memory_available` takes as "no reading" and admits on. Write the next
+value to a fresh path and rebind the attribute the reader resolves at call time, so a
+reader that took the old path finishes the old file
+(`test_spawn_floor_defaults.py::_Host.set`).
+
 ### Host tool dialects
 
 A test double for a platform-specific CLI must not depend on another host's
