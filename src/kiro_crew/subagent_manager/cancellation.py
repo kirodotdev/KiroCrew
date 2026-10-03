@@ -613,6 +613,10 @@ class CancellationCoordinator(ManagerComponent):
             if not agent_id:
                 continue
             info = self._manager._agents.get(agent_id)
+            if info is not None and info._ending_claimed:
+                # Ending completed on its own: a parent end does not undo it,
+                # and its report is already gated by the mark above.
+                continue
             if info is not None and not info.done:
                 # A LIVE run goes through the ordinary reap, which does no store
                 # work of its own. The stop's cause and origin are written on the
@@ -1098,8 +1102,9 @@ class CancellationCoordinator(ManagerComponent):
         """Cancel a single running subagent. Returns True if found and cancelled.
 
         User-initiated stop is a neutral terminal state, not an error: partial
-        output is preserved on the info record (and remains in result.txt), the
-        tombstone is written as ``user_stop``, and the ``subagent_done`` event
+        output is preserved on the info record (and in result.txt, as the latest
+        attempt that wrote text left it), the tombstone is written as
+        ``user_stop``, and the ``subagent_done`` event
         carries ``stopped: true`` so the UI renders a neutral "stopped" card.
 
         A caller that is NOT the user pressing Stop names itself on the record
@@ -1112,6 +1117,12 @@ class CancellationCoordinator(ManagerComponent):
         death the stop caused (see ``_run``'s reap-echo arm).
         """
         info = self._manager._agents.get(agent_id)
+        if info is not None and info._ending_claimed:
+            # A run that claimed its completed ending is ``done`` to a Stop:
+            # nothing is left to stop, and nothing on the record is stamped. A
+            # registered run is never in the stagger queue, so no unqueue (and
+            # no store call on the loop) is attempted for it either.
+            return False
         if not info or info.done:
             # A run still WAITING behind the stagger has no `_agents` record at
             # all: `spawn` builds its queued SubagentInfo and returns it without
@@ -1301,13 +1312,18 @@ class CancellationCoordinator(ManagerComponent):
             # retrieved" warning at interpreter exit.
             stragglers = [t for t in pending_reports if not t.done()]
             if stragglers:
+                # The set also holds writes that carry no completion (a run's
+                # usage row, a posted task-queue write): only a task with a
+                # report owner is a completion that may go undelivered.
+                abandoned = [self._manager._report_owners.get(t) for t in stragglers]
                 logger.warning(
-                    "cancel_all: %d terminal report(s) did not drain in %.0fs — "
-                    "cancelling; their completions may not have been delivered",
+                    "cancel_all: %d pending report/write task(s) did not drain in %.0fs — "
+                    "cancelling; %d of them carry a subagent completion that may not "
+                    "have been delivered",
                     len(stragglers),
                     _REPORT_DRAIN_TIMEOUT,
+                    sum(owner is not None for owner in abandoned),
                 )
-                abandoned = [self._manager._report_owners.get(t) for t in stragglers]
                 for report_task in stragglers:
                     report_task.cancel()
                 try:

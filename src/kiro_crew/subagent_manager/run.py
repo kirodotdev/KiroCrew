@@ -56,7 +56,6 @@ if TYPE_CHECKING:
         KiroCrewConfig,
         LLMEvent,
         LLMProvider,
-        Path,
         Stats,
         SubagentInfo,
         _context_groups_of,
@@ -82,7 +81,6 @@ if TYPE_CHECKING:
         annotate_model_fallback,
         append_fallback_story,
         apply_completion_keep,
-        cap_result_file,
         classify_stop_reason,
         configured_fallback_chain,
         evict_completed_agents,
@@ -97,7 +95,6 @@ if TYPE_CHECKING:
         join_failures,
         kill_set,
         logger,
-        mark_result_complete,
         name_grant,
         permission_pre_tool_block,
         platform_compat,
@@ -116,6 +113,7 @@ if TYPE_CHECKING:
         update_state,
         window_for_provider_client,
         with_kill_failure,
+        write_finished_result,
         write_result_chunk,
     )
 
@@ -204,8 +202,10 @@ class RunEventCoordinator(ManagerComponent):
     ) -> bool:
         """Merge *fields* into this run's ``state.json``, off the event loop.
 
-        Every ``state.json`` writer inside a run goes through here, for two
-        reasons that are both load-bearing.
+        Every ``state.json`` writer inside a run goes off the loop and is
+        drained through :meth:`_drain_state_writer_impl`, entering here or, for
+        the run's ending, through :meth:`_write_finished_result_off_loop_impl`,
+        for two reasons that are both load-bearing.
 
         OFF-LOOP, because ``update_state`` ends in a synchronous fsync and a
         slow FS must not freeze the gateway/heartbeat. Running in a pool
@@ -243,44 +243,96 @@ class RunEventCoordinator(ManagerComponent):
         writer for the same fields.
         """
         writer = asyncio.ensure_future(asyncio.to_thread(update_state, info.id, **fields))
+        return await self._drain_state_writer_impl(info, what, writer)
+
+    async def _write_finished_result_off_loop_impl(
+        self, info: SubagentInfo, text: str | None, *, hold_conversation: bool = False
+    ) -> bool:
+        """Leave this run's ``result.txt`` as its ending reads it, and say so.
+
+        ``write_finished_result`` as one worker, drained exactly like a state
+        write (it ends in one): *text* is the whole answer of a claimed
+        completed ending, ``None`` any other ending. ``update_state`` is handed
+        over from this namespace, the seam the run's other state writes go
+        through.
+
+        Bounded by ``_STATE_DRAIN_TIMEOUT`` even when nothing cancels it. A
+        claimed ending is ``done`` to every stop, so a Stop, a reap or a parent
+        end cannot cut this wait short, and ``_run``'s ``finally`` caps after
+        the run's cancellation was consumed; unbounded, a wedged FS would hold
+        the run, its lane slot and its parent until the run deadline, and
+        ``cancel_all()``'s gather forever. Past the bound the worker finishes
+        detached, under the same hold a cancelled drain takes, and False is
+        returned: the flag lands late or not at all, the safe direction.
+
+        *hold_conversation* takes that hold for the whole write instead, for a
+        run that is already ``done``: ``_conversation_busy`` no longer counts
+        it, so a release landing mid-write would write ``keep`` on the loop
+        for this worker's whole-file rewrite to roll back.
+        """
+        writer = asyncio.ensure_future(
+            asyncio.to_thread(write_finished_result, info.id, text, update_state)
+        )
+        if hold_conversation:
+            self._hold_for_detached_writer_impl(info, "result complete", writer)
+        return await self._drain_state_writer_impl(
+            info, "result complete", writer, bound=_STATE_DRAIN_TIMEOUT
+        )
+
+    async def _start_result_file_impl(self, info: SubagentInfo, text: str) -> bool:
+        """Start this attempt's ``result.txt`` with *text*, off the event loop.
+
+        *text* is everything the attempt has streamed: until a write succeeds
+        each chunk retries the fresh write with all of it, so a first write
+        the disk refused leaves no hole at the file's head. That write grows
+        with the answer, so it runs in a worker, drained like a state write,
+        and the chunk loop awaits it, so its rename lands before ``_run``'s
+        cap and before a respawn's own first write. The exception is a drain
+        that gives up at ``_STATE_DRAIN_TIMEOUT`` on cancellation: the worker
+        is left to finish detached and its rename can then land after the
+        cap. That drain consumes the one-shot recovery, so no respawn follows
+        it. True once the file is started.
+        """
+        writer = asyncio.ensure_future(
+            asyncio.to_thread(write_result_chunk, info.id, text, fresh=True)
+        )
+        return await self._drain_state_writer_impl(info, "result start", writer)
+
+    async def _drain_state_writer_impl(
+        self,
+        info: SubagentInfo,
+        what: str,
+        writer: "asyncio.Future[Any]",
+        *,
+        bound: float | None = None,
+    ) -> bool:
+        """Await a state-writing worker, drained and bounded on cancellation.
+
+        Called by :meth:`_write_state_off_loop_impl`, whose docstring carries
+        the rationale, :meth:`_start_result_file_impl`, and
+        :meth:`_write_finished_result_off_loop_impl`, the one caller that
+        passes *bound*: a limit on the UNCANCELLED wait too, past which the
+        worker is left to finish detached and False is returned. The
+        manager's ``_drain_state_writer`` forwards here unchanged.
+        """
         try:
-            return bool(await asyncio.shield(writer))
+            if bound is None:
+                return bool(await asyncio.shield(writer))
+            # ``asyncio.wait`` never cancels its member, so the worker is
+            # intact whether this returns on time, on the bound or by a cancel.
+            await asyncio.wait({writer}, timeout=bound)
+            if writer.done():
+                return bool(writer.result())
+            logger.warning(
+                "%s write for %s did not finish in %.0fs — leaving it to finish detached",
+                what,
+                info.id,
+                bound,
+            )
+            self._hold_for_detached_writer_impl(info, what, writer)
+            return False
         except asyncio.CancelledError:
-            # Hold this run's conversation for the WHOLE window in which the
-            # worker may still write, which starts here and not at the drain
-            # deadline: on Python 3.10 a second outer cancel can deliver _run's
-            # finalization mid-drain, so the run can go `done` while the writer
-            # is live, and a continuation reaching a released gate would then
-            # write `keep` for that writer's stale whole-file rewrite to erase.
-            # `keep` is written on the loop and takes no per-agent lock,
-            # so ordering is the only thing protecting it. The worker's own
-            # done-callback releases the hold, so it lasts exactly as long as the
-            # worker does -- milliseconds on a healthy FS. Recorded on the
-            # MANAGER, not on `info`: `evict_completed_agents` prunes completed
-            # runs out of `_agents`, and an eviction must not release the hold.
-            self._manager._abandoned_state_writers.add(info.id)
-
-            def _settled(
-                fut: "asyncio.Future[Any]",
-                _mgr: Any = self._manager,
-                _aid: str = info.id,
-                _what: str = what,
-            ) -> None:
-                # The worker has landed (drained or abandoned): the conversation
-                # is safe to promote or release again.
-                _mgr._abandoned_state_writers.discard(_aid)
-                _mgr._run_events._forget_finished_live_state(info)
-                # It may also have raised; retrieve it so it never surfaces as an
-                # asynchronous "exception was never retrieved" warning.
-                if not fut.cancelled() and fut.exception() is not None:
-                    logger.debug(
-                        "Best-effort %s write failed for %s during cancel drain",
-                        _what,
-                        _aid,
-                        exc_info=fut.exception(),
-                    )
-
-            writer.add_done_callback(_settled)
+            self._hold_for_detached_writer_impl(info, what, writer)
             # Latch for _run's recovery gate: on Python 3.10, wait_for's
             # _cancel_and_wait awaits a bare future that a SECOND outer cancel
             # can interrupt, delivering _run's CancelledError handler while this
@@ -325,6 +377,73 @@ class RunEventCoordinator(ManagerComponent):
             finally:
                 info._state_drain_active = False
             raise
+
+    def _hold_for_detached_writer_impl(
+        self, info: SubagentInfo, what: str, writer: "asyncio.Future[Any]"
+    ) -> None:
+        """Hold this run's conversation until *writer* has landed.
+
+        Taken for a worker no one awaits any more, and up front for the final
+        result write of a run that is already ``done``.
+        """
+        # Hold this run's conversation for the WHOLE window in which the
+        # worker may still write, which starts here and not at the drain
+        # deadline: on Python 3.10 a second outer cancel can deliver _run's
+        # finalization mid-drain, so the run can go `done` while the writer
+        # is live, and a continuation reaching a released gate would then
+        # write `keep` for that writer's stale whole-file rewrite to erase.
+        # `keep` is written on the loop and takes no per-agent lock,
+        # so ordering is the only thing protecting it. The worker's own
+        # done-callback releases the hold, so it lasts exactly as long as the
+        # worker does -- milliseconds on a healthy FS. Recorded on the
+        # MANAGER, not on `info`: `evict_completed_agents` prunes completed
+        # runs out of `_agents`, and an eviction must not release the hold.
+        self._manager._abandoned_state_writers.add(info.id)
+
+        def _settled(
+            fut: "asyncio.Future[Any]",
+            _mgr: Any = self._manager,
+            _aid: str = info.id,
+            _what: str = what,
+        ) -> None:
+            # The worker has landed (drained or abandoned): the conversation
+            # is safe to promote or release again.
+            _mgr._abandoned_state_writers.discard(_aid)
+            _mgr._run_events._forget_finished_live_state(info)
+            # It may also have raised; retrieve it so it never surfaces as an
+            # asynchronous "exception was never retrieved" warning.
+            if not fut.cancelled() and fut.exception() is not None:
+                logger.debug(
+                    "Best-effort %s write failed for %s while detached",
+                    _what,
+                    _aid,
+                    exc_info=fut.exception(),
+                )
+
+        writer.add_done_callback(_settled)
+
+    async def _cap_unclaimed_result_impl(self, info: SubagentInfo) -> None:
+        """Cap ``result.txt`` and record no whole answer, for every ending but a claim.
+
+        Called once, from ``_run``'s ``finally``, so the cap covers the endings
+        that never reach ``_run_inner``'s tail as well: the turn-limit and
+        escalation bails, the deadline, a cancel, a raised error and a reap.
+        Skipped for a claimed ending, which wrote its whole answer, and for a
+        cancel-recovery respawn, whose next attempt starts ``result.txt``
+        afresh: a cap racing it would write this attempt's bytes over that
+        one's. Bounded like every finished-result write, and it never raises,
+        so the report below it is still spawned: a cancellation landing here is
+        drained first, and ``_run`` re-raises none. The run is ``done`` by now,
+        so the write holds its conversation until the worker lands.
+        """
+        if info._ending_claimed or info._recovering:
+            return
+        try:
+            await self._manager._write_finished_result_off_loop(info, None, hold_conversation=True)
+        except asyncio.CancelledError:
+            logger.debug("result cap for %s cut short by a cancel", info.id)
+        except Exception:
+            logger.warning("Failed to record result_complete for %s", info.id, exc_info=True)
 
     async def _remember_identity_off_loop(
         self,
@@ -624,6 +743,29 @@ class RunEventCoordinator(ManagerComponent):
                 # consumed the entry before cancelling this task).
                 self._manager._process_handles.pop(info.id, None)
 
+    def _record_reap_ending_impl(self, info: SubagentInfo, unfinished: str) -> None:
+        """Record the ending of a run whose reap got there first.
+
+        Setting ``done`` here wins the first-arrival record over the reaper's
+        own synthesis (guard 1 in ``_force_reap``), so the whole record --
+        error, stat, tombstone -- is written once. Neutrality follows the FIRST
+        stopper: a Stop that lands while a deadline reap already owns the
+        teardown sets ``user_stopped`` too; the record still belongs to the
+        deadline, so the flag is put back and the failure kept, named
+        ``"<origin> — <unfinished>"``.
+        """
+        neutral = info.stop_is_neutral
+        if not neutral:
+            info.user_stopped = False
+            if not info.error:
+                info.error = f"{info._stop_origin or 'the reaper'} — {unfinished}"
+        if not info.result and info.streaming_text:
+            info.result = info.streaming_text
+        info.done = True
+        if not neutral:
+            Stats().inc_subagent_failed()
+        self._manager._write_tombstone(info, info._reap_reason or "reaped")
+
     async def _run_impl(self, info: SubagentInfo) -> None:
         """Execute a subagent task in its own session."""
         session_key = info.conversation_key or f"subagent:{info.id}"
@@ -635,15 +777,37 @@ class RunEventCoordinator(ManagerComponent):
             await asyncio.wait_for(
                 self._manager._run_inner(info, session_key), timeout=self._manager._default_timeout
             )
+            if info._reap_started and not info.done:
+                # Returned with no ending while a reap is in flight -- the tail
+                # records nothing for a whole answer a reap got to first: the
+                # reap's ending, recorded and reported as for the runtime
+                # death below. Only a complete event finished the answer.
+                reap_owns_report = True
+                self._record_reap_ending_impl(
+                    info,
+                    (
+                        "the run was stopped as it finished its answer"
+                        if info._answer_finished
+                        else "the runtime was torn down before the run finished"
+                    ),
+                )
         except asyncio.TimeoutError:
-            if not info.reaped:
+            # ``done`` is first-arrival-wins in every arm below, as in
+            # _force_reap: an ending already recorded -- a claimed completed
+            # ending (``_ending_claimed``) sets ``done`` before _run_inner
+            # unwinds -- is never overwritten or respawned, and its log line
+            # says the run completed rather than naming what cut its tail short.
+            if not info.reaped and not info.done:
                 info.error = f"Timed out after {self._manager._default_timeout // 60} minutes [{_timeout_context(info, turn_limit=self._manager._effective_turn_limit(info))}]"
                 info.done = True
                 Stats().inc_subagent_failed()
                 self._manager._write_tombstone(info, "timeout")
-            logger.warning("Subagent %s timed out", info.id)
+            if info._ending_claimed:
+                logger.info("Subagent %s completed before its deadline ended the run", info.id)
+            else:
+                logger.warning("Subagent %s timed out", info.id)
         except asyncio.CancelledError:
-            if not info.reaped:
+            if not info.reaped and not info.done:
                 if (
                     not info.user_stopped
                     and not self._manager._shutting_down
@@ -710,7 +874,10 @@ class RunEventCoordinator(ManagerComponent):
                         info.result = info.streaming_text
                     Stats().inc_subagent_failed()
                     self._manager._write_tombstone(info, "cancelled")
-            logger.info("Subagent %s cancelled", info.id)
+            if info._ending_claimed:
+                logger.info("Subagent %s completed before a cancel ended the run", info.id)
+            else:
+                logger.info("Subagent %s cancelled", info.id)
         except Exception as exc:
             if getattr(exc, "context_overflow", False):
                 # The native session that raised this cannot shrink the envelope
@@ -815,23 +982,9 @@ class RunEventCoordinator(ManagerComponent):
                 reap_owns_report = True
                 origin = info._stop_origin or "the reaper"
                 if not info.done:
-                    # Neutrality follows the FIRST stopper. A Stop that lands
-                    # while a deadline reap already owns the teardown sets
-                    # ``user_stopped`` too; the record still belongs to the
-                    # deadline, so the flag is put back and the failure kept.
-                    neutral = info.stop_is_neutral
-                    if not neutral:
-                        info.user_stopped = False
-                        if not info.error:
-                            info.error = (
-                                f"{origin} — the runtime was torn down before the run finished"
-                            )
-                    if not info.result and info.streaming_text:
-                        info.result = info.streaming_text
-                    info.done = True
-                    if not neutral:
-                        Stats().inc_subagent_failed()
-                    self._manager._write_tombstone(info, info._reap_reason or "reaped")
+                    self._record_reap_ending_impl(
+                        info, "the runtime was torn down before the run finished"
+                    )
                 # One attributable line, at the level the action deserves: a
                 # user's own stop is routine; a parent end or a deadline reap
                 # discarded live work the user did not ask to lose.
@@ -843,19 +996,29 @@ class RunEventCoordinator(ManagerComponent):
                     _describe_exception(exc),
                 )
             else:
-                # Story appended INSIDE the cap: info.error reaches a WS frame
-                # and the Subagents panel, so the rendered total stays bounded
-                # by MAX_ERROR_DETAIL_LEN exactly as before — and the budget
-                # trims the ERROR text, never the story, so a verbose chain
-                # cannot push the walk out of the terminal error.
-                info.error = append_fallback_story(
-                    _describe_exception(exc), exc, budget=MAX_ERROR_DETAIL_LEN
-                )
-                info.done = True
-                Stats().inc_subagent_failed()
-                self._manager._write_tombstone(info, "error")
-                logger.exception("Subagent %s failed", info.id)
+                if not info.done:
+                    # Story appended INSIDE the cap: info.error reaches a WS
+                    # frame and the Subagents panel, so the rendered total stays
+                    # bounded by MAX_ERROR_DETAIL_LEN exactly as before — and the
+                    # budget trims the ERROR text, never the story, so a verbose
+                    # chain cannot push the walk out of the terminal error.
+                    info.error = append_fallback_story(
+                        _describe_exception(exc), exc, budget=MAX_ERROR_DETAIL_LEN
+                    )
+                    info.done = True
+                    Stats().inc_subagent_failed()
+                    self._manager._write_tombstone(info, "error")
+                if info._ending_claimed:
+                    logger.error(
+                        "Subagent %s completed, then its run raised", info.id, exc_info=exc
+                    )
+                else:
+                    logger.exception("Subagent %s failed", info.id)
         finally:
+            # Every ending but a claimed one leaves result.txt capped before its
+            # report exists, so the parent reads a bounded file. Bounded, and it
+            # never raises, so it cannot keep the report below from spawning.
+            await self._cap_unclaimed_result_impl(info)
             # Guard 3 of 3 — the terminal REPORT, owned by the finalize claim.
             # Taken (and the report task SPAWNED) before the teardown awaits
             # below, so a cancellation landing anywhere in teardown cannot
@@ -1880,8 +2043,8 @@ class RunEventCoordinator(ManagerComponent):
             # have executed BEFORE the first text chunk, so tool_count must
             # trigger the preamble too — a bare original prompt after tool
             # activity invites duplicate side effects. (info.tool_count and
-            # streaming_text persist across the respawn; _run_inner never
-            # resets them.)
+            # streaming_text persist across the respawn until this point;
+            # streaming_text restarts only on the new attempt's first chunk.)
             message = _CANCEL_RESUME_PREFIX + message
         # A server the session could not mount is stated before the task, so the
         # run never spends a turn discovering the absence for itself. Empty for a
@@ -2087,6 +2250,16 @@ class RunEventCoordinator(ManagerComponent):
 
         _rp = agent_dir_for_display(info.id) / "result.txt"
         info.result_path = str(_rp)
+        # This attempt's first text chunk starts the live partial and
+        # result.txt afresh, so they hold this attempt's text alone, never
+        # glued to an earlier attempt's: until then that partial stays
+        # readable. Two flags, because a failed write must not cost the live
+        # partial: it starts afresh on the first chunk whatever the disk does,
+        # and the file is replaced by the first write that succeeds, with
+        # every chunk this attempt has streamed so far (again after a refused
+        # append).
+        _attempt_has_text = False
+        _result_file_started = False
         # Cache tool names by tool_call_id so PostToolUse can recover the tool name
         # when EVENT_TOOL_RESULT arrives (which only carries tool_call_id and output).
         # Mirrors kiro_crew.dashboard.chat_runner._pending_tools.
@@ -2428,11 +2601,25 @@ class RunEventCoordinator(ManagerComponent):
                                 "Failed to persist refined model for %s", info.id, exc_info=True
                             )
                 result_text += event.text
-                write_result_chunk(info.id, event.text)
+                if not _attempt_has_text:
+                    # The in-memory partial a stop or a cancel delivers. It
+                    # keeps growing when the file cannot be written, which is
+                    # exactly when it is the only copy left.
+                    _attempt_has_text = True
+                    info.streaming_text = ""
+                # The live partial takes the chunk before the file is
+                # started off the loop, so a Stop landing in that wait still
+                # delivers it.
                 redacted = _redact(event.text)
                 info.streaming_text += redacted
                 if len(info.streaming_text) > 50_000:
                     info.streaming_text = "…(truncated)\n" + info.streaming_text[-40_000:]
+                if _result_file_started:
+                    # A refused append starts the file over on the next
+                    # chunk, so a lost chunk leaves no hole mid-file either.
+                    _result_file_started = write_result_chunk(info.id, event.text)
+                else:
+                    _result_file_started = await self._manager._start_result_file(info, result_text)
                 await self._manager._fire_event("subagent_chunk", info, {"text": redacted})
             elif event.kind == EVENT_PERMISSION_REQUEST:
                 # Both kiro-cli and claude-agent-acp surface tool calls via
@@ -2985,58 +3172,6 @@ class RunEventCoordinator(ManagerComponent):
             if not info.user_stopped:
                 info.error = self._manager._stop_error_text(info, _stop, _complete_event)
         info.result = cleaned or "_No response._"
-        # Cap disk file and trim memory — gateway decides how much to show based on mode.
-        if info.result_path:
-            cap_result_file(Path(info.result_path))
-        # The stream reached a successful EVENT_COMPLETE, so result.txt now holds
-        # the whole answer. Nothing else on disk says so: write_result_chunk
-        # appends per streamed chunk, so the file is non-empty from the first
-        # token and a reader after a restart cannot tell a finished answer from an
-        # opening sentence. A non-success completion leaves the flag unset, and
-        # so does a stream that never delivered a complete event at all — the
-        # generator can simply stop between chunks when the transport dies, and
-        # the absent stop reason alone classifies as a normal end of turn, which
-        # would mark the fragment complete. The explicit ``_complete_event``
-        # check is what tells those two apart. Recorded here because this is the
-        # only point that knows. Written after cap_result_file so the flag
-        # describes the file as it will be read.
-        _result_complete = _complete_event is not None and _stop.is_success
-        # Drop the DURABLE completion marker before the state write below. The
-        # ``result_complete`` flag lives in state.json, written in the separate
-        # step that follows; a restart landing in that gap left a finished
-        # answer on disk with the flag never written, and the orphan reconciler
-        # read the whole answer as a fragment "cut off mid-turn". The marker
-        # lands in the SAME step that finalized result.txt (right after
-        # cap_result_file), so the completeness signal cannot lag the bytes it
-        # describes across a crash. The reconciler treats either signal as proof.
-        # Off the loop like the sibling state write below: a network-backed data
-        # home makes the mkdir + temp-file + rename synchronous filesystem work,
-        # which must not run on the gateway's single event loop. Shielded AND
-        # drained on cancellation for the same reason ``_write_state_off_loop``
-        # is: a cancel arriving during the rename must not return control to a
-        # terminal tombstone arm while the marker is still half-written, or that
-        # arm's ``tombstone_recovery_action`` reads a finished answer as a
-        # fragment. Holding the cancel until the worker settles lands the rename
-        # first, so the marker and the result bytes it certifies agree on disk.
-        if _result_complete:
-            _marker_writer = asyncio.ensure_future(asyncio.to_thread(mark_result_complete, info.id))
-            try:
-                await asyncio.shield(_marker_writer)
-            except asyncio.CancelledError:
-                try:
-                    await _marker_writer
-                except BaseException:
-                    pass
-                raise
-        # A restart landing between the complete event and the state write below
-        # still finds the durable marker above, so a finished result stays a
-        # whole result — while a run that never completed writes neither, which
-        # is the safe direction for a signal whose purpose is not to overstate.
-        await self._manager._write_state_off_loop(
-            info,
-            "result complete",
-            result_complete=_result_complete,
-        )
         # Flag whether the completion-event copy will drop content, so the gateway
         # emits a summary + result_path pointer (read on demand) instead of a lossy
         # blob. The full transcript stays in result.txt for the TTL grace window.
@@ -3062,14 +3197,10 @@ class RunEventCoordinator(ManagerComponent):
         evict_completed_agents(self._manager._agents)
 
         # ── Per-turn usage row: attribute subagent spend. ──
-        # Deliberately BEFORE `info.done`: the caller's cleanup (which awaits
-        # provider.shutdown() -> handle.destroy()) runs after this function
-        # returns, so an await placed after `done` sits inside the
-        # done-to-teardown window. Waiters that poll for `done` would then
-        # observe completion while this file write is still in flight — which
-        # widens that window on slow filesystems and lets teardown-observing
-        # callers race it. Writing first also means `done` never becomes
-        # visible with the usage row still missing.
+        # Its inputs are read here, synchronously, and the append itself is
+        # best-effort analytics on a task the manager holds (``_report_tasks``,
+        # which ``cancel_all()`` drains within its bound): no ending waits on
+        # it, so a cancel, the shutdown or a wedged FS can never hold one.
         try:
             # circular import: reached while kiro_crew.slack.handler is still
             # initialising (dashboard/handlers/files.py imports is_tracked_channel
@@ -3082,43 +3213,101 @@ class RunEventCoordinator(ManagerComponent):
             )
 
             _used, _window = read_context_tokens(client)
-            await persist_token_record_async(
-                session_key,
-                # Blank while a fallback serves this run: the explicit pin
-                # would bill the fallback's spend to a model that never
-                # executed; model_source reports what actually ran.
-                ("" if provider_fallback_active(client) else (info.model or "")),
-                _complete_event,
-                provider="claude_code" if is_cc else "acp",
-                surface="subagent",
-                # Ownership stamp (see _build_token_record): an app-dispatched
-                # subagent's spend must be readable by that app's audit — the
-                # illustrator lane of an app is exactly this path.
-                app=info.app or "",
-                # Explicit/inherited `agent` FIRST here — unlike every other
-                # surface. Under session sharing this subagent reuses the
-                # PARENT's runtime, so read_effective_agent() would report the
-                # parent's agent and misattribute a `spawn_run(agent="…")` turn.
-                # `agent` is already the resolved value (it inherits the parent
-                # session's agent when the spawn did not name one), and the
-                # helper stays as the fallback for when it is empty.
-                agent=agent or read_effective_agent(client) or "",
-                context_used=_used,
-                context_window=_window,
-                elapsed_ms=int((time.monotonic() - _turn_t0) * 1000),
-                model_source=client,
+            _usage_row = asyncio.ensure_future(
+                persist_token_record_async(
+                    session_key,
+                    # Blank while a fallback serves this run: the explicit pin
+                    # would bill the fallback's spend to a model that never
+                    # executed; model_source reports what actually ran.
+                    ("" if provider_fallback_active(client) else (info.model or "")),
+                    _complete_event,
+                    provider="claude_code" if is_cc else "acp",
+                    surface="subagent",
+                    # Ownership stamp (see _build_token_record): an app-dispatched
+                    # subagent's spend must be readable by that app's audit — the
+                    # illustrator lane of an app is exactly this path.
+                    app=info.app or "",
+                    # Explicit/inherited `agent` FIRST here — unlike every other
+                    # surface. Under session sharing this subagent reuses the
+                    # PARENT's runtime, so read_effective_agent() would report the
+                    # parent's agent and misattribute a `spawn_run(agent="…")` turn.
+                    # `agent` is already the resolved value (it inherits the parent
+                    # session's agent when the spawn did not name one), and the
+                    # helper stays as the fallback for when it is empty.
+                    agent=agent or read_effective_agent(client) or "",
+                    context_used=_used,
+                    context_window=_window,
+                    elapsed_ms=int((time.monotonic() - _turn_t0) * 1000),
+                    model_source=client,
+                )
             )
+            self._manager._report_tasks.add(_usage_row)
+            _usage_row.add_done_callback(self._manager._report_tasks.discard)
         except Exception:
             logger.debug("usage row (subagent) persist failed", exc_info=True)
 
-        info.done = True
-        if _stop.is_success:
+        def _count_success() -> None:
+            # The one success bookkeeping, for a claimed ending and the tail's alike.
             self._manager._sessions.record_success(session_key)
             Stats().inc_subagent_completed()
             logger.info("Subagent %s completed", info.id)
-        elif info.user_stopped:
+
+        # ── The ending, claimed once. ──
+        # No await since the complete event, so this is first-arrival-wins
+        # against every stop. A whole answer -- a SUCCESSFUL complete event: the
+        # generator can also just stop between chunks when the transport dies,
+        # and that absent stop reason classifies as a normal end of turn, which
+        # the explicit ``_complete_event`` check tells apart -- claims the
+        # completed ending unless a stop got here first. From the claim on, every
+        # stop path treats the run as ``done`` and does nothing, and a cancel,
+        # the shutdown or the deadline only cuts this tail short: ``done`` is
+        # recorded either way, and _run's arms leave a recorded ending alone.
+        # An ``error`` already stamped is a stop too: a failed child under
+        # ``on_child_failure=fail_parent`` and an expired wait stamp it and only
+        # schedule their cancel.
+        if (
+            _complete_event is not None
+            and _stop.is_success
+            and not (info.done or info._reap_started or info.user_stopped or info.error)
+        ):
+            info._ending_claimed = True
+            _count_success()
+            try:
+                # result.txt rewritten whole from memory, then the flag that says
+                # so (``subagent_persistence.result_is_whole``).
+                await self._manager._write_finished_result_off_loop(info, result_text)
+            except Exception:
+                logger.warning("Failed to record result_complete for %s", info.id, exc_info=True)
+            finally:
+                info.done = True
+            return
+        # Any other ending, including a whole answer a stop got to first: _run's
+        # ``finally`` caps the streamed file and records no whole answer.
+        if _stop.is_success and info._reap_started and not info.done:
+            # A reap in flight got here first and owns this ending: ``_run``
+            # records the stop it is making and leaves the report to it, as for
+            # the runtime death its teardown causes. A bare ``done`` here would
+            # make the reap's record guard skip, so a deadline-stopped run would
+            # be reported completed. A stream that just stopped, with no
+            # complete event, had not finished its answer, and the record says so.
+            info._answer_finished = _complete_event is not None
+            logger.info(
+                "Subagent %s %s after a reap began",
+                info.id,
+                "finished its answer" if info._answer_finished else "stream ended",
+            )
+            return
+        was_done = info.done
+        info.done = True
+        if info.user_stopped:
             # The user-stop path owns the tombstone/stat for this record.
             logger.info("Subagent %s stream ended by user stop (%s)", info.id, _stop.stop_reason)
+        elif _stop.is_success and not info.error:
+            if was_done:
+                # Another path recorded this run's ending first; it owns the stat.
+                logger.info("Subagent %s finished after its ending was recorded", info.id)
+            else:
+                _count_success()
         else:
             Stats().inc_subagent_failed()
             self._manager._write_tombstone(

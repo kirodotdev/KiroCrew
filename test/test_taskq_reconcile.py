@@ -658,3 +658,160 @@ def test_reconcile_settles_the_row_whose_probe_raised_and_the_rows_behind_it(
         assert s.state_of("done_before_ack") == model.DONE
     finally:
         s.close()
+
+
+# ── the subagent probe reads a whole result the way the orphan reconcile does ──
+
+
+_UNREADABLE = object()
+
+
+@pytest.mark.parametrize(
+    "tombstone, complete, expected",
+    [
+        (None, True, model.DONE),
+        (None, False, None),
+        ({"cause": "gateway_restart"}, True, model.DONE),
+        ({"cause": "gateway_restart", "outcome": "completed"}, True, model.DONE),
+        ({"cause": "gateway_restart"}, False, None),
+        ({"cause": "cancelled"}, True, model.CANCELLED),
+        # The shape the cancel arm writes: its error makes the outcome failed,
+        # which is also what the live settle recorded for it.
+        ({"cause": "cancelled", "outcome": "failed"}, True, model.FAILED),
+        ({"cause": "user_stop", "outcome": "stopped"}, True, model.CANCELLED),
+        ({"cause": "error"}, True, model.FAILED),
+        # A reap after the answer was whole: the reap's ending stands.
+        ({"cause": "reaped", "outcome": "failed"}, True, model.FAILED),
+        ({"cause": "reaped"}, True, model.FAILED),
+        ({"cause": "startup_timeout"}, True, model.FAILED),
+        ({"cause": "start_queue_saturated"}, True, model.FAILED),
+        # A tombstone that is there but cannot be read records an ending this
+        # probe cannot see, so it says nothing rather than reading the folder.
+        (_UNREADABLE, True, None),
+    ],
+)
+def test_subagent_probe_settles_a_whole_result_done(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tombstone, complete, expected
+) -> None:
+    """With no tombstone, or one whose cause proves nothing, a whole result is
+    done: the rule (``result_is_whole``) the orphan reconcile announces it with.
+    Any other tombstone decides by its recorded ending, then its cause."""
+    import kiro_crew.subagent_persistence as sp
+    from kiro_crew.subagent_manager.admission.taskq_bridge import _TaskqBridgeMixin
+
+    monkeypatch.setattr(sp, "_SUBAGENTS_DIR", tmp_path / "subagents")
+    folder = tmp_path / "subagents" / "run00002"
+    _write_json(folder / "state.json", {"id": "run00002", "result_complete": complete})
+    (folder / "result.txt").write_text("the answer", encoding="utf-8")
+    if tombstone is _UNREADABLE:
+        (folder / "tombstone.json").write_text("{not json", encoding="utf-8")
+    elif tombstone is not None:
+        _write_json(folder / "tombstone.json", tombstone)
+
+    assert _TaskqBridgeMixin.taskq_artifact_probe(_rec("run00002")) == expected
+
+
+def test_an_admitted_row_whose_run_delivered_is_settled_not_rerun(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A row still ``admitted`` in the store (its start mark lost behind a slow
+    writer) whose run already delivered settles from its tombstone: requeueing
+    it would run finished work a second time."""
+    import kiro_crew.subagent_persistence as sp
+    from kiro_crew.subagent_manager.admission.taskq_bridge import _TaskqBridgeMixin
+
+    monkeypatch.setattr(sp, "_SUBAGENTS_DIR", tmp_path / "subagents")
+    folder = tmp_path / "subagents" / "adm00001"
+    _write_json(folder / "state.json", {"id": "adm00001", "result_complete": True})
+    (folder / "result.txt").write_text("the answer", encoding="utf-8")
+    _write_json(folder / "tombstone.json", {"cause": "delivered"})
+    path = tmp_path / "tasks.db"
+    s = TaskStore(path, network_fs=False).open()
+    s.accept([_rec("adm00001")])
+    s.claim("adm00001")
+    s.close()
+
+    s = TaskStore(path, network_fs=False).open()
+    try:
+        reconcile_on_boot(s, artifact_probe=_TaskqBridgeMixin.taskq_artifact_probe)
+        assert s.state_of("adm00001") == model.DONE
+    finally:
+        s.close()
+
+
+def test_every_tombstone_cause_has_a_terminal_state() -> None:
+    """Every cause a tombstone writer in src can record maps to a terminal task
+    state, except ``gateway_restart``, which proves nothing by itself. A new
+    cause missing from the map would otherwise settle by the folder alone."""
+    import ast
+
+    from source_corpus import parsed_candidates
+
+    from kiro_crew.subagent_manager.admission.types import tombstone_terminal_state
+
+    causes: set[str] = set()
+
+    def _strings(node: ast.AST) -> set[str]:
+        """The string literals *node* can evaluate to, not the keys it reads."""
+        if isinstance(node, ast.Constant):
+            return {node.value} if isinstance(node.value, str) else set()
+        if isinstance(node, ast.Call) and getattr(node.func, "attr", "") == "get":
+            return set()
+        return set().union(*(_strings(child) for child in ast.iter_child_nodes(node)))
+
+    # Every name the walk below matches contains one of these, so the narrow
+    # prefilter hides no site.
+    for _path, _text, tree in parsed_candidates(
+        require_any=("write_tombstone", "force_reap", "_reap_reason")
+    ):
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                fn = node.func
+                name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", "")
+                if (
+                    name == "to_thread"
+                    and node.args
+                    and getattr(node.args[0], "id", "") == "write_tombstone"
+                ):
+                    name = "write_tombstone"
+                if name == "_write_tombstone" and len(node.args) >= 2:
+                    causes |= _strings(node.args[1])
+                elif name in ("write_tombstone", "_force_reap", "force_reap"):
+                    for kw in node.keywords:
+                        if kw.arg in ("cause", "reason"):
+                            causes |= _strings(kw.value)
+            elif isinstance(node, ast.Assign) and any(
+                isinstance(t, ast.Attribute) and t.attr == "_reap_reason" for t in node.targets
+            ):
+                causes |= _strings(node.value)
+    assert {"delivered", "reaped", "timeout", "gateway_restart"} <= causes, causes
+    unmapped = sorted(
+        c for c in causes - {"gateway_restart"} if tombstone_terminal_state(c) is None
+    )
+    assert unmapped == [], f"tombstone causes with no terminal task state: {unmapped}"
+
+
+def test_every_recorded_outcome_and_neutral_stop_has_its_task_state() -> None:
+    """The outcome vocabulary is spelled once (``SubagentInfo.outcome``, the
+    panel's ``_PANEL_OUTCOMES``) and the task-state tables read it: an outcome
+    added there and not here would settle a stopped or failed run ``done``, and
+    a neutral stop the live record calls ``stopped`` must cancel its row."""
+    from kiro_crew.subagent import _NEUTRAL_REAP_REASONS, SubagentInfo
+    from kiro_crew.subagent_manager.admission.types import (
+        outcome_task_state,
+        tombstone_terminal_state,
+    )
+    from kiro_crew.subagent_persistence import _PANEL_OUTCOMES
+
+    live = {
+        SubagentInfo(id="o", task="t", user_stopped=stopped, error=error).outcome
+        for stopped in (False, True)
+        for error in ("", "boom")
+    }
+    assert live == set(_PANEL_OUTCOMES)
+    assert {o: outcome_task_state(o) for o in _PANEL_OUTCOMES} == {
+        "completed": model.DONE,
+        "failed": model.FAILED,
+        "stopped": model.CANCELLED,
+    }
+    assert {tombstone_terminal_state(r) for r in _NEUTRAL_REAP_REASONS} == {model.CANCELLED}

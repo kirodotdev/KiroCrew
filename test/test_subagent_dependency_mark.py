@@ -606,7 +606,13 @@ def test_taskq_settle_itself_is_what_reads_the_terminal_writes_boolean(
     generation = _admitted_row(store)
     assert store.advance("sa-1", m.RUNNING, generation=generation)
     assert store.transition("sa-1", PARK_STATE, generation=generation)
-    info = SimpleNamespace(id="sa-1", _taskq_generation=generation, user_stopped=False, error=None)
+    info = SimpleNamespace(
+        id="sa-1",
+        _taskq_generation=generation,
+        user_stopped=False,
+        error=None,
+        outcome="completed",
+    )
 
     with caplog.at_level(logging.WARNING, logger="kiro_crew.subagent_manager.admission"):
         _settle_bridge(store).taskq_settle(info)  # type: ignore[attr-defined]
@@ -625,7 +631,13 @@ def test_a_settle_the_store_took_says_nothing_through_the_real_method(
     is satisfied by a settle that warns unconditionally."""
     generation = _admitted_row(store)
     assert store.advance("sa-1", m.RUNNING, generation=generation)
-    info = SimpleNamespace(id="sa-1", _taskq_generation=generation, user_stopped=False, error=None)
+    info = SimpleNamespace(
+        id="sa-1",
+        _taskq_generation=generation,
+        user_stopped=False,
+        error=None,
+        outcome="completed",
+    )
 
     with caplog.at_level(logging.WARNING, logger="kiro_crew.subagent_manager.admission"):
         _settle_bridge(store).taskq_settle(info)  # type: ignore[attr-defined]

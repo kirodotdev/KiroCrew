@@ -1499,7 +1499,7 @@ async def test_delivered_orphan_survives_audit_and_tombstone_failures():
             "kiro_crew.subagent.write_tombstone", side_effect=OSError("disk unavailable")
         ) as write_tombstone,
     ):
-        result = await mgr._notify_orphan("orphan-1", state, "notification_pending", False)
+        result = await mgr._notify_orphan("orphan-1", state, False)
 
     assert result is None
     notify.assert_awaited_once()

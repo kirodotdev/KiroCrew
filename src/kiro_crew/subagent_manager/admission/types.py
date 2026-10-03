@@ -22,23 +22,55 @@ TASK_STORE_UNAVAILABLE_CODE = "task_store_unavailable"
 MIN_RECHECK_DELAY_SECS = 0.05
 
 
-def tombstone_terminal_state(cause: str) -> str | None:
-    """The terminal task state a tombstone cause proves, loaded on first use."""
+def outcome_task_state(outcome: str) -> str | None:
+    """The terminal task state of a run's recorded outcome (``SubagentInfo.outcome``).
+
+    ONE table for the live settle (``taskq_settle``) and the boot probe, so the
+    two cannot disagree about the same ending. Its keys are the outcome
+    vocabulary (``subagent_persistence._PANEL_OUTCOMES``);
+    ``test_taskq_reconcile.py`` pins that every outcome maps.
+    """
     from kiro_crew import taskq
 
     return {
-        "delivered": taskq.DONE,
-        "user_stop": taskq.CANCELLED,
-        # A parent end and a stage cancel are deliberate stops like a user's,
+        "completed": taskq.DONE,
+        "stopped": taskq.CANCELLED,
+        "failed": taskq.FAILED,
+    }.get(outcome)
+
+
+def tombstone_terminal_state(cause: str, outcome: str = "") -> str | None:
+    """The terminal task state a tombstone proves, loaded on first use.
+
+    The ending the writer recorded (``outcome``) decides first, exactly as the
+    live settle decided it (:func:`outcome_task_state`); the coarser ``cause``
+    answers for a tombstone that recorded none. ``gateway_restart`` proves
+    nothing by itself, and is the one cause missing here
+    (``test_every_tombstone_cause_has_a_terminal_state`` pins that).
+    """
+    from kiro_crew import taskq
+    from kiro_crew.subagent import _NEUTRAL_REAP_REASONS
+
+    recorded = outcome_task_state(outcome)
+    if recorded is not None:
+        return recorded
+    if cause in _NEUTRAL_REAP_REASONS:
+        # A user stop, a parent end and a stage cancel are deliberate stops,
         # written by the same reap: the row they leave behind is cancelled, not
-        # a run to recover on the next boot.
-        "parent_end": taskq.CANCELLED,
-        "stage_cancel": taskq.CANCELLED,
+        # a run to recover on the next boot. Read from the set that makes the
+        # live record neutral (``SubagentInfo.stop_is_neutral``), so the two
+        # cannot drift.
+        return taskq.CANCELLED
+    return {
+        "delivered": taskq.DONE,
         "cancelled": taskq.CANCELLED,
         "error": taskq.FAILED,
         "timeout": taskq.FAILED,
         "turn_limit": taskq.FAILED,
         "child_escalation_limit": taskq.FAILED,
+        "reaped": taskq.FAILED,
+        "startup_timeout": taskq.FAILED,
+        "start_queue_saturated": taskq.FAILED,
     }.get(cause)
 
 

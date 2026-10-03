@@ -53,29 +53,62 @@ SESSION_MAX_AGE_SECS = 86400 * 7  # 7 days
 MAX_RETAINED_AGENTS = 50
 
 
-def cap_result_file(path: Path) -> bool:
-    """Truncate a result file if it exceeds RESULT_FILE_MAX_BYTES.
+def _result_budgets() -> tuple[int, int]:
+    """How the byte budget splits: the first 20% (task context) and the last
+    80% (final output), less room for the marker between them."""
+    head = RESULT_FILE_MAX_BYTES // 5
+    return head, RESULT_FILE_MAX_BYTES - head - 100
 
-    Keeps the first 20% and last 80% of the budget to preserve
-    the beginning (task context) and end (final output).
-    Returns True if truncation occurred.
+
+def _join_capped(head: bytes, tail: bytes, total: int) -> bytes:
+    """*head* and *tail* of a *total*-byte result, each trimmed to a whole
+    character, with a marker counting the bytes dropped between them."""
+    head = head.decode("utf-8", "ignore").encode("utf-8")
+    tail = tail.decode("utf-8", "ignore").encode("utf-8")
+    marker = f"\n\n[...truncated {total - len(head) - len(tail):,} bytes...]\n\n"
+    return head + marker.encode("utf-8") + tail
+
+
+def cap_result_bytes(data: bytes) -> bytes:
+    """Cap a result's UTF-8 bytes at RESULT_FILE_MAX_BYTES.
+
+    Keeps the first 20% and last 80% of the budget to preserve the beginning
+    (task context) and end (final output). The budget is bytes, so the cut is in
+    bytes, each side moved back to a whole character, so nothing is kept twice
+    and the seams decode cleanly. Data within the budget is returned as is.
+    """
+    if len(data) <= RESULT_FILE_MAX_BYTES:
+        return data
+    head, tail = _result_budgets()
+    return _join_capped(data[:head], data[-tail:], len(data))
+
+
+def cap_result_file(path: Path) -> bool:
+    """Cap the result file at *path* in place, as :func:`cap_result_bytes` would.
+
+    For a result that streamed to disk and was not rewritten from memory (a
+    partial, or a whole answer whose rewrite failed). Reads only the two ends it
+    keeps, so an oversized file costs no more memory than the cap. Rewritten IN
+    PLACE, never by temp file and rename: the result only shrinks, so a full
+    disk cannot refuse it, and on Windows a reader holding the file open (the
+    panel, the parent's read tool, AV) shares writes but not the delete a
+    rename needs. Nothing vouches for a partial, so it needs no atomicity.
+    Returns True when it truncated; a missing file is left missing.
     """
     try:
         size = path.stat().st_size
-    except OSError:
+    except FileNotFoundError:
         return False
     if size <= RESULT_FILE_MAX_BYTES:
         return False
-
-    head_budget = RESULT_FILE_MAX_BYTES // 5  # 20%
-    tail_budget = RESULT_FILE_MAX_BYTES - head_budget - 100  # 80% minus marker
-
-    content = path.read_text(encoding="utf-8", errors="replace")
-    head = content[:head_budget]
-    tail = content[-tail_budget:]
-    marker = f"\n\n[...truncated {size - RESULT_FILE_MAX_BYTES:,} bytes...]\n\n"
-
-    path.write_text(head + marker + tail, encoding="utf-8")
+    head_budget, tail_budget = _result_budgets()
+    with path.open("r+b") as handle:
+        head = handle.read(head_budget)
+        handle.seek(size - tail_budget)
+        tail = handle.read(tail_budget)
+        handle.seek(0)
+        handle.write(_join_capped(head, tail, size))
+        handle.truncate()
     logger.info("Truncated %s from %d to %d bytes", path.name, size, RESULT_FILE_MAX_BYTES)
     return True
 
