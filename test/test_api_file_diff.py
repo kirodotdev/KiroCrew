@@ -488,7 +488,7 @@ async def test_exfiltration_url_is_redacted_in_both_fields(tmp_path):
     assert body["status"] == "modified"
     assert EXFIL_URL not in body["original"]
     assert EXFIL_URL not in body["diff"]
-    assert "[REDACTED: suspicious URL to collect.example.com]" in body["original"]
+    assert "[REDACTED: suspicious URL to collect.example.com (long query, may be legitimate)]" in body["original"]
     # This fixture is a discriminator only while the credential pass ignores it.
     assert redact_credentials(EXFIL_URL)[0] == EXFIL_URL
 

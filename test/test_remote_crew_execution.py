@@ -2294,7 +2294,7 @@ def _assert_redacted(text: str) -> None:
     assert "[REDACTED: credential]" in text
     # The exfil marker names the host by design, so assert the marker rather
     # than the absence of the domain substring.
-    assert "[REDACTED: suspicious URL to evil.example.com]" in text
+    assert "[REDACTED: suspicious URL to evil.example.com (credential)]" in text
 
 
 class TestRelayedRedaction:

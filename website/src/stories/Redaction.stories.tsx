@@ -109,6 +109,31 @@ export const LinkAddressTooLong: Story = {
   },
 }
 
+// ── placeholder reasons ──────────────────────────────────────────────────
+
+/** Each reason the backend puts after the host, as plain text: what a channel
+ *  message, or a dashboard reply whose record was dropped, shows. The last line
+ *  keeps its record, so it renders as the chip. */
+const REASONS = ['credential', 'encoded credential', 'heavy encoding, may be legitimate', 'long query, may be legitimate', 'random-looking query, may be legitimate']
+const REASONED = [
+  '**Links removed from this reply:**',
+  '',
+  ...REASONS.map((r, i) => `${i + 1}. [REDACTED: suspicious URL to learn${i + 1}.example.com (${r})]`),
+  '',
+  'With its record, the same text renders as the chip: [REDACTED: suspicious URL to wiki.example.org (long query, may be legitimate)]',
+].join('\n')
+export const PlaceholderReasons: StoryObj<typeof MarkdownRenderer> = {
+  render: () => (
+    <div className="max-w-[900px] p-4 text-[14px] leading-6 text-text">
+      <MarkdownRenderer
+        content={REASONED}
+        blockedLinks={[{ ...BLOCKED[0], domain: 'wiki.example.org', path: '/pages', url: 'https://wiki.example.org/pages?id=1', query_chars: 240 }]}
+        slotKey="story"
+      />
+    </div>
+  ),
+}
+
 // ── credential card states ───────────────────────────────────────────────
 
 /** A secret found in a command's output: the card offers the command the

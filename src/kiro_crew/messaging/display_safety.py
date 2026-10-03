@@ -166,10 +166,19 @@ DISPLAY_MARKUP = re.compile(r"[\[\]<>|*_~`]")
 # tag is not kept whole on the last-resort paths, which costs its brackets and its
 # count in the redaction notice, never the redaction. This shape is local because
 # this leaf cannot import the security package; ``test_markdown_link_parentheses.py``
-# pins it against that package's exported vocabulary.
+# pins it against that package's exported vocabulary. A suspicious-URL tag may
+# end in one of the fixed rule reasons (``EXFIL_RULE_LABELS``); none holds markup.
+_REDACTION_TAG_REASONS = (
+    "credential",
+    "encoded credential",
+    "heavy encoding, may be legitimate",
+    "long query, may be legitimate",
+    "random-looking query, may be legitimate",
+)
 _REDACTION_TAG = re.compile(
     r"\[REDACTED: (?:(?:encoded )?credential|suspicious URL to "
-    r"(?:[-A-Za-z0-9.:]+|\[[0-9A-Fa-f:.]+\]))\]"
+    r"(?:[-A-Za-z0-9.:]+|\[[0-9A-Fa-f:.]+\])"
+    r"(?: \((?:" + "|".join(map(re.escape, _REDACTION_TAG_REASONS)) + r")\))?)\]"
 )
 
 

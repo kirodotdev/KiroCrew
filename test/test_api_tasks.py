@@ -401,7 +401,7 @@ def test_redaction_runs_exfil_before_credentials() -> None:
     ``security.redact_and_truncate`` both order it this way.
     """
     scrubbed = tasks_mod._scrub_prose(_EXFIL_URL)
-    assert scrubbed == f"[REDACTED: suspicious URL to {_EXFIL_HOST}]"
+    assert scrubbed == f"[REDACTED: suspicious URL to {_EXFIL_HOST} (credential)]"
     # Credentials-first would have produced this instead: the credential gone,
     # the destination and the whole fetchable URL still on the wire.
     from kiro_crew.security import redact_credentials, redact_exfiltration_urls
