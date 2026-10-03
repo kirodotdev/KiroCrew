@@ -40,6 +40,15 @@ def _request_with_job(**job_kw) -> MagicMock:
     state.crons.list_jobs_async = AsyncMock(return_value=[job])
     state.crons.is_running.return_value = False
     state.crons.running_since.return_value = None
+    # The non-owner disclosure gate asks each retained reply's own run whether it
+    # fired project-bound, so the history reader is awaited on this path and a
+    # bare MagicMock cannot stand in for it. One row stamped UNBOUND, not an
+    # empty read: with retained output and no row to read, the gate cannot tell
+    # and withholds, so only a row that says "ran, unbound" leaves the
+    # result-field assertions below unaffected.
+    state.crons.get_history.return_value.get_job_history = AsyncMock(
+        return_value=([{"project_bound": False}], 1)
+    )
     state.has_slot.return_value = False
     request = MagicMock()
     request.app = {"state": state}

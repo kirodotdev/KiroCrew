@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import ANY, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
@@ -60,6 +60,21 @@ def _make_state(jobs=None, history_messages=None, notifications=None):
     state.get_or_create_slot = get_or_create_slot
     state.crons = MagicMock()
     state.crons.list_jobs.return_value = jobs or []
+
+    # Every job's newest run stamped itself UNBOUND by default: these fixtures
+    # exercise the ordinary to-chat path, not the project-bound owner gate's
+    # deleted-job branch (see test_cron_project_bound_history_provenance.py),
+    # which awaits get_history().get_job_history(...) for a job with no live
+    # record. A bare MagicMock() here is not awaitable and would crash that gate
+    # rather than exercise it, and an EMPTY read is not the same input: with the
+    # job gone and no row to read, the gate cannot tell and withholds, so the
+    # stub has to supply the row that says "ran, unbound" to mean what it says.
+    async def _unbound_job_history(job_id, limit=1, offset=0):
+        return [{"project_bound": False}], 1
+
+    state.crons.get_history.return_value.get_job_history = AsyncMock(
+        side_effect=_unbound_job_history
+    )
     state.conversation_log = MagicMock()
     state.conversation_log.read_messages.return_value = history_messages or []
     state._notification_log = notifications or []
@@ -74,6 +89,14 @@ def _make_job(job_id="abc123", name="test-cron", last_result="Hello world"):
     job.name = name
     job.last_result = last_result
     job.agent_id = ""
+    # Unbound by default: these tests exercise the ordinary to-chat path, not
+    # the project-bound owner gate (see test_cron_project_bound_history_provenance.py).
+    # An unconfigured MagicMock attribute is truthy, so leaving this unset would
+    # make every job here read as project-bound and start requiring an owner.
+    job.project_path = ""
+    # Same MagicMock truthiness trap as above: the retained-result
+    # provenance stamp must be set, or every job here reads as bound.
+    job.last_result_project_bound = False
     return job
 
 

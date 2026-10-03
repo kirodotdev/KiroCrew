@@ -20,7 +20,7 @@ import threading
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Generic, Iterator, Sequence, TypeVar
+from typing import Any, Callable, Collection, Generic, Iterator, Sequence, TypeVar
 
 from kiro_crew import agent_state, hooks
 from kiro_crew.agent_files import (
@@ -899,7 +899,14 @@ def _declared_project_agent_name(spec: Path) -> str | None:
     data = _read_agent_spec(spec, operation="resolve_project_agent_name", source="unknown")
     if data is None:
         return None
-    return spec_str(data, "name", _project_agent_fallback_name(spec))
+    fallback = _project_agent_fallback_name(spec)
+    # ``or fallback`` as well as passing it: ``spec_str`` returns a PRESENT key
+    # verbatim, so ``{"name": ""}`` yields ``""`` -- which is not a name the
+    # backend can activate, and which ``agent_binding_is_shadowed`` would match
+    # against an empty ``effective`` and report every binding as shadowed. The
+    # singular ``project_agent_name`` already applies the fallback, so this keeps
+    # the two readers answering the same name for the same file.
+    return spec_str(data, "name", fallback) or fallback
 
 
 def project_agent_name(spec: Path) -> str:
@@ -924,6 +931,23 @@ def _project_signature(project_dir: str | Path) -> tuple[_ListAgentsSig, ...]:
         _dir_signature(project_kiro_dir(project_dir)),
         _dir_signature(project_agents_dir(project_dir)),
     )
+
+
+def agent_binding_is_shadowed(
+    shadow_names: Collection[str],
+    agent: str,
+    effective: str = "",
+) -> bool:
+    """Whether project names shadow a binding alias or dispatched template.
+
+    An empty *agent* or *effective* never matches: the loader passes
+    ``effective=""`` whenever it allows the project override, and a name no
+    caller supplied must not be answered by a set member that happens to be
+    empty — that would report every binding as shadowed. The producer side keeps
+    ``""`` out of the set (``_declared_project_agent_name``); this is the same
+    rule stated where the comparison happens, so neither alone has to hold.
+    """
+    return bool(agent) and agent in shadow_names or bool(effective) and effective in shadow_names
 
 
 def project_agent_names(

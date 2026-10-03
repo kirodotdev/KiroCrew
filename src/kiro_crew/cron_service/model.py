@@ -80,6 +80,17 @@ class CronJob:
     # :meth:`set_run_result` and PERSISTED. Carries the run's identity for
     # history attribution.
     last_result_ts: float = 0.0
+    # Whether ``last_result`` was produced by a PROJECT-BOUND run, written by
+    # :meth:`set_run_result` and PERSISTED. The disclosure gates read this
+    # rather than the newest history row: a row describes its OWN run, while
+    # ``last_result`` can outlive the run that produced it (a result-less agent
+    # run carries it forward -- see ``clear_carried_result``), so the newest row
+    # can say unbound while the retained text is still a bound run's reply.
+    # Travels with ``last_result`` through the merge, like the two stamps below,
+    # and through ``store.job_record``/``_job_from_record`` — a stamp that lives
+    # only in memory answers "not bound" for every retained bound reply after a
+    # restart, so the round-trip is part of the guarantee, not an optimization.
+    last_result_project_bound: bool = False
     # The run stamp as ALREADY RENDERED text, written once by
     # :meth:`set_run_result` and PERSISTED. This is what the dashboard header
     # displays, and it is a snapshot on purpose.
@@ -170,6 +181,16 @@ class CronJob:
     skip_dates: list[str] = field(default_factory=list)  # ISO dates to skip ["YYYY-MM-DD"]
     timezone: str = ""  # IANA timezone for skip evaluation
     persistent_session: bool = True  # False → fresh ephemeral session per run
+    # Absolute path to a project directory whose .kiro/agents/*.json this job's
+    # agent_id may resolve against. "" = global agent only (default, unchanged
+    # behavior). Validated at add_job() time (must exist, must not be a
+    # sensitive path) mirroring chat_folders._validate_project_dir. A path that
+    # existed at save time but is gone by fire time is NOT re-validated here —
+    # the fire-time path (slack/gateway.py) does that check itself and SKIPS
+    # the run entirely when the folder is gone, surfacing it via a normal
+    # last_status="error" on the run record rather than falling back to a
+    # global agent.
+    project_path: str = ""
     minimal_context: bool = False  # True → skip memory/lessons/skills/history
     hide_in_chat: bool = (
         False  # True → don't create a dashboard chat slot; result still goes to history + Slack/bell
@@ -288,6 +309,10 @@ class CronJob:
         # ``last_result_stamp`` for why re-rendering duplicates rows.
         self.last_result_ts = time.time()
         self.last_result_stamp = self._render_run_stamp(self.last_result_ts)
+        # Read from the job the run is executing on, so this is the binding the
+        # result was produced UNDER. A later edit that clears the binding cannot
+        # retroactively relabel text already composed inside the project.
+        self.last_result_project_bound = bool(self.project_path)
 
     def _render_run_stamp(self, when_ts: float) -> str:
         """Render *when_ts* as the header suffix, in the job's own timezone.
@@ -319,6 +344,10 @@ class CronJob:
         """
         if not self.result_produced:
             self.last_result = ""
+            # Clear the provenance with the text it describes: a stamp left True
+            # over an empty result withholds nothing and reports a bound result
+            # that is not there.
+            self.last_result_project_bound = False
 
     def _audit_pause_change(self, outcome: str) -> None:
         """Emit a SEL audit event for an auto-pause permission transition.
