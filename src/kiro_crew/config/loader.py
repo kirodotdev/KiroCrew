@@ -5432,6 +5432,11 @@ _MATERIALIZED_AGENTS: frozenset[str] = frozenset()
 # residue witness compares a dict by identity. See :func:`dispatch_kiro_agent`.
 _MATERIALIZED_STEMS: dict[str, str] = {}
 _MATERIALIZED_AGENTS_READY = False
+# Whether the snapshot now installed came from a scan that read every spec.
+# Published with the snapshot, under the same lock, because the healer reads the
+# INSTALLED snapshot, which a later partial scan may have replaced since the
+# refresh that called it scanned (see :func:`reset_dangling_default_agent`).
+_MATERIALIZED_COMPLETE = False
 # Every name a landed snapshot or a publish has let a binding dispatch in this
 # process: declared names and the file names mapped to one. Updated in place,
 # never rebound. A name in it that the current snapshot does not declare was
@@ -5516,6 +5521,15 @@ def _remember_seen(names: Iterable[str]) -> None:
     _report_dropped("removal-evidence name(s)", dropped)
 
 
+# Whether the last :func:`_scan_materialized_index` on THIS thread read every
+# candidate spec. Thread-local, not returned: the scan's ``(names, stems)``
+# contract has other callers, and each refresh runs its scan and reads this on
+# one thread. A scan that skipped an unreadable or unparseable spec leaves that
+# agent's name out of the snapshot although its file is still there, so its
+# absence is not evidence of a removal (see :func:`refresh_materialized_agents`).
+_SCAN_STATE = threading.local()
+
+
 def _scan_materialized_agents(agents_dir: Path) -> frozenset[str]:
     """Every agent name declared by the kiro agent configs in *agents_dir*.
 
@@ -5551,9 +5565,11 @@ def _scan_materialized_index(agents_dir: Path) -> tuple[frozenset[str], dict[str
     # fail-closed, rather than falling back to an unguarded read.
     from kiro_crew.hooks import safe_read_file
 
+    _SCAN_STATE.complete = True
     try:
         candidates = iter_agent_spec_files(agents_dir)
     except OSError:
+        _SCAN_STATE.complete = False
         return frozenset(), {}
     for af in candidates:
         try:
@@ -5565,6 +5581,8 @@ def _scan_materialized_index(agents_dir: Path) -> tuple[frozenset[str], dict[str
             # refused entry is skipped by the same handler as an unreadable one.
             data = parse_agent_spec_text(safe_read_file(str(af)), af)
         except (ValueError, OSError):
+            # Its agent may be one this scan now leaves out; the scan is partial.
+            _SCAN_STATE.complete = False
             continue
         # Skip stray non-object JSON a user may have dropped in the dir. The
         # filename stem is only trusted AFTER the file parses as an agent config:
@@ -5632,7 +5650,9 @@ def refresh_materialized_agents(*, heal_default: bool = False) -> None:
     inside a caller's own locked config write (the default-agent PUT reaches
     :func:`dispatch_kiro_agent` from its mutate), where the reset's write would
     wait on the lock that caller holds. A refresh that does not heal still
-    records what it saw removed, for the next one that does.
+    records what it saw removed, for the next one that does. A scan that could
+    not read or parse every spec never heals: the agent of a skipped file is
+    missing from that snapshot while its file is still on disk.
 
     Consequence worth stating plainly: editing an existing config IN PLACE — say
     renaming its ``name`` field by hand — refreshes nothing, so that new name
@@ -5642,14 +5662,16 @@ def refresh_materialized_agents(*, heal_default: bool = False) -> None:
     rather than papered over with a per-file stat.
     """
     global _MATERIALIZED_AGENTS, _MATERIALIZED_AGENTS_READY, _MATERIALIZED_REFRESH_ISSUED
-    global _MATERIALIZED_REFRESH_APPLIED
+    global _MATERIALIZED_REFRESH_APPLIED, _MATERIALIZED_COMPLETE
     with _MATERIALIZED_AGENTS_LOCK:
         generation_at_start = _MATERIALIZED_AGENTS_GENERATION
         _MATERIALIZED_REFRESH_ISSUED += 1
         my_ticket = _MATERIALIZED_REFRESH_ISSUED
     try:
         agents_dir = kiro_agents_dir()
+        _SCAN_STATE.complete = True
         snapshot, stems = _scan_materialized_index(agents_dir)
+        scan_complete = bool(getattr(_SCAN_STATE, "complete", True))
     except Exception:  # noqa: BLE001 — a refresh failure only costs a fallback
         logger.debug("Failed to refresh materialized agent names", exc_info=True)
         return
@@ -5678,6 +5700,7 @@ def refresh_materialized_agents(*, heal_default: bool = False) -> None:
         # One call per landed snapshot, so its eviction and its report happen
         # once for the whole of what it declares.
         _remember_seen([*snapshot, *stems])
+        _MATERIALIZED_COMPLETE = scan_complete
         _MATERIALIZED_AGENTS_READY = True
         _MATERIALIZED_REFRESH_APPLIED = my_ticket
     # An app install/upgrade that rewrote agent JSON just landed in the snapshot;
@@ -5690,8 +5713,25 @@ def refresh_materialized_agents(*, heal_default: bool = False) -> None:
         invalidate_include_crew_context_cache()
     except Exception:  # noqa: BLE001 — best-effort; a stale flag is not fatal
         logger.debug("Failed to invalidate includeCrewContext cache", exc_info=True)
-    if heal_default:
+    # Only a scan that read every spec may heal: one that skipped a file it could
+    # not read or parse is missing that file's agent while the file is still
+    # there, and the reset it would make is durable.
+    if heal_default and scan_complete:
         reset_dangling_default_agent()
+
+
+def _removal_evidence() -> tuple[frozenset[str] | None, frozenset[str], bool]:
+    """``(installed names, removed names, scan complete)``, read in one lock hold.
+
+    ``None`` names while no snapshot has landed. Read together so the removals
+    and the completeness flag describe the same installed snapshot.
+    """
+    with _MATERIALIZED_AGENTS_LOCK:
+        names = _MATERIALIZED_AGENTS if _MATERIALIZED_AGENTS_READY else None
+        removed = frozenset(
+            _MATERIALIZED_SEEN.keys() - _MATERIALIZED_AGENTS - _MATERIALIZED_STEMS.keys()
+        )
+        return names, removed, _MATERIALIZED_COMPLETE
 
 
 def reset_dangling_default_agent() -> bool:
@@ -5727,12 +5767,8 @@ def reset_dangling_default_agent() -> bool:
     and takes the config lock); :func:`refresh_materialized_agents` is its
     caller. Never raises. Returns ``True`` when the default was reset.
     """
-    with _MATERIALIZED_AGENTS_LOCK:
-        names = _MATERIALIZED_AGENTS if _MATERIALIZED_AGENTS_READY else None
-        removed = frozenset(
-            _MATERIALIZED_SEEN.keys() - _MATERIALIZED_AGENTS - _MATERIALIZED_STEMS.keys()
-        )
-    if not names or not removed:
+    names, removed, complete = _removal_evidence()
+    if not names or not removed or not complete:
         return False
     try:
         cfg = KiroCrewConfig.load()
@@ -5758,7 +5794,13 @@ def reset_dangling_default_agent() -> bool:
         row = agents.get(current)
         if "default" not in agents or not isinstance(row, dict):
             return None
-        if _dangling_template(row.get("kiro_agent"), _MATERIALIZED_AGENTS) != template:
+        # Re-derived from the snapshot installed NOW: another refresh may have
+        # replaced the one read above, and if its scan was partial its absences
+        # are not evidence.
+        names_now, removed_now, complete_now = _removal_evidence()
+        if names_now is None or not complete_now or template not in removed_now:
+            return None
+        if _dangling_template(row.get("kiro_agent"), names_now) != template:
             return None
         data["default_agent"] = "default"
         reset = True

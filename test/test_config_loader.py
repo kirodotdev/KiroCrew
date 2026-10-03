@@ -5358,6 +5358,7 @@ class TestAppAgentDispatch(unittest.TestCase):
         loader._MATERIALIZED_STEMS = {}
         loader._MATERIALIZED_SEEN.clear()
         loader._MATERIALIZED_LAST_DROPPED.clear()
+        loader._MATERIALIZED_COMPLETE = False
         loader._MATERIALIZED_AGENTS_READY = False
         loader._MATERIALIZED_AGENTS_GENERATION = 0
         loader._MATERIALIZED_REFRESH_ISSUED = 0
@@ -6106,6 +6107,7 @@ class TestDanglingDefaultAgentReset(unittest.TestCase):
         loader._MATERIALIZED_STEMS = {}
         loader._MATERIALIZED_SEEN.clear()
         loader._MATERIALIZED_LAST_DROPPED.clear()
+        loader._MATERIALIZED_COMPLETE = False
         loader._MATERIALIZED_AGENTS_READY = False
         loader._MATERIALIZED_AGENTS_GENERATION = 0
         loader._MATERIALIZED_REFRESH_ISSUED = 0
@@ -6513,6 +6515,97 @@ class TestDanglingDefaultAgentReset(unittest.TestCase):
                     if any("file-name mapping" in str(arg) for arg in call.args)
                 ]
                 assert len(reported) == 1
+
+    def test_a_scan_that_could_not_read_every_spec_is_not_evidence_of_a_removal(self):
+        # The default's spec is caught mid-write (or briefly unreadable) during
+        # the owner's fetch. The scan skips it, so its name is missing, but the
+        # file is still there: the default must not be reset on that scan, and
+        # once the file reads again nothing has changed. A real removal still
+        # resets on the next complete scan.
+        import kiro_crew.config.loader as loader
+
+        with tempfile.TemporaryDirectory() as td:
+            config, d = self._home(
+                Path(td),
+                {"default": {"kiro_agent": "kirocrew"}, "pkg": {"kiro_agent": "captain"}},
+                "pkg",
+                {"kirocrew.json": {"name": "kirocrew"}, "captain.json": {"name": "captain"}},
+            )
+            p1, p2 = self._patched(config, d)
+            with p1, p2:
+                loader.refresh_materialized_agents(heal_default=True)
+                spec = d / "captain.json"
+                good = spec.read_text(encoding="utf-8")
+                spec.write_text('{"name": "capt', encoding="utf-8")  # torn
+                loader.refresh_materialized_agents(heal_default=True)
+                assert "captain" not in loader._MATERIALIZED_AGENTS
+                assert self._on_disk(config)["default_agent"] == "pkg"
+                spec.write_text(good, encoding="utf-8")
+                loader.refresh_materialized_agents(heal_default=True)
+                assert self._on_disk(config)["default_agent"] == "pkg"
+                spec.unlink()
+                loader.refresh_materialized_agents(heal_default=True)
+            assert self._on_disk(config)["default_agent"] == "default"
+
+    def test_a_partial_snapshot_installed_after_a_complete_scan_is_not_evidence(self):
+        # Two refreshes overlap: a complete one scans, then a partial one (a torn
+        # spec) installs its snapshot before the complete one's healer reads.
+        # The healer reads the INSTALLED snapshot, so it must see that snapshot
+        # is partial and leave the default alone.
+        import kiro_crew.config.loader as loader
+
+        with tempfile.TemporaryDirectory() as td:
+            config, d = self._home(
+                Path(td),
+                {"default": {"kiro_agent": "kirocrew"}, "pkg": {"kiro_agent": "captain"}},
+                "pkg",
+                {"kirocrew.json": {"name": "kirocrew"}, "captain.json": {"name": "captain"}},
+            )
+            p1, p2 = self._patched(config, d)
+            with p1, p2:
+                loader.refresh_materialized_agents()
+                (d / "captain.json").write_text('{"name": "capt', encoding="utf-8")
+                loader.refresh_materialized_agents()  # the partial one lands
+                assert loader.reset_dangling_default_agent() is False
+            assert self._on_disk(config)["default_agent"] == "pkg"
+
+    def test_a_partial_snapshot_installed_inside_the_locked_write_stops_it(self):
+        # The healer checked a complete snapshot, then a partial one was
+        # installed while it waited for the config lock: the locked mutate
+        # re-reads the installed snapshot and declines.
+        import kiro_crew.config.loader as loader
+
+        with tempfile.TemporaryDirectory() as td:
+            config, d = self._home(
+                Path(td),
+                {"default": {"kiro_agent": "kirocrew"}, "pkg": {"kiro_agent": "captain"}},
+                "pkg",
+                {
+                    "kirocrew.json": {"name": "kirocrew"},
+                    "captain.json": {"name": "captain"},
+                    "other.json": {"name": "other"},
+                },
+            )
+            real_read = loader.read_config_for_update
+            raced: list[bool] = []
+
+            def _partial_lands_first(path=None):
+                raced.append(True)
+                (d / "other.json").write_text('{"name": "oth', encoding="utf-8")
+                loader.refresh_materialized_agents()
+                return real_read(path)
+
+            p1, p2 = self._patched(config, d)
+            with p1, p2:
+                loader.refresh_materialized_agents()
+                (d / "captain.json").unlink()
+                loader.refresh_materialized_agents()  # complete: captain removed
+                with unittest.mock.patch.object(
+                    loader, "read_config_for_update", _partial_lands_first
+                ):
+                    assert loader.reset_dangling_default_agent() is False
+            assert raced, "the locked write was reached"
+            assert self._on_disk(config)["default_agent"] == "pkg"
 
     def test_a_template_the_directory_never_declared_is_not_reset(self):
         # ``scout`` runs ``reviewer``, which only a project checkout (or an
