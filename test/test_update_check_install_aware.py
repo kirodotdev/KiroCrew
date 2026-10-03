@@ -1758,7 +1758,6 @@ async def callback(job):
             "sessions.inbound_callback_count",
             "inbound_spool.pending_refusal_write_count()",
             'getattr(slot, "task", None)',
-            'getattr(slot, "_in_stage_execution", False)',
             'getattr(owner, "_handler_tasks", None)',
             'getattr(self, "_channel_handles", {})',
         ):

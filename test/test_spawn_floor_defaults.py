@@ -687,23 +687,3 @@ async def test_no_recheck_when_nothing_was_underpriced_or_the_floor_is_off(
             assert info._start_price_gb == pytest.approx(DEDICATED), "still topped up"
     finally:
         await _teardown(mgr)
-
-
-@pytest.mark.asyncio
-@pytest.mark.timeout(30)
-async def test_a_retained_claim_keeps_its_checked_price(monkeypatch, tmp_path) -> None:
-    """A claim re-entry that does not proceed still holds its slot, so its price
-    must stay charged until it registers or is released."""
-    _Host(monkeypatch, tmp_path, 8.0)
-    mgr, _ = await _manager(monkeypatch, eligible=False)
-    retained = mgr._admission.CLAIM_RETAINED
-    mgr._claim_prices["held"] = (DEDICATED, False)
-    try:
-        mgr.spawn(
-            "one", parent_session_key=PARENT, _preassigned_id="held", _claimed=(1, False, retained)
-        )
-        assert mgr._claim_prices == {"held": (DEDICATED, False)}
-        mgr._admission.release_reservation("held")
-        assert mgr._claim_prices == {}
-    finally:
-        await _teardown(mgr)

@@ -259,29 +259,6 @@ def test_app_scoped_target_is_not_addressable(tmp_path):
     assert "app-scoped" in exc.value.message
 
 
-def test_between_plan_stages_the_target_still_reports_running(tmp_path):
-    """An orchestrator between stages is busy, and `read` must say so.
-
-    `slot.running` is derived from the task, and each stage's `_run_chat` closes
-    its own turn — so between stages it reads False while the plan is very much
-    alive. A poller following the documented "send, then read until not running"
-    loop would stop here and miss every later stage.
-
-    Mutation guard: reporting `slot.running` alone returns False.
-    """
-    state = _make_state(tmp_path)
-    caller = _slot(state, "chat-1")
-    target = _peer_target(state, "chat-2", caller)
-    target.messages.append({"role": "assistant", "content": "stage one done"})
-    # Between stages: no task in flight, but the plan is still orchestrating.
-    target.task = None
-    target._in_stage_execution = True
-
-    out = sc.read_messages(state, caller_session_key=_key(caller), target="chat-2")
-
-    assert out["running"] is True, "a mid-plan target must not look idle"
-
-
 @pytest.mark.asyncio
 async def test_an_identical_queue_entry_does_not_masquerade_as_our_requeue(tmp_path):
     """A pre-existing identical queue entry must not be read as OUR requeue.
@@ -2594,43 +2571,6 @@ async def test_a_requeued_steer_with_no_recorded_admission_carries_no_baseline(t
     assert "mirrored" in sc.newly_held_constraints(
         sc.containment_snapshot(state, slot, on_probe_failure=True), entry.get("meta")
     ), "so the drain checks it against the current constraints and drops it"
-
-
-@pytest.mark.asyncio
-async def test_an_inter_stage_send_queues_instead_of_racing_the_plan(tmp_path):
-    """Between a plan's stages the target is busy even though `running` says no.
-
-    Each stage's `_run_chat` closes its own turn, so `slot.running` reads False in
-    the gap while the plan is still live. Handing the prompt to a gate that read
-    `running` alone started a SECOND turn racing the plan, with no recovery once two
-    turns own the same slot. Every producer that must not do that reads
-    `slot.running or slot._in_stage_execution`, and `enqueue_or_run_prompt` -- the
-    admission point this path delivers through -- now does too, so this path needs no
-    branch of its own.
-
-    Mutation guard: drop `or self._in_stage_execution` from the gate in
-    `state.enqueue_or_run_prompt` and this starts a turn.
-    """
-    state = _make_state(tmp_path)
-    caller = _slot(state, "chat-1")
-    target = _peer_target(state, "chat-2", caller)
-    # The inter-stage shape exactly: no task in flight, plan still executing.
-    target.task = None
-    target._in_stage_execution = True
-
-    out = await sc.send_to_target(
-        state,
-        caller_session_key=_key(caller),
-        target="chat-2",
-        message="do not race the plan",
-    )
-
-    assert out["started"] is False, "a mid-plan send must not start a turn"
-    assert target.task is None, "and must not have created one"
-    entry = next(q for q in target._queue if q["content"].endswith("do not race the plan"))
-    assert sc.QUEUED_CONTAINMENT_META_KEY in (
-        entry.get("meta") or {}
-    ), "the held prompt still carries its admission stamp for the drain"
 
 
 @pytest.mark.asyncio
@@ -5812,16 +5752,14 @@ def test_the_post_rpc_regate_warms_the_config_first():
 async def test_the_inter_stage_append_persists_before_returning_success(tmp_path):
     """An acknowledged prompt must not live only in memory.
 
-    A mid-plan send queues the prompt and the function then returns a success
-    receipt. Until the plan's drain reaches it the queue is its only record, so a
+    A send to a busy target queues the prompt and the function then returns a
+    success receipt. Until the drain reaches it the queue is its only record, so a
     restart inside the ordinary flush interval loses a message the sender was told had
     landed. Every other producer that appends and reports success writes immediately.
 
-    Asserted on BEHAVIOUR, not on the order of two lines in this module's source: the
-    append and the write both moved into `state.enqueue_or_run_prompt` when the
-    inter-stage branch here was deleted in favour of the central gate, and a
-    source-text pin would have reported that as a lost guarantee rather than a moved
-    one. What the sender is owed is the write, wherever it is started from.
+    Asserted on BEHAVIOUR, not on the order of two lines in this module's source:
+    the append and the write both live in `state.enqueue_or_run_prompt`. What the
+    sender is owed is the write, wherever it is started from.
 
     Mutation guard: remove the `start_queue_persist` call from
     `enqueue_or_run_prompt`'s queue branch and no write starts here.
@@ -5829,9 +5767,8 @@ async def test_the_inter_stage_append_persists_before_returning_success(tmp_path
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
     target = _peer_target(state, "chat-2", caller)
-    # The inter-stage shape exactly: no task in flight, plan still executing.
-    target.task = None
-    target._in_stage_execution = True
+    # A turn still in flight on the target, so the send queues.
+    target.task = MagicMock(done=MagicMock(return_value=False))
     flushed: list = []
     state.flush_slot_now = lambda slot: flushed.append(slot)
 

@@ -39,18 +39,6 @@ from kiro_crew.dashboard.chat_utils import (
 from kiro_crew.dashboard.handlers import api_mcp_server_detail
 from kiro_crew.dashboard.state import _MAX_PENDING_CONTEXT, DashboardState, _ChatSlot
 
-
-class _StageManager:
-    def running_agents_for(self, _parent: str) -> list[dict]:
-        return []
-
-    async def has_pending_work_for_async(self, _parent: str) -> bool:
-        return False
-
-    async def wait_for_parent_reports(self, _parent: str, _owner: str = "") -> bool:
-        return False
-
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -1856,23 +1844,6 @@ class TestNoteEndpoint:
         assert [m["content"] for m in slot.messages] == ["held"]
         # The skipped half added nothing at flush either.
         assert len(slot._pending_context) == 10
-
-    @pytest.mark.asyncio
-    async def test_note_defers_during_stage_execution_too(self, tmp_path: Path):
-        """Between autopilot stages `running` reads False but the turn is live."""
-        state = _make_state(tmp_path)
-        slot = _ChatSlot("s1")
-        state._slots["s1"] = slot
-        slot._in_stage_execution = True
-        assert slot.running is False
-
-        async with self._make_client(state) as client:
-            resp = await client.post("/api/chat/slots/s1/note", json={"content": "x"})
-            assert resp.status == 200
-            assert (await resp.json())["visibleDeferred"] is True
-
-        assert len(slot.messages) == 0
-        assert len(slot._deferred_notes) == 1
 
     @pytest.mark.asyncio
     async def test_deferred_notes_are_capped_per_turn(self, tmp_path: Path):

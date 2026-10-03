@@ -174,8 +174,8 @@ def slot_unable_to_take(slot: Any) -> str:
     produces -- the steer row and the queue entry are the same records the slot's
     own composer writes in that mode.
 
-    ``running or _in_stage_execution`` is the predicate every producer that must
-    not start a concurrent turn reads. The lease the channel observed as busy can
+    ``running`` is the predicate every producer that must not start a concurrent
+    turn reads. The lease the channel observed as busy can
     be held by something other than the dashboard turn loop -- the channel's own
     turn on the resumed key is the live case -- and then the slot has no published
     client to steer into and no drain coming: a queue entry would strand until an
@@ -188,7 +188,7 @@ def slot_unable_to_take(slot: Any) -> str:
         return REFUSED_CLOSING
     if getattr(slot, "is_remote", False) or getattr(slot, "executor", "") == "remote":
         return REFUSED_REMOTE
-    if not (getattr(slot, "running", False) or getattr(slot, "_in_stage_execution", False)):
+    if not getattr(slot, "running", False):
         return REFUSED_IDLE
     return ""
 

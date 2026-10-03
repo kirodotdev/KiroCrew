@@ -82,7 +82,6 @@ from kiro_crew.dashboard.state import (
     PERSISTED_SUBAGENT_REPLAY_KEEP,
     PERSISTED_SUBAGENT_REPLAY_MAX_AGE_SECS,
     DashboardState,
-    stage_boundary_for,
 )
 from kiro_crew.dashboard.token_auth import (
     LINK_WINDOW_SECS,
@@ -126,7 +125,6 @@ from kiro_crew.subagent import (
     effort_applied_note,
     effort_drop_reason,
     parent_spawn_allowlists,
-    stage_boundary_owner_for_run,
 )
 from kiro_crew.subagent_manager.admission.types import (
     QueuedReadUnavailable,
@@ -644,12 +642,8 @@ async def _spawn_request_memory_mode(
     return strictest((parent_mode, caller_mode)) or "persistent"
 
 
-def _stage_boundary_slot_for_parent(
-    state: DashboardState,
-    parent: str,
-    boundary_owner: str = "",
-) -> Any | None:
-    """Return an exact tagged owner, or legacy parent/latest fallback."""
+def _slot_for_parent(state: DashboardState, parent: str) -> Any | None:
+    """Return the slot a parent session key names, or one bound to it."""
     slots = getattr(state, "_slots", None)
     if not isinstance(slots, dict):
         return None
@@ -662,43 +656,7 @@ def _stage_boundary_slot_for_parent(
         for candidate in slots.values()
         if candidate is canonical or effective_session_key(candidate) == parent
     )
-    if boundary_owner:
-        return next(
-            (
-                candidate
-                for candidate in same_parent
-                if stage_boundary_for(candidate).owner == boundary_owner
-            ),
-            None,
-        )
-    aliases = tuple(candidate for candidate in same_parent if candidate is not canonical)
-    active_aliases = tuple(
-        candidate for candidate in aliases if stage_boundary_for(candidate).owner
-    )
-    if active_aliases:
-        parent_matches = tuple(
-            candidate
-            for candidate in active_aliases
-            if parent in stage_boundary_for(candidate).parent_session_keys
-        )
-        eligible = parent_matches or active_aliases
-        return max(
-            eligible,
-            key=lambda candidate: (
-                stage_boundary_for(candidate).armed_at,
-                str(getattr(candidate, "key", "")),
-            ),
-        )
     return canonical or (same_parent[0] if same_parent else None)
-
-
-def _stage_boundary_owner_for_parent(state: DashboardState, parent: str) -> str:
-    """Return the active stage token for *parent*, or explicit unowned ``""``."""
-    slot = _stage_boundary_slot_for_parent(state, parent)
-    if slot is None:
-        return ""
-    owner = stage_boundary_for(slot).owner
-    return owner if isinstance(owner, str) else ""
 
 
 def parent_work_supported(state: Any, parent_session: str) -> bool:
@@ -914,7 +872,6 @@ async def api_spawn(request: web.Request) -> web.Response:
         crew=crew,
         _memory_mode=admitted_mode,
         _execution_context=admitted_execution.to_record(),
-        _stage_boundary_owner=_stage_boundary_owner_for_parent(state, parent_session),
         _parent_spawn_policy=parent_spawn_policy,
     )
     if not info:
@@ -1121,7 +1078,6 @@ async def api_spawn_continue(request: web.Request) -> web.Response:
         max_turns=max_turns,
         cwd=resumed_cwd,
         _memory_mode=admitted_mode,
-        _stage_boundary_owner=_stage_boundary_owner_for_parent(state, parent_session),
     )
     if not info:
         return web.json_response(
@@ -1907,25 +1863,6 @@ async def _retry_failed_run(state: "DashboardState", agent_id: str, old: Any) ->
     # current config before any discovery read.
     if old.agent:
         await warm_project_agents_for_spawn(state, old.cwd or "")
-    # Keep the failed run's captured owner only while that exact boundary is
-    # still active. After release, current parent routing wins; an empty owner
-    # lets completion select the canonical slot at delivery time instead of
-    # carrying a stale token that exact lookup must reject.
-    previous_boundary_owner = stage_boundary_owner_for_run(old)
-    exact_boundary = (
-        _stage_boundary_slot_for_parent(
-            state,
-            old.parent_session_key,
-            boundary_owner=previous_boundary_owner,
-        )
-        if previous_boundary_owner
-        else None
-    )
-    retry_boundary_owner = (
-        previous_boundary_owner
-        if exact_boundary is not None
-        else _stage_boundary_owner_for_parent(state, old.parent_session_key)
-    )
     start = _spawn_on_loop(
         state,
         old._raw_task or old.task,
@@ -1953,7 +1890,6 @@ async def _retry_failed_run(state: "DashboardState", agent_id: str, old: Any) ->
         app=execution.app,
         _memory_mode=execution.memory_mode,
         _execution_context=execution.to_record(),
-        _stage_boundary_owner=retry_boundary_owner,
     )
     try:
         info = await start
@@ -2212,18 +2148,7 @@ async def api_spawn_delete(request: web.Request) -> web.Response:
         return web.json_response({"ok": True, "cancelled": False, "dismissed": True})
     cancelled = await manager.cancel(agent_id)
     if not cancelled:
-        deleted_owner = stage_boundary_owner_for_run(info)
-        deleted_boundary_slot = (
-            _stage_boundary_slot_for_parent(
-                state,
-                info.parent_session_key,
-                boundary_owner=deleted_owner,
-            )
-            if deleted_owner
-            else None
-        )
-        active_owner = deleted_owner if deleted_boundary_slot is not None else ""
-        settlement = await manager.settle_before_delete(agent_id, active_owner)
+        settlement = await manager.settle_before_delete(agent_id)
         if settlement == "pending":
             return web.json_response(
                 {
@@ -3811,13 +3736,9 @@ async def api_send_message(request: web.Request) -> web.Response:
                     # cronLabel in cls JSON provides structured data for frontend.
                     wrapped = f'{CRON_NOTIFY_PREFIX}"{label}"]\n{text}\n{CRON_NOTIFY_END}'
                     inject_cls = json.dumps({"cronLabel": label})
-                    # Queue while a turn is live OR a multi-stage plan is mid-flight.
-                    # During stage execution slot.task is None between stages (see
-                    # chat_orchestrator), so slot.running alone reads False in that
-                    # window and would let this injection start a concurrent turn that
-                    # clobbers the plan. _in_stage_execution closes it — same predicate
-                    # the user-typed path uses (chat_handlers._api_chat).
-                    if slot.running or slot._in_stage_execution:
+                    # Queue while a turn is live -- same predicate the user-typed
+                    # path uses (chat_handlers._api_chat).
+                    if slot.running:
                         from kiro_crew.dashboard.slot_queue_repository import MAX_LIVE_QUEUE_ENTRIES
 
                         if len(slot._queue) >= MAX_LIVE_QUEUE_ENTRIES:

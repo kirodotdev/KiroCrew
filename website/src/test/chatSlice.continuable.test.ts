@@ -21,7 +21,7 @@ import type { ChatMessage } from '../types'
 const msg = (role: string, content = 'x', meta?: Record<string, unknown>): ChatMessage =>
   ({ role, content, cls: '', ...(meta ? { meta } : {}) }) as ChatMessage
 
-const state = (over: Partial<{ messages: ChatMessage[]; slotRunning: boolean; slotStopping: boolean; pendingTurnSlot: string | null }> = {}, slots: Array<{ key: string; orchestrating?: boolean; subagents_running?: boolean; executor?: 'local' | 'remote' }> = []) =>
+const state = (over: Partial<{ messages: ChatMessage[]; slotRunning: boolean; slotStopping: boolean; pendingTurnSlot: string | null }> = {}, slots: Array<{ key: string; subagents_running?: boolean; executor?: 'local' | 'remote' }> = []) =>
   ({
     chat: {
       messages: [],
@@ -142,18 +142,12 @@ describe('selectContinuable', () => {
     expect(selectContinuable(state({ messages: [msg('user')], pendingTurnSlot: 'slot-1' }))).toBe(false)
   })
 
-  it('is false while an autopilot plan is mid-flight', () => {
-    // A plan reads `running` False BETWEEN stages, so `running` alone would offer
-    // Continue on a slot the server refuses with `slot_orchestrating`.
-    expect(selectContinuable(state({ messages: [msg('user')] }, [{ key: 'slot-1', orchestrating: true }]))).toBe(false)
-  })
-
   it('is false while a subagent is still running on the slot', () => {
     expect(selectContinuable(state({ messages: [msg('user')] }, [{ key: 'slot-1', subagents_running: true }]))).toBe(false)
   })
 
-  it('is unaffected by another slot orchestrating', () => {
-    expect(selectContinuable(state({ messages: [msg('user')] }, [{ key: 'other', orchestrating: true }]))).toBe(true)
+  it('is unaffected by a subagent running on another slot', () => {
+    expect(selectContinuable(state({ messages: [msg('user')] }, [{ key: 'other', subagents_running: true }]))).toBe(true)
   })
 
   it('is false on a crew-bound slot — the server refuses Continue there', () => {

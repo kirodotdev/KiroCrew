@@ -314,7 +314,6 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     is_harness_slash_command,
     is_system_injection_item,
     mirror_is_paused,
-    owned_stage_delivery_entry,
     parse_workflow_command,
     remember_slack_options,
     restore_replacement_if_handover_did_not_land,
@@ -389,7 +388,6 @@ from kiro_crew.dashboard.state import (  # noqa: F401
     row_mid,
     should_queue_hook_continuation,
     should_queue_refusal_recovery,
-    stage_boundary_for,
 )
 from kiro_crew.dashboard.steer_settle import settle_consumed_steers
 from kiro_crew.dashboard.turn_dispatch import (
@@ -610,8 +608,8 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: E402, F401
     MCP_APP_MESSAGE_KIND,
     MODEL_UNENTITLED_KIND,
     SESSION_START_FAILED_KIND,
-    STAGE_DELIVERY_KINDS,
     SUBAGENT_COMPLETION_KIND,
+    SUBAGENT_DELIVERY_KINDS,
     SYNTHESIS_CLEAR,
     SYNTHESIS_HELD,
     SYNTHESIS_UNKNOWN,
@@ -6315,12 +6313,7 @@ async def _start_next_queued_turn(
     # notification or a runner-injected recovery prompt -- for the same reason
     # _finish_queue_cycle withholds from synthesis: a note is owed to the next
     # USER turn, and that cycle's own flush delivers it afterwards.
-    # A plan is withheld from for that same reason, and the check sits HERE rather
-    # than reusing the `in_stage` read below because this flush runs above it: a
-    # plain user message carries no `kind`, so this site would release the note
-    # into stage N+1 before the dequeue gate ever holds that message back.
-    # _stage_loop's exit flush is the seam that delivers it.
-    if not slot._in_stage_execution and not (slot._queue and slot._queue[0].get("kind")):
+    if not (slot._queue and slot._queue[0].get("kind")):
         try:
             slot.flush_deferred_notes()
         except Exception:
@@ -6453,40 +6446,16 @@ async def _start_next_queued_turn(
         )
         merge = False
 
-    in_stage = bool(slot._in_stage_execution)
     hold_users = bool(
-        (
-            not allow_user_during_subagents
-            and state.subagents is not None
-            and state.subagents.running_agents_for(effective_session_key(slot))
-        )
-        or in_stage
+        not allow_user_during_subagents
+        and state.subagents is not None
+        and state.subagents.running_agents_for(effective_session_key(slot))
     )
-    preferred_stage_delivery = (
-        owned_stage_delivery_entry(stage_boundary_for(slot), slot._queue) if in_stage else None
-    )
-    if in_stage and preferred_stage_delivery is None:
-        # An active stage may consume only delivery owned by its boundary.
-        # The generic system fallback would pull another parent's completion into
-        # this stage; leave it queued until stage execution releases the gate.
-        return False
     if required_queue_id and not slot.queue_promote_by_id(required_queue_id):
         return False
     if hold_users:
-        # During a multi-stage plan hold cron notifications too: each stage is
-        # its own _run_chat whose tail-drain runs while _in_stage_execution is
-        # still set, so draining a cron here starts an unrelated turn between
-        # stages and scatters the plan. It drains at end-of-plan once the gate
-        # clears. Sub-agent completions / recovery still flow.
-        next_msg, consumed = _dequeue_next_system_message(
-            slot,
-            exclude_cron=in_stage,
-            preferred_id=(
-                str(preferred_stage_delivery.get("id") or "")
-                if preferred_stage_delivery is not None
-                else ""
-            ),
-        )
+        # Sub-agent completions / recovery still flow while user messages wait.
+        next_msg, consumed = _dequeue_next_system_message(slot)
     else:
         # ``required_queue_id`` is an explicit request to run exactly one card.
         # Promotion selects it; merging here would consume unrelated queued user
@@ -6783,12 +6752,9 @@ async def _start_next_queued_turn(
     # carry one. Recovery rows are included because a completion that failed before
     # the model consumed it is re-queued verbatim under that kind.
     _consumed: list[bool] = [False]
-    _stage_delivery_entry = (
-        owned_stage_delivery_entry(stage_boundary_for(slot), consumed)
-        if slot._in_stage_execution
-        else None
-    )
-    _settleable = [item["content"] for item in consumed if item.get("kind") in STAGE_DELIVERY_KINDS]
+    _settleable = [
+        item["content"] for item in consumed if item.get("kind") in SUBAGENT_DELIVERY_KINDS
+    ]
 
     if _settleable and not slot.owes_subagent_delivery(_settleable):
         # Owes nothing (every ordinary recovery replay, and any completion whose
@@ -6836,7 +6802,7 @@ async def _start_next_queued_turn(
     # whoever could write the session file.
     if any(item.get(RESTORED_QUEUE_KEY) for item in consumed):
         _run_kwargs["_turn_provenance_restored"] = True
-    if _stage_delivery_entry is not None or _settleable or _delivery_callbacks:
+    if _settleable or _delivery_callbacks:
         _run_kwargs["_on_consumed"] = _note_consumed
     if _irreversible_delivery_callbacks:
         _run_kwargs["_on_irreversibly_consumed"] = _note_irreversibly_consumed
@@ -6880,78 +6846,6 @@ async def _start_next_queued_turn(
         _run_chat(state, slot, next_msg, **_run_kwargs),
     )
     slot.task = task
-    if _stage_delivery_entry is not None:
-        _delivery_stop_generation = slot._stop_generation
-
-        def _restore_failed_stage_delivery(done: "asyncio.Task[Any]") -> None:
-            # Four terminal dispositions: cancelled, consumed, already requeued,
-            # or still owed. ``_run_chat`` handles provider failures and returns
-            # normally, so ``done.exception() is None`` is not proof of delivery.
-            # Cooperative Stop is the one cancellation that preserves queued work;
-            # hard kill and teardown keep cancellation-as-discard semantics. The
-            # generation check also catches providers that absorb cancellation and
-            # make the task look normally completed.
-            if _consumed[0]:
-                return
-            _current_stop_generation = slot._stop_generation
-            _stop_changed = _current_stop_generation != _delivery_stop_generation
-            _preserve_stopped_delivery = (
-                _stop_changed
-                and stage_boundary_for(slot).preserve_stop_generation == _current_stop_generation
-            )
-            if _stop_changed and not _preserve_stopped_delivery:
-                return
-            if done.cancelled():
-                if not _preserve_stopped_delivery:
-                    return
-            else:
-                done.exception()
-            if state._slots.get(slot.key) is not slot:
-                return
-            content = str(_stage_delivery_entry.get("content", ""))
-            kind = str(_stage_delivery_entry.get("kind", ""))
-            if any(
-                entry.get("kind") in STAGE_DELIVERY_KINDS and entry.get("content") == content
-                for entry in slot._queue
-            ):
-                return
-            stage_boundary_for(slot).retry_queue_id = slot.queue_insert(
-                0,
-                content,
-                kind=kind,
-                payload=str(_stage_delivery_entry.get("payload", "")),
-                meta=(
-                    _stage_delivery_entry.get("meta")
-                    if isinstance(_stage_delivery_entry.get("meta"), dict)
-                    else None
-                ),
-                on_consumed=(
-                    _stage_delivery_entry.get("_on_consumed")
-                    if callable(_stage_delivery_entry.get("_on_consumed"))
-                    else None
-                ),
-                on_irreversibly_consumed=(
-                    _stage_delivery_entry.get("_on_irreversibly_consumed")
-                    if callable(_stage_delivery_entry.get("_on_irreversibly_consumed"))
-                    else None
-                ),
-                directive_user_origin=(_stage_delivery_entry.get("_directive_user_origin") is True),
-                directive_channel_origin=(
-                    _stage_delivery_entry.get("_directive_channel_origin") is True
-                ),
-            )
-            state.push_slots_update()
-
-        task.add_done_callback(_restore_failed_stage_delivery)
-    if is_recovery:
-        stage_boundary_for(slot).synthetic_recovery_inflight += 1
-
-        def _release_stage_recovery(_task: "asyncio.Task[Any]") -> None:
-            stage_boundary_for(slot).synthetic_recovery_inflight = max(
-                0, stage_boundary_for(slot).synthetic_recovery_inflight - 1
-            )
-
-        task.add_done_callback(_release_stage_recovery)
     if _settleable:
         # Open the retention clock on the result files this row promises — but
         # only once the turn has actually run and the model has consumed the
@@ -7142,12 +7036,9 @@ async def _finish_queue_cycle(
 
     # Before any successor is dispatched. A held note's CONTEXT half drains into
     # the next turn, so flushing after that turn started would let the note shape
-    # a turn its visible line appears below. Two automatic successors are withheld
-    # from, since a note is owed to the next USER turn: synthesis, and the next
-    # stage of a plan -- this function runs per stage, from inside each stage's own
-    # _run_chat finally, while _in_stage_execution is still set. Each has a later
-    # seam that flushes: the cycle after synthesis, _stage_loop's exit for a plan.
-    if not will_synthesize and not slot._in_stage_execution:
+    # a turn its visible line appears below. Synthesis is withheld from, since a
+    # note is owed to the next USER turn; the cycle after synthesis flushes it.
+    if not will_synthesize:
         try:
             slot.flush_deferred_notes()
         except Exception:
@@ -7380,7 +7271,7 @@ async def _run_chat(
     # Chokepoint invariant: a crew-bound slot NEVER executes locally. Its turns go
     # through ``relay_remote_turn``; ``_run_chat`` is the LOCAL runner. Every
     # dispatch entry point (the primary send, regenerate, edit-resend, rewind,
-    # continue, ``session_send``, the queue drain, orchestrator stages, the
+    # continue, ``session_send``, the queue drain, the
     # OpenAI-compat endpoint) is supposed to refuse or relay a remote slot before
     # reaching here — but they are many and a new one is easy to add. This is the
     # single place that makes running a bound slot on this machine impossible
@@ -7434,12 +7325,6 @@ async def _run_chat(
             _current_replay_message = None
 
     session_key = effective_session_key(slot)
-    if getattr(slot, "_in_stage_execution", False):
-        # A stage may be linked to another session while this turn runs. Its
-        # children and terminal reports stay under the key captured here, so the
-        # controller settles every captured key instead of re-deriving only the
-        # slot's newest binding after the turn.
-        stage_boundary_for(slot).parent_session_keys.add(session_key)
     sessions = getattr(state, "sessions", None)
 
     def _session_stop_generation() -> int:
@@ -8029,8 +7914,6 @@ async def _run_chat(
             # without these lists the replayed transcript row falls back to a
             # whitespace-bounded path and truncates spaced attachment names.
             _recovery_meta.update(attachment_meta(_current_replay_message.get("meta")))
-        if slot._in_stage_execution:
-            _recovery_meta = stage_boundary_for(slot).tag_meta(_recovery_meta)
         _recovery_qid = slot.queue_insert(
             index,
             content,
@@ -8051,8 +7934,6 @@ async def _run_chat(
             directive_user_origin=_directive_user_origin,
             directive_channel_origin=_directive_channel_origin,
         )
-        if slot._in_stage_execution and not _consumed_reported and content == message:
-            stage_boundary_for(slot).retry_queue_id = _recovery_qid
         if _is_refusal_retry_turn and index == 0 and content == message:
             # A verbatim requeue of the refusal retry's own message REPLACES
             # the consumed replay, whichever recovery family issued it: carry
@@ -14897,7 +14778,6 @@ async def _run_chat(
             compaction_continue_retries=slot._compaction_continue_retries,
             is_cancelled=(_stop_reason == STOP_REASON_CANCELLED),
             refusal_reasons=_refusal_reasons,
-            in_stage_execution=slot._in_stage_execution,
             # Same user-intent gates the promise-only arm uses, for the same
             # reasons: a Stop pressed during compaction can surface here as a plain
             # end_turn, and a user follow-up already queued must win over a
@@ -15185,11 +15065,6 @@ async def _run_chat(
             is_cancelled=(_stop_reason == STOP_REASON_CANCELLED),
             refusal_reasons=_refusal_reasons,
             turn_tool_calls=_turn_tool_calls,
-            # A stage-execution turn must not be un-landed from here: the
-            # orchestrator's stage loop reads this turn's result for stage
-            # accounting, and the leak mark would let it record an unfinished
-            # stage as complete (same exclusion as the promise-only guard).
-            in_stage_execution=slot._in_stage_execution,
         ):
             logger.warning(
                 "Leaked tool call for slot %s — the final message contained an "
@@ -15263,7 +15138,6 @@ async def _run_chat(
             # serves the slot, and a provider (or test stand-in) that exposes an
             # auto-created attribute must not be read as a verdict.
             and isinstance(getattr(client, "last_infra_error", None), InfraError)
-            and not slot._in_stage_execution
             and not _should_suppress_requeue(slot)
             and getattr(slot, "_stop_generation", _stop_gen_turn_start) == _stop_gen_turn_start
             and not _has_user_queued_followup(slot)
@@ -15433,11 +15307,6 @@ async def _run_chat(
             # after this guard. Check them here so a "don't delete" steer aborts
             # recovery instead of being overridden by the announced action.
             no_pending_steers=(not getattr(slot, "_pending_steers", None)),
-            # A stage-execution turn (the orchestrator running one plan stage) must
-            # NOT trigger async recovery: the stage loop records the stage complete
-            # and advances before the injected continuation finishes, corrupting
-            # stage attribution.
-            in_stage_execution=slot._in_stage_execution,
         ):
             if state.is_yolo_active() or _slot_is_trusted(slot):
                 # auto-approve downgrade: with no human
@@ -15540,8 +15409,7 @@ async def _run_chat(
                 slot._promise_only_session_key = effective_session_key(slot)
                 _recovering_promise = True
         elif (
-            not slot._in_stage_execution
-            and _prompt_depth == 0
+            _prompt_depth == 0
             and slot._promise_only_retries >= 1
             # Same derivation as the recovery arm above: the raw
             # `_produced_visible_output` flag is set True only on the reset-to-empty
@@ -15598,8 +15466,7 @@ async def _run_chat(
         # lifecycle. The same notice covers present-progressive claims with no
         # tool calls, which are outside the narrow "I'll do it now" detector.
         elif (
-            not slot._in_stage_execution
-            and _prompt_depth == 0
+            _prompt_depth == 0
             and (bool(assistant_text.strip()) or _produced_visible_output)
             and _stop_reason == STOP_REASON_END_TURN
             and not _refusal_reasons
@@ -17894,9 +17761,8 @@ async def _run_chat(
             slot._wait_state = None
             slot._end_wait_request = None
             slot._wait_contested = False
-        # Record this turn's auth outcome so the orchestrator _stage_loop, which
-        # runs stages as separate _run_chat calls, can mirror this same
-        # "hold the queue for post-login resume" guard on its end-of-plan handoff.
+        # Record this turn's auth outcome for the completion-sound gate, which
+        # does not count a queue held for post-login resume as continuing.
         slot._last_turn_auth_required = _auth_required
         next_turn_started = False
         if slot._queue and not _auth_required and _memory_preparation_admitted:

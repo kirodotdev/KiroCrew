@@ -300,17 +300,6 @@ before either arm is reached. `steer` is strictly typed at both entry points (th
 tool schema and the HTTP handler) and defaults false, so a caller that omits it
 keeps the queue-or-run behaviour.
 
-**A target mid-plan is busy even when `running` says otherwise.** Both arms read
-`slot.running or slot._in_stage_execution`, the predicate every producer that must
-not start a concurrent turn reads — the composer, the cron injection, the nudge arm
-and the transfer gate. Between a multi-stage plan's stages each stage's `_run_chat`
-closes its own turn, so `running` reads False while the plan is still live, and
-`enqueue_or_run_prompt` gates on `running` alone: handing it a prompt there starts a
-second turn racing the plan, with no recovery once two turns own the same slot. So
-an inter-stage send is queued with the same admission stamp that method applies and
-held until the plan ends. There is no steer client in that window either, so a steer
-falls through its own re-gate to the same queue branch.
-
 `session_create` earns its place on its own, not as the front half of a delivery
 design: an agent that has just worked out that a job needs its own session can
 open it pre-named and bound to the right agent, in the caller's workspace, and

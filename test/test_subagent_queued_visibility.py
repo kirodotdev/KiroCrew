@@ -217,9 +217,9 @@ def test_a_claimed_unregistered_row_is_counted_and_listed(tmp_path) -> None:
         store.close()
 
 
-def test_the_queued_count_includes_a_retained_claim(tmp_path) -> None:
-    """``taskq_overflow`` is the count every pending-work guard reads: a
-    retained ``admitted`` row no run is registered for counts."""
+def test_the_queued_count_includes_an_unregistered_claim(tmp_path) -> None:
+    """``taskq_overflow`` is the count every pending-work guard and the depth
+    chip read: an ``admitted`` row no run is registered for counts."""
     import types
 
     from kiro_crew.subagent_manager.admission.taskq_bridge import _TaskqBridgeMixin
@@ -244,9 +244,9 @@ def test_the_queued_count_includes_a_retained_claim(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_the_chip_count_includes_a_retained_claim(tmp_path) -> None:
+async def test_the_chip_count_includes_an_unregistered_claim(tmp_path) -> None:
     """The chip's own reader (``taskq_chip_overflow_async``) uses the same
-    "accepted, no run yet" definition as ``taskq_overflow``: a retained
+    "accepted, no run yet" definition as ``taskq_overflow``: an
     ``admitted`` row counts until a run registers for it."""
     import types
 

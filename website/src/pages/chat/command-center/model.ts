@@ -199,11 +199,11 @@ export function buildCommandCenter(source: CommandCenterSources) {
       addAttention({ id: `session-input:${s.key}`, slot: s.key, kind: 'open_session' })
     }
   }
-  // A turn can be idle while delegated or orchestrated work is active, or while
-  // a queued message waits to run; those slot flags keep the session running.
+  // A turn can be idle while delegated work is active, or while a queued
+  // message waits to run; those slot flags keep the session running.
   const nodes: RunNode[] = slots.map((s, index) => ({
     id: `session:${s.key}`, kind: 'session', ref: s.key, slot: s.key, title: s.title && s.title !== s.key ? s.title : '', ordinal: index + 1,
-    state: s.needs_input || s.pending_approval ? 'needs_input' : s.running || s.subagents_running || s.orchestrating || (s.queue_depth ?? 0) > 0 ? 'running' : 'idle',
+    state: s.needs_input || s.pending_approval ? 'needs_input' : s.running || s.subagents_running || (s.queue_depth ?? 0) > 0 ? 'running' : 'idle',
     detail: s.todo?.current || undefined,
   }))
   const agentIds = new Set<string>()

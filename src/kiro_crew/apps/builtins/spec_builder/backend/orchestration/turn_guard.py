@@ -311,11 +311,7 @@ async def _final_alias_conflict(
 def _slot_is_writing(slot: Any) -> bool:
     """True once a slot has published an in-flight agent turn."""
     task = getattr(slot, "task", None)
-    return bool(
-        getattr(slot, "running", False)
-        or getattr(slot, "_in_stage_execution", False)
-        or (task is not None and not task.done())
-    )
+    return bool(getattr(slot, "running", False) or (task is not None and not task.done()))
 
 
 def _agent_is_writing(request: web.Request, name: str) -> bool:

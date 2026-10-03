@@ -902,10 +902,6 @@ class TestSendMessage:
         # Mock a slot that the cron originated from
         mock_slot = MagicMock()
         mock_slot.running = False
-        # Real _ChatSlot defaults this False; a bare MagicMock returns a truthy
-        # Mock and would trip the busy guard (running or _in_stage_execution),
-        # diverting origin-inject to the queue branch.
-        mock_slot._in_stage_execution = False
         mock_slot.task = None
         mock_slot.key = "chat-1-1712793600"
         state.get_slot = MagicMock(return_value=mock_slot)
@@ -1011,10 +1007,6 @@ class TestSendMessage:
         # Rehydrate helper returns a slot reconstructed from persisted history.
         mock_slot = MagicMock()
         mock_slot.running = False
-        # Real _ChatSlot defaults this False; a bare MagicMock returns a truthy
-        # Mock and would trip the busy guard (running or _in_stage_execution),
-        # diverting origin-inject to the queue branch.
-        mock_slot._in_stage_execution = False
         mock_slot.task = None
         mock_slot.key = "chat-1-1712793600"
         state._background_tasks = set()
@@ -1152,10 +1144,6 @@ class TestSendMessage:
         state = _mock_state()
         mock_slot = MagicMock()
         mock_slot.running = False
-        # Real _ChatSlot defaults this False; a bare MagicMock returns a truthy
-        # Mock and would trip the busy guard (running or _in_stage_execution),
-        # diverting origin-inject to the queue branch.
-        mock_slot._in_stage_execution = False
         mock_slot.task = None
         mock_slot.key = "chat-1-1712793600"
         state.get_slot = MagicMock(return_value=mock_slot)

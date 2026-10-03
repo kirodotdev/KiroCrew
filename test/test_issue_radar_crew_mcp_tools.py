@@ -496,7 +496,6 @@ class TestAnAutoNudgeTurnResolvesTheSameIdentityAsADirectTurn:
         slot = MagicMock()
         slot.key = slot_key
         slot.running = False
-        slot._in_stage_execution = False
         slot._closing = False
         slot.mode = ""
         slot.memory_mode = "persistent"

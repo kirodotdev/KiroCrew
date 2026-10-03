@@ -59,13 +59,13 @@ describe('agent switch failure feedback', () => {
   })
 
   it('matches on the structured code, not the 409 status alone', () => {
-    // A different 409 (e.g. slot_orchestrating) keeps its own server message.
+    // A different 409 (e.g. slot_busy) keeps its own server message.
     const other409 = new ApiError(
       409,
-      'slot is orchestrating',
-      JSON.stringify({ error: 'slot is orchestrating', code: 'slot_orchestrating' }),
+      'slot is busy',
+      JSON.stringify({ error: 'slot is busy', code: 'slot_busy' }),
     )
-    expect(agentSwitchFailureMessage(other409)).toBe('slot is orchestrating')
+    expect(agentSwitchFailureMessage(other409)).toBe('slot is busy')
     expect(isTurnInFlightError(other409)).toBe(false)
   })
 

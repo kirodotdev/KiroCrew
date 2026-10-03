@@ -45,7 +45,6 @@ _TO_DICT_KEYS = (
     "running",
     "compacting",
     "stop_declined",
-    "orchestrating",
     "queue_depth",
     "stopping",
     "pending_approval",

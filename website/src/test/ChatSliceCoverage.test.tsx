@@ -836,7 +836,7 @@ describe('chatSlice queued message bubbles', () => {
 })
 
 describe('chatSlice selectors', () => {
-  it('reports the composer busy for a running background pane or an orchestrating slot', () => {
+  it('reports the composer busy for a running background pane or a slot with running sub-agents', () => {
     const store = makeStore()
     store.dispatch(setActiveSlot('front'))
     expect(selectComposerBusy(root(store), null)).toBe(false)
@@ -844,7 +844,7 @@ describe('chatSlice selectors', () => {
     store.dispatch(sseChatMessage({ slot: 'back', role: 'chunk', content: 'x' }))
     expect(selectComposerBusy(root(store), 'back')).toBe(true)
 
-    store.dispatch(sseSlots([slotRow('idlepane', { orchestrating: true })]))
+    store.dispatch(sseSlots([slotRow('idlepane', { subagents_running: true })]))
     expect(selectComposerBusy(root(store), 'idlepane')).toBe(true)
     store.dispatch(sseSlots([slotRow('plainpane')]))
     expect(selectComposerBusy(root(store), 'plainpane')).toBe(false)

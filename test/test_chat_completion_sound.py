@@ -19,7 +19,6 @@ def completion_state(tmp_path, monkeypatch):
     state.subagents = MagicMock()
     state.subagents.running_agents_for.return_value = []
     state.subagents.has_pending_work_for_async = AsyncMock(return_value=False)
-    state.subagents.wait_for_parent_reports = AsyncMock(return_value=False)
     state.subagents._queued_depth.return_value = 0
     state.broadcast_ws = MagicMock()
     slot = state.get_or_create_slot("chat-sound")
@@ -51,7 +50,7 @@ async def test_finished_conversation_is_not_continuing(completion_state):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("work", ["running", "queued", "delivering", "stage", "synthesis"])
+@pytest.mark.parametrize("work", ["running", "queued", "delivering", "synthesis"])
 async def test_intermediate_completion_keeps_continuation_signal(completion_state, work):
     state, slot = completion_state
     if work == "running":
@@ -60,8 +59,6 @@ async def test_intermediate_completion_keeps_continuation_signal(completion_stat
         state.subagents._queued_depth.return_value = 1
     elif work == "delivering":
         slot._subagent_deliveries_inflight = 1
-    elif work == "stage":
-        slot._in_stage_execution = True
     else:
         slot._pending_synthesis = True
         slot._synthesis_inflight = True

@@ -177,7 +177,6 @@ def _slot(
         memory_mode="persistent",
         # Idle by default: Layer B only travels when no turn is in flight.
         running=False,
-        _in_stage_execution=False,
     )
 
 
@@ -2153,23 +2152,6 @@ async def test_layer_b_is_skipped_while_a_turn_is_in_flight(monkeypatch):
     assert "layer_b" not in bundle
     assert bundle["bundle_version"] == 2
     assert resolved == [], "the sid must not even be resolved mid-turn"
-
-
-@pytest.mark.asyncio
-async def test_layer_b_is_skipped_between_stages_of_a_staged_plan(monkeypatch):
-    """``running`` reads False between stages, so the staged-plan flag is checked
-    too (chat_handlers documents that gap)."""
-    from kiro_crew.dashboard import session_transfer as st
-
-    msgs = [{"role": "user", "content": "hi", "ts": ""}]
-    slot = _slot(msgs)
-    slot.running = False
-    slot._in_stage_execution = True
-    monkeypatch.setattr(st, "_resolve_layer_b_sid", lambda *a: "sid")
-
-    bundle = await st.build_transfer_bundle_async(_state(msgs), slot, origin="mac")
-
-    assert "layer_b" not in bundle
 
 
 @pytest.mark.asyncio
