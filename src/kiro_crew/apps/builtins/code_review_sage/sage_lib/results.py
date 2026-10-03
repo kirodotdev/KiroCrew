@@ -237,6 +237,13 @@ def write_result(record: dict, root: Path | None = None,
         store.ensure_layout(root)
     path = result_path(record["change_id"], root, run_id)
     data = json.dumps(record, indent=2).encode("utf-8")
+    # Every cross-boundary reader refuses a record past this size, so writing
+    # one would replace a readable record with an unreadable one. Refused before
+    # the atomic write, which leaves the prior record in place.
+    if len(data) > _RECORD_MAX_BYTES:
+        raise ValueError(
+            f"invalid result record: {len(data)} bytes exceeds the {_RECORD_MAX_BYTES}-byte limit"
+        )
     store.atomic_write_locked(path, data)
     return path
 
@@ -428,6 +435,13 @@ def adopt_from_shared(change_id: str, root: Path | None = None,
     errs = validate_result(parsed)
     if errs:
         return False
+    # `delivery_intent` is DRIVER-owned: it is the durable evidence that a
+    # review reached GitHub, and post_recorded treats a "prepared"/"attempting"
+    # /"indeterminate" one as an operation to reconcile and confirm. The worker
+    # owns the staging dir, so adopting its record verbatim let it author an
+    # intent the driver would then confirm as its own delivery. The field never
+    # crosses this boundary.
+    parsed.pop("delivery_intent", None)
     got = str(parsed.get("change_id") or "")
     if got != change_id:
         # Compared EXACTLY, not through `safe_change_id`. That sanitizer is lossy
@@ -446,8 +460,23 @@ def adopt_from_shared(change_id: str, root: Path | None = None,
     # the name: atomic, so a valid record is never destroyed by a failed write,
     # and the rename replaces the NAME without following a link planted there.
     try:
-        store.atomic_write_locked(dst, raw)
-    except OSError:
+        # Serialized from the PARSED record, not the raw bytes: the driver-owned
+        # fields reconciled above live on `parsed`, and writing `raw` would put
+        # the worker's original document back on disk with them undone.
+        #
+        # `ensure_ascii=False` keeps the re-serialized record no larger than the
+        # source it was read from: non-ASCII characters are written as UTF-8
+        # (2-4 bytes each) instead of ASCII-escaped (`\uXXXX`, 6 bytes each), so
+        # escaping could push a record that fit under the 4 MiB read cap past it
+        # on the way back out. The size check below is the belt-and-braces
+        # version of the same guarantee — a record that would still exceed the
+        # cap after parsing is refused, because the read path would reject it on
+        # the next adoption and the source would then be gone.
+        payload_bytes = json.dumps(parsed, indent=2, ensure_ascii=False).encode("utf-8")
+        if len(payload_bytes) > _RECORD_MAX_BYTES:
+            return False
+        store.atomic_write_locked(dst, payload_bytes)
+    except (OSError, UnicodeEncodeError):
         return False
     try:
         src.unlink()
@@ -462,7 +491,8 @@ def publish_to_shared(change_id: str, root: Path | None = None,
 
     Only needed on the opt-in posting path: the poster prompt also refers to
     ``data/results/<id>.json``, so the record has to be visible there for the
-    turn, and is re-adopted afterwards.
+    turn. The driver discards the staged copy after posting; the run-scoped
+    record retains the authoritative delivery intent.
 
     The write goes to a private temp file and is renamed over the destination.
     The destination lives in the SHARED dir, which the worker owns and can write

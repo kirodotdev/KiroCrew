@@ -22,8 +22,17 @@ from sage_lib import review_driver as D
 from sage_lib import store
 
 
+def _confirmed(_link, _payload):
+    return "1"
+
+
 class _Base(unittest.TestCase):
     def setUp(self):
+        target = mock.patch.object(
+            D, "_canonical_target", return_value="https://github.com/o/r/pull/1"
+        )
+        target.start()
+        self.addCleanup(target.stop)
         self.tmp = tempfile.mkdtemp()
         self._old = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = self.tmp
@@ -129,7 +138,8 @@ class TestNoAutoPost(_Base):
     def test_opt_in_restores_posting(self):
         tasks: list[str] = []
         D.run_review(["CR-1"], dispatch=self._dispatch(tasks),
-                     generate_report=False, root=self.root, post=True)
+                     generate_report=False, root=self.root, post=True,
+                     confirm=_confirmed)
         self.assertTrue(self._posters(tasks), "posting was enabled but no poster ran")
 
     def test_config_flag_enables_posting(self):
@@ -139,7 +149,7 @@ class TestNoAutoPost(_Base):
         cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
         tasks: list[str] = []
         D.run_review(["CR-1"], dispatch=self._dispatch(tasks),
-                     generate_report=False, root=self.root)
+                     generate_report=False, root=self.root, confirm=_confirmed)
         self.assertTrue(self._posters(tasks))
 
     def test_non_boolean_config_does_not_enable_posting(self):
@@ -223,7 +233,7 @@ class TestRecordsKeptWhenPostingFails(_Base):
         tasks: list[str] = []
         out = D.run_review(["CR-1"], dispatch=self._dispatch_failing_poster(tasks),
                            generate_report=True, archiver=lambda html, root: "slug-1",
-                           root=self.root, post=True)
+                           root=self.root, post=True, confirm=lambda *_args: "")
         # A poster WAS dispatched (posting was intended) and it failed.
         self.assertTrue(self._posters(tasks), "no poster was dispatched")
         self.assertFalse(out["per_change"][0]["post_ok"])
@@ -244,6 +254,6 @@ class TestRecordsKeptWhenPostingFails(_Base):
             out = D.run_review(["CR-1"], dispatch=self._dispatch(tasks),
                                generate_report=True,
                                archiver=lambda html, root: "slug-1",
-                               root=self.root, post=True)
+                               root=self.root, post=True, confirm=_confirmed)
         self.assertIn("results_cleaned", out)
         self.assertFalse(out.get("results_kept_undelivered"))

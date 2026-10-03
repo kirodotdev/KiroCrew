@@ -8,6 +8,43 @@ app**, next to the pull request they came from — nothing is written to the pul
 request unless you turn on `review.auto_post`, which publishes them as a PENDING
 (draft) review for you to submit.
 
+## Recovering a posting attempt
+
+Before posting, Sage saves the operation identity, selected findings, target,
+revision and payload digest in the run record. The poster's staged copy never
+replaces that record. A retry first checks GitHub for the same operation,
+account and exact payload; a matching pending or submitted review confirms
+delivery without another POST. Unresolved pending comment positions are checked
+against the diff with both head and base revisions pinned. If those coordinates
+cannot be verified, delivery remains unconfirmed.
+
+If a retry requests different findings while recovering an earlier delivery,
+Sage reports that the earlier delivery was reconciled and the requested selection
+is still pending. Post the remaining selection again to deliver it.
+
+GitHub permits only one pending review per account on a pull request. A legacy
+Sage draft carrying only the generic marker has no exact delivery receipt, so
+Sage cannot automatically delete it. If posting fails with 422, inspect your
+pending review in GitHub. Manually delete it there only if you intend to discard
+it, then retry posting in Sage. Human drafts receive the same protection;
+submitted reviews are never deleted by this recovery path.
+
+A follow-up post replaces Sage's own earlier pending draft, so it carries that
+draft's findings as well as the new selection. Before building it, Sage checks
+the earlier draft's state on GitHub: if you have since submitted it, those
+findings are already delivered, so the follow-up carries only the new selection
+and deletes nothing. If the state cannot be read, the post is refused rather than
+guessed. When a replacement does delete the earlier draft, the poster first
+re-reads it and compares its body and every comment with what Sage verified;
+any edit you made in between stops the post without deleting anything.
+
+The error text a failed attempt keeps in the run record is capped, and a record
+write that would exceed the byte cap is refused before it replaces the previous
+record.
+
+Worker records containing invalid Unicode or exceeding the serialized byte cap
+are rejected without replacing the run record or removing the staged source.
+
 ## Ask the reviewer
 
 A report states conclusions; "why did you decide that?" is answerable only by the

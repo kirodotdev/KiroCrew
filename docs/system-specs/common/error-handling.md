@@ -8,6 +8,24 @@
 2. Error strings at CLI boundaries (never expose tracebacks to users)
 3. Graceful degradation — partial output returned on timeout
 
+## Sage interrupted posting recovery
+
+Restart recovery visits only runs retained in the loaded registry. A runtime
+startup failure reports that the reviewer runtime could not start; it does not
+claim a delivery-intent write failed. Intent persistence failures after the pool
+starts still require reconciliation before posting again. The poster puts the
+operation marker on its own final line so delivery read-back can compare the
+marker-free body with the recorded payload.
+
+If a human submits the predecessor while a replacement is interrupted, recovery
+first proves the replacement absent and verifies the predecessor's account and
+payload. It rebuilds only the undelivered portion of the saved selection under a
+new operation ID, persisting it before dispatch. Unreadable or conflicting
+remote evidence prevents dispatch; an already delivered replacement is adopted
+without posting again. The same reconciliation applies immediately before a
+fresh replacement dispatch. Later replacements carry only the current draft's
+selection, keeping findings from earlier submitted reviews out of new drafts.
+
 ## Exception Hierarchy
 
 Two independent families. `AcpError` covers protocol and prompt-level failures;
