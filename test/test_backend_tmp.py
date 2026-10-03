@@ -299,6 +299,48 @@ class TestBootSweep:
         assert bt.sweep_all_backend_tmp() == 0
         assert path.exists()
 
+    def test_out_of_range_owner_is_kept_without_blocking_later_cleanup(
+        self, tmp_root: Path, monkeypatch
+    ) -> None:
+        real_scandir = os.scandir
+        reaped: list[Path] = []
+        corrupt = bt.allocate_backend_tmp(DIGEST)
+        bt.record_owner(corrupt, 10**100)
+        _age(corrupt, 2 * bt._UNOWNED_GRACE_SECONDS)
+        _age(corrupt / bt.OWNER_FILENAME, 2 * bt._UNOWNED_GRACE_SECONDS)
+        dead = bt.allocate_backend_tmp("b" * 64)
+        bt.record_owner(dead, 2**22 - 1)  # almost surely dead
+        _age(dead, 2 * bt._UNOWNED_GRACE_SECONDS)
+        _age(dead / bt.OWNER_FILENAME, 2 * bt._UNOWNED_GRACE_SECONDS)
+
+        with monkeypatch.context() as ordered:
+            ordered.setattr(
+                os,
+                "scandir",
+                lambda path: sorted(real_scandir(path), key=lambda entry: entry.name),
+            )
+
+            # The sweep reaps through ``platform_compat.rmtree_force`` and only
+            # counts a directory it confirms is GONE afterwards, so a stub that
+            # merely records the path would read back as a failed delete and
+            # never be counted. Record what was reaped and perform the real
+            # removal (with the real ``os.scandir`` restored, since
+            # ``shutil.rmtree`` enters it as a context manager) so the
+            # production success contract is exercised.
+            def _record_and_remove(path, **_kwargs):
+                reaped.append(Path(path))
+                with monkeypatch.context() as unordered:
+                    unordered.setattr(os, "scandir", real_scandir)
+                    return real_rmtree_force(path)
+
+            real_rmtree_force = bt.platform_compat.rmtree_force
+            ordered.setattr(bt.platform_compat, "rmtree_force", _record_and_remove)
+            removed = bt.sweep_all_backend_tmp()
+
+        assert corrupt.exists(), "an invalid identity is not evidence that its owner is dead"
+        assert dead in reaped, "one corrupt marker must not abort cleanup of later entries"
+        assert removed == 1
+
     def test_crashed_probe_dir_is_reclaimed_when_dead_and_idle(self, tmp_root: Path) -> None:
         # A probe normally cleans its own dir in its finally; one whose
         # cleanup never ran (crash) is reclaimed by the generic owner-dead +
