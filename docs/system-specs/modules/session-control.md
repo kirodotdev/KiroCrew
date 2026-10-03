@@ -1054,7 +1054,9 @@ item. Three refusals had to move for that, and one deliberately did not:
 - **The global switch still gates a cron.** Unlike a member, a cron gets no
   bypass: the switch is the user's statement that agents may open and drive
   sessions at all, and a job running while they are asleep is the last caller
-  that should be exempt from it.
+  that should be exempt from it. A script cron is bound the same way on the two
+  chat routes it writes to. The `agent.session_control` entry under
+  Configuration states that rule.
 
 **An APP-owned cron is refused, and ownership is read from the job.** This is the
 one place admitting a cron would otherwise open something. `_app` is how every
@@ -1619,6 +1621,18 @@ conductor is in the second class for `session_create` and `session_read_message`
 loop runs with nobody at the keyboard and must not block on an approval no one is
 there to give. An operator who wants folder tools without session control names the
 folder tools individually.
+
+The switch binds a script cron on the gateway side too. While it is off, the
+gateway refuses a caller that presents a `cron:` session key on
+`POST /api/chat/slots` and `POST /api/chat` with `session_control_disabled`. These
+are the two routes `ScriptContext.open_session` and
+`ScriptContext.send_to_session` call. The refusal is the same rule the "Cron
+callers" section states for agent crons: the switch gates a cron, and a cron gets
+no bypass. It is checked in `private_chat_route_refusal`, the gate every internal
+chat-route call passes after the internal secret validates, and it answers with
+the same 403 body the session-control routes send. Owner and member callers are
+unaffected and keep their own gates. The folder routes are not gated, because
+folders are not session control.
 
 `agent.member_dispatch` (bool, default **true**). The operator ceiling on the
 member switch bypass described under "Member callers". At its default a member DM
