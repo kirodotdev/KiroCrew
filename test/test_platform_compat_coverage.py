@@ -1012,6 +1012,9 @@ def _exit_code_kernel32(code: int, *, ok: bool = True, terminated: bool = True) 
     return types.SimpleNamespace(
         GetExitCodeProcess=_Fn(_get_exit_code),
         TerminateProcess=_const(terminated),
+        # WAIT_TIMEOUT: the process object is not signalled, so a refused
+        # terminate is read as a refusal of a live process.
+        WaitForSingleObject=_const(0x102),
         CloseHandle=_const(True),
     )
 
