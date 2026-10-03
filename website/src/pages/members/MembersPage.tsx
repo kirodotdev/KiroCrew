@@ -48,7 +48,7 @@
  */
 import { Fragment, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
-import { AlarmClock, ArrowLeft, Check, ChevronRight, Circle, Goal, LayoutDashboard, ListChecks, Loader2, MessageCircleQuestionMark, NotebookPen, Plus, RotateCw, Route, Sparkles, Square, Star, Users, Zap } from 'lucide-react'
+import { AlarmClock, ArrowLeft, Check, ChevronRight, Circle, Goal, LayoutDashboard, ListChecks, Loader2, MessageCircleQuestionMark, NotebookPen, Plus, RotateCw, Route, Sparkles, Square, Star, Users, X, Zap } from 'lucide-react'
 import { usePreviewFlag } from '../../hooks/usePreviewFlag'
 import { PREVIEW_DASHBOARD } from '../../utils/previewFlags'
 import { PanelRightSolid } from '../../components/icons/panels'
@@ -158,12 +158,9 @@ import { usePanelTabDescriptors } from '../../hooks/panelTabRegistry'
 import CrewWakeSection from '../../components/CrewWakeSection'
 import { crewWakeQueryKey, wakesCrew } from '../../components/crew/wakesCrew'
 import { usePanelDocumentActions } from '../../hooks/usePanelDocumentActions'
-import ResizeHandle from '../../components/ResizeHandle'
 import { cn } from '../../lib/utils'
 import { LIST_SHELL_CLS, LIST_HEADER_CLS, LIST_TITLE_CLS, LIST_BODY_CLS, ROW_BOX_CLS, ROW_IDLE_CLS, ROW_ACTIVE_CLS, ROW_TITLE_CLS, ROW_STATUS_CLS } from '../../components/listShell'
 import { ListDock } from '../../components/ListDock'
-import { useColumnResize } from '../../hooks/useColumnResize'
-import { loadColumnWidth } from '../../lib/columnWidth'
 import { tabStatus, type TabStatus } from '../../lib/sessionTabs'
 import { lastActivityEpoch } from '../chat/sessionOrder'
 import { activityDayLabel, floorCountText, groupActivityDays, projectLabel } from './activityDays'
@@ -251,11 +248,7 @@ export function memberMemoryDisplay(row: MemberRosterRow): MemberMemoryDisplay {
   return 'unavailable'
 }
 
-/** Roster width bounds, persisted like the chat sidebar's (mc-sidebar-width). */
-const ROSTER_MIN = 200
-const ROSTER_MAX = 420
-const ROSTER_DEFAULT = 264
-const ROSTER_WIDTH_KEY = 'mc-members-roster-width'
+
 /** Size of the newest-first activity ring the members projection serves
  *  (mirrors the backend's `_ACTIVITY_RING` in members_projections.py). A full
  *  ring means older in-window events were dropped, so a count off it is a
@@ -432,8 +425,6 @@ const DRIVING_STATUS: Record<TabStatus, { cls: string; text: string; label: stri
   unread: { cls: 'fill-muted text-muted', text: 'text-muted', label: 'pages.membersPage.driving_idle', spoken: false },
   idle: { cls: 'fill-muted text-muted', text: 'text-muted', label: 'pages.membersPage.driving_idle', spoken: false },
 }
-// Module-level so the resize hook's memoised resolver isn't invalidated every render.
-const loadRosterWidth = () => loadColumnWidth(ROSTER_WIDTH_KEY, ROSTER_MIN, ROSTER_MAX, ROSTER_DEFAULT)
 /** The chat side panel's right-dock mount preset — module-pure, so one
  *  constant serves every render. */
 const dockMotion = sidePanelDockMotion('right')
@@ -1231,11 +1222,6 @@ export default function MembersPage() {
       (m.name === activeName ? threadOutcome?.slot_key : '') || m.slot_key,
     [activeName, threadOutcome],
   )
-  // Roster width is user-adjustable on md+ (drag handle on the right edge),
-  // mirroring the chat sidebar. Below md the roster is full-width single-pane
-  // and the stored width is simply unused. Clamp + persist live in the shared
-  // useColumnResize hook — the same primitive every resizable column uses.
-  const roster = useColumnResize(ROSTER_WIDTH_KEY, loadRosterWidth, ROSTER_MIN, ROSTER_MAX)
   // Where the side panel lives. Wide enough (see panelSitsBeside) it is a
   // column beside the thread, hidden and shown by the header toggle and by the
   // panel's own close control — the chat page's panel, docked. Narrower, it is
@@ -1249,7 +1235,14 @@ export default function MembersPage() {
     window.addEventListener('resize', onResize)
     return () => window.removeEventListener('resize', onResize)
   }, [])
-  const beside = panelSitsBeside({ winW, rosterW: roster.width, isMobile })
+  // The floating roster card overlays the thread and reserves NO column of its
+  // own (unlike the full-height column it replaced on wide viewports), so the
+  // side panel's beside/overlay boundary no longer subtracts a roster width.
+  // `panelSitsBeside` keeps its contract — it is fed `rosterW: 0` here rather
+  // than having the term removed, and it is a wide-only decision anyway
+  // (`isMobile` short-circuits it), so the narrow full-screen roster is
+  // untouched.
+  const beside = panelSitsBeside({ winW, rosterW: 0, isMobile })
   // On a phone the overlay must FILL its scrim. SidePanel's own mobile
   // fallback is `width: 100%`, which cannot resolve here: the overlay's inner
   // wrapper is a shrink-to-fit flex item, so a percentage child falls back to
@@ -1274,6 +1267,16 @@ export default function MembersPage() {
   const [dockedOpen, setDockedOpen] = usePersistedBool(PANEL_OPEN_KEY, true)
   const { panelVisible, showOpener } = panelChrome({ beside, dockedOpen, overlayOpen })
   const closeDocked = useCallback(() => setDockedOpen(false), [setDockedOpen])
+  // The FLOATING roster card's open state (wide viewport only). Persisted in the
+  // `mc-` family like the panel flag above; default CLOSED, because the card
+  // exists to give the chat its full width and is summoned, not shown by
+  // default. The toggle (a hamburger under the avatar) and the card itself are
+  // gated on `moreThanOneMate`: a single-crewmate page has nothing to switch
+  // to, so it carries neither. Below md the roster is the full-screen column as
+  // before and this flag does not drive it — only the SAME gate reaches the
+  // narrow back-arrow, so a single crewmate shows no roster entry on either
+  // viewport.
+  const moreThanOneMate = members.length > 1
   // One gesture drives whichever placement is live, so the header button and
   // the dashboard's side-panel chord share it. The chord reaches this page the
   // way it reaches the chat page: App dispatches `toggle-activity-panel` on the
@@ -3231,42 +3234,20 @@ export default function MembersPage() {
     </div>
   )
 
-  return (
-    // No bottom inset on the root: the card columns carry their own pb-2 and
-    // the side panel brings the chat SidePanel's mb-2, so all three end 8px
-    // above the window edge without stacking two insets. No right padding
-    // either — the panel docks FLUSH to the window's right edge, exactly as it
-    // does in the chat page's actbar column; the card columns' pr-2 lives on
-    // the inner wrapper below.
-    <div className="flex h-full min-h-0" data-testid="members-page">
-      {/* Card columns (roster + thread) keep the page's original insets. */}
-      <div className="flex flex-1 min-w-0 gap-2 pr-2 pb-2">
-      {/* Member list. Below md the page is single-pane: the roster IS the
-          page until a member is picked, then the thread takes over and the
-          header's back button returns here. Two fixed rails (264+300px)
-          otherwise crush the flex-1 thread to zero at narrow widths.
-          The card, header line, list body and rows are the Sessions sidebar's
-          own recipes (components/listShell) so the two conversation lists read
-          as one surface — including the kiro-light shell hook that steps the
-          card back from the white canvas. */}
-      <aside
-        // Below md the roster is the whole width, so it yields whenever the
-        // chat column must be seen: an open chat, or a ROSTER post-create
-        // notice (a failed re-read opens no chat, and a full-width `shrink-0`
-        // roster would push the notice and its retry off-screen). A GREETING
-        // notice does not imply an open chat — the header back can close the
-        // chat under it — so it alone must not hide the roster, or a phone
-        // shows a notice bar over a blank column until it is dismissed. An
-        // open team view takes the column the same way an open chat does.
-        className={`${
-          activeName || activeTeam || postCreateError?.kind === 'roster' ? 'hidden md:flex' : 'flex'
-        } ${LIST_SHELL_CLS} relative w-full md:w-[var(--roster-w)] shrink-0 flex-col min-h-0`}
-        // CSS owns the breakpoint: the var is set unconditionally and only the
-        // md: class consumes it, so resizing the window across 768px reacts
-        // without any JS media-query snapshot going stale.
-        style={{ '--roster-w': `${roster.width}px` } as React.CSSProperties}
-        data-testid="member-roster"
-      >
+  // The roster body (header, search dock, list) rendered once and placed
+  // in TWO shells: the narrow full-height `<aside>` (below md) and the wide
+  // floating card (`motion.div` under the avatar). One list, one source of
+  // truth; the shell differs, the contents do not.
+  //
+  // `chrome` picks the shell: the narrow <aside> (mobile) renders the FULL
+  // chrome — its own page header (brand mark + "Crewmates" title + the add
+  // menu) and the search/filter capsule — because there the roster stands on
+  // its own. The WIDE merged surface passes chrome=false: the identity pill IS
+  // the header there, so a second header would double it, and the search is
+  // dropped; the add (+) menu moves to a row at the BOTTOM of the list instead.
+  const renderRoster = (chrome: boolean) => (
+    <>
+        {chrome && (
         <div className={LIST_HEADER_CLS}>
           {/* pl-1.5 is the sidebar's title inset when no rail toggle sits
               before it; the page icon leads the title where the sidebar's
@@ -3342,7 +3323,27 @@ export default function MembersPage() {
             </DropdownMenuContent>
           </DropdownMenu>
           )}
+          {/* Dismiss the roster back to the chat (NARROW only). On mobile the
+              roster is a full screen reached by the thread's back arrow; without
+              this there is no way back to the conversation except opening a row.
+              Shown only when a crewmate exists to return to; reopens the
+              most-recently-used one (the same target the default-open uses). */}
+          {(() => {
+            const back = resolveDefaultMember(safeGetItem(LAST_MEMBER_KEY), orderedMembers)
+            return back ? (
+              <button
+                onClick={() => { void openMember(back) }}
+                className="md:hidden flex items-center justify-center w-7 h-7 rounded-md transition-colors bg-transparent border-none shrink-0 text-muted hover:text-text hover:bg-bg-hover cursor-pointer"
+                aria-label={t('pages.membersPage.close')}
+                title={t('pages.membersPage.close')}
+                data-testid="member-roster-dismiss"
+              >
+                <X size={15} />
+              </button>
+            ) : null
+          })()}
         </div>
+        )}
         {/* The count reads the cached roster; after a create whose re-read
             failed that cache is a list without the new crewmate, and "0
             crewmates" under "Radar was created" contradicts the notice. The
@@ -3396,8 +3397,10 @@ export default function MembersPage() {
           </div>
         )}
         {/* The floating dock (components/ListDock): the glass search capsule and
-            the filter chip hover over the roster, which scrolls under them. */}
-        <ListDock field={(
+            the filter chip hover over the roster, which scrolls under them. The
+            search is CHROME: the merged wide surface (chrome=false) drops it, so
+            `field` is null there and the dock collapses to nothing above the list. */}
+        <ListDock field={!chrome ? null : (
           // The Sessions sidebar's search row (components/SearchFilterBar): the
           // same field, clear button and inline sort/filter menu. The menu holds
           // what the sidebar's holds for sessions, in the roster's terms — a
@@ -3689,25 +3692,95 @@ export default function MembersPage() {
           })}
         </ul>
         </ListDock>
-        {/* Window-splitter between roster and thread: the same component as the
-            Sessions sidebar's grip, sitting on the card's right border the same
-            way (absolute, 12px rounded-xl corner inset), so the two pages' edges
-            read as one control. md+ only — below md the page is single-pane and
-            there is nothing to resize. */}
-        <div className="hidden md:block" data-testid="member-roster-resize">
-          <ResizeHandle
-            handleProps={roster.handleProps}
-            label={t('pages.membersPage.resize_roster')}
-            onNudge={roster.nudge}
-            value={roster.width}
-            min={ROSTER_MIN}
-            max={ROSTER_MAX}
-            inset={12}
-            // z-40: above the floating search dock (ListDock, z-30), whose
-            // opaque shelf would otherwise take the inner half of the grip.
-            className="absolute top-0 -right-[3px] h-full z-40"
-          />
-        </div>
+        {/* Chromeless (merged surface) only: the add (+) control, moved OUT of
+            the page header (the pill is the header there) to a row at the
+            BOTTOM of the list — a full-width "New crewmate" button over a thin
+            top border so it reads as the list's footer action. Same menu as the
+            header's: crewmate or team, with the same in-flight hold on the
+            crewmate item. Hidden until the first read answers and while the
+            empty-roster hero owns the create door, mirroring the header menu. */}
+        {!chrome && loaded && !(!loadError && hasNoCrewmates(members)) && (
+          <div className="shrink-0 border-t border-border p-1.5">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  className="flex items-center gap-1.5 w-full px-2 py-1.5 rounded-md transition-colors bg-transparent border-none text-[12.5px] text-muted hover:text-text hover:bg-bg-hover cursor-pointer data-[state=open]:bg-bg-hover data-[state=open]:text-text"
+                  aria-label={t('pages.membersPage.add_menu')}
+                  title={t('pages.membersPage.add_menu')}
+                  data-testid="member-add-bottom"
+                >
+                  <Plus size={14} className="lucide-inline shrink-0" />
+                  <span className="truncate">{t('pages.membersPage.add_member')}</span>
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" side="top" data-testid="member-add-menu-bottom">
+                <DropdownMenuItem
+                  onSelect={() => setCreateOpen(true)}
+                  disabled={createHeld !== null}
+                  className={createHeld !== null ? 'items-start' : undefined}
+                  data-testid="member-add-crewmate-bottom"
+                >
+                  <Plus size={13} className="lucide-inline text-muted shrink-0" aria-hidden="true" />
+                  <span className="flex-1 min-w-0 flex flex-col">
+                    <span>{t('pages.membersPage.add_member')}</span>
+                    {createHeld !== null && (
+                      <span className="text-[11.5px] text-muted whitespace-normal" data-testid="member-add-crewmate-bottom-held">
+                        {createHeld}
+                      </span>
+                    )}
+                  </span>
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => setTeamDialog({})} data-testid="member-add-team-bottom">
+                  <Users size={13} className="lucide-inline text-muted" aria-hidden="true" />
+                  <span className="flex-1">{t('pages.membersPage.team_new')}</span>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        )}
+    </>
+  )
+
+  return (
+    // No bottom inset on the root: the card columns carry their own pb-2 and
+    // the side panel brings the chat SidePanel's mb-2, so all three end 8px
+    // above the window edge without stacking two insets. No right padding
+    // either — the panel docks FLUSH to the window's right edge, exactly as it
+    // does in the chat page's actbar column; the card columns' pr-2 lives on
+    // the inner wrapper below.
+    <div className="flex h-full min-h-0" data-testid="members-page">
+      {/* Card columns (roster + thread) keep the page's original insets. */}
+      <div className="flex flex-1 min-w-0 gap-2 pr-2 pb-2">
+      {/* Member list. Below md the page is single-pane: the roster IS the
+          page until a member is picked, then the thread takes over and the
+          header's back button returns here. Two fixed rails (264+300px)
+          otherwise crush the flex-1 thread to zero at narrow widths.
+          The card, header line, list body and rows are the Sessions sidebar's
+          own recipes (components/listShell) so the two conversation lists read
+          as one surface — including the kiro-light shell hook that steps the
+          card back from the white canvas. */}
+      <aside
+        // Below md the roster is the whole width, so it yields whenever the
+        // chat column must be seen: an open chat, or a ROSTER post-create
+        // notice (a failed re-read opens no chat, and a full-width `shrink-0`
+        // roster would push the notice and its retry off-screen). A GREETING
+        // notice does not imply an open chat — the header back can close the
+        // chat under it — so it alone must not hide the roster, or a phone
+        // shows a notice bar over a blank column until it is dismissed. An
+        // open team view takes the column the same way an open chat does.
+        // The full-height column is now the NARROW (below-md) roster only: on
+        // wide viewports the floating roster card (below, under the avatar)
+        // replaces it, so this `<aside>` is `md:hidden`. Below md it is the
+        // whole-width screen as before, yielding to an open chat / team view /
+        // roster post-create notice exactly as it did. The width var and the
+        // resize handle are gone with the wide column (narrow is always
+        // `w-full`).
+        className={`${
+          activeName || activeTeam || postCreateError?.kind === 'roster' ? 'hidden' : 'flex md:hidden'
+        } ${LIST_SHELL_CLS} relative w-full shrink-0 flex-col min-h-0`}
+        data-testid="member-roster"
+      >
+        {renderRoster(true)}
       </aside>
 
       {/* DM thread */}
@@ -3718,15 +3791,32 @@ export default function MembersPage() {
         // failure and its retry are said. A greeting notice sits over its
         // chat; once that chat is closed the roster is the screen and the
         // notice waits for the reopen.
-        className={`${activeName || activeTeam || postCreateError?.kind === 'roster' ? 'flex' : 'hidden md:flex'} flex-1 min-w-0 flex-col min-h-0`}
+        // The roster switcher is an md:absolute overlay pinned top-left of this
+        // section. Reserve a narrow left gutter (the icon-column width only, not
+        // the hover name) so the transcript and composer never flow UNDER the
+        // avatars; the hover-name flyout overlays past the gutter and costs no
+        // layout width. Gutter only on wide, with >1 crewmate, and a chat open.
         // The page's main column: the thread (or the team view, or an empty
         // state), and never the side panel, which is a sibling of this section.
         // Named so a case can ask what the THREAD says without matching the
         // panel's own copy — the two surfaces share several sentences, "Opening
         // the conversation…" among them, and each says it about itself.
+        className={`${activeName || activeTeam || postCreateError?.kind === 'roster' ? 'flex' : 'hidden md:flex'} relative flex-1 min-w-0 flex-col min-h-0${active && moreThanOneMate ? ' md:pl-16' : ''}`}
         data-testid="member-main-column"
       >
-        {!greetingNoticeInRoster && postCreateNotice}
+        {/* Floating roster card (WIDE viewport only). Replaces the full-height
+            column: it overlays the thread, anchored top-left under the crewmate
+            avatar, and is only as tall as its contents (max-height caps a long
+            roster and scrolls inside). Shown when a member is open, more than
+        {/* AnimatePresence wrapper: the notice is set from an async follow-up
+            (openThread.onSuccess -> seedGreeting -> setPostCreateError), and
+            this presence boundary keeps that state change on the committed
+            render cycle rather than deferring it — the removed wide roster card
+            used to provide this adjacency. It also gives the notice a clean
+            enter/exit. */}
+        <AnimatePresence initial={false}>
+          {!greetingNoticeInRoster && postCreateNotice}
+        </AnimatePresence>
         {/* The hero yields to a post-create notice: after the FIRST create a
             failed re-read leaves the cached roster at [] while the crewmate
             exists, and "No crewmates yet" under "Radar was created" would be
@@ -3811,10 +3901,20 @@ export default function MembersPage() {
                 (narrow) or the panel opener (docked, panel hidden) is present:
                 a flex row with `flex-1` around the pill would shift it by the
                 width of whichever side control is missing. */}
+            {/* Narrow: a 3-column grid with the identity pill centred (the
+                outer 1fr columns balance the back-arrow / opener so the pill
+                stays centred whichever side control is present). Wide: the
+                roster is a floating card anchored top-left, so the avatar/pill
+                moves to the LEFT (`md:flex md:justify-start`) to be that anchor;
+                the roster toggle is a chevron ON the avatar (not a separate
+                control beside it, so nothing appears/disappears to shift the
+                pill), and the panel opener is pushed to the far right by an
+                `ml-auto` spacer. One header element in both; only the track
+                layout flips at the breakpoint. */}
             <header className="grid grid-cols-[1fr_minmax(0,auto)_1fr] items-center gap-2 px-3 py-2" data-testid="member-thread-header">
-              <div className="flex items-center justify-start min-w-0">
+              <div className="flex items-center justify-start min-w-0 gap-1">
+                {moreThanOneMate && (
                 <button
-                  // Back to the roster. When this entry was pushed from the
                   // roster on this page, pop it — the browser's own Back then
                   // lands on whatever preceded the roster, with no duplicate
                   // roster entry. A deep link (no such state) has no roster
@@ -3840,6 +3940,7 @@ export default function MembersPage() {
                 >
                   <ArrowLeft size={16} className="lucide-inline" />
                 </button>
+                )}
               </div>
               {/* The identity pill: one centred Glass chip holding the face and
                   the name, the same material as the composer dock and the
@@ -3877,22 +3978,20 @@ export default function MembersPage() {
                   click does ("Edit crewmate") rides along as the tooltip,
                   which doubles as the accessible description. An aria-label
                   would replace the identity with the verb. */}
-              <Glass
-                as="button"
-                type="button"
-                variant="chip"
-                radius={999}
-                // Opens the editor as a modal IN PLACE (CREW-18688): no `leave`
-                // guard needed. The old pill navigated away, which would discard a
-                // typed Schedules draft, so it went through `leave`. Opening a modal
-                // does NOT unmount the panel subtree that holds the draft, so there is
-                // nothing to lose and nothing to guard — the modal sits over the page
-                // with the roster and thread still mounted behind it.
-                onClick={() => setEditingCrew(active.name)}
-                className="glass-shadow flex items-center gap-2.5 pl-2.5 pr-4 py-1.5 min-w-0 max-w-full justify-self-center cursor-pointer text-left focus-ring"
-                title={t('pages.membersPage.edit_member')}
-                data-testid="member-identity-pill"
-              >
+              {/* Identity + roster, a top-left vertical STACK (wide only).
+                  Two fixed elements, no modes, no collapse:
+                  • The identity PILL — a floating Glass chip (avatar + name),
+                    click to edit the active crewmate.
+                  • Directly BELOW it, the vertical compact SWITCHER — always
+                    shown, never collapsed. With one crewmate it is just the add
+                    (+) button; with two or more it becomes the vertical avatar
+                    strip (every crewmate, active one ringed) with the add (+) at
+                    the bottom. Click an avatar to switch.
+                  On narrow the pill is laid out by the aside; this stack is
+                  wide-only. */}
+              {(() => {
+                const pillBody = (
+                  <>
                 {/* The same reactive CrewStateAvatar as before — a plain face,
                     no scrim, no badge (issue #9425). */}
                 <CrewStateAvatar
@@ -3916,13 +4015,7 @@ export default function MembersPage() {
                   {/* Activity line — what the crewmate is doing right now, text
                       only (the face above already carries presence, so no dot
                       here). Always rendered, so the pill keeps one height
-                      whether the crewmate is busy or resting: a resting line
-                      says how long ago the thread last moved. A busy line is
-                      the shared status label, clamped in `pillActivity.ts`;
-                      `truncate` is the belt to that cap's braces. Out of the
-                      button's accessible name: the name is WHO the thread is
-                      with, and this line changes several times a turn — the
-                      screen-reader copy sits outside the button, below. */}
+                      whether the crewmate is busy or resting. */}
                   <div
                     className="text-[11px] text-muted truncate max-w-[24rem]"
                     data-testid="member-pill-activity"
@@ -3930,7 +4023,192 @@ export default function MembersPage() {
                     aria-hidden="true"
                   >{pillActivity.label}</div>
                 </div>
+                  </>
+                )
+                // The add (+) menu — crewmate / team. Shared by the solo state
+                // (the switcher IS this button) and the strip footer (below the
+                // avatars). Rendered only once the roster has loaded and the
+                // page is not in its empty first-run state.
+                const addMenu = loaded && !(!loadError && hasNoCrewmates(members)) ? (
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <button
+                        className="shrink-0 flex items-center justify-center w-7 h-7 rounded-full transition-colors bg-transparent border border-border text-muted hover:text-text hover:bg-bg-hover cursor-pointer data-[state=open]:bg-bg-hover data-[state=open]:text-text"
+                        aria-label={t('pages.membersPage.add_menu')}
+                        title={t('pages.membersPage.add_menu')}
+                        data-testid="member-add-strip"
+                      >
+                        <Plus size={15} />
+                      </button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="start" side="bottom" data-testid="member-add-menu-strip">
+                      <DropdownMenuItem
+                        onSelect={() => setCreateOpen(true)}
+                        disabled={createHeld !== null}
+                        className={createHeld !== null ? 'items-start' : undefined}
+                        data-testid="member-add-crewmate-strip"
+                      >
+                        <Plus size={13} className="lucide-inline text-muted shrink-0" aria-hidden="true" />
+                        <span className="flex-1 min-w-0 flex flex-col">
+                          <span>{t('pages.membersPage.add_member')}</span>
+                          {createHeld !== null && (
+                            <span className="text-[11.5px] text-muted whitespace-normal" data-testid="member-add-crewmate-strip-held">
+                              {createHeld}
+                            </span>
+                          )}
+                        </span>
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onSelect={() => setTeamDialog({})} data-testid="member-add-team-strip">
+                        <Users size={13} className="lucide-inline text-muted" aria-hidden="true" />
+                        <span className="flex-1">{t('pages.membersPage.team_new')}</span>
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                ) : null
+                return (
+              <>
+              <div
+                className="relative justify-self-center min-w-0 max-w-full"
+                data-testid="member-identity-cluster"
+              >
+              {/* The identity pill — a floating Glass chip; click to edit.
+                  Centered in the header grid; the roster switcher is decoupled
+                  from it and pinned to the pane's top-left corner below. */}
+              <Glass
+                as="button"
+                type="button"
+                variant="chip"
+                radius={999}
+                // Opens the editor as a modal IN PLACE (CREW-18688): no `leave`
+                // guard needed — the modal sits over the page with the roster
+                // and thread still mounted behind it, so nothing is lost.
+                onClick={() => setEditingCrew(active.name)}
+                className="glass-shadow flex items-center gap-2.5 pl-2.5 pr-4 py-1.5 min-w-0 max-w-full cursor-pointer text-left focus-ring"
+                title={t('pages.membersPage.edit_member')}
+                data-testid="member-identity-pill"
+              >
+                {pillBody}
               </Glass>
+              </div>
+              {/* The vertical compact switcher — pinned to the thread pane's
+                  TOP-LEFT corner (wide only), decoupled from the centered pill.
+                  `md:absolute` anchors to the thread <section> (relative), so it
+                  floats over the transcript's top-left and never shifts the
+                  centered pill. ALWAYS shown — no chevron, no open/close. One
+                  crewmate: just the add (+). Two or more: the vertical avatar
+                  strip of the OTHER crewmates (active is the pill) with the add
+                  (+) at the bottom. Deliberately NOT a Glass chip: it recedes —
+                  no glass material, no shadow, just a faint recessed column. */}
+              {!isMobile && (moreThanOneMate ? (
+                <div
+                  className="hidden md:flex md:absolute md:left-3 md:top-3 md:z-30 flex-col items-center gap-1.5 p-1.5 rounded-2xl bg-bg-elevated/40 overflow-visible"
+                  data-testid="member-roster-strip"
+                  data-orientation="vertical"
+                >
+                  {/* Teams — a monogram tile per team (first two letters of the
+                      name) at the TOP of the strip; click opens the team view.
+                      This is how a team is reached and switched now that the
+                      wide grouped roster is not a column (RFC §09 team view is
+                      unchanged — only its entry point moves here). A hairline
+                      separates the team markers from the crewmate avatars. */}
+                  {teams.length > 0 && (
+                    <>
+                      {teams.map((tm) => {
+                        const monogram = tm.name.trim().slice(0, 2).toUpperCase() || '??'
+                        const current = !!activeTeam && activeTeam.id === tm.id
+                        return (
+                          <div key={tm.id} className="group/team relative shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => openTeam(tm.id)}
+                            className={`flex items-center justify-center w-7 h-7 rounded-lg text-[11px] font-semibold uppercase transition-all cursor-pointer border focus-ring ${current ? 'opacity-100 border-accent bg-accent/15 text-text' : 'opacity-55 hover:opacity-100 border-border bg-bg-hover text-muted hover:text-text'}`}
+                            aria-label={tm.name}
+                            aria-current={current ? 'true' : undefined}
+                            data-testid={`member-strip-team-${tm.id}`}
+                          >
+                            {monogram}
+                          </button>
+                          {/* Team name on hover/focus — same flyout treatment as
+                              the avatars, to the right of the strip. */}
+                          <div
+                            className="pointer-events-none absolute left-full top-1/2 -translate-y-1/2 ml-2 z-40 hidden md:block opacity-0 translate-x-[-4px] transition-all duration-150 group-hover/team:opacity-100 group-hover/team:translate-x-0 group-focus-within/team:opacity-100 group-focus-within/team:translate-x-0"
+                            role="presentation"
+                            aria-hidden="true"
+                            data-testid={`member-strip-team-flyout-${tm.id}`}
+                          >
+                            <div className="rounded-lg bg-bg-elevated border border-border shadow-md px-2.5 py-1.5 min-w-[8rem] max-w-[16rem]">
+                              <div className="text-[12.5px] font-semibold text-text truncate">{tm.name}</div>
+                              <div className="text-[11px] text-muted truncate">{t('pages.membersPage.team_crewmate_count', { count: tm.members.length })}</div>
+                            </div>
+                          </div>
+                          </div>
+                        )
+                      })}
+                      <div className="w-5 h-px bg-border my-0.5" aria-hidden="true" data-testid="member-strip-team-divider" />
+                    </>
+                  )}
+                  {/* All crewmates — the pill and this switcher are separate UI
+                      elements now, so the active one is shown here too. */}
+                  {sortedMembers.map((m) => {
+                    // Hover detail: the crewmate's name + its latest activity —
+                    // the last message if there is one, else a resting "… ago".
+                    // Detail = a resting activity line (how long since the
+                    // thread last moved), NOT the raw last_message: the message
+                    // text already lives in the transcript, and repeating it in
+                    // this overlay would duplicate it in the DOM.
+                    const detail = m.last_active_ts ? timeAgo(m.last_active_ts) : ''
+                    const current = m.name === active.name
+                    return (
+                      <div key={m.name} className="group/avatar relative shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => { void openMember(m) }}
+                        className={`block rounded-full p-0.5 transition-all cursor-pointer bg-transparent border-none focus-ring ${current ? 'opacity-100' : 'opacity-55 hover:opacity-100 group-focus-within/avatar:opacity-100 hover:ring-2 hover:ring-border'}`}
+                        aria-label={crewDisplayName(m)}
+                        aria-current={current ? 'true' : undefined}
+                        data-testid={`member-strip-avatar-${m.name}`}
+                      >
+                        <CrewStateAvatar
+                          seed={m.name}
+                          avatar={m.avatar}
+                          slotKey={m.slot_key}
+                          running={!!isRunning(m)}
+                          size={28}
+                          working="full"
+                        />
+                      </button>
+                      {/* Name + details on hover/focus — a lightweight flyout to
+                          the RIGHT of the avatar (the strip is on the left edge),
+                          revealed by group-hover/focus. Pointer-events-none so it
+                          never eats the click; the avatar's aria-label already
+                          names it for assistive tech, so this is decorative. */}
+                      <div
+                        className="pointer-events-none absolute left-full top-1/2 -translate-y-1/2 ml-2 z-40 hidden md:block opacity-0 translate-x-[-4px] transition-all duration-150 group-hover/avatar:opacity-100 group-hover/avatar:translate-x-0 group-focus-within/avatar:opacity-100 group-focus-within/avatar:translate-x-0"
+                        role="presentation"
+                        aria-hidden="true"
+                        data-testid={`member-strip-flyout-${m.name}`}
+                      >
+                        <div className="rounded-lg bg-bg-elevated border border-border shadow-md px-2.5 py-1.5 min-w-[8rem] max-w-[16rem]">
+                          <div className="text-[12.5px] font-semibold text-text truncate">{crewDisplayName(m)}</div>
+                          {detail && <div className="text-[11px] text-muted truncate">{detail}</div>}
+                        </div>
+                      </div>
+                      </div>
+                    )
+                  })}
+                  {addMenu && <div className="mt-0.5">{addMenu}</div>}
+                </div>
+              ) : (
+                /* Solo: the switcher is JUST the add (+) button, same top-left. */
+                addMenu && (
+                  <div className="hidden md:block md:absolute md:left-3 md:top-3 md:z-30" data-testid="member-roster-solo-add">
+                    {addMenu}
+                  </div>
+                )
+              ))}
+              </>
+                )
+              })()}
               {/* The panel's opener. Same icon and hit-target as the chat
                   page's side-panel toggle, so the two surfaces teach one
                   gesture, and the dashboard's side-panel chord fires it too.
@@ -3943,7 +4221,7 @@ export default function MembersPage() {
                   announcing it taught the user a term for a thing that can
                   never be otherwise. The member's edit entry is not a peer of
                   this toggle: it is the identity pill in the middle. */}
-              <div className="flex items-center justify-end min-w-0">
+              <div className="flex items-center justify-end min-w-0 md:ml-auto">
                 {/* The activity line for assistive tech: the same text, outside
                     the button so it never joins the crewmate's name, and NOT a
                     live region — a line that changes several times a turn
@@ -4920,9 +5198,10 @@ export default function MembersPage() {
                          so a drag can never fold the thread to nothing (the
                          contract the old drawer's reserveWidth carried).
                          Overlay: the panel covers the thread, so nothing to
-                         reserve. */
+                         reserve. The floating roster reserves no column, so
+                         only the page's own gaps are kept clear here now. */
                       onClose={beside ? closeDocked : closeOverlay}
-                      extraReserveW={beside ? roster.width + PANEL_GAPS_W : 0}
+                      extraReserveW={beside ? PANEL_GAPS_W : 0}
                       /* Phone only (see panelFillWidth): the overlay fills the
                          window. Off the phone this is undefined and the panel
                          sizes itself. */

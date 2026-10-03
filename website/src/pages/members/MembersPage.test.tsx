@@ -223,7 +223,13 @@ const PANEL_OPEN_KEY = 'mc-members-panel-open'
  *  = 1168. happy-dom's default is narrower, which would put every case in
  *  overlay mode with the panel closed. Narrow-window cases set their own. */
 const WIDE_WINDOW = 1440
-const NARROW_WINDOW = 1000
+// Narrow enough to force the side panel to OVERLAY rather than dock. With the
+// roster now a floating card that reserves no column, the dock boundary is
+// winW - PANEL_GAPS_W(24) >= SIDE_PANEL_RESERVED_W(560) + SIDE_PANEL_MIN_W(320)
+// = 880, i.e. winW >= 904 docks. 880 sits below that so the panel overlays,
+// while staying above the md/useIsMobile breakpoint (768) so it is the px
+// arithmetic — not mobile — that decides.
+const NARROW_WINDOW = 880
 function setWindowWidth(px: number) {
   Object.defineProperty(window, 'innerWidth', { value: px, configurable: true, writable: true })
 }
@@ -2028,14 +2034,14 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     await screen.findByTestId('team-dialog-body')
     fireEvent.change(screen.getByTestId('team-dialog-name'), { target: { value: 'Release' } })
     fireEvent.click(screen.getByTestId('team-dialog-save'))
-    // Both surfaces carry the notice; the pane's copy is the one a narrow
-    // viewport can see (the roster's is inside the `hidden md:flex` aside),
-    // and it steps aside at md where the roster's own notice is beside it.
+    // Both surfaces carry the notice; the pane's copy is the one shown while a
+    // team is open — the roster's copy lives inside the aside, which is hidden
+    // whenever a chat or team view occupies the pane (the roster is a
+    // narrow-only full-screen column now; on wide it is the floating card).
     const paneNotice = await screen.findByTestId('team-view-teams-error')
     expect(screen.getByTestId('team-view')).toBeTruthy()
     expect(screen.getByTestId('member-roster-teams-error')).toBeTruthy()
-    expect(screen.getByTestId('member-roster').className).toContain('hidden md:flex')
-    expect(paneNotice.closest('.md\\:hidden')).not.toBeNull()
+    expect(screen.getByTestId('member-roster').className).toContain('hidden')
     expect(screen.getByTestId('member-roster').contains(paneNotice)).toBe(false)
   })
 
@@ -3282,7 +3288,9 @@ describe('MembersPage member edit entry (issue #9425)', () => {
     // Same glass at rest and under the pointer: no hover tint step.
     expect(pill.className).not.toContain('glass-hover')
     expect(pill.className).toContain('cursor-pointer')
-    expect(pill.className).toContain('justify-self-center')
+    // Centred via its cluster wrapper now (the pill and the roster switcher are
+    // separate elements inside the centred cluster), not on the pill itself.
+    expect(screen.getByTestId('member-identity-cluster').className).toContain('justify-self-center')
     // The accessible NAME is the crewmate — the identity a screen reader hears
     // and voice control can say; what the click does is the tooltip, which is
     // also the accessible description. No aria-label: it would replace the
@@ -4863,11 +4871,12 @@ describe('New crewmate dialog', () => {
     // count reads as a dash — the same dash a failed arrival read shows — until
     // the retry refreshes the list.
     expect(screen.getByTestId('member-count')).toHaveTextContent('\u2014')
-    // CSS picks per viewport, so assert the classes: roster hidden below md,
-    // column shown at every width.
+    // The roster is a narrow-only full-screen column now (the wide column was
+    // replaced by the floating card), so under a roster post-create error the
+    // aside is hidden and the notice is carried by the thread section, which
+    // shows at every width.
     const aside = screen.getByTestId('member-roster')
     expect(aside.className).toMatch(/\bhidden\b/)
-    expect(aside.className).toMatch(/\bmd:flex\b/)
     const column = notice.closest('section') as HTMLElement
     expect(column.className).toMatch(/\bflex\b/)
     expect(column.className).not.toMatch(/\bhidden\b/)
@@ -5808,7 +5817,11 @@ describe('MembersPage default member, memory and URL', () => {
       fireEvent.click(screen.getByTestId('member-back'))
       await waitFor(() => expect(screen.queryByTestId('chat-pane-stub')).toBeNull())
       const aside = screen.getByTestId('member-roster')
-      expect(aside.className).not.toMatch(/\bhidden\b/)
+      // Visible on narrow: the aside is `flex md:hidden` here (shown below md,
+      // the floating card takes over at md+). Assert there is no STANDALONE
+      // `hidden` utility — `md:hidden` is the breakpoint variant and must not
+      // be read as display:none at this width.
+      expect(aside.className).not.toMatch(/(^|\s)hidden(\s|$)/)
       // The retry is not lost, and not hidden with the chat column either: with
       // no chat open the notice moves INTO the roster, where the "+" it holds
       // sits, so its dismiss and "Send it again" are on the screen the user

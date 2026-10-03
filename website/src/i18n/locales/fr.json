@@ -17108,7 +17108,6 @@
       "member_gone": "Affichage de {{shown}} : « {{name}} » ne figure plus dans la liste.",
       "member_gone_roster": "« {{name}} » ne figure plus dans la liste.",
       "opening_thread": "Ouverture de la conversation…",
-      "resize_roster": "Redimensionner la liste des coéquipiers",
       "sort_filter_members": "Trier et filtrer les coéquipiers",
       "filter_origin": "Origine",
       "filter_status_working_description": "Coéquipiers dont le chat est en plein tour",

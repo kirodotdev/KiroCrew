@@ -16630,7 +16630,6 @@
       "member_gone": "{{shown}}을(를) 표시합니다. '{{name}}'은(는) 더 이상 명단에 없습니다.",
       "member_gone_roster": "'{{name}}'은(는) 더 이상 명단에 없습니다.",
       "opening_thread": "대화를 여는 중…",
-      "resize_roster": "크루메이트 목록 크기 조정",
       "sort_filter_members": "크루메이트 정렬 및 필터",
       "filter_origin": "출처",
       "filter_status_working_description": "채팅이 지금 턴을 처리 중인 크루메이트",

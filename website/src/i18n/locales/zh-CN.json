@@ -16630,7 +16630,6 @@
       "member_gone": "已改为显示 {{shown}}——“{{name}}”已不在成员列表中。",
       "member_gone_roster": "“{{name}}”已不在成员列表中。",
       "opening_thread": "正在打开对话…",
-      "resize_roster": "调整队友列表大小",
       "sort_filter_members": "排序和筛选队友",
       "filter_origin": "来源",
       "filter_status_working_description": "聊天当前正在进行中的队友",

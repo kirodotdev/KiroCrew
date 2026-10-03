@@ -304,7 +304,7 @@ export default function TeamView({
         <button
           type="button"
           onClick={onBack}
-          className="md:hidden inline-flex items-center p-1 -ml-1 rounded hover:bg-accent/40"
+          className="inline-flex items-center p-1 -ml-1 rounded hover:bg-accent/40"
           aria-label={t('pages.membersPage.title')}
           data-testid="team-back"
         >

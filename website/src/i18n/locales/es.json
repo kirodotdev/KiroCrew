@@ -17108,7 +17108,6 @@
       "member_gone": "Se muestra {{shown}}: «{{name}}» ya no está en la lista.",
       "member_gone_roster": "«{{name}}» ya no está en la lista.",
       "opening_thread": "Abriendo la conversación…",
-      "resize_roster": "Cambiar el tamaño de la lista de compañeros",
       "sort_filter_members": "Ordenar y filtrar compañeros",
       "filter_origin": "Origen",
       "filter_status_working_description": "Compañeros cuyo chat está en pleno turno ahora",

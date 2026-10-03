@@ -16630,7 +16630,6 @@
       "member_gone": "{{shown}} を表示しています。「{{name}}」はメンバー一覧にありません。",
       "member_gone_roster": "「{{name}}」はメンバー一覧にありません。",
       "opening_thread": "会話を開いています…",
-      "resize_roster": "クルーメイト一覧のサイズを変更",
       "sort_filter_members": "クルーメイトの並べ替えと絞り込み",
       "filter_origin": "出自",
       "filter_status_working_description": "チャットが現在ターンの途中にあるクルーメイト",

@@ -31,9 +31,11 @@ const NOOP_HANDLE: HandleProps = {
   onLostPointerCapture: () => {},
 }
 
+// Only ChatSidebar remains a resizable column. The Crew Members roster moved
+// to a floating card (no draggable width), so MembersPage no longer mounts a
+// ResizeHandle — this pin covers the surfaces that still carry a column grip.
 const SURFACES: ReadonlyArray<readonly [name: string, file: string]> = [
   ['ChatSidebar', join(process.cwd(), 'src', 'pages', 'ChatSidebar.tsx')],
-  ['MembersPage', join(process.cwd(), 'src', 'pages', 'members', 'MembersPage.tsx')],
 ]
 
 describe('column resize grip — one component on both pages', () => {

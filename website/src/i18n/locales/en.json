@@ -7351,7 +7351,6 @@
       "member_gone": "Showing {{shown}} — “{{name}}” is no longer on the roster.",
       "member_gone_roster": "“{{name}}” is no longer on the roster.",
       "opening_thread": "Opening the conversation…",
-      "resize_roster": "Resize crewmate list",
       "sort_filter_members": "Sort and filter crewmates",
       "filter_origin": "Origin",
       "filter_status_working_description": "Crewmates whose chat is mid-turn right now",

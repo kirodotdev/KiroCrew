@@ -17347,7 +17347,6 @@
       "member_gone": "Показан {{shown}} — «{{name}}» больше нет в списке участников.",
       "member_gone_roster": "«{{name}}» больше нет в списке участников.",
       "opening_thread": "Открываем переписку…",
-      "resize_roster": "Изменить размер списка напарников",
       "sort_filter_members": "Сортировка и фильтр напарников",
       "filter_origin": "Источник",
       "filter_status_working_description": "Напарники, в чьём чате сейчас выполняется ход",
