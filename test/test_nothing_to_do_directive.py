@@ -1,5 +1,5 @@
 """``nothing_to_do``: the deliberate quiet end of a turn, and the structured
-terminal-turn signal it rides on (issue #16392, the structured half of #9324).
+terminal-turn signal it rides on.
 
 The turn-end contract: after its tool calls a turn ends with a closing text or
 with ``nothing_to_do`` — never by stopping bare after an ordinary tool. These
@@ -18,6 +18,8 @@ tests pin the three layers that make the quiet end real:
 from __future__ import annotations
 
 import asyncio
+import re
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -33,6 +35,7 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.dashboard import session_directive_apply as sda
 from kiro_crew.dashboard.chat_turn.directives import _DIRECTIVE_NOT_APPLIED_OUTCOMES
+from kiro_crew.dashboard.chat_utils import EMPTY_TURN_NOTICE_KIND
 from kiro_crew.mcp_tools import control
 from kiro_crew.messaging import TransportCapabilities, TurnDriver
 from kiro_crew.messaging.renderer import Renderer
@@ -81,6 +84,34 @@ class TestNothingToDoTool:
         assert set(_DIRECTIVE_NOT_APPLIED_OUTCOMES) == set(session_directive.DIRECTIVE_TOOLS)
 
 
+# ── the frontend mirror ──────────────────────────────────────────────────────
+
+
+class TestFrontendMirrorStaysInSync:
+    def test_quiet_end_identity_constants_match_the_selectors_mirror(self):
+        """``is_quiet_end_row`` and ``isQuietEndRow`` must name the same tool on
+        the same server, or a rename on one side silently brings the Resume
+        button back on every quiet turn. Read from the TypeScript source, so
+        the pin fails on the side that drifted."""
+        from kiro_crew.dashboard import state as st
+
+        src = (
+            Path(__file__).resolve().parents[1]
+            / "website"
+            / "src"
+            / "store"
+            / "chat"
+            / "selectors.ts"
+        ).read_text(encoding="utf-8")
+        tool = re.search(r"export const QUIET_END_TOOL = '([^']+)'", src)
+        server = re.search(r"export const QUIET_END_SERVER = '([^']+)'", src)
+        assert tool and server, "the selectors mirror lost its QUIET_END_* constants"
+        assert tool.group(1) == st.QUIET_END_TOOL
+        assert server.group(1) == st.QUIET_END_SERVER
+        assert "meta?.ends_turn === true" in src, "the mirror no longer requires ends_turn"
+        assert st.QUIET_END_SERVER == session_directive.CORE_MCP_SERVER
+
+
 # ── the applier: structured terminal signal ──────────────────────────────────
 
 
@@ -98,30 +129,69 @@ def _apply(kind, args, *, slot=None, state=None, session_key="chat-1", **kw):
 
 
 class TestApplierTerminalSignal:
-    def test_nothing_to_do_ends_the_turn_and_records_the_note(self):
-        out = _apply("nothing_to_do", {"note": "patrol: no new activity"}, slot=MagicMock())
+    def test_nothing_to_do_ends_a_wake_turn_and_records_the_note(self):
+        out = _apply(
+            "nothing_to_do",
+            {"note": "patrol: no new activity"},
+            slot=MagicMock(),
+            producer_is_self_wake=True,
+        )
         assert isinstance(out, sda.DirectiveOutcome)
         assert out.ends_turn is True
         assert out.text.startswith(sda.QUIET_END_OUTCOME_PREFIX)
         assert "patrol: no new activity" in out.text
 
     def test_nothing_to_do_without_a_note_is_just_the_quiet_line(self):
-        out = _apply("nothing_to_do", {}, slot=MagicMock())
+        out = _apply("nothing_to_do", {}, slot=MagicMock(), producer_is_self_wake=True)
         assert out.ends_turn is True
         assert out.text == sda.QUIET_END_OUTCOME_PREFIX
 
-    def test_nothing_to_do_needs_no_slot_or_surface(self):
-        """A channel turn (slot None) and a headless producer both get the quiet
-        end: it mutates nothing, so there is no effect to misdirect, and a cron
-        wake or patrol cycle with nothing to report is the designed caller."""
-        out = _apply("nothing_to_do", {}, slot=None, session_key="slack:C1:t1")
-        assert out.ends_turn is True
+    def test_nothing_to_do_ends_a_headless_turn(self):
+        """A cron, crew or app injection (neither user-facing nor a channel) is
+        a turn nobody is waiting on: the quiet end applies with no slot or
+        surface gate."""
         out = _apply(
             "nothing_to_do",
             {},
             slot=MagicMock(),
             session_key="cron:job-1",
             producer_is_user_facing=False,
+        )
+        assert out.ends_turn is True
+
+    def test_a_turn_a_person_opened_is_refused(self):
+        """THE gate: a person's message owes a reply. The refusal leaves
+        ``ends_turn`` False, so the runner's recovery, the Resume control and
+        the channel notice all run as they did before the directive existed."""
+        out = _apply(
+            "nothing_to_do",
+            {"note": "nothing"},
+            slot=MagicMock(),
+            producer_is_user_facing=True,
+        )
+        assert out.ends_turn is False
+        assert out.text == sda.QUIET_END_REFUSED_USER_TURN
+        assert out.text.startswith("Error:")
+
+    def test_a_channel_turn_is_refused_until_it_carries_wake_provenance(self):
+        """The channel driver cannot yet tell a human's message from a loop's
+        wake, so the conservative answer is the pre-existing notice, never
+        silence."""
+        out = _apply(
+            "nothing_to_do", {}, slot=None, session_key="slack:C1:t1", producer_is_channel=True
+        )
+        assert out.ends_turn is False
+        assert out.text == sda.QUIET_END_REFUSED_USER_TURN
+
+    def test_a_self_wake_on_a_user_facing_slot_is_a_wake(self):
+        """A member's loop firing on the member's own slot carries both marks;
+        the wake wins, because nobody typed this turn."""
+        out = _apply(
+            "nothing_to_do",
+            {},
+            slot=MagicMock(),
+            producer_is_user_facing=True,
+            producer_is_self_wake=True,
         )
         assert out.ends_turn is True
 
@@ -159,7 +229,14 @@ class TestApplierTerminalSignal:
 
     def test_string_entry_returns_the_text_only(self):
         text = asyncio.run(
-            sda.apply_session_directive(MagicMock(), MagicMock(), "chat-1", "nothing_to_do", {})
+            sda.apply_session_directive(
+                MagicMock(),
+                MagicMock(),
+                "chat-1",
+                "nothing_to_do",
+                {},
+                producer_is_self_wake=True,
+            )
         )
         assert text == sda.QUIET_END_OUTCOME_PREFIX
 
@@ -284,6 +361,27 @@ class TestChannelDriverHonoursTheSignal:
         assert driver.terminal_directive_applied is False
         assert driver.empty_turn_notice != ""
 
+    @pytest.mark.parametrize("stop_reason", ["refusal", "error:tool_stall", "error:other"])
+    def test_a_fault_terminal_after_the_quiet_end_keeps_its_notice(self, stop_reason):
+        """The quiet end silences only a CLEAN close. A refusal or an error
+        terminal after the directive is a fault the thread must still hear."""
+
+        async def _consumer(kind, args):
+            return True
+
+        marker = session_directive.encode("nothing_to_do", {}, "Quiet end requested.")
+        events = [
+            _core_call("nothing_to_do"),
+            _result(marker),
+            AcpEvent(kind=EVENT_COMPLETE, stop_reason=stop_reason),
+        ]
+        driver = TurnDriver(
+            _ScriptedProvider(events), _NullRenderer(), directive_consumer=_consumer
+        )
+        asyncio.run(driver.run("patrol"))
+        assert driver.terminal_directive_applied is True
+        assert driver.empty_turn_notice != ""
+
     def test_the_flag_resets_per_run(self):
         async def _consumer(kind, args):
             return True
@@ -316,9 +414,11 @@ def _stub_state(tmp_path):
     return state
 
 
-async def _drive_turn(state, slot, events, monkeypatch):
+async def _drive_turn(state, slot, events, monkeypatch, *, self_wake: bool = True):
     """Stream *events* through the REAL ``_run_chat`` with the REAL applier, and
-    record every recovery turn the runner queued."""
+    record every recovery turn the runner queued. ``self_wake`` drives the turn
+    as a monitor wake (the designed caller); False drives it as a person's
+    message."""
     from kiro_crew.dashboard import chat_runner
 
     async def _stream(_msg):
@@ -341,8 +441,20 @@ async def _drive_turn(state, slot, events, monkeypatch):
 
     monkeypatch.setattr(type(slot), "queue_insert", _record_queue)
     monkeypatch.setattr(chat_runner, "_start_next_queued_turn", AsyncMock(return_value=False))
+    # The opener row the HANDLER (not the runner) writes before a turn: a
+    # monitor wake's nudge row, or the person's own message. The interrupted
+    # scan reads it, so a transcript without one is not a turn at all.
+    slot.messages.append(
+        {"role": "nudge" if self_wake else "user", "content": "patrol", "ts": "t0", "cls": ""}
+    )
     try:
-        await chat_runner._run_chat(state, slot, "patrol", _directive_user_origin=True)
+        await chat_runner._run_chat(
+            state,
+            slot,
+            "patrol",
+            _directive_user_origin=not self_wake,
+            _directive_self_wake=self_wake,
+        )
     finally:
         tasks = list(state._background_tasks)
         for task in tasks:
@@ -355,7 +467,7 @@ async def _drive_turn(state, slot, events, monkeypatch):
 class TestDashboardRunnerHonoursTheSignal:
     @pytest.mark.asyncio
     async def test_quiet_end_skips_the_empty_response_ladder(self, tmp_path, monkeypatch):
-        """The acceptance of #16392: a tool-only turn that ends on
+        """The acceptance: a tool-only turn that ends on
         ``nothing_to_do`` gets no notice card, no synthetic continuation and no
         recovery budget spent — the quiet step on the tool card is the record."""
         state = _stub_state(tmp_path)
@@ -398,6 +510,100 @@ class TestDashboardRunnerHonoursTheSignal:
         quiet = [o for o in outputs if o.startswith(sda.QUIET_END_OUTCOME_PREFIX)]
         assert quiet and "patrol: no new activity" in quiet[0]
         assert not any(session_directive.SENTINEL in o for o in outputs)
+        # The applied row carries the structured flag the interrupted-turn scan
+        # reads, and the open client was told the same thing live.
+        rows = [
+            m
+            for m in slot.messages
+            if m.get("role") == "tool" and (m.get("meta") or {}).get("tool_name") == "nothing_to_do"
+        ]
+        assert rows and all(m["meta"].get("ends_turn") is True for m in rows)
+        patches = [
+            c.args[1]
+            for c in state.broadcast_ws.call_args_list
+            if c.args
+            and c.args[0] == "chat_message_update"
+            and c.args[1].get("meta") == {"ends_turn": True}
+        ]
+        assert patches, "no live ends_turn patch for the quiet-end row"
+        from kiro_crew.dashboard.state import is_turn_interrupted
+
+        assert is_turn_interrupted(slot.messages) is False
+
+    @pytest.mark.asyncio
+    async def test_the_stamp_stays_on_this_turn_s_row(self, tmp_path, monkeypatch):
+        """A transcript-preserving reset can hand a later turn a tool_call_id an
+        earlier turn already used. The ``ends_turn`` stamp must land only on the
+        row THIS turn wrote: an older refused row with the same id must not be
+        rewritten into an applied terminal directive."""
+        state = _stub_state(tmp_path)
+        slot = state.get_or_create_slot("stamp-scope")
+        slot._titled = True
+        stale = {
+            "role": "tool",
+            "ts": "t-old",
+            "cls": "msg msg-tool",
+            "content": "🔧 @kirocrew-core/nothing_to_do",
+            "meta": {
+                "tool_call_id": "tc-quiet",
+                "tool_name": "nothing_to_do",
+                "mcp_server": "kirocrew-core",
+                "output": sda.QUIET_END_REFUSED_USER_TURN,
+            },
+        }
+        slot.messages.append({"role": "user", "content": "earlier", "ts": "t-u0", "cls": ""})
+        slot.messages.append(stale)
+        events = [
+            _core_call("nothing_to_do", "tc-quiet"),
+            _result(
+                session_directive.encode("nothing_to_do", {}, "Quiet end requested."), "tc-quiet"
+            ),
+            AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+        ]
+        await _drive_turn(state, slot, events, monkeypatch)
+        assert stale["meta"].get("ends_turn") is None, "the historical refused row was stamped"
+        fresh = [
+            m
+            for m in slot.messages
+            if m is not stale
+            and m.get("role") == "tool"
+            and (m.get("meta") or {}).get("tool_call_id") == "tc-quiet"
+        ]
+        assert fresh and all(m["meta"].get("ends_turn") is True for m in fresh)
+
+    @pytest.mark.asyncio
+    async def test_a_person_s_turn_cannot_end_quietly(self, tmp_path, monkeypatch):
+        """The blocking review point: on a turn a person opened, the applier
+        refuses, so the ladder runs, the row carries no ``ends_turn`` flag, and
+        the turn still reads as unanswered (Resume stays offered)."""
+        state = _stub_state(tmp_path)
+        slot = state.get_or_create_slot("person-turn")
+        slot._titled = True
+        events = [
+            _core_call("nothing_to_do", "tc-quiet"),
+            _result(
+                session_directive.encode("nothing_to_do", {}, "Quiet end requested."), "tc-quiet"
+            ),
+            AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+        ]
+        queue_calls = await _drive_turn(state, slot, events, monkeypatch, self_wake=False)
+        assert queue_calls, "a refused quiet end did not re-arm recovery"
+        assert slot._empty_response_retries > 0
+        rows = [
+            m
+            for m in slot.messages
+            if m.get("role") == "tool" and (m.get("meta") or {}).get("tool_name") == "nothing_to_do"
+        ]
+        assert rows and not any(m["meta"].get("ends_turn") for m in rows)
+        outputs = [
+            c.args[1].get("output", "")
+            for c in state.broadcast_ws.call_args_list
+            if c.args and c.args[0] == "tool_result"
+        ]
+        assert any(o.startswith(sda.QUIET_END_REFUSED_USER_TURN) for o in outputs)
+        from kiro_crew.dashboard.state import is_turn_interrupted
+
+        assert is_turn_interrupted(slot.messages) is True
 
     @pytest.mark.asyncio
     async def test_a_bare_tool_stop_still_gets_recovery(self, tmp_path, monkeypatch):
@@ -425,6 +631,13 @@ class TestDashboardRunnerHonoursTheSignal:
         queue_calls = await _drive_turn(state, slot, events, monkeypatch)
         assert queue_calls, "the bare tool stop was not recovered"
         assert slot._empty_response_retries > 0
+        # Every recovery card the ladder writes is tagged, so the Crewmate chat
+        # can drop it by the tag rather than by matching its words.
+        notices = [m for m in slot.messages if m.get("role") == "notice"]
+        assert notices, "the recovery rung wrote no card"
+        assert all(
+            (m.get("meta") or {}).get("kind") == EMPTY_TURN_NOTICE_KIND for m in notices
+        ), notices
 
     @pytest.mark.asyncio
     async def test_activity_after_the_quiet_end_is_a_logged_violation_not_a_notice(

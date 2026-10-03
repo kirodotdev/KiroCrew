@@ -420,8 +420,10 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                 "that found no change, a cron wake with nothing to report. It is "
                 "TERMINAL: write nothing and call nothing after it. Never use it to skip "
                 "answering a direct question, to end a turn the user is waiting on, or "
-                "when work is still unfinished. The optional note is recorded as a quiet "
-                "transcript step the user can inspect; it is not a message to them."
+                "when work is still unfinished — the host REFUSES it on a turn a person "
+                "opened (and on every messaging-channel turn), and the normal empty-reply "
+                "handling then runs. The optional note is recorded as a quiet transcript "
+                "step the user can inspect; it is not a message to them."
             ),
             "inputSchema": {
                 "type": "object",

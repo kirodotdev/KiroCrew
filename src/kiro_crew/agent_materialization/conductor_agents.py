@@ -141,6 +141,7 @@ _HISTORY_CORE_VERBS: frozenset[str] = frozenset(
         "@kirocrew-core/send_message",
         "@kirocrew-core/send_notification",
         "@kirocrew-core/ask_question",
+        "@kirocrew-core/nothing_to_do",
     }
 )
 # The dashboard verbs every conductor ships: the folder/session reads and creates,

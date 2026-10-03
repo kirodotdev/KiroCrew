@@ -2672,10 +2672,18 @@ that need the text alone. `nothing_to_do` exists for the turn-end contract the
 base prompt states: after its tool calls a turn ends with a closing text or with
 `nothing_to_do`, never by stopping bare after an ordinary tool — a bare stop
 keeps the recovery ladder, which is what makes the directive the only sanctioned
-silent exit. It takes no surface, slot or provenance gate (a cron wake or a
-patrol cycle with nothing to report is its designed caller, and it mutates
-nothing a wrong identity could misdirect); isolation from a sub-agent is the
-same structural isolation every directive has.
+silent exit. Its ONE gate is who opened the turn: it applies on a monitor wake
+(`producer_is_self_wake`) or a headless producer (cron, crew runtime, app or
+task-runner injection), and is REFUSED (`QUIET_END_REFUSED_USER_TURN`,
+`ends_turn` False) on a turn a person opened — a user-facing dashboard turn or
+any channel turn, since the channel driver cannot yet tell a human's message
+from a loop's wake. The refusal is what keeps a model misfire a visible failure:
+the ladder, the Resume control and the channel notice run exactly as before. No
+slot or surface gate otherwise (it mutates nothing a wrong identity could
+misdirect); isolation from a sub-agent is the same structural isolation every
+directive has. The runner stamps `meta.ends_turn = True` on the applied
+directive's tool row (persisted, and patched live over `chat_message_update`),
+which is the structured fact the interrupted-turn scan reads.
 
 The directive marker is model-visible, since it comes back as tool-result text,
 so the consumer defends against forgery by honoring a directive only when the

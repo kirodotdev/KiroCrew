@@ -57,6 +57,26 @@ describe('filterCrewmateChat', () => {
     for (const m of rows) expect(isCrewmateChatRow(m)).toBe(true)
   })
 
+  it("drops the runner's empty-response recovery cards by their tag, not their words", () => {
+    // `chat_runner` tags its continue / give-up / post-compaction cards with
+    // `meta.kind = "empty_turn"` (chat_utils.EMPTY_TURN_NOTICE_KIND). They are
+    // machinery talking about itself; an untagged notice still draws.
+    const tagged: ChatMessage = {
+      role: 'notice', cls: 'msg msg-info', ts: at('2026-09-22T06:00:05Z'),
+      content: 'ℹ️ The turn ended without a closing reply — continuing once from what already ran.',
+      meta: { kind: 'empty_turn' },
+    }
+    const untaggedSameWords: ChatMessage = { ...tagged, meta: undefined }
+    const otherNotice: ChatMessage = {
+      role: 'notice', cls: 'msg msg-info', ts: at('2026-09-22T06:00:06Z'),
+      content: '⚠️ Automation loop NOT armed: not allowed here.', meta: { kind: 'arm_refusal' },
+    }
+    expect(isCrewmateChatRow(tagged)).toBe(false)
+    expect(isCrewmateChatRow(untaggedSameWords)).toBe(true)
+    expect(isCrewmateChatRow(otherNotice)).toBe(true)
+    expect(filterCrewmateChat([tagged, otherNotice])).toEqual([otherNotice])
+  })
+
   it('an all-machinery transcript filters to nothing (so the empty hint can show)', () => {
     const rows: ChatMessage[] = [
       { role: 'nudge', content: '[auto-nudge cycle 1]', cls: '', ts: at('2026-09-22T04:00:00Z') },

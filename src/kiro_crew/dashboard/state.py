@@ -1132,6 +1132,43 @@ def chat_message_frame(note: dict, *, include_metadata: bool) -> dict[str, Any]:
     return frame
 
 
+#: The tool row a turn ends on when the agent called ``nothing_to_do``. Read from
+#: the row's persisted TRUSTED identity (``_tool_identity_fields``: the backend's
+#: ``_meta.kiro`` name and server), never from the row's title text, so a shell
+#: command printing the tool's name cannot close a turn.
+QUIET_END_TOOL = "nothing_to_do"
+QUIET_END_SERVER = "kirocrew-core"
+
+
+def is_quiet_end_row(m: dict) -> bool:
+    """True when *m* is the APPLIED ``nothing_to_do`` directive's tool row.
+
+    A quiet end is a FINISHED turn: the agent ran its checks, had nothing the
+    user needs to read, and said so through the directive rather than by
+    stopping bare. Without this the transcript tail is ``[user|nudge, tool…]``
+    -- shape-identical to a gateway that died mid-turn -- so the composer
+    would offer Resume and the sidebar would flag the session as interrupted
+    on every quiet patrol cycle.
+
+    Two structured facts, both required: the row's trusted identity, and the
+    ``meta.ends_turn`` flag the runner stamps only when the applier's
+    ``DirectiveOutcome.ends_turn`` was True. A REFUSED call (a person opened
+    the turn) carries the identity and no flag, so it stays an unanswered turn.
+
+    Mirrors ``isQuietEndRow`` in ``website/src/store/chat/selectors.ts``.
+    """
+    if m.get("role") != "tool":
+        return False
+    meta = m.get("meta")
+    if not isinstance(meta, dict):
+        return False
+    return (
+        meta.get("tool_name") == QUIET_END_TOOL
+        and meta.get("mcp_server") == QUIET_END_SERVER
+        and meta.get("ends_turn") is True
+    )
+
+
 def is_stop_event_row(m: dict) -> bool:
     """True when *m* is the card recorded because the user pressed Stop.
 
@@ -1249,6 +1286,11 @@ def is_turn_interrupted(messages: list[dict]) -> bool:
     """
     saw_trailing_error = False
     saw_compaction_result = False
+    # A tool row met AFTER the quiet end (later in time): the model broke the
+    # contract and kept working, so the quiet-end row is not the turn's last
+    # act and must not close it -- a gateway that died in that later work
+    # would otherwise hide behind it.
+    saw_later_tool = False
     for m in reversed(messages):
         role = m.get("role")
         meta = m.get("meta") or {}
@@ -1262,6 +1304,15 @@ def is_turn_interrupted(messages: list[dict]) -> bool:
         # first.
         if is_stop_event_row(m):
             return False
+        # A quiet end (``nothing_to_do``) is the turn's deliberate ending too:
+        # same reasoning as the Stop card, same position in the scan. Only the
+        # newest turn's row reaches here, for the same reason -- and only when
+        # it IS the turn's last tool row.
+        if is_quiet_end_row(m):
+            if not saw_later_tool:
+                return False
+        elif role == "tool":
+            saw_later_tool = True
         if is_system_notice(role, meta):
             # Remember a compaction RESULT row on the newest turn. Skipping the
             # row is still right in general (an auto-compaction notice inside

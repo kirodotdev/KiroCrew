@@ -103,11 +103,24 @@ export function isCrewmateSpeech(m: ChatMessage): boolean {
   return !isHiddenInvisibleAssistantRow(m) && !isSystemNoticeRow(m) && !isWorkflowCompletionMessage(m) && !isSubagentCompletionMessage(m)
 }
 
+/** The runner's own empty-response recovery cards ("ended without a closing
+ *  reply — continuing once", "send a message to continue"): the runner talking
+ *  about its machinery, tagged `meta.kind = "empty_turn"` by `chat_runner`
+ *  (`chat_utils.EMPTY_TURN_NOTICE_KIND`). A person reading a crewmate's chat
+ *  has nothing to do with them, so they are dropped by the tag, never by their
+ *  words. A `notice` row with any other tag (an automation arm refusal, say)
+ *  still draws: it names something the person may have to act on. */
+const EMPTY_TURN_NOTICE_KIND = 'empty_turn'
+function isEmptyTurnNotice(m: ChatMessage): boolean {
+  return m.role === 'notice' && (m.meta as { kind?: unknown } | undefined)?.kind === EMPTY_TURN_NOTICE_KIND
+}
+
 /** Whether a row is drawn in a crewmate's chat at all. */
 export function isCrewmateChatRow(m: ChatMessage): boolean {
   if (MACHINERY_ROLES.has(m.role)) return false
   if (m.role === 'assistant') return isCrewmateSpeech(m)
   if (m.role === 'system') return isStopCard(m)
+  if (isEmptyTurnNotice(m)) return false
   // A pending approval is the approval surface and stays; a RESOLVED one draws
   // nothing (its renderer returns null) and must not count as content — kept,
   // it would hide the quiet hint behind a blank chat. Same rule `isRunTransparent`

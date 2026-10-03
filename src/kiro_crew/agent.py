@@ -4922,7 +4922,9 @@ the charter, not the procedure.
 #: patrol loop's own lifecycle (``monitor_*``, ``autonudge_stop``, ``wait``),
 #: the conductor's OWN durable ledger, routing (``select_crew``), and
 #: reporting to the owner (``send_message``, ``send_notification``,
-#: ``ask_question``).
+#: ``ask_question``), and the quiet end of a patrol cycle with nothing to report
+#: (``nothing_to_do``, which mutates nothing and would otherwise prompt on every
+#: quiet wake -- a blocking prompt in place of the noise it removes).
 #: The work-ledger verbs the conductor may call without an approval prompt.
 #: Per tool rather than the whole server, because the worker half is mounted on the
 #: same server and a conductor has no reason to auto-approve a tool whose only
@@ -5010,6 +5012,7 @@ _CONDUCTOR_CORE_GRANTS: tuple[str, ...] = (
     "@kirocrew-core/send_message",
     "@kirocrew-core/send_notification",
     "@kirocrew-core/ask_question",
+    "@kirocrew-core/nothing_to_do",
 )
 
 
@@ -5145,8 +5148,9 @@ instruction with `monitor_update` so every later cycle honors it.
 #: subagents with no human in the loop. What is granted is reads
 #: (``resource_status``, ``list_sessions``, skills), the conductor's OWN
 #: patrol-loop lifecycle (``monitor_*``, ``autonudge_stop``, ``wait``), its
-#: OWN durable ledger, and reporting to the owner (``send_message``,
-#: ``send_notification``, ``ask_question``). ``spawn_run`` — the intervention
+#: OWN durable ledger, reporting to the owner (``send_message``,
+#: ``send_notification``, ``ask_question``), and the quiet end of a patrol
+#: cycle with nothing to report (``nothing_to_do``, which mutates nothing). ``spawn_run`` — the intervention
 #: ladder's read-only inspector — is deliberately NOT here: it starts agent
 #: work from ingested context, so like ``session_send``/``session_stop`` it
 #: stays mounted-but-gated and unattended runs get it from the operator's
@@ -5165,6 +5169,7 @@ _PIPELINE_CONDUCTOR_CORE_GRANTS: tuple[str, ...] = (
     "@kirocrew-core/send_message",
     "@kirocrew-core/send_notification",
     "@kirocrew-core/ask_question",
+    "@kirocrew-core/nothing_to_do",
 )
 
 

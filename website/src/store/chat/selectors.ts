@@ -197,10 +197,29 @@ const firstPythonToken = (content: string): string | undefined =>
  * so the rule needs BOTH halves, matching `is_turn_interrupted` in
  * `src/kiro_crew/dashboard/state.py`.
  */
+/**
+ * The tool row a turn ends on when the agent called `nothing_to_do`: a quiet
+ * end is a FINISHED turn, not an interruption. Read from the row's persisted
+ * trusted identity (`meta.tool_name` / `meta.mcp_server`, the backend's
+ * `_meta.kiro` fields), never from the row's title, so a shell command that
+ * prints the tool's name cannot close a turn. Mirrors `is_quiet_end_row` in
+ * `src/kiro_crew/dashboard/state.py`.
+ */
+export const QUIET_END_TOOL = 'nothing_to_do'
+export const QUIET_END_SERVER = 'kirocrew-core'
+export const isQuietEndRow = (m: ChatMessage): boolean => {
+  if (m.role !== 'tool') return false
+  const meta = m.meta as { tool_name?: unknown; mcp_server?: unknown; ends_turn?: unknown } | undefined
+  // `ends_turn` is stamped by the runner only when the applier ended the turn;
+  // a refused call carries the same identity and no flag.
+  return meta?.tool_name === QUIET_END_TOOL && meta?.mcp_server === QUIET_END_SERVER && meta?.ends_turn === true
+}
+
 export const selectTurnInterrupted = (state: RootState): boolean => {
   const msgs = state.chat.messages
   let sawTrailingError = false
   let sawCompactionResult = false
+  let sawLaterTool = false
   for (let i = msgs.length - 1; i >= 0; i--) {
     const m = msgs[i]
     // A deliberate Stop ENDS the turn; it does not interrupt it. This must be
@@ -215,6 +234,11 @@ export const selectTurnInterrupted = (state: RootState): boolean => {
     // card deeper in history is never scanned, because a later user/inject/
     // assistant row returns first.
     if (isStopEvent(m)) return false
+    // A quiet end (`nothing_to_do`) is the turn's deliberate ending too, when it
+    // is the turn's last tool row (a later tool row means the model kept working
+    // past it; mirrors `saw_later_tool` in state.py).
+    if (isQuietEndRow(m)) { if (!sawLaterTool) return false }
+    else if (m.role === 'tool') sawLaterTool = true
     if (m.role === 'error') { sawTrailingError = true; continue }
     // An inject row that DISPATCHED a turn (a queued continuation, a recovery,
     // a synthesis, a cron prompt) opens it exactly as a user row does, so one
@@ -303,9 +327,15 @@ export const selectTurnInterrupted = (state: RootState): boolean => {
  */
 export const selectTrailingSendUnconfirmed = (state: RootState): boolean => {
   const msgs = state.chat.messages
+  let sawLaterTool = false
   for (let i = msgs.length - 1; i >= 0; i--) {
     const m = msgs[i]
     if (isStopEvent(m)) return false
+    // A quiet end (`nothing_to_do`) is the turn's deliberate ending too, when it
+    // is the turn's last tool row (a later tool row means the model kept working
+    // past it; mirrors `saw_later_tool` in state.py).
+    if (isQuietEndRow(m)) { if (!sawLaterTool) return false }
+    else if (m.role === 'tool') sawLaterTool = true
     if (m.role === 'inject' && m.content && TURN_INJECT_KINDS.has((m.meta as { injectKind?: unknown } | undefined)?.injectKind)) return false
     if (m.role === 'nudge' && m.content) return false
     if (CONTINUE_SCAN_SKIP.has(m.role)) continue

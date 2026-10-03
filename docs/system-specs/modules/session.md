@@ -766,6 +766,36 @@ against sweep completeness, and are torn down at `close_all`.
   privacy-safe WARNING (`Turn-end contract violation`, counts and the directive
   kind only); it does not fail the turn and does not re-arm recovery, because
   re-arming would turn the quiet end the model asked for into a notice card.
+  **Who may end quietly.** The applier's one gate is who opened the turn: a
+  monitor wake (`_directive_self_wake`) or a headless producer (cron, crew, app,
+  task runner — `_directive_user_origin` False) may; a turn a person opened
+  (`_directive_user_origin` True, or any channel turn) is REFUSED
+  (`QUIET_END_REFUSED_USER_TURN`), so the ladder, Resume and the channel notice
+  run as before and a model that dodged a question fails VISIBLY, not silently.
+  A quiet end is also a FINISHED turn for the interrupted-turn scan: its tail
+  (`[nudge, tool…]`) is shape-identical to a gateway that died mid-turn, so
+  `state.is_turn_interrupted` and its mirror `selectTurnInterrupted` treat the
+  applied directive's tool row (`is_quiet_end_row` / `isQuietEndRow`) as a
+  terminator like the Stop card — otherwise every quiet patrol cycle would offer
+  Resume and flag the session as interrupted. Two structured facts, both
+  required: the row's persisted TRUSTED identity (`meta.tool_name` +
+  `meta.mcp_server`, never its title), and `meta.ends_turn = True`, which the
+  runner stamps only on the rows of a directive whose `DirectiveOutcome.ends_turn`
+  was True (persisted, and patched live over `chat_message_update`) — a refused
+  call carries the identity and no flag. And only when it is the turn's LAST
+  tool row: a tool row later than it means the model kept working past the
+  directive, and a gateway that died in that work must not hide behind it.
+  `test_nothing_to_do_directive.py` pins the two constants against the
+  selectors mirror. The Crewmate chat draws nothing for it: tool rows are
+  machinery there
+  (`crewmateBubbles.MACHINERY_ROLES`), so the quiet turn leaves that surface
+  exactly as it was. The ladder's own cards — the continue and give-up rungs
+  and the post-compaction resume — carry `meta.kind = "empty_turn"`
+  (`chat_utils.EMPTY_TURN_NOTICE_KIND`), and the Crewmate chat drops a `notice`
+  row by that tag (`crewmateBubbles.isCrewmateChatRow`), never by its words: a
+  person reading a crewmate has nothing to do with the runner's recovery, while
+  an untagged notice (an automation arm refusal) still draws because it names
+  something they may have to act on. The Sessions page keeps drawing them.
 
   **Turn-end diagnostics.** The branch emits ONE privacy-safe WARNING per empty
   verdict, after the rung is chosen, naming a closed `cause` and `rung` plus

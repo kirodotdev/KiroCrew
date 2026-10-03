@@ -3743,6 +3743,12 @@ FALSE_TOOL_BLOCKER_REPLAY_KIND = "false_tool_blocker_replay"
 #: Row-level kind for the `error` notice appended when a recovery has ALREADY
 #: been queued, so the frontend can tell a pending retry from a terminal failure.
 TRANSIENT_RETRY_KIND = "transient_retry"
+#: ``meta.kind`` of the runner's empty-response recovery notice cards (the
+#: continue and give-up rungs of the ladder, and the post-compaction resume).
+#: They are the runner talking about its own machinery, so a surface that draws
+#: only what a person must act on -- the Crewmate chat -- drops them by this
+#: tag (``crewmateBubbles.isCrewmateChatRow``), never by matching their words.
+EMPTY_TURN_NOTICE_KIND = "empty_turn"
 
 #: ``meta["notice"]`` on the three `error` rows the transient-5xx ladder appends
 #: (chat_runner ``acp_error_is_transient`` branches). The row's CONTENT is the

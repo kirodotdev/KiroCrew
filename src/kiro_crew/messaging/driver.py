@@ -166,6 +166,13 @@ _ERROR_STOP_LABELS: dict[str, str] = {
 _ERROR_STOP_GENERIC_LABEL = "backend error"
 
 
+def _is_fault_terminal(stop_reason: str) -> bool:
+    """A terminal the user must hear about even after a quiet directive: the
+    refusal, and the ``error:`` family the ACP layer synthesises. A clean
+    ``end_turn`` (or an absent reason) is not one."""
+    return stop_reason == STOP_REASON_REFUSAL or stop_reason.startswith(_ERROR_STOP_PREFIX)
+
+
 def empty_turn_notice(
     accumulated: str,
     *,
@@ -1018,11 +1025,14 @@ class TurnDriver:
                 pending_steer_events = 0
                 # After the flushes: ``accumulated`` is final only now, and the
                 # verdict must read the same text the renderer was handed. A
-                # turn that ended on a terminal directive owes no verdict: the
-                # quiet end IS the reply.
+                # turn that ended on a terminal directive AND closed cleanly
+                # owes no verdict: the quiet end IS the reply. A refusal or an
+                # ``error:``-family terminal after the directive is a fault the
+                # user still has to hear about, so those keep their notice.
                 self.empty_turn_notice = (
                     ""
                     if self.terminal_directive_applied
+                    and not _is_fault_terminal(event.stop_reason or "")
                     else empty_turn_notice(
                         accumulated,
                         completed=True,

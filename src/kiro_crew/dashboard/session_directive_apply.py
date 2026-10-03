@@ -67,7 +67,7 @@ from kiro_crew.session_surface import has_dashboard_surface
 logger = logging.getLogger(__name__)
 
 QUESTION_CARD_SHOWN_PREFIX = "Question card shown in this session."
-QUIET_END_OUTCOME_PREFIX = "Turn ended quietly — nothing to report."
+QUIET_END_OUTCOME_PREFIX = "Nothing new to report."
 
 # The directives whose SUCCESSFUL application is the turn's intended terminal
 # output: the tool tells the model to end without a closing reply, so the
@@ -463,7 +463,12 @@ async def apply_session_directive_outcome(
         elif kind == "ask_question":
             result = await _ask_question(state, slot, args)
         elif kind == "nothing_to_do":
-            result = _nothing_to_do(args)
+            result = _nothing_to_do(
+                args,
+                producer_is_user_facing=producer_is_user_facing,
+                producer_is_self_wake=producer_is_self_wake,
+                producer_is_channel=producer_is_channel,
+            )
         else:
             _audit(session_key, kind, "error")
             return DirectiveOutcome(f"Error: unknown session directive {kind!r}.")
@@ -1995,18 +2000,44 @@ async def _ask_question(state: Any, slot: Any, args: dict[str, Any]) -> Directiv
     )
 
 
-def _nothing_to_do(args: dict[str, Any]) -> DirectiveOutcome:
+QUIET_END_REFUSED_USER_TURN = (
+    "Error: nothing_to_do was not applied — a person opened this turn, so it "
+    "owes them a reply. Answer in text (even one line) instead."
+)
+
+
+def _nothing_to_do(
+    args: dict[str, Any],
+    *,
+    producer_is_user_facing: bool,
+    producer_is_self_wake: bool,
+    producer_is_channel: bool,
+) -> DirectiveOutcome:
     """Record the deliberate quiet end of this turn.
 
-    No slot, surface or provenance gate: a quiet end is meaningful on every
-    surface and from every producer (a cron wake or a patrol cycle with nothing
-    to report is the designed caller), and it mutates nothing, so there is no
-    effect a wrong identity could misdirect. The outcome text is what the
+    THE ONE GATE IS WHO OPENED THE TURN. A quiet end is for a turn nobody is
+    waiting on: a monitor wake (``producer_is_self_wake``) or a headless
+    producer (a cron, a crew runtime, an app or task-runner injection — neither
+    user-facing nor a channel). A turn a PERSON opened owes that person a reply,
+    and the contract says so; enforcing it here rather than in prompt text is
+    what keeps a model misfire a VISIBLE failure: the refusal leaves
+    ``ends_turn`` False, so the runner's empty-response ladder, the Resume
+    control and the channel's empty-turn notice all run exactly as they did
+    before this directive existed. A channel turn is refused too, because the
+    channel driver cannot yet tell a human's message from a loop's wake — the
+    conservative answer until it carries that provenance; the patrol then gets
+    the pre-existing "ended without a closing reply" notice, not silence.
+
+    No slot or surface gate otherwise: the quiet end mutates nothing, so there
+    is no effect a wrong identity could misdirect. The outcome text is what the
     transcript's tool step shows — the low-key, inspectable record that the turn
     ended on purpose — and the ``note`` the model supplied rides on it. It is
     not a chat message: the consumer renders no assistant bubble, no notice
     card and no continuation for a turn that ends here.
     """
+    opened_by_person = producer_is_user_facing or producer_is_channel
+    if opened_by_person and not producer_is_self_wake:
+        raise _DirectiveDenied(QUIET_END_REFUSED_USER_TURN)
     note = str(args.get("note") or "").strip()
     text = QUIET_END_OUTCOME_PREFIX if not note else f"{QUIET_END_OUTCOME_PREFIX} {note}"
     return DirectiveOutcome(text, ends_turn=True)
