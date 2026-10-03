@@ -22,7 +22,7 @@
  * The three call sites are held by `eslint-rules/approval-one-shot-decision.js`,
  * whose own violating-fixture tests are in `approvalOneShotDecisionRule.test.ts`:
  * a lint rule is the only layer that sees a trust verb BEFORE the mapping turns
- * it into `approve`, which is upstream of both the typed `api.resolveApproval`
+ * it into `approve`, which is upstream of both the typed `api.decideApproval`
  * client and the backend's 400.
  *
  * Why a source contract for the ChatInput binding: the trust arm is unreachable
@@ -84,7 +84,7 @@ describe('ChatInput binding to the shared mapping (#5486 / #8193)', () => {
     // semantics — re-verify this contract against it before adding one.
     const calls = composerSources.flatMap(src => src.match(/(?<!function\s)toApiDecision\(/g) ?? [])
     expect(calls).toHaveLength(1)
-    expect(source).toContain('api.resolveApproval(approvalId, toApiDecision(decision))')
+    expect(source).toContain('api.decideApproval(approvalTarget, toApiDecision(decision))')
   })
 
   it('does not re-declare the mapping locally', () => {

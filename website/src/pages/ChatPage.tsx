@@ -12,7 +12,6 @@ import { SETTINGS_DEFAULT_MODEL_ID } from '../hooks/useSettingHighlight'
 import { settingsPath } from '../components/settingsPath'
 import { isTouchDevice } from '../utils/isTouchDevice'
 import { agentOrDefaultLabel } from '../utils/agentLabel'
-import { toApiDecision } from '../utils/approvalDecision'
 import { isHiddenInvisibleAssistantRow } from '../utils/invisibleText'
 import { mergeRenderers, resolveRenderer, type MessageRenderer, type MessageRenderContext } from '../app-sdk/messageRenderers'
 import { createTranscriptRenderers } from './chat/transcriptRenderers'
@@ -23,7 +22,7 @@ import { queuedSendStash } from '../hooks/useQueuedMessageActions'
 import { useChatPopouts } from '../hooks/useChatPopouts'
 import {
   switchSlot, createSlot, deleteSlot, loadOlderMessages, abortActiveOlderFetch, isSupersededPagingRejection, appendMessage, appendSlotMessage, endLocalTurn, forkSlot,
-  setSlotRunning, startLocalTurn, syncSlotRunningFromServer, setPendingInput, setAgentSwitchNotice, resolveByApprovalId, selectComposerBusy, selectSendConfirmed,
+  setSlotRunning, startLocalTurn, syncSlotRunningFromServer, setPendingInput, setAgentSwitchNotice, selectComposerBusy, selectSendConfirmed,
   setVoiceAudio,
   toggleActivity, openActivityPanel, openActivityToTab,
   selectSubagent,
@@ -38,13 +37,14 @@ import { confirmedDelivered } from '../utils/sendDelivery'
 import { sendTurn } from '../chat-core/transport/sendTurn'
 import { applySteerReceipt } from '../chat-core/transport/steerReceipt'
 import { useSelectionQuoteAsk } from '../chat-core/composer/selectionActions'
-import { addNotification, removeNotificationByTs } from '../store/notificationsSlice'
+import { addNotification } from '../store/notificationsSlice'
 import { useDeleteTerminalSession } from '../components/CliPanel'
 import { interceptSlashCommand, isInterceptedSlashCommand } from './chat/ChatInput'
 import { updateSlot, slotIsRemoteBound } from '../store/dashboardSlice'
 import { inFlightSlotSwitchOutcome, performSlotSwitch, stagedSlotSwitchTarget } from '../lib/slotSwitch'
 import { performAgentSlotSwitch } from '../lib/agentSwitch'
 import { api } from '../api/client'
+import { decidePermissionRow } from '../lib/decidePermissionRow'
 import { resolveAskAfterSend } from '../lib/resolveAskAfterSend'
 import type { PlanStepInput } from '../api/client'
 import { useProvider } from '../providers'
@@ -2425,16 +2425,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   useAutoSendIntake({ connected, send, autoSendTick, autoSendRef, appLaunchSendRef, widgetPrefillRef, setInput, raisePrefillHint })
 
   const approve = useCallback(async (action: string) => { if (activeSlot) await api.approveChatSlot(activeSlot, action) }, [activeSlot])
-  // Approvals dismissed through the CollapsibleToolGroup mounts resolve via the
-  // ONE-SHOT `api.resolveApproval` endpoint, which has no trust verb. The shared
-  // `toApiDecision` (utils/approvalDecision.ts) is fail-closed and is the only
-  // place that mapping is spelled — a Trust affordance on this path would claim
-  // a standing grant the backend never records (#5400, #5434).
-  const dismissApproval = useCallback((aid: string, decision?: string) => {
-    dispatch(resolveByApprovalId({ id: aid, slot: activeSlot || undefined, decision }))
-    const n = store.getState().notifications.items.find(x => x.approval_id === aid)
-    if (n) dispatch(removeNotificationByTs(n.ts))
-  }, [activeSlot, dispatch])
+  // The collapsed tool groups decide their pending row bound to the request
+  // it names (see lib/decidePermissionRow).
+  const decideRow = useCallback((meta: Record<string, unknown> | undefined, action: string) =>
+    dispatch(decidePermissionRow(meta, activeSlot, action)), [activeSlot, dispatch])
   const switchAgent = useCallback(async (agentName: string, kind?: 'member' | 'template') => {
     if (!activeSlot) {
       setPendingAgent(agentName, kind)
@@ -4354,16 +4348,16 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           permissionMeta={unresolvedPerms.at(-1)?.meta as Record<string, unknown> | undefined}
           pendingPermCount={unresolvedPerms.length}
           onApprove={(() => {
-            const aid = unresolvedPerms.at(-1)?.meta?.approval_id as string | undefined
-            if (!aid) return approve
-            return async (action: string) => { await api.resolveApproval(aid, toApiDecision(action)); dismissApproval(aid) }
+            const meta = unresolvedPerms.at(-1)?.meta as Record<string, unknown> | undefined
+            if (!meta?.approval_id) return approve
+            return (action: string) => decideRow(meta, action)
           })()}
           onViewActivity={toggleAct}
           activityOpen={activityOpen}
         >{it.msgs.map((m, j) => <div key={msgIdentityKey(m, stableMsgKey)}>{renderMessage(it.startIdx + j, m)}</div>)}</CollapsibleToolGroup>)
       })() : renderMessage(it.idx, it.msg)}
     </div>
-  }, [stableMsgKey, renderMessage, approve, dismissApproval, toggleAct, activityOpen])
+  }, [stableMsgKey, renderMessage, approve, decideRow, toggleAct, activityOpen])
 
   // ---- Measure-farm wiring ----
   // The farm's renderItem must reproduce the transcript row wrappers EXACTLY
@@ -5917,12 +5911,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   permissionMeta={unresolvedGroupPerms.at(-1)?.meta as Record<string, unknown> | undefined}
                   pendingPermCount={unresolvedGroupPerms.length}
                   onApprove={(() => {
-                    const aid = unresolvedGroupPerms.at(-1)?.meta?.approval_id as string | undefined
-                    if (!aid) return approve
-                    return async (action: string) => {
-                      await api.resolveApproval(aid, toApiDecision(action))
-                      dismissApproval(aid)
-                    }
+                    const meta = unresolvedGroupPerms.at(-1)?.meta as Record<string, unknown> | undefined
+                    if (!meta?.approval_id) return approve
+                    return (action: string) => decideRow(meta, action)
                   })()}
                   onViewActivity={toggleAct}
                   activityOpen={activityOpen}

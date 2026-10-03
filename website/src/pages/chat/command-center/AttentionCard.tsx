@@ -10,9 +10,11 @@ import { sendTurn } from '../../../chat-core/transport/sendTurn'
 import { Btn } from '../../../components/ui'
 import QuestionCard from '../../../components/QuestionCard'
 import ErrorNotice from '../../../components/ErrorNotice'
+import { refusedNotice } from '../../../components/notifications/notifMeta'
 import { APPROVAL_MODE_KEYS, approvalTitle, questionText, type AttentionItem } from './model'
 import { toApiDecision } from '../../../utils/approvalDecision'
-import { ApiError, isTerminalApprovalRefusal } from '../../../api/apiError'
+import { coordinatorTarget, nativeTarget } from '../../../types/approvalTarget'
+import { ApiError, isTerminalApprovalRefusal, noPendingApprovalError } from '../../../api/apiError'
 
 /** Kept mounted while other inbox items are selected, preserving each answer draft. */
 export default function AttentionCard({ item, title, context, onDraftChange, onOpenSession }: {
@@ -46,8 +48,12 @@ export default function AttentionCard({ item, title, context, onDraftChange, onO
     retry: false,
     mutationFn: async (action: { answers: Record<string, string> } | { approval: 'approve' | 'reject_once' }) => {
       if ('approval' in action && item.approval) {
-        if (item.native) await api.approveChatSlot(item.slot, action.approval === 'approve' ? 'approved' : 'rejected_once', { request_id: item.approval.id, request_mid: item.approval.request_mid || '', origin: 'native' })
-        else await api.resolveApproval(item.approval.id, toApiDecision(action.approval === 'approve' ? 'approved' : 'rejected_once'), { origin: 'coordinator', slot: item.approval.slot || '', instance: item.approval.instance || '' })
+        // Bound to the one request the card shows (types/approvalTarget).
+        const target = item.native
+          ? nativeTarget(item.approval.id, item.slot, item.approval.request_mid)
+          : coordinatorTarget(item.approval.id, item.approval.slot || '', item.approval.instance)
+        if (!target) throw noPendingApprovalError()
+        await api.decideApproval(target, toApiDecision(action.approval === 'approve' ? 'approved' : 'rejected_once'))
       } else if ('answers' in action && item.question) {
         const q = item.question
         if (q.ask_id) {
@@ -108,7 +114,7 @@ export default function AttentionCard({ item, title, context, onDraftChange, onO
     {item.approval && item.approvalMode === 'normal' && <p className="text-[12px] text-muted">{t('commandCenter.normal_help')}</p>}
     {(item.approval || item.question) && <p className="text-[12px] text-muted">{t('commandCenter.explicit_input')}</p>}
     {/* No hand-off: QuestionCard holds this session's unsent answer draft. */}
-    <ErrorNotice message={expired ? t('components.approvalCard.approval_no_longer_pending') : mutation.error?.message} />
+    <ErrorNotice message={expired ? refusedNotice() : mutation.error?.message} />
     {delivered ? <p role="status" className="text-sm text-ok flex items-center gap-2"><Check size={15} />{t('commandCenter.recorded')}</p>
       : item.question ? <QuestionCard questions={followUpQuestions || item.question.questions} submitLabel={t('commandCenter.send_answer')} busy={mutation.isPending} onDraftChange={onDraftChange} onSubmit={answers => submit({ answers })} />
       : item.approval ? <>

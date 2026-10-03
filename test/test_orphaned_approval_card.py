@@ -43,6 +43,10 @@ class _FakeSlot:
         )
         return fut
 
+    def approval_instance(self, request_id: str, message: dict | None = None) -> str | None:
+        """No row here carries a mid, so no request reports one."""
+        return None
+
     def resolved_for(self, request_id: str) -> str | None:
         for msg in self.messages:
             if msg.get("role") != "permission":

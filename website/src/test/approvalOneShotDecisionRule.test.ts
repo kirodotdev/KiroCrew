@@ -63,6 +63,17 @@ describe('approval-one-shot/no-inline-one-shot-decision', () => {
     expect(hits[0].severity).toBe(2)
   })
 
+  it('holds the target-bound decideApproval to the same rule', async () => {
+    // Every dashboard decide now goes through it, so it must not reopen the class.
+    const hits = ruleMessages(await lint(`
+      declare const api: { decideApproval: (target: { id: string }, action: 'approve' | 'reject' | 'reject_once') => Promise<unknown> }
+      export async function go(target: { id: string }, action: string) {
+        await api.decideApproval(target, action === 'rejected' ? 'reject' : 'approve')
+      }
+    `))
+    expect(hits).toHaveLength(1)
+  })
+
   it('flags the inverted spelling too — the rule is about the shape, not the operand order', async () => {
     const hits = ruleMessages(await lint(`
       declare const api: { resolveApproval: (id: string, action: 'approve' | 'reject' | 'reject_once') => Promise<unknown> }

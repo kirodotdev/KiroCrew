@@ -240,7 +240,8 @@
       "stream_ended_without_completion": "स्ट्रीम पूरी होने से पहले समाप्त हो गई",
       "token_not_accepted": "यह साइन-इन URL स्वीकार नहीं हुआ। kirocrew token फिर चलाऐँ और नया साइन-इन URL नीचे पेस्ट करें।",
       "token_exchange_unreachable": "गेटवे तक नहीं पहुँच सके, इसलिए साइन-इन URL जाँचा नहीं गया। पुष्टि करें कि वह चल रहा है, फिर दोबारा Enter दबाएँ।",
-      "unexpected_server_response": "सर्वर से अनपेक्षित प्रतिक्रिया"
+      "unexpected_server_response": "सर्वर से अनपेक्षित प्रतिक्रिया",
+      "no_pending_approval": "यह अनुमोदन अब लंबित नहीं है।"
     }
   },
   "app": {
@@ -7557,7 +7558,9 @@
         "search": "खोजें…",
         "show_less": "कम दिखाएँ",
         "show_muted_count": "म्यूट दिखाओ ({{count}})",
-        "try_a_different_search": "कोई दूसरी खोज आज़माएँ"
+        "try_a_different_search": "कोई दूसरी खोज आज़माएँ",
+        "approving": "स्वीकृत किया जा रहा है…",
+        "rejecting": "अस्वीकार किया जा रहा है…"
       },
       "notificationPermissionHint": {
         "get_alerted_when_you_re_away": "दूर रहने पर भी अलर्ट पाओ",
@@ -9456,7 +9459,6 @@
       "cron": "Cron{{detail}}",
       "cron_running": "Cron · चल रहा है",
       "deny": "अस्वीकार करें",
-      "failed": "विफल",
       "idle": "निष्क्रिय",
       "kiro_is_working": "kiro काम कर रहा है…",
       "loading_thread": "थ्रेड लोड हो रहा है…",

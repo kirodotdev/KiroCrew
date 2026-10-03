@@ -83,8 +83,18 @@ export default function ApprovalCard({ title, toolInput, showButtons, showTrust 
   // a failed Reject with Enter would silently APPROVE the command instead.
   // Positional: Approve renders first and Reject last; a trust attempt lands
   // on the dropdown trigger between them.
+  // A terminal refusal keeps the buttons away, so there is no button to return
+  // to: focus the notice that replaced them instead, so a keyboard user carries
+  // on from the card rather than from the top of the page. Only when focus was
+  // actually lost; a reader who has moved on keeps their place.
+  const failureRef = useRef<HTMLDivElement | null>(null)
   useEffect(() => {
-    if (!failure || failure.terminal) return
+    if (!failure) return
+    if (failure.terminal) {
+      const active = document.activeElement
+      if (!active || active === document.body) failureRef.current?.focus()
+      return
+    }
     const buttons = Array.from(buttonsRef.current?.querySelectorAll('button') ?? [])
     if (!buttons.length) return
     const target = failure.attempted === 'approved' ? buttons[0]
@@ -134,11 +144,13 @@ export default function ApprovalCard({ title, toolInput, showButtons, showTrust 
       {failure !== null && (
         // The card holds no draft: the pending buttons are not user input and the
         // failed decision is retryable, so the hand-off loses nothing.
-        <ErrorNotice variant="inline" className="mt-1.5" askAgent testId="approval-card-failure" message={failure.terminal
-          ? i18nT('components.approvalCard.approval_no_longer_pending')
-          : failure.message
-            ? i18nT('components.approvalCard.decision_not_recorded_error', { error: failure.message })
-            : i18nT('components.approvalCard.decision_failed')} />
+        <div ref={failureRef} tabIndex={-1} className="rounded-md outline-none focus-visible:ring-2 focus-visible:ring-accent">
+          <ErrorNotice variant="inline" className="mt-1.5" askAgent testId="approval-card-failure" message={failure.terminal
+            ? i18nT('components.approvalCard.approval_no_longer_pending')
+            : failure.message
+              ? i18nT('components.approvalCard.decision_not_recorded_error', { error: failure.message })
+              : i18nT('components.approvalCard.decision_failed')} />
+        </div>
       )}
       {decided && (
         <div className="mt-1.5 text-[13px] text-muted">

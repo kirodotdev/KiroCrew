@@ -3,13 +3,15 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { Bot, ScrollText, X, Lock, CheckCircle, AlertCircle, Loader as LoaderIcon, Ban, Wrench, MessageCircleQuestionMark, Workflow, BookmarkPlus, Component, GitPullRequest, CircleDot, Square, RotateCcw, Clock, Search, Link as LinkIcon, ExternalLink } from 'lucide-react'
 import { api } from '../../api/client'
-import { isTerminalApprovalRefusal } from '../../api/apiError'
+import { isTerminalApprovalRefusal, noPendingApprovalError } from '../../api/apiError'
 import { LogViewer } from '../LogsPage'
 import Clickable from '../../components/Clickable'
 import ErrorNotice from '../../components/ErrorNotice'
 import type { SubagentActivity, ToolActivity, Artifact } from '../../types'
 import { countDiffStats } from '../../utils/diffLineCounts'
 import { toApiDecision } from '../../utils/approvalDecision'
+import { approvalGoneKey } from '../../types/approvalTarget'
+import { refusedNotice } from '../../components/notifications/notifMeta'
 import type { ExtractedLink } from '../../utils/extractChatLinks'
 import { dedupResourceLinks, resourceKey } from '../../utils/extractChatLinks'
 import type { PullRequestLink } from '../../utils/pullRequestLinks'
@@ -132,8 +134,9 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
   // Redux flags only roll back the busy state, which left a refused decision
   // indistinguishable from one that never happened.
   const [actionError, setActionError] = useState<string | null>(null)
-  // WHICH approval is gone, not merely that one was: the id scopes the
-  // withdrawal, so a later live approval here is never suppressed by it.
+  // WHICH approval is gone, not merely that one was: keyed by the request's
+  // target (`approvalGoneKey`), so a later live request here, even one that
+  // reuses the recurring id, is never suppressed by it.
   const [goneFor, setGoneFor] = useState<string | null>(null)
   // 1-click transcript: chip selection expands the card, scrolls it into
   // view, and (via DiskLoader autoLoad) fetches the output — then clears the
@@ -149,8 +152,15 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
     e.stopPropagation()
     if (!a.approval_id) return
     setActionError(null)
+    // Bound to the request the spawn was raised for (types/approvalTarget).
+    const target = a.approval_target
+    if (!target) {
+      setGoneFor(approvalGoneKey(a.approval_id, null))
+      setActionError(refusedNotice())
+      return
+    }
     dispatch(markSubagentApproving({ id: a.id, approving: true }))
-    api.resolveApproval(a.approval_id, action).then(() => {
+    api.decideApproval(target, action).then(() => {
       // See the matching note in ChatInput's resolveOneSpawn: the backend's
       // `approval_resolved` frame carries no slot, so the WS handler that would
       // terminate the card is skipped. An approved spawn converges on its own
@@ -162,15 +172,15 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
     }).catch((e: unknown) => {
       dispatch(markSubagentApproving({ id: a.id, approving: false }))
       const gone = isTerminalApprovalRefusal(e)
-      setGoneFor(gone ? a.approval_id ?? null : null)
+      setGoneFor(gone ? approvalGoneKey(a.approval_id, target) : null)
       const reason = e instanceof Error ? e.message : ''
       setActionError(gone
-        ? i18nT('components.approvalCard.approval_no_longer_pending')
+        ? refusedNotice()
         : reason
           ? i18nT('components.approvalCard.decision_not_recorded_error', { error: reason })
           : i18nT('components.approvalCard.decision_failed'))
     })
-  }, [a.approval_id, a.id, slot, dispatch])
+  }, [a.approval_id, a.approval_target, a.id, slot, dispatch])
 
   // Live elapsed timer for running subagents
   const [elapsed, setElapsed] = useState(0)
@@ -322,7 +332,7 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
         </div>
       )}
       {/* Approval buttons for pending */}
-      {isPending && !a.approving && goneFor !== a.approval_id && (
+      {isPending && !a.approving && goneFor !== approvalGoneKey(a.approval_id, a.approval_target) && (
         <div className="px-3 pb-2 flex gap-1.5">
           <button className="px-2.5 py-1 rounded-md border border-border bg-transparent text-muted text-[12px] cursor-pointer hover:text-text hover:border-border-strong hover:bg-bg-hover transition-all" onClick={e => onApprove(e, 'approve')}><CheckCircle className="lucide-inline" /> {i18nT('pages.chat.activityViewer.approve')}</button>
           <button className="px-2.5 py-1 rounded-md border border-border bg-transparent text-muted text-[12px] cursor-pointer hover:text-danger hover:border-danger transition-all" onClick={e => onApprove(e, 'reject')}><Ban className="lucide-inline" /> {i18nT('pages.chat.activityViewer.reject')}</button>
@@ -377,30 +387,34 @@ function ApprovalEntry({ entry }: { entry: ToolActivity }) {
   const isResolved = resolved || !!localDecision
   const [acting, setActing] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
-  // WHICH approval is gone, not merely that one was: the id scopes the
-  // withdrawal, so a later live approval here is never suppressed by it.
+  // WHICH approval is gone, not merely that one was: keyed by the request's
+  // target (`approvalGoneKey`), so a later live request here, even one that
+  // reuses the recurring id, is never suppressed by it.
   const [goneFor, setGoneFor] = useState<string | null>(null)
   const onAction = useCallback(async (action: string) => {
     setActing(true)
     setActionError(null)
     setLocalDecision(action)
     try {
-      await api.resolveApproval(entry.approval_id!, toApiDecision(action))
+      // Bound to the request the entry was raised for (types/approvalTarget);
+      // an entry that names none has nothing live to decide.
+      if (!entry.approval_target) throw noPendingApprovalError()
+      await api.decideApproval(entry.approval_target, toApiDecision(action))
     } catch (e: unknown) {
       setLocalDecision(null); setActing(false)
       const gone = isTerminalApprovalRefusal(e)
-      setGoneFor(gone ? entry.approval_id ?? null : null)
+      setGoneFor(gone ? approvalGoneKey(entry.approval_id, entry.approval_target) : null)
       const reason = e instanceof Error ? e.message : ''
       setActionError(gone
-        ? i18nT('components.approvalCard.approval_no_longer_pending')
+        ? refusedNotice()
         : reason
           ? i18nT('components.approvalCard.decision_not_recorded_error', { error: reason })
           : i18nT('components.approvalCard.decision_failed'))
     }
-  }, [entry.approval_id])
+  }, [entry.approval_id, entry.approval_target])
 
   // This card mounts only for non-chat approvals (see the `isSpawnApproval`
-  // filter at the render site), which resolve through `api.resolveApproval` —
+  // filter at the render site), which resolve through a coordinator `api.decideApproval` —
   // an endpoint with no trust verb, so the only decisions this card can carry
   // out are a one-shot approve or reject. Offering trust tiers here (or
   // labelling a decision "Trusted") would overstate the grant: the next
@@ -423,7 +437,7 @@ function ApprovalEntry({ entry }: { entry: ToolActivity }) {
         <span className="text-[11px] text-muted/40 font-mono ml-auto shrink-0">{fmtTime(entry.ts)}</span>
       </div>
       {!isResolved && <div className="px-3 pb-2 text-[13px] text-muted/70">{entry.text}</div>}
-      {!isResolved && !acting && goneFor !== entry.approval_id && (
+      {!isResolved && !acting && goneFor !== approvalGoneKey(entry.approval_id, entry.approval_target) && (
         <div className="px-3 pb-2 flex gap-1.5">
           <button className={btnClass} onClick={() => onAction('approved')}><CheckCircle className="lucide-inline" /> {i18nT('pages.chat.activityViewer.approve')}</button>
           <button className={btnClass + ' hover:!text-danger hover:!border-danger'} onClick={() => onAction('rejected')}><Ban className="lucide-inline" /> {i18nT('pages.chat.activityViewer.reject')}</button>

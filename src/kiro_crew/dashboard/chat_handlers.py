@@ -14432,6 +14432,8 @@ async def api_chat_mode(request: web.Request) -> web.Response:
                 continue
             for aid, fut in list(_slot._approval_futures.items()):
                 if not fut.done():
+                    # Read while still pending: names the row the frame settles.
+                    _mid = _slot.approval_instance(aid) or ""
                     fut.set_result("approved")
                     # Persist resolved state into the permission message. The
                     # periodic flush skips non-dirty slots, so the mark must
@@ -14442,7 +14444,12 @@ async def api_chat_mode(request: web.Request) -> web.Response:
                     # app token cannot receive its own resolution without it.
                     state.broadcast_ws(
                         "approval_resolved",
-                        {"id": aid, "approved": True, "slot": _slot.key},
+                        {
+                            "id": aid,
+                            "approved": True,
+                            "slot": _slot.key,
+                            **_native_resolution_target(_mid),
+                        },
                     )
                     try:
                         sel().log_api_access(
@@ -14586,6 +14593,25 @@ def _deny_trust_pattern(name: str, request_id: str, action: str, code: str) -> w
     return web.json_response({"error": errors[code], "code": code}, status=400)
 
 
+def _native_resolution_target(mid: str) -> dict[str, str]:
+    """The fields naming a chat runner's resolved request on ``approval_resolved``.
+
+    ``origin`` tells a client the frame is the runner's own, so it never
+    settles a coordinator row under a colliding id; ``mid`` (the permission
+    row's delivery identity, when it has one) names the row.
+    """
+    return {"origin": "native", **({"mid": mid} if mid else {})}
+
+
+# What a strict native decide may carry. Trust verbs are included so a pending
+# card's standing grant is bound to the exact request (``request_mid``) the card
+# showed; ``yolo`` widens the whole session rather than one request and stays
+# off the strict path.
+_STRICT_NATIVE_ACTIONS = frozenset(
+    {"approved", "rejected", "rejected_once", "trust", "trust_reads", "trust_command", "trust_base"}
+)
+
+
 async def api_chat_slot_approve(request: web.Request) -> web.Response:
     """POST /api/chat/slots/{slot}/approve — resolve a pending tool approval."""
     state: DashboardState = request.app["state"]
@@ -14624,7 +14650,10 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
             or not request_id
             or not isinstance(request_mid, str)
             or not request_mid
-            or action not in ("approved", "rejected", "rejected_once")
+            # A non-string action (a list, an object) is unhashable: test the
+            # type first so it is refused as a bad target, not raised as a 500.
+            or not isinstance(action, str)
+            or action not in _STRICT_NATIVE_ACTIONS
         ):
             return web.json_response(
                 {"error": "invalid approval target", "code": "invalid_approval_target"}, status=400
@@ -14840,6 +14869,8 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
         if not strict_native and request_id and state.resolve_state_approval(request_id, approved):
             return web.json_response({"ok": True})
         return web.json_response({"error": "no pending approval"}, status=404)
+    # Read while still pending: names the row the frame below settles.
+    resolved_mid = (owner.approval_instance(request_id) or "") if request_id else ""
     fut.set_result(resolved)
     # Persist resolved state into the permission message so it survives tab
     # switches — on the owner slot, whose messages hold the permission card.
@@ -14866,6 +14897,7 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
                 # Keys the frame for the slot-scoped WS gate (see
                 # ws_event_scope._SLOT_SCOPED_EVENTS).
                 "slot": owner.key,
+                **_native_resolution_target(resolved_mid),
             },
         )
     state.push_slots_update()

@@ -241,7 +241,8 @@
       "stream_ended_without_completion": "Lo stream è terminato senza completarsi",
       "token_not_accepted": "Questo URL di accesso non è stato accettato. Esegui di nuovo kirocrew token e incolla qui sotto il nuovo URL di accesso.",
       "token_exchange_unreachable": "Non è stato possibile raggiungere il gateway, quindi l'URL di accesso non è stato verificato. Verifica che sia in esecuzione, poi premi di nuovo Invio.",
-      "unexpected_server_response": "Risposta del server inaspettata"
+      "unexpected_server_response": "Risposta del server inaspettata",
+      "no_pending_approval": "Questa approvazione non è più in sospeso."
     }
   },
   "app": {
@@ -7668,7 +7669,9 @@
         "search": "Cerca…",
         "show_less": "Mostra meno",
         "show_muted_count": "Mostra silenziate ({{count}})",
-        "try_a_different_search": "Prova una ricerca diversa"
+        "try_a_different_search": "Prova una ricerca diversa",
+        "approving": "Approvazione…",
+        "rejecting": "Rifiuto…"
       },
       "notificationPermissionHint": {
         "get_alerted_when_you_re_away": "Ricevi avvisi quando non ci sei",
@@ -9583,7 +9586,6 @@
       "cron": "Cron{{detail}}",
       "cron_running": "Cron · in esecuzione",
       "deny": "Nega",
-      "failed": "non riuscito",
       "idle": "Inattivo",
       "kiro_is_working": "Kiro sta lavorando…",
       "loading_thread": "Caricamento del thread…",

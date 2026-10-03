@@ -7,6 +7,7 @@ import { ToolInputText } from '../../components/ToolInputText'
 import ErrorNotice from '../../components/ErrorNotice'
 import { ApiError } from '../../api/client'
 import { isTerminalApprovalRefusal } from '../../api/apiError'
+import { refusedNotice } from '../../components/notifications/notifMeta'
 import { useRowDisclosure } from './rowDisclosure'
 
 import { i18nT } from '../../i18n/t'
@@ -51,8 +52,8 @@ interface CollapsibleToolGroupProps {
    * Offer the standing-trust tier. FAIL-CLOSED: leave unset unless this mount's
    * `onApprove` routes to an endpoint that actually RECORDS standing trust
    * (POST /api/chat/slots/{slot}/approve carries the decision verbatim).
-   * The common resolve path — ChatPage's `toApiDecision` into the one-shot
-   * `api.resolveApproval` — has no trust verb, so offering Trust there (or
+   * The common resolve path — ChatPage's `toApiDecision` into a one-shot
+   * `api.decideApproval` — has no trust verb, so offering Trust there (or
    * labelling a decision "Trusted") overstates the grant: the next identical
    * call prompts again (#5400 on the spawn card, #5434 on this row).
    */
@@ -132,8 +133,8 @@ const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, autoExp
   }, [isRunning, setExpanded])
 
   // The 'trust' entries are reachable only from a `canTrust` mount (see the
-  // prop's contract above): a mount resolving through the one-shot
-  // `api.resolveApproval` endpoint never offers the Trust button, so it can
+  // prop's contract above): a mount resolving through a one-shot
+  // `api.decideApproval` never offers the Trust button, so it can
   // never wear a "Trusted" label it did not earn (#5400, #5434).
   const decisionLabel: Record<string, ReactNode> = { approved: <><CheckCircle className="lucide-inline" /> {i18nT('pages.chat.collapsibleToolGroup.approved')}</>, trust: <><Handshake className="lucide-inline" /> {i18nT('pages.chat.collapsibleToolGroup.trusted')}</>, rejected: <><Ban className="lucide-inline" /> {i18nT('pages.chat.collapsibleToolGroup.rejected')}</> }
   const labelNode = localResolved
@@ -287,7 +288,7 @@ const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, autoExp
         // switch) while the hand-off opens a FRESH slot rather than navigating
         // away — so there is nothing here the navigation can destroy.
         <ErrorNotice variant="inline" className="mt-1 ml-4 pl-3" askAgent message={failure.terminal
-          ? i18nT('components.approvalCard.approval_no_longer_pending')
+          ? refusedNotice()
           : failure.message
             ? i18nT('components.approvalCard.decision_not_recorded_error', { error: failure.message })
             : i18nT('components.approvalCard.decision_failed')} />

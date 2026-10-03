@@ -28,6 +28,7 @@
  *     "the selection cleared" pass or fail on timing.
  *  3. The api client is automocked; every test sets the responses it needs.
  */
+import { refusedNotice } from '../components/notifications/notifMeta'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, fireEvent, waitFor, act } from '@testing-library/react'
 import type { ProjectRun, TaskDetail } from '../types'
@@ -234,10 +235,13 @@ const mockRun = (overrides: Partial<ProjectRun> = {}): ProjectRun => ({
   ...overrides,
 })
 
-/** An approvals payload gating `indexes`, plus one id the parser must ignore. */
+/** The run and task the gateway records on run *run*'s gate for task *task*. */
+const gateFields = (task: number, run = 'run-1') => ({ task_run: run, task_index: task })
+
+/** An approvals payload gating `indexes` of run-1, plus one id the parser must ignore. */
 const gates = (...indexes: number[]) => [
   { id: 'tool-call-9', source: 'chat' },
-  ...indexes.map(i => ({ id: `task-gate-${i}-abc`, source: 'taskrunner' })),
+  ...indexes.map(i => ({ id: `task-gate-${i}-abc`, source: 'taskrunner', slot: '', instance: `inst-${i}`, ...gateFields(i) })),
 ]
 
 const dag = () => screen.getByTestId('dag-view')
@@ -257,7 +261,7 @@ beforeEach(() => {
   // ThemeProvider boots through the same automocked client; without a value its
   // query logs "Query data cannot be undefined" on every render.
   vi.mocked(api.themeBoot).mockResolvedValue({})
-  vi.mocked(api.resolveApproval).mockResolvedValue({ ok: true })
+  vi.mocked(api.decideApproval).mockResolvedValue({ ok: true })
   vi.mocked(api.updateTask).mockResolvedValue({ ok: true, title: 'Renamed', description: 'New body', depends_on: [] })
   vi.mocked(api.updatePlan).mockResolvedValue({ steps: [] })
   vi.mocked(api.exportPlanYaml).mockResolvedValue(undefined)
@@ -337,7 +341,7 @@ describe('ProjectDetailPage approve and reject', () => {
     renderWithProviders(<ProjectDetailPage run={runningRun()} onRefresh={onRefresh} />)
     await waitFor(() => expect(dag()).toHaveAttribute('data-approvals', '1'), { timeout: 5_000 })
     fireEvent.click(screen.getByRole('button', { name: 'dag-ok-1' }))
-    await waitFor(() => expect(api.resolveApproval).toHaveBeenCalledWith('task-gate-1-abc', 'approve'), { timeout: 5_000 })
+    await waitFor(() => expect(api.decideApproval).toHaveBeenCalledWith({ origin: 'coordinator', id: 'task-gate-1-abc', slot: '', instance: 'inst-1' }, 'approve'), { timeout: 5_000 })
     await waitFor(() => expect(onRefresh).toHaveBeenCalled(), { timeout: 5_000 })
   })
 
@@ -347,7 +351,7 @@ describe('ProjectDetailPage approve and reject', () => {
     await waitFor(() => expect(dag()).toHaveAttribute('data-approvals', '1'), { timeout: 5_000 })
     fireEvent.click(screen.getByRole('button', { name: 'dag-no-1' }))
     expect(await screen.findByText('panel-task:1:Setup', undefined, { timeout: 5_000 })).toBeInTheDocument()
-    expect(api.resolveApproval).toHaveBeenCalledWith('task-gate-1-abc', 'reject')
+    expect(api.decideApproval).toHaveBeenCalledWith({ origin: 'coordinator', id: 'task-gate-1-abc', slot: '', instance: 'inst-1' }, 'reject')
   })
 
   it('makes no request when the DAG approves a task that has no gate', async () => {
@@ -356,7 +360,7 @@ describe('ProjectDetailPage approve and reject', () => {
     await waitFor(() => expect(dag()).toHaveAttribute('data-approvals', '1'), { timeout: 5_000 })
     fireEvent.click(screen.getByRole('button', { name: 'dag-ok-2' }))
     await act(async () => { await vi.advanceTimersByTimeAsync(50) })
-    expect(api.resolveApproval).not.toHaveBeenCalled()
+    expect(api.decideApproval).not.toHaveBeenCalled()
   })
 
   it('resolves the gate from the detail panel and keeps it open on reject', async () => {
@@ -365,10 +369,67 @@ describe('ProjectDetailPage approve and reject', () => {
     await waitFor(() => expect(dag()).toHaveAttribute('data-approvals', '1'), { timeout: 5_000 })
     fireEvent.click(screen.getByRole('button', { name: 'pick-1' }))
     fireEvent.click(await screen.findByRole('button', { name: 'panel-approve' }, { timeout: 5_000 }))
-    await waitFor(() => expect(api.resolveApproval).toHaveBeenCalledWith('task-gate-1-abc', 'approve'), { timeout: 5_000 })
+    await waitFor(() => expect(api.decideApproval).toHaveBeenCalledWith({ origin: 'coordinator', id: 'task-gate-1-abc', slot: '', instance: 'inst-1' }, 'approve'), { timeout: 5_000 })
     fireEvent.click(screen.getByRole('button', { name: 'panel-reject' }))
-    await waitFor(() => expect(api.resolveApproval).toHaveBeenCalledWith('task-gate-1-abc', 'reject'), { timeout: 5_000 })
+    await waitFor(() => expect(api.decideApproval).toHaveBeenCalledWith({ origin: 'coordinator', id: 'task-gate-1-abc', slot: '', instance: 'inst-1' }, 'reject'), { timeout: 5_000 })
     expect(screen.getByTestId('task-panel')).toBeInTheDocument()
+  })
+
+  it('decides a gate by the instance it was listed with, never by its id alone', async () => {
+    // The same gate id under a newer request: the press names the request the
+    // page showed, and the server refuses it once another one holds the id.
+    vi.mocked(api.approvals).mockResolvedValue([{ id: 'task-gate-1-abc', source: 'taskrunner', slot: 'run-slot', instance: 'inst-b', ...gateFields(1) }])
+    renderWithProviders(<ProjectDetailPage run={runningRun()} />)
+    await waitFor(() => expect(dag()).toHaveAttribute('data-approvals', '1'), { timeout: 5_000 })
+    fireEvent.click(screen.getByRole('button', { name: 'dag-ok-1' }))
+    await waitFor(() => expect(api.decideApproval).toHaveBeenCalledWith(
+      { origin: 'coordinator', id: 'task-gate-1-abc', slot: 'run-slot', instance: 'inst-b' }, 'approve'), { timeout: 5_000 })
+  })
+
+  it('a gate that names no request offers no Approve/Reject and says it is no longer pending', async () => {
+    // Listed by an older build without the instance: nothing could decide it.
+    vi.mocked(api.approvals).mockResolvedValue([{ id: 'task-gate-1-abc', source: 'taskrunner', slot: '', ...gateFields(1) }])
+    renderWithProviders(<ProjectDetailPage run={runningRun()} />)
+    expect(await screen.findByTestId('project-detail-gate-gone', {}, { timeout: 5_000 })).toHaveTextContent(refusedNotice())
+    expect(dag()).toHaveAttribute('data-approvals', '')
+    expect(api.decideApproval).not.toHaveBeenCalled()
+  })
+
+  it('decides its own run\'s gate when two concurrent runs gate the same task index', async () => {
+    // The listing is global. Run 1 and run 2 both wait on task 1, and run 2's
+    // gate is listed LAST, where an index-only map let it overwrite run 1's,
+    // so run 1's Approve started run 2's task. Each page maps only its run's
+    // gate and sends that run and task with the decide for the server to check.
+    vi.mocked(api.approvals).mockResolvedValue([
+      { id: 'task-gate-1-aaaa', source: 'taskrunner', slot: '', instance: 'inst-run1', ...gateFields(1, 'run-1') },
+      { id: 'task-gate-1-bbbb', source: 'taskrunner', slot: '', instance: 'inst-run2', ...gateFields(1, 'run-2') },
+    ])
+    const { unmount } = renderWithProviders(<ProjectDetailPage run={runningRun()} />)
+    await waitFor(() => expect(dag()).toHaveAttribute('data-approvals', '1'), { timeout: 5_000 })
+    fireEvent.click(screen.getByRole('button', { name: 'dag-ok-1' }))
+    await waitFor(() => expect(api.decideApproval).toHaveBeenCalledTimes(1), { timeout: 5_000 })
+    expect(api.decideApproval).toHaveBeenCalledWith(
+      { origin: 'coordinator', id: 'task-gate-1-aaaa', slot: '', instance: 'inst-run1' }, 'approve')
+    unmount()
+
+    vi.mocked(api.decideApproval).mockClear()
+    renderWithProviders(<ProjectDetailPage run={runningRun({ task_id: 'run-2' })} />)
+    await waitFor(() => expect(dag()).toHaveAttribute('data-approvals', '1'), { timeout: 5_000 })
+    fireEvent.click(screen.getByRole('button', { name: 'dag-ok-1' }))
+    await waitFor(() => expect(api.decideApproval).toHaveBeenCalledTimes(1), { timeout: 5_000 })
+    expect(api.decideApproval).toHaveBeenCalledWith(
+      { origin: 'coordinator', id: 'task-gate-1-bbbb', slot: '', instance: 'inst-run2' }, 'approve')
+  })
+
+  it('shows no gate for another run\'s approval, or one that names no run', async () => {
+    vi.mocked(api.approvals).mockResolvedValue([
+      { id: 'task-gate-1-bbbb', source: 'taskrunner', slot: '', instance: 'inst-run2', ...gateFields(1, 'run-2') },
+      { id: 'task-gate-2-cccc', source: 'taskrunner', slot: '', instance: 'inst-x' },
+    ])
+    renderWithProviders(<ProjectDetailPage run={runningRun()} />)
+    await waitFor(() => expect(api.approvals).toHaveBeenCalled(), { timeout: 5_000 })
+    await act(async () => { await vi.advanceTimersByTimeAsync(50) })
+    expect(dag()).toHaveAttribute('data-approvals', '')
   })
 
   it('wires no approve action into the panel for an ungated task', async () => {

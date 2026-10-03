@@ -61,6 +61,12 @@ export class ApiError extends Error {
 export const isNotFoundError = (e: unknown): boolean =>
   typeof e === 'object' && e !== null && (e as { status?: unknown }).status === 404
 
+/** The refusal a decide control raises when it names no request: nothing live
+ *  stands behind it, so it is answered like the server's own 404 for an
+ *  approval that is gone (`isTerminalApprovalRefusal`). */
+export const noPendingApprovalError = (): ApiError =>
+  new ApiError(404, i18nT('api.client.no_pending_approval'))
+
 /** True when an approval refusal is terminal — the approval itself is gone (404,
  *  or the endpoint's `no pending approval` 400). Duck-typed like {@link isNotFoundError}. */
 export const isTerminalApprovalRefusal = (e: unknown): boolean => {

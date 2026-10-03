@@ -13313,6 +13313,7 @@ async def _run_chat(
                         only_if_pending=True,
                     ):
                         slot._dirty = True
+                        _resolved_mid = row_mid(permission_row)
                         state.broadcast_ws(
                             "approval_resolved",
                             {
@@ -13320,6 +13321,9 @@ async def _run_chat(
                                 "approved": _approved,
                                 # Keys the frame for the slot-scoped WS gate.
                                 "slot": slot.key,
+                                # The runner's own request, named by its row.
+                                "origin": "native",
+                                **({"mid": _resolved_mid} if _resolved_mid else {}),
                             },
                         )
                         state.push_slots_update()

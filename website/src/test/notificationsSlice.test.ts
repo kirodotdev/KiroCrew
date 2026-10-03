@@ -1,9 +1,14 @@
 import { describe, it, expect, vi } from 'vitest'
+import { configureStore } from '@reduxjs/toolkit'
+import { api } from '../api/client'
 import reducer, {
   addNotification,
   ackNotificationByTs,
   unackNotificationByTs,
-  removeNotificationByTs,
+  retireApprovalNote,
+  retireApprovalRow,
+  settleDecidedApproval,
+  selectUnreadNotes,
   clearAllNotifications,
   fetchNotifications,
   clearNotifications,
@@ -328,12 +333,6 @@ describe('notificationsSlice', () => {
       expect(state.ackSeqByTs).toEqual({})
     })
 
-    it('removing an item drops its ack stamp', () => {
-      const acked = reducer({ items: [n1, n2], clearSeq: 0 }, ackNotificationByTs('1'))
-      const state = reducer(acked, removeNotificationByTs('1'))
-      expect(state.ackSeqByTs).toEqual({})
-    })
-
     it('deleteNotification.fulfilled drops the deleted item ack stamp', () => {
       const acked = reducer({ items: [n1, n2], clearSeq: 0 }, ackNotificationByTs('1'))
       const state = reducer(acked, deleteNotification.fulfilled('1', '', '1'))
@@ -395,6 +394,165 @@ describe('notificationsSlice', () => {
       const action = { type: ackAllNotifications.pending.type, meta: { arg: undefined, requestId: 'x', requestStatus: 'pending' as const } }
       const state = reducer({ items: [n1, n2] }, action)
       expect(state.items.every(n => n.acked)).toBe(true)
+    })
+  })
+})
+
+// The server is the source of truth for which rows exist: nothing below
+// removes a row except a DELETE the server confirmed (or answered 404).
+describe('notificationsSlice: server-confirmed removal', () => {
+  const approvalNote: Notification = { kind: 'approval', title: 'Approve?', body: 'tool X', ts: '2', approval_id: 'ap-2' }
+  const mkStore = (items: Notification[]) =>
+    configureStore({ reducer: { notifications: reducer }, preloadedState: { notifications: { items, clearSeq: 0 } } })
+  const deferred = () => {
+    let resolve: (v: unknown) => void = () => {}
+    let reject: (e: unknown) => void = () => {}
+    const promise = new Promise((res, rej) => { resolve = res; reject = rej })
+    return { promise, resolve, reject }
+  }
+
+  it('retiring an approval keeps its row and only marks it', () => {
+    const state = reducer({ items: [n1, approvalNote] }, retireApprovalNote({ ts: '2', why: 'gone' }))
+    expect(state.items.map(n => n.ts)).toEqual(['1', '2'])
+    expect(state.retiredApprovals).toEqual({ '2': 'gone' })
+  })
+
+  it('a later gone does not overwrite a recorded outcome, and nothing absent is marked', () => {
+    let state = reducer({ items: [approvalNote] }, retireApprovalNote({ ts: '2', why: 'approve' }))
+    state = reducer(state, retireApprovalNote({ ts: '2', why: 'gone' }))
+    state = reducer(state, retireApprovalNote({ ts: 'absent', why: 'gone' }))
+    expect(state.retiredApprovals).toEqual({ '2': 'approve' })
+    expect(state.items).toHaveLength(1)
+  })
+
+  it('a 404 on DELETE means the row is already gone, so it is removed', async () => {
+    vi.mocked(api.deleteNotification).mockRejectedValueOnce(Object.assign(new Error('not found'), { status: 404 }))
+    const store = mkStore([n1, approvalNote])
+    await store.dispatch(deleteNotification('2'))
+    expect(store.getState().notifications.items.map(n => n.ts)).toEqual(['1'])
+  })
+
+  it('a failed DELETE keeps the row', async () => {
+    vi.mocked(api.deleteNotification).mockRejectedValueOnce(new Error('network down'))
+    const store = mkStore([n1, approvalNote])
+    await store.dispatch(deleteNotification('2'))
+    expect(store.getState().notifications.items.map(n => n.ts)).toEqual(['1', '2'])
+  })
+
+  it('retiring an approval nobody saw leaves it unread, and sends no ack and no DELETE', async () => {
+    vi.mocked(api.ackNotification).mockClear()
+    vi.mocked(api.deleteNotification).mockClear()
+    const store = mkStore([{ ...approvalNote, acked: false }])
+    store.dispatch(retireApprovalRow('2', 'gone'))
+    const s = store.getState().notifications
+    expect(s.retiredApprovals).toEqual({ '2': 'gone' })
+    // Still news (the job was denied): it keeps counting until it is read.
+    expect(selectUnreadNotes(store.getState()).map(n => n.ts)).toEqual(['2'])
+    expect(api.ackNotification).not.toHaveBeenCalled()
+    expect(api.deleteNotification).not.toHaveBeenCalled()
+  })
+
+  it('a retirement the reader caused, or a decision they made, reads the row', async () => {
+    vi.mocked(api.ackNotification).mockClear()
+    const store = mkStore([{ ...approvalNote, acked: false }])
+    store.dispatch(retireApprovalRow('2', 'refused', { seen: true }))
+    expect(api.ackNotification).toHaveBeenCalledWith('2')
+    vi.mocked(api.ackNotification).mockClear()
+    const other = mkStore([{ ...approvalNote, acked: false }])
+    void other.dispatch(settleDecidedApproval('2', 'approve'))
+    expect(api.ackNotification).toHaveBeenCalledWith('2')
+  })
+
+  it('a refused decide is kept over a later expiry frame, and an outcome over both', () => {
+    let state = reducer({ items: [approvalNote] }, retireApprovalNote({ ts: '2', why: 'refused' }))
+    state = reducer(state, retireApprovalNote({ ts: '2', why: 'gone' }))
+    expect(state.retiredApprovals).toEqual({ '2': 'refused' })
+    state = reducer(state, retireApprovalNote({ ts: '2', why: 'approve' }))
+    expect(state.retiredApprovals).toEqual({ '2': 'approve' })
+    state = reducer(state, retireApprovalNote({ ts: '2', why: 'refused' }))
+    expect(state.retiredApprovals).toEqual({ '2': 'approve' })
+  })
+
+  it('a decision that landed retires the row with its outcome and removes it once the server confirms', async () => {
+    const d = deferred()
+    vi.mocked(api.deleteNotification).mockReturnValueOnce(d.promise as ReturnType<typeof api.deleteNotification>)
+    const store = mkStore([approvalNote])
+    const settled = store.dispatch(settleDecidedApproval('2', 'reject'))
+    expect(store.getState().notifications.retiredApprovals).toEqual({ '2': 'reject' })
+    expect(store.getState().notifications.items).toHaveLength(1)
+    d.resolve({ ok: true })
+    await settled
+    expect(store.getState().notifications.items).toEqual([])
+  })
+
+  it('a refetch drops the marks of rows the server no longer lists and keeps the rest', () => {
+    // An ordinary note the server stopped listing goes, marks and all. (An
+    // approval row is the client's own and survives a snapshot; see below.)
+    const other: Notification = { kind: 'cron', title: 'Job done', body: 'output', ts: '3' }
+    const seeded = { items: [approvalNote, other], clearSeq: 0, retiredApprovals: { '2': 'gone' as const } }
+    const state = reducer(seeded, fetchNotifications.fulfilled({ items: [approvalNote], seq: 0, ackSeq: 0 }, '', undefined))
+    expect(state.items.map(n => n.ts)).toEqual(['2'])
+    expect(state.retiredApprovals).toEqual({ '2': 'gone' })
+  })
+
+  // Approval rows are raised by the `approval` frame and the approvals
+  // reconcile; the server's notification log never holds them, so a snapshot
+  // that lacks one is no evidence it went away.
+  describe('approval rows across a server snapshot', () => {
+    const live: Notification = { ...approvalNote, ts: '2', approval_id: 'ap-2', approval_instance: 'inst-a', slot: 'chat-1' }
+
+    it('a reconnect snapshot keeps a retired approval row, and its reason, until the reader dismisses it', async () => {
+      const store = mkStore([n1, live])
+      store.dispatch(retireApprovalNote({ ts: '2', why: 'gone' }))
+      vi.mocked(api.notifications).mockResolvedValueOnce({ notifications: [n1] } as Awaited<ReturnType<typeof api.notifications>>)
+      await store.dispatch(fetchNotifications())
+      expect(store.getState().notifications.items.map(n => n.ts)).toEqual(['1', '2'])
+      expect(store.getState().notifications.retiredApprovals).toEqual({ '2': 'gone' })
+      // Its Dismiss removes it (the server answers 404: it never held the row),
+      // and the next snapshot does not bring it back.
+      vi.mocked(api.deleteNotification).mockRejectedValueOnce(Object.assign(new Error('nf'), { status: 404 }))
+      await store.dispatch(deleteNotification('2'))
+      vi.mocked(api.notifications).mockResolvedValueOnce({ notifications: [n1] } as Awaited<ReturnType<typeof api.notifications>>)
+      await store.dispatch(fetchNotifications())
+      expect(store.getState().notifications.items.map(n => n.ts)).toEqual(['1'])
+      expect(store.getState().notifications.retiredApprovals).toEqual({})
+    })
+
+    it('a live approval row survives a snapshot too, so the reconcile can retire it with its explanation', () => {
+      const state = reducer({ items: [live], clearSeq: 0 }, fetchNotifications.fulfilled({ items: [n1], seq: 0, ackSeq: 0 }, '', undefined))
+      expect(state.items.map(n => n.ts)).toEqual(['1', '2'])
+    })
+
+    it('a kept row goes back in ts order among the served rows', () => {
+      const later: Notification = { kind: 'cron', title: 'Later', body: '', ts: '9' }
+      const state = reducer({ items: [live], clearSeq: 0 }, fetchNotifications.fulfilled({ items: [n1, later], seq: 0, ackSeq: 0 }, '', undefined))
+      expect(state.items.map(n => n.ts)).toEqual(['1', '2', '9'])
+    })
+
+    it('a kept row raised with an epoch ts goes back in order among served ISO rows', () => {
+      // The server writes ISO 8601 ts; the approval frame raises its row with
+      // epoch seconds. `Number()` reads the ISO ts as NaN, which sent the kept
+      // row to the newest end above notes raised hours after it.
+      const earlier: Notification = { kind: 'cron', title: 'Earlier', body: '', ts: '2026-10-02T01:00:00+00:00' }
+      const later: Notification = { kind: 'cron', title: 'Later', body: '', ts: '2026-10-02T05:00:00+00:00' }
+      const kept: Notification = { ...live, ts: String(Date.UTC(2026, 9, 2, 3) / 1000) }
+      const state = reducer({ items: [kept], clearSeq: 0 }, fetchNotifications.fulfilled({ items: [earlier, later], seq: 0, ackSeq: 0 }, '', undefined))
+      expect(state.items.map(n => n.title)).toEqual(['Earlier', live.title, 'Later'])
+    })
+
+    it('a served row naming the same request supersedes the local one', () => {
+      const served: Notification = { ...live, ts: '5' }
+      const state = reducer(
+        { items: [live], clearSeq: 0, retiredApprovals: { '2': 'gone' } },
+        fetchNotifications.fulfilled({ items: [served], seq: 0, ackSeq: 0 }, '', undefined),
+      )
+      expect(state.items.map(n => n.ts)).toEqual(['5'])
+      expect(state.retiredApprovals).toEqual({})
+    })
+
+    it('a Clear all still removes a kept approval row', () => {
+      const state = reducer({ items: [live], clearSeq: 0, retiredApprovals: { '2': 'gone' } }, clearAllNotifications())
+      expect(state.items).toEqual([])
     })
   })
 })

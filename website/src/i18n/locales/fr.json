@@ -241,7 +241,8 @@
       "stream_ended_without_completion": "Flux interrompu avant la fin",
       "token_not_accepted": "Cette URL de connexion a été refusée. Relance kirocrew token et colle la nouvelle URL de connexion ci-dessous.",
       "token_exchange_unreachable": "La passerelle est injoignable, l'URL de connexion n'a donc pas été vérifiée. Vérifiez qu'elle fonctionne, puis appuyez de nouveau sur Entrée.",
-      "unexpected_server_response": "Réponse inattendue du serveur"
+      "unexpected_server_response": "Réponse inattendue du serveur",
+      "no_pending_approval": "Cette approbation n'est plus en attente."
     }
   },
   "app": {
@@ -7668,7 +7669,9 @@
         "search": "Rechercher…",
         "show_less": "Afficher moins",
         "show_muted_count": "Afficher en sourdine ({{count}})",
-        "try_a_different_search": "Essaie une autre recherche"
+        "try_a_different_search": "Essaie une autre recherche",
+        "approving": "Approbation…",
+        "rejecting": "Refus…"
       },
       "notificationPermissionHint": {
         "get_alerted_when_you_re_away": "Soyez alerté même en votre absence",
@@ -9583,7 +9586,6 @@
       "cron": "Cron{{detail}}",
       "cron_running": "Cron · en cours",
       "deny": "Refuser",
-      "failed": "échec",
       "idle": "Inactif",
       "kiro_is_working": "kiro travaille…",
       "loading_thread": "Chargement du fil…",

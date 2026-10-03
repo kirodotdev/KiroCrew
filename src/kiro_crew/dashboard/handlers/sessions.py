@@ -3665,19 +3665,21 @@ async def api_approval_resolve(request: web.Request) -> web.Response:
         # showed: the request id is minted by the caller and can recur in the same
         # slot, so a card left up from an expired record would otherwise resolve
         # the request that replaced it.
-        slot = request.query.get("slot", "")
+        # ``slot`` must be present but may be empty: a coordinator approval
+        # raised with no owning slot (a cron job's) is bound by its instance
+        # alone, and the record's own empty slot must still match.
+        slot = request.query.get("slot")
         instance = request.query.get("instance", "")
-        if request.query["origin"] != "coordinator" or not slot or not instance:
+        if request.query["origin"] != "coordinator" or slot is None or not instance:
             return web.json_response(
                 {"error": "invalid approval target", "code": "invalid_approval_target"}, status=400
             )
-        pending = state._pending_approvals.get(approval_id)
-        # No await between checking the record and resolving its state-only future.
-        ok = bool(
-            pending
-            and pending.get("slot") == slot
-            and pending.get("instance") == instance
-            and state.resolve_state_approval(approval_id, action == "approve")
+        # Verified against the record and resolved with no await between; a
+        # chat runner's request is decided on its slot's approve route
+        # (``origin: native``), never here. The instance is minted per record,
+        # so it already names the record's subject: no subject is sent here.
+        ok = state.resolve_coordinator_approval(
+            approval_id, action == "approve", slot=slot, instance=instance
         )
     else:
         ok = state.resolve_approval(

@@ -6,6 +6,7 @@
 import { createSelector, type PayloadAction } from '@reduxjs/toolkit'
 import type { RootState } from '../index'
 import type { SubagentActivity } from '../../types'
+import type { CoordinatorApprovalTarget } from '../../types/approvalTarget'
 import { parseSubagentQueuedReason, type SubagentQueuedEvent } from '../../pages/chat/subagentQueuedReason'
 import { i18nT } from '../../i18n/t'
 import type { ChatState } from './state'
@@ -303,12 +304,13 @@ export const subagentReducers = {
     if (reason) state.subagentQueuedReason[key] = reason
     else delete state.subagentQueuedReason[key]
   },
-  sseSubagentPending(state: ChatState, action: PayloadAction<{ slot: string; id: string; task: string; approval_id: string }>) {
+  sseSubagentPending(state: ChatState, action: PayloadAction<{ slot: string; id: string; task: string; approval_id: string; approval_target?: CoordinatorApprovalTarget }>) {
     if (isUnsafeKey(action.payload.slot) || isUnsafeKey(action.payload.id)) return
     const entry: SubagentActivity = {
       id: action.payload.id, task: action.payload.task, agent: '',
       status: 'pending', streaming: '', lastTool: '', startedAt: Date.now(), elapsed: 0,
       approval_id: action.payload.approval_id,
+      ...(action.payload.approval_target ? { approval_target: action.payload.approval_target } : {}),
     }
     if (action.payload.slot !== state.activeSlot) {
       const c = state.slotActivity[safeKey(action.payload.slot)] ??= { toolLog: [], subagents: {} }
@@ -572,7 +574,7 @@ export const subagentReducers = {
       // A snapshot never turns retrying ON (it has no attempt field); it only
       // preserves what a live frame already set.
       retrying: existing?.retrying,
-      approval_id: existing?.approval_id, approving: existing?.approving,
+      approval_id: existing?.approval_id, approval_target: existing?.approval_target, approving: existing?.approving,
     }
   },
 }

@@ -585,6 +585,7 @@ On gateway restart, any task with `status == "running"` is automatically transit
 `task_executor.execute_single_task()` evaluates task-level approval before agent execution.
 
 - With an `on_approval` callback, either `requires_approval` or `force_approval` prompts the owning surface; a denial pauses the project for editing.
+- `on_approval` is called as `on_approval(task)`. Before the call the executor sets `task.run_task_id` to its run's `task_id`, so a gate can name which run it holds: up to three runs execute at once and their task indexes overlap.
 - Without that callback, `requires_approval` logs a warning and continues, while `force_approval` fails closed and prevents replanning around the gate.
 - `cli_server.py` constructs the standalone `kirocrew run TASK.md` runner without an approval callback. Use `force_approval`, not `requires_approval`, for an action that must not execute unattended.
 - The dashboard supplies the callback and renders Approve/Deny controls in the project detail view.

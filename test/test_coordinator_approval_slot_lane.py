@@ -82,9 +82,23 @@ def test_projection_reads_coordinator_record_for_this_slot() -> None:
         "tool_input": "task text",
         "tool_kind": "spawn",
         "request_id": "spawn:a1",
+        "request_instance": "",
     }
     # A parked slot is not "waiting for input": the user has a decision, not a turn.
     assert payload["waiting_for_input"] is False
+
+
+def test_projection_names_the_coordinator_request_instance() -> None:
+    # The id is the caller's and recurs; a client decides through the slot and
+    # this instance, so a stale card cannot decide a later request under the id.
+    slot = _ChatSlot("parent")
+    slot._coordinator_approvals = lambda key: [{**_record("req-7", key), "instance": "inst-7"}]
+
+    info = slot.to_dict()["pending_approval_info"]
+
+    assert info["origin"] == "coordinator"
+    assert info["request_id"] == "req-7"
+    assert info["request_instance"] == "inst-7"
 
 
 def test_projection_without_coordinator_records_is_unchanged() -> None:

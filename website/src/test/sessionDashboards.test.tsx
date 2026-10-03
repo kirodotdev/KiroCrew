@@ -39,7 +39,7 @@ describe('all session dashboards', () => {
 
   it('surfaces exact-session inputs first with saved summaries and no automatic writes', async () => {
     const answer = vi.spyOn(api, 'answerQuestion').mockResolvedValue({})
-    const approve = vi.spyOn(api, 'resolveApproval').mockResolvedValue({})
+    const approve = vi.spyOn(api, 'decideApproval').mockResolvedValue({})
     const generate = vi.spyOn(api, 'generateSessionSummary')
     renderWithProviders(<SessionDashboardsPage />, { store: store() })
     await screen.findByText('Summary for slot-1')
@@ -60,7 +60,7 @@ describe('all session dashboards', () => {
     expect(approve).not.toHaveBeenCalled()
     expect(generate).not.toHaveBeenCalled()
     fireEvent.click(within(inbox).getByRole('button', { name: 'Approve once' }))
-    await waitFor(() => expect(approve).toHaveBeenCalledWith('approval-2', 'approve', { origin: 'coordinator', slot: 'slot-2', instance: 'inst-2' }))
+    await waitFor(() => expect(approve).toHaveBeenCalledWith({ origin: 'coordinator', id: 'approval-2', slot: 'slot-2', instance: 'inst-2' }, 'approve'))
   })
 
   it('keeps cards in place on live activity, re-sorts on a filter change, and shows a builder\'s view on its conductor', async () => {
