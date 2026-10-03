@@ -44,6 +44,7 @@ if TYPE_CHECKING:
         FALLBACK_STORY_ATTR,
         HOOK_EVENT_POST_TOOL_USE,
         MAX_ERROR_DETAIL_LEN,
+        SESSION_NOT_FOUND_GIVE_UP_TEXT,
         STOP_CLASS_CANCELLED,
         STOP_RECOVERY_MAX_RETRIES,
         TOOL_AUTO_APPROVE,
@@ -76,6 +77,7 @@ if TYPE_CHECKING:
         _timeout_context,
         _validate_agent,
         _vet_spawn_governance,
+        acp_error_is_session_not_found,
         acp_error_is_transient,
         advance_fallback_candidate,
         agent_dir_for_display,
@@ -783,6 +785,46 @@ class RunEventCoordinator(ManagerComponent):
                     Stats().inc_subagent_failed()
                     self._manager._write_tombstone(info, "error")
                     logger.warning("Subagent %s context overflow: %s", info.id, exc)
+            elif acp_error_is_session_not_found(exc) and not info._reap_started:
+                # A live backend holds no session under this run's id. The
+                # teardown in ``finally`` resets the session and keeps its
+                # durable pointer, so a respawned run's claim re-loads the SAME
+                # id on a fresh runtime. Same side-effect gate as the
+                # unexpected-cancel respawn: once a tool ran, re-sending the
+                # task could repeat it, so the run ends with the partial kept.
+                can_reload = (
+                    not info._session_not_found_retry_used
+                    and info.tool_count == 0
+                    and not info.user_stopped
+                    and not self._manager._shutting_down
+                )
+                if can_reload:
+                    info._session_not_found_retry_used = True
+                    info._recovering = True
+                    logger.warning(
+                        "Subagent %s: backend lost its session; re-running once on a "
+                        "fresh runtime: %s",
+                        info.id,
+                        exc,
+                    )
+                    self._manager._schedule_cancel_recovery(info, reason="session_not_found")
+                else:
+                    if not info.result and info.streaming_text:
+                        info.result = info.streaming_text
+                    detail = _redact(str(exc))[:MAX_ERROR_DETAIL_LEN]
+                    if info._session_not_found_retry_used:
+                        info.error = f"{SESSION_NOT_FOUND_GIVE_UP_TEXT} {detail}"
+                    elif info.tool_count:
+                        info.error = (
+                            "The agent lost its session after tools executed; it was not "
+                            f"re-run because that could repeat side effects. {detail}"
+                        )
+                    else:
+                        info.error = detail
+                    info.done = True
+                    Stats().inc_subagent_failed()
+                    self._manager._write_tombstone(info, "error")
+                    logger.warning("Subagent %s lost its session: %s", info.id, exc)
             elif info._reap_started and is_runtime_death(exc):
                 # The ECHO of our own teardown, not a fault of the run.
                 # ``_force_reap`` resets the run's session (or shuts its shared

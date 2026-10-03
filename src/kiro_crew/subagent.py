@@ -116,11 +116,13 @@ from kiro_crew.hooks import (
 from kiro_crew.llm_helpers import (
     FALLBACK_CANDIDATE_ATTEMPTS,
     FALLBACK_STORY_ATTR,
+    SESSION_NOT_FOUND_GIVE_UP_TEXT,
     TRANSIENT_RETRIES,
     FallbackState,
     _billing_stats,
     _steer_host_deny,
     _sum_usage,
+    acp_error_is_session_not_found,
     acp_error_is_transient,
     advance_fallback_candidate,
     annotate_model_fallback,
@@ -2852,6 +2854,9 @@ class SubagentInfo:
     # dedicated runtime, where native skill projection and Tool Search setup run
     # afresh; a second overflow is terminal so a too-large agent cannot loop.
     _context_overflow_retry_used: bool = False
+    # One re-run on a fresh runtime after a live backend lost this run's
+    # session; a second loss is terminal.
+    _session_not_found_retry_used: bool = False
     _force_dedicated: bool = False
     # True while a cancelled run is draining an in-flight off-loop state.json
     # write worker (every off-loop writer). _run's
@@ -6628,6 +6633,7 @@ class SubagentManager:
 # existing integrations patch ``kiro_crew.subagent.*`` after manager creation.
 _COMPONENT_GLOBAL_BINDINGS = (
     AcpSessionProvider,
+    SESSION_NOT_FOUND_GIVE_UP_TEXT,
     DEFAULT_SPAWN_MIN_MEMORY_GB,
     cap_buckets,
     learned_settled_for,
@@ -6667,6 +6673,7 @@ _COMPONENT_GLOBAL_BINDINGS = (
     _cleanup_session_files_sync,
     _subagents_dir,
     _ws_result_path,
+    acp_error_is_session_not_found,
     acp_error_is_transient,
     advance_fallback_candidate,
     agent_dir_for_display,

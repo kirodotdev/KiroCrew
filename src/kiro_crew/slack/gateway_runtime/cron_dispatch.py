@@ -23,6 +23,7 @@ from kiro_crew.subagent import _TRANSIENT_CONTINUE_MSG
 if TYPE_CHECKING:
     from kiro_crew.slack.gateway import (
         _SUBPROC_CLEANUP_ALLOWANCE_SECS,
+        TOOL_ACTIVITY_ATTR,
         Any,
         Callable,
         CronJob,
@@ -561,6 +562,14 @@ async def _cron_stream_with_posttoken_resume(
             return preserved + text, carried_credits
         except Exception as exc:
             partial = "".join(parts)
+            if _resume_used:
+                # The continuation's own tag sees only the continuation. The
+                # first prompt already produced output and may have run tools,
+                # so a caller must never re-send the task after this.
+                try:
+                    setattr(exc, TOOL_ACTIVITY_ATTR, True)
+                except Exception:
+                    pass
             if _resume_used or not partial or not acp_error_is_transient(exc):
                 raise
             _resume_used = True
