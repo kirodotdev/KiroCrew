@@ -521,7 +521,7 @@ class TestChannelApplierBoundary:
         assert [c["outcome"] for c in directive_calls] == ["denied"]
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("kind", ["suggest_followup", "ask_question"])
+    @pytest.mark.parametrize("kind", ["suggest_followup"])
     async def test_dashboard_only_directives_refused_on_channel_transport(
         self, kind, no_dashboard_tabs
     ):

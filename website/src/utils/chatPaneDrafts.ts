@@ -233,6 +233,11 @@ export function subscribePaneDraft(slot: string, onArrival: () => void): () => v
   }
 }
 
+/** Whether some pane is showing `slot` right now. */
+export function hasPaneListener(slot: string): boolean {
+  return (listeners.get(slot)?.size ?? 0) > 0
+}
+
 /** Merge a late recovery (or a late upload) into `slot`'s parked composer:
  *  text appends under the shared recovery rule, paths union, paste blocks
  *  carry over with their tokens re-numbered past the parked ones

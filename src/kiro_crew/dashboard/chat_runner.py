@@ -186,10 +186,7 @@ from kiro_crew.dashboard.handlers.usage import (
     read_effective_agent,
     read_turn_model,
 )
-from kiro_crew.dashboard.session_directive_apply import (
-    QUESTION_CARD_SHOWN_PREFIX,
-    apply_session_directive,
-)
+from kiro_crew.dashboard.session_directive_apply import apply_session_directive
 from kiro_crew.dashboard.slot_queue_repository import RESTORED_QUEUE_KEY
 from kiro_crew.dashboard.state import (
     _MAX_SLOT_MESSAGES,
@@ -6576,7 +6573,6 @@ _DIRECTIVE_NOT_APPLIED_OUTCOMES: dict[str, str] = {
     "set_project": "The project change was not applied.",
     "reset_conversation": "The conversation was not reset.",
     "chat_tag": "The session tags were not changed.",
-    "ask_question": "The question was not shown.",
     "suggest_followup": "The follow-up suggestions were not shown.",
 }
 
@@ -11696,15 +11692,6 @@ async def _run_chat(
     # text and overwrite the applied outcome in the transcript. Replaying the
     # stored output keeps every frame consistent and marker-free.
     _dir_consumed_out: dict[str, str] = {}
-    # A successfully posted non-blocking question card is the intended terminal
-    # output of this turn. The tool tells the model to end without assistant
-    # text, so empty-response recovery must not inject a closing continuation.
-    _terminal_question_posted = False
-
-    def _record_terminal_question(kind: str, outcome: str) -> None:
-        nonlocal _terminal_question_posted
-        if kind == "ask_question" and outcome.startswith(QUESTION_CARD_SHOWN_PREFIX):
-            _terminal_question_posted = True
 
     # When this turn began, for bounding an out-of-band directive claim to it.
     # A directive belongs to the turn that asked for it: a record parked by a turn
@@ -15266,7 +15253,6 @@ async def _run_chat(
                             producer_is_channel=_directive_producer_is_channel(),
                             producer_wake_loop_id=_directive_loop_id,
                         )
-                        _record_terminal_question(_applied_kind, _applied_one)
                         logger.info(
                             "session-directive applied OUT OF BAND for %s "
                             "(tool_call_id=%s, kind=%s): the marker was unavailable; "
@@ -15479,7 +15465,6 @@ async def _run_chat(
                                 producer_is_channel=_directive_producer_is_channel(),
                                 producer_wake_loop_id=_directive_loop_id,
                             )
-                            _record_terminal_question(_dir_tool, _applied_one)
                             _out = _redact_tool_field(_applied_one)
                             _dir_consumed_out[event.tool_call_id] = _out
                         else:
@@ -18563,7 +18548,6 @@ async def _run_chat(
         elif (
             _stop_reason != STOP_REASON_CANCELLED
             and not _produced_visible_output
-            and not _terminal_question_posted
             and not _refusal_reasons
         ):
             _had_empty_response_verdict = True

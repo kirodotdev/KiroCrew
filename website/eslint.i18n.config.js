@@ -114,6 +114,9 @@ export default [
       // parser, never read as words. Extracted from `PullRequestPanel.tsx` so that
       // panel -- which does carry copy -- stays fully covered.
       'src/components/unifiedPatchHeaders.ts',
+      // Parses the ask_question tool result that mcp_tools/control.py writes: wire
+      // format matched verbatim, never shown. Keep it parse-only; copy goes in AskAnswersCard.tsx.
+      'src/utils/askQuestionTool.ts',
       // Per-shell env-var export command builders for SettingRef's env popover:
       // every string is CLI syntax handed to a terminal (`export`, `$env:`,
       // `set`, `=1`), never user-visible copy — translating a fragment would

@@ -13,6 +13,7 @@ import { isSubagentCompletionMessage } from './subagentCompletion'
 import { isReasoningBurst } from './groupDisplayItems'
 import { isSystemNoticeRow } from './CompactionCard'
 import { isDiffToolMessage } from './toolDiff'
+import { isAskAnsweredToolMessage } from '../../utils/askQuestionAnswers'
 import { findOptionMarkers, stripOptionMarkers } from '../../app-sdk/protocol/optionMarker'
 import { hasKeepVisibleMarker } from '../../app-sdk/protocol/keepVisibleMarker'
 import { i18nT } from '../../i18n/t'
@@ -56,9 +57,13 @@ const isMcpAppItem = (it: TurnItem, appToolCallIds: ReadonlySet<string>) =>
 // not an immovable wall (see rfc-tool-derived-diff-cards.md).
 const isDiffCardItem = (it: TurnItem) =>
   it.kind === 'single' && isDiffToolMessage(it.msg)
+// An answered ask_question row carries the only record of the user's answers (its chip), so like a diff card it stays out of both folds.
+const isAskAnsweredItem = (it: TurnItem) =>
+  it.kind === 'single' && isAskAnsweredToolMessage(it.msg)
 const isTool = (it: TurnItem, appToolCallIds: ReadonlySet<string>) =>
   it.kind === 'single' && it.msg.role === 'tool' && !isWorkflowRunItem(it) &&
-  !isSpawnRunItem(it) && !isMcpAppItem(it, appToolCallIds) && !isDiffCardItem(it)
+  !isSpawnRunItem(it) && !isMcpAppItem(it, appToolCallIds) && !isDiffCardItem(it) &&
+  !isAskAnsweredItem(it)
 const isHiddenTool = (it: TurnItem) => it.kind === 'single' && it.msg.role === 'tool' && !it.msg.content.startsWith('🔧')
 const isConclusion = (it: TurnItem) => it.kind === 'single' && (it.msg.role === 'assistant' || it.msg.role === 'streaming' || it.msg.role === 'file')
 /**
@@ -147,14 +152,14 @@ const isCrewReply = (it: TurnItem) =>
  *  ([OPTIONS:] marker), a keep-visible-marked deliverable (#7948), a legacy
  *  crew-mode answer, a role that must surface inline (mcp_oauth, error), a
  *  workflow_run / spawn_run / workflow-completion / sub-agent-completion card,
- *  or an MCP App-bearing tool call (interactive iframe anchored to the row).
- *  All bypass the collapse pane. */
+ *  an MCP App-bearing tool call (interactive iframe anchored to the row), a
+ *  diff card, or an answered ask_question row. All bypass the collapse pane. */
 const isVisibleInline = (it: TurnItem, appToolCallIds: ReadonlySet<string>) =>
   isRenderable(it) || isHandBack(it) || isKeepVisible(it) || isAlwaysVisible(it) || isCrewReply(it) ||
   isWorkflowRunItem(it) || isSpawnRunItem(it) ||
   isSubagentCompletionItem(it) ||
   isWorkflowCompletionItem(it) || isMcpAppItem(it, appToolCallIds) ||
-  isDiffCardItem(it)
+  isDiffCardItem(it) || isAskAnsweredItem(it)
 
 /** One ordered run of the collapse split: a contiguous run of items that hide
  *  behind the toggle, or a single item that must render in place. */

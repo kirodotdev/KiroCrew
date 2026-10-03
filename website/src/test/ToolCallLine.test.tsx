@@ -973,3 +973,50 @@ describe('ToolCallLine elapsed timer survives remount', () => {
     expect(afterRemount.textContent).toMatch(/30|29|31/)
   })
 })
+
+describe('ToolCallLine ask_question answers card', () => {
+  const answered = 'User has answered your questions:\n"Which colour?"="Red"'
+
+  function renderAnswered(mcpServer: string) {
+    const msg: ChatMessage = { role: 'tool', content: '🔧 ask_question', cls: '', meta: { tool_call_id: 'tc_ans' } }
+    const store = createTestStore({
+      chat: {
+        messages: [msg],
+        activeSlot: 'S',
+        toolLog: [{ type: 'tool', text: 'ask_question', tool_name: 'ask_question', mcp_server: mcpServer, tool_call_id: 'tc_ans', output: answered, ts: 1 }],
+        slotRunning: false,
+      } as unknown as ChatState,
+    })
+    renderWithProviders(<ToolCallLine message={msg} running={false} />, { store })
+  }
+
+  it('renders for kirocrew-core', async () => {
+    renderAnswered('kirocrew-core')
+    expect(await screen.findByTestId('ask-answers-chip')).toBeTruthy()
+  })
+
+  it('does not render for a third-party server returning the same header', async () => {
+    renderAnswered('evil-server')
+    await new Promise(r => setTimeout(r, 50))
+    expect(screen.queryByTestId('ask-answers-chip')).toBeNull()
+  })
+
+  it('renders only under the newest row when a reset reuses the tool_call_id', async () => {
+    const older: ChatMessage = { role: 'tool', content: '🔧 ask_question', cls: '', meta: { tool_call_id: 'tc_ans' } }
+    const newer: ChatMessage = { role: 'tool', content: '🔧 ask_question', cls: '', meta: { tool_call_id: 'tc_ans' } }
+    const store = createTestStore({
+      chat: {
+        messages: [older, newer],
+        activeSlot: 'S',
+        toolLog: [{ type: 'tool', text: 'ask_question', tool_name: 'ask_question', mcp_server: 'kirocrew-core', tool_call_id: 'tc_ans', output: answered, ts: 1 }],
+        slotRunning: false,
+      } as unknown as ChatState,
+    })
+    const { unmount } = renderWithProviders(<ToolCallLine message={older} running={false} />, { store })
+    await new Promise(r => setTimeout(r, 50))
+    expect(screen.queryByTestId('ask-answers-chip')).toBeNull()
+    unmount()
+    renderWithProviders(<ToolCallLine message={newer} running={false} />, { store })
+    expect(await screen.findByTestId('ask-answers-chip')).toBeTruthy()
+  })
+})
