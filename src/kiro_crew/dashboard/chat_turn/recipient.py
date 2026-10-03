@@ -417,17 +417,25 @@ def _resolve_mirror_target(state: Any, session_key: str) -> Any:
 def cross_surface_withheld(state: Any, slot: Any) -> bool:
     """Whether *slot*'s turn must NOT publish its reply to a linked channel.
 
-    True when a peer steered this turn and the containment holding NOW is not the
-    containment that steer was admitted under. Evaluated HERE, synchronously with the
-    publication it guards, which is the only place the answer cannot go stale:
-    :func:`_deliver_cross_surface_reply` resolves the mirror live, so a link bound at
-    any point before this moment is effective, and a reply already sent cannot be
-    recalled.
+    True when the containment holding NOW is not the containment an admission this
+    turn rests on was made under -- a peer steered this turn, or this turn was
+    ADMITTED to a session-control verb or a work-ledger route (the caller-side
+    gates record the caller's own containment through
+    ``session_control.record_audience_admission``, since what those return -- a
+    peer's transcript, a roster, a ledger -- becomes part of the reply). Asked by
+    the Slack legs, synchronously with the publication each guards, which is the
+    only place the answer cannot go stale: a link bound at any point before this
+    moment is effective, and a reply already sent cannot be recalled. The
+    channel-neutral leg (``_deliver_cross_surface_reply``) does not ask it: that leg
+    resolves its target from one read of the binding and judges THAT row through
+    ``session_control.publication_withheld`` -- the same comparison -- so its
+    decision and its delivery cannot straddle a retarget.
 
-    The sender cannot answer this on its own behalf. It records the admission before
-    its RPC and keeps it for the whole turn, because a check it runs when the RPC
-    returns says nothing about a mirror bound between then and the reply. So the
-    sender's job is to record and to stop the turn on what it can see; the decision
+    Neither writer can answer this on its own behalf. A sender records the admission
+    before its RPC and keeps it for the whole turn, because a check it runs when the
+    RPC returns says nothing about a mirror bound between then and the reply; a reader
+    records and returns, and its reply publishes later still. So the writer's job is
+    to record (and, for a steer, to stop the turn on what it can see); the decision
     about publishing belongs to the publisher.
 
     Costs the channel audience nothing when nothing moved -- the comparison is exact
@@ -443,3 +451,29 @@ def cross_surface_withheld(state: Any, slot: Any) -> bool:
 
     now = containment_snapshot(state, slot, on_probe_failure=True)
     return any(newly_held_constraints(now, admission) for admission in fences.values())
+
+
+def slack_publication_withheld(state: Any, slot: Any, channel_id: Any, thread_ts: Any) -> bool:
+    """Whether *slot*'s turn must NOT publish to the Slack thread its legs cached.
+
+    The Slack legs post to the ``(channel, thread)`` they read ONCE at turn start, so
+    the room they publish to is not the binding holding now. A Slack thread unlinked
+    mid-turn is therefore in neither side of :func:`cross_surface_withheld`'s
+    comparison -- the admission a gate recorded after the unlink names no Slack room,
+    and the live binding names none -- while the cached destination still receives the
+    reply: an operator who unlinks the shared thread and mirrors the tab to their own
+    DM before a transcript read would have that read posted into the thread they just
+    left. Judged here as the room the leg actually posts to
+    (``session_control.publication_withheld`` over a binding naming only that thread):
+    a room no recorded admission saw withholds the leg. Asked BESIDE
+    :func:`cross_surface_withheld`, never instead of it -- that one still catches a
+    constraint the live binding newly holds. Nothing recorded, or no destination,
+    withholds nothing.
+    """
+    fences = getattr(slot, "_steer_audience_fences", None)
+    if not fences or not channel_id or not thread_ts:
+        return False
+    # circular import: session_control imports this package's modules at module level.
+    from kiro_crew.dashboard.session_control import publication_withheld
+
+    return publication_withheld(state, slot, (None, str(thread_ts), str(channel_id)))

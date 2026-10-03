@@ -4165,6 +4165,17 @@ class _ChatSlot:
         #
         # TURN-SCOPED: the turn's teardown empties it, so one turn's withheld reply
         # never silences the next, whose authorization is its own.
+        #
+        # A second writer records the same shape for the opposite direction:
+        # ``session_control.record_audience_admission`` stamps the CALLER's own
+        # containment here from the caller-side admission gates (every
+        # session-control verb's, and the work ledger's), because what a verb
+        # returns becomes part of this slot's reply and the same publisher resolves
+        # the mirror live at delivery -- a mirror gained or retargeted between the
+        # admission and the reply would publish a peer's transcript or a ledger to an
+        # audience the admission never saw. One entry per distinct audience per turn,
+        # keyed by the snapshot under ``AUDIENCE_ADMISSION_KEY_PREFIX`` so polling
+        # does not grow it. One record, one publisher check, both directions.
         self._steer_audience_fences: dict[str, dict] = {}
         # How many channel steers hold each AUDIENCE-keyed fence above. A channel
         # hand-off records one fence per distinct containment snapshot per turn

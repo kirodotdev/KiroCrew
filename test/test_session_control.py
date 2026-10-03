@@ -2755,13 +2755,26 @@ async def test_the_reply_leg_consults_the_fence_before_publishing(tmp_path):
         "one channel-neutral call site only; a second would need its own fence "
         f"check: {deliver_calls}"
     )
-    # EVERY cross-surface publication asks, not just the channel-neutral leg: Slack
-    # is an audience too, and it resolves its thread owner live. Four sites -- the
-    # channel-neutral reply, the Slack reply, the mid-turn tool stream, and the
-    # teardown's final task append, which would otherwise publish a title whose
-    # in-progress append was withheld.
+    # The channel-neutral leg judges the fence INSIDE the delivery, on the one
+    # binding read it resolves its target from (`publication_withheld`), so its call
+    # site hands the slot over instead of asking first -- asked first, the decision
+    # and the delivery would be two reads with the off-loop mirror-link writer free
+    # to retarget between them.
+    assert "slot=slot" in deliver_calls[0], deliver_calls[0]
+    # EVERY other cross-surface publication asks: Slack is an audience too, and it
+    # resolves its thread owner live. Three sites -- the Slack reply, the mid-turn
+    # tool stream, and the teardown's final task append, which would otherwise
+    # publish a title whose in-progress append was withheld.
     asks = src.count("cross_surface_withheld(state, slot)")
-    assert asks == 4, f"expected four fenced publication sites, found {asks}"
+    assert asks == 3, f"expected three fenced Slack publication sites, found {asks}"
+    # Each Slack site publishes to the thread it cached at turn start, not to the
+    # live binding, so each ALSO judges that destination as the room it is
+    # (`slack_publication_withheld`): a thread unlinked mid-turn is in neither side
+    # of the live comparison, yet the cached destination still receives the reply.
+    destination_asks = src.count("not slack_publication_withheld(")
+    assert (
+        destination_asks == 3
+    ), f"expected three destination-judged Slack sites, found {destination_asks}"
 
 
 @pytest.mark.asyncio
@@ -4384,7 +4397,7 @@ def test_a_mirror_link_landing_during_the_await_still_refuses(tmp_path, monkeypa
     """Eligibility decided before a suspension point says nothing at allocation time.
 
     The project directory is resolved in a worker thread, so the coroutine suspends
-    between the caller gate and the allocation. `_has_channel_mirror` reads the live
+    between the caller gate and the allocation. The caller gate reads the live
     session store, and a dashboard-born session can be given an outbound mirror link
     at any moment -- so a link registered inside that window would otherwise let a
     now-channel-backed caller publish a persistent session outside its containment.
@@ -4395,14 +4408,12 @@ def test_a_mirror_link_landing_during_the_await_still_refuses(tmp_path, monkeypa
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
     before = set(state._slots)
-    mirrored = {"now": False}
-
-    monkeypatch.setattr(sc, "_has_channel_mirror", lambda _state, _slot: mirrored["now"])
 
     def _resolve_then_mirror(_workspace):
         # Stand in for the interleaving: the mirror link lands while the project
-        # directory is still being resolved off-loop.
-        mirrored["now"] = True
+        # directory is still being resolved off-loop -- in the store the gate's
+        # re-assert reads, so it is the row that read sees.
+        state.sessions.set_mirror_link(_key(caller), "C0FFEE", "1758.0003")
         return str(tmp_path)
 
     monkeypatch.setattr(sc, "default_project_dir", _resolve_then_mirror)

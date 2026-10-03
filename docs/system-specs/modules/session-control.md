@@ -250,7 +250,9 @@ window and replaces it with a narrower one: the steer RPC suspends on
   publishes before any post-RPC check resumes, and a sent reply cannot be recalled.
   So the send also RECORDS the containment it was admitted under on the slot, before
   the RPC and synchronously with the authorization, and that record stays for the
-  whole turn. The publisher then asks `cross_surface_withheld` at delivery: it
+  whole turn. The publisher then judges the fence at delivery -- the Slack legs
+  through `cross_surface_withheld`, the channel-neutral leg on the one row it
+  delivers to (`publication_withheld`, below): it
   compares the containment holding THEN against each recorded admission and withholds
   the cross-surface leg when a constraint newly holds.
 
@@ -275,6 +277,77 @@ window and replaces it with a narrower one: the steer RPC suspends on
   interfered with publishes normally. And the record is TURN-SCOPED -- the teardown
   empties it unconditionally -- so one turn's withheld reply never judges the next by
   an authorization that was never about it.
+
+  The record has a second writer, for the opposite direction. The caller-side
+  admission gates -- `refuse_caller_surface`, which every targeted session-control
+  verb passes, `_refuse_ineligible_creator`, which a creation (and a fork of the
+  caller's own transcript, neither of which passes `authorize_target`) passes, and
+  the work ledger's `_caller_key`, which every ledger route passes --
+  stamp the CALLER's own containment on the caller's slot the moment they admit it
+  (`record_audience_admission`), because what those verbs return -- a peer's
+  transcript, the roster of created sessions and their titles, a brief or a ledger
+  -- becomes part of the caller's reply and the same publisher resolves the
+  caller's mirror live at delivery: a mirror gained, retargeted, or widened by a
+  Slack thread between the admission and the publication would hand privately-read
+  content to an audience the admission never saw, and a sent reply cannot be
+  recalled. Written at the gates and never per verb, so a read path cannot be added
+  without it. What is stamped is the containment of the very row the gate JUDGED:
+  the owner-DM predicate answers a verdict (`judge_owner_dm` -> `OwnerDmVerdict`)
+  whose `admission` is built from the one read its clauses evaluated, and
+  `record_audience_admission` takes that object and has no read of its own -- a
+  record built from a second read would describe whatever row was live at that
+  second read, so a retarget landing between validation and record would be
+  recorded as the admitted audience without having been judged, and the publisher
+  would find live and recorded equal and publish the private read into the new
+  room. Written only INSIDE a dashboard-runner turn -- under the identity
+  `_run_chat` publishes on the slot at turn start (`_active_turn_session_key`)
+  and retires in the same teardown that empties this record -- because that
+  teardown is the only thing that clears it: a channel-born session's own turns
+  run in the messaging driver, which sets no such marker and runs no such
+  teardown, so an owner-DM conductor calling these tools from its channel turn
+  would otherwise leave an entry nothing clears, and a later mirror change would
+  make the publisher withhold the mirror leg of an unrelated dashboard reply on
+  that slot. Nothing is lost by not recording there: the dispatcher publishes its
+  own replies to the conversation the turn came from, and the runner's publisher
+  is this record's only reader. ONE entry per distinct audience per turn: the key is the snapshot
+  itself (`AUDIENCE_ADMISSION_KEY_PREFIX` + the containment snapshot), so a
+  conductor polling a worker every few seconds re-records the same audience as a
+  no-op and the record holds one entry per distinct containment state the turn
+  passed through -- each a real change the publisher must see -- never one per
+  call; there is deliberately no cap, because evicting an admission would turn the
+  fail-closed publication gate fail-open. The publisher's question is unchanged --
+  the containment holding at delivery is compared against every recorded
+  admission, steer or gate, and the cross-surface legs are withheld when a
+  constraint newly holds (`mirrored`, `mirror_retarget`, `linked`, ...), while
+  the transcript keeps the reply -- but the channel-neutral leg asks it of the ONE
+  row it delivers to: `_deliver_cross_surface_reply` reads the binding once
+  (`_read_mirror_binding`), judges that row against the record
+  (`publication_withheld`, the same comparison) and resolves its transport from the
+  same row. Decided on one read and delivered from another, a retarget landing
+  between the two -- the mirror-link writer runs off the loop, in
+  `asyncio.to_thread`, so nothing orders it against two reads on the loop -- would
+  be judged as the admitted DM and sent to the room that replaced it. The Slack
+  legs keep asking `cross_surface_withheld` synchronously with their own sends,
+  and each also judges the thread it CACHED at turn start as the room it is
+  (`slack_publication_withheld`, the same comparison over a binding naming only
+  that thread): the cached destination is not the live binding, so a thread
+  unlinked mid-turn -- before a read whose admission therefore names no Slack
+  room -- is in neither side of the live comparison while still receiving the
+  reply; judged as a room no admission saw, it is withheld.
+  Same exactness (a mirror that did not move,
+  or moved back, publishes), same turn scope. A retarget is also refused outright
+  at the caller's NEXT call, since every gate judges the current row; the record
+  closes the window between the last admitted call and the reply it fed. It covers
+  the newly admitted owner-DM mirror (retarget to a room) and the ordinary
+  unmirrored tab (a mirror gained mid-turn) alike. Pinned in
+  `test/test_session_control_owner_dm.py`
+  (`test_a_read_records_the_readers_audience_so_a_retarget_before_publication_withholds`,
+  `test_a_read_by_an_unmirrored_tab_withholds_a_mirror_gained_before_publication`,
+  `test_every_admission_gate_records_the_audience_not_only_the_transcript_read`,
+  `test_polling_records_one_audience_entry_per_turn_not_one_per_call`,
+  `test_a_retarget_landing_during_publication_never_reaches_the_new_room`,
+  `test_the_slack_legs_judge_the_thread_they_cached_not_the_live_binding`,
+  `test_a_binding_that_moves_after_turn_start_is_judged_per_destination`).
 - **Provenance.** Both arms hand over the same text: redacted through
   `sanitize_outbound` and prefixed with the
   `[sent by session <caller> via <verb>]` envelope, where `<verb>` is the tool
@@ -576,7 +649,7 @@ that is out of bounds is visible after the fact even though nothing happened.
 | Target is incognito or temporary | 403 | Never addressable, matching `list_sessions` |
 | Target is app-scoped | 403 | App sessions are the app's, not a peer's |
 | Target is channel-linked (`linked_session_key` set) | 403 | Its conversation is mirrored to Slack/Telegram, so reaching it crosses a surface boundary both ways — and its stop cannot be honoured, because the stop path addresses `dashboard:<slot>` while a linked slot's turns run under its linked key |
-| Target or caller has an outbound channel mirror (`get_mirror_link`) | 403 | The same boundary reached by the other mechanism. `linked_session_key` marks a channel-BORN slot; a dashboard-born slot given a mirror link republishes its turns to a channel just as surely, and the link lives in the session store rather than on the slot, so the slot-side check reads empty on exactly the session that mirrors. **Caller-side exception:** an owner DM whose mirror IS its own conversation — the same audience, established by `owner_dm_refusal` before either caller-side channel refusal runs; the threadless Slack row every unlinked channel session carries reads as no mirror from the store itself (`SessionMap.get_mirror_link` never synthesizes a Slack mirror without a thread), and a Slack thread bound beside the mirror row (`get_slack_link`) counts as a second audience. **A paused mirror refuses exactly like a live one.** `_has_channel_mirror` reads the binding, never `mirror_paused`: the dashboard's Disconnect row mutes outbound delivery and keeps the binding, inbound from that conversation still routes into the session (`SessionBinder.resolve_inbound` does not read the flag either), and one click on the same row resumes delivery — so a paused binding is a latent audience that returns without any further authorization, and admitting the session while it stands would let a session control peers between two clicks of the same toggle. Fail-closed here means the way back into session control is to **sever** the binding: the menu's `Unlink from X` item (`mirror-unlink` / `slack-unlink`) or an in-channel `/unlink`, both of which drop the row and the pause flag with it (#14068; pinned in `test_session_control_boundaries.py::test_a_paused_mirror_still_refuses`). Not decided here: whether a dashboard-born session mirroring to the owner's OWN DM is the contained audience `owner_dm_refusal` admits for the channel-born DM session itself — the predicate deliberately judges channel-born slots only, and a dashboard-born mirrored caller stays refused (see #14084) |
+| Target or caller has an outbound channel mirror (`get_mirror_link`) | 403 | The same boundary reached by the other mechanism. `linked_session_key` marks a channel-BORN slot; a dashboard-born slot given a mirror link republishes its turns to a channel just as surely, and the link lives in the session store rather than on the slot, so the slot-side check reads empty on exactly the session that mirrors. **Caller-side exception, two shapes:** an owner DM whose mirror IS its own conversation, and a dashboard-born caller whose outbound mirror IS the owner's own 1:1 DM (the conductor tab the operator linked to their phone) — the same audience either way, established by `owner_dm_refusal` before either caller-side channel refusal runs; the threadless Slack row every unlinked channel session carries reads as no mirror from the store itself (`SessionMap.get_mirror_link` never synthesizes a Slack mirror without a thread), and a Slack thread bound beside the mirror row (`get_slack_link`) counts as a second audience. **A paused mirror refuses exactly like a live one.** `_has_channel_mirror` reads the binding, never `mirror_paused`: the dashboard's Disconnect row mutes outbound delivery and keeps the binding, inbound from that conversation still routes into the session (`SessionBinder.resolve_inbound` does not read the flag either), and one click on the same row resumes delivery — so a paused binding is a latent audience that returns without any further authorization, and admitting the session while it stands would let a session control peers between two clicks of the same toggle. Fail-closed here means the way back into session control is to **sever** the binding: the menu's `Unlink from X` item (`mirror-unlink` / `slack-unlink`) or an in-channel `/unlink`, both of which drop the row and the pause flag with it (#14068; pinned in `test_session_control_boundaries.py::test_a_paused_mirror_still_refuses`). The exemption reads the binding the same way, so a paused mirror to the owner's own DM is admitted exactly as a live one is — the audience did not change. Whether a dashboard-born session mirroring to the owner's OWN DM is that contained audience was left open by #14084 and is decided by #15288: it is, on the same clauses, with the peer read off the transport's own record of the DM (see "Owner-DM channel callers" below) |
 | Target is in another workspace | 403 | Workspaces are the memory boundary |
 | Target names no open session | 404 | A mistake, not an authorization failure |
 | Title matches more than one session | 409 | Guessing means acting on the wrong conversation |
@@ -1199,37 +1272,55 @@ publish a private dispatch's acceptance bar there. That reasoning assumes an
 audience distinct from the operator. A **1:1 DM whose only human is the configured
 owner** has none — the "audience" the containment protects is the operator
 themself — and refusing it made every Discord and Telegram conversation a session
-that could dispatch nothing.
+that could dispatch nothing. Two shapes reach that audience: the channel-born DM
+session itself, and a **dashboard-born session whose outbound mirror is that DM**
+— a conductor tab the operator linked to their own phone, whose words come from the
+dashboard and whose readers are exactly the mirror's. Refusing the second while
+admitting the first (#15288, the question #14084 left open) cut a dashboard
+conductor off from every worker it had dispatched the moment it was mirrored:
+`session_send`, `session_read_message`, `session_create` and every `work_ledger_*`
+call refused, with the fleet's workers still running and nothing able to seed,
+read or accept them.
 
 Three gates decide this, and three different facts are available to them — the
 live `linked_session_key`, the key prefix (`is_channel_session_key`), the mirror
 store. A key prefix can never be cleared while a link can, so gates keying on
 different facts would disagree about one slot. They therefore consult **one
-predicate**, `session_control.owner_dm_refusal(state, slot)`, and the ledger
-reaches it through `session_owner_dm_refusal(state, session_key)`,
-which resolves the slot with the same `caller_slot_key` every session-control verb
-uses — so "the ledger gate and session control agree on the same slot" holds by
-construction. The predicate IS the clause walk: it returns the first fact that
-FAILED, and `""` when none did, which is the admission; there is no separate
-boolean face, because the only consumers are the three gates and each of them
-needs the reason, not a verdict. Every gate renders that reason into its refusal,
-so the three tell a caller the same thing about the same slot and none of them
-can name a clause the predicate did not actually evaluate. The refusal CODES are
-unchanged (`linked_session_caller`, `mirrored_caller`, `channel_session`).
+predicate**, `session_control.judge_owner_dm(state, slot)`, whose answer is an
+`OwnerDmVerdict`: `refusal` (the first fact that FAILED, `""` when none did, which
+is the admission -- `owner_dm_refusal(state, slot)` is this field alone, for the
+re-checks that need only the reason), `mirrored` (the fail-closed reading of the
+same row, for the `mirrored_caller` refusal) and `admission` (the containment of
+that row, the object the gates record). The ledger's entry gate judges the slot
+`caller_slot_key` resolves -- the same resolution every session-control verb uses
+-- so "the ledger gate and session control agree on the same slot" holds by
+construction (`session_owner_dm_refusal(state, session_key)` is the reason-only
+form its post-await re-checks use). Every field of the verdict comes from ONE read
+of the slot's binding (`_read_mirror_binding`: the mirror row and the Slack
+binding, the two accessors the delivery legs read); no gate probes the store a
+second time to decide what the first read already saw, and the audience it records
+is that read -- the reason a judged row and a recorded row can never differ. There
+is no separate boolean face, because the only consumers are the three gates and
+each of them needs the reason, not a verdict. Every gate renders that reason into
+its refusal — the mirrored refusals too, since the mirrored shape can now fail a
+clause — so the three tell a caller the same thing about the same slot and none
+of them can name a clause the predicate did not actually evaluate. The refusal
+CODES are unchanged (`linked_session_caller`, `mirrored_caller`,
+`channel_session`). Both shapes are admitted on the same positive facts — a
+verified surface, a live roster naming exactly one owner who is the
+conversation's peer, no wider room bound beside it — and differ only in where the
+conversation and its peer are read from. The predicate is a conjunction of those
+facts, and any it cannot establish answers **false**.
 
-The predicate is a conjunction of positive facts, and any it cannot establish
-answers **false**:
+**The channel-born shape** — the slot's `linked_session_key` is a channel key (a
+`cron:<job_id>` link is not):
 
-1. The slot is channel-born — its `linked_session_key` is a channel key (a
-   `cron:<job_id>` link is not). A dashboard-born slot that mirrors to a DM is
-   not the subject: its own conversation is the dashboard, and the mirror refusal
-   keeps judging it as before.
-2. The key parses under the canonical grammar (`messaging.link.parse_session_key`)
+1. The key parses under the canonical grammar (`messaging.link.parse_session_key`)
    as a **direct** conversation with exactly one peer, on a surface in
    `OWNER_DM_CONDUCTOR_SURFACES`. A `group`/`forum` key names a wider audience; a
    `unified` bucket names no peer; the legacy two-segment Slack shape does not
    parse; a surface outside the set fails closed by construction.
-3. The channel's **live** transport names exactly one owner and it is that peer:
+2. The channel's **live** transport names exactly one owner and it is that peer:
    `messaging.transport.sole_direct_target(transport.configured_targets())`, the
    same one-identity rule `/sessions` and the proactive owner DM apply, shared with
    `_owner_dm_target` so the two surfaces name the same human. An allow-list is a
@@ -1237,8 +1328,10 @@ answers **false**:
    the operator, so two entries name nobody. Read off the transport (the roster in
    force now, reloaded live, an in-memory read that stays callable from
    `close_target`'s no-suspension re-check) rather than the config record. An
-   absent transport means the channel is not running and refuses.
-4. The outbound mirror, if any, **is** the conversation the session lives in. The
+   absent transport means the channel is not running and refuses. This clause is
+   one helper (`_sole_owner`) both shapes call, so they cannot drift on who the
+   owner is.
+3. The outbound mirror, if any, **is** the conversation the session lives in. The
    dispatcher binds the DM as its own mirror on every turn, and that is the same
    audience — but the dashboard can retarget a mirror at any thread or channel,
    and a retargeted DM republishes what it reads to people who are not the owner.
@@ -1292,42 +1385,134 @@ answers **false**:
    out of scope here, since that store serves the auto-compact notice, whose own
    reason for being in memory is that a restart takes the live session with it.
 
-**What is relaxed.** An admitted owner DM may `session_create`, and may `send`,
-`read`, `stop` and `close` **the sessions it created**, and may hold a work ledger
-— the whole conductor loop. Holding a ledger needs one more thing than the gate:
-the ledger is a projection of the crew log and appends every write to the acting
-session's log, refusing (`crew_log_unrecorded`) when there is nowhere to append,
-so the Discord and Telegram dispatchers open their own sessions' crew logs ahead
-of each turn exactly as the dashboard runner does
-(`messaging.dispatch.open_turn_crew_log`, see [messaging](messaging.md)). **What
-is kept.** It is creator-fenced:
+**The dashboard-born shape** — the slot has no channel link, and the mirror row
+`SessionMap.get_mirror_link` holds for its effective key is the subject:
+
+1. The slot is an **attended chat tab** — a person's own, or one an agent created
+   — and not an unattended slot (`UNATTENDED_SLOT_PREFIXES`). A cron tab's `cron:`
+   link is not a channel link, so it reaches this shape with a plain key, and a
+   cron slot is otherwise an admitted (fenced) session-control source; but the
+   audience argument rests on the owner typing the words the mirror republishes,
+   which no scheduled run's tab satisfies, so such a tab mirrored to the owner's
+   DM keeps today's mirror refusal (a workflow result tab is refused as a source
+   before the predicate runs).
+2. The slot **has** an outbound mirror. An unmirrored dashboard tab is not the
+   owner's DM — it is nobody's channel conversation — and no gate consults the
+   predicate for it, since the gates ask only about a linked or mirrored caller
+   (`_has_channel_mirror` answering false admits it as the ordinary caller it is).
+3. The mirror is on a surface in `OWNER_DM_CONDUCTOR_SURFACES` and **names no
+   thread**. The Slack link the store synthesizes for a threaded Slack row fails
+   the first test; a Telegram forum topic fails the second. A Discord thread
+   carries its snowflake as the channel id with no thread id, so it falls to the
+   peer clause instead — a guild room is never on record as anyone's DM.
+4. The channel's **live** transport names exactly one owner (clause 2 of the
+   channel-born shape, the same `_sole_owner` call) **and places the mirror's
+   conversation as a DM with exactly that person**:
+   `transport.direct_peer_of(mirror.channel_id)`, the contract hook described in
+   [messaging](messaging.md). Nothing is derived from the conversation id itself,
+   because whether it equals the peer is a per-platform fact only the transport
+   knows: a Discord DM link persists the channel id `create_dm_channel` returned,
+   unrelated to the user snowflake, while a Telegram private `chat_id` IS the user
+   id — attested only when the allow-listed id is a positive integer, since a
+   group or supergroup `chat_id` is negative and the allow-list is operator-edited
+   text. The record the transport answers from is the one it writes when it opens
+   the DM — the dashboard's connect row resolves a `user:<id>` target through
+   `resolve_configured_target`, which is that call — or when an authorized message
+   arrives from it, and on Discord that record lives in the process
+   (`cached_dm_recipient`, the pairing the mid-send re-check also decides on). The
+   hook answers a peer or nothing, so one refusal covers the two things "nothing"
+   means and does not pretend to tell them apart: a conversation the transport
+   would not place as a DM at all (a guild room or thread, a Telegram group or
+   forum, a chat outside the roster the transport opens DMs for), and a Discord
+   DM whose pairing a gateway restart dropped, until the DM is re-opened or its
+   peer writes into it. That is `MIRROR_PEER_NOT_ON_RECORD`, the counterpart of
+   `ORIGIN_NOT_ON_RECORD`: it names both causes and states the remedy for the DM
+   it may be and for nothing else. Every other outcome is the roster clause's own
+   refusal: a DM the transport DOES place, with a peer the roster does not name as
+   its sole owner — a stranger's DM, or the owner's DM on a roster that names two
+   people — refuses with the same words the channel-born shape uses.
+4. No Slack thread is bound beside the mirror row, read through `get_slack_link`
+   on the slot's own effective key, for the reason clause 3 of the channel-born
+   shape gives: `get_mirror_link` answers the `mirror` row alone when one exists.
+
+There is no origin clause for this shape because there is no origin: the slot was
+born in the dashboard, and the dashboard is where its words come from. The retarget
+the channel-born origin clause catches is caught here by the peer clause — a mirror
+moved to a room or to a stranger's DM stops naming the sole owner — and a retarget
+while a session-control call is in flight is judged at the **next** call, since
+every gate consults the current row and never an earlier admission, and the ledger
+re-checks after each read it awaits across (the same post-read re-check the
+channel-born shape gets). The one window a next-call judgement cannot close is the
+reply itself: a transcript read under the owner-DM mirror becomes part of the
+reader's reply, which its turn publishes to the mirror later, resolved live — so a
+retarget landing between the read and that publication would put the transcript in
+front of the new room. The caller-side admission gates therefore record the
+caller's containment (`record_audience_admission`) -- the containment of the row
+the predicate judged, carried on its verdict, never a second read -- and the
+publisher withholds the cross-surface legs when it has changed (the audience-fence
+record above: `publication_withheld` on the one row the channel-neutral leg
+delivers to, `cross_surface_withheld` for the Slack legs). The drain-time
+re-validation of queued prompts (`containment_snapshot`) is untouched: it judges
+the TARGET's containment, and a dashboard conductor's own mirror was never one of
+its constraints. A paused mirror to the owner's DM is admitted exactly as a live
+one is, for the reason the paused origin mirror is: the predicate reads the
+binding and never `mirror_paused`, and the audience did not change.
+
+**What is relaxed.** An admitted owner DM — either shape — may `session_create`,
+and may `send`, `read`, `stop` and `close` the sessions its reach covers, and may
+hold a work ledger — the whole conductor loop. Holding a ledger needs one more
+thing than the gate: the ledger is a projection of the crew log and appends every
+write to the acting session's log, refusing (`crew_log_unrecorded`) when there is
+nowhere to append, so the Discord and Telegram dispatchers open their own sessions'
+crew logs ahead of each turn exactly as the dashboard runner does
+(`messaging.dispatch.open_turn_crew_log`, see [messaging](messaging.md)); a
+dashboard-born conductor's log is opened by the dashboard runner as it always was.
+**What is kept.** The channel-born DM is creator-fenced:
 `_caller_is_ownership_fenced` treats every non-cron channel link as fenced (the
 only linked caller that gets past the refusals is an owner DM), so it inherits a
 crew member's reach, not the owner's own tab's. A wrong audience inference
 therefore costs the sessions the DM created and never the person's other
 conversations — `session_read_message` on an arbitrary private tab, the disclosure
 the containment was written for, is still refused (`not_creator`, worded "an
-owner-DM channel session can only control sessions it created itself"). Group and
-thread sessions on every channel stay refused by all three gates; every channel
-outside the set stays refused; `channel.CHANNEL_AGENT_BLOCKED_TOOLS` (the
-multi-agent Channel feature's permission-request block) is untouched; the
-target-side refusals are untouched, so a channel session is still never a
-`session_send` target. The reach is not new to the trust model: the same DM
-already resumes any dashboard session into itself through `!sessions` /
-`/sessions` under the same single-owner rule.
+owner-DM channel session can only control sessions it created itself"). The
+dashboard-born shape changes the fence in **neither** direction: the exemption
+waives the two channel refusals and nothing else, so a person's own `chat-*` tab
+keeps the reach it had before the link (its authority is the owner's dashboard
+session — the words that drive it are typed into the dashboard by the authenticated
+owner, and the mirror the predicate admitted changes who reads them, the owner
+alone, not who authored them; fencing it on the mirror would take the owner's own
+reach away for the price of linking a tab to their phone, including the
+`memory_delegation_denied` refusal a fenced caller meets when it dispatches a crew
+member's worker), while a tab an agent created stays fenced by its `_created_by`
+mark whether or not it mirrors. Group and thread sessions on every channel stay
+refused by all three gates; every channel outside the set stays refused; every
+other mirror — a guild channel or thread, a Slack thread, a group, a DM with anyone
+but the sole owner, a DM the transport cannot place — stays refused with today's
+codes; `channel.CHANNEL_AGENT_BLOCKED_TOOLS` (the multi-agent Channel feature's
+permission-request block) is untouched; the target-side refusals are untouched, so
+a channel session, and a mirrored session, is still never a `session_send` target.
+The reach is not new to the trust model: the same DM already resumes any dashboard
+session into itself through `!sessions` / `/sessions` under the same single-owner
+rule, and the same dashboard tab already had it before the link.
 
 **Which channels got which path.** Discord and Telegram: the predicate, because
-both facts membership asserts were verified against their transports — the DM key
-is `{surface}:{agent}:direct:{peer}` and `configured_targets()` advertises that peer
-as `user:{peer}` from configured state alone (Weixin and WeCom fold learned
+the three facts membership asserts were verified against their transports — the
+DM key is `{surface}:{agent}:direct:{peer}`, `configured_targets()` advertises that
+peer as `user:{peer}` from configured state alone (Weixin and WeCom fold learned
 identities in, which is why `constants.CHANNEL_OWNER_DM_NAMESPACES` excludes them
-and this set is a subset of it). Slack, Webex, Teams, WhatsApp, iMessage, Feishu,
-WeCom, Weixin and `unified`-scope DMs: no relaxation — they read as contained
-exactly as before. A channel graduates by verifying the two facts for it and adding
-its name to `OWNER_DM_CONDUCTOR_SURFACES`; nothing else changes. No "detach from
-channel" dashboard action was built: the dashboard's Disconnect row pauses outbound
+and this set is a subset of it), and the transport attests a DM conversation's peer
+from its own state (`direct_peer_of`: Discord from the pairing its client records,
+Telegram from the identity a positive-integer private `chat_id` carries). Slack, Webex, Teams,
+WhatsApp, iMessage, Feishu, WeCom, Weixin and `unified`-scope DMs: no relaxation —
+they read as contained exactly as before, in both shapes, and a mirror onto any of
+them fails the surface clause before a transport is consulted. A channel graduates
+by verifying the three facts for it, overriding `direct_peer_of` (the base class
+answers `""`, which admits nothing), and adding its name to
+`OWNER_DM_CONDUCTOR_SURFACES`; nothing else changes. No "detach from channel"
+dashboard action was built: the dashboard's Disconnect row pauses outbound
 delivery and retains the binding by design (see [session](session.md)), and with
-the predicate in place an owner needs neither it nor an unlink to conduct.
+the predicate in place an owner needs neither it nor an unlink to conduct — from
+the DM or from the tab mirrored to it.
 
 Related fold: the ledger's bind ownership check compares `_created_by` (the
 creator's **slot** key, as `session_create` stamps it) against the conductor
@@ -1342,10 +1527,36 @@ thread and a Telegram forum topic refused by all three gates; an owner DM on
 Discord and on Telegram conducting end to end; the fence; the paused mirror; every
 fail-closed edge (two identities, a stranger's DM, an absent or unavailable
 transport, a retargeted mirror, an unknown origin, an unreadable store,
-unparseable and non-direct keys, a dashboard-born mirrored caller); gate agreement
-over one slot; the post-read re-check; the bind fold; that an owner DM which
-`!unlink`s its own mirror is still admitted by all three gates while a threaded
-Slack mirror refuses; and that mirror-unlink clears only the mirror. The crew-log
+unparseable and non-direct keys); gate agreement over one slot; the post-read
+re-check; the bind fold; that an owner DM which `!unlink`s its own mirror is still
+admitted by all three gates while a threaded Slack mirror refuses; and that
+mirror-unlink clears only the mirror. For the dashboard-born shape: a `chat-*`
+tab mirrored to the owner's DM conducting end to end on Discord and on Telegram;
+the same tab mirrored to a guild thread, a stranger's DM, a two-identity roster, a
+forum topic, an unverified surface and a Slack thread refused with today's codes;
+a Slack thread bound beside the owner-DM mirror; a retarget judged at the next
+call and an unlink restoring the ordinary tab; the pairing not on record; a cron
+tab and a workflow tab mirrored to the owner's DM refused as unattended; every
+fail-closed edge of the shape (no transport, an unreadable roster, an unavailable
+owner, a peer lookup that raises, an unreadable store); that the admitted tab keeps
+its reach while an agent-created child mirrored to the same DM stays fenced; gate
+agreement over a mirrored slot; that every surface in the set overrides
+`direct_peer_of`; and the two real transports' answers. The audience record: a
+read under the owner-DM mirror is withheld from a retargeted or widened mirror at
+publication and published to an unchanged one; the same record for a plain tab
+that gains a mirror; every admission gate writing it, not only the transcript
+read; polling recording one entry per audience, not one per call; and that a
+retarget landing between the gate's validation and its record -- walked across
+every read the gate could make, on the session-control gate and on the ledger's
+-- is never the recorded audience: the record is the judged row, a reply under the
+retarget is withheld, and the admission read the row exactly once; and that a
+channel-born owner DM conducting from its own channel turn records no audience
+(so a later dashboard reply on that slot is not withheld after a mirror change)
+while the same slot driven from the dashboard records and still fences, the
+marker being the runner's own; and that a turn whose only call is `create_session`
+records its audience at the creator gate; and that a Telegram allow-list entry that
+is not a positive integer (a group id, zero, text) is never attested as a DM peer,
+so a tab mirrored to such a conversation stays refused with the real transport. The crew-log
 opener is pinned in `test/test_discord.py` and `test/test_telegram.py`: a DM turn
 followed by a `work_ledger_record` write against the real writer lands, and the
 resumed-session path opens nothing.

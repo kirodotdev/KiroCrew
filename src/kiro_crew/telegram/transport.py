@@ -432,6 +432,32 @@ class TelegramTransport(MessagingTransport):
         """Only one unambiguous owner DM may drive a dashboard session inbound."""
         return thread_id is None and len(self._allowed) == 1 and conversation_id in self._allowed
 
+    def direct_peer_of(self, conversation_id: str) -> str:
+        """A private ``chat_id`` IS the peer's ``user_id``, so the conversation
+        names its own peer -- for the conversations this transport opens, which are
+        exactly the allow-listed users' private chats (:meth:`resolve_conversation`
+        returns the user id unchanged). Answered on the same roster test
+        :meth:`may_send_to` applies to a threadless conversation, so a group or
+        forum ``chat_id``, which is never on the user roster, reads ``""``.
+
+        The roster alone is not the test, because the roster is operator-edited
+        text: a Telegram user id is a positive integer, while a group or
+        supergroup ``chat_id`` is NEGATIVE, so a negative id pasted into the user
+        allow-list would let a group conversation read as the owner's own DM --
+        and the owner-DM exemption, which trusts this answer, would then admit
+        session controls whose private output lands in the group. Only an
+        allow-listed id that parses as an integer greater than zero is attested; a
+        negative, zero or non-numeric entry reads ``""`` (no peer), exactly as the
+        base transport answers, and the mirrored session stays refused.
+        """
+        if not conversation_id or conversation_id not in self._allowed:
+            return ""
+        try:
+            user_id = int(conversation_id)
+        except ValueError:
+            return ""
+        return conversation_id if user_id > 0 else ""
+
     # -- Lifecycle ----------------------------------------------------------
     async def connect(self) -> None:
         await self._client.start()

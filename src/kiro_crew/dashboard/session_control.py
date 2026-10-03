@@ -195,18 +195,24 @@ CRON_LINK_PREFIX = "cron:"
 APP_CRON_OWNER_PREFIX = "app:"
 
 # The channels whose 1:1 DM session can be recognised as the configured owner's
-# own conversation by :func:`owner_dm_refusal`. Membership asserts two facts
+# own conversation by :func:`owner_dm_refusal`. Membership asserts three facts
 # that were VERIFIED against the transport, and a surface is added only by
-# verifying both again for it:
+# verifying all of them again for it:
 #
 # * the dispatcher mints its DM key as ``{surface}:{agent}:direct:{peer}``
 #   (``build_dm_session_key`` with ``chat_type=direct``), so the key names the one
 #   human in the conversation and a thread, group, forum or unified key does not
-#   parse as one; and
+#   parse as one;
 # * ``configured_targets()`` advertises exactly that peer as ``user:{peer}`` and
 #   draws from CONFIGURED state alone -- never from identities learned off inbound
 #   traffic, which is the gap ``constants.CHANNEL_OWNER_DM_NAMESPACES`` names for
-#   Weixin and WeCom and the reason this set is a subset of it.
+#   Weixin and WeCom and the reason this set is a subset of it; and
+# * the transport attests, from its own state, which person a DM conversation it
+#   opened or received a message from belongs to (``direct_peer_of``), so a
+#   dashboard-born slot's persisted mirror row -- a conversation id, never a
+#   principal -- can be placed as the owner's DM or refused. Discord answers from
+#   the ``create_dm_channel`` / inbound-DM pairing its client records; Telegram's
+#   private ``chat_id`` is the peer.
 #
 # Every other channel fails closed here and keeps its full containment.
 OWNER_DM_CONDUCTOR_SURFACES: frozenset[str] = frozenset({"discord", "telegram"})
@@ -364,7 +370,15 @@ def _caller_is_ownership_fenced(state: "DashboardState", caller_key: str) -> boo
       the admission keeps the fence readable without the transport roster or the
       session store. What it buys is the bound on a wrong audience inference: the
       DM reaches the workers it dispatched and never the person's own tabs, the
-      same reach a crew member has;
+      same reach a crew member has. A DASHBOARD-born slot the same predicate
+      admits on its outbound mirror is deliberately not a fifth population: the
+      fence follows authority, and that slot's authority is the person's own
+      dashboard session -- the words that drive it are typed into the dashboard by
+      the authenticated owner, and the mirror the predicate admitted changes who
+      READS them (the owner, alone) and not who authored them. Fencing it on the
+      mirror would take the owner's own reach away for the price of linking a tab
+      to their phone, which is the one thing the admission exists to allow. When
+      an AGENT made that slot it is fenced anyway, by the mark below;
     * **anything any of them created**, which is the part a key prefix cannot
       see. A created child is minted with a plain ``chat-`` key and INHERITS the
       creator's agent, so a fenced caller running a session-control agent would
@@ -889,15 +903,50 @@ def _probe_channel_mirror_for_key(state: "DashboardState", session_key: str) -> 
     two store reads (mirror row plus Slack binding) as the live form.
     """
     sessions = getattr(state, "sessions", None)
-    getter = getattr(sessions, "get_mirror_link", None)
-    if getter is None:
+    if getattr(sessions, "get_mirror_link", None) is None:
         return ""
+    binding = _read_mirror_binding(sessions, session_key)
+    return None if binding is None else _mirror_identity_of(binding)
+
+
+def _read_mirror_binding(sessions: Any, session_key: str) -> tuple[Any, str, str] | None:
+    """ONE read of *session_key*'s outbound binding -- ``(mirror row, Slack thread,
+    Slack channel)`` -- or ``None`` when the store cannot answer.
+
+    The single store read a caller-side admission rests on. :func:`judge_owner_dm`
+    judges its clauses on this tuple AND builds the audience it records from the
+    same tuple (:func:`_mirror_identity_of`), so the row a gate validates and the
+    row it records are one object: a retarget that lands after this read is a
+    change the publisher sees against the record, never a room the record adopts
+    unjudged. The probe (:func:`_probe_channel_mirror_for_key`) is this read
+    reduced to its identity, so the drain and the publisher compare the same two
+    accessors the delivery legs read: ``get_mirror_link`` and, through
+    :func:`_slack_thread_of`, ``get_slack_link``.
+
+    *sessions* must carry ``get_mirror_link``; the callers check that first, since
+    a store without the accessor is "no mirror" (a duck-typed slot on the
+    spec-builder queue path) rather than an unreadable one. A store whose accessor
+    RAISES is unreadable and reads ``None`` -- the tri-state the two consumers need,
+    see :func:`_probe_channel_mirror`.
+    """
     try:
-        link = getter(session_key)
+        link = sessions.get_mirror_link(session_key)
         slack_thread, slack_channel = _slack_thread_of(sessions, session_key)
     except Exception:
         logger.debug("mirror-link probe failed", exc_info=True)
         return None
+    return link, slack_thread, slack_channel
+
+
+def _mirror_identity_of(binding: tuple[Any, str, str]) -> str:
+    """The probe identity of one :func:`_read_mirror_binding` -- its rooms, joined.
+
+    One ``type:channel:thread`` part per accessor that names a room, joined by
+    :data:`MIRROR_IDENTITY_SEPARATOR`; ``""`` when neither does. The Slack thread is
+    appended only when one is named: a threadless Slack row is bookkeeping the store
+    itself never reads as a mirror.
+    """
+    link, slack_thread, slack_channel = binding
     parts: list[str] = []
     if link:
         parts.append(
@@ -986,9 +1035,90 @@ hunting for a link it cannot clear; the exemption itself stays withheld, because
 mirror without the recorded origin cannot be told from a retarget.
 """
 
+MIRROR_PEER_NOT_ON_RECORD = (
+    "the channel does not place the mirror's conversation as anyone's 1:1 direct "
+    "message -- it is not a DM this channel opened or received a message from (a "
+    "room, a thread, a group, a chat outside its roster), or that record was lost "
+    "with a gateway restart; if it is the owner's DM, send a message from it (or "
+    "link it again) and retry"
+)
+"""The mirrored shape's counterpart of :data:`ORIGIN_NOT_ON_RECORD`.
+
+A mirror row persists a conversation id and no principal, and the transport's
+answer to "whose DM is this" (``direct_peer_of``) is a peer or nothing -- so this
+one refusal covers the two things "nothing" can mean, which the predicate cannot
+tell apart at this seam and does not pretend to: a conversation that is not a DM
+the transport would place at all (a guild room or thread, a Telegram group or
+forum, a chat outside the roster the transport opens DMs for), and a Discord DM
+whose in-process pairing a gateway restart dropped, until the DM is re-opened or
+its peer writes into it. The remedy is therefore stated for the DM it may be and
+for nothing else. A DM the transport DOES place with someone other than the
+roster's sole owner never reads this; it reads :data:`NOT_THE_SOLE_OWNER`.
+"""
+
+# The two clause reasons both shapes of :func:`owner_dm_refusal` share, spelled once
+# so the channel-born and the mirrored dashboard-born slot are refused in the same
+# words for the same missing fact.
+NOT_THE_SOLE_OWNER = "the channel's roster does not name this conversation's peer as its sole owner"
+SLACK_THREAD_BESIDE = "the session also mirrors to a Slack thread"
+
+
+def _sole_owner(state: "DashboardState", surface: str) -> tuple[Any, str, str]:
+    """``(transport, owner, "")`` -- *surface*'s LIVE transport and the one
+    ``user:<id>`` target it names as owner (``""`` when it names none) -- or
+    ``(None, "", why)`` when the clause cannot be established at all.
+
+    The roster clause both shapes of :func:`owner_dm_refusal` walk, in one place:
+    the transport is the roster in force NOW (reloaded live, the very set that
+    admits the peer's turns), read in memory so the predicate stays callable from
+    ``close_target``'s no-suspension re-check; an absent transport means the
+    channel is not running and refuses; an unreadable roster refuses. The caller
+    compares *owner* against the peer it established for its own shape.
+    """
+    transport = state.get_channel_transport(surface)
+    if transport is None:
+        return None, "", f"the {surface} channel is not running"
+    try:
+        owner = sole_direct_target(transport.configured_targets())
+    except Exception:
+        logger.debug("owner-DM check: %s targets unreadable", surface, exc_info=True)
+        return None, "", f"the {surface} roster is unreadable"
+    return transport, owner, ""
+
+
+@dataclass(frozen=True)
+class OwnerDmVerdict:
+    """What ONE reading of a caller's outbound binding decides, as one object.
+
+    ``refusal`` is the predicate's answer -- ``""`` when the slot is the configured
+    owner's own DM (:func:`owner_dm_refusal` is this field alone). ``mirrored`` is
+    the gates' fail-closed reading of the same row -- an unreadable store counts as
+    mirrored -- for the ``mirrored_caller`` refusal, so a gate never re-probes the
+    store to decide it. ``admission`` is the containment the verdict rests on, in the
+    queue-entry ``meta`` shape (:func:`containment_meta`), built from the very row
+    the clauses judged: the object :func:`record_audience_admission` stores, so the
+    audience a gate admits and the audience it records cannot be two different rows.
+    """
+
+    refusal: str
+    mirrored: bool
+    admission: dict[str, Any]
+
 
 def owner_dm_refusal(state: "DashboardState", slot: "_ChatSlot") -> str:
     """Why *slot* is not the configured owner's own DM -- ``""`` when it is.
+
+    The refusal field of :func:`judge_owner_dm`, for callers that need the reason
+    alone (the ledger's :func:`session_owner_dm_refusal`, the re-checks after an
+    await). A GATE that admits on the answer must call :func:`judge_owner_dm` itself
+    and record the verdict's ``admission``: the reason and the audience come from one
+    read there, and this view discards the audience.
+    """
+    return judge_owner_dm(state, slot).refusal
+
+
+def judge_owner_dm(state: "DashboardState", slot: "_ChatSlot") -> OwnerDmVerdict:
+    """Judge *slot* against the owner-DM exemption on ONE read of its binding.
 
     The ONE predicate the three channel-containment gates consult -- the creator
     gate and the target gate here, the ledger gate in ``handlers/work_ledger.py``
@@ -1001,16 +1131,38 @@ def owner_dm_refusal(state: "DashboardState", slot: "_ChatSlot") -> str:
     being protected is the operator themself, and refusing it makes every Discord
     and Telegram conversation a session that can dispatch nothing.
 
+    The answer is an :class:`OwnerDmVerdict`, and every field of it comes from ONE
+    read of the slot's binding (:func:`_read_mirror_binding`): the clauses below
+    judge that row, the ``mirrored`` flag is that row's fail-closed reading, and
+    the ``admission`` the gates record is built from that row and no other
+    (:func:`_meta_from_probe`). A gate that judged one read and recorded a second
+    would leave a window between them -- a retarget landing there (a link handler
+    on another thread) would be recorded as the admitted audience without ever
+    having been judged, and the publisher, comparing the live row against that
+    record, would find nothing changed and publish a privately-read transcript
+    into the new room. Reading once closes the window by construction: whatever
+    lands after the read is a difference against the record.
+
+    Two shapes reach that audience, and the predicate admits both on the same
+    positive facts -- a verified surface, a live roster naming exactly one owner
+    who is the conversation's peer, and no wider room bound beside it -- differing
+    only in where the conversation and its peer are read from:
+
+    * a CHANNEL-BORN slot (``linked_session_key`` is a channel key): the DM the
+      session lives in, whose key names the peer; and
+    * a DASHBOARD-BORN slot whose OUTBOUND mirror (``SessionMap.get_mirror_link``)
+      is such a DM -- a conductor tab the operator linked to their own phone. Its
+      words come from the dashboard and its readers are the mirror's, so the
+      audience is identical; what differs is that the mirror row persists a
+      conversation id and no principal, so the peer is read off the transport's
+      own record of the DM (``direct_peer_of``).
+
     Every clause is a positive fact, and the first one that cannot be established
     is the answer, so a gate that refuses can say which fact was missing without a
     second walk that could disagree with the first. Every reason is generic -- a
     surface name at most, never an id -- because it is rendered into the refusal
-    the caller reads in its own channel. In order:
+    the caller reads in its own channel. For the channel-born shape, in order:
 
-    * *slot* is channel-born: its ``linked_session_key`` is a channel key (a cron
-      tab's link is not, see ``CRON_LINK_PREFIX``). A dashboard-born slot is not
-      this predicate's subject even when it mirrors to a DM -- its own
-      conversation is the dashboard, and the mirror refusal keeps judging it.
     * The key parses under the canonical grammar as a DIRECT conversation with
       exactly one peer, on a surface in :data:`OWNER_DM_CONDUCTOR_SURFACES`. A
       thread, group or forum key names a wider audience; a ``unified`` bucket
@@ -1058,15 +1210,139 @@ def owner_dm_refusal(state: "DashboardState", slot: "_ChatSlot") -> str:
       ``thread_ts`` refuses: the DM's mirror still equals its origin, and the
       Slack thread is a room full of people who are not the owner.
 
-    What this deliberately does NOT establish is unfenced reach: an admitted DM is
-    creator-fenced by :func:`_caller_is_ownership_fenced`, so a wrong inference
-    costs the sessions the DM created and never the person's own tabs. Group and
-    thread sessions, every other channel, and ``channel.CHANNEL_AGENT_BLOCKED_TOOLS``
-    are untouched.
+    For the dashboard-born shape, in order:
+
+    * The slot is an attended chat tab -- a person's own, or one an agent created
+      -- and not an unattended one (``UNATTENDED_SLOT_PREFIXES``). A cron tab's
+      ``cron:`` link is not a channel link, so it reaches this shape with a plain
+      key, and a cron slot is otherwise an admitted (fenced) session-control
+      source; but the audience argument below rests on the owner typing the words
+      the mirror republishes, which no scheduled run's tab satisfies, so such a tab
+      keeps today's mirror refusal even when its mirror is the owner's DM.
+    * The slot HAS an outbound mirror. An unmirrored dashboard tab is not the
+      owner's DM -- it is nobody's channel conversation -- and the gates never
+      consult this predicate for it, since they ask only about a linked or
+      mirrored caller.
+    * The mirror is on a surface in :data:`OWNER_DM_CONDUCTOR_SURFACES` and names
+      no thread. The Slack mirror the store synthesizes for a threaded Slack row
+      fails the first test; a Telegram forum topic fails the second. A Discord
+      thread carries its snowflake as the channel id with no thread id, so it is
+      caught by the peer clause instead: a guild room is never on record as
+      anyone's DM.
+    * The channel's LIVE transport names exactly one owner -- the same roster
+      clause, through the same call -- and the transport places the mirror's
+      conversation as a DM with exactly that person (``direct_peer_of``). The
+      record it answers from is the one the transport writes when it opens the DM
+      (the dashboard link's ``resolve_configured_target``) or when an authorized
+      message arrives from it; on Discord that record lives in this process, so
+      a mirror linked before a gateway restart reads as unplaced until the DM is
+      re-opened or its peer writes into it, and a mirror aimed at a room reads the
+      same, since a room is never anyone's DM (:data:`MIRROR_PEER_NOT_ON_RECORD`
+      names both causes and the remedy for the DM it may be; a DM the transport
+      places with someone other than the sole owner reads
+      :data:`NOT_THE_SOLE_OWNER` instead). Nothing is derived from the
+      conversation id itself: whether it equals the peer is a per-platform fact
+      only the transport knows.
+    * No Slack thread is bound beside the mirror row, read through
+      ``get_slack_link`` for the reason given above -- the same clause, on the
+      slot's own effective key.
+
+    There is no origin clause for this shape because there is no origin: the slot
+    was born in the dashboard, and the dashboard is where its words come from. The
+    retarget the channel-born origin clause catches is caught here by the peer
+    clause -- a mirror moved to a room or to a stranger's DM stops naming the sole
+    owner -- and a retarget while a session-control call is in flight is judged at
+    the next call, since every gate consults the CURRENT row and never an earlier
+    admission (the ledger re-checks after each read it awaits across); what such a
+    call already read is covered by the audience the gate recorded from THIS read,
+    which the publisher compares against the row live at delivery.
+
+    What this deliberately does NOT establish is unfenced reach for the channel-born
+    shape: an admitted DM is creator-fenced by :func:`_caller_is_ownership_fenced`,
+    so a wrong inference costs the sessions the DM created and never the person's
+    own tabs. Nor does it change the fence for the dashboard-born shape, in either
+    direction: a person's own tab keeps the reach it had before the link and an
+    agent-created tab stays fenced by its ``_created_by`` mark (see the fence's own
+    notes on why the mirror is not a fifth population). Group and thread sessions,
+    every other channel, every other mirror, and
+    ``channel.CHANNEL_AGENT_BLOCKED_TOOLS`` are untouched.
+    """
+    sessions = getattr(state, "sessions", None)
+    binding: tuple[Any, str, str] | None
+    probed: str | None
+    if getattr(sessions, "get_mirror_link", None) is None:
+        # No store to ask: "no mirror" without touching the slot, exactly as
+        # :func:`_probe_channel_mirror` answers (a duck-typed slot on the queue
+        # path). The clauses still refuse the shape that needs the store.
+        binding, probed = None, ""
+    else:
+        try:
+            key = slot_history_key(slot)
+        except Exception:
+            logger.debug("mirror-link probe failed", exc_info=True)
+            key = None
+        binding = None if key is None else _read_mirror_binding(sessions, key)
+        probed = None if binding is None else _mirror_identity_of(binding)
+    return OwnerDmVerdict(
+        refusal=_owner_dm_clauses(state, slot, sessions, binding),
+        mirrored=True if probed is None else bool(probed),
+        admission=_meta_from_probe(state, slot, probed),
+    )
+
+
+def _owner_dm_clauses(
+    state: "DashboardState",
+    slot: "_ChatSlot",
+    sessions: Any,
+    binding: tuple[Any, str, str] | None,
+) -> str:
+    """The clauses of :func:`judge_owner_dm`, judged on the read it took.
+
+    *binding* is the slot's ``(mirror row, Slack thread, Slack channel)`` from
+    :func:`_read_mirror_binding`, ``None`` when the store could not answer -- the
+    ONLY reading of the mirror this function sees, so its verdict and the audience
+    recorded beside it describe one row. The origin (channel-born shape) is read
+    here: it is a validation input the record does not carry, not an audience.
     """
     link = _channel_link_of(slot)
     if not link:
-        return "the session is not channel-born"
+        # ── The dashboard-born shape: judged on its outbound mirror row. ──
+        if str(getattr(slot, "key", "")).startswith(UNATTENDED_SLOT_PREFIXES):
+            # A cron tab's ``cron:`` link is stripped above, so it lands here with
+            # a plain key -- and a cron slot IS admitted as a session-control
+            # source (fenced to what it created). What this shape admits is the
+            # PERSON's tab, whose words the owner types; a scheduled run's tab
+            # mirrored to the owner's DM keeps the mirror refusal it meets today,
+            # and a workflow result tab is refused as a source before this runs.
+            return "the session is unattended, not a person's dashboard tab"
+        if sessions is None:
+            return "the session store is unavailable"
+        if binding is None:
+            return "the session store is unreadable"
+        mirror, slack_thread, _slack_channel = binding
+        if mirror is None:
+            return "the session is neither channel-born nor mirrored"
+        surface = str(getattr(mirror, "channel_type", "") or "")
+        if surface not in OWNER_DM_CONDUCTOR_SURFACES:
+            return "the outbound mirror is not on a verified owner-DM surface"
+        if getattr(mirror, "thread_id", None):
+            return "the outbound mirror names a thread, not a 1:1 direct message"
+        transport, owner, why = _sole_owner(state, surface)
+        if why:
+            return why
+        try:
+            peer = str(transport.direct_peer_of(str(getattr(mirror, "channel_id", "") or "")) or "")
+        except Exception:
+            logger.debug("owner-DM check: %s peer lookup failed", surface, exc_info=True)
+            return f"the {surface} channel cannot place the mirror"
+        if not peer:
+            return MIRROR_PEER_NOT_ON_RECORD
+        if not owner or owner != f"{DM_TARGET_PREFIX}{peer}":
+            return NOT_THE_SOLE_OWNER
+        if slack_thread:
+            return SLACK_THREAD_BESIDE
+        return ""
+    # ── The channel-born shape: judged on the conversation it lives in. ──
     parsed = parse_session_key(link)
     if parsed is None:
         return "the session key does not name a channel conversation"
@@ -1074,30 +1350,25 @@ def owner_dm_refusal(state: "DashboardState", slot: "_ChatSlot") -> str:
         return f"{parsed.surface} is not a verified owner-DM surface"
     if parsed.chat_type != CHAT_TYPE_DIRECT or len(parsed.scope) != 1:
         return "the conversation is not a 1:1 direct message"
-    transport = state.get_channel_transport(parsed.surface)
-    if transport is None:
-        return f"the {parsed.surface} channel is not running"
-    try:
-        owner = sole_direct_target(transport.configured_targets())
-    except Exception:
-        logger.debug("owner-DM check: %s targets unreadable", parsed.surface, exc_info=True)
-        return f"the {parsed.surface} roster is unreadable"
+    _transport, owner, why = _sole_owner(state, parsed.surface)
+    if why:
+        return why
     if not owner or owner != f"{DM_TARGET_PREFIX}{parsed.scope[0]}":
-        return "the channel's roster does not name this conversation's peer as its sole owner"
-    sessions = getattr(state, "sessions", None)
+        return NOT_THE_SOLE_OWNER
     if sessions is None:
         return "the session store is unavailable"
+    if binding is None:
+        return "the session store is unreadable"
     try:
         origin = sessions.get_origin_link(link)
-        mirror = sessions.get_mirror_link(link)
-        slack_thread, _slack_channel = sessions.get_slack_link(link)
     except Exception:
         logger.debug("owner-DM check: session store unreadable for %s", link, exc_info=True)
         return "the session store is unreadable"
+    mirror, slack_thread, _slack_channel = binding
     if not isinstance(origin, ChannelLink):
         return ORIGIN_NOT_ON_RECORD
     if slack_thread:
-        return "the session also mirrors to a Slack thread"
+        return SLACK_THREAD_BESIDE
     if mirror is None or (isinstance(mirror, ChannelLink) and mirror == origin):
         return ""
     return "the outbound mirror points somewhere other than this conversation"
@@ -1220,7 +1491,22 @@ def containment_snapshot(
     and drain for a TAGGED entry — it is carried for the unmarked fail-closed
     path, where the baseline is all-False and any held constraint must count.
     """
-    probed = _probe_channel_mirror(state, slot)
+    return _snapshot_from_probe(
+        state, slot, _probe_channel_mirror(state, slot), on_probe_failure=on_probe_failure
+    )
+
+
+def _snapshot_from_probe(
+    state: "DashboardState", slot: "_ChatSlot", probed: str | None, *, on_probe_failure: bool
+) -> dict[str, Any]:
+    """:func:`containment_snapshot` over a probe already taken.
+
+    *probed* is :func:`_probe_channel_mirror`'s tri-state for *slot*. Split out so
+    :func:`judge_owner_dm` can build the audience it records from the SAME read it
+    judged rather than probing the store a second time -- the second read is where
+    a retarget could slip in between validation and record. Every other field is a
+    plain slot attribute read that cannot fail.
+    """
     snap: dict[str, Any] = {
         "linked": bool(getattr(slot, "linked_session_key", "")),
         "mirrored": on_probe_failure if probed is None else bool(probed),
@@ -1255,7 +1541,19 @@ def containment_meta(state: "DashboardState", slot: "_ChatSlot") -> dict[str, An
     current-constraint set — so an untagged producer can never ride a queued
     prompt past a boundary the tagged paths respect.
     """
-    return {QUEUED_CONTAINMENT_META_KEY: containment_snapshot(state, slot, on_probe_failure=False)}
+    return _meta_from_probe(state, slot, _probe_channel_mirror(state, slot))
+
+
+def _meta_from_probe(
+    state: "DashboardState", slot: "_ChatSlot", probed: str | None
+) -> dict[str, Any]:
+    """:func:`containment_meta` over a probe already taken -- the record shape an
+    :class:`OwnerDmVerdict` carries, built from the read the verdict judged."""
+    return {
+        QUEUED_CONTAINMENT_META_KEY: _snapshot_from_probe(
+            state, slot, probed, on_probe_failure=False
+        )
+    }
 
 
 def send_origin_meta(state: "DashboardState", sender_slot_key: str) -> dict[str, Any]:
@@ -1835,14 +2133,19 @@ def _refuse_ineligible_creator(state: "DashboardState", caller_slot: "_ChatSlot"
         )
     # The channel link and mirror refusals share ONE exemption with
     # `authorize_target`'s caller half: :func:`owner_dm_refusal` answering ``""``,
-    # a 1:1 DM whose only human is the configured owner and whose mirror (if any)
-    # is that same DM. It waives both together, because the predicate has already
-    # established that the mirror IS the DM -- waiving the link alone would refuse
-    # every owner DM on the origin mirror its dispatcher binds each turn. The
-    # refusal names the clause that failed: the code stays the same, but a DM that
-    # lost its origin to a gateway restart is told to send a message rather than
-    # left hunting for a link it cannot clear.
-    if why := owner_dm_refusal(state, caller_slot):
+    # a 1:1 DM whose only human is the configured owner -- the DM the session lives
+    # in, or the DM a dashboard tab mirrors to -- with no wider room bound beside
+    # it. It waives both together, because the predicate has already established
+    # that the mirror IS the DM -- waiving the link alone would refuse every owner
+    # DM on the origin mirror its dispatcher binds each turn. The refusal names the
+    # clause that failed: the code stays the same, but a DM that lost its origin to
+    # a gateway restart, or a mirror whose peer this process holds no record of, is
+    # told to send a message rather than left hunting for a link it cannot clear.
+    # Both refusals are decided from the ONE read the verdict took: its ``mirrored``
+    # flag is that row's fail-closed reading, so the gate never probes the store a
+    # second time to decide what the first read already saw.
+    verdict = judge_owner_dm(state, caller_slot)
+    if why := verdict.refusal:
         if _channel_link_of(caller_slot):
             # A cron tab's link is its own run transcript, not a channel thread,
             # and is exempt -- see CRON_LINK_PREFIX. Everything else is a channel
@@ -1852,11 +2155,19 @@ def _refuse_ineligible_creator(state: "DashboardState", caller_slot: "_ChatSlot"
                 f"exemption is withheld because {why}",
                 code="linked_session_caller",
             )
-        if _has_channel_mirror(state, caller_slot):
+        if verdict.mirrored:
             raise SessionControlError(
-                "sessions mirrored to a channel cannot create sessions",
+                "sessions mirrored to a channel cannot create sessions; the owner-DM "
+                f"exemption is withheld because {why}",
                 code="mirrored_caller",
             )
+    # Admitted. A creation's result -- the child's key and title -- becomes part of
+    # the caller's reply exactly as a read does, and ``create_session`` and a
+    # ``fork_session`` of the caller's own transcript never pass ``authorize_target``,
+    # so this is the ONE gate such a turn passes: record the audience here too, from
+    # the row this verdict judged. Applied twice per creation (entry and allocation),
+    # the second write is the no-op the audience-keyed record makes it.
+    record_audience_admission(caller_slot, verdict.admission)
 
 
 def _resolve_slot(
@@ -3414,12 +3725,17 @@ def refuse_caller_surface(
     # The one exemption from both caller-side channel refusals below, shared with
     # `_refuse_ineligible_creator` so the two halves cannot drift on WHO is exempt:
     # :func:`owner_dm_refusal` answering ``""``, a 1:1 DM whose only human is the
-    # configured owner and whose mirror (if any) is that same DM. It waives both
-    # refusals together, because it has already established that the mirror IS
-    # the DM -- waiving the link alone would refuse every owner DM on the origin
-    # mirror its dispatcher binds each turn. An admitted DM is creator-fenced
-    # further down. The refusal names the clause that failed, code unchanged.
-    if why := owner_dm_refusal(state, caller_slot):
+    # configured owner -- the DM the session lives in, or the DM a dashboard tab
+    # mirrors to -- with no wider room bound beside it. It waives both refusals
+    # together, because it has already established that the mirror IS the DM --
+    # waiving the link alone would refuse every owner DM on the origin mirror its
+    # dispatcher binds each turn. An admitted channel-born DM is creator-fenced
+    # further down; an admitted dashboard tab keeps the fence verdict it had. The
+    # refusal names the clause that failed, code unchanged. ONE read: the verdict's
+    # ``mirrored`` flag and the ``admission`` recorded below come from the row the
+    # clauses judged, so nothing here probes the store a second time.
+    verdict = judge_owner_dm(state, caller_slot)
+    if why := verdict.refusal:
         if _channel_link_of(caller_slot):
             # The exfiltration direction, and the reason this is not merely the
             # mirror of the target-side check: a linked caller's own conversation
@@ -3441,14 +3757,22 @@ def refuse_caller_surface(
                 f"exemption is withheld because {why}",
                 "linked_session_caller",
             )
-        if _has_channel_mirror(state, caller_slot):
+        if verdict.mirrored:
             # The exfiltration direction again, via the outbound mechanism: a
             # mirrored caller republishes its own turns to a channel, so a peer's
             # transcript it reads lands in front of that channel's audience.
             raise deny(
-                "sessions mirrored to a channel cannot control other sessions",
+                "sessions mirrored to a channel cannot control other sessions; the "
+                f"owner-DM exemption is withheld because {why}",
                 "mirrored_caller",
             )
+    # Admitted. What this verb returns -- a peer's transcript, the roster of
+    # created sessions and their titles, a delivery receipt -- becomes part of the
+    # caller's reply, which the caller's own turn publishes to its mirror LATER,
+    # resolved live. Record the audience it was admitted under -- the row the
+    # verdict judged, not a fresh read -- here at the one gate every verb passes
+    # rather than per verb, so no read path can miss it.
+    record_audience_admission(caller_slot, verdict.admission)
     return caller_slot
 
 
@@ -3534,6 +3858,125 @@ def _not_creator_reason(
         return "a crew member can only control worker sessions it created itself"
     else:
         return "an agent-created session can only control sessions it created itself"
+
+
+# The key prefix of an audience admission in ``_ChatSlot._steer_audience_fences``,
+# so an admission and a peer steer's uuid-keyed entry cannot collide and a reader
+# of the record can tell the two writers apart.
+AUDIENCE_ADMISSION_KEY_PREFIX = "admission:"
+
+
+def record_audience_admission(slot: Any, admission: dict[str, Any]) -> None:
+    """Record *admission* on *slot* as the audience its current turn was admitted under.
+
+    *admission* is the ``admission`` of the :class:`OwnerDmVerdict` the gate just
+    judged -- the containment of the very row the clauses saw, in the queue-entry
+    ``meta`` shape. This function takes it rather than probing the store itself, on
+    purpose: a record built from a second read would describe whatever row was live
+    at the second read, and a retarget landing between the two would be recorded as
+    the admitted audience without having been judged -- the publisher, comparing the
+    live row against that record, would then see no change and publish the private
+    read into the new room. Handed the judged row, the record can only ever be the
+    audience that was actually admitted.
+
+    The read-side twin of the peer steer's record: the publisher compares the
+    containment holding at reply delivery against every entry in
+    ``_steer_audience_fences`` and withholds the cross-surface legs when a
+    constraint newly holds -- a mirror gained, a mirror retargeted, a Slack thread
+    bound beside it -- because a sent reply cannot be recalled. The channel-neutral
+    leg (``chat_runner._deliver_cross_surface_reply``) judges the ONE binding it
+    resolves its target from (:func:`publication_withheld`); the Slack legs ask
+    ``cross_surface_withheld``. Written at the caller-side admission gates
+    (:func:`refuse_caller_surface` for every targeted session-control verb,
+    :func:`_refuse_ineligible_creator` for a creation, which passes no other gate,
+    the work ledger's ``_caller_key`` for every ledger route) rather than per verb,
+    so a read path cannot be added without it.
+
+    ONE entry per distinct audience per turn: the key is the snapshot itself, so a
+    conductor polling a worker every few seconds re-records the same audience as
+    a no-op and the record stays the size of the number of DISTINCT containment
+    states the turn passed through -- each of which is a real change the
+    publisher must see -- never the number of calls. That is what bounds it
+    without a cap, and a cap is exactly what this record must not have: evicting
+    an admission would turn the fail-closed publication gate fail-open. The turn's
+    teardown empties the record, so it is turn-scoped like the steer's entries.
+    Keyed under :data:`AUDIENCE_ADMISSION_KEY_PREFIX` so it cannot collide with a
+    steer's uuid key, which the steer path pops by name.
+
+    Written ONLY inside a turn whose teardown clears it (:func:`_in_runner_turn`):
+    the dashboard runner's ``_run_chat`` publishes ``_active_turn_session_key`` on
+    the slot at turn start and retires it in the same ``finally`` that empties this
+    record. A channel-born session's own turns run in the messaging driver, which
+    sets no such marker and runs no such teardown -- so an owner-DM conductor that
+    calls these tools from its channel turn would leave an entry that nothing
+    clears, and a mirror change afterwards would make the publisher withhold the
+    mirror leg of an unrelated dashboard reply on that slot, judged by an admission
+    that was never about it. Nothing is lost by not recording there: the
+    dispatcher publishes its own replies to the conversation the turn came from,
+    and the runner's publisher, the only reader of this record, publishes only
+    runner turns.
+
+    A caller with no slot record of its own leaves nothing, which is the behaviour
+    such a caller has today.
+    """
+    fences = getattr(slot, "_steer_audience_fences", None)
+    if slot is None or not isinstance(fences, dict) or not _in_runner_turn(slot):
+        return
+    key = AUDIENCE_ADMISSION_KEY_PREFIX + json.dumps(
+        admission.get(QUEUED_CONTAINMENT_META_KEY, {}), sort_keys=True, default=str
+    )
+    if key not in fences:
+        fences[key] = admission
+
+
+def _in_runner_turn(slot: Any) -> bool:
+    """Whether *slot* is inside a dashboard-runner turn -- one ``_run_chat`` is running.
+
+    Read off ``_active_turn_session_key``, the identity ``_run_chat`` publishes on
+    the slot once its turn is admitted and compare-and-clears in its teardown. It
+    is the runner's own marker, so it names exactly the turns whose ``finally``
+    empties ``_steer_audience_fences``: a channel turn driven by the messaging
+    driver never sets it, and neither does the gap between two stages of a plan.
+    Preferred over ``turn_running`` for that reason -- the task predicate also
+    counts a stage controller that owns the slot while no runner turn, and no
+    runner teardown, is in flight.
+    """
+    return bool(getattr(slot, "_active_turn_session_key", "") or "")
+
+
+def publication_withheld(
+    state: "DashboardState", slot: Any, binding: tuple[Any, str, str] | None
+) -> bool:
+    """Whether *slot*'s turn must NOT publish its reply to the audience *binding* names.
+
+    The channel-neutral delivery leg's half of the audience fence. *binding* is the
+    ONE :func:`_read_mirror_binding` that ``chat_runner._deliver_cross_surface_reply``
+    resolves its target from, judged here against every admission the turn recorded
+    in ``_steer_audience_fences`` -- :func:`record_audience_admission`'s, the peer
+    steer's, the handoff's hold -- through the same comparison the Slack legs ask of
+    ``cross_surface_withheld``: :func:`newly_held_constraints` over a snapshot built
+    from that read (:func:`_snapshot_from_probe`). The decision and the delivery see
+    one row. Judged from a second read, the decision would describe one row and the
+    send would land in another whenever a retarget fell between them -- the
+    mirror-link writer runs off the loop (``chat_mirror._claim_binding`` under
+    ``asyncio.to_thread``), so nothing orders it against two reads on the loop --
+    and a transcript the decision never saw would reach the new room. Handed the
+    row the send resolves from, the judgement can only ever be about that room; a
+    retarget landing after this read changes what the NEXT reply is judged against,
+    not where this one goes.
+
+    A binding of ``None`` is an unreadable store and is judged as an unverifiable
+    mirror (``mirror_unverified``), which withholds whenever the turn recorded an
+    admission: the drain's fail-closed reading, for the drain's reason. A slot with
+    no record -- a caller outside a turn, a turn that admitted nothing -- withholds
+    nothing, as it does today.
+    """
+    fences = getattr(slot, "_steer_audience_fences", None)
+    if not fences:
+        return False
+    probed = None if binding is None else _mirror_identity_of(binding)
+    now = _snapshot_from_probe(state, slot, probed, on_probe_failure=True)
+    return any(newly_held_constraints(now, admission) for admission in fences.values())
 
 
 def authorize_target(
@@ -7463,6 +7906,11 @@ def read_messages(
         operation="read",
         precomputed_ownership_fenced=caller_fenced,
     )
+    # The reader's own audience was recorded by the caller-side gate inside
+    # ``authorize_target`` (:func:`record_audience_admission`), so a mirror gained
+    # or retargeted between this read and the reply it feeds withholds the
+    # reader's cross-surface publication. No per-verb stamp here: the gate is the
+    # one point every verb passes, which is what keeps a read path from missing it.
 
     # Indexes are ABSOLUTE positions in the session, not offsets into the live
     # window. A slot keeps only the most recent ``_MAX_SLOT_MESSAGES`` in memory

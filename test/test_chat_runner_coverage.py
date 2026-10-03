@@ -1379,7 +1379,7 @@ class TestCrossSurfaceReply:
     async def test_empty_text_is_not_mirrored(self, tmp_path):
         state = _state(tmp_path)
 
-        with patch.object(chat_runner, "_resolve_mirror_target") as resolve:
+        with patch.object(chat_runner, "_resolve_channel_target") as resolve:
             await chat_runner._deliver_cross_surface_reply(state, "dashboard:x", "")
 
         resolve.assert_not_called()
@@ -1395,7 +1395,7 @@ class TestCrossSurfaceReply:
         transport.capabilities.max_message_bytes = 0
         link = MagicMock(channel_id="123", thread_id=None, channel_type="telegram")
 
-        with patch.object(chat_runner, "_resolve_mirror_target", return_value=(link, transport)):
+        with patch.object(chat_runner, "_resolve_channel_target", return_value=(link, transport)):
             await chat_runner._deliver_cross_surface_reply(state, "dashboard:x", "ab " * 20)
 
         assert transport.send_message.await_count > 1
@@ -1409,7 +1409,7 @@ class TestCrossSurfaceReply:
         transport.send_message.side_effect = RuntimeError("offline")
         link = MagicMock(channel_id="123", thread_id=None, channel_type="telegram")
 
-        with patch.object(chat_runner, "_resolve_mirror_target", return_value=(link, transport)):
+        with patch.object(chat_runner, "_resolve_channel_target", return_value=(link, transport)):
             await chat_runner._deliver_cross_surface_reply(state, "dashboard:x", "hello")
 
 

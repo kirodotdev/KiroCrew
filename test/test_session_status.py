@@ -802,18 +802,17 @@ class TestTheCallerSurfaceIsRecheckedAfterTheScan:
         caller = _slot(state, "chat-1")
         child = _child(state, "chat-2", caller)
         child.title = "acquisition terms Q4"
-        mirrored: dict[str, bool] = {"now": False}
         real_scan = sc._created_history_roster
 
         def _scan_then_mirror(state_, caller_key_, workspace_):
             # The mirror lands while the scan is on its worker thread, which is
-            # exactly the window the synchronous gate cannot see.
+            # exactly the window the synchronous gate cannot see -- in the store the
+            # re-check reads.
             out = real_scan(state_, caller_key_, workspace_)
-            mirrored["now"] = True
+            state.sessions.set_mirror_link(_key(caller), "C0FFEE", "1758.0004")
             return out
 
         monkeypatch.setattr(sc, "_created_history_roster", _scan_then_mirror)
-        monkeypatch.setattr(sc, "_has_channel_mirror", lambda state_, slot_: mirrored["now"])
 
         with pytest.raises(sc.SessionControlError) as excinfo:
             _status(state, caller)

@@ -208,6 +208,7 @@ from kiro_crew.dashboard.chat_turn.recipient import (  # noqa: F401
     _resolve_mirror_target,
     _session_principal,
     cross_surface_withheld,
+    slack_publication_withheld,
 )
 from kiro_crew.dashboard.chat_turn.recovery import (  # noqa: F401
     _answer_text_only,
@@ -3035,7 +3036,9 @@ async def _deliver_linked_slack_message(
         logger.debug("Failed to deliver a message to the linked Slack thread", exc_info=True)
 
 
-async def _deliver_cross_surface_reply(state: Any, session_key: str, assistant_text: str) -> None:
+async def _deliver_cross_surface_reply(
+    state: Any, session_key: str, assistant_text: str, *, slot: Any = None
+) -> None:
     """Deliver a completed dashboard reply to a linked NON-Slack channel.
 
     The channel-neutral leg of cross-surface sync: reads the session's outbound
@@ -3049,6 +3052,18 @@ async def _deliver_cross_surface_reply(state: Any, session_key: str, assistant_t
     — WeCom pushes through ``aibot_send_msg`` but only into a conversation the user
     has already written to. Best-effort: a delivery failure never disrupts the
     dashboard turn.
+
+    The publish decision and the delivery rest on ONE read of the binding
+    (``get_mirror_link`` and ``get_slack_link``, through
+    ``session_control._read_mirror_binding``): the row is judged against the
+    admissions *slot*'s turn recorded (``session_control.publication_withheld``, the
+    audience fence) and the send resolves its transport from that same row. The
+    mirror-link writer runs off the loop (``chat_mirror._claim_binding`` under
+    ``asyncio.to_thread``), so a decision taken on one read and a send resolved from
+    another could straddle a retarget and publish a transcript the decision never
+    saw into the new room. An unreadable store delivers nothing. *slot* carries the
+    record; a caller with no slot has no turn and no admissions, and gets the plain
+    delivery.
     """
     if not assistant_text:
         return
@@ -3057,7 +3072,27 @@ async def _deliver_cross_surface_reply(state: Any, session_key: str, assistant_t
     # transport lookup.
     if mirror_is_paused(state, session_key):
         return
-    target = _resolve_mirror_target(state, session_key)
+    # circular import: session_control imports this package's modules at module level.
+    from kiro_crew.dashboard.session_control import _read_mirror_binding, publication_withheld
+
+    sessions = getattr(state, "sessions", None)
+    if getattr(sessions, "get_mirror_link", None) is None:
+        return
+    binding = _read_mirror_binding(sessions, session_key)
+    if publication_withheld(state, slot, binding):
+        logger.info(
+            "withholding cross-surface reply for %s: %d unresolved audience "
+            "fence(s) (peer steers into, or transcript reads by, this turn)",
+            session_key,
+            len(slot._steer_audience_fences),
+        )
+        return
+    if binding is None:
+        logger.debug(
+            "cross-surface: mirror binding unreadable for %s; skipping mirror", session_key
+        )
+        return
+    target = _resolve_channel_target(state, session_key, binding[0])
     if target is None:
         return
     link, transport = target
@@ -11076,8 +11111,14 @@ async def _run_chat(
                 # is resolved live. The check is a dict emptiness test on the
                 # overwhelming majority of turns -- `cross_surface_withheld` returns
                 # before probing anything when no peer steer is recorded -- so paying
-                # it per event costs nothing on a turn nobody interfered with.
-                if _mirror_stream_ts and not cross_surface_withheld(state, slot):
+                # it per event costs nothing on a turn nobody interfered with. The
+                # stream's destination is the thread cached at turn start, judged
+                # as the room it is beside the live comparison.
+                if (
+                    _mirror_stream_ts
+                    and not cross_surface_withheld(state, slot)
+                    and not slack_publication_withheld(state, slot, _mirror_chan, _mirror_thread)
+                ):
                     try:
                         if _mirror_active_task:
                             await state.slack_client.append_task(
@@ -16047,13 +16088,16 @@ async def _run_chat(
         # because a relink can land mid-turn, so a peer steer admitted against an
         # unlinked target can have its reply published here to a conversation the
         # authorization never saw. Fencing only the non-Slack leg would leave the
-        # busier surface open.
+        # busier surface open. The destination is the thread cached at turn start,
+        # not the live binding, so it is judged as the room it is
+        # (`slack_publication_withheld`) beside the live comparison.
         if (
             assistant_text
             and state.slack_client
             and _mirror_thread
             and _mirror_chan
             and not cross_surface_withheld(state, slot)
+            and not slack_publication_withheld(state, slot, _mirror_chan, _mirror_thread)
         ):
             try:
                 from kiro_crew.slack.format import (  # circular: slack.format -> dashboard.state -> chat
@@ -16133,17 +16177,12 @@ async def _run_chat(
         # withheld: it has no mirrored question, whereas every requeue site runs
         # downstream of the user-message leg above, so a recovery reply always has
         # a preceding question on the linked surface — withholding it would strand
-        # that question unanswered.
+        # that question unanswered. The audience fence is judged INSIDE the leg, on
+        # the one binding read the send resolves its target from: asked here first,
+        # the decision and the delivery would be two reads with the off-loop
+        # mirror-link writer free to retarget between them.
         if not is_slash:
-            if cross_surface_withheld(state, slot):
-                logger.info(
-                    "withholding cross-surface reply for %s: %d unresolved steer "
-                    "audience fence(s)",
-                    session_key,
-                    len(slot._steer_audience_fences),
-                )
-            else:
-                await _deliver_cross_surface_reply(state, session_key, assistant_text)
+            await _deliver_cross_surface_reply(state, session_key, assistant_text, slot=slot)
     except asyncio.CancelledError:
         _crew_log_error = "CancelledError"
         _persist_partial_reply()
@@ -17717,7 +17756,13 @@ async def _run_chat(
                     # one was withheld, marking it complete here would publish the
                     # title for the first time. This runs BEFORE the fence is
                     # cleared below, so it still sees the turn's own records.
-                    if _mirror_active_task and not cross_surface_withheld(state, slot):
+                    if (
+                        _mirror_active_task
+                        and not cross_surface_withheld(state, slot)
+                        and not slack_publication_withheld(
+                            state, slot, _mirror_chan, _mirror_thread
+                        )
+                    ):
                         await state.slack_client.append_task(
                             _mirror_chan,
                             _mirror_stream_ts,
@@ -17844,7 +17889,8 @@ async def _run_chat(
         # individually cancellable — a user who meant "discard" clicks ✕;
         # nothing is ever silently lost.
         _requeue_unconsumed_steers(state, slot)
-        # Drop the peer-steer admissions with the turn they belonged to. They govern
+        # Drop the audience admissions with the turn they belonged to -- the peer
+        # steers admitted into it and the transcript reads it made. They govern
         # whether THIS turn may publish across surfaces, which is their whole job;
         # carrying them further would judge a later turn by an authorization that was
         # never about it. Cleared unconditionally, so a hard stop, a crash or a

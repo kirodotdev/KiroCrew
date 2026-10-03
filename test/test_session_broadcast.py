@@ -926,13 +926,12 @@ class TestACallerSurfaceThatGoesStaleMidBroadcast:
     def test_a_mirror_bound_during_a_delivery_withholds_the_report(self, tmp_path, monkeypatch):
         state = _make_state(tmp_path)
         caller = _slot(state, "chat-1")
-        mirrored: dict[str, bool] = {"now": False}
 
         def _mirror_now():
-            mirrored["now"] = True
+            # In the store the post-delivery re-check reads.
+            state.sessions.set_mirror_link(_key(caller), "C0FFEE", "1758.0005")
 
         send = self._one_child_and_a_send(state, caller, _mirror_now)
-        monkeypatch.setattr(sc, "_has_channel_mirror", lambda _state, _slot: mirrored["now"])
         monkeypatch.setattr(sc, "send_to_target", send)
 
         with pytest.raises(sc.SessionControlError) as excinfo:
