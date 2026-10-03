@@ -4082,6 +4082,16 @@ wait exactly, and give the real deadline a generous backstop
 (`_PointClock` in `test_decisions_memory_recall_reachable.py`). To make a deadline
 pass, move it to the real present rather than sleeping past it.
 
+Where a test wants a timeout to expire at a particular AWAIT -- the cancellation must
+land inside the steer RPC, after authorization, not in the gate work in front of it --
+neither `0` nor a small value is correct: both let real work ahead of the hang consume
+the bound, and on a loaded Windows runner a 0.05 s allowance was spent before the hang
+was reached, so the case read the pre-hand-over arm (`assert 0 == 1` on the missing
+audit row). Make the allowance a large backstop and fire the bound's own
+`asyncio.Timeout` from the hang as it parks, so the product's real `wait_for` path
+runs and only its moment is chosen. `_bound_expires_at_the_hang` in
+`test/test_session_broadcast.py` is the helper.
+
 **A count taken across a wall-clock cache measures the runner too.** The path gate's
 target cache expires after a 0.1s floor, and each expiry is a rebuild that resolves the
 root anchors once more. `test_the_fence_resolves_its_anchors_per_directory_not_per_entry`
