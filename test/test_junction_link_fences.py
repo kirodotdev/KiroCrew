@@ -1002,3 +1002,66 @@ class TestTheUnpinnedMergeRestoreDoesNotCopyThroughALink:
         self._merge(src, dst)
 
         assert (dst / "keep.txt").read_text(encoding="utf-8") == "already here"
+
+
+class TestTheLinkedAncestorWalkSeesRealReparsePoints:
+    """``iter_linked_ancestors`` against planted links rather than a double.
+
+    The agent-discovery screen that decides whether resolving a local-looking
+    spelling would reach an SMB share consumes this generator, and the tests
+    around that screen supply it through ``monkeypatch``. A double answers
+    whatever its author expected, so the property those tests rest on -- that
+    EVERY linked ancestor is yielded, root-first, and that the caller therefore
+    gets to judge a deeper junction sitting under a benign shallow one -- is
+    asserted here against reparse points on disk: a junction on Windows, a
+    directory symlink on POSIX, through the same ``make_dir_link`` the rest of
+    this file plants with.
+
+    A double that returned one ancestor for any queried path would satisfy a
+    single-link test and still hide the case the screen exists for, so the chain
+    below carries TWO links and pins the exact list.
+    """
+
+    @staticmethod
+    def _two_link_chain(root: Path) -> tuple[Path, Path, Path]:
+        """Spell a leaf whose path crosses two planted directory links.
+
+        Returns the shallow link, the deeper link AS SPELLED THROUGH it, and the
+        leaf spelling the caller hands to the walk.
+        """
+        outer_target = root / "outer_target"
+        outer_target.mkdir()
+        inner_target = outer_target / "inner_target"
+        inner_target.mkdir()
+        (inner_target / "leaf").mkdir()
+
+        shallow = root / "shallow"
+        make_dir_link(shallow, outer_target)
+        make_dir_link(outer_target / "deeper", inner_target)
+
+        return shallow, shallow / "deeper", shallow / "deeper" / "leaf"
+
+    def test_every_linked_ancestor_is_yielded_root_first(self, tmp_path: Path) -> None:
+        shallow, deeper, leaf = self._two_link_chain(tmp_path)
+
+        assert platform_compat.is_link_or_junction(shallow)
+        assert platform_compat.is_link_or_junction(deeper)
+
+        walked = list(platform_compat.iter_linked_ancestors(leaf))
+
+        assert walked == [str(shallow), str(deeper)], (
+            "the walk must yield BOTH planted links, shallowest first -- a deeper "
+            f"junction under a benign one is what it exists to reach: {walked}"
+        )
+
+    def test_the_leaf_itself_is_excluded_even_when_it_is_a_link(self, tmp_path: Path) -> None:
+        """The screen judges the leaf separately, so the walk must not include it."""
+        target = tmp_path / "target"
+        target.mkdir()
+        parent = tmp_path / "parent"
+        parent.mkdir()
+        leaf = parent / "leaf"
+        make_dir_link(leaf, target)
+
+        assert platform_compat.is_link_or_junction(leaf)
+        assert list(platform_compat.iter_linked_ancestors(leaf)) == []

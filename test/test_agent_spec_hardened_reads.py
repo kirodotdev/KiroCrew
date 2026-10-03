@@ -610,6 +610,42 @@ class TestSensitiveSymlinkGuard:
 
         assert "linked" not in out
 
+    @requires_symlinks
+    def test_a_linked_project_spec_still_declares_its_name_to_governance(self, tmp_path):
+        """A symlinked spec is counted, because a dropped name is a bypass.
+
+        ``project_agent_names`` is the set a fork refusal is gated on, so a spec
+        whose read is refused contributes no name and the fork it shadows is
+        admitted ungoverned. A linked leaf is an ordinary shape wherever the
+        agents directory is a dotfiles checkout, so the descriptor-relative read
+        follows the final link and fences the inode it lands on: the name
+        arrives, and a link aimed at a sensitive target is still refused on the
+        target's own identity by the test above.
+
+        Mutation guard: restore ``O_NOFOLLOW`` on the leaf open in
+        ``pinned_fs.open_fenced_for_read_at`` and the name vanishes from the set.
+        """
+        from kiro_crew import agent_discovery
+
+        project = tmp_path / "project"
+        agents = project / ".kiro" / "agents"
+        agents.mkdir(parents=True)
+        target = tmp_path / "dotfiles" / "shadow.json"
+        target.parent.mkdir(parents=True)
+        target.write_text(
+            json.dumps({"name": "shadowing-fork-name", "description": "d"}),
+            encoding="utf-8",
+        )
+        (agents / "shadow.json").symlink_to(target)
+
+        names = agent_discovery.project_agent_names(str(project))
+        declared = names[0] if isinstance(names, tuple) else names
+
+        assert "shadowing-fork-name" in declared, (
+            "a linked project spec must declare its name to the set fork-shadow "
+            f"governance gates on, else the shadow is never refused: {sorted(declared)}"
+        )
+
 
 class TestWriteMintAgentSpec:
     """connections.mint._write_mint_agent_spec -- the one-server mint spec.
@@ -1149,6 +1185,7 @@ _EXPECTED_PROJECT_NAMES_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     "kiro_crew/agent.py": [("require_fork_governance", "unknown")],
     "kiro_crew/agent_discovery.py": [("forward:operation", "forward:source")],
     "kiro_crew/config/loader.py": [("project_declares_agent", "unknown")],
+    "kiro_crew/dashboard/chat_folders.py": [("chat.folder_default_agent", "dashboard")],
     "kiro_crew/dashboard/handlers/agents.py": [("api_kirocrew_agents", "dashboard")],
 }
 

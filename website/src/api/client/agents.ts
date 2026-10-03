@@ -149,10 +149,14 @@ export function createAgentsEndpoints({ post, put, del, j, sessionKeyHeader: _sk
     // slots sit on different projects, so project-scoped agents silently
     // vanish from the picker. Surfaces with no slot context (Channels,
     // Schedule) pass nothing and keep the global-only view.
-    kirocrewAgents: (sessionKey?: string) =>
-      fetch('/api/agents', {
+    // projectPath names a directory directly, for a caller whose scope is not a
+    // slot's: a folder's own project directory, which no session key resolves to.
+    kirocrewAgents: (sessionKey?: string, projectPath?: string) => {
+      const qs = projectPath ? '?project_path=' + encodeURIComponent(projectPath) : ''
+      return fetch('/api/agents' + qs, {
         headers: sessionKey ? { 'X-Session-Key': sessionKey } : { ..._sk },
-      }).then(j),
+      }).then(j)
+    },
     /** The model a new session on this Kiro Crew agent would run on. Empty
      *  `agent` resolves the configured default agent. */
     agentResolvedModel: (agent: string) =>

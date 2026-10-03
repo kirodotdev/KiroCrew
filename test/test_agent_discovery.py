@@ -9,11 +9,13 @@ Tests use a tmp_path fake $HOME so the real filesystem is never touched.
 
 from __future__ import annotations
 
+import errno
 import json
 import logging
 import os
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -32,6 +34,7 @@ from kiro_crew.agent_discovery import (
     project_agent_names,
     spec_by_declared_name,
 )
+from kiro_crew.agent_spec_format import NATIVE_SKILL_ALIAS_PREFIX
 
 # caplog collects records from EVERY logger, not just the one at_level() names, so
 # a negative "logged no warning" assertion must filter by logger: an unrelated
@@ -57,6 +60,47 @@ def _project_agents_dir(root: Path) -> Path:
     d = root / ".kiro" / "agents"
     d.mkdir(parents=True)
     return d
+
+
+class _FakeScandir:
+    """A descriptor listing for tests that must execute without OS ``dir_fd`` support."""
+
+    def __init__(self, entries: list[object]) -> None:
+        self._entries = entries
+
+    def __enter__(self):
+        return iter(self._entries)
+
+    def __exit__(self, *_exc: object) -> None:
+        return None
+
+
+def _mock_pinned_directory(
+    monkeypatch: pytest.MonkeyPatch, *, real_path: Path, entries: list[object]
+) -> dict[str, object]:
+    """Drive the pinned branch on every OS with one held-descriptor test double."""
+    import kiro_crew.agent_discovery as discovery_mod
+
+    fd = 7301
+    state: dict[str, object] = {"fd": fd, "opens": [], "scans": [], "closes": []}
+
+    def fake_open(parent, name, **kwargs):
+        state["opens"].append((parent, name, kwargs))  # type: ignore[union-attr]
+        return fd
+
+    def fake_scandir(target):
+        state["scans"].append(target)  # type: ignore[union-attr]
+        assert target == fd, "the scan re-opened the directory by name"
+        return _FakeScandir(entries)
+
+    os_double = SimpleNamespace(**vars(os))
+    os_double.scandir = fake_scandir
+    os_double.close = lambda held_fd: state["closes"].append(held_fd)  # type: ignore[union-attr]
+    monkeypatch.setattr(discovery_mod, "os", os_double)
+    monkeypatch.setattr(discovery_mod, "supports_pinned_walk", lambda: True)
+    monkeypatch.setattr(discovery_mod, "open_in_pinned_parent", fake_open)
+    monkeypatch.setattr(discovery_mod, "fd_real_path", lambda held_fd: str(real_path))
+    return state
 
 
 class TestProjectScopeDiscovery:
@@ -110,6 +154,44 @@ class TestProjectScopeDiscovery:
         names = [a.name for a in list_agents(agents_dir=d, project_dir=str(proj))]
         assert names == ["declared"]
 
+    def test_native_skill_view_specs_are_not_listed_as_project_agents(self, fake_home, tmp_path):
+        """``kirocrew-skill-view-*`` is the projection's own machine namespace.
+
+        ``iter_agent_spec_files`` has always dropped these for the user-level
+        scan, and ``_require_unshadowed_templates`` documents the omission as
+        discovery's contract. The project scan reaches the twin rule through
+        ``split_listed_spec_paths``, which carries only that rule, so the alias
+        half is applied at the call site — without it a checkout could plant a
+        view into the very roster the projection reads to decide what to
+        project, and offer it as a pickable agent.
+        """
+        d = _agents_dir(fake_home)
+        proj = tmp_path / "repo"
+        agents = _project_agents_dir(proj)
+        digest = "0" * 24
+        alias_json = agents / f"{NATIVE_SKILL_ALIAS_PREFIX}{digest}.json"
+        alias_json.write_text(json.dumps({"name": f"{NATIVE_SKILL_ALIAS_PREFIX}{digest}"}))
+        alias_md = agents / f"{NATIVE_SKILL_ALIAS_PREFIX}md{digest}.md"
+        alias_md.write_text(f"---\nname: {NATIVE_SKILL_ALIAS_PREFIX}md{digest}\n---\nPrompt\n")
+        # A real project agent beside them: the scan must still work, so an
+        # empty result cannot pass this test by accident.
+        (agents / "repobot.json").write_text(json.dumps({"name": "repobot"}))
+
+        clear_list_agents_cache()
+        clear_project_agent_cache()
+        leaked = [f for f in project_agent_files(str(proj)) if NATIVE_SKILL_ALIAS_PREFIX in f.name]
+        assert leaked == [], (
+            f"project scan listed the native skill-view alias(es) "
+            f"{[f.name for f in leaked]} as project agent specs; "
+            f"iter_agent_spec_files drops this namespace for the user-level scan"
+        )
+        assert [f.name for f in project_agent_files(str(proj))] == ["repobot.json"]
+        assert project_agent_names(str(proj)) == frozenset({"repobot"})
+        names = {a.name for a in list_agents(agents_dir=d, project_dir=str(proj))}
+        assert not {
+            n for n in names if n.startswith(NATIVE_SKILL_ALIAS_PREFIX)
+        }, f"roster offered a native skill-view alias as a pickable agent: {sorted(names)}"
+
     def test_legacy_spec_is_not_offered_as_a_dispatchable_agent(self, fake_home, tmp_path):
         """``.agent-spec.json`` is not a location kiro-cli reads, so it must not be
         offered anywhere an agent gets dispatched — the picker would accept the name
@@ -148,9 +230,19 @@ class TestProjectScopeDiscovery:
             "kiro_crew.agent_discovery.is_sensitive_path",
             lambda p: str(p) == str(tmp_path / "secret"),
         )
+        sel_events: list[dict] = []
+        monkeypatch.setattr(
+            "kiro_crew.agent_discovery._sel",
+            lambda: SimpleNamespace(log_api_access=lambda **kw: sel_events.append(kw)),
+        )
         proj = tmp_path / "secret"
         (_project_agents_dir(proj) / "a.json").write_text(json.dumps({"name": "a"}))
         assert project_agent_files(str(proj)) == []
+        # The refused scan must leave a denial trail, not just a debug line.
+        assert any(e.get("outcome") == "denied" for e in sel_events), (
+            f"sensitive project-dir rejection in project_agent_files must emit a "
+            f"SEL denial: {sel_events}"
+        )
 
     def test_list_agents_sensitive_project_dir_denied_before_any_stat(
         self, fake_home, tmp_path, monkeypatch
@@ -204,9 +296,9 @@ class TestProjectScopeDiscovery:
         names = [a.name for a in list_agents(agents_dir=d, project_dir=str(protected))]
 
         assert names == ["user-level"]
-        assert [e["outcome"] for e in sel_events] == ["denied"], (
-            f"one refusal owes exactly one denial row: {sel_events}"
-        )
+        assert [e["outcome"] for e in sel_events] == [
+            "denied"
+        ], f"one refusal owes exactly one denial row: {sel_events}"
 
     def test_list_agents_decides_project_sensitivity_exactly_once(
         self, fake_home, tmp_path, monkeypatch
@@ -309,6 +401,36 @@ class TestProjectScopeDiscovery:
         assert project_agent_files(None) == []
         assert project_agent_files("") == []
 
+    @pytest.mark.parametrize(
+        ("scan_path", "include_legacy"),
+        [(".kiro", True), (".kiro/agents", False)],
+    )
+    def test_non_directory_scan_scope_is_empty_without_a_denial(
+        self, tmp_path, monkeypatch, scan_path, include_legacy
+    ):
+        """A regular file at either scan scope means nothing to enumerate.
+
+        ``None`` is the sensitive-denied sentinel consumed by
+        ``project_agent_files``; an empty iterable is the ordinary no-agents
+        outcome. A wrong sentinel here emits a false SEL denial for a harmless
+        malformed checkout.
+        """
+        import kiro_crew.agent_discovery as ad
+
+        proj = tmp_path / "repo"
+        occupied = proj / scan_path
+        occupied.parent.mkdir(parents=True)
+        occupied.write_text("not a directory", encoding="utf-8")
+        sel_events: list[dict] = []
+        monkeypatch.setattr(
+            ad,
+            "_sel",
+            lambda: SimpleNamespace(log_api_access=lambda **kw: sel_events.append(kw)),
+        )
+
+        assert project_agent_files(str(proj), include_legacy=include_legacy) == []
+        assert sel_events == [], f"a non-directory scan scope emitted a denial: {sel_events}"
+
     def test_project_symlink_to_sensitive_file_is_not_read(self, fake_home, tmp_path):
         """The per-file resolved-target guard applies in the project scope too."""
         d = _agents_dir(fake_home)
@@ -335,6 +457,51 @@ class TestProjectScopeDiscovery:
             ad.is_sensitive_canonical_path = original
         assert names == []
 
+    @requires_symlinks
+    def test_project_agents_dir_symlinked_into_sensitive_tree_is_not_scanned(
+        self, fake_home, tmp_path
+    ):
+        """A ``.kiro/agents`` that RESOLVES into a sensitive tree is not enumerated.
+
+        Distinct from the per-file guard: here the SCAN DIRECTORY itself is a
+        symlink into a credential home, so a root-only sensitivity check passes
+        but ``glob``/``scandir`` would still probe the protected directory. The
+        dir-level guard (``_pinned_scan_dir``) must skip it entirely.
+        """
+        secret_tree = tmp_path / "creds_home"
+        secret_tree.mkdir()
+        (secret_tree / "leaked.json").write_text(json.dumps({"name": "leaked"}))
+        proj = tmp_path / "repo"
+        (proj / ".kiro").mkdir(parents=True)
+        # <repo>/.kiro/agents -> the credential tree; the repo root is NOT sensitive.
+        os.symlink(secret_tree, proj / ".kiro" / "agents")
+
+        import kiro_crew.agent_discovery as ad
+
+        original = ad.is_sensitive_path
+        # Only the resolved credential tree is sensitive; the repo root is not.
+        ad.is_sensitive_path = lambda p: os.path.realpath(str(p)) == os.path.realpath(
+            str(secret_tree)
+        )
+        sel_events: list[dict] = []
+        original_sel = ad._sel
+        ad._sel = lambda: SimpleNamespace(log_api_access=lambda **kw: sel_events.append(kw))
+        try:
+            clear_list_agents_cache()
+            # The glob site must not enumerate the symlinked dir.
+            assert project_agent_files(str(proj)) == []
+            # The leaked name must never surface through the cached names path.
+            assert "leaked" not in project_agent_names(str(proj))
+            # And the sensitive SUBDIR skip must leave a denial trail — the root
+            # is not sensitive, so this row can only come from the scan-dir guard.
+            assert any(
+                e.get("outcome") == "denied" for e in sel_events
+            ), f"sensitive scan-dir skip must emit a SEL denial: {sel_events}"
+        finally:
+            ad.is_sensitive_path = original
+            ad._sel = original_sel
+            clear_list_agents_cache()
+
     def test_cache_does_not_leak_between_projects(self, fake_home, tmp_path):
         """Two checkouts must not serve each other's agents from one cache entry."""
         d = _agents_dir(fake_home)
@@ -360,6 +527,156 @@ class TestProjectAgentNameCache:
         (_project_agents_dir(proj) / "file-stem.json").write_text(json.dumps({"name": "declared"}))
         clear_project_agent_cache()
         assert project_agent_names(str(proj)) == frozenset({"declared"})
+
+    def test_an_oversized_project_key_is_answered_but_never_retained(self, tmp_path):
+        """The count cap bounds HOW MANY keys live here, not how large one is.
+
+        The key is the caller's raw ``project_dir`` spelling, so 256 keys of
+        unbounded length is unbounded resident memory. A spelling past the named
+        character bound is still answered -- it simply is not kept, which costs
+        the next call a rescan, exactly what any miss here costs.
+
+        Mutation guard: drop the length check in ``_store_project_agent_names``
+        and the oversized key appears in the cache.
+        """
+        import kiro_crew.agent_discovery as ad
+
+        oversized = "/" + "d" * (ad._PROJECT_NAMES_CACHE_MAX_KEY_CHARS + 1)
+        entry = ((), frozenset({"declared"}))
+        clear_project_agent_cache()
+
+        ad._store_project_agent_names(oversized, entry)
+
+        assert (
+            oversized not in ad._PROJECT_NAMES_CACHE
+        ), "an unbounded caller-supplied key must not be retained"
+
+        within = "/" + "d" * 16
+        ad._store_project_agent_names(within, entry)
+        assert (
+            within in ad._PROJECT_NAMES_CACHE
+        ), "an ordinary path must still be cached, or every lookup rescans"
+
+    def test_a_truncated_listing_signature_is_never_reused(self, tmp_path):
+        """A listing that aborts part-way must not be cached as the directory.
+
+        ``_entries_signature`` describes a PREFIX when the walk raises mid-way.
+        Cached bare, that prefix is indistinguishable from a complete scan of a
+        smaller directory, so a second identical failure hits the entry and hands
+        back names the directory has stopped declaring -- including an agent a
+        folder's saved default still points at. The truncation row carries a
+        per-call value for exactly that reason: equality must fail against a
+        later PARTIAL signature too, not merely against a complete one.
+
+        A walk that collects nothing is NOT a prefix: an empty signature is the
+        documented answer for an absent or unlistable directory, so that case
+        stays ``()`` and is pinned here beside the truncated one.
+
+        Mutation guard: replace the row append with a bare ``pass`` and
+        ``partial == partial`` becomes True, reusing the stale roster.
+        """
+        agents = _project_agents_dir(tmp_path / "repo")
+        (agents / "a.json").write_text(json.dumps({"name": "a"}), encoding="utf-8")
+        (agents / "b.json").write_text(json.dumps({"name": "b"}), encoding="utf-8")
+        entries = sorted(os.scandir(agents), key=lambda e: e.name)
+
+        import kiro_crew.agent_discovery as ad
+
+        class _AbortsPartWay:
+            """Stands in for a listing whose walk raises after the first entry."""
+
+            def __iter__(self):
+                yield from entries[:1]
+                raise OSError(errno.EIO, "simulated mid-listing failure")
+
+        complete = ad._entries_signature(entries)
+        first_partial = ad._entries_signature(_AbortsPartWay())
+        second_partial = ad._entries_signature(_AbortsPartWay())
+
+        assert any(
+            row[0] == ad._DIR_TRUNCATED_ROW for row in first_partial
+        ), f"a truncated listing must say so in its signature: {first_partial}"
+        assert complete != first_partial
+        assert first_partial != second_partial, (
+            "two identical failures must not share a signature, or the second "
+            "reuses the first's stale roster"
+        )
+
+        class _FailsBeforeYielding:
+            """A walk that collects nothing: no directory, not a prefix of one."""
+
+            def __iter__(self):
+                raise OSError(errno.EIO, "simulated immediate failure")
+                yield  # pragma: no cover - makes this a generator
+
+        assert ad._entries_signature(_FailsBeforeYielding()) == (), (
+            "an empty signature is the documented answer for an unlistable "
+            "directory and must not pick up a per-call truncation row"
+        )
+
+    def test_parses_enumerated_spec_through_held_directory_descriptor(self, tmp_path, monkeypatch):
+        """A replacement directory cannot contribute an agent after enumeration.
+
+        Asserted on EVERY platform through the held-descriptor double, which
+        forces the pinned branch and fails if the scan re-opens the directory by
+        name. Where the real ``O_NOFOLLOW``/``dir_fd``/``O_DIRECTORY`` syscalls
+        exist the same contract is driven a second time against a real swap, so
+        neither the double's fidelity nor the syscalls' behaviour is taken on
+        trust -- and a platform without them still runs the first half rather
+        than skipping the contract entirely.
+        """
+        import kiro_crew.agent_discovery as ad
+
+        entry = MagicMock()
+        entry.name = "enumerated.json"
+        doubled = tmp_path / "repo"
+        held = _project_agents_dir(doubled)
+        (held / "enumerated.json").write_text(json.dumps({"name": "enumerated"}))
+        state = _mock_pinned_directory(monkeypatch, real_path=held, entries=[entry])
+        listed: list[list[Path]] = []
+        real_split = ad.split_listed_spec_paths
+
+        def _record(directory, paths, **kwargs):
+            paths = list(paths)
+            listed.append(paths)
+            return real_split(directory, iter(paths), **kwargs)
+
+        monkeypatch.setattr(ad, "split_listed_spec_paths", _record)
+        clear_project_agent_cache()
+        ad.project_agent_names(doubled)
+
+        assert state["scans"] and set(state["scans"]) == {
+            state["fd"]
+        }, f"a scan used a path instead of the held fd: {state['scans']}"
+        assert [p.name for p in listed[-1]] == ["enumerated.json"], (
+            "the roster's candidate paths came from somewhere other than the "
+            f"entries the held descriptor yielded: {listed[-1]}"
+        )
+
+        if not (
+            hasattr(os, "O_NOFOLLOW")
+            and os.open in os.supports_dir_fd
+            and hasattr(os, "O_DIRECTORY")
+        ):
+            return
+        monkeypatch.undo()
+        project = tmp_path / "real-repo"
+        agents_dir = _project_agents_dir(project)
+        (agents_dir / "enumerated.json").write_text(json.dumps({"name": "enumerated"}))
+        real_split = ad.split_listed_spec_paths
+
+        def _swap_after_enumeration(directory, paths, **kwargs):
+            live, shadowed = real_split(directory, paths, **kwargs)
+            held_directory = directory.with_name("agents-held")
+            directory.rename(held_directory)
+            directory.mkdir()
+            (directory / "replacement.json").write_text(json.dumps({"name": "replacement"}))
+            return live, shadowed
+
+        monkeypatch.setattr(ad, "split_listed_spec_paths", _swap_after_enumeration)
+        clear_project_agent_cache()
+
+        assert project_agent_names(project) == frozenset({"enumerated"})
 
     def test_sensitive_project_dir_denied_before_any_stat(self, tmp_path, monkeypatch):
         """A sensitive project dir is rejected BEFORE the signature stats, loudly.
@@ -394,9 +711,9 @@ class TestProjectAgentNameCache:
         clear_project_agent_cache()
 
         assert project_agent_names(str(protected)) == frozenset()
-        assert sel_events and sel_events[0]["outcome"] == "denied", (
-            f"sensitive-dir rejection must emit a SEL denial: {sel_events}"
-        )
+        assert (
+            sel_events and sel_events[0]["outcome"] == "denied"
+        ), f"sensitive-dir rejection must emit a SEL denial: {sel_events}"
 
     def test_decides_project_sensitivity_exactly_once(self, tmp_path, monkeypatch):
         """The sibling entry point decides once too, for the same reason.
@@ -489,6 +806,79 @@ class TestProjectAgentNameCache:
         assert project_agent_names(None) == frozenset()
         assert project_agent_names("") == frozenset()
         assert project_agent_names(str(tmp_path / "nope")) == frozenset()
+
+    def test_cache_is_bounded_across_many_distinct_projects(self, tmp_path):
+        """The cache key is a caller-supplied directory (the dashboard roster
+        endpoint's debounced picker fires one scan per path prefix typed), so it
+        must not grow one never-evicted entry per distinct path.
+
+        Regression: before the bound, driving more than
+        ``_PROJECT_NAMES_CACHE_MAX_KEYS`` distinct project dirs through
+        ``project_agent_names`` left every one of them cached forever.
+        """
+        import kiro_crew.agent_discovery as ad
+
+        clear_project_agent_cache()
+        cap = ad._PROJECT_NAMES_CACHE_MAX_KEYS
+        for i in range(cap + 50):
+            proj = tmp_path / f"proj-{i}"
+            (_project_agents_dir(proj) / "a.json").write_text(json.dumps({"name": "a"}))
+            project_agent_names(str(proj))
+
+        assert len(ad._PROJECT_NAMES_CACHE) <= cap, (
+            f"cache grew to {len(ad._PROJECT_NAMES_CACHE)} entries, exceeding the "
+            f"{cap}-entry cap"
+        )
+
+    def test_cache_is_bounded_on_the_oversized_name_write_site(self, tmp_path):
+        """The second, partial-roster write site (an oversized declared name)
+        must be bounded too — it is a distinct write from the one above and a
+        distinct hazard, since it is also keyed on the caller-supplied dir."""
+        import kiro_crew.agent_discovery as ad
+
+        clear_project_agent_cache()
+        cap = ad._PROJECT_NAMES_CACHE_MAX_KEYS
+        oversized = "x" * (ad._AGENT_NAME_MAX_CHARS + 1)
+        for i in range(cap + 50):
+            proj = tmp_path / f"oversized-{i}"
+            (_project_agents_dir(proj) / "a.json").write_text(json.dumps({"name": oversized}))
+            project_agent_names(str(proj))
+
+        assert len(ad._PROJECT_NAMES_CACHE) <= cap, (
+            f"cache grew to {len(ad._PROJECT_NAMES_CACHE)} entries via the oversized-name "
+            f"write site, exceeding the {cap}-entry cap"
+        )
+
+    def test_clear_at_cap_costs_a_miss_never_a_wrong_answer(self, tmp_path):
+        """Clearing the whole cache at the cap must only force a rescan — the
+        signature-first fencing must still refuse a stale or wrong roster.
+
+        Drives the cache to the cap (clearing it), then edits one of the
+        earlier project dirs and confirms the next lookup reflects the edit
+        rather than serving a stale cached name set.
+        """
+        import kiro_crew.agent_discovery as ad
+
+        clear_project_agent_cache()
+        cap = ad._PROJECT_NAMES_CACHE_MAX_KEYS
+        proj = tmp_path / "proj-0"
+        pdir = _project_agents_dir(proj)
+        (pdir / "a.json").write_text(json.dumps({"name": "a"}))
+        assert project_agent_names(str(proj)) == frozenset({"a"})
+
+        for i in range(1, cap + 5):
+            other = tmp_path / f"proj-{i}"
+            (_project_agents_dir(other) / "z.json").write_text(json.dumps({"name": "z"}))
+            project_agent_names(str(other))
+
+        # The cache was cleared at least once by now; add a second spec to the
+        # first project and confirm the miss rescans rather than serving the
+        # long-stale ("a" only) cached answer.
+        b = pdir / "b.json"
+        b.write_text(json.dumps({"name": "b"}))
+        os.utime(pdir, (0, 0))  # defeat a coarse directory-mtime clock
+        os.utime(b, None)
+        assert project_agent_names(str(proj)) == frozenset({"a", "b"})
 
 
 class TestListAgentsRobustness:
@@ -714,8 +1104,11 @@ class TestSpecModelCoercion:
         # are excluded by NAME, not skipped silently: the lists render as chips
         # (one element each) and `kirocrew_owned` is the bool provenance flag —
         # everything else must be a plain string or React error #31 returns.
-        assert all(isinstance(v, str) for k, v in info.to_dict().items() if k not in
-                   ("skills", "mcp_servers", "kirocrew_owned"))
+        assert all(
+            isinstance(v, str)
+            for k, v in info.to_dict().items()
+            if k not in ("skills", "mcp_servers", "kirocrew_owned")
+        )
         assert isinstance(info.to_dict()["kirocrew_owned"], bool)
 
     def test_list_fields_drop_only_the_unusable_elements(self) -> None:
@@ -972,14 +1365,10 @@ class TestListAgentsCache:
         clear_list_agents_cache()
         d = tmp_path / "agents"
         d.mkdir()
-        (d / "a.json").write_text(
-            json.dumps({"name": "a", "model": "auto"}), encoding="utf-8"
-        )
+        (d / "a.json").write_text(json.dumps({"name": "a", "model": "auto"}), encoding="utf-8")
         assert {a.name for a in list_agents(agents_dir=d)} == {"a"}
 
-        (d / "b.json").write_text(
-            json.dumps({"name": "b", "model": "auto"}), encoding="utf-8"
-        )
+        (d / "b.json").write_text(json.dumps({"name": "b", "model": "auto"}), encoding="utf-8")
         assert {a.name for a in list_agents(agents_dir=d)} == {"a", "b"}
 
     def test_cache_invalidates_on_remove(self, tmp_path: Path) -> None:
@@ -987,12 +1376,8 @@ class TestListAgentsCache:
         clear_list_agents_cache()
         d = tmp_path / "agents"
         d.mkdir()
-        (d / "a.json").write_text(
-            json.dumps({"name": "a", "model": "auto"}), encoding="utf-8"
-        )
-        (d / "b.json").write_text(
-            json.dumps({"name": "b", "model": "auto"}), encoding="utf-8"
-        )
+        (d / "a.json").write_text(json.dumps({"name": "a", "model": "auto"}), encoding="utf-8")
+        (d / "b.json").write_text(json.dumps({"name": "b", "model": "auto"}), encoding="utf-8")
         assert {a.name for a in list_agents(agents_dir=d)} == {"a", "b"}
 
         (d / "b.json").unlink()
@@ -1011,9 +1396,9 @@ class TestListAgentsCache:
         # Bump mtime forward deterministically so the signature is guaranteed newer.
         st = f.stat()
         os.utime(f, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
-        assert [a.name for a in list_agents(agents_dir=d)] == ["v2"], (
-            "an in-place edit must invalidate the cache"
-        )
+        assert [a.name for a in list_agents(agents_dir=d)] == [
+            "v2"
+        ], "an in-place edit must invalidate the cache"
 
     def test_clear_cache_forces_rescan(self, tmp_path: Path) -> None:
         """clear_list_agents_cache() forces a fresh scan even when the signature
@@ -1276,3 +1661,1566 @@ class TestSpecByDeclaredName:
         # The refusal still names every duplicate: paths are kept, parses are not.
         for stem in ("Alpha", "Beta", "Gamma", "Delta"):
             assert f"{stem}-kirocrew.json" in str(exc.value)
+
+
+class TestScanCapabilityGate:
+    """The scan is gated on ``pinned_fs.supports_pinned_walk()`` and refuses
+    outright when it is False, rather than falling back to a by-name walk an
+    ancestor swap could redirect -- the same standing rule
+    ``pinned_fs.remove_tree_pinned`` states for itself.
+    """
+
+    @pytest.mark.parametrize("pinned", [False, True])
+    def test_scan_entry_cap_reports_overflow_and_stops(
+        self, tmp_path, monkeypatch, caplog, pinned
+    ) -> None:
+        """Both scan branches retain at most the shared directory-entry cap."""
+        import kiro_crew.agent_discovery as discovery_mod
+        from kiro_crew.agent_discovery import (
+            _AGENT_DIRECTORY_MAX_ENTRIES,
+            _pinned_scan_dir_fd,
+        )
+
+        class _CountingScandir:
+            def __init__(self) -> None:
+                self.pulls = 0
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc: object) -> None:
+                return None
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                self.pulls += 1
+                if self.pulls > _AGENT_DIRECTORY_MAX_ENTRIES + 8:
+                    raise StopIteration
+                entry = MagicMock()
+                entry.name = f"agent-{self.pulls}.json"
+                return entry
+
+        scan = _CountingScandir()
+        agents_dir = tmp_path / "repo" / ".kiro" / "agents"
+        agents_dir.mkdir(parents=True)
+        fd = 7303
+        os_double = SimpleNamespace(**vars(os))
+        os_double.scandir = lambda target: scan
+        os_double.close = lambda _held_fd: None
+        monkeypatch.setattr(discovery_mod, "os", os_double)
+        monkeypatch.setattr(discovery_mod, "supports_pinned_walk", lambda: pinned)
+        monkeypatch.setattr(discovery_mod, "is_sensitive_path", lambda _path: False)
+        monkeypatch.setattr(discovery_mod, "fd_real_path", lambda _held_fd: str(agents_dir))
+        monkeypatch.setattr(discovery_mod, "open_in_pinned_parent", lambda *_a, **_kw: fd)
+
+        with caplog.at_level(logging.WARNING, logger=_DISCOVERY_LOGGER):
+            with _pinned_scan_dir_fd(agents_dir, unsupported_ok=not pinned) as (
+                entries,
+                dir_fd,
+                overflow,
+            ):
+                assert entries is not None
+                assert len(tuple(entries)) == _AGENT_DIRECTORY_MAX_ENTRIES
+                assert overflow is True
+                assert dir_fd == (fd if pinned else None)
+
+        assert scan.pulls == _AGENT_DIRECTORY_MAX_ENTRIES + 1
+        warnings = [record for record in caplog.records if record.name == _DISCOVERY_LOGGER]
+        assert len(warnings) == 1
+        assert warnings[0].args == (
+            agents_dir,
+            _AGENT_DIRECTORY_MAX_ENTRIES,
+        )
+
+    @staticmethod
+    def _windows_path_key(path: str | os.PathLike[str]) -> str:
+        """Match production's normalized lookup spelling under Windows semantics."""
+        import ntpath
+
+        return ntpath.normcase(ntpath.normpath(os.fspath(path)))
+
+    def test_scan_overflow_never_becomes_a_partial_roster(
+        self, tmp_path, monkeypatch, caplog
+    ) -> None:
+        import kiro_crew.agent_discovery as discovery_mod
+        from kiro_crew.agent_discovery import ScanUnverifiable
+
+        monkeypatch.setattr(discovery_mod, "_AGENT_DIRECTORY_MAX_ENTRIES", 2)
+        project = tmp_path / "repo"
+        agents_dir = _project_agents_dir(project)
+        for name in ("a", "b", "c"):
+            (agents_dir / f"{name}.json").write_text(json.dumps({"name": name}))
+        clear_project_agent_cache()
+
+        kiro_dir = project / ".kiro"
+        with os.scandir(kiro_dir) as scan:
+            kiro_entries = list(scan)
+        with os.scandir(agents_dir) as scan:
+            agent_entries = list(scan)
+        fd_by_path = {
+            os.path.normcase(os.path.normpath(os.fspath(kiro_dir))): 7304,
+            os.path.normcase(os.path.normpath(os.fspath(agents_dir))): 7305,
+        }
+        entries_by_fd = {7304: kiro_entries, 7305: agent_entries}
+        real_by_fd = {fd: path for path, fd in fd_by_path.items()}
+
+        def fake_open(parent, name, **_kwargs):
+            path = os.path.normcase(os.path.normpath(os.path.join(parent, name)))
+            return fd_by_path[path]
+
+        os_double = SimpleNamespace(**vars(os))
+        os_double.scandir = lambda fd: _FakeScandir(entries_by_fd[fd])
+        os_double.close = lambda _fd: None
+        monkeypatch.setattr(discovery_mod, "os", os_double)
+        monkeypatch.setattr(discovery_mod, "supports_pinned_walk", lambda: True)
+        monkeypatch.setattr(discovery_mod, "open_in_pinned_parent", fake_open)
+        monkeypatch.setattr(discovery_mod, "fd_real_path", lambda fd: real_by_fd[fd])
+        monkeypatch.setattr(
+            discovery_mod,
+            "_read_agent_spec_from_descriptor",
+            lambda path, **_kwargs: json.loads(path.read_text()),
+        )
+
+        with caplog.at_level(logging.WARNING, logger=_DISCOVERY_LOGGER):
+            session_names = project_agent_names(project)
+            assert len(session_names) == 2
+            assert session_names <= {"a", "b", "c"}
+            with pytest.raises(ScanUnverifiable, match="2-entry scan cap"):
+                project_agent_names(project, raise_unverifiable=True)
+
+        assert (
+            sum(
+                record.name == _DISCOVERY_LOGGER and "entry cap" in record.message
+                for record in caplog.records
+            )
+            == 3
+        )
+
+    def test_oversized_declared_name_narrows_session_roster_and_is_not_cached_complete(
+        self, tmp_path, monkeypatch, caplog
+    ) -> None:
+        import kiro_crew.agent_discovery as discovery_mod
+        from kiro_crew.agent_discovery import ScanUnverifiable
+
+        name_limit = getattr(discovery_mod, "_AGENT_NAME_MAX_CHARS", 63)
+        project = tmp_path / "repo"
+        agents_dir = _project_agents_dir(project)
+        (agents_dir / "good.json").write_text(json.dumps({"name": "good"}))
+        oversized = "x" * (name_limit + 1)
+        (agents_dir / "oversized.json").write_text(json.dumps({"name": oversized}))
+        clear_project_agent_cache()
+
+        # Session path: the surviving sibling is served, not the whole
+        # roster refused -- mirrors _bounded_scan_entries' split between a
+        # strict request scan (refuses) and a pre-existing session scan
+        # (consumes the bounded/valid prefix and reports the narrowing).
+        with caplog.at_level(logging.WARNING, logger=_DISCOVERY_LOGGER):
+            assert project_agent_names(project) == frozenset({"good"})
+
+        warnings = [
+            record
+            for record in caplog.records
+            if record.name == _DISCOVERY_LOGGER and "agent-name cap" in record.message
+        ]
+        assert len(warnings) == 1
+        assert oversized not in caplog.text
+        cached_signature, cached_names = discovery_mod._PROJECT_NAMES_CACHE[str(project)]
+        # The cached signature still carries the oversized-name marker so a
+        # later verified (complete) scan cannot hit this as a complete
+        # roster -- but the cached NAMES are the partial, not empty.
+        assert cached_signature[-1] == (("\0oversized-name", 1),)
+        assert cached_names == frozenset({"good"})
+
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger=_DISCOVERY_LOGGER):
+            assert project_agent_names(project) == frozenset({"good"})
+        assert sum("agent-name cap" in record.message for record in caplog.records) == 1
+
+        # Strict path is untouched: it still refuses the whole answer. Forced
+        # pinned so the assertion reaches the name-cap refusal even on a
+        # platform that cannot pin -- mirrors test_scan_entry_cap_reports_
+        # overflow_and_stops/test_scan_overflow_never_becomes_a_partial_roster
+        # forcing supports_pinned_walk for the same reason: unsupported_ok is
+        # False here (raise_unverifiable=True), so an unpinnable platform would
+        # otherwise raise ScanUnverifiable's PINNING message before the name
+        # cap is ever consulted, never reaching this contract at all.
+        #
+        # Forcing the capability alone is not enough: it makes the code take
+        # the PINNED branch, which calls into `pinned_fs.pin_parent` and opens
+        # with `os.O_RDONLY | os.O_DIRECTORY` -- a flag real Windows does not
+        # have, so that force alone raises `AttributeError` there instead of the
+        # refusal this assertion checks. `open_in_pinned_parent` is substituted
+        # with a fake, same as both siblings above, so the pinned branch never
+        # reaches that real primitive on any platform.
+        kiro_dir = project / ".kiro"
+        with os.scandir(kiro_dir) as scan:
+            kiro_entries = list(scan)
+        with os.scandir(agents_dir) as scan:
+            agent_entries = list(scan)
+        fd_by_path = {
+            os.path.normcase(os.path.normpath(os.fspath(kiro_dir))): 7306,
+            os.path.normcase(os.path.normpath(os.fspath(agents_dir))): 7307,
+        }
+        entries_by_fd = {7306: kiro_entries, 7307: agent_entries}
+        real_by_fd = {fd: path for path, fd in fd_by_path.items()}
+
+        def fake_open(parent, name, **_kwargs):
+            path = os.path.normcase(os.path.normpath(os.path.join(parent, name)))
+            return fd_by_path[path]
+
+        os_double = SimpleNamespace(**vars(os))
+        os_double.scandir = lambda fd: _FakeScandir(entries_by_fd[fd])
+        os_double.close = lambda _fd: None
+        monkeypatch.setattr(discovery_mod, "os", os_double)
+        monkeypatch.setattr(discovery_mod, "supports_pinned_walk", lambda: True)
+        monkeypatch.setattr(discovery_mod, "open_in_pinned_parent", fake_open)
+        monkeypatch.setattr(discovery_mod, "fd_real_path", lambda fd: real_by_fd[fd])
+        monkeypatch.setattr(
+            discovery_mod,
+            "_read_agent_spec_from_descriptor",
+            lambda path, **_kwargs: json.loads(path.read_text()),
+        )
+        with pytest.raises(ScanUnverifiable, match=rf"{name_limit}-character agent-name cap"):
+            project_agent_names(project, raise_unverifiable=True)
+
+    def test_name_of_exactly_the_cap_is_accepted_not_narrowed(
+        self, tmp_path, monkeypatch, caplog
+    ) -> None:
+        """A name AT the cap is a normal roster entry, not the oversized case.
+
+        The sibling test above uses ``name_limit + 1`` derived from the
+        module's OWN constant, so it only proves the cap refuses one
+        character past whatever that constant currently says -- it can never
+        disagree with a wrong constant. This is the other half, pinned
+        against the independent authority instead: a name of exactly
+        ``kiro_crew.validation._AGENT_NAME_RE``'s maximum length (64, the
+        grammar a dispatchable agent name is checked against) must be served
+        like any other declared name, with no warning row, no
+        ``ScanUnverifiable`` under ``raise_unverifiable=True``, and no
+        oversized-name cache marker.
+        """
+        import kiro_crew.agent_discovery as discovery_mod
+        from kiro_crew.validation import _AGENT_NAME_RE
+
+        authority_limit = 64
+        assert _AGENT_NAME_RE.match("x" * authority_limit)
+        assert not _AGENT_NAME_RE.match("x" * (authority_limit + 1))
+
+        project = tmp_path / "repo"
+        agents_dir = _project_agents_dir(project)
+        at_limit = "x" * authority_limit
+        (agents_dir / "at-limit.json").write_text(json.dumps({"name": at_limit}))
+        clear_project_agent_cache()
+
+        with caplog.at_level(logging.WARNING, logger=_DISCOVERY_LOGGER):
+            assert project_agent_names(project) == frozenset({at_limit})
+        assert not any(
+            record.name == _DISCOVERY_LOGGER and "agent-name cap" in record.message
+            for record in caplog.records
+        )
+        cached_signature, cached_names = discovery_mod._PROJECT_NAMES_CACHE[str(project)]
+        assert cached_signature[-1] != (("\0oversized-name", 1),)
+        assert cached_names == frozenset({at_limit})
+
+        # Strict path must serve the same name at the cap, not refuse. Forced
+        # pinned so the assertion reaches the name judgment even on a platform
+        # that cannot pin -- unsupported_ok is False here (raise_unverifiable=
+        # True), so an unpinnable platform would otherwise raise
+        # ScanUnverifiable's PINNING message before the name is ever judged.
+        #
+        # Forcing the capability alone is not enough: it makes the code take
+        # the PINNED branch, which calls into `pinned_fs.pin_parent` and opens
+        # with `os.O_RDONLY | os.O_DIRECTORY` -- a flag real Windows does not
+        # have, so that force alone raises `AttributeError` there instead of
+        # reaching the name judgment this assertion checks.
+        # `open_in_pinned_parent` is substituted with a fake, same as the
+        # siblings above, so the pinned branch never reaches that real
+        # primitive on any platform.
+        kiro_dir = project / ".kiro"
+        with os.scandir(kiro_dir) as scan:
+            kiro_entries = list(scan)
+        with os.scandir(agents_dir) as scan:
+            agent_entries = list(scan)
+        fd_by_path = {
+            os.path.normcase(os.path.normpath(os.fspath(kiro_dir))): 7308,
+            os.path.normcase(os.path.normpath(os.fspath(agents_dir))): 7309,
+        }
+        entries_by_fd = {7308: kiro_entries, 7309: agent_entries}
+        real_by_fd = {fd: path for path, fd in fd_by_path.items()}
+
+        def fake_open(parent, name, **_kwargs):
+            path = os.path.normcase(os.path.normpath(os.path.join(parent, name)))
+            return fd_by_path[path]
+
+        os_double = SimpleNamespace(**vars(os))
+        os_double.scandir = lambda fd: _FakeScandir(entries_by_fd[fd])
+        os_double.close = lambda _fd: None
+        monkeypatch.setattr(discovery_mod, "os", os_double)
+        monkeypatch.setattr(discovery_mod, "supports_pinned_walk", lambda: True)
+        monkeypatch.setattr(discovery_mod, "open_in_pinned_parent", fake_open)
+        monkeypatch.setattr(discovery_mod, "fd_real_path", lambda fd: real_by_fd[fd])
+        monkeypatch.setattr(
+            discovery_mod,
+            "_read_agent_spec_from_descriptor",
+            lambda path, **_kwargs: json.loads(path.read_text()),
+        )
+        assert project_agent_names(project, raise_unverifiable=True) == frozenset({at_limit})
+
+    @pytest.mark.parametrize(
+        ("targets", "ancestors", "refused"),
+        [
+            ({"C:/links/a": "C:/local/agents"}, {}, False),
+            ({"C:/links/a": "//attacker/share"}, {}, True),
+            (
+                {
+                    "C:/links/a": "C:/links/b",
+                    "C:/links/b": "C:/links/c",
+                    "C:/links/c": "//attacker/share",
+                },
+                {},
+                True,
+            ),
+            (
+                {
+                    "C:/links/a": "C:/links/b",
+                    "C:/links/b": "C:/links/a",
+                },
+                {},
+                True,
+            ),
+            (
+                {"C:/links/a": "C:/under-junction/agents"},
+                {"C:/under-junction/agents": ["C:/under-junction"]},
+                True,
+            ),
+        ],
+        ids=(
+            "single-local",
+            "single-unc",
+            "chained-unc",
+            "cycle",
+            "rewritten-target-under-unc-ancestor",
+        ),
+    )
+    def test_link_target_chain_is_cleared_without_following(
+        self, monkeypatch, targets, ancestors, refused
+    ) -> None:
+        """Stored targets are inspected recursively; only a cleared local chain
+        passes. A REWRITTEN target (hop >= 1) that itself sits beneath a linked
+        ancestor is refused at that ancestor before ``readlink`` ever runs on
+        the rewritten target itself.
+        """
+        import ntpath
+
+        import kiro_crew.agent_discovery as discovery_mod
+
+        normalized_targets = {
+            self._windows_path_key(path): target for path, target in targets.items()
+        }
+        normalized_ancestors = {
+            self._windows_path_key(path): [self._windows_path_key(a) for a in chain]
+            for path, chain in ancestors.items()
+        }
+        # The ancestor itself readlinks to the UNC share in this fixture's one
+        # ancestor-bearing case; no other case populates this map.
+        ancestor_link_targets = {
+            self._windows_path_key("C:/under-junction"): "//attacker/share",
+        }
+        readlink_calls: list[str] = []
+
+        def readlink(path):
+            key = self._windows_path_key(path)
+            readlink_calls.append(key)
+            if key in ancestor_link_targets:
+                return ancestor_link_targets[key]
+            try:
+                return normalized_targets[key]
+            except KeyError:
+                raise OSError(errno.EINVAL, "not a link")
+
+        def iter_linked_ancestors_double(path):
+            key = self._windows_path_key(path)
+            yield from normalized_ancestors.get(key, [])
+
+        os_double = SimpleNamespace(**vars(os))
+        os_double.path = ntpath
+        os_double.readlink = readlink
+        monkeypatch.setattr(discovery_mod, "os", os_double)
+        monkeypatch.setattr(discovery_mod, "iter_linked_ancestors", iter_linked_ancestors_double)
+
+        assert discovery_mod._link_reaches_unc("C:/links/a") is refused
+        if ancestors:
+            rewritten_key = next(iter(normalized_ancestors))
+            assert (
+                rewritten_key not in readlink_calls
+            ), "readlink ran on the rewritten target before its ancestor was cleared"
+
+    def test_link_target_chain_refuses_an_uninspectable_hop(self, monkeypatch) -> None:
+        import ntpath
+
+        import kiro_crew.agent_discovery as discovery_mod
+
+        def readlink(path):
+            if self._windows_path_key(path) == self._windows_path_key("C:/links/a"):
+                return "C:/links/b"
+            raise PermissionError(errno.EACCES, "cannot inspect link")
+
+        os_double = SimpleNamespace(**vars(os))
+        os_double.path = ntpath
+        os_double.readlink = readlink
+        monkeypatch.setattr(discovery_mod, "os", os_double)
+
+        assert discovery_mod._link_reaches_unc("C:/links/a") is True
+
+    def test_link_target_chain_refuses_hop_budget_exhaustion(self, monkeypatch) -> None:
+        import ntpath
+
+        import kiro_crew.agent_discovery as discovery_mod
+
+        targets = {
+            self._windows_path_key(f"C:/links/{index}"): f"C:/links/{index + 1}"
+            for index in range(discovery_mod._LINK_TARGET_MAX_HOPS)
+        }
+        calls: list[str] = []
+
+        def readlink(path):
+            key = self._windows_path_key(path)
+            calls.append(key)
+            return targets[key]
+
+        os_double = SimpleNamespace(**vars(os))
+        os_double.path = ntpath
+        os_double.readlink = readlink
+        monkeypatch.setattr(discovery_mod, "os", os_double)
+
+        assert discovery_mod._link_reaches_unc("C:/links/0") is True
+        assert calls[:2] == [
+            self._windows_path_key("C:/links/0"),
+            self._windows_path_key("C:/links/1"),
+        ]
+        assert len(calls) == discovery_mod._LINK_TARGET_MAX_HOPS
+
+    def test_no_pinned_walk_support_raises_for_the_new_surface(self, monkeypatch) -> None:
+        """The default (``unsupported_ok=False``) is the NEW request-supplied
+        ``?project_path=`` surface's contract: an unpinnable platform refuses
+        rather than silently walking the caller-supplied path by name.
+        """
+        import kiro_crew.agent_discovery as discovery_mod
+        from kiro_crew.agent_discovery import ScanUnverifiable, _pinned_scan_dir
+
+        monkeypatch.setattr(discovery_mod, "supports_pinned_walk", lambda: False)
+
+        with pytest.raises(ScanUnverifiable):
+            with _pinned_scan_dir(Path("/some/project/.kiro/agents")):
+                pass  # pragma: no cover - the context manager must raise on enter
+
+    def test_local_linked_ancestor_still_contributes_project_specs_when_unpinnable(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """A local junction ancestor cannot trigger an SMB/NTLM exchange, so
+        the unpinned Windows fallback still scans the project beneath it.
+        """
+        import kiro_crew.agent_discovery as discovery_mod
+
+        monkeypatch.setattr(discovery_mod, "supports_pinned_walk", lambda: False)
+        monkeypatch.setattr(discovery_mod, "_WINDOWS", True)
+        linked_ancestor = tmp_path / "local-junction"
+        local_target = tmp_path / "local-target"
+        local_target.mkdir()
+        proj = tmp_path / "repo"
+        scanned_dir = _project_agents_dir(proj)
+        monkeypatch.setattr(
+            discovery_mod,
+            "iter_linked_ancestors",
+            lambda path: iter([linked_ancestor]) if path == scanned_dir else iter([]),
+        )
+        os_double = SimpleNamespace(**vars(os))
+        os_double.readlink = lambda path: (
+            str(local_target) if path == linked_ancestor else os.readlink(path)
+        )
+        monkeypatch.setattr(discovery_mod, "os", os_double)
+        spec = scanned_dir / "a.json"
+        spec.write_text(json.dumps({"name": "a"}))
+
+        assert project_agent_files(str(proj)) == [spec]
+
+    def test_mocked_windows_unc_linked_ancestor_is_denied_before_unpinned_probe(
+        self, monkeypatch
+    ) -> None:
+        """A junction ancestor targeting a disallowed UNC share is refused
+        before the fallback can follow it through ``is_dir`` or ``realpath``.
+        """
+        import kiro_crew.agent_discovery as discovery_mod
+        from kiro_crew.agent_discovery import _pinned_scan_dir
+
+        target = Path("C:/work/junction/repo/.kiro/agents")
+        linked_ancestor = Path("C:/work/junction")
+        probes: list[str] = []
+        monkeypatch.setattr(discovery_mod, "supports_pinned_walk", lambda: False)
+        monkeypatch.setattr(discovery_mod, "_WINDOWS", True)
+        monkeypatch.setattr(
+            discovery_mod,
+            "iter_linked_ancestors",
+            lambda _path: iter([linked_ancestor]),
+        )
+        path_double = SimpleNamespace(**vars(os.path))
+        path_double.realpath = lambda path: probes.append(f"realpath:{path}") or str(path)
+        os_double = SimpleNamespace(**vars(os))
+        os_double.path = path_double
+        os_double.readlink = lambda path: (
+            "//attacker/share" if path == linked_ancestor else os.readlink(path)
+        )
+        monkeypatch.setattr(discovery_mod, "os", os_double)
+
+        def leaf_probe_boom(_path):
+            raise AssertionError("leaf probe ran after linked ancestor was found")
+
+        monkeypatch.setattr(discovery_mod, "is_link_or_junction", leaf_probe_boom)
+        monkeypatch.setattr(
+            Path,
+            "is_dir",
+            lambda self: probes.append(f"is_dir:{self}") or True,
+        )
+        with _pinned_scan_dir(target, unsupported_ok=True) as entries:
+            assert entries is None
+        assert probes == []
+
+    def test_local_junction_above_a_unc_junction_is_still_denied(self, monkeypatch) -> None:
+        """The gap a benign shallow junction could hide: a local junction near
+        the root must not stop the walk before a DEEPER UNC-targeted junction
+        on the same chain is examined. Refusing the outer link unconditionally
+        (the pre-narrowing behaviour) would also pass this; the regression this
+        guards is a screen that stops at the first ancestor and never looks
+        further down the chain to find the one that actually targets a share.
+        """
+        import kiro_crew.agent_discovery as discovery_mod
+        from kiro_crew.agent_discovery import _pinned_scan_dir
+
+        target = Path("C:/dotfiles-junction/projects/evil-unc/repo/.kiro/agents")
+        local_ancestor = Path("C:/dotfiles-junction")
+        unc_ancestor = Path("C:/dotfiles-junction/projects/evil-unc")
+        probes: list[str] = []
+        monkeypatch.setattr(discovery_mod, "supports_pinned_walk", lambda: False)
+        monkeypatch.setattr(discovery_mod, "_WINDOWS", True)
+        monkeypatch.setattr(
+            discovery_mod,
+            "iter_linked_ancestors",
+            lambda path: (iter([local_ancestor, unc_ancestor]) if path == target else iter([])),
+        )
+        path_double = SimpleNamespace(**vars(os.path))
+        path_double.realpath = lambda path: probes.append(f"realpath:{path}") or str(path)
+        os_double = SimpleNamespace(**vars(os))
+        os_double.path = path_double
+        os_double.readlink = lambda path: (
+            str(Path("C:/actual/dotfiles"))
+            if path == local_ancestor
+            else "//evil/share" if path == unc_ancestor else os.readlink(path)
+        )
+        monkeypatch.setattr(discovery_mod, "os", os_double)
+        monkeypatch.setattr(
+            Path,
+            "is_dir",
+            lambda self: probes.append(f"is_dir:{self}") or True,
+        )
+
+        with _pinned_scan_dir(target, unsupported_ok=True) as entries:
+            assert entries is None
+        assert probes == [], f"the walk touched the chain before clearing every ancestor: {probes}"
+
+    def test_local_junction_above_another_local_junction_is_followed(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The mirror case: two links in the chain, BOTH targeting local
+        directories, must both be cleared and the scan must still contribute
+        the project's specs -- proving the fix is "examine every ancestor's
+        own target", not merely "refuse whenever there is more than one link".
+        """
+        import kiro_crew.agent_discovery as discovery_mod
+
+        monkeypatch.setattr(discovery_mod, "supports_pinned_walk", lambda: False)
+        monkeypatch.setattr(discovery_mod, "_WINDOWS", True)
+        outer_ancestor = tmp_path / "outer-junction"
+        inner_ancestor = tmp_path / "outer-junction" / "inner-junction"
+        outer_target = tmp_path / "outer-target"
+        inner_target = tmp_path / "inner-target"
+        outer_target.mkdir()
+        inner_target.mkdir()
+        proj = tmp_path / "outer-junction" / "inner-junction" / "repo"
+        scanned_dir = _project_agents_dir(proj)
+        monkeypatch.setattr(
+            discovery_mod,
+            "iter_linked_ancestors",
+            lambda path: (
+                iter([outer_ancestor, inner_ancestor]) if path == scanned_dir else iter([])
+            ),
+        )
+        os_double = SimpleNamespace(**vars(os))
+        os_double.readlink = lambda path: (
+            str(outer_target)
+            if path == outer_ancestor
+            else str(inner_target) if path == inner_ancestor else os.readlink(path)
+        )
+        monkeypatch.setattr(discovery_mod, "os", os_double)
+        spec = scanned_dir / "a.json"
+        spec.write_text(json.dumps({"name": "a"}))
+
+        assert project_agent_files(str(proj)) == [spec]
+
+    def test_no_pinned_walk_support_still_scans_by_name_when_opted_in(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """``unsupported_ok=True`` is the pre-existing-caller contract: on a
+        platform that cannot pin, the scan degrades to the SAME by-name walk
+        ``upstream/main`` has always run, rather than refusing -- proven here
+        by actually finding an entry through it, not merely by not raising.
+        """
+        import kiro_crew.agent_discovery as discovery_mod
+        from kiro_crew.agent_discovery import _pinned_scan_dir
+
+        monkeypatch.setattr(discovery_mod, "supports_pinned_walk", lambda: False)
+        agents_dir = _project_agents_dir(tmp_path / "repo")
+        (agents_dir / "a.json").write_text(json.dumps({"name": "a"}))
+
+        with _pinned_scan_dir(agents_dir, unsupported_ok=True) as entries:
+            assert entries is not None
+            assert [e.name for e in entries] == ["a.json"]
+
+    @requires_symlinks
+    def test_ordinary_leaf_link_is_followed_not_refused_when_unpinnable(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """A ``.kiro/agents`` that is an ordinary symlink into a LOCAL directory
+        -- the dotfiles-managed checkout -- still yields its specs on an
+        unpinnable platform, with NO audited denial. The leaf link is followed
+        and judged by its resolved target, exactly as the pinned branch follows
+        a leaf link; only a link whose target names an SMB share is refused. A
+        blanket leaf ``is_link_or_junction`` screen refused this, dropping every
+        project agent across Slack, per-turn resolution, ``spawn_run`` validation
+        and the config loader, writing a false ``sensitive scan dir rejected``
+        audit, and -- through the never-equal sensitive-dir signature --
+        re-auditing on every turn.
+        """
+        import kiro_crew.agent_discovery as discovery_mod
+
+        real_agents = tmp_path / "elsewhere"
+        real_agents.mkdir()
+        spec = real_agents / "a.json"
+        spec.write_text(json.dumps({"name": "a"}))
+        proj = tmp_path / "repo"
+        (proj / ".kiro").mkdir(parents=True)
+        os.symlink(real_agents, proj / ".kiro" / "agents")
+
+        monkeypatch.setattr(discovery_mod, "supports_pinned_walk", lambda: False)
+        monkeypatch.setattr(discovery_mod, "_WINDOWS", True)
+        sel_events: list[dict] = []
+        monkeypatch.setattr(
+            discovery_mod,
+            "_sel",
+            lambda: SimpleNamespace(log_api_access=lambda **kw: sel_events.append(kw)),
+        )
+        clear_project_agent_cache()
+
+        assert project_agent_files(str(proj)) == [proj / ".kiro" / "agents" / "a.json"]
+        assert not any(
+            e.get("outcome") == "denied" for e in sel_events
+        ), f"an ordinary leaf link must not be audited as a sensitive denial: {sel_events}"
+
+    @requires_symlinks
+    def test_leaf_link_into_unc_is_still_refused_before_any_probe(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The narrowed screen still stops the SMB/NTLM probe it exists for: a
+        leaf ``.kiro/agents`` that is a link whose stored target is UNC-shaped
+        (``//host/share``) is refused by :func:`_linked_ancestor_refused`, so the
+        unpinnable branch yields ``None`` and never reaches the ``is_dir`` /
+        ``realpath`` / ``scandir`` follow that would open the outbound SMB
+        connection, exactly as an ancestor junction is refused.
+        """
+        import kiro_crew.agent_discovery as discovery_mod
+        from kiro_crew.agent_discovery import _pinned_scan_dir
+
+        proj = tmp_path / "repo"
+        (proj / ".kiro").mkdir(parents=True)
+        agents_dir = proj / ".kiro" / "agents"
+        os.symlink("//attacker/share/agents", agents_dir)
+
+        monkeypatch.setattr(discovery_mod, "supports_pinned_walk", lambda: False)
+        monkeypatch.setattr(discovery_mod, "_WINDOWS", True)
+
+        # The screen catches it, and it is consulted BEFORE any follow in the
+        # unpinnable branch, so the scan refuses without a resolving syscall.
+        assert discovery_mod._linked_ancestor_refused(agents_dir) is True
+        with _pinned_scan_dir(agents_dir, unsupported_ok=True) as entries:
+            assert entries is None
+
+    def test_project_agent_files_still_discovers_real_agents_when_unpinnable(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The regression this correction exists to close: on a platform that
+        cannot pin a directory descriptor, EVERY pre-existing caller
+        (per-turn resolution, ``spawn_run`` validation, Slack, the config
+        loader) must keep discovering real ``<project>/.kiro/agents/*.json``
+        entries exactly as `upstream/main` does on every platform -- not
+        merely fail to raise, but actually return the agent. A prior version
+        of this fix gated the whole scan and this returned ``[]`` for a
+        project that genuinely has agents, which is the exact regression a
+        Windows user would have hit in Slack, spawn validation and per-turn
+        dispatch.
+        """
+        import kiro_crew.agent_discovery as discovery_mod
+
+        monkeypatch.setattr(discovery_mod, "supports_pinned_walk", lambda: False)
+        proj = tmp_path / "repo"
+        spec = _project_agents_dir(proj) / "a.json"
+        spec.write_text(json.dumps({"name": "a"}))
+
+        assert project_agent_files(str(proj)) == [spec]
+
+    def test_project_agent_names_still_discovers_real_agents_when_unpinnable(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Same regression, through the per-turn resolver's own entry point and
+        its cache -- a cache MISS on an unpinnable platform must still compute
+        a real signature and a real name set, not the sensitive-dir sentinel.
+        """
+        import kiro_crew.agent_discovery as discovery_mod
+
+        monkeypatch.setattr(discovery_mod, "supports_pinned_walk", lambda: False)
+        proj = tmp_path / "repo"
+        (_project_agents_dir(proj) / "a.json").write_text(json.dumps({"name": "a"}))
+        clear_project_agent_cache()
+
+        assert project_agent_names(str(proj), raise_unverifiable=False) == frozenset({"a"})
+
+    def test_project_agent_files_raises_when_asked(self, tmp_path, monkeypatch) -> None:
+        """The dashboard's explicit ``?project_path=`` scan opts INTO the sharper
+        signal: an unverifiable scan must never read as "this project declares
+        no agents" for the one caller with a UI state for "could not verify".
+        """
+        import kiro_crew.agent_discovery as discovery_mod
+        from kiro_crew.agent_discovery import ScanUnverifiable
+
+        monkeypatch.setattr(discovery_mod, "supports_pinned_walk", lambda: False)
+        proj = tmp_path / "repo"
+        (_project_agents_dir(proj) / "a.json").write_text(json.dumps({"name": "a"}))
+
+        with pytest.raises(ScanUnverifiable):
+            project_agent_files(str(proj), raise_unverifiable=True)
+
+    def test_project_agent_names_raises_when_asked_on_a_cache_miss(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        import kiro_crew.agent_discovery as discovery_mod
+        from kiro_crew.agent_discovery import ScanUnverifiable
+
+        monkeypatch.setattr(discovery_mod, "supports_pinned_walk", lambda: False)
+        proj = tmp_path / "repo"
+        (_project_agents_dir(proj) / "a.json").write_text(json.dumps({"name": "a"}))
+        clear_project_agent_cache()
+
+        with pytest.raises(ScanUnverifiable):
+            project_agent_names(str(proj), raise_unverifiable=True)
+
+    def test_scan_follows_a_benign_leaf_link_when_pinning_is_supported(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Confirms the ancestor pin does not also refuse the LEAF for being a
+        link: ``.kiro``/``.kiro/agents`` symlinked into an ordinary directory
+        (a dotfiles-managed checkout) must still be scanned, matching the
+        pre-existing POSIX contract byte for byte.
+        """
+        from kiro_crew.agent_discovery import _pinned_scan_dir
+
+        target = tmp_path / "elsewhere"
+        target.mkdir()
+        (target / "repo-dev.json").write_text("{}", encoding="utf-8")
+        link = tmp_path / "agents"
+        link.mkdir()
+        entry = MagicMock()
+        entry.name = "repo-dev.json"
+        state = _mock_pinned_directory(monkeypatch, real_path=target, entries=[entry])
+
+        with _pinned_scan_dir(link) as entries:
+            assert entries is not None, "a benign leaf link must be scanned, not refused"
+            assert [e.name for e in entries] == ["repo-dev.json"]
+        ((_, opened_name, open_kwargs),) = state["opens"]
+        assert opened_name == "agents"
+        assert not (
+            open_kwargs["flags"] & getattr(os, "O_NOFOLLOW", 0)
+        ), "the leaf open must follow a benign link; only its ancestors are no-follow"
+        assert state["scans"] == [state["fd"]]
+        assert state["closes"] == [state["fd"]]
+
+    def test_a_swapped_ancestor_is_refused_not_traversed(self, tmp_path, monkeypatch) -> None:
+        """The ancestor chain is pinned component-by-component via
+        ``pinned_fs.open_in_pinned_parent`` -> ``pin_parent``, so a component
+        that becomes a link AFTER the parent was resolved is refused rather
+        than followed -- the check-to-use swap the pin exists to close.
+        """
+        import kiro_crew.agent_discovery as discovery_mod
+        from kiro_crew.agent_discovery import ScanUnverifiable, _pinned_scan_dir
+        from kiro_crew.pinned_fs import PinnedPathRefusal
+
+        # The parent must exist as a real directory: the scan's own isdir
+        # pre-check (which distinguishes an ordinary malformed checkout from a
+        # security-relevant swap) would otherwise short-circuit as "absent"
+        # before the pin below is ever reached.
+        parent = tmp_path / "repo" / ".kiro"
+        parent.mkdir(parents=True)
+        monkeypatch.setattr(discovery_mod, "supports_pinned_walk", lambda: True)
+
+        def _boom(*_a, **_kw):
+            raise PinnedPathRefusal("an ancestor was swapped for a link")
+
+        monkeypatch.setattr(discovery_mod, "open_in_pinned_parent", _boom)
+
+        with pytest.raises(ScanUnverifiable, match="ancestor was swapped"):
+            with _pinned_scan_dir(parent / "agents"):
+                pass
+
+    def test_swapped_ancestor_is_unverifiable_without_false_denial(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The sharp caller raises; legacy callers degrade without a denial audit.
+
+        Covers both entry points that reach the pin: ``project_agent_files``
+        (guarded at its own ``except ScanUnverifiable:``) and
+        ``project_agent_names`` (which reaches the pin through
+        ``_project_signature`` before it ever consults ``project_agent_files``,
+        so a guard on the files path alone does not cover it).
+        """
+        import kiro_crew.agent_discovery as discovery_mod
+        from kiro_crew.agent_discovery import ScanUnverifiable
+        from kiro_crew.pinned_fs import PinnedPathRefusal
+
+        proj = tmp_path / "repo"
+        _project_agents_dir(proj)
+        monkeypatch.setattr(discovery_mod, "supports_pinned_walk", lambda: True)
+        sel_events: list[dict] = []
+        monkeypatch.setattr(
+            discovery_mod,
+            "_sel",
+            lambda: SimpleNamespace(log_api_access=lambda **kw: sel_events.append(kw)),
+        )
+
+        def _boom(*_a, **_kw):
+            raise PinnedPathRefusal("an ancestor was swapped for a link")
+
+        monkeypatch.setattr(discovery_mod, "open_in_pinned_parent", _boom)
+
+        with pytest.raises(ScanUnverifiable, match="ancestor was swapped"):
+            project_agent_files(str(proj), raise_unverifiable=True)
+        assert project_agent_files(str(proj)) == []
+
+        clear_project_agent_cache()
+        with pytest.raises(ScanUnverifiable, match="ancestor was swapped"):
+            project_agent_names(str(proj), raise_unverifiable=True)
+        assert project_agent_names(str(proj)) == frozenset()
+        assert sel_events == [], f"an unverifiable scan emitted a denial: {sel_events}"
+
+        # The degraded lookup above must not have cached a signature that a
+        # LATER raise_unverifiable=True call could read as a verified-empty
+        # cache hit and skip the scan (and its sharp signal) entirely.
+        with pytest.raises(ScanUnverifiable, match="ancestor was swapped"):
+            project_agent_names(str(proj), raise_unverifiable=True)
+
+    def test_sensitive_resolved_parent_is_denied_before_filesystem_probe(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """A mocked symlinked ``.kiro`` is judged before its target is stat'd or opened."""
+        import kiro_crew.agent_discovery as discovery_mod
+        from kiro_crew.agent_discovery import _pinned_scan_dir_fd
+
+        sensitive = tmp_path / "sensitive"
+        sensitive.mkdir()
+        project = tmp_path / "repo"
+        (project / ".kiro").mkdir(parents=True)
+        agents_dir = project / ".kiro" / "agents"
+        sensitive_real = os.path.realpath(sensitive)
+        touched: list[str] = []
+        sel_events: list[dict] = []
+        fake_fd = 7302
+        real_isdir = discovery_mod.os.path.isdir
+        real_realpath = discovery_mod.os.path.realpath
+        path_double = SimpleNamespace(**vars(os.path))
+        os_double = SimpleNamespace(**vars(os))
+        os_double.path = path_double
+        os_double.close = lambda _fd: None
+        monkeypatch.setattr(discovery_mod, "os", os_double)
+
+        def simulated_realpath(path) -> str:
+            if os.fspath(path) == os.fspath(project / ".kiro"):
+                return sensitive_real
+            return real_realpath(path)
+
+        monkeypatch.setattr(
+            discovery_mod,
+            "_sel",
+            lambda: SimpleNamespace(log_api_access=lambda **kw: sel_events.append(kw)),
+        )
+        monkeypatch.setattr(
+            discovery_mod,
+            "is_sensitive_path",
+            lambda path: os.fspath(path) == sensitive_real,
+        )
+        monkeypatch.setattr(discovery_mod, "supports_pinned_walk", lambda: True)
+        monkeypatch.setattr(discovery_mod.os.path, "realpath", simulated_realpath)
+        monkeypatch.setattr(discovery_mod, "fd_real_path", lambda _fd: sensitive_real)
+
+        def guarded_isdir(path) -> bool:
+            if os.fspath(path) == sensitive_real:
+                touched.append("isdir")
+                raise AssertionError("sensitive parent was stat'd before denial")
+            return real_isdir(path)
+
+        def guarded_open(parent, *args, **kwargs):
+            if os.fspath(parent) == sensitive_real:
+                touched.append("open")
+                raise AssertionError("sensitive parent was opened before denial")
+            return fake_fd
+
+        monkeypatch.setattr(discovery_mod.os.path, "isdir", guarded_isdir)
+        monkeypatch.setattr(discovery_mod, "open_in_pinned_parent", guarded_open)
+
+        with _pinned_scan_dir_fd(agents_dir) as (entries, dir_fd, overflow):
+            assert entries is None, "a sensitive resolved parent must use the denied sentinel"
+            assert dir_fd is None
+            assert overflow is False
+
+        clear_project_agent_cache()
+        assert project_agent_files(str(project), raise_unverifiable=False) == []
+        assert project_agent_names(str(project), raise_unverifiable=False) == frozenset()
+        assert any(event.get("outcome") == "denied" for event in sel_events)
+        assert touched == []
+
+    def test_a_sensitive_resolved_target_is_refused(self, tmp_path, monkeypatch) -> None:
+        """The held descriptor's REAL path, not its mutable name, is sensitivity-checked."""
+        import kiro_crew.agent_discovery as discovery_mod
+        from kiro_crew.agent_discovery import _pinned_scan_dir
+
+        secret = tmp_path / "creds_home"
+        secret.mkdir()
+        link = tmp_path / "agents"
+        link.mkdir()
+
+        monkeypatch.setattr(
+            discovery_mod,
+            "is_sensitive_path",
+            lambda p: os.path.realpath(str(p)) == os.path.realpath(str(secret)),
+        )
+        state = _mock_pinned_directory(monkeypatch, real_path=secret, entries=[])
+
+        with _pinned_scan_dir(link) as entries:
+            assert entries is None, "a leaf resolving into a sensitive tree must be refused"
+        assert state["scans"] == [], "a sensitive held target was enumerated before refusal"
+        assert state["closes"] == [state["fd"]]
+
+    def test_a_missing_scan_dir_is_absent_not_unverifiable(self, tmp_path, monkeypatch) -> None:
+        """A checkout with no ``.kiro`` yet is the ordinary case: absence, not
+        a failed or refused scan -- must not raise and must not read as denied.
+        """
+        import kiro_crew.agent_discovery as discovery_mod
+        from kiro_crew.agent_discovery import _pinned_scan_dir
+
+        monkeypatch.setattr(discovery_mod, "supports_pinned_walk", lambda: True)
+        monkeypatch.setattr(
+            discovery_mod,
+            "open_in_pinned_parent",
+            lambda *_a, **_kw: pytest.fail("an absent parent must short-circuit before pinning"),
+        )
+
+        with _pinned_scan_dir(tmp_path / "repo" / ".kiro" / "agents") as entries:
+            assert entries == ()
+
+    def test_a_strict_enumeration_failure_raises_scan_unverifiable(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """An owner-supplied (``unsupported_ok=False``) scan whose ``os.scandir``
+        raises ``OSError`` (e.g. a FUSE/NFS ``readdir`` EIO) must surface
+        :class:`ScanUnverifiable`, never an empty tuple -- the confident-wrong-
+        answer GPT 5.6 flagged: "not in this project" where the truth is
+        "could not be read".
+        """
+        from kiro_crew.agent_discovery import ScanUnverifiable, _pinned_scan_dir_fd
+
+        agents_dir = tmp_path / "repo" / ".kiro" / "agents"
+        agents_dir.parent.mkdir(parents=True)
+        state = _mock_pinned_directory(monkeypatch, real_path=agents_dir, entries=[])
+        import kiro_crew.agent_discovery as discovery_mod
+
+        def fake_scandir(target):
+            state["scans"].append(target)
+            raise OSError(errno.EIO, "input/output error")
+
+        monkeypatch.setattr(discovery_mod.os, "scandir", fake_scandir)
+
+        with pytest.raises(ScanUnverifiable, match="could not enumerate"):
+            with _pinned_scan_dir_fd(agents_dir, unsupported_ok=False) as (
+                entries,
+                dir_fd,
+                overflow,
+            ):
+                pass  # pragma: no cover - the raise happens before a yield
+
+        # The descriptor is still closed: the raise runs inside the
+        # try/finally that owns it, so a strict refusal must not leak the fd.
+        assert state["closes"] == [state["fd"]]
+
+    def test_a_legacy_enumeration_failure_still_degrades_to_empty(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The fence: the SAME ``os.scandir`` ``OSError`` on the LEGACY
+        (``unsupported_ok=True``) path must keep degrading to an empty tuple.
+        Widening the strict-path fix to every caller would break Slack and
+        per-turn resolution, which depend on degrade-to-empty on every platform.
+        """
+        from kiro_crew.agent_discovery import _pinned_scan_dir_fd
+
+        agents_dir = tmp_path / "repo" / ".kiro" / "agents"
+        agents_dir.parent.mkdir(parents=True)
+        state = _mock_pinned_directory(monkeypatch, real_path=agents_dir, entries=[])
+        import kiro_crew.agent_discovery as discovery_mod
+
+        def fake_scandir(target):
+            state["scans"].append(target)
+            raise OSError(errno.EIO, "input/output error")
+
+        monkeypatch.setattr(discovery_mod.os, "scandir", fake_scandir)
+
+        with _pinned_scan_dir_fd(agents_dir, unsupported_ok=True) as (
+            entries,
+            dir_fd,
+            overflow,
+        ):
+            assert entries == ()
+            assert dir_fd is None
+            assert overflow is False
+        assert state["closes"] == [state["fd"]]
+
+    def test_project_agent_names_raises_unverifiable_on_strict_enumeration_failure(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """End-to-end through the public surface the dashboard roster endpoint
+        calls: ``raise_unverifiable=True`` must propagate ``ScanUnverifiable``
+        rather than resolving to an empty roster, for BOTH a cache miss and
+        (via the signature-first cache-fencing) a would-be cache hit.
+        """
+        import kiro_crew.agent_discovery as discovery_mod
+        from kiro_crew.agent_discovery import ScanUnverifiable
+
+        project = tmp_path / "repo"
+        agents_dir = _project_agents_dir(project)
+        (agents_dir / "existing.json").write_text(json.dumps({"name": "existing"}))
+        clear_project_agent_cache()
+
+        # The pinned branch is driven through the shared held-descriptor double
+        # rather than by forcing ``supports_pinned_walk`` alone: that force sends
+        # the code into ``pinned_fs.pin_parent``, which opens with
+        # ``os.O_RDONLY | os.O_DIRECTORY`` -- a flag Windows does not define, so
+        # the force by itself raises ``AttributeError`` there instead of the
+        # refusal this test asserts. The double substitutes
+        # ``open_in_pinned_parent``, so the pinned branch never reaches that real
+        # primitive on any platform.
+        state = _mock_pinned_directory(monkeypatch, real_path=agents_dir, entries=[])
+
+        def fake_scandir(target):
+            state["scans"].append(target)  # type: ignore[union-attr]
+            raise OSError(errno.EIO, "input/output error")
+
+        monkeypatch.setattr(discovery_mod.os, "scandir", fake_scandir)
+
+        with pytest.raises(ScanUnverifiable):
+            project_agent_names(project, raise_unverifiable=True)
+
+        # And the legacy caller shape on the identical failure still degrades.
+        assert project_agent_names(project, raise_unverifiable=False) == frozenset()
+
+    def test_a_plain_file_leaf_is_absence_not_a_refusal(self, tmp_path, monkeypatch) -> None:
+        """Settles the brief's line-1111 judgment call from the code: on POSIX,
+        ``open_in_pinned_parent``'s final ``os.open(name, O_DIRECTORY, ...)``
+        raises ``NotADirectoryError`` directly for a LEAF that is a plain file
+        -- this is not ``pin_parent``'s ancestor-swap ``PinnedPathRefusal``
+        (that only wraps ELOOP/ENOTDIR on ancestor components, and is caught
+        separately). There is nothing behind a regular file to protect or to
+        have been swapped, so this stays absence on every ``unsupported_ok``
+        value -- it must NOT raise ``ScanUnverifiable`` even when strict.
+        """
+        import kiro_crew.agent_discovery as discovery_mod
+        from kiro_crew.agent_discovery import _pinned_scan_dir_fd
+
+        project = tmp_path / "repo"
+        project.mkdir()
+        # `.kiro` exists as a plain FILE, not a directory: the malformed-
+        # checkout case the line-1111 comment names.
+        (project / ".kiro").write_text("not a directory\n")
+        agents_scope = project / ".kiro" / "agents"
+
+        monkeypatch.setattr(discovery_mod, "supports_pinned_walk", lambda: True)
+
+        for unsupported_ok in (False, True):
+            with _pinned_scan_dir_fd(agents_scope, unsupported_ok=unsupported_ok) as (
+                entries,
+                dir_fd,
+                overflow,
+            ):
+                assert (
+                    entries == ()
+                ), f"a plain-file leaf must read as absence, unsupported_ok={unsupported_ok}"
+                assert dir_fd is None
+                assert overflow is False
+
+
+class TestPosixPinnedScanIsDescriptorRelative:
+    """The POSIX branch must not re-resolve the directory by NAME after checking
+    it: a writable project lets an attacker swap ``.kiro/agents`` for a symlink
+    into a credential home between the check and the read, and a name-based
+    ``glob`` would follow the swap while a descriptor-relative ``scandir`` reads
+    the inode that was validated.
+    """
+
+    def test_a_mid_enumeration_error_degrades_instead_of_crashing(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """A `@contextmanager` generator may yield exactly ONCE.
+
+        With a lazy iterator, an `OSError` raised while the CALLER iterates is
+        thrown back in at the yield, and yielding again from the handler raises
+        `RuntimeError: generator didn't stop after throw()` -- which aborts the
+        caller's whole command (Slack agent resolution) instead of degrading to
+        "no project agents". Materializing before the yield is what makes the
+        failure a value rather than a crash.
+        """
+        from kiro_crew.agent_discovery import _pinned_scan_dir
+
+        agents = tmp_path / "agents"
+        agents.mkdir()
+        (agents / "repo-dev.json").write_text("{}", encoding="utf-8")
+        entry = MagicMock()
+        entry.name = "repo-dev.json"
+        state = _mock_pinned_directory(monkeypatch, real_path=agents, entries=[entry])
+
+        with _pinned_scan_dir(agents) as entries:
+            assert entries is not None
+            # The contract that makes this safe: what is handed over is already
+            # read, so nothing can fail partway through the caller's loop.
+            assert isinstance(entries, list), (
+                "entries must be materialized before the yield, or a mid-loop "
+                "OSError re-enters the generator and crashes the caller"
+            )
+            assert [e.name for e in entries] == ["repo-dev.json"]
+        assert state["scans"] == [state["fd"]]
+
+    def test_entries_come_from_the_validated_inode_after_a_name_swap(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        from kiro_crew.agent_discovery import _pinned_scan_dir
+
+        real = tmp_path / "agents"
+        real.mkdir()
+        (real / "repo-dev.json").write_text("{}", encoding="utf-8")
+
+        decoy = tmp_path / "credentials"
+        decoy.mkdir()
+        (decoy / "stolen.json").write_text("{}", encoding="utf-8")
+        entry = MagicMock()
+        entry.name = "repo-dev.json"
+        state = _mock_pinned_directory(monkeypatch, real_path=real, entries=[entry])
+
+        with _pinned_scan_dir(real) as entries:
+            assert entries is not None
+            # The swap lands AFTER the open and before the listing is consumed,
+            # which is exactly the window the finding describes.
+            real.rename(tmp_path / "moved")
+            decoy.rename(tmp_path / "agents")
+            names = sorted(e.name for e in entries)
+
+        assert names == ["repo-dev.json"], (
+            "enumeration followed the swapped NAME instead of reading the "
+            "descriptor it validated"
+        )
+        assert state["scans"] == [state["fd"]], "enumeration used a path, not the held fd"
+
+    def test_a_benign_symlinked_scan_dir_is_scanned_not_denied(self, tmp_path, monkeypatch) -> None:
+        """A mocked `.kiro/agents` link to an ordinary directory is enumerated.
+
+        The scan follows the leaf and judges the HELD descriptor's resolved
+        target: an ordinary target is not sensitive, so the link is scanned like
+        a plain directory. Refusing it for being a link breaks every existing
+        caller whose `.kiro` is symlinked (a dotfiles-managed checkout).
+        """
+        from kiro_crew.agent_discovery import _pinned_scan_dir
+
+        target = tmp_path / "elsewhere"
+        target.mkdir()
+        (target / "repo-dev.json").write_text("{}", encoding="utf-8")
+        link = tmp_path / "agents"
+        link.mkdir()
+        entry = MagicMock()
+        entry.name = "repo-dev.json"
+        state = _mock_pinned_directory(monkeypatch, real_path=target, entries=[entry])
+
+        with _pinned_scan_dir(link) as entries:
+            assert entries is not None, "a benign symlinked scan dir must be scanned, not denied"
+            assert [e.name for e in entries] == ["repo-dev.json"]
+        assert state["scans"] == [state["fd"]]
+
+    def test_a_symlinked_scan_dir_into_a_sensitive_tree_is_denied(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """A mocked link whose held target is sensitive is denied before enumeration."""
+        import kiro_crew.agent_discovery as discovery_mod
+        from kiro_crew.agent_discovery import _pinned_scan_dir
+
+        secret = tmp_path / "secrets"
+        secret.mkdir()
+        link = tmp_path / "agents"
+        link.mkdir()
+        monkeypatch.setattr(
+            discovery_mod,
+            "is_sensitive_path",
+            lambda p: os.path.realpath(str(p)) == os.path.realpath(str(secret)),
+        )
+        state = _mock_pinned_directory(monkeypatch, real_path=secret, entries=[])
+
+        with _pinned_scan_dir(link) as entries:
+            assert entries is None, "a link resolving into a sensitive tree must deny"
+        assert state["scans"] == [], "the sensitive held directory was enumerated"
+
+    def test_a_missing_directory_is_nothing_here_not_a_denial(self, tmp_path, monkeypatch) -> None:
+        """An absent `.kiro/agents` is the ordinary "no project agents" case; a
+        denial here would emit a false security audit on every plain checkout."""
+        import kiro_crew.agent_discovery as discovery_mod
+        from kiro_crew.agent_discovery import _pinned_scan_dir
+
+        monkeypatch.setattr(discovery_mod, "supports_pinned_walk", lambda: True)
+        pin_attempts: list[tuple[object, str, dict[str, object]]] = []
+
+        def missing_leaf(parent, name, **kwargs):
+            pin_attempts.append((parent, name, kwargs))
+            raise FileNotFoundError(name)
+
+        monkeypatch.setattr(discovery_mod, "open_in_pinned_parent", missing_leaf)
+
+        with _pinned_scan_dir(tmp_path / "does-not-exist") as entries:
+            assert entries is not None
+            assert list(entries) == []
+        assert len(pin_attempts) == 1
+        assert pin_attempts[0][1] == "does-not-exist"
+
+
+class TestProjectSignatureSnapshotBinding:
+    def test_roster_from_a_different_directory_identity_is_not_cached(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """A cache entry binds the signature and roster to one directory inode."""
+        import contextlib
+
+        import kiro_crew.agent_discovery as discovery_mod
+
+        project = tmp_path / "repo"
+        agents_dir = _project_agents_dir(project)
+        (agents_dir / "poison.json").write_text(json.dumps({"name": "poison"}))
+        clear_project_agent_cache()
+
+        witnesses = [tmp_path / name for name in ("kiro-witness", "old-agents", "new-agents")]
+        for witness in witnesses:
+            witness.write_text(witness.name)
+        fds = [os.open(witness, os.O_RDONLY) for witness in witnesses]
+        calls = iter(
+            (
+                ((), fds[0], False),
+                ((), fds[1], False),
+                ((SimpleNamespace(name="poison.json"),), fds[2], False),
+            )
+        )
+
+        @contextlib.contextmanager
+        def swapped_scan(_directory, **_kwargs):
+            yield next(calls)
+
+        monkeypatch.setattr(discovery_mod, "_pinned_scan_dir_fd", swapped_scan)
+        try:
+            assert project_agent_names(project) == frozenset()
+        finally:
+            for fd in fds:
+                os.close(fd)
+
+        assert str(project) not in discovery_mod._PROJECT_NAMES_CACHE, (
+            "names read from the replacement directory were cached under the "
+            "original directory's signature"
+        )
+
+    def test_a_repoint_inside_the_request_window_audits_its_denial_and_still_refuses(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """A scope readable when its signature was taken and sensitive when the
+        scan runs is BOTH audited as denied AND refused.
+
+        The identity compare raises on that mismatch, so ordering it ahead of the
+        ``entries is None`` audit loses the denial row: the request is refused
+        with 503 while SEL carries only the caller's ``allowed`` row, which reads
+        as a scan that was permitted. Auditing first must not cost the refusal
+        either -- dropping the compare would let a roster built WITHOUT the
+        sensitive directory be cached against the pre-repoint signature.
+
+        The DENIAL half is asserted on every platform, because that is the
+        finding. The RAISE half needs a recorded directory identity to mismatch,
+        which a platform that cannot pin a descriptor never produces -- there the
+        scan refuses the directory without a snapshot error, and the test asserts
+        that rather than skipping.
+        """
+        import contextlib
+
+        import kiro_crew.agent_discovery as discovery_mod
+        from kiro_crew.agent_discovery import _ProjectSnapshotChanged, _scan_project_agent_files
+
+        proj = tmp_path / "repo"
+        agents_dir = _project_agents_dir(proj)
+        (agents_dir / "a.json").write_text(json.dumps({"name": "a"}))
+        # Taken while the directory is still readable. Where the platform can
+        # pin a descriptor this carries the identity rows the compare below
+        # fails to observe; where it cannot, there is no identity to mismatch.
+        readable = discovery_mod._project_signature(proj)
+        identity_recorded = discovery_mod._signature_dir_identity(readable[1]) is not None
+
+        @contextlib.contextmanager
+        def _now_sensitive(_d, **_kw):
+            yield None, None, False
+
+        monkeypatch.setattr(discovery_mod, "_pinned_scan_dir_fd", _now_sensitive)
+        denials: list[dict] = []
+        monkeypatch.setattr(discovery_mod, "_audit_denied", lambda **kw: denials.append(kw))
+
+        if identity_recorded:
+            with pytest.raises(_ProjectSnapshotChanged):
+                _scan_project_agent_files(
+                    proj, expected_signatures=readable, raise_unverifiable=True
+                )
+        else:
+            specs = _scan_project_agent_files(
+                proj, expected_signatures=readable, raise_unverifiable=True
+            )
+            assert specs == [], (
+                "the sensitive directory was refused, so it must contribute no "
+                f"spec even without an identity to mismatch: {specs}"
+            )
+
+        assert [d["error"] for d in denials] == [
+            "sensitive scan dir rejected"
+        ], f"the refused scan recorded no denial: {denials}"
+        assert denials[0]["resources"] == str(agents_dir)
+
+
+class TestProjectSignatureSensitiveDirSentinel:
+    """A sensitive subdir's cache signature must differ from an empty dir's.
+
+    GPT flagged that ``_project_signature`` returning ``()`` for BOTH "empty"
+    and "sensitive, skipped" lets a cache warmed on a legitimately empty
+    ``.kiro/agents`` survive an attacker later swapping that dir to a symlink
+    into a credential home: the next call's signature is still ``()``, so
+    ``project_agent_names`` treats it as an unchanged cache hit and never calls
+    ``project_agent_files`` -- whose call is what emits the required SEL denial
+    audit for the sensitive dir. The fix is a sentinel that cannot collide with
+    any real ``_dir_signature`` output.
+    """
+
+    def test_a_refused_dir_is_never_served_from_cache(self, tmp_path, monkeypatch) -> None:
+        """Every lookup of a refused directory must re-scan, because the scan is
+        what emits the SEL denial.
+
+        A stable sentinel matches the cached signature on the next lookup, so the
+        cached result is served and the repeat probe goes unaudited -- the first
+        attempt is recorded and an attacker's subsequent ones are silent.
+        """
+        import contextlib as _contextlib
+
+        import kiro_crew.agent_discovery as discovery_mod
+        from kiro_crew.agent_discovery import _project_signature
+
+        proj = tmp_path / "repo"
+        (proj / ".kiro" / "agents").mkdir(parents=True)
+
+        @_contextlib.contextmanager
+        def _refused(_d, **_kw):
+            yield None, None, False
+
+        monkeypatch.setattr(discovery_mod, "_pinned_scan_dir_fd", _refused)
+
+        first = _project_signature(proj)
+        second = _project_signature(proj)
+
+        assert first != second, (
+            "two lookups of a refused dir produced the SAME signature, so the "
+            "second is a cache hit and its denial is never audited"
+        )
+        # Still distinguishable from a genuinely empty directory, which is the
+        # other job this sentinel has to do.
+        assert all(part != () for part in first), first
+
+    def test_sensitive_signature_differs_from_empty_signature(self, tmp_path, monkeypatch) -> None:
+        import contextlib
+
+        import kiro_crew.agent_discovery as discovery_mod
+        from kiro_crew.agent_discovery import _dir_signature, _project_signature
+
+        proj = tmp_path / "repo"
+        proj.mkdir()
+        empty_sig = _dir_signature(proj / "does-not-exist")
+        assert empty_sig == ()
+
+        @contextlib.contextmanager
+        def _sensitive(_d, **_kw):
+            yield None, None, False  # None entries == refuse and audit
+
+        monkeypatch.setattr(discovery_mod, "_pinned_scan_dir_fd", _sensitive)
+        sensitive_sig = _project_signature(proj)
+
+        assert sensitive_sig != ((), ())
+        assert all(part != () for part in sensitive_sig)
+
+    def test_transition_from_empty_to_sensitive_is_a_cache_miss(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The exact regression: a cache entry keyed on the once-empty
+        signature must NOT be reused once the same directory is sensitive.
+        """
+        import contextlib
+
+        import kiro_crew.agent_discovery as discovery_mod
+        from kiro_crew.agent_discovery import _project_signature
+
+        proj = tmp_path / "repo"
+        (proj / ".kiro" / "agents").mkdir(parents=True)
+
+        @contextlib.contextmanager
+        def _safe(_d, **_kw):
+            yield (), None, False  # an empty listing: safe, simply nothing to scan
+
+        @contextlib.contextmanager
+        def _sensitive(_d, **_kw):
+            yield None, None, False  # None entries == refuse and audit
+
+        monkeypatch.setattr(discovery_mod, "_pinned_scan_dir_fd", _safe)
+        warm_signature = _project_signature(proj)
+
+        monkeypatch.setattr(discovery_mod, "_pinned_scan_dir_fd", _sensitive)
+        later_signature = _project_signature(proj)
+
+        assert warm_signature != later_signature, (
+            "a signature computed while the dir is sensitive must not match "
+            "a signature cached from when it was not -- a match here is "
+            "exactly the cache-poisoning collision this sentinel prevents"
+        )
+
+
+class TestTheRosterSignatureDoesNotTraverseChildEntries:
+    """``_entries_signature`` fingerprints entry NAMES without following them."""
+
+    def test_a_dangling_spec_symlink_is_fingerprinted_not_followed(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """GPT flagged ``DirEntry.stat()``, which FOLLOWS by default.
+
+        On Windows, statting a name that is a symlink to ``\\\\host\\share`` IS the
+        outbound SMB/NTLM authentication, and the signature walk reaches every
+        child of the scanned directory before ``_read_agent_spec``'s
+        resolved-target guard runs. The directory hold protects the scan directory
+        from being swapped; it says nothing about an entry planted inside it.
+
+        A DANGLING link is the oracle and needs no Windows host: a following stat
+        raises on it, which the old code swallowed into a ``0`` mtime, while a
+        non-following stat reads the LINK's own mtime. A ``0`` here would also be
+        a correctness bug in its own right — every dangling link would share one
+        fingerprint, so repointing one could not invalidate the cache.
+        """
+        from kiro_crew.agent_discovery import _entries_signature
+
+        entry = MagicMock()
+        entry.name = "planted.json"
+        entry.path = str(tmp_path / entry.name)
+        entry.is_symlink.return_value = True
+        entry.stat.side_effect = [
+            SimpleNamespace(st_mtime_ns=17),
+            FileNotFoundError("simulated dangling target"),
+        ]
+        monkeypatch.setattr(os, "readlink", lambda _path: str(tmp_path / "absent-target.json"))
+
+        sig = _entries_signature([entry])
+
+        names = {name for name, _ in sig}
+        assert "planted.json" in names, "the planted entry was not fingerprinted at all"
+        mtimes = {name: m for name, m in sig}
+        assert mtimes["planted.json"] != 0, (
+            "the mtime came back 0, which means the stat FOLLOWED the link and "
+            "failed on its absent target -- on Windows that stat is the SMB "
+            "authentication this must not perform"
+        )
+        assert entry.stat.call_args_list[0].kwargs == {"follow_symlinks": False}
+
+    @requires_symlinks
+    def test_editing_a_symlinked_specs_target_invalidates_the_signature(self, tmp_path) -> None:
+        """A symlinked spec (``~/.kiro/agents/mine.json`` -> a dotfiles copy)
+        whose TARGET is edited must change the directory signature.
+
+        The link's OWN mtime catches a repoint but not an edit to the file it
+        resolves to, so fingerprinting the link alone leaves ``_LIST_AGENTS_CACHE``
+        and ``_PARSED_SPECS_CACHE`` serving the pre-edit model/tools/prompt for the
+        process lifetime -- the very staleness ``agents_dir_revision`` returns
+        ``None`` for on a symlinked spec. The fix folds the followed target mtime
+        in additively, keeping the non-following link mtime (its SMB safety and its
+        repoint detection) intact.
+        """
+        from kiro_crew.agent_discovery import _dir_signature
+
+        agents = tmp_path / ".kiro" / "agents"
+        agents.mkdir(parents=True)
+        # The real spec lives OUTSIDE the scanned dir; the scanned entry links to it.
+        target = tmp_path / "dotfiles" / "mine.json"
+        target.parent.mkdir(parents=True)
+        target.write_text(json.dumps({"name": "mine", "model": "old"}))
+        (agents / "mine.json").symlink_to(target)
+
+        before = _dir_signature(agents)
+
+        # Edit the TARGET only, and stamp ONLY its mtime to a fixed, past value --
+        # the link's own mtime is untouched, so a signature that fingerprints the
+        # link alone cannot tell this from no change at all.
+        target.write_text(json.dumps({"name": "mine", "model": "new"}))
+        os.utime(target, (1_000_000, 1_000_000))
+
+        after = _dir_signature(agents)
+        assert after != before, (
+            "a symlinked spec's target edit did not change the signature -- the "
+            "list-agents and parsed-spec caches would serve the pre-edit spec"
+        )
+
+    @requires_symlinks
+    def test_pinned_signature_tracks_a_symlinked_specs_target(self, tmp_path) -> None:
+        """The project-cache signature must fingerprint a linked spec's target
+        through the descriptor-relative scan, not only through ``_dir_signature``.
+        """
+        from kiro_crew.agent_discovery import _project_signature
+
+        agents = tmp_path / ".kiro" / "agents"
+        agents.mkdir(parents=True)
+        target = tmp_path / "dotfiles" / "mine.json"
+        target.parent.mkdir(parents=True)
+        target.write_text(json.dumps({"name": "mine", "model": "old"}))
+        (agents / "mine.json").symlink_to(target)
+
+        before = _project_signature(tmp_path)
+        target_rows = {name: mtime for name, mtime in before[1]}
+        assert (
+            "mine.json\0target" in target_rows
+        ), "the descriptor-relative signature omitted the linked target row"
+        assert target_rows["mine.json\0target"] == target.stat().st_mtime_ns
+
+        target.write_text(json.dumps({"name": "mine", "model": "new"}))
+        os.utime(target, (1_000_000, 1_000_000))
+
+        after = _project_signature(tmp_path)
+        assert (
+            after != before
+        ), "editing a linked spec's target did not invalidate the pinned signature"

@@ -46,7 +46,10 @@ from kiro_crew.agent import (
 )
 from kiro_crew.agent_capabilities import CapabilityError, require_unmanaged_template
 from kiro_crew.agent_discovery import (
+    ScanUnverifiable,
+    _linked_ancestor_refused,
     _read_agent_spec,
+    _unc_refused,
     clear_list_agents_cache,
     list_agents,
     project_agent_names,
@@ -150,6 +153,7 @@ from kiro_crew.memory_stores import (
     provision_member_memory,
     retire_unpublished_allocation,
 )
+from kiro_crew.pinned_fs import PinnedPathRefusal, supports_pinned_walk
 from kiro_crew.platform.governance import sanitize_agent_config_governance
 from kiro_crew.platform_compat import is_link_or_junction, kill_and_reap
 from kiro_crew.sandbox import (
@@ -159,6 +163,7 @@ from kiro_crew.sandbox import (
     scrub_agent_subprocess_env,
     wrap_argv,
 )
+from kiro_crew.security import is_sensitive_path
 from kiro_crew.user_json import loads_user_json
 from kiro_crew.validation import TEMPLATE_NAME_RE
 
@@ -4295,6 +4300,75 @@ def _agent_roster_row(
     }
 
 
+def _resolve_roster_project_path(raw: str) -> tuple[str, bool]:
+    """Resolve+validate a ``?project_path=`` query value for roster scoping.
+
+    Returns ``(resolved_path, denied)``:
+
+    * ``denied=True`` — the spelling names an untrusted UNC share, or the
+      realpath'd target is sensitive (a protected tree such as a credential
+      home). ``resolved_path`` is ``""``; the CALLER logs the SEL denial,
+      because this runs in a worker thread and must not touch ``sel()`` there.
+    * ``resolved_path=""`` with ``denied=False`` — the path is neither sensitive
+      nor an existing directory (a half-typed draft, a typo). The caller ships
+      GLOBAL rows only rather than scanning a non-directory or falling back to
+      a different project's roster.
+    * ``resolved_path=<dir>`` — a safe, existing directory to scan.
+
+    Blocking (realpath + stat), so callers run it off the event loop. The UNC
+    gate runs before resolving the raw spelling because resolving an untrusted
+    UNC host is itself an outbound SMB probe; it runs again on the resolved
+    spelling before any sensitivity or directory probe. The
+    ``is_sensitive_path`` check is on the RESOLVED root so a symlink into a
+    protected tree cannot slip past. ``~`` is expanded first, because the folder
+    project-dir field accepts ``~/repo``-style paths (as the chat project picker
+    does) and ``realpath`` does NOT expand a leading ``~`` — without this an
+    existing ``~/repo`` resolves to a bogus literal-tilde path, fails the isdir
+    check, and the folder's project agents silently never appear. Deliberately
+    no ``~``/absolute-path bar beyond expansion: a read-only roster scan of an
+    existing directory is not held to the cron create-time write bar, and the
+    sensitivity gate is the real protection.
+
+    This resolver validates only the ROOT it is handed. The value actually
+    scanned is the ``.kiro``/``.kiro/agents`` SUBDIR, pinned and
+    sensitivity-checked by the scan machinery that enumerates it
+    (:func:`agent_discovery._pinned_scan_dir_fd`, reached through
+    ``project_agent_names``/``project_agent_files``) at the moment it opens
+    them — not re-validated or held here. That machinery is what refuses a
+    redirecting ancestor or a resolved-sensitive target, and what raises
+    :class:`kiro_crew.agent_discovery.ScanUnverifiable` when it cannot pin a
+    directory descriptor. The caller below always asks for that signal
+    (``raise_unverifiable=True``) for an owner-supplied path, on every
+    platform: a directory an HTTP query named is not one the caller already
+    trusts, so a platform that cannot pin it answers 503 rather than walking
+    it by name, where a swapped component could redirect the read. Folder-level
+    project-agent selection is therefore unavailable on a platform that cannot
+    pin a directory descriptor — a stated platform limitation, not a failure.
+    The slot-derived fallback below is a different caller with no UI state for
+    "could not be checked"; it keeps the by-name fallback unconditionally and
+    is unaffected by this.
+    """
+    if _unc_refused(raw):
+        return "", True
+    try:
+        expanded = os.path.expanduser(raw)
+    except (OSError, ValueError):
+        return "", False
+    if _linked_ancestor_refused(expanded):
+        return "", True
+    try:
+        resolved = os.path.realpath(expanded)
+    except (OSError, ValueError):
+        return "", False
+    if _unc_refused(resolved):
+        return "", True
+    if is_sensitive_path(resolved):
+        return "", True
+    if not os.path.isdir(resolved):
+        return "", False
+    return resolved, False
+
+
 async def api_kirocrew_agents(request: web.Request) -> web.Response:
     """GET /api/agents — list all Kiro Crew agent definitions, most-used first.
 
@@ -4336,7 +4410,134 @@ async def api_kirocrew_agents(request: web.Request) -> web.Response:
     # Project rows come from a directory scan, so it runs on the discovery
     # pool — same rule as every other agent listing: no filesystem I/O on the
     # event loop. Failure costs only the project rows, never the roster.
-    project_dir = active_project_dir(state, _read_session_key(request)) if state else ""
+    #
+    # An explicit ``?project_path=`` overrides the slot-derived project. It is
+    # the ONLY way a surface with no chat slot yet — the folder create/settings
+    # modal, whose project directory is a draft the user is still typing — can
+    # scope the roster to that directory. Without it that modal falls back to
+    # the cross-slot ``active_project_dir``, which is never the folder's own
+    # directory, so its "default agent" picker can never list project agents.
+    # Validation (realpath + sensitivity + isdir) runs off the loop; a sensitive
+    # path is denied (SEL-logged here, on the loop) and a non-existent one
+    # resolves to "" — and an explicit path that fails validation SUPPRESSES the
+    # slot fallback rather than reusing it: honoring the caller's directory means
+    # a bad one yields the global-only roster, since silently substituting the
+    # slot's project would answer for a directory nobody asked about.
+    raw_project_path = request.query.get("project_path", "").strip()
+    project_dir: str | Path | None = ""
+    # ``?project_path=`` lets the caller point the scan at an ARBITRARY directory,
+    # so it is owner-only. `redact` is already True for any non-owner caller
+    # (app token, or an allow-listed messaging user holding a dashboard token);
+    # honoring the param for them would let a non-owner enumerate agent names
+    # under any readable directory.
+    owner_supplied_path = bool(raw_project_path) and not redact
+    if owner_supplied_path:
+        resolved_path, denied = await asyncio.to_thread(
+            _resolve_roster_project_path, raw_project_path
+        )
+        # An owner directing the scan at an arbitrary directory is a
+        # security-relevant action, audited on its TRUE outcome:
+        #   - denied  -> a sensitive path was refused;
+        #   - allowed -> a real directory was resolved and will be scanned.
+        # A non-existent / non-directory path resolves to ("", False): nothing
+        # is scanned, so it is neither an allowed scan nor a refusal and emits no
+        # event — logging "allowed" there would record a scan that never ran.
+        outcome = "denied" if denied else ("allowed" if resolved_path else None)
+        if outcome is not None:
+            try:
+                # A synchronous critical write does filesystem I/O AND `_sel()`
+                # itself may initialise SEL (also filesystem I/O) on first use, so
+                # BOTH the lookup and the write run OFF the event loop inside one
+                # to_thread lambda. to_thread re-raises in the awaiting task, so
+                # the fail-closed branch still fires. `critical=True` makes the
+                # write synchronous/re-raising (the queued form swallows failures,
+                # leaving fail-closed unreachable); `resources` records WHICH dir
+                # was scanned/refused. A denied event stays best-effort.
+                _outcome = outcome
+                # The tree actually enumerated, not the request spelling: for a
+                # path like `~/link-into-elsewhere` the two differ, and an
+                # `allowed` row naming the spelling would record a scan of a
+                # directory that was never walked. `resolved_path` is non-empty
+                # on every `allowed` outcome by the test above, so the fallback
+                # only serves `denied`, where nothing resolved and the spelling
+                # is the only thing there is to name.
+                _res = resolved_path or raw_project_path
+                _caller = request.get("user", "dashboard")
+                await asyncio.to_thread(
+                    lambda: _sel().log_api_access(
+                        caller=_caller,
+                        operation="api_kirocrew_agents",
+                        outcome=_outcome,
+                        source="dashboard",
+                        resources=_res,
+                        critical=(_outcome == "allowed"),
+                    )
+                )
+            except Exception:
+                logger.warning("SEL logging failed for owner project_path scan", exc_info=True)
+                if outcome == "allowed":
+                    # FAIL CLOSED: an "allowed" event means the scan is about to
+                    # READ a caller-supplied directory — a security-relevant act
+                    # whose whole point is that it leaves an audit trail. The
+                    # critical write above re-raises on failure, so we land here
+                    # and the scan does not happen.
+                    #
+                    # Answered as an ERROR, not as a 200 carrying global rows
+                    # only. That shape is indistinguishable from the bug this
+                    # endpoint exists to fix -- the caller cannot tell "this
+                    # directory declares no agents" from "the scan was
+                    # refused", so a wedged audit sink silently empties the
+                    # picker, and can mark a perfectly valid project agent as
+                    # absent from its own directory and block Save, with
+                    # nothing but a server-side log to explain it. 503 lets the
+                    # client render the refusal it already has a state for
+                    # (ErrorNotice + Retry) and makes the retry meaningful,
+                    # since the condition is transient by nature.
+                    raise web.HTTPServiceUnavailable(
+                        reason="project roster scan refused: audit write failed"
+                    )
+        project_dir = resolved_path
+    elif raw_project_path:
+        # A NON-OWNER (redact) carrying ?project_path= is refused: the param is
+        # ignored and the roster answers with GLOBAL agents only -- no project
+        # scope is substituted, since falling back to the slot's project would
+        # still disclose project agent names this caller is not entitled to.
+        # That refusal is itself a security-relevant event — a non-owner
+        # attempting to point the roster scan at an arbitrary directory — so it
+        # is audited too. Without this, the audit trail records owner scans
+        # (allowed/denied) but stays silent on every non-owner attempt, which is
+        # the exact gap the anchor backend-security-controls protects.
+        try:
+            _caller_no = request.get("user", "dashboard")
+            _res_no = raw_project_path
+            await asyncio.to_thread(
+                lambda: _sel().log_api_access(
+                    caller=_caller_no,
+                    operation="api_kirocrew_agents",
+                    outcome="denied",
+                    source="dashboard",
+                    resources=_res_no,
+                )
+            )
+        except Exception:
+            logger.warning(
+                "SEL logging failed for non-owner project_path attempt",
+                exc_info=True,
+            )
+    # Fall back to the active chat slot's project ONLY when NO ?project_path=
+    # was supplied at all. When one WAS supplied — whether honored (owner) or
+    # refused (non-owner, audited above as "denied") — that request asked for
+    # a specific directory's roster, so an unresolved/refused path ships
+    # GLOBAL rows only rather than silently substituting the active slot's
+    # project agents. A non-owner's `?project_path=B` request (refused,
+    # project_dir stays "") therefore takes this same GLOBAL-only path rather
+    # than the active-slot fallback below, so chat slot A's project roster is
+    # never leaked to a caller who asked about an unrelated project B.
+    #
+    # The slot-derived path is not caller-supplied, so it never went through
+    # the resolver above. ``project_agent_names`` fences it exactly as before.
+    if not project_dir and not raw_project_path:
+        project_dir = active_project_dir(state, _read_session_key(request)) if state else ""
     if project_dir:
         try:
             project_names = await asyncio.get_running_loop().run_in_executor(
@@ -4346,8 +4547,59 @@ async def api_kirocrew_agents(request: web.Request) -> web.Response:
                     project_dir,
                     operation="api_kirocrew_agents",
                     source="dashboard",
+                    # Only the OWNER-SUPPLIED scan has a distinct UI state for
+                    # "this could not be checked": the folder picker's ErrorNotice
+                    # + Retry row. The slot-derived fallback below has no such
+                    # surface, so it keeps the degrade-to-empty default -- an
+                    # unverifiable slot project reads as "no project agents",
+                    # exactly as an unreadable one always has.
+                    #
+                    # An owner-supplied scan requires a pinnable walk: a
+                    # directory an HTTP query named is not one the caller
+                    # already trusts, so a by-name fallback that re-resolves
+                    # each path component after checking it is not an
+                    # acceptable substitute -- a swapped component could
+                    # redirect the read. On a platform without
+                    # ``O_DIRECTORY``/``O_NOFOLLOW``/``dir_fd`` (Windows),
+                    # every owner-supplied request therefore answers 503 and no
+                    # by-name scan ever runs for it, so folder-level
+                    # project-agent selection is unavailable there -- a stated
+                    # platform limitation, not a failure. The slot-derived
+                    # fallback below is unaffected: it is not caller-supplied,
+                    # so it keeps the by-name discovery on every platform.
+                    raise_unverifiable=owner_supplied_path,
                 ),
             )
+        except (ScanUnverifiable, PinnedPathRefusal):
+            # The scan could not be run or could not be trusted -- never read
+            # this as "no agents in this project". Same 503 shape as the SEL
+            # audit-write failure above, and for the identical reason: the
+            # picker's ErrorNotice + Retry state is what a caller-visible
+            # "could not verify" belongs in, not a 200 with an empty roster
+            # indistinguishable from a project that genuinely declares none.
+            #
+            # Two distinct shapes ride the same 503: a platform that can never
+            # pin a directory descriptor (``supports_pinned_walk()`` is False)
+            # is a PERMANENT limitation -- no retry of this same request can
+            # ever succeed, so the response names it ``code:
+            # "scan_unsupported_platform"`` and the modal must not offer a
+            # Retry for it. Every other cause (a genuine pin failure, an
+            # audit-write failure, an entry-count overflow) is a transient
+            # refusal that a retry can clear, so it keeps the pre-existing
+            # unlabeled shape the modal's ordinary Retry state already
+            # handles.
+            if not supports_pinned_walk():
+                raise web.HTTPServiceUnavailable(
+                    text=json.dumps(
+                        {
+                            "error": "folder-level project-agent selection is not "
+                            "supported on this platform",
+                            "code": "scan_unsupported_platform",
+                        }
+                    ),
+                    content_type="application/json",
+                )
+            raise web.HTTPServiceUnavailable(reason="project roster scan could not be verified")
         except Exception:
             logger.warning("Failed to list project agents for %s", project_dir, exc_info=True)
             project_names = frozenset()

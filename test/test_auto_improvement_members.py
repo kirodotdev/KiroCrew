@@ -931,12 +931,12 @@ async def test_project_shadow_scan_fails_closed(tmp_path, monkeypatch, failure):
     elif failure == "unreadable-spec":
         original_read = agent_discovery._read_spec_bytes
 
-        def unreadable(real):
+        def unreadable(real, **kwargs):
             # The pinned reader reports an unreadable spec by raising OSError
             # (the old by-name reader returned None for the same condition).
             if Path(real) == spec.resolve():
                 raise PermissionError("project agent spec cannot be read")
-            return original_read(real)
+            return original_read(real, **kwargs)
 
         monkeypatch.setattr(agent_discovery, "_read_spec_bytes", unreadable)
     elif failure == "oversized-spec":
