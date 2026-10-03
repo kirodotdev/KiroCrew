@@ -321,7 +321,13 @@ class TestLeafOnlyPopulationIsRecorded:
     #: launch fingerprints; ``mcp/resolved`` holds executables substituted for an
     #: approved launch. Each sits beside writable siblings, so no parent stand-in
     #: can hold it.
-    EXPECTED: dict[str, int] = {"standard": 262, "cc": 269, "strict": 270}
+    #:
+    #: ``background`` -- the gateway-owned background command records, exit
+    #: statuses and logs, sealed read-only so a forged record cannot aim the
+    #: gateway's kill -- is one more data-home root leaf, three entries per tier.
+    #: The gateway only ever creates names beneath it and never republishes the
+    #: leaf itself.
+    EXPECTED: dict[str, int] = {"standard": 265, "cc": 272, "strict": 273}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:

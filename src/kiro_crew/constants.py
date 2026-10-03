@@ -1604,3 +1604,10 @@ STEER_NOTICE_BOUND_SECS = 5.0
 # wait (``acp.liveness.ToolCallState.declared_wait_verdict``), so raising it in one
 # place cannot leave a long wait badged as stalled.
 WAIT_TOOL_MAX_SECS = 1800
+
+# ``background_run`` bounds, read by ``validation.py`` (a leaf) and enforced again
+# by ``background_commands``, so the tool schema and the gateway agree.
+BACKGROUND_RUN_MAX_COMMAND_CHARS = 8000
+BACKGROUND_RUN_DEFAULT_TIMEOUT_SECS = 3600
+BACKGROUND_RUN_MIN_TIMEOUT_SECS = 10
+BACKGROUND_RUN_MAX_TIMEOUT_SECS = 7 * 86400

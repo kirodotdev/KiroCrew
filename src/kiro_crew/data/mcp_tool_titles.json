@@ -124,6 +124,7 @@
     "cron_pause": "Pause schedule",
     "cron_resume": "Resume schedule",
     "cron_trigger": "Run schedule now",
-    "cron_secret_request": "Request schedule secrets"
+    "cron_secret_request": "Request schedule secrets",
+    "background_run": "Run command in background"
   }
 }

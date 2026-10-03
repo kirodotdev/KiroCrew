@@ -94,6 +94,9 @@ def _expected_exceptions() -> set[str]:
         # owner a cold continuation restores, and READABLE because a run's results are
         # the product working.
         ("subagents", False),
+        # Background command records and logs: readable for the same reason, and
+        # write-protected so a forged record cannot aim the gateway's kill.
+        ("background", False),
         # Its retained V1 companion, on the read+write floor instead: a legacy binding
         # record carries a raw session key, so the agent may not open one. The edit
         # refusal below is identical either way, which is why both leaves stay in one
@@ -165,6 +168,8 @@ class TestKeystonesAreSealedInEveryMode:
     KEYSTONES = (
         "subagents",
         "member-memory-bindings",
+        # Background command records: a forged one would aim the gateway's kill.
+        "background",
         "security_policy.json",
         "admission_policy.json",
         "app_admission.json",
