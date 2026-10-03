@@ -248,6 +248,7 @@ from kiro_crew.agent_sdk.backends import (
     launch_for,
     model_refusal_phrase,
 )
+from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.browser_cli.launch import browser_session_env, browser_socket_env
 from kiro_crew.config.paths import config_dir, kiro_sessions_dir
@@ -3663,6 +3664,15 @@ class AcpClient:
         # file Crew writes (claude's ``permissions.deny``) leaves it empty, and an
         # empty set makes the refusal a no-op. Cleared on reset with the array.
         self._spec_denied_tools: frozenset[tuple[str, str]] = frozenset()
+        # The mirror's other CLIENT OBLIGATION from the same parse
+        # (``SessionProjection.zero_tools``): the spec declares ``"tools": []``, a
+        # total ban the array and ``denied_tools`` above have no way to express --
+        # they answer "which MCP servers mount", not "may this agent's own native
+        # tools (the harness's built-in Bash/Read/Write) run at all". kiro-cli/KAS
+        # honour the ban natively; every mirrored backend does not, so this client
+        # refuses EVERY permission request when it is set (``_handle_permission``).
+        # Cleared on reset with the array.
+        self._spec_zero_tools: bool = False
         # The inline harness config this session's routing seed travels in, resolved
         # in the opencode spawn arm and read back there before the first prompt. The
         # env section applies it; holding it here is what keeps that section a plain
@@ -4011,6 +4021,95 @@ class AcpClient:
         return getattr(self, "_agent_version", "")
 
     @property
+    def spec_zero_tools(self) -> bool:
+        """True once this session's CONSUMED mirror projection confirms the spec's ``"tools": []``.
+
+        Set from :attr:`_spec_zero_tools`, which only becomes True after the session's
+        projection has been parsed and reports the agent spec actually in force declares
+        an empty tool list, so :meth:`_deny_zero_tools` refuses every permission request
+        the session raises. Stays False for the lifetime of a session whose spec is
+        missing, malformed, or shadowed by another one, and always False on a backend
+        with no mirror at all, where the harness itself reads the spec and enforces the
+        ban natively rather than through this client.
+        """
+        return self._spec_zero_tools
+
+    def authored_spec_declares_zero_tools(self) -> bool:
+        """True when the authored spec this agent name resolves to declares ``"tools": []``.
+
+        Reads the spec through :func:`agent_spec_snapshot`, project checkout first and
+        user level second, which is the order the harness resolves ``--agent`` in, so
+        a project-level spec that shadows the installed one is the one judged.
+
+        Blocking (reads the spec); async callers run it with ``asyncio.to_thread``.
+
+        Fails closed: an unreadable spec, a non-dict result, and a ``tools`` that is
+        missing, not a list, or non-empty all answer False.
+        """
+        try:
+            spec = agent_spec_snapshot(self._agent, work_dir=self._work_dir)
+        except Exception:
+            logger.warning(
+                "agent spec for %r unreadable; not confirming zero tools",
+                self._agent,
+                exc_info=True,
+            )
+            return False
+        if not isinstance(spec, dict):
+            return False
+        tools = spec.get("tools")
+        return isinstance(tools, list) and not tools
+
+    def effective_spec_declares_zero_tools(self, *, authored_before_spawn: bool = False) -> bool:
+        """True when the spec the harness runs under declares an empty ``tools`` list.
+
+        With a prepared projection the answer comes from the view handed to the
+        harness through ``--agent``. The session prepares that view before the spawn
+        and never re-reads it, so the view is immutable and authoritative: a change
+        to the authored spec after the harness consumed it cannot change the answer,
+        and *authored_before_spawn* is ignored. The view covers a project-level spec
+        that shadows the installed one and any tool the projection adds, such as
+        skill search for a spec carrying ``skill://`` resources. Unlike
+        :attr:`spec_zero_tools` it needs no mirror, so it can confirm the ban on a
+        backend that enforces it natively.
+
+        With no prepared projection (the projection switched off, or its alias
+        could not be taken) the harness reads the named spec itself. The caller
+        reads that spec before the spawn and passes the result as
+        *authored_before_spawn*; this method reads it again after the harness
+        started, and both reads must declare an empty list. The bracket narrows a
+        change to the authored file but cannot close one made and restored inside
+        the spawn window, which is why a prepared view is preferred.
+
+        Fails closed: a projection with no view for this agent or a view whose
+        ``tools`` is missing or non-empty is unconfirmed, and so is a missing
+        projection whose pre-spawn read was not confirmed or whose post-start read
+        is not an empty list.
+
+        The no-projection branch reads a file, so async callers run this method with
+        ``asyncio.to_thread``.
+        """
+        projection = getattr(self, "_native_skill_projection", None)
+        if projection is None:
+            return authored_before_spawn and self.authored_spec_declares_zero_tools()
+        view = projection.specs.get(self._agent)
+        if not isinstance(view, dict):
+            return False
+        tools = view.get("tools")
+        return isinstance(tools, list) and not tools
+
+    @property
+    def _enforces_zero_tool_ban(self) -> bool:
+        """True when the spec's ``"tools": []`` is refused at the permission request.
+
+        Needs both facts: the session's spec declares the empty list, and the backend
+        honours it as a ban on native tools too. A backend that does not honour it
+        leaves the refusal unreached on some paths, so it is not applied at the sites
+        that do run.
+        """
+        return self._spec_zero_tools and capabilities_for(self.backend).honors_zero_tool_ban
+
+    @property
     def _judges_permission_requests(self) -> bool:
         """True when a permission request on this session is JUDGED before it is answered.
 
@@ -4023,8 +4122,20 @@ class AcpClient:
         goose projection carries an empty deny set by ruling, so a refusal that waited
         for one would never run on a goose session at all. Everywhere else the sites keep
         their prior behaviour byte for byte.
+
+        A third fact judges too: :attr:`_enforces_zero_tool_ban`, the agent's own
+        ``"tools": []`` on a backend that honours it. It is not folded into the
+        deny-set check above because it answers a broader question -- every request,
+        MCP or native -- and a spec with no MCP servers to deny at all (the ordinary
+        case for a zero-tool agent) would otherwise leave ``_spec_denied_tools`` empty
+        and this property False, which is exactly the auto-approve path the zero-tool
+        ban exists to close.
         """
-        return bool(self._spec_denied_tools) or self.backend in ACP_BACKENDS_META_IDENTITY
+        return (
+            bool(self._spec_denied_tools)
+            or self._enforces_zero_tool_ban
+            or self.backend in ACP_BACKENDS_META_IDENTITY
+        )
 
     @property
     def _is_claude(self) -> bool:
@@ -4187,6 +4298,7 @@ class AcpClient:
             session_token=self._stub_session_token,
         )
         self._spec_denied_tools = projection.denied_tools
+        self._spec_zero_tools = projection.zero_tools
         # Kept beside the array it describes, so the post-consume check judges the
         # generation these elements were built from and not a later read of the file.
         self._session_mcp_snapshot = projection.derived_spec_snapshot
@@ -9345,6 +9457,7 @@ class AcpClient:
         # what the next session's guard judges, not this one's.
         self._mcp_ref_spec = None
         self._spec_denied_tools = frozenset()
+        self._spec_zero_tools = False
         # Save PID state before clearing it. A root is confirmed exited only
         # when its own Process reports a reaped return code; a missing or
         # unreadable PID is not enough to reclaim its working directory.
@@ -11557,13 +11670,15 @@ class AcpClient:
                     if msg.id is not None:
                         await self._send_error(msg.id, -32600, "invalid request id")
                     continue
-                # Two refusals before the consumer's gate sees the request: a switched-off
-                # tool, and a harness identity that is absent or names an unmounted
-                # server. The second matters HERE as much as on the auto-approve site --
-                # a frame nothing classified reaches the consumer as a non-shell tool, so
-                # the command-deny tier never sees the command it carries.
+                # Three refusals before the consumer's gate sees the request: a
+                # zero-tool spec, a switched-off tool, and a harness identity that is
+                # absent or names an unmounted server. The third matters HERE as much
+                # as on the auto-approve site -- a frame nothing classified reaches
+                # the consumer as a non-shell tool, so the command-deny tier never
+                # sees the command it carries.
                 if not (
-                    await self._deny_spec_disabled_tool(permission_event)
+                    await self._deny_zero_tools(permission_event)
+                    or await self._deny_spec_disabled_tool(permission_event)
                     or await self._refuse_identity_drift(permission_event)
                 ):
                     yield permission_event
@@ -12410,8 +12525,9 @@ class AcpClient:
         When this session judges its requests (:attr:`_judges_permission_requests`),
         the refusals run first, because this site answers the request with no
         consumer's gate in between and a restriction must hold on every path that
-        answers: a switched-off tool, then a harness identity that is absent or names
-        a server this session never mounted. And because there is no human here,
+        answers: the zero-tool refusal (every request, when the spec declares
+        ``"tools": []``), then a switched-off tool, then a harness identity that is
+        absent or names a server this session never mounted. And because there is no human here,
         "unidentified" cannot fall toward asking: on a session with a deny set, an MCP
         tool approval (the adapter marks one with ``_meta.is_mcp_tool_approval``)
         whose call this client cannot identify is REFUSED rather than approved blind.
@@ -12433,6 +12549,8 @@ class AcpClient:
             if reject_id:
                 options[event.request_id] = {"reject": reject_id}
         if self._judges_permission_requests:
+            if await self._deny_zero_tools(event):
+                return
             if await self._deny_spec_disabled_tool(event):
                 return
             if await self._refuse_identity_drift(event):
@@ -12875,14 +12993,18 @@ class AcpClient:
             f"stopped. {remedy}"
         )
 
-    def _audit_spec_restriction(self, *, tool_name: str, outcome: str, reason: str) -> None:
+    def _audit_spec_restriction(
+        self, *, tool_name: str, outcome: str, reason: str, tool_kind: str = "mcp"
+    ) -> None:
         """One SEL record shape for every decision the spec's per-tool restrictions drive.
 
-        Three sites emit it -- the identified refusal, the unidentified-approval
-        refusal on the auto-approve path, and the completed-call tripwire -- and a
-        permission decision that reaches the log but not the SEL is one an operator
-        cannot find later. Best-effort like every other ACP-layer audit: a failure to
-        write the record must not change the decision it records.
+        Four sites emit it -- the identified refusal, the unidentified-approval
+        refusal on the auto-approve path, the completed-call tripwire, and the
+        zero-tools refusal (whose ``tool_kind`` may be a harness-native call, not an
+        MCP one) -- and a permission decision that reaches the log but not the SEL is
+        one an operator cannot find later. Best-effort like every other ACP-layer
+        audit: a failure to write the record must not change the decision it
+        records.
         """
         try:
             # Resolved through the MODULE at call time: the file-scope ``sel`` name
@@ -12892,12 +13014,49 @@ class AcpClient:
                 session_key=self._session_key or "",
                 source="acp",
                 tool_name=tool_name,
-                tool_kind="mcp",
+                tool_kind=tool_kind,
                 outcome=outcome,
                 metadata={"reason": reason, "backend": self.backend},
             )
         except Exception:  # pragma: no cover - audit is best-effort
             logger.debug("session MCP: audit of a spec-restriction decision failed", exc_info=True)
+
+    async def _deny_zero_tools(self, event: AcpEvent) -> bool:
+        """Refuse EVERY permission request when the agent spec declares ``tools: []``.
+
+        The one refusal in this file that is not scoped to MCP calls: kiro-cli/KAS
+        honour ``"tools": []`` as a total ban natively, including the harness's own
+        built-in tools, but every mirrored backend (claude/opencode/goose) only
+        turns ``tools`` into an MCP-server allowlist -- a native Bash/Read/Write call
+        never reaches that allowlist at all, and would otherwise sail through
+        ``approve_tool`` unconditionally. ``_spec_zero_tools`` is set from the same
+        spec parse ``_spec_denied_tools`` is (:data:`SessionProjection.zero_tools`),
+        so a spec edited between the two parses cannot ban tools in one and not the
+        other.
+
+        Runs before :meth:`_deny_spec_disabled_tool`: a zero-tool spec has nothing to
+        deny per-tool (there is nothing it allows), so the narrower check would be a
+        silent no-op on exactly the sessions this one exists for.
+
+        Returns True when the request was refused (rejected on the wire and
+        audited), False when :attr:`_enforces_zero_tool_ban` is not set and the caller
+        decides.
+        """
+        if not self._enforces_zero_tool_ban:
+            return False
+        name = event.wire_title or event.title or "unknown"
+        logger.warning(
+            'session permission: refusing %r -- the agent spec declares "tools": [] '
+            "and this backend does not honour that as a native-tool ban, so it is "
+            "enforced at the permission request [session=%s]",
+            name,
+            self._session_id,
+        )
+        self._audit_spec_restriction(
+            tool_name=name, outcome="denied", reason="spec_zero_tools", tool_kind="native"
+        )
+        await self.reject_tool(event.request_id)
+        return True
 
     async def _deny_spec_disabled_tool(self, event: AcpEvent) -> bool:
         """Refuse a codex permission request for a tool the agent spec switched off.

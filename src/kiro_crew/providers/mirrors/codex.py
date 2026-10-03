@@ -429,6 +429,7 @@ def codex_projection(
         disabled_servers=projection.disabled_servers,
         restricted_servers=projection.restricted,
         derived_spec_snapshot=projection.derived_spec_snapshot,
+        zero_tools=projection.zero_tools,
     )
 
 

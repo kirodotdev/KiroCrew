@@ -152,7 +152,8 @@ with no row here.
    * - ``ACP_BACKENDS_SEED_LOCAL_SETTINGS``
      - driver-internal (whether ``settings.local.json`` is re-seeded on switch)
    * - ``ACP_BACKENDS_KIRO_SLASH_COMMANDS``
-     - driver-internal (whether ``_kiro.dev/commands/execute`` exists)
+     - semantic question (``SessionCapabilities.effort_via_slash_command``), and
+       driver-internal everywhere else (whether ``_kiro.dev/commands/execute`` exists)
    * - ``ACP_BACKENDS_TOOL_SEARCH_OVERLAY``
      - driver-internal (whether the workspace ``cli.json`` Tool Search keys are written)
    * - ``ACP_BACKENDS_CLIENT_META_SETTINGS``
@@ -195,6 +196,10 @@ with no row here.
        a semantic question: it describes where a HOST reads agent specs from, and
        no consumer above the boundary asks it -- what a consumer would ask about
        is the resulting server list, which it already receives
+   * - ``ACP_BACKENDS_HONOR_ZERO_TOOL_BAN``
+     - semantic question (``SessionCapabilities.honors_zero_tool_ban``)
+   * - ``ACP_BACKENDS_ACP_CLIENT_SPAWNABLE``
+     - semantic question (``SessionCapabilities.acp_client_spawnable``)
 
 The two non-set tables ``SessionCapabilities`` also translates are
 :func:`model_registry_namespace` (the model-id namespace) and
@@ -1434,6 +1439,25 @@ ACP_BACKENDS_POD_HOME_REMAP = frozenset({ACP_BACKEND_KIRO})
 # every kiro-family convention is its own set, and codex is absent from each.
 ACP_BACKENDS_ACP_RUNTIME = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS, ACP_BACKEND_CODEX})
 
+# Backends ``AcpClient._spawn`` can construct a session for directly: kiro (the
+# resolve-and-exec branch every other backend's dedicated arm falls through to
+# when none matches) plus the five with an explicit ``elif self._is_<x>`` arm.
+# A POSITIVE allowlist, not "every backend except kas/codex": a future backend
+# added to ``BASELINE_SELECTABLE_BACKENDS`` with no arm here must fail closed
+# (report not-spawnable) rather than silently fall to the kiro-cli branch under
+# its own identity the way kas and codex do today -- the exact bug this fact
+# exists to let a caller avoid.
+ACP_BACKENDS_ACP_CLIENT_SPAWNABLE = frozenset(
+    {
+        ACP_BACKEND_KIRO,
+        ACP_BACKEND_CLAUDE,
+        ACP_BACKEND_OPENCODE,
+        ACP_BACKEND_GOOSE,
+        ACP_BACKEND_PI,
+        ACP_BACKEND_DEEPSEEK,
+    }
+)
+
 # Backends that load an agent defined as ONE markdown file (YAML frontmatter
 # plus the body as the system prompt) -- the form the v3 engine and Kiro IDE
 # read from ``~/.kiro/agents/<name>.md``. Kiro Crew's own discovery lists that
@@ -2032,6 +2056,48 @@ def model_registry_namespace(backend: str) -> str:
 # deepseek is not a member and publishes no command list either: it carries commands
 # internally and its ACP surface rejects them, so it exposes none over the wire.
 ACP_BACKENDS_KIRO_SLASH_COMMANDS = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
+
+# Backends on which an agent spec's ``"tools": []`` is honoured as a total ban --
+# no MCP server AND no harness-native tool (Bash, file edit, ...) is callable --
+# rather than merely an MCP-server allowlist that leaves native tools reachable.
+#
+# Membership is the join of three facts, not a name pattern:
+#
+# * ``Routing.AGENT_SPEC`` (kiro, kas) -- the harness itself reads the spec and
+#   refuses every tool NATIVELY, so nothing else is needed.
+# * a routing in ``tool_gate.ENFORCED_ROUTINGS`` whose non-ROUTED verdict actually
+#   refuses a session, AND a mirror in ``providers/mirrors/registry.py``'s
+#   ``MIRRORS`` that reports ``SessionProjection.zero_tools`` from the spec parse
+#   (``acp/session_mcp.py``), AND the session is served by ``AcpClient`` rather than
+#   ``AcpRuntime`` -- because the refusal that closes the gap,
+#   ``AcpClient._deny_zero_tools``, lives ONLY on ``AcpClient``.
+#
+# Today that is exactly opencode and goose (``Routing.VERIFIED_SEEDED_SETTINGS``,
+# mirrored, not in ``ACP_BACKENDS_ACP_RUNTIME``).
+#
+# claude is NOT a member: its routing, ``Routing.SEEDED_SETTINGS``, is declared but
+# not enforced by this core (see ``Routing``'s docstring and
+# ``tool_gate.ENFORCED_ROUTINGS``) -- an operator's own ``~/.claude`` settings can
+# pre-approve a tool, which skips ``session/request_permission`` entirely, so
+# ``_deny_zero_tools`` never runs to close the mirror's allowlist-only translation.
+#
+# codex is NOT a member: its sessions are served by ``AcpRuntime`` /
+# ``AcpSessionHandle`` (``acp/runtime.py``, ``acp/session_handle.py``), which carry
+# ``spec_denied_tools`` but no ``zero_tools`` and no ``_deny_zero_tools`` equivalent
+# -- the refusal exists only on ``AcpClient``, so nothing refuses on a codex session
+# even though its ``Routing.SESSION_CONFIG`` is itself enforced.
+#
+# pi and deepseek are NOT members: neither has a mirror at all
+# (``providers/mirrors/registry.py``'s ``MIRRORS``), so nothing computes
+# ``zero_tools`` for them and ``AcpClient`` never refuses on their sessions.
+ACP_BACKENDS_HONOR_ZERO_TOOL_BAN = frozenset(
+    {
+        ACP_BACKEND_KIRO,
+        ACP_BACKEND_KAS,
+        ACP_BACKEND_OPENCODE,
+        ACP_BACKEND_GOOSE,
+    }
+)
 
 # Backends that read the MCP Tool Search setting from the workspace ``cli.json``
 # overlay (``toolSearch.*`` keys). Only kiro-cli's Rust engine does. KAS shares

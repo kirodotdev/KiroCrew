@@ -589,6 +589,33 @@ class TestDenyRules:
         assert session_mcp.session_mcp_deny_rules(None) == []
 
 
+class TestZeroTools:
+    """``SessionMcpProjection.zero_tools`` -- an explicit empty ``tools`` list,
+    not a missing key, which means "no restriction stated" and must NOT trip
+    ``AcpClient._deny_zero_tools``."""
+
+    def test_an_explicit_empty_list_is_zero_tools(self, agents_dir):
+        _write_spec(agents_dir, servers={}, tools=[])
+        assert session_mcp.session_mcp_projection("kirocrew").zero_tools is True
+
+    def test_a_missing_tools_key_is_not_zero_tools(self, agents_dir):
+        _write_spec(agents_dir, servers={}, tools=None)
+        assert session_mcp.session_mcp_projection("kirocrew").zero_tools is False
+
+    def test_a_populated_tools_list_is_not_zero_tools(self, agents_dir):
+        _write_spec(agents_dir, servers={"srv": {"command": "/s"}}, tools=["@srv"])
+        assert session_mcp.session_mcp_projection("kirocrew").zero_tools is False
+
+    def test_no_agent_is_not_zero_tools(self):
+        assert session_mcp.session_mcp_projection(None).zero_tools is False
+
+    def test_a_non_list_tools_value_is_not_zero_tools(self, agents_dir):
+        (agents_dir / "kirocrew.json").write_text(
+            json.dumps({"name": "kirocrew", "tools": "none"}), encoding="utf-8"
+        )
+        assert session_mcp.session_mcp_projection("kirocrew").zero_tools is False
+
+
 class TestControlPlane:
     def test_loaded_when_no_spec_exists(self, agents_dir):
         names = _by_name(session_mcp.session_mcp_servers("kirocrew"))

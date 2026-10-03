@@ -830,6 +830,14 @@ class SessionMcpProjection(NamedTuple):
     #: host consumes the spec, so the caller re-verifies THIS after ``session/new`` /
     #: ``session/load`` -- one snapshot per consumed load.
     derived_spec_snapshot: Any = None
+    #: Whether the spec declares ``"tools": []`` -- an explicit, empty list, not a
+    #: missing key (which means "no restriction stated", the ordinary default). The
+    #: allowlist above already reduces both to "mount nothing", which answers the
+    #: MCP-array question; this answers a different one an ``AcpClient`` session
+    #: asks of the SAME parse: does this agent claim zero tools at all, including
+    #: the harness's own native ones the array has no opinion on. See
+    #: ``AcpClient._spec_zero_tools``.
+    zero_tools: bool = False
 
 
 def session_mcp_projection(
@@ -864,6 +872,7 @@ def session_mcp_projection(
     disabled_tools = session_mcp_disabled_tools(
         agent, work_dir=work_dir, spec=spec, settings=settings
     )
+    spec_tools = spec.get("tools") if isinstance(spec, dict) else None
     return SessionMcpProjection(
         servers=session_mcp_servers(
             agent, stub_server_names=stub_server_names, work_dir=work_dir, spec=spec
@@ -873,6 +882,7 @@ def session_mcp_projection(
         disabled_servers=session_mcp_disabled_servers(spec, settings),
         allowlist=_tools_allowlist(spec),
         derived_spec_snapshot=snapshot,
+        zero_tools=isinstance(spec_tools, list) and not spec_tools,
     )
 
 

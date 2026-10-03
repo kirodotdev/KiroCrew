@@ -10,7 +10,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE, ACP_BACKEND_KIRO
+from kiro_crew.acp_backends import (
+    ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_CODEX,
+    ACP_BACKEND_GOOSE,
+    ACP_BACKEND_KAS,
+    ACP_BACKEND_KIRO,
+    ACP_BACKEND_OPENCODE,
+)
 from kiro_crew.knowledge.llm_pool import (
     DEFAULT_EXTRACTION_EFFORT,
     DEFAULT_IDLE_TTL_SECS,
@@ -20,6 +27,7 @@ from kiro_crew.knowledge.llm_pool import (
     CCWorker,
     LLMPool,
     Worker,
+    _get_acp_backend,
     _get_idle_ttl,
     _get_provider_type,
     _get_sandbox_mode,
@@ -46,6 +54,21 @@ def _config_dir_tracks_patched_home(monkeypatch):
     monkeypatch.setattr(
         "kiro_crew.knowledge.llm_pool.config_dir", lambda: Path.home() / ".kirocrew"
     )
+
+
+def _zero_tool_client(*, spec_declares_zero_tools: bool = True) -> AsyncMock:
+    """An ``AcpClient`` double whose resolved agent spec answers the zero-tool check.
+
+    ``effective_spec_declares_zero_tools`` and ``authored_spec_declares_zero_tools``
+    are synchronous on the real client, so they are plain mocks rather than the
+    coroutines an ``AsyncMock`` attribute would be. The authored read answers the
+    same value as the effective check, so a double built as unconfirmed is
+    unconfirmed on both.
+    """
+    client = AsyncMock()
+    client.effective_spec_declares_zero_tools = MagicMock(return_value=spec_declares_zero_tools)
+    client.authored_spec_declares_zero_tools = MagicMock(return_value=spec_declares_zero_tools)
+    return client
 
 
 # ---------------------------------------------------------------------------
@@ -514,6 +537,7 @@ class TestReadConfig:
         the no-op-on-malformed-config contract of ``_read_config``."""
         assert _get_provider_type(bad) == "acp"
         assert _get_sandbox_mode(bad) == "auto"
+        assert _get_acp_backend(bad) == ACP_BACKEND_KIRO
 
     def test_read_config_coerces_non_dict_sections(self, tmp_path):
         """``_read_config`` normalises non-dict ``agent``/``knowledge`` to ``{}``
@@ -532,7 +556,7 @@ class TestReadConfig:
         config = tmp_path / ".kirocrew" / "config.json"
         config.parent.mkdir(parents=True)
         config.write_text('{"agent": {"sandbox": "off"}}')
-        mock_client = AsyncMock()
+        mock_client = _zero_tool_client()
         mock_client.is_ready = True
         with (
             patch("pathlib.Path.home", return_value=tmp_path),
@@ -547,7 +571,7 @@ class TestReadConfig:
         # With no config, the sandbox mode defaults to "auto" — engaging
         # OS-level isolation (namespace on Linux, seatbelt on macOS) and
         # automatically deferring to kiro-cli's internal sandbox when enabled.
-        mock_client = AsyncMock()
+        mock_client = _zero_tool_client()
         mock_client.is_ready = True
         with (
             patch("pathlib.Path.home", return_value=tmp_path),
@@ -556,6 +580,149 @@ class TestReadConfig:
             worker = AcpWorker()
             await worker.start()
         assert mk.call_args.kwargs["sandbox_mode"] == "auto"
+
+    @pytest.mark.parametrize(
+        ("persisted", "expected"),
+        [
+            (ACP_BACKEND_KIRO, ACP_BACKEND_KIRO),
+            (None, ACP_BACKEND_KIRO),
+            ("no-such-harness", ACP_BACKEND_KIRO),
+            (42, ACP_BACKEND_KIRO),
+            # claude's routing (SEEDED_SETTINGS) is declared but not enforced by
+            # this core -- an inherited ~/.claude pre-approval can skip
+            # session/request_permission entirely, so honors_zero_tool_ban answers
+            # False and it degrades to kiro.
+            (ACP_BACKEND_CLAUDE, ACP_BACKEND_KIRO),
+            # Selectable through the gate but outside this pool's zero-tool
+            # allowlist -- codex is served by AcpRuntime, which carries no
+            # zero-tool refusal -- so it degrades to kiro the same as an
+            # unselectable value.
+            (ACP_BACKEND_CODEX, ACP_BACKEND_KIRO),
+            # Answers both capabilities _get_acp_backend checks:
+            # honors_zero_tool_ban (AcpClient._deny_zero_tools refuses every
+            # permission request on this backend's mirror) and
+            # acp_client_spawnable -- passes through.
+            (ACP_BACKEND_OPENCODE, ACP_BACKEND_OPENCODE),
+        ],
+    )
+    def test_acp_backend_goes_through_the_selection_gate(self, persisted, expected):
+        agent = {} if persisted is None else {"acp_backend": persisted}
+        assert _get_acp_backend({"agent": agent}) == expected
+
+    @pytest.mark.asyncio
+    async def test_start_passes_the_resolved_backend_to_client(self, tmp_path):
+        """The resolved backend must reach ``AcpClient`` explicitly, not ride
+        the client's own default -- the pool's zero-tool restriction has to be
+        decided HERE, once, rather than re-derived at the spawn site."""
+        config = tmp_path / ".kirocrew" / "config.json"
+        config.parent.mkdir(parents=True)
+        config.write_text(json.dumps({"agent": {"acp_backend": ACP_BACKEND_KIRO}}))
+        mock_client = _zero_tool_client()
+        mock_client.is_ready = True
+        with (
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch("kiro_crew.knowledge.llm_pool.AcpClient", return_value=mock_client) as mk,
+        ):
+            worker = AcpWorker()
+            await worker.start()
+        assert mk.call_args.kwargs["acp_backend"] == ACP_BACKEND_KIRO
+
+    @pytest.mark.asyncio
+    async def test_start_passes_a_zero_tool_enforced_opencode_backend(self, tmp_path):
+        """A configured ``opencode`` backend reaches ``AcpClient`` for this pool:
+        ``AcpClient._deny_zero_tools`` refuses every permission request (MCP or
+        native) on a mirrored session whose spec declares ``tools: []``, so the
+        pool's zero-tool guarantee holds on opencode too -- both capabilities
+        ``_get_acp_backend`` checks (``honors_zero_tool_ban``,
+        ``acp_client_spawnable``) answer True for it."""
+        config = tmp_path / ".kirocrew" / "config.json"
+        config.parent.mkdir(parents=True)
+        config.write_text(json.dumps({"agent": {"acp_backend": ACP_BACKEND_OPENCODE}}))
+        mock_client = _zero_tool_client()
+        mock_client.is_ready = True
+        with (
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch("kiro_crew.knowledge.llm_pool.AcpClient", return_value=mock_client) as mk,
+        ):
+            worker = AcpWorker()
+            await worker.start()
+        assert mk.call_args.kwargs["acp_backend"] == ACP_BACKEND_OPENCODE
+
+    @pytest.mark.asyncio
+    async def test_start_degrades_a_non_enforced_backend_to_kiro(self, tmp_path):
+        """A configured ``codex`` backend must not reach ``AcpClient`` for this
+        pool: codex needs ``AcpRuntime``, which ``AcpClient`` doesn't drive, so
+        it would fall through to a bare kiro-cli spawn under the wrong identity
+        -- ``acp_client_spawnable`` answers False for it."""
+        config = tmp_path / ".kirocrew" / "config.json"
+        config.parent.mkdir(parents=True)
+        config.write_text(json.dumps({"agent": {"acp_backend": ACP_BACKEND_CODEX}}))
+        mock_client = _zero_tool_client()
+        mock_client.is_ready = True
+        with (
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch("kiro_crew.knowledge.llm_pool.AcpClient", return_value=mock_client) as mk,
+        ):
+            worker = AcpWorker()
+            await worker.start()
+        assert mk.call_args.kwargs["acp_backend"] == ACP_BACKEND_KIRO
+
+    def test_unsafe_backend_fallback_warns_once_naming_the_capability(self, caplog):
+        """A configured backend that fails a capability check logs a warning
+        naming the configured backend and which capability failed, and does so
+        ONCE per backend per process -- this pool's workers are recreated
+        often, so a warning on every ``start()`` would spam the log."""
+        from kiro_crew.knowledge import llm_pool as llm_pool_mod
+
+        llm_pool_mod._WARNED_UNSAFE_BACKENDS.clear()
+        with caplog.at_level("WARNING", logger="kiro_crew.knowledge.llm_pool"):
+            # codex fails honors_zero_tool_ban (AcpRuntime carries no zero-tool
+            # refusal).
+            assert _get_acp_backend({"agent": {"acp_backend": ACP_BACKEND_CODEX}}) == (
+                ACP_BACKEND_KIRO
+            )
+            assert _get_acp_backend({"agent": {"acp_backend": ACP_BACKEND_CODEX}}) == (
+                ACP_BACKEND_KIRO
+            )
+            # kas passes honors_zero_tool_ban (native) but fails
+            # acp_client_spawnable (needs AcpRuntime, no arm in AcpClient._spawn).
+            assert _get_acp_backend({"agent": {"acp_backend": ACP_BACKEND_KAS}}) == (
+                ACP_BACKEND_KIRO
+            )
+        codex_records = [r for r in caplog.records if ACP_BACKEND_CODEX in r.getMessage()]
+        kas_records = [r for r in caplog.records if ACP_BACKEND_KAS in r.getMessage()]
+        assert len(codex_records) == 1, "codex fallback warned more than once"
+        assert "honors_zero_tool_ban" in codex_records[0].getMessage()
+        assert len(kas_records) == 1, "kas fallback warned more than once"
+        assert "acp_client_spawnable" in kas_records[0].getMessage()
+
+    @pytest.mark.asyncio
+    async def test_start_defaults_backend_to_kiro(self, tmp_path):
+        mock_client = _zero_tool_client()
+        mock_client.is_ready = True
+        with (
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch("kiro_crew.knowledge.llm_pool.AcpClient", return_value=mock_client) as mk,
+        ):
+            worker = AcpWorker()
+            await worker.start()
+        assert mk.call_args.kwargs["acp_backend"] == ACP_BACKEND_KIRO
+
+    @pytest.mark.asyncio
+    async def test_pool_worker_resolves_backend_through_get_acp_backend(self, tmp_path):
+        config = tmp_path / ".kirocrew" / "config.json"
+        config.parent.mkdir(parents=True)
+        config.write_text(json.dumps({"agent": {"acp_backend": ACP_BACKEND_KIRO}}))
+        mock_client = _zero_tool_client()
+        mock_client.is_ready = True
+        with (
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch("kiro_crew.knowledge.llm_pool.AcpClient", return_value=mock_client) as mk,
+        ):
+            pool = LLMPool(pool_size=1)
+            await pool.start()
+            await pool.shutdown()
+        assert mk.call_args.kwargs["acp_backend"] == ACP_BACKEND_KIRO
 
 
 # ---------------------------------------------------------------------------
@@ -693,7 +860,7 @@ class TestAcpWorker:
         shut the previous client down before creating a new one, so the prior
         subprocess is not orphaned."""
         stale = AsyncMock()
-        fresh = AsyncMock()
+        fresh = _zero_tool_client()
         fresh.is_ready = True
         with (
             patch("pathlib.Path.home", return_value=tmp_path),
@@ -710,7 +877,7 @@ class TestAcpWorker:
         """A failure shutting the stale client down must not abort the respawn."""
         stale = AsyncMock()
         stale.shutdown.side_effect = RuntimeError("boom")
-        fresh = AsyncMock()
+        fresh = _zero_tool_client()
         fresh.is_ready = True
         with (
             patch("pathlib.Path.home", return_value=tmp_path),
@@ -727,7 +894,7 @@ class TestAcpWorker:
         sweep (register on start, unregister on shutdown) — otherwise a busy
         knowledge worker is SIGKILLed mid-task as a false orphan ("ACP process
         exited (code=1)")."""
-        fresh = AsyncMock()
+        fresh = _zero_tool_client()
         fresh.is_ready = True
         fresh._pid = 7777
         registered: list[int] = []
@@ -753,10 +920,10 @@ class TestAcpWorker:
     async def test_respawn_reshields_new_pid(self, tmp_path):
         """A re-``start`` (respawn under a new PID) must release the old PID's
         shield and register the new one, so a dead PID is never left shielded."""
-        first = AsyncMock()
+        first = _zero_tool_client()
         first.is_ready = True
         first._pid = 100
-        second = AsyncMock()
+        second = _zero_tool_client()
         second.is_ready = True
         second._pid = 200
         registered: list[int] = []
@@ -779,6 +946,352 @@ class TestAcpWorker:
         assert unregistered == [100]
 
 
+class TestAcpWorkerZeroToolConfirmation:
+    """``start()`` requires the CONSUMED projection to confirm the zero-tool
+    spec on any backend not natively routed through ``Routing.AGENT_SPEC``,
+    falling back to Kiro before any prompt is sent when it doesn't. A worker
+    that ends on ``Routing.AGENT_SPEC`` (kiro) must also find the spec it
+    resolves declaring ``"tools": []``, or it refuses to start."""
+
+    @pytest.mark.asyncio
+    async def test_unconfirmed_opencode_falls_back_to_kiro_and_warns(self, tmp_path, caplog):
+        from kiro_crew.knowledge import llm_pool as llm_pool_mod
+
+        llm_pool_mod._WARNED_UNSAFE_BACKENDS.clear()
+        first = _zero_tool_client()
+        first.is_ready = True
+        first.backend = ACP_BACKEND_OPENCODE
+        first.spec_zero_tools = False
+        second = _zero_tool_client()
+        second.is_ready = True
+        second.backend = ACP_BACKEND_KIRO
+        second.spec_zero_tools = False
+        with (
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch("kiro_crew.knowledge.llm_pool.AcpClient", side_effect=[first, second]) as mk,
+            caplog.at_level("WARNING", logger="kiro_crew.knowledge.llm_pool"),
+        ):
+            worker = AcpWorker(acp_backend=ACP_BACKEND_OPENCODE)
+            await worker.start()
+        assert mk.call_count == 2
+        assert mk.call_args_list[0].kwargs["acp_backend"] == ACP_BACKEND_OPENCODE
+        assert mk.call_args_list[1].kwargs["acp_backend"] == ACP_BACKEND_KIRO
+        first.shutdown.assert_awaited_once()
+        assert worker._client is second
+        assert worker._acp_backend == ACP_BACKEND_KIRO
+        assert any("did not confirm the zero-tool spec" in r.getMessage() for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_unconfirmed_opencode_fallback_survives_a_failing_shutdown(self, tmp_path):
+        first = _zero_tool_client()
+        first.is_ready = True
+        first.backend = ACP_BACKEND_OPENCODE
+        first.spec_zero_tools = False
+        first.shutdown.side_effect = RuntimeError("shutdown failed")
+        second = _zero_tool_client()
+        second.is_ready = True
+        second.backend = ACP_BACKEND_KIRO
+        second.spec_zero_tools = False
+        with (
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch("kiro_crew.knowledge.llm_pool.AcpClient", side_effect=[first, second]),
+        ):
+            worker = AcpWorker(acp_backend=ACP_BACKEND_OPENCODE)
+            await worker.start()
+        first.shutdown.assert_awaited_once()
+        assert worker._client is second
+        assert worker._acp_backend == ACP_BACKEND_KIRO
+
+    @pytest.mark.asyncio
+    async def test_confirmed_opencode_stays_on_opencode_no_warning(self, tmp_path, caplog):
+        from kiro_crew.knowledge import llm_pool as llm_pool_mod
+
+        llm_pool_mod._WARNED_UNSAFE_BACKENDS.clear()
+        client = _zero_tool_client()
+        client.is_ready = True
+        client.backend = ACP_BACKEND_OPENCODE
+        client.spec_zero_tools = True
+        with (
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch("kiro_crew.knowledge.llm_pool.AcpClient", return_value=client) as mk,
+            caplog.at_level("WARNING", logger="kiro_crew.knowledge.llm_pool"),
+        ):
+            worker = AcpWorker(acp_backend=ACP_BACKEND_OPENCODE)
+            await worker.start()
+        assert mk.call_count == 1
+        assert worker._client is client
+        assert worker._acp_backend == ACP_BACKEND_OPENCODE
+        assert not any(
+            "did not confirm the zero-tool spec" in r.getMessage() for r in caplog.records
+        )
+
+    @pytest.mark.asyncio
+    async def test_kiro_backend_never_falls_back_even_when_unconfirmed(self, tmp_path, caplog):
+        """kiro-cli's routing is ``Routing.AGENT_SPEC`` -- the harness enforces
+        the ban natively, so an unset ``spec_zero_tools`` (no mirror at all on
+        this backend) must not trigger a restart."""
+        client = _zero_tool_client()
+        client.is_ready = True
+        client.backend = ACP_BACKEND_KIRO
+        client.spec_zero_tools = False
+        with (
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch("kiro_crew.knowledge.llm_pool.AcpClient", return_value=client) as mk,
+            caplog.at_level("WARNING", logger="kiro_crew.knowledge.llm_pool"),
+        ):
+            worker = AcpWorker(acp_backend=ACP_BACKEND_KIRO)
+            await worker.start()
+        assert mk.call_count == 1
+        assert worker._client is client
+        assert not any(
+            "did not confirm the zero-tool spec" in r.getMessage() for r in caplog.records
+        )
+
+    @pytest.mark.asyncio
+    async def test_kiro_confirms_the_resolved_spec_before_the_worker_is_ready(self, tmp_path):
+        client = _zero_tool_client()
+        client.is_ready = True
+        client.backend = ACP_BACKEND_KIRO
+        client.spec_zero_tools = False
+        with (
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch("kiro_crew.knowledge.llm_pool.AcpClient", return_value=client),
+        ):
+            worker = AcpWorker(acp_backend=ACP_BACKEND_KIRO)
+            await worker.start()
+        client.authored_spec_declares_zero_tools.assert_called_once_with()
+        client.effective_spec_declares_zero_tools.assert_called_once_with(
+            authored_before_spawn=True
+        )
+        assert worker._client is client
+
+    @pytest.mark.asyncio
+    async def test_confirmed_opencode_does_not_reread_the_spec(self, tmp_path):
+        client = _zero_tool_client(spec_declares_zero_tools=False)
+        client.is_ready = True
+        client.backend = ACP_BACKEND_OPENCODE
+        client.spec_zero_tools = True
+        with (
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch("kiro_crew.knowledge.llm_pool.AcpClient", return_value=client),
+        ):
+            worker = AcpWorker(acp_backend=ACP_BACKEND_OPENCODE)
+            await worker.start()
+        client.effective_spec_declares_zero_tools.assert_not_called()
+        client.authored_spec_declares_zero_tools.assert_not_called()
+        assert worker._client is client
+
+    @pytest.mark.asyncio
+    async def test_kiro_with_a_shadowed_spec_refuses_to_start_and_sends_nothing(
+        self, tmp_path, caplog
+    ):
+        """A project-level spec of the same name that carries tools shadows the
+        installed zero-tool one on kiro, which resolves ``--agent`` against the
+        workspace first. Nothing native confirms the ban there, so the worker
+        must not start, and no prompt may reach the shadowing spec."""
+        client = _zero_tool_client(spec_declares_zero_tools=False)
+        client.is_ready = True
+        client.backend = ACP_BACKEND_KIRO
+        client.spec_zero_tools = False
+        with (
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch("kiro_crew.knowledge.llm_pool.AcpClient", return_value=client) as mk,
+            caplog.at_level("WARNING", logger="kiro_crew.knowledge.llm_pool"),
+        ):
+            worker = AcpWorker(acp_backend=ACP_BACKEND_KIRO)
+            with pytest.raises(RuntimeError, match="zero-tool spec"):
+                await worker.send_message("untrusted document text")
+        assert mk.call_count == 1
+        client.shutdown.assert_awaited_once()
+        client.send_message.assert_not_awaited()
+        assert worker._client is None
+        assert any(
+            "does not declare" in r.getMessage() and "kirocrew-knowledge" in r.getMessage()
+            for r in caplog.records
+        )
+
+    @pytest.mark.asyncio
+    async def test_unconfirmed_spec_refusal_survives_a_failing_shutdown(self, tmp_path):
+        client = _zero_tool_client(spec_declares_zero_tools=False)
+        client.is_ready = True
+        client.backend = ACP_BACKEND_KIRO
+        client.spec_zero_tools = False
+        client.shutdown.side_effect = RuntimeError("boom")
+        with (
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch("kiro_crew.knowledge.llm_pool.AcpClient", return_value=client),
+        ):
+            worker = AcpWorker(acp_backend=ACP_BACKEND_KIRO)
+            with pytest.raises(RuntimeError, match="zero-tool spec"):
+                await worker.start()
+        assert worker._client is None
+
+    @pytest.mark.asyncio
+    async def test_kiro_fallback_with_a_shadowed_spec_also_refuses_to_start(self, tmp_path):
+        """The restart on Kiro is not a safe harbour by itself: the fallback client
+        resolves the same shadowed spec, so it is confirmed too."""
+        first = _zero_tool_client()
+        first.is_ready = True
+        first.backend = ACP_BACKEND_OPENCODE
+        first.spec_zero_tools = False
+        second = _zero_tool_client(spec_declares_zero_tools=False)
+        second.is_ready = True
+        second.backend = ACP_BACKEND_KIRO
+        second.spec_zero_tools = False
+        with (
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch("kiro_crew.knowledge.llm_pool.AcpClient", side_effect=[first, second]) as mk,
+        ):
+            worker = AcpWorker(acp_backend=ACP_BACKEND_OPENCODE)
+            with pytest.raises(RuntimeError, match="zero-tool spec"):
+                await worker.send_message("untrusted document text")
+        assert mk.call_count == 2
+        first.shutdown.assert_awaited_once()
+        second.shutdown.assert_awaited_once()
+        second.send_message.assert_not_awaited()
+        assert worker._client is None
+
+    @pytest.mark.asyncio
+    async def test_kiro_without_a_projection_confirms_through_the_bracketed_authored_read(
+        self, tmp_path
+    ):
+        """With no prepared projection the effective check answers True only when the
+        pre-spawn authored read is handed back to it."""
+        client = _zero_tool_client()
+        client.is_ready = True
+        client.backend = ACP_BACKEND_KIRO
+        client.spec_zero_tools = False
+        client.authored_spec_declares_zero_tools = MagicMock(return_value=True)
+        client.effective_spec_declares_zero_tools = MagicMock(
+            side_effect=lambda *, authored_before_spawn=False: authored_before_spawn
+        )
+        with (
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch("kiro_crew.knowledge.llm_pool.AcpClient", return_value=client),
+        ):
+            worker = AcpWorker(acp_backend=ACP_BACKEND_KIRO)
+            await worker.start()
+        client.effective_spec_declares_zero_tools.assert_called_once_with(
+            authored_before_spawn=True
+        )
+        assert worker._client is client
+
+    @pytest.mark.asyncio
+    async def test_kiro_whose_pre_spawn_authored_read_is_unconfirmed_refuses_to_start(
+        self, tmp_path
+    ):
+        client = _zero_tool_client()
+        client.is_ready = True
+        client.backend = ACP_BACKEND_KIRO
+        client.spec_zero_tools = False
+        client.authored_spec_declares_zero_tools = MagicMock(return_value=False)
+        client.effective_spec_declares_zero_tools = MagicMock(
+            side_effect=lambda *, authored_before_spawn=False: authored_before_spawn
+        )
+        with (
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch("kiro_crew.knowledge.llm_pool.AcpClient", return_value=client),
+        ):
+            worker = AcpWorker(acp_backend=ACP_BACKEND_KIRO)
+            with pytest.raises(RuntimeError, match="could not be confirmed"):
+                await worker.send_message("untrusted document text")
+        client.effective_spec_declares_zero_tools.assert_called_once_with(
+            authored_before_spawn=False
+        )
+        client.shutdown.assert_awaited_once()
+        client.send_message.assert_not_awaited()
+        assert worker._client is None
+
+    @pytest.mark.asyncio
+    async def test_the_authored_read_precedes_the_spawn_of_the_kiro_client(self, tmp_path):
+        calls: list[str] = []
+        client = _zero_tool_client()
+        client.is_ready = True
+        client.backend = ACP_BACKEND_KIRO
+        client.spec_zero_tools = False
+        client.authored_spec_declares_zero_tools = MagicMock(
+            side_effect=lambda: calls.append("authored") or True
+        )
+        client.ensure_ready.side_effect = lambda: calls.append("ready")
+        client.effective_spec_declares_zero_tools = MagicMock(
+            side_effect=lambda **_kwargs: calls.append("effective") or True
+        )
+        with (
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch("kiro_crew.knowledge.llm_pool.AcpClient", return_value=client),
+        ):
+            await AcpWorker(acp_backend=ACP_BACKEND_KIRO).start()
+        assert calls == ["authored", "ready", "effective"]
+
+    @pytest.mark.asyncio
+    async def test_the_fallback_client_is_read_before_its_own_spawn(self, tmp_path):
+        """The Kiro client that replaces an unconfirmed opencode session reads the
+        authored spec before ITS ensure_ready; the opencode client reads nothing."""
+        calls: list[str] = []
+        first = _zero_tool_client()
+        first.is_ready = True
+        first.backend = ACP_BACKEND_OPENCODE
+        first.spec_zero_tools = False
+        first.authored_spec_declares_zero_tools = MagicMock(
+            side_effect=lambda: calls.append("first-authored") or True
+        )
+        first.ensure_ready.side_effect = lambda: calls.append("first-ready")
+        second = _zero_tool_client()
+        second.is_ready = True
+        second.backend = ACP_BACKEND_KIRO
+        second.spec_zero_tools = False
+        second.authored_spec_declares_zero_tools = MagicMock(
+            side_effect=lambda: calls.append("second-authored") or True
+        )
+        second.ensure_ready.side_effect = lambda: calls.append("second-ready")
+        second.effective_spec_declares_zero_tools = MagicMock(
+            side_effect=lambda **_kwargs: calls.append("second-effective") or True
+        )
+        with (
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch("kiro_crew.knowledge.llm_pool.AcpClient", side_effect=[first, second]),
+        ):
+            await AcpWorker(acp_backend=ACP_BACKEND_OPENCODE).start()
+        assert calls == ["first-ready", "second-authored", "second-ready", "second-effective"]
+        first.authored_spec_declares_zero_tools.assert_not_called()
+        second.effective_spec_declares_zero_tools.assert_called_once_with(
+            authored_before_spawn=True
+        )
+
+    @pytest.mark.asyncio
+    async def test_fallback_is_sticky_across_reset_conversation(self, tmp_path):
+        """Once a worker has fallen back to Kiro, ``reset_conversation`` (which
+        just re-runs ``start()``) must stay on Kiro rather than re-resolving
+        the originally configured backend and falling back again."""
+        first = _zero_tool_client()
+        first.is_ready = True
+        first.backend = ACP_BACKEND_OPENCODE
+        first.spec_zero_tools = False
+        second = _zero_tool_client()
+        second.is_ready = True
+        second.backend = ACP_BACKEND_KIRO
+        second.spec_zero_tools = False
+        third = _zero_tool_client()
+        third.is_ready = True
+        third.backend = ACP_BACKEND_KIRO
+        third.spec_zero_tools = False
+        with (
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch(
+                "kiro_crew.knowledge.llm_pool.AcpClient",
+                side_effect=[first, second, third],
+            ) as mk,
+        ):
+            worker = AcpWorker(acp_backend=ACP_BACKEND_OPENCODE)
+            await worker.start()
+            assert worker._acp_backend == ACP_BACKEND_KIRO
+            await worker.reset_conversation()
+        # Third construction (the reset) must be Kiro, not opencode again.
+        assert mk.call_args_list[2].kwargs["acp_backend"] == ACP_BACKEND_KIRO
+        assert worker._acp_backend == ACP_BACKEND_KIRO
+        assert worker._client is third
+
+
 def _mock_effort_client(
     levels: list[str],
     *,
@@ -788,13 +1301,13 @@ def _mock_effort_client(
 ) -> AsyncMock:
     """An AcpClient double whose BACKEND decides the effort channel.
 
-    ``_apply_effort`` asks ``SessionCapabilities.effort_via_config_option`` off
-    ``client.backend`` rather than reading the private ``_is_claude``, so the
-    double sets the public backend string and the capability answers for it. The
-    ``claude`` keyword stays, because that is what the callers are asserting
-    about.
+    ``_apply_effort`` asks ``SessionCapabilities.effort_via_config_option`` and
+    ``effort_via_slash_command`` off ``client.backend`` rather than reading the
+    private ``_is_claude``, so the double sets the public backend string and the
+    capabilities answer for it. The ``claude`` keyword stays, because that is what
+    the callers are asserting about.
     """
-    client = AsyncMock()
+    client = _zero_tool_client()
     client.is_ready = True
     client._pid = None
     if backend is None:
@@ -923,6 +1436,33 @@ class TestAcpWorkerEffort:
         assert "unsupported" in caplog.text
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("backend", [ACP_BACKEND_OPENCODE, ACP_BACKEND_GOOSE])
+    async def test_backend_with_no_effort_channel_sends_nothing_and_warns(
+        self, backend, tmp_path, caplog
+    ):
+        """opencode and goose implement neither ``session/set_config_option`` for
+        effort nor the kiro-native ``/effort`` command, so the pool says the
+        provider default applies instead of sending a command that cannot land."""
+        client = _mock_effort_client(["low", "medium", "high"], backend=backend)
+        client.spec_zero_tools = True
+        with (
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch("kiro_crew.knowledge.llm_pool.AcpClient", return_value=client),
+            caplog.at_level("WARNING", logger="kiro_crew.knowledge.llm_pool"),
+        ):
+            worker = AcpWorker(effort="high", acp_backend=backend)
+            await worker.start()
+
+        client.send_command.assert_not_awaited()
+        client.set_config_option.assert_not_awaited()
+        assert worker._effective_effort is None
+        assert any(
+            "effort=high unsupported on backend=" in r.getMessage()
+            and "using provider default" in r.getMessage()
+            for r in caplog.records
+        )
+
+    @pytest.mark.asyncio
     async def test_uses_provider_default_when_kiro_effort_command_fails(self, tmp_path, caplog):
         client = _mock_effort_client(["low", "medium", "high"])
         client.send_command.side_effect = RuntimeError("effort command rejected")
@@ -951,10 +1491,16 @@ class TestLLMPoolEffort:
                 "kiro_crew.knowledge.llm_pool.AcpWorker", return_value=fake_worker
             ) as worker_type,
             patch("kiro_crew.knowledge.llm_pool._get_sandbox_mode", return_value="auto"),
+            patch(
+                "kiro_crew.knowledge.llm_pool._get_acp_backend",
+                return_value=ACP_BACKEND_KIRO,
+            ),
         ):
             result = await pool._create_worker()
 
-        worker_type.assert_called_once_with(sandbox_mode="auto", effort="high")
+        worker_type.assert_called_once_with(
+            sandbox_mode="auto", effort="high", acp_backend=ACP_BACKEND_KIRO
+        )
         assert result is fake_worker
 
     @pytest.mark.asyncio
@@ -968,10 +1514,16 @@ class TestLLMPoolEffort:
                 "kiro_crew.knowledge.llm_pool.AcpWorker", return_value=fake_worker
             ) as worker_type,
             patch("kiro_crew.knowledge.llm_pool._get_sandbox_mode", return_value="auto"),
+            patch(
+                "kiro_crew.knowledge.llm_pool._get_acp_backend",
+                return_value=ACP_BACKEND_KIRO,
+            ),
         ):
             await pool._create_worker()
 
-        worker_type.assert_called_once_with(sandbox_mode="auto", effort=None)
+        worker_type.assert_called_once_with(
+            sandbox_mode="auto", effort=None, acp_backend=ACP_BACKEND_KIRO
+        )
 
     @pytest.mark.asyncio
     async def test_fetch_sized_pool_ignores_extraction_size_config(self):
@@ -1555,7 +2107,7 @@ class TestWorkerConversationRecycle:
         worker._client = old_client
         worker.calls_since_reset = 7
 
-        new_client = AsyncMock()
+        new_client = _zero_tool_client()
         new_client._pid = 4242
         new_client.is_process_alive = lambda: True
 

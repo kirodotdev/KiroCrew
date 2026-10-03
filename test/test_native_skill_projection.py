@@ -205,6 +205,62 @@ def test_custom_agent_gets_only_the_scoped_search_capability(native_tree):
     assert "autoApprove" not in view["mcpServers"]["kirocrew-core"]
 
 
+@pytest.mark.parametrize(
+    ("resources", "expected"),
+    [(["skill://skills/a/SKILL.md"], False), (["file://RULES.md"], True)],
+)
+def test_zero_tool_confirmation_judges_the_view_kiro_loads(
+    native_tree, monkeypatch, resources, expected
+):
+    """The projection appends skill search to the view of a spec carrying a
+    ``skill://`` resource, so an empty authored ``tools`` list does not confirm
+    the ban for the alias kiro loads through ``--agent``. The view is captured
+    when the projection is prepared, so a later edit of the authored spec does
+    not change the answer."""
+    from kiro_crew.acp import client as acp_client
+
+    _home, agents, project = native_tree
+    spec = {"name": "custom", "tools": [], "resources": resources}
+    (agents / "custom.json").write_text(json.dumps(spec), encoding="utf-8")
+    client = acp_client.AcpClient(agent="custom", work_dir=project)
+    client._native_skill_projection = projection.prepare_native_skill_projection(
+        project, per_session_element=False
+    )
+    view = client._native_skill_projection.specs["custom"]
+    assert (view["tools"] == []) is expected
+    assert client.effective_spec_declares_zero_tools() is expected
+
+    (agents / "custom.json").write_text(json.dumps({**spec, "tools": ["read"]}), encoding="utf-8")
+    assert client.effective_spec_declares_zero_tools() is expected
+
+
+def test_rollback_switch_confirms_a_zero_tool_spec_through_the_authored_bracket(
+    native_tree, monkeypatch
+):
+    """With the projection switched off no view exists and the harness loads the
+    named spec itself, so the authored spec read before the spawn and again after
+    start is the confirmation; a view-only answer would leave the pool unstartable."""
+    from kiro_crew.acp import client as acp_client
+
+    _home, _agents, project = native_tree
+    project_agents = project / ".kiro" / "agents"
+    project_agents.mkdir(parents=True)
+    spec_path = project_agents / "custom.json"
+    spec_path.write_text(json.dumps({"name": "custom", "tools": []}), encoding="utf-8")
+    monkeypatch.setenv("KIROCREW_NATIVE_SKILL_PROJECTION", "0")
+    client = acp_client.AcpClient(agent="custom", work_dir=project)
+    client._native_skill_projection = projection.prepare_native_skill_projection(
+        project, per_session_element=False
+    )
+    assert client._native_skill_projection is None
+    before = client.authored_spec_declares_zero_tools()
+    assert before is True
+    assert client.effective_spec_declares_zero_tools(authored_before_spawn=before) is True
+
+    spec_path.write_text(json.dumps({"name": "custom", "tools": ["read"]}), encoding="utf-8")
+    assert client.effective_spec_declares_zero_tools(authored_before_spawn=before) is False
+
+
 def test_global_inheritance_preference_is_refreshed(native_tree):
     home, agents, project = native_tree
     (agents / "custom.json").write_text('{"name":"custom"}', encoding="utf-8")

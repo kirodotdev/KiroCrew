@@ -238,6 +238,11 @@ class ClaudeCodeMirror(AgentConfigMirror):
         :meth:`session_params` (H13).
         """
         del kwargs
+        projection = session_mcp_projection(
+            agent,
+            stub_server_names=stub_server_names,
+            work_dir=work_dir,  # type: ignore[arg-type]
+        )
         if not permission_surface_owned:
             logger.warning(
                 "session MCP: withholding the whole mcpServers array, pooled broker stubs "
@@ -247,12 +252,7 @@ class ClaudeCodeMirror(AgentConfigMirror):
                 "tools; the client's own warning names why the file could not be left out. "
                 "Removing or renaming the project's .claude/settings.local.json restores them.",
             )
-            return SessionProjection(params={"mcpServers": []})
-        projection = session_mcp_projection(
-            agent,
-            stub_server_names=stub_server_names,
-            work_dir=work_dir,  # type: ignore[arg-type]
-        )
+            return SessionProjection(params={"mcpServers": []}, zero_tools=projection.zero_tools)
         out: list[dict[str, Any]] = list(projection.servers)
         for stub in stub_elements:
             if not isinstance(stub, Mapping):
@@ -278,4 +278,5 @@ class ClaudeCodeMirror(AgentConfigMirror):
             # caller that appends an element of its own must still see it.
             disabled_servers=projection.disabled_servers,
             derived_spec_snapshot=projection.derived_spec_snapshot,
+            zero_tools=projection.zero_tools,
         )

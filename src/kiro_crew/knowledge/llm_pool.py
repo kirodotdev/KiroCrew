@@ -18,8 +18,13 @@ from typing import Optional
 
 from kiro_crew import platform_compat
 from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_KIRO,
+    POLICY_ID_BY_BACKEND,
+    Routing,
     effort_config_option_id,
     effort_config_option_value,
+    resolve_selected_backend,
+    routing_for,
 )
 from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
@@ -62,6 +67,10 @@ except Exception:  # pragma: no cover - standalone / test fallback
 
 
 logger = logging.getLogger(__name__)
+
+# Backends ``_get_acp_backend`` already warned about; workers respawn often, so
+# the fallback is logged once per backend per process.
+_WARNED_UNSAFE_BACKENDS: set = set()
 
 DEFAULT_POOL_SIZE = 3
 DEFAULT_TIMEOUT = 60.0
@@ -168,6 +177,51 @@ def _get_sandbox_mode(config: Optional[dict] = None) -> str:
     if isinstance(mode, str) and mode in _VALID_SANDBOX_MODES:
         return mode
     return "auto"  # present but malformed -> fail secure, never silently unsandboxed
+
+
+def _get_acp_backend(config: Optional[dict] = None) -> str:
+    """Configured ``agent.acp_backend``, through the one selection gate (H3),
+    then narrowed to a backend this pool's zero-tool workers can trust.
+
+    This pool's workers run a spec carrying ``"tools": []``, meant as a total
+    ban, and construct their own ``AcpClient`` directly (not through a provider
+    that already routes by backend). Two capability questions decide whether a
+    resolved backend is safe to hand it, asked rather than enumerated so a
+    backend that later earns both answers needs no change here:
+    ``SessionCapabilities.honors_zero_tool_ban`` (kiro-cli/KAS natively, plus
+    opencode/goose via ``AcpClient._deny_zero_tools``; not claude, whose routing
+    is unenforced so an inherited pre-approval can skip the permission request;
+    not codex, whose sessions run on ``AcpRuntime`` with no such refusal; not
+    pi/deepseek, which have no mirror at all) and ``.acp_client_spawnable`` (not
+    kas/codex, which need ``AcpRuntime`` and have no arm in ``AcpClient._spawn``).
+
+    The pool reads raw ``config.json``, which never passed the loader's
+    normalizer, so an unselectable or malformed value degrades to Kiro here --
+    and so does a resolved value that fails either capability check above.
+    """
+    data = _read_config() if config is None else config
+    resolved = resolve_selected_backend(_section(data, "agent").get("acp_backend"))
+    if not capabilities_for(resolved).honors_zero_tool_ban:
+        if resolved not in _WARNED_UNSAFE_BACKENDS:
+            _WARNED_UNSAFE_BACKENDS.add(resolved)
+            logger.warning(
+                "Knowledge pool: configured acp_backend=%s does not honor a zero-tool "
+                "spec (honors_zero_tool_ban is False); falling back to %s",
+                resolved,
+                ACP_BACKEND_KIRO,
+            )
+        return ACP_BACKEND_KIRO
+    if not capabilities_for(resolved).acp_client_spawnable:
+        if resolved not in _WARNED_UNSAFE_BACKENDS:
+            _WARNED_UNSAFE_BACKENDS.add(resolved)
+            logger.warning(
+                "Knowledge pool: configured acp_backend=%s is not acp_client_spawnable; "
+                "falling back to %s",
+                resolved,
+                ACP_BACKEND_KIRO,
+            )
+        return ACP_BACKEND_KIRO
+    return resolved
 
 
 def _get_idle_ttl(config: Optional[dict] = None) -> float:
@@ -315,11 +369,13 @@ class AcpWorker(Worker):
         *,
         sandbox_mode: Optional[str] = None,
         effort: Optional[str] = None,
+        acp_backend: Optional[str] = None,
     ) -> None:
         self._client: Optional[AcpClient] = None
         # Pre-resolved by the caller (off the event loop). ``None`` -> resolve
         # lazily in ``start`` (direct construction outside the pool / tests).
         self._sandbox_mode = sandbox_mode
+        self._acp_backend = acp_backend
         self._effort = _normalize_effort(effort)
         self._effective_effort: Optional[str] = None
         # PID currently shielded from the gateway orphan sweep (see module note).
@@ -350,12 +406,75 @@ class AcpWorker(Worker):
             if self._sandbox_mode is not None
             else await asyncio.to_thread(_get_sandbox_mode)
         )
-        logger.info("AcpWorker: starting with agent=%s", AGENT_NAME)
-        self._client = AcpClient(
-            agent=AGENT_NAME, sandbox_mode=sandbox_mode, audit_source="subagent"
+        acp_backend = (
+            self._acp_backend
+            if self._acp_backend is not None
+            else await asyncio.to_thread(_get_acp_backend)
         )
-        self._effective_effort = None
-        await self._client.ensure_ready()
+        logger.info(
+            "AcpWorker: starting with agent=%s backend=%s",
+            AGENT_NAME,
+            POLICY_ID_BY_BACKEND.get(acp_backend, acp_backend),
+        )
+        self._client, authored_before_spawn = await self._spawn_client(acp_backend, sandbox_mode)
+        # A zero-tool spec must be CONFIRMED, not assumed. A backend that is not
+        # routed through Routing.AGENT_SPEC relies on the mirror's consumed
+        # projection (spec_zero_tools). If the spec was missing, malformed, or
+        # shadowed by a project-level spec, that signal is false and every native
+        # tool request would auto-approve, so this worker restarts on Kiro before
+        # any prompt is sent.
+        if not (routing_for(acp_backend) is Routing.AGENT_SPEC or self._client.spec_zero_tools):
+            logger.warning(
+                "AcpWorker: backend=%s session did not confirm the zero-tool spec "
+                '("tools": [] missing, malformed, or shadowed); restarting worker on %s',
+                POLICY_ID_BY_BACKEND.get(acp_backend, acp_backend),
+                ACP_BACKEND_KIRO,
+            )
+            try:
+                await self._client.shutdown()
+            except Exception:
+                logger.debug("AcpWorker: unsafe-backend client shutdown failed", exc_info=True)
+            acp_backend = ACP_BACKEND_KIRO
+            self._acp_backend = ACP_BACKEND_KIRO
+            self._client, authored_before_spawn = await self._spawn_client(
+                acp_backend, sandbox_mode
+            )
+        # A backend routed through Routing.AGENT_SPEC (kiro) enforces "tools": []
+        # natively but has no mirror, so spec_zero_tools cannot confirm it. The
+        # harness resolves --agent against <cwd>/.kiro/agents before the global
+        # directory, and this pool's cwd is a workspace under the data home, so a
+        # project-level spec of the same name that carries tools would shadow the
+        # installed one and auto-approve them for untrusted document text. The
+        # projected view the harness consumed through --agent is the authority
+        # when one exists: it is prepared before the spawn and never re-read, so a
+        # later spec edit cannot change the answer. Without one (the rollback
+        # switch, or an alias that could not be taken) the harness loads the named
+        # spec itself, so the authored spec is read before the spawn and again
+        # after start, and both reads must declare an empty list. A worker that
+        # cannot confirm the ban does not start: Kiro is the last fallback.
+        if routing_for(acp_backend) is Routing.AGENT_SPEC and not (
+            await asyncio.to_thread(
+                self._client.effective_spec_declares_zero_tools,
+                authored_before_spawn=authored_before_spawn,
+            )
+        ):
+            logger.warning(
+                'AcpWorker: agent=%s backend=%s spec does not declare "tools": []; '
+                "refusing to start the worker",
+                AGENT_NAME,
+                POLICY_ID_BY_BACKEND.get(acp_backend, acp_backend),
+            )
+            try:
+                await self._client.shutdown()
+            except Exception:
+                logger.debug("AcpWorker: unconfirmed-spec client shutdown failed", exc_info=True)
+            self._client = None
+            raise RuntimeError(
+                f"knowledge agent {AGENT_NAME!r} could not be confirmed to declare a "
+                "zero-tool spec (a project-level spec may shadow the installed one, "
+                "or the spec could not be read); refusing to run the knowledge pool "
+                "without a confirmed tool ban"
+            )
         await self._apply_effort()
         # Shield the live worker PID from the periodic orphan sweep for as long
         # as it runs. Paired with unregister in shutdown() and on respawn above.
@@ -371,22 +490,51 @@ class AcpWorker(Worker):
             getattr(self._client, "_pid", "unknown"),
         )
 
+    async def _spawn_client(self, acp_backend: str, sandbox_mode: str) -> tuple[AcpClient, bool]:
+        """Build the client for *acp_backend*, bring it up, and return it with the pre-spawn read.
+
+        The client is stored as ``self._client`` before ``ensure_ready`` so a failed
+        start still leaves it reachable. For a backend routed through
+        ``Routing.AGENT_SPEC`` the authored spec is read BEFORE this client's
+        ``ensure_ready`` spawns the harness, and the result is returned so the
+        post-start confirmation can require both reads to agree when no projection
+        was prepared. Any other backend returns False.
+        """
+        client = AcpClient(
+            agent=AGENT_NAME,
+            sandbox_mode=sandbox_mode,
+            acp_backend=acp_backend,
+            audit_source="subagent",
+        )
+        self._client = client
+        self._effective_effort = None
+        authored_before_spawn = False
+        if routing_for(acp_backend) is Routing.AGENT_SPEC:
+            authored_before_spawn = await asyncio.to_thread(
+                client.authored_spec_declares_zero_tools
+            )
+        await client.ensure_ready()
+        return client, authored_before_spawn
+
     async def _apply_effort(self) -> None:
         """Apply the requested effort without breaking provider-default fallback.
 
-        Which channel carries the change is a CAPABILITY question --
-        ``SessionCapabilities.effort_via_config_option`` -- asked off the client's
-        own public ``backend`` string. It replaced a read of the private
-        ``AcpClient._is_claude``, which was both the sharpest boundary violation in
-        the tree (application code reaching an underscore attribute of the ACP
-        client) and an identity branch: it sent every non-claude harness down the
-        ``/effort`` slash command, including one that has no such command.
+        Which channel carries the change is a CAPABILITY question, asked off the
+        client's own public ``backend`` string rather than an identity. Three
+        outcomes follow: ``SessionCapabilities.effort_via_config_option`` sends
+        ``session/set_config_option``, ``SessionCapabilities.effort_via_slash_command``
+        sends the kiro-native ``/effort`` command, and a backend answering neither has
+        no channel for the change, so the worker logs that the provider default
+        applies and sends nothing.
 
-        This pool constructs its client with the DEFAULT backend and never passes
-        ``acp_backend``, so the answer here is the kiro one and both spellings
-        agree on it; ``test_agent_sdk_capabilities`` pins that, so a future pool
-        that does select a backend gets the capability answer rather than an
-        identity guess.
+        This pool's ``acp_backend`` is restricted by ``_get_acp_backend`` to a
+        backend that answers both ``honors_zero_tool_ban`` and
+        ``acp_client_spawnable`` True, and those do NOT all answer these capabilities
+        the same way -- kiro takes the slash command, opencode and goose take
+        neither -- which is exactly why they are asked here instead of an identity.
+        ``test_agent_sdk_capabilities`` pins every member's answers, so a backend
+        that later qualifies with different answers is caught there, not assumed to
+        inherit an existing member's.
         """
         client = self._client
         requested = self._effort
@@ -395,6 +543,13 @@ class AcpWorker(Worker):
         try:
             backend = getattr(client, "backend", "")
             via_config_option = capabilities_for(backend).effort_via_config_option
+            if not via_config_option and not capabilities_for(backend).effort_via_slash_command:
+                logger.warning(
+                    "AcpWorker: effort=%s unsupported on backend=%s; using provider default",
+                    requested,
+                    POLICY_ID_BY_BACKEND.get(backend, backend),
+                )
+                return
             # Resolved per backend, like every other effort site: writing the
             # wrong spelling draws "unknown config option", and the except
             # below turns that into "using provider default" without saying
@@ -892,6 +1047,7 @@ class LLMPool:
             worker = AcpWorker(
                 sandbox_mode=sandbox_mode,
                 effort=self._effort,
+                acp_backend=await asyncio.to_thread(_get_acp_backend),
             )
         await worker.start()
         return worker

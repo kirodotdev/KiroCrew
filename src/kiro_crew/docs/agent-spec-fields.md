@@ -154,6 +154,43 @@ underneath.
 | `pi` | none | — | — | no projection at all — kind `no-channel` [8]; `model` and `prompt` still arrive [9] |
 | `deepseek` | none | — | — | no projection of the spec — kind `broker-only` [8]; `model` and `prompt` still arrive [9] |
 
+**An empty `tools` list is a second, stronger case of the "allowlist" row.** `tools:
+[]` reads as "mount nothing" for the MCP array on every mirror, same as any other
+allowlist -- but it does NOT, by itself, stop the harness's own native tools
+(claude-agent-acp's Bash/Read/Write, for instance): those are outside the array
+entirely. Every mirrored backend carries a second signal from the same spec
+parse, `SessionMcpProjection.zero_tools` (true only for an explicit `[]`, not a
+missing key), but only `opencode` and `goose` close the gap on it:
+`AcpClient._deny_zero_tools` refuses EVERY permission request on such a session
+-- MCP or native -- and the refusal runs only on `AcpClient` sessions of a
+backend that answers `SessionCapabilities.honors_zero_tool_ban` (an enforced
+routing, `tool_gate.ENFORCED_ROUTINGS`, plus a mirror). `claude`'s
+routing (`Routing.SEEDED_SETTINGS`) is declared but not enforced by this core, so
+an inherited `~/.claude` pre-approval can skip `session/request_permission`
+entirely; the refusal is not applied there. `codex` is served by `AcpRuntime` /
+`AcpSessionHandle` rather than `AcpClient`, which carries `spec_denied_tools`
+but no `zero_tools` and no equivalent refusal, so nothing closes the gap on a
+codex session either. `pi` and `deepseek` have no mirror, so neither this nor
+the ordinary allowlist ever applies to them; an agent spec relying on
+`tools: []` for any of claude, codex, pi or deepseek is not enforced at all.
+
+The knowledge and research pool spawns zero-tool agents and does not rely on the
+native ban alone. On kiro-cli, `--agent` resolves against the project checkout
+before the user directory, so a project-level spec of the same name that carries
+tools shadows the installed zero-tool one. At worker start the pool confirms the
+ban (`AcpClient.effective_spec_declares_zero_tools`) and refuses to run when it
+cannot. With a prepared projection the judged spec is the projected view the harness
+consumed through `--agent`; the session prepares the view before the spawn and never
+re-reads it, so a spec edit after the harness consumed it cannot change the answer.
+The view is the one judged because the skill projection appends the skill-search tool
+to a spec that carries `skill://` resources. With no prepared projection (the
+`KIROCREW_NATIVE_SKILL_PROJECTION=0` rollback, or an alias that could not be taken)
+the harness loads the named spec itself, so the authored spec, resolved project
+checkout first (`AcpClient.authored_spec_declares_zero_tools`), is read before the
+spawn and again after start, and both reads must declare `tools: []`. That bracket
+narrows a change to the authored file but cannot close one made and restored inside
+the spawn window, which is why a prepared view is preferred.
+
 1. Delivered ONLY when Crew authored `<work_dir>/.claude/settings.local.json`.
    That file is this session's permission surface, and a tool Crew cannot gate is
    not handed to the session at all — so a project carrying its own copy gets no

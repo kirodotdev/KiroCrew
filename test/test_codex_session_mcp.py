@@ -1493,7 +1493,11 @@ class TestSpecDisabledToolRefusal:
         assert builds == 2, "a site that answers a permission request was added or removed"
         for site in ("_dispatch_events", "_handle_permission"):
             body = inspect.getsource(getattr(client_mod.AcpClient, site))
-            assert "_build_permission_event(" in body and "_deny_spec_disabled_tool(" in body, site
+            assert (
+                "_build_permission_event(" in body
+                and "_deny_spec_disabled_tool(" in body
+                and "_deny_zero_tools(" in body
+            ), site
         # And the two other loops answer ONLY through _handle_permission.
         assert source.count("await self._handle_permission(msg)") == 2
 
