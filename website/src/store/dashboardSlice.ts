@@ -82,6 +82,20 @@ interface DashboardState {
    *  reply predates what is on screen for that key. Pruned with the rest of the
    *  per-slot state when an authoritative frame drops the key. */
   slotWrittenAt: Record<string, number>
+  /** Per key, the value of `slotWriteSeq` at that row's last MEMBERSHIP write (a
+   *  create / resume / fork / companion-open — every `addSlotOptimistic` and
+   *  `createSlot.fulfilled`). Compared against a `fetchSlots` request's mark the
+   *  same way `slotWrittenAt` is, but it drives the RE-ADD of a key the reply
+   *  OMITS, where `slotWrittenAt` drives only the substitution of a key the
+   *  reply contains: a content write must never resurrect a row the reply
+   *  dropped (that would revive a foreign-deleted chat), while a membership
+   *  write the server confirmed must survive a reply serialized before it.
+   *  Only a reply dispatched BEFORE the add can re-add the key: `membersOutranking`
+   *  re-adds when `slotMemberAt` exceeds the request's mark, and a reply
+   *  dispatched after the add carries a mark at or above the stamp, so it never
+   *  re-adds — no consumption step is needed. Pruned with the rest of the
+   *  per-slot state when an authoritative frame drops the key. */
+  slotMemberAt: Record<string, number>
   /** Per in-flight `fetchSlots` requestId, the value of `slotWriteSeq` when the
    *  request was dispatched. The server serialized its reply after that instant,
    *  so any key whose `slotWrittenAt` is HIGHER was written locally while the
@@ -299,6 +313,7 @@ const initialState: DashboardState = {
   staleSlotFetches: {},
   slotWriteSeq: 0,
   slotWrittenAt: {},
+  slotMemberAt: {},
   slotFetchWriteMark: {},
   sidebarOrder: [],
   approvalMode: 'normal',
@@ -402,6 +417,9 @@ const reconcileSlots = (state: DashboardState, liveKeys: Set<string>, evictStale
   // reply that merely predates a newly created slot cannot strip its protection.
   for (const stamped of Object.keys(state.slotWrittenAt ?? {})) {
     if (!liveKeys.has(slotKeyOfStamp(stamped))) delete state.slotWrittenAt[stamped]
+  }
+  for (const stamped of Object.keys(state.slotMemberAt ?? {})) {
+    if (!liveKeys.has(slotKeyOfStamp(stamped))) delete state.slotMemberAt[stamped]
   }
 }
 
@@ -619,6 +637,23 @@ const stampSlotWrite = (state: DashboardState, key: string): void => {
   state.slotWrittenAt[stampKey(key)] = seq
 }
 
+/** Record that `key` was just ADDED to membership (a create / resume / fork /
+ *  companion-open). Bumps the counter and stamps ONLY `slotMemberAt`, so a
+ *  reply that OMITS the key re-adds it (issue #14831) rather than dropping it.
+ *
+ *  Deliberately NOT a content stamp: membership says the key EXISTS, not that
+ *  this tab's optimistic row is newer than the server's. A reply that genuinely
+ *  LISTS the key carries the full server row (`mode`/`surface`/`color_index`/
+ *  `project`/…), and stamping `slotWrittenAt` here would send that reply down
+ *  the substitution branch and keep the thinner optimistic row instead. The
+ *  create site adds its own content stamp, because its payload alone carries
+ *  locally-applied fields the server has not confirmed. */
+const stampSlotMember = (state: DashboardState, key: string): void => {
+  state.slotWriteSeq = (state.slotWriteSeq ?? 0) + 1
+  if (!state.slotMemberAt) state.slotMemberAt = {}
+  state.slotMemberAt[stampKey(key)] = state.slotWriteSeq
+}
+
 /** A single-slot mutation. Returning `false` means the writer's own guard
  *  declined and the row was left alone, so no write is stamped. */
 type RowPatch = (slot: ChatSlot) => boolean | void
@@ -644,10 +679,13 @@ export interface SlotPatchFrame {
  *  build if a reducer reaches a row any other way without saying, on the line,
  *  that its lookup is read-only.
  *
- *  Deliberately NOT applied to membership changes (`addSlotOptimistic`,
- *  `removeSlotOptimistic`): the reply's own membership is reconciled by the
- *  close-tombstone machinery and by `applySlots`, and those two are already
- *  ordered against each other. This guards row CONTENT. */
+ *  This guards row CONTENT. A membership ADD (`addSlotOptimistic`,
+ *  `createSlot.fulfilled`) carries its own narrower stamp through
+ *  `stampSlotMember`, which is what lets a `fetchSlots` reply RE-ADD a key it
+ *  omits; a content stamp from here never does, so a rename cannot resurrect a
+ *  row another client deleted mid-flight. A removal (`removeSlotOptimistic`) is
+ *  reconciled by the close-tombstone machinery and by `applySlots`, which are
+ *  already ordered against each other, and so needs no stamp here. */
 /** A slot row's value for `field`, as a `slot_patch` row would state it. A full
  *  frame omits `lineage_pending` when it is false, while a patch states it either
  *  way, because a patch that omitted it could never clear a pending row. So an
@@ -696,6 +734,31 @@ const localWritesOutranking = (state: DashboardState, requestId: string | undefi
     if (writtenAt[stamped] > mark) outranked.add(slotKeyOfStamp(stamped))
   }
   return outranked
+}
+
+/** Keys MEMBERSHIP-added after `requestId` was dispatched, read from
+ *  `slotMemberAt` the same way `localWritesOutranking` reads `slotWrittenAt`.
+ *  These are the only keys a `fetchSlots` reply may RE-ADD when it omits them:
+ *  the add is a create / resume / fork / companion-open the server confirmed,
+ *  so a reply serialized before it is simply too old to list it. A content
+ *  write stamps `slotWrittenAt` but NOT this record, so it can keep its own
+ *  on-screen row (substitution) yet can never resurrect a key the reply
+ *  dropped — the row may have been deleted by another client in the same window
+ *  (GPT F1).
+ *
+ *  A reply dispatched AFTER the add carries a mark at or above the stamp, so
+ *  `memberAt > mark` is false and it cannot re-add the key: the re-add is bounded
+ *  to replies that predate the add, with no explicit consumption step. */
+const membersOutranking = (state: DashboardState, requestId: string | undefined): Set<string> => {
+  const added = new Set<string>()
+  if (requestId === undefined) return added
+  const mark = state.slotFetchWriteMark?.[requestId]
+  if (mark === undefined) return added
+  const memberAt = state.slotMemberAt ?? {}
+  for (const stamped of Object.keys(memberAt)) {
+    if (memberAt[stamped] > mark) added.add(slotKeyOfStamp(stamped))
+  }
+  return added
 }
 
 const applySlots = (state: DashboardState, incomingRows: ChatSlot[]): void => {
@@ -984,6 +1047,13 @@ const dashboardSlice = createSlice({
       if (!state.slots.find(s => s.key === action.payload.key)) { // row-read: membership test, adds a row rather than changing one
         state.slots.push(action.payload)
       }
+      // Every add site routes through this reducer (resume, fork, companion
+      // chat, Papyrus), so stamping membership here covers them all by
+      // construction: a `fetchSlots` serialized before the add omits the key,
+      // and the stamp lets `membersOutranking` re-add the row the whole-list
+      // replace would drop (issue #14831). Stamped even when the row is already
+      // present — the add still asserts the key is current as of now.
+      stampSlotMember(state, action.payload.key)
     },
     /** Drop a close tombstone (see `applySlots`). `deleteSlot` dispatches this in
      *  its failure path BEFORE the recovery `fetchSlots`, because the thunk's
@@ -1378,11 +1448,23 @@ const dashboardSlice = createSlice({
         // stamp a row it found, an empty list has none, and the set is therefore
         // empty and the reply applies unfiltered.
         const outranked = localWritesOutranking(state, requestId)
+        // Keys ADDED while the request was in flight (see `membersOutranking`),
+        // read from `slotMemberAt`. A membership add stamps membership only, not
+        // content, so this is NOT a subset of `outranked`. Only these may be
+        // re-added when the reply omits them; a content-only outranked key must
+        // not be resurrected, since its row may since have been deleted by
+        // another client (GPT F1).
+        const addedWhileInFlight = membersOutranking(state, requestId)
         // For a stale key the reply's row is pre-pop and is NOT trusted, but the
         // key may since have been recreated (a resume on another client): keep
         // whatever row is on screen for it rather than dropping the key, so a
         // live same-key session and its unread state survive the stale reply.
-        const current = staleKeys.size || outranked.size ? new Map((state.slots ?? []).map(s => [s.key, s])) : undefined
+        // `addedWhileInFlight` is included because a membership add stamps only
+        // `slotMemberAt`, so a pure add (no content stamp) leaves `outranked`
+        // empty yet still needs the live-row map to re-add its omitted key.
+        const current = staleKeys.size || outranked.size || addedWhileInFlight.size
+          ? new Map((state.slots ?? []).map(s => [s.key, s]))
+          : undefined
         const rows: ChatSlot[] = current
           ? action.payload.flatMap((s: ChatSlot) => {
             if (!staleKeys.has(s.key) && !outranked.has(s.key)) return [s]
@@ -1394,6 +1476,30 @@ const dashboardSlice = createSlice({
             return staleKeys.has(s.key) ? [] : [s]
           })
           : action.payload
+        // A key MEMBERSHIP-added while this request was in flight, which the
+        // reply OMITS, is a create / resume / fork / companion-open the server
+        // serialized the reply too early to list (issue #14831). The whole-list
+        // replace below would drop that freshly added row, so re-add its live
+        // row — kept in reply order after the rest — and the sidebar does not
+        // need a reload to learn about it. A key the reply contains is already
+        // handled above; a content-only outranked key is deliberately NOT here,
+        // so a reply cannot revive a chat deleted mid-flight.
+        //
+        // The re-add is bounded by the mark comparison in `membersOutranking`:
+        // only a reply dispatched BEFORE the add re-adds the key. A later reply
+        // (mark at or above the stamp) cannot re-add it, so a foreign delete that
+        // omits the key wins on the next authoritative list — no resurrection
+        // while the WS is disconnected (GPT F1). The #14831 case re-adds on every
+        // pre-add reply — two `fetchSlots` can overlap — and heals on the next
+        // authoritative list either way.
+        if (current && addedWhileInFlight.size) {
+          const present = new Set(rows.map(s => s.key))
+          for (const key of addedWhileInFlight) {
+            if (present.has(key)) continue
+            const live = current.get(key)
+            if (live) rows.push(live)
+          }
+        }
         // A reply in flight can be older than the live frames that arrived while
         // it travelled, so it may omit a slot the stream has since created. The
         // unread drain still runs — that is this path's documented job, and a
@@ -1438,6 +1544,14 @@ const dashboardSlice = createSlice({
           if (!state.slots.find(s => s.key === action.payload.key)) { // row-read: membership test, adds a row rather than changing one
             state.slots.push(action.payload)
           }
+          // A create is a single-slot MEMBERSHIP write, so stamp it as one (see
+          // `stampSlotMember`): a `fetchSlots` reply already in flight was
+          // serialized by the server before this slot existed and so omits the
+          // key; the membership stamp lets `membersOutranking` re-add the row
+          // the reply dropped (issue #14831). Stamped even when the row is
+          // already present — the create still asserts the key is current as of
+          // now, which a reply that predates it must not override.
+          stampSlotMember(state, action.payload.key)
         },
       )
       // Close tombstone lifecycle (see `applySlots`). Matched by type string for
