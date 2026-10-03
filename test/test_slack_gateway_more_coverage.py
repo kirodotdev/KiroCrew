@@ -45,7 +45,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_crew.autonudge import APPROVAL_STALL_REASON, NudgeLoop
+from kiro_crew.autonudge import APPROVAL_STALL_REASON, CONSECUTIVE_FAILURE_REASON, NudgeLoop
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.monitoring.models import (
     DEFAULT_MONITOR_CADENCE_SECS,
@@ -1275,6 +1275,32 @@ class TestNotifyNudgeExpired:
         # auto-approve was perfectly healthy; telling them to re-enable it would
         # send them to change a setting that was never off.
         assert "away" in body
+        assert "restart the loop" in body
+
+    def test_consecutive_failure_names_its_own_remedy(self):
+        """Failing cycles must not be reported as a cap the loop never hit.
+
+        Before this branch the stop fell through to the final ``else`` ("hit its
+        cycle cap" / "raise the cap"), telling the operator to raise a bound that
+        was never the problem. The cause is the loop's own cycles dying, so the
+        remedy is to look at the error and restart.
+        """
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        loop = NudgeLoop(
+            id="loop-cf",
+            slot_key="chat-5",
+            message="keep checking",
+            max_cycles=24,
+            cycle_count=5,
+            stopped_reason=CONSECUTIVE_FAILURE_REASON,
+        )
+        orch._notify_nudge_expired(loop)
+        title = ds.notify.call_args.args[1]
+        body = ds.notify.call_args.args[2]
+        assert title == "Monitoring loop stopped — its cycles kept failing"
+        assert "cycle cap" not in body
         assert "restart the loop" in body
 
     def test_cycle_cap_outranks_a_stall(self):

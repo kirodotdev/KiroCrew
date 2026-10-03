@@ -7,7 +7,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_crew.autonudge import APPROVAL_STALL_REASON, AutoNudgeService
+from kiro_crew.autonudge import (
+    APPROVAL_STALL_REASON,
+    CONSECUTIVE_FAILURE_REASON,
+    AutoNudgeService,
+)
 from kiro_crew.autonudge_authz import authorize_and_update_monitor
 from kiro_crew.dashboard import session_directive_apply as sda
 from kiro_crew.dashboard.session_directive_apply import apply_session_directive
@@ -776,6 +780,50 @@ async def test_denied_monitor_update_is_surfaced_into_the_session(tmp_path):
     assert not text.startswith(sda.ARM_REFUSAL_NOTICE_PREFIX)
     assert "kept its previous instruction" in text
     assert "approval prompt" in text
+    service.stop()
+
+
+@pytest.mark.asyncio
+async def test_denied_monitor_update_names_the_consecutive_failure_bound(tmp_path):
+    """A loop stopped on CONSECUTIVE_FAILURE_REASON names its own remedy.
+
+    Without a branch the bound falls to the generic "paused manually; ask the
+    user", which sends the operator to a human who made no decision. The real
+    cause is the loop's own cycles dying, so the remedy is to look at the error
+    and re-arm.
+    """
+    service = AutoNudgeService(base_dir=tmp_path)
+    loop = await service.add("chat-1", "watch the build", idle_secs=60)
+    await service.update(loop.id, active=False, stopped_reason=CONSECUTIVE_FAILURE_REASON)
+    surfaced = MagicMock()
+    state = SimpleNamespace(
+        _slots={
+            "chat-1": SimpleNamespace(
+                workspace="default", mode="", memory_mode="persistent", is_closing=False
+            )
+        },
+        sessions=None,
+        channel_transports={},
+    )
+    slot = SimpleNamespace(key="chat-1", _app="", messages=[])
+    with (
+        patch("kiro_crew.autonudge.get_instance", return_value=service),
+        patch("kiro_crew.dashboard.state.append_and_surface", surfaced),
+    ):
+        result = await apply_session_directive(
+            state,
+            slot,
+            "dashboard:chat-1",
+            "monitor_update",
+            {"patch": {"message": "revised instruction"}},
+        )
+
+    assert "is PAUSED" in result
+    surfaced.assert_called_once()
+    _, _, _, text, _ = surfaced.call_args.args
+    assert "paused manually" not in text
+    assert "reached a model session and then died" in text
+    assert "re-arm it with monitor_start" in text
     service.stop()
 
 

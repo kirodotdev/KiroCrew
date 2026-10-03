@@ -1164,6 +1164,11 @@ async def test_structured_legacy_row_carries_exactly_the_entitled_keys(
         # whether it can act, not a fact about what it watches. A structured
         # monitor never writes it, so the row carries 0 truthfully.
         "consecutive_start_failures",
+        # Same class and same reason as ``consecutive_start_failures``: the
+        # loop's own reading of whether its cycles can make progress, not a fact
+        # about the subject. A structured monitor never writes it, so the row
+        # carries 0 truthfully.
+        "consecutive_failed_cycles",
         "next_due_ts",
         "self_armed",
         "terminal_notification_outcome",

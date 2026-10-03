@@ -25,9 +25,11 @@ from kiro_crew import shutdown_event
 from kiro_crew.autonudge_service.gate import _WAKE_FOLLOWUP_TICKS
 from kiro_crew.autonudge_service.maintenance import _release_mutation_lock
 from kiro_crew.autonudge_service.model import (
+    _CONSECUTIVE_FAILURE_STANDDOWN_AFTER,
     _START_FAILURE_BACKOFF_AFTER,
     _START_FAILURE_STANDDOWN_AFTER,
     APPROVAL_STALL_REASON,
+    CONSECUTIVE_FAILURE_REASON,
     MONITOR_TERMINAL_REASON,
     SESSION_START_FAILURE_REASON,
     NudgeLoop,
@@ -230,6 +232,38 @@ async def _timer(self: AutoNudgeService, loop: NudgeLoop, delay: float | None = 
             )
             self._arm_timer(loop, delay=backoff)
             return
+    # Own cycles that keep FAILING. A delivered cycle that reached a session and
+    # dispatched but died -- turn outcome ``error`` or ``timeout`` -- produced
+    # nothing, and firing the next one on the plain interval reproduces it. The
+    # three bounds above each catch one deterministic sub-case (a malformed
+    # payload, an unanswered approval, a session that never started); a turn that
+    # ran and errored is none of them, so without this a loop firing every
+    # interval into a turn that always fails burns its whole cycle cap producing
+    # nothing. Checked here with the other terminal bounds, on recorded evidence
+    # only (``notify_cycle_failed``); a single landed turn on the slot clears the
+    # streak, so a loop that recovers is never held back. No deferral tier: a
+    # failed turn already spent its own time (a start failure fails fast, so its
+    # deferral throttles a tight retry loop that this one does not have), and the
+    # stand-down threshold is set high enough that a couple of transient errors
+    # pass through untouched.
+    #
+    # Terminal in the same shape as the other bounds: deactivate (inspectable and
+    # restartable, not removed), ``expired`` so the notifier tells the user it
+    # stopped rather than finished, and re-armable once the backend or tool
+    # recovers.
+    if loop.consecutive_failed_cycles >= _CONSECUTIVE_FAILURE_STANDDOWN_AFTER:
+        logger.warning(
+            "AutoNudge: loop %s stood down — %d consecutive cycles failed with "
+            "nothing landing between them, so cycle %d would spend a turn to fail "
+            "the same way; it stays inspectable and can be resumed once the cause "
+            "clears",
+            loop.id,
+            loop.consecutive_failed_cycles,
+            loop.cycle_count + 1,
+        )
+        await self.update(loop.id, active=False, stopped_reason=CONSECUTIVE_FAILURE_REASON)
+        self._emit("expired", loop)
+        return
     # Fire. Update state only if the callback reports actual delivery —
     # otherwise skipped nudges (e.g. slot mid-turn) inflate cycle_count and
     # prematurely trip max_cycles. Missing callback → nothing to deliver.

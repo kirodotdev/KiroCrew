@@ -221,6 +221,7 @@ from kiro_crew.dashboard.chat_turn.recovery import (  # noqa: F401
     _image_recovery_vetoed_at_consume,
     _model_access_replay_vetoed_at_consume,
     _model_unentitled_meta,
+    _note_cycle_failure,
     _note_cycle_start_failure,
     _purge_superseded_continuations,
     _rearm_turn_episode,
@@ -17414,6 +17415,23 @@ async def _run_chat(
                 # that can only fail the same way. Read with getattr: the two ACP
                 # exception families tag this fact independently and share no base.
                 _note_cycle_start_failure(slot.key, exc, self_wake=_directive_self_wake)
+                # A cycle that DID reach a model session and dispatched but then
+                # died terminally here -- a backend error after retries were spent,
+                # a persistent tool error, a prompt timeout. The gate (self-wake
+                # only, structural / session-start / pre-dispatch excluded, scoped
+                # to the fired loop's config generation) lives in the helper, which
+                # the generic ``except`` arm below also calls -- a report in only
+                # one arm would miss whichever death the other serves. No row meta
+                # is resolved in this arm (a structural rejection is excluded by its
+                # own ``exc`` tag, and the pre-dispatch classes land in the generic
+                # arm, not here), so ``err_meta`` is None.
+                await _note_cycle_failure(
+                    slot.key,
+                    exc,
+                    self_wake=_directive_self_wake,
+                    loop_id=_directive_loop_id,
+                    expected_generation=_directive_loop_gen,
+                )
                 # This branch ENDS the retry cycle: the error is terminal and
                 # nothing is re-queued. Refresh the transient-5xx budget now so the
                 # NEXT cycle — the Continue press this very error message invites
@@ -17508,6 +17526,34 @@ async def _run_chat(
         # population that runs there. Reporting only in the AcpError branch would
         # leave the loops this bound exists for never backing off.
         _note_cycle_start_failure(slot.key, exc, self_wake=_directive_self_wake)
+        # The SIBLING of the failed-cycle report in the AcpError branch above,
+        # for the same reason the start-failure report is duplicated here: a
+        # cycle that reached a session and dispatched but then died does not
+        # always raise an AcpError. A prompt timeout (AcpRequestTimeout) and a
+        # wedged session (AcpSessionStartTimeout) descend from AcpRuntimeError,
+        # not AcpError, so they land in THIS arm, and an exhausted retry or a
+        # plain Exception does too. Charging the streak only in the AcpError
+        # branch would leave a loop failing this way firing cycle after cycle
+        # that only fails the same way -- the exact waste this bound ends. The
+        # gate is the helper's: same self-wake scope and the structural /
+        # session-start exclusions as the AcpError arm, PLUS the pre-dispatch
+        # exclusion that only this arm needs. A memory store that would not open
+        # (``memory_unavailable``) and a member agent file changed out of band
+        # (``materialization_changed``) never reached a session at all, so the
+        # "reached a session and then died" stand-down -- and the operator notice
+        # that names a backend/tool/timeout cause -- must not fire for them. They
+        # are identified by the ``_err_meta`` resolved just above, passed through
+        # so the helper needs no new classification. A plain internal bug keeps
+        # charging: a self-wake cycle that dispatches and raises the same bug
+        # every interval is exactly the no-progress waste this bound ends.
+        await _note_cycle_failure(
+            slot.key,
+            exc,
+            self_wake=_directive_self_wake,
+            loop_id=_directive_loop_id,
+            expected_generation=_directive_loop_gen,
+            err_meta=_err_meta,
+        )
         if not (isinstance(exc, MemoryStartupUnavailable) and not _memory_preparation_admitted):
             await state.sessions.record_failure(session_key)
     finally:
