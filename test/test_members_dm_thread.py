@@ -201,6 +201,137 @@ class TestDmBinding:
             member_slot_key("Bad Slug")
 
 
+class TestRestrictedRestartMemberIdentity:
+    """A restricted chat must not read a member's private store it cannot prove
+    it ran as, after an alias change across a restart.
+
+    A restricted (incognito/temporary) session persists no durable execution
+    carrier, so on restart it re-selects the member from the alias its slot
+    carries. Binding that member's PRIVATE store is sound only when a durable
+    identity the session itself carries -- the slot KEY, never the agent-writable
+    metadata line -- confirms the alias still names the same member. A DM slot
+    key encodes the ``member_id``; an ordinary ``chat-N`` slot encodes none.
+    Resolve the hazard by refusing (open a new conversation) rather than
+    failing open: a DM slot whose encoded id DIFFERS from the resolved member
+    (the thread belongs to a specific member), and a restricted ordinary slot
+    whose alias resolves to a V2 member (reading its private store is a
+    cross-member read, and substituting the default store reads Global memory
+    the chat did not run as -- so neither is bound).
+    """
+
+    @staticmethod
+    def _member(cfg, tmp_path, alias, member_id, store):
+        from kiro_crew.config.sections import KiroCrewAgentConfig, MemoryStoreConfig
+        from kiro_crew.vector_memory import create_member_database
+
+        path = tmp_path / "memory_stores" / store / "memory.db"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        create_member_database(path, member_id=member_id, store_id=store)
+        cfg.agents[alias] = KiroCrewAgentConfig(
+            member_id=member_id, memory_store=store, kiro_agent="shared-template"
+        )
+        cfg.memory_stores[store] = MemoryStoreConfig(
+            owner_member=alias, owner_member_id=member_id, memory_version=2
+        )
+
+    def test_dm_slot_refuses_after_alias_reassignment(self, tmp_path, monkeypatch):
+        from kiro_crew import execution_context as execution
+        from kiro_crew.config import loader
+        from kiro_crew.dashboard.chat_runner import (
+            _dm_member_binding_changed,
+            _slot_member_slug,
+        )
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        loader._invalidate_config_cache()
+        cfg = SimpleNamespace(agents={}, memory_stores={}, default_agent="kirocrew")
+        # The original member the incognito DM chat ran as. Its slug IS its id
+        # (a MemV2 member always gets an id-based slug), so the slot key encodes
+        # the immutable id.
+        self._member(cfg, tmp_path, "assistant", "id-alpha", "member-alpha")
+        monkeypatch.setattr(loader.KiroCrewConfig, "load", classmethod(lambda cls: cfg))
+
+        slot_key = member_slot_key("id-alpha")
+
+        # While the chat is restarting, the alias "assistant" is reassigned to a
+        # brand-new member (the original removed, a new one created under the
+        # same name), minting a different immutable id and store.
+        cfg.agents.clear()
+        cfg.memory_stores.clear()
+        self._member(cfg, tmp_path, "assistant", "id-beta", "member-beta")
+
+        # The slot key still encodes the ORIGINAL id -- durable across the
+        # original member's removal.
+        assert _slot_member_slug(slot_key) == "id-alpha"
+        resolved = execution.resolve_member_execution(
+            cfg, "assistant", memory_mode="incognito", validate_memory_files=False
+        )
+        assert resolved.member_id == "id-beta"
+        # A DM slot whose encoded id differs from the alias -> refuse.
+        assert _dm_member_binding_changed(resolved.member_id, slot_key)
+
+    def test_dm_slot_runs_normally_when_alias_is_unchanged(self, tmp_path, monkeypatch):
+        from kiro_crew import execution_context as execution
+        from kiro_crew.config import loader
+        from kiro_crew.dashboard.chat_runner import (
+            _dm_member_binding_changed,
+            _slot_member_slug,
+        )
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        loader._invalidate_config_cache()
+        cfg = SimpleNamespace(agents={}, memory_stores={}, default_agent="kirocrew")
+        self._member(cfg, tmp_path, "assistant", "id-alpha", "member-alpha")
+        monkeypatch.setattr(loader.KiroCrewConfig, "load", classmethod(lambda cls: cfg))
+
+        slot_key = member_slot_key("id-alpha")
+        resolved = execution.resolve_member_execution(
+            cfg, "assistant", memory_mode="incognito", validate_memory_files=False
+        )
+        # No reassignment: the alias still resolves to the same immutable id, so
+        # the refuse branch does not fire.
+        assert _slot_member_slug(slot_key) == "id-alpha"
+        assert resolved.member_id == "id-alpha"
+        assert not _dm_member_binding_changed(resolved.member_id, slot_key)
+
+    def test_legacy_member_without_persisted_id_touches_neither_branch(self, tmp_path, monkeypatch):
+        from kiro_crew import execution_context as execution
+        from kiro_crew.config import loader
+        from kiro_crew.config.sections import KiroCrewAgentConfig
+        from kiro_crew.dashboard.chat_runner import (
+            _dm_member_binding_changed,
+            _slot_member_slug,
+        )
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        loader._invalidate_config_cache()
+        # A legacy (MemV1) member has a name-derived slug and no persisted id, so
+        # ``resolve_member_execution`` yields an empty ``member_id`` -- nothing
+        # private is at stake, so the DM-mismatch branch does not fire on a
+        # member slot key OR an ordinary one.
+        slug = slug_for_name("legacy crew")
+        slot_key = member_slot_key(slug)
+        cfg = SimpleNamespace(
+            agents={"legacy crew": KiroCrewAgentConfig(kiro_agent="kirocrew")},
+            memory_stores={},
+            default_agent="kirocrew",
+        )
+        monkeypatch.setattr(loader.KiroCrewConfig, "load", classmethod(lambda cls: cfg))
+        resolved = execution.resolve_member_execution(
+            cfg, "legacy crew", memory_mode="incognito", validate_memory_files=False
+        )
+        assert resolved.member_id is None
+        assert _slot_member_slug(slot_key) == slug
+        assert slug != ""
+        assert not _dm_member_binding_changed(resolved.member_id or "", slot_key)
+        assert not _dm_member_binding_changed(resolved.member_id or "", "chat-7-f00d")
+
+    def test_non_member_slot_key_has_no_slug(self):
+        from kiro_crew.dashboard.chat_runner import _slot_member_slug
+
+        assert _slot_member_slug("chat-1-abc") == ""
+
+
 def _make_members_app(state) -> web.Application:
     from kiro_crew.dashboard.handlers.members import (
         api_member_activity,
@@ -1063,6 +1194,71 @@ class TestPinEnforcement:
         assert not any(message["role"] == "assistant" for message in slot.messages)
         autonudge.notify_turn_complete.assert_called_once()
         assert autonudge.notify_turn_complete.call_args.args == (slot.key,)
+        state.sessions.get_or_create.assert_not_called()
+        state.context_builder.build_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_runner_refuses_a_reassigned_dm_member_after_restricted_restart(
+        self, tmp_path, monkeypatch
+    ):
+        """Drive the real ``_run_chat`` guard: a DM member thread whose alias now
+        resolves to a DIFFERENT immutable id (member removed, new one created
+        under the same name) must be refused before any provider or context work,
+        not bound to the replacement member's private store. Deleting the guard
+        regresses this to a silent cross-member bind.
+        """
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.config.sections import KiroCrewAgentConfig, MemoryStoreConfig
+        from kiro_crew.dashboard.chat_runner import _run_chat
+        from kiro_crew.vector_memory import create_member_database
+
+        def _member(cfg, alias, member_id, store):
+            path = tmp_path / "memory_stores" / store / "memory.db"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            create_member_database(path, member_id=member_id, store_id=store)
+            cfg.agents[alias] = KiroCrewAgentConfig(
+                member_id=member_id, memory_store=store, kiro_agent="kirocrew"
+            )
+            cfg.memory_stores[store] = MemoryStoreConfig(
+                owner_member=alias, owner_member_id=member_id, memory_version=2
+            )
+
+        cfg = KiroCrewConfig.load()
+        # The DM slot the incognito chat ran as encodes id-alpha; the alias is
+        # then reassigned to a brand-new member before the restart.
+        _member(cfg, "assistant", "id-beta", "member-beta")
+        cfg.save()
+        monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda c: cfg))
+
+        slot_key = "member-id-alpha"
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        state.sessions.get_or_create = AsyncMock(
+            side_effect=AssertionError("provider acquisition must not run")
+        )
+        state.context_builder = MagicMock()
+        state.context_builder.build_message = MagicMock(
+            side_effect=AssertionError("context construction must not run")
+        )
+        slot = state.get_or_create_slot(slot_key, agent="assistant", mode=DM_SLOT_MODE)
+        slot.memory_mode = "incognito"
+        state._restricted_keys.add(f"dashboard:{slot_key}")
+        state.sessions.record_failure = AsyncMock()
+        slot.append("user", "hello", "msg msg-u")
+
+        with (
+            patch("kiro_crew.autonudge.get_instance", return_value=MagicMock()),
+            patch(
+                "kiro_crew.dashboard.chat_runner.chat_done_payload",
+                AsyncMock(return_value={}),
+            ),
+        ):
+            await _run_chat(state, slot, "after restart")
+
+        errors = [m for m in slot.messages if m["role"] == "error"]
+        assert len(errors) == 1
+        assert "open a new conversation" in errors[0]["content"]
+        assert not any(m["role"] == "assistant" for m in slot.messages)
         state.sessions.get_or_create.assert_not_called()
         state.context_builder.build_message.assert_not_called()
 

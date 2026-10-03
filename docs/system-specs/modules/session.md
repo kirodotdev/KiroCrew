@@ -224,7 +224,13 @@ the line, a store name would read back as the legacy owner claim the identity
 backfill refuses for a restricted mode, and the restart would refuse the chat.
 Left out, the restart reads the session as unbound and the first turn re-selects
 the member from `agent` under the retained mode -- the same live-only carrier the
-session ran under before the restart. `agent_kind` stays on the line: it is a
+session ran under before the restart. Because `agent` is a mutable alias, a DM
+re-selection must prove the chat still runs as the member it ran before: a DM
+slot KEY encodes the member's immutable id (the metadata line is agent-writable
+and is never an identity source), so a DM re-selection whose resolved id differs
+from that encoded id is refused -- the thread belongs to a specific member and
+the alias now names another; the member's memory stays intact and a new
+conversation binds it cleanly. `agent_kind` stays on the line: it is a
 display fact, not an owner claim.
 
 Tab close and idle archival snapshot the live restricted identity before yielding;
