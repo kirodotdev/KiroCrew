@@ -247,3 +247,37 @@ async def test_stop_after_dispatch_aborts_the_replay_before_the_provider(tmp_pat
     assert slot._session_not_found_queue_id == ""
     assert slot._session_not_found_retry_used is False
     assert any(m.get("content") == SESSION_NOT_FOUND_CANCELLED_TEXT for m in slot.messages)
+
+
+@pytest.mark.asyncio
+async def test_stop_resolved_before_the_error_never_queues_a_replay(tmp_path, monkeypatch):
+    """A Stop that pressed and already snapped back to idle before the lost-session
+    error reaches the handler leaves ``_stopping`` False; only the Stop counter
+    moved. The handler must read that counter itself: the replay snapshots are
+    taken after the Stop, so the drain-side veto cannot see it either."""
+    from kiro_crew.dashboard.chat import _run_chat
+
+    calls: list[str] = []
+
+    async def _stop_then_fail(msg):
+        calls.append(msg)
+        # The user's Stop lands mid-turn and resolves straight back to idle.
+        slot._stop_generation = getattr(slot, "_stop_generation", 0) + 1
+        slot._stopping = False
+        raise AcpError(_NOT_FOUND)
+        yield  # pragma: no cover
+
+    state = _state(tmp_path, monkeypatch)
+    _wire(state, _client(_stop_then_fail))
+    slot = state.get_or_create_slot("s1")
+    slot._titled = True
+
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        await _run_chat(state, slot, "delete the old branches")
+        await _drain(state)
+
+    assert calls == ["delete the old branches"]
+    assert slot._queue == []
+    assert SESSION_NOT_FOUND_RETRY_TEXT not in _errors(slot)
+    assert slot._session_not_found_queue_id == ""
+    assert slot._session_not_found_retry_used is False
