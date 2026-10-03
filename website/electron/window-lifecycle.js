@@ -268,15 +268,30 @@ function createWindowLifecycle(options) {
   function setupWindowContents(win, windowBackendUrl) {
     const windowPort = defaultedPort(windowBackendUrl);
     let customName = null;
+    // Before the view exists: the preload argument below is decided by the same
+    // per-window predicate the IPC gates and the agent channel use, which reads
+    // the window's own URL.
+    win._mcBackendUrl = windowBackendUrl;
+    // A configured crew is reached through a loopback tunnel, so only the store
+    // can say the gateway is on another machine. Decided ONCE, at creation: an
+    // argument list is fixed for a WebContents's life, so a crew configured for
+    // this port afterwards is not reflected -- that window keeps asking and the
+    // registrar's `assertLocalDashboard` keeps refusing, as before (#14815; the
+    // residual is pinned in window-lifecycle.test.js and in docs/build/desktop-app.md).
+    const remoteGateway = !isGatewayLocalForWindow(win);
 
     const view = new WebContentsView({
       webPreferences: {
         preload: path.join(__dirname, "preload.js"),
         contextIsolation: true,
         nodeIntegration: false,
-        // Frameless Linux is a launch-time decision, not a platform constant.
-        // The preload reads this argument to reserve caption-control space.
-        additionalArguments: LINUX_FRAMELESS ? ["--kc-linux-frameless"] : [],
+        // Launch-time decisions the preload cannot make itself: frameless Linux
+        // reserves caption-control space; a remote gateway withholds the bridges
+        // whose answers are facts about THIS machine.
+        additionalArguments: [
+          ...(LINUX_FRAMELESS ? ["--kc-linux-frameless"] : []),
+          ...(remoteGateway ? ["--kc-remote-gateway"] : []),
+        ],
       },
     });
     view.setBackgroundColor("#00000000");
@@ -390,7 +405,6 @@ function createWindowLifecycle(options) {
       applyTitle();
     };
     win._mcGetCustomName = () => customName;
-    win._mcBackendUrl = windowBackendUrl;
     // The dashboard SPA is a capture surface (the chat composer's snip and the
     // web-preview crop). Registered against the gateway origin THIS window was
     // opened on, so a secondary window pointed at a remote gateway is bound to

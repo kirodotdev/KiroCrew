@@ -158,6 +158,59 @@ test("the local-dashboard gate has exactly one spelling", () => {
   }
 });
 
+// The local-only gate has TWO halves that must name the same channels. The main
+// process refuses a sender whose gateway is not this machine's
+// (`assertLocalDashboard`); the preload withholds the bridge from a window the
+// shell opened against a configured remote crew (`REMOTE_GATEWAY`), so the
+// remote's SPA never asks (#14815). A channel gated on one side and not the
+// other is either a local-only channel a remote window still invokes (and the
+// main process logs a refusal for, on every page load) or a bridge withheld
+// from the remote for no reason the main process agrees with. Both sets are read
+// from the source, so a channel added to either side names itself here.
+test("the preload withholds exactly the channels the local-dashboard gate refuses", () => {
+  const gated = new Set();
+  for (const m of IPC_REGISTRAR_SOURCE.matchAll(/assertLocalDashboard\(event, "([^"]+)"\)/g)) gated.add(m[1]);
+  assert.ok(gated.size >= 4, `expected the registrar to gate several channels, found ${gated.size}`);
+
+  // The guarded block of whole bridges, plus the one method withheld from a
+  // shared bridge. Each is sliced by its own delimiter so a channel that drifts
+  // outside the guard stops being counted.
+  const blockStart = PRELOAD_SOURCE.indexOf("if (!REMOTE_GATEWAY) {");
+  assert.notEqual(blockStart, -1, "preload.js must guard its local-only bridges behind REMOTE_GATEWAY");
+  const blockEnd = PRELOAD_SOURCE.indexOf("\n}\n", blockStart);
+  assert.notEqual(blockEnd, -1, "the guarded block must close");
+  const methodStart = PRELOAD_SOURCE.indexOf("...(REMOTE_GATEWAY ? {} : {");
+  assert.notEqual(methodStart, -1, "the withheld electronAPI method must be spread under REMOTE_GATEWAY");
+  const methodEnd = PRELOAD_SOURCE.indexOf("}),", methodStart);
+  const withheldSource = PRELOAD_SOURCE.slice(blockStart, blockEnd) + PRELOAD_SOURCE.slice(methodStart, methodEnd);
+
+  const withheld = new Set();
+  for (const m of withheldSource.matchAll(/ipcRenderer\.invoke\(\s*"([^"]+)"/g)) withheld.add(m[1]);
+
+  assert.deepStrictEqual(
+    [...withheld].sort(),
+    [...gated].sort(),
+    "channels the preload withholds from a remote window must be exactly those assertLocalDashboard refuses",
+  );
+
+  // And the argument the preload reads is the one the window owner passes.
+  assert.match(
+    PRELOAD_SOURCE,
+    /process\.argv\.includes\("--kc-remote-gateway"\)/,
+    "preload.js must read the remote-gateway decision from its launch arguments",
+  );
+  assert.match(
+    WINDOW_SOURCE,
+    /\.\.\.\(remoteGateway \? \["--kc-remote-gateway"\] : \[\]\)/,
+    "window-lifecycle.js must pass --kc-remote-gateway in additionalArguments for a remote window",
+  );
+  assert.match(
+    WINDOW_SOURCE,
+    /const remoteGateway = !isGatewayLocalForWindow\(win\);/,
+    "the argument must be decided by the same per-window predicate the gates and the agent channel use",
+  );
+});
+
 test("every mochi channel main SENDS is received by a preload", () => {
   const mainSrc = readAll(sourceFiles().map(rel).filter((f) => !PRELOADS.includes(f)));
   const preloadSrc = readAll(PRELOADS);

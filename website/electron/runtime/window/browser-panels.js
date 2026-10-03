@@ -3,7 +3,6 @@
 const { createBrowserViewManager } = require("../../browser-view");
 const {
   canAgentControl,
-  isLoopbackUrl,
   mayBootstrapView,
   createControlPlane,
   OWNER,
@@ -177,10 +176,18 @@ function attachBrowserPanels(win, view, {
     // not sufficient and why the port must be the window's own.
     isGatewayLocal: () => isGatewayLocalForWindow(win),
     listPanelIds: () => {
-      // Preserve the existing predicate exactly. In particular, do not
-      // mechanically fold isGatewayLocal into this branch during extraction:
-      // that is a policy change, not a module move.
-      if (!isLoopbackUrl(win._mcBackendUrl)) return [];
+      // The same predicate as the heartbeat, for the same reason. The drain is
+      // a loopback-only, internal-secret endpoint: a gateway on another machine
+      // can never accept this process's secret, so a window reaching one has
+      // nothing to drain for. Loopback alone does not decide that -- a configured
+      // crew reached through `ssh -L` presents as localhost -- and gating on it
+      // here is what made a client-only desktop (local gateway off, Remote Crew
+      // configured for the launch port) long-poll the remote for every declared
+      // chat slot, back off on its 403, and retry for the life of the window,
+      // putting THIS machine's `X-Internal-Secret` on the wire each time (#14815).
+      // `isGatewayLocalForWindow` folds in the loopback test, so a non-loopback
+      // window is still excluded.
+      if (!isGatewayLocalForWindow(win)) return [];
       return [...new Set([...browserPanels.keys(), ...reachableSessions])];
     },
     dispatch: async (sessionKey, op, args) => {
@@ -232,7 +239,11 @@ function attachBrowserPanels(win, view, {
       return dispatchBrowserOp(entry, op, args);
     },
     onError: (error, context) => {
-      console.warn(`[browser-agent-channel] ${context}: ${error && error.message}`);
+      // `context` is the channel's `{ phase, ... }` object; interpolating it
+      // directly printed `[object Object]: drain: HTTP 403` (#14815's log).
+      // Bounded: one phase carries the malformed body it is reporting.
+      const where = (context && typeof context === "object" ? JSON.stringify(context) : String(context)).slice(0, 200);
+      console.warn(`[browser-agent-channel] ${where}: ${error && error.message}`);
     },
   });
   win._mcAgentChannel.start();

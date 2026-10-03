@@ -592,6 +592,26 @@ therefore refused; only then may
 [`wsl-detection.js`](../../website/electron/wsl-detection.js) run the trusted
 system `wsl.exe` path.
 
+A window the shell opens against a **configured** remote crew — the client-only
+launch (local gateway off, Remote Crew set for the launch port), or a *New
+Connection Window* on a port whose crew is already saved — does not ask in the
+first place.
+`setupWindowContents` passes the preload `--kc-remote-gateway`, decided by the
+same per-window predicate the gate uses, and
+[`preload.js`](../../website/electron/preload.js) then withholds every bridge
+whose channels that gate refuses (`crashReportsAPI`, `wslAPI`, `fileOpenAPI`,
+and `electronAPI.clearPaneHttpCache`); the SPA treats the missing bridge exactly
+as it does in a plain browser tab. The same predicate keeps the agent command
+channel idle for that window: `/api/browser/command-drain` accepts only the
+gateway's own internal secret, so a desktop reaching another machine's gateway
+has nothing to drain for, and must not put this machine's secret on the wire
+trying. The argument is fixed when the WebContents is created, so a crew
+configured for a port **after** its window exists — a connection window whose
+crew is first saved from its token prompt, *Set Remote Host…* on the tab menu,
+or the launch-failure dialog's *Add Remote Crew* — is not reflected in it: that
+window keeps asking and the main-process gate keeps refusing, as before, until
+the window is next created with the record in place.
+
 Before spawning a **bundled** backend the shell checks that the bundle's Python
 stdlib is fully on disk
 ([`bundle-integrity.js`](../../website/electron/bundle-integrity.js)). The

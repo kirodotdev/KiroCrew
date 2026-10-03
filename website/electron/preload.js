@@ -3,6 +3,22 @@ const { contextBridge, ipcRenderer, webUtils } = require("electron");
 // Live `watchCursorAway` subscriptions in this renderer; see that method.
 let cursorAwaySubscribers = 0;
 
+// This window was opened against a gateway on ANOTHER machine: a configured
+// Remote Crew reached through a loopback tunnel (window-lifecycle.js decides
+// this once per WebContents from the crew record for the window's port and
+// passes it the same way as `--kc-linux-frameless`; see setupWindowContents).
+// The bridges whose answers are facts about THIS machine -- crash artifacts,
+// the WSL inventory, opening a file in a local editor, evicting a pane's cache
+// -- are withheld below rather than exposed and refused: the main-process
+// handlers reject such a sender anyway (`assertLocalDashboard` in
+// ipc-registrar.js), and the SPA already treats a missing bridge as "not here",
+// exactly as it does in a plain browser tab. Withholding them is what stops a
+// client-only desktop (local gateway off) from invoking local-only channels on
+// every page load (#14815). The gates in the main process stay the authority
+// for every window that does still ask, including one pointed at a crew after
+// it was created.
+const REMOTE_GATEWAY = process.argv.includes("--kc-remote-gateway");
+
 contextBridge.exposeInMainWorld("kirocrew", {
   platform: process.platform,
   isElectron: true,
@@ -39,9 +55,14 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // port) before reloading it. Used when the pane's module graph reports a
   // load error: a hashed chunk the gateway once answered 404+immutable is
   // replayed from cache forever, and only eviction gets the pane past Loading.
-  // Resolves to whether a purge ran; the caller reloads regardless.
-  clearPaneHttpCache: (origin) =>
-    ipcRenderer.invoke("pane:clear-http-cache", String(origin || "")),
+  // Resolves to whether a purge ran; the caller reloads regardless. Withheld
+  // for a remote-gateway window (see REMOTE_GATEWAY): only the local dashboard
+  // shell -- the one that frames remote panes -- may evict a loopback origin's
+  // cache, and the SPA keeps its no-bridge path when the method is absent.
+  ...(REMOTE_GATEWAY ? {} : {
+    clearPaneHttpCache: (origin) =>
+      ipcRenderer.invoke("pane:clear-http-cache", String(origin || "")),
+  }),
   onStatus: (cb) => {
     const handler = (_e, msg) => cb(msg);
     ipcRenderer.on("status", handler);
@@ -186,43 +207,54 @@ contextBridge.exposeInMainWorld("localGatewayAPI", {
   set: (enabled) => ipcRenderer.invoke("local-gateway:set", !!enabled),
 });
 
-// Crash-artifact notice for the dashboard banner (CrashReportNotice).
+// ── Local-only bridges ───────────────────────────────────────────────────────
 //
-// The app already captures a minidump and, on macOS, the OS writes an .ips
-// report — and until now nothing ever mentioned that either exists, which is how
-// a main-process crash reaches us as "it closed by itself" with the evidence
-// still unread on the reporter's disk. This bridge is what closes that loop.
-//
-// `get` resolves { newCount } and NOTHING else: no paths, no filenames, no
-// exception codes, not even a timestamp. `reveal` takes no argument — main.js knows
-// where the log is from the scan it performed, so this cannot be turned into a
-// request to open an arbitrary file. Absent in plain browsers and in the PWA,
-// where there is no local disk to reveal; the banner hides itself.
-contextBridge.exposeInMainWorld("crashReportsAPI", {
-  get: () => ipcRenderer.invoke("crash-reports:get"),
-  reveal: () => ipcRenderer.invoke("crash-reports:reveal"),
-});
+// Every bridge in this block answers with a fact about, or an action on, THE
+// MACHINE IN FRONT OF THE USER, and every one of its channels is gated in the
+// main process by `assertLocalDashboard` (ipc-registrar.js). For a window the
+// shell opened against a configured remote crew the block is skipped: the SPA
+// served by that remote then sees no bridge, which is the same thing it sees in
+// a plain browser tab, and asks for nothing. The gate still refuses whatever
+// does ask (shell-contract.test.js pins that the two sets of channels match).
+if (!REMOTE_GATEWAY) {
+  // Crash-artifact notice for the dashboard banner (CrashReportNotice).
+  //
+  // The app already captures a minidump and, on macOS, the OS writes an .ips
+  // report — and until now nothing ever mentioned that either exists, which is how
+  // a main-process crash reaches us as "it closed by itself" with the evidence
+  // still unread on the reporter's disk. This bridge is what closes that loop.
+  //
+  // `get` resolves { newCount } and NOTHING else: no paths, no filenames, no
+  // exception codes, not even a timestamp. `reveal` takes no argument — main.js knows
+  // where the log is from the scan it performed, so this cannot be turned into a
+  // request to open an arbitrary file. Absent in plain browsers and in the PWA,
+  // where there is no local disk to reveal; the banner hides itself.
+  contextBridge.exposeInMainWorld("crashReportsAPI", {
+    get: () => ipcRenderer.invoke("crash-reports:get"),
+    reveal: () => ipcRenderer.invoke("crash-reports:reveal"),
+  });
 
-// Read-only WSL2 host-runtime readout for the Host runtime card on System >
-// Services (HostRuntimeCard). Detection only — no config writes, no
-// persistence. The main-process handler rejects every sender whose gateway is
-// not genuinely local, so a connection window pointed at a remote gateway
-// gets a rejection here rather than the host's distro inventory. Absent in
-// plain browsers — the card treats a missing bridge as "not an Electron
-// shell" and renders nothing.
-contextBridge.exposeInMainWorld("wslAPI", {
-  detect: () => ipcRenderer.invoke("wsl:detect"),
-});
+  // Read-only WSL2 host-runtime readout for the Host runtime card on System >
+  // Services (HostRuntimeCard). Detection only — no config writes, no
+  // persistence. The main-process handler rejects every sender whose gateway is
+  // not genuinely local, so a connection window pointed at a remote gateway
+  // after it was created gets a rejection here rather than the host's distro
+  // inventory. Absent in plain browsers — the card treats a missing bridge as
+  // "not an Electron shell" and renders nothing.
+  contextBridge.exposeInMainWorld("wslAPI", {
+    detect: () => ipcRenderer.invoke("wsl:detect"),
+  });
 
-// File-open bridge for the chat path chip's "Open in editor" affordance. Hands
-// a filesystem PATH — never a URL scheme — to the main process, which validates
-// it and calls shell.openPath so the file opens in the OS default handler on the
-// user's own machine. Resolves { ok, error? }. Absent in a plain browser and in
-// the PWA — the renderer treats a missing bridge as "cannot open externally" and
-// hides the control, keeping the built-in viewer as the only path there.
-contextBridge.exposeInMainWorld("fileOpenAPI", {
-  open: (filePath) => ipcRenderer.invoke("dashboard:open-file", String(filePath || "")),
-});
+  // File-open bridge for the chat path chip's "Open in editor" affordance. Hands
+  // a filesystem PATH — never a URL scheme — to the main process, which validates
+  // it and calls shell.openPath so the file opens in the OS default handler on the
+  // user's own machine. Resolves { ok, error? }. Absent in a plain browser and in
+  // the PWA — the renderer treats a missing bridge as "cannot open externally" and
+  // hides the control, keeping the built-in viewer as the only path there.
+  contextBridge.exposeInMainWorld("fileOpenAPI", {
+    open: (filePath) => ipcRenderer.invoke("dashboard:open-file", String(filePath || "")),
+  });
+}
 
 // Native zoom bridge for the Settings > Display "Zoom Level" stepper.
 // Chromium's per-origin zoom (the thing Cmd/Ctrl +/- changes) is not
