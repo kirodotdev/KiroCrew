@@ -1449,6 +1449,7 @@
       "enumValues": null,
       "defaultValue": {
         "timeout_secs": 3600,
+        "idle_exempt_keys": [],
         "empty_response_auto_continue": true,
         "empty_response_max_continues": 1,
         "autocompact_pct": 70.0,
@@ -1475,6 +1476,34 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 3600
+    },
+    {
+      "path": "session.idle_exempt_keys",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Idle-Exempt Sessions",
+      "help": "Session keys the idle timeout never ends, for a chat that automation wakes hours apart. A dashboard chat's key is dashboard: followed by the sid in its URL, e.g. dashboard:chat-12-1790000000, unless the tab is linked to a cron job or a channel thread, which uses that link's key instead, e.g. cron:<job id>. Closing a dashboard or cron tab still ends its process; a channel thread's session belongs to the channel, so closing its viewer does not. The Watchdog RSS Limit still applies.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "session.idle_exempt_keys.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
     },
     {
       "path": "session.empty_response_auto_continue",

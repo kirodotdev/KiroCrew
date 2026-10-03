@@ -1013,6 +1013,12 @@ against sweep completeness, and are torn down at `close_all`.
 - **Idle cleanup**: expires sessions after `session.timeout_secs` (default
   60min). Never expires `BACKGROUND_KEY`. Dashboard per-tab sessions
   (`dashboard:{slot_key}`) idle-expire like any other session.
+  A key listed in `session.idle_exempt_keys` never expires on the idle clock,
+  for a chat that automation wakes hours apart and that would otherwise pay a
+  cold start on every wake. `SessionCleanup._idle_exempt_keys()` reads the list
+  at every sweep, so a config write applies at the next one. It exempts the idle
+  axis only: the owner-gone axis below still reaps a listed session whose owning
+  slot has closed, and the RSS recycle never consults the list.
   A session is also expired on a second, clock-independent axis: its owning
   dashboard slot is gone. `SessionCleanup._owner_is_gone()` answers that, and it
   asks a deliberately different question of two populations. A
