@@ -2388,6 +2388,26 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "voice.custom-model-sha-256",
+    "label": "Custom model SHA-256",
+    "labelKey": "pages.settings.sttSettings.custom_model_sha256",
+    "description": "Paste the SHA-256 the model's publisher lists for this file, so a changed download is refused — a `sha256:` value or a `sha256sum` line works too. Or compute it from a copy you trust with `shasum -a 256 <file>` (or `Get-FileHash <file> -Algorithm SHA256` on Windows).",
+    "tab": "voice",
+    "type": "input",
+    "occurrence": 1,
+    "configKey": "stt.custom_model_sha256"
+  },
+  {
+    "id": "voice.custom-model-url",
+    "label": "Custom model URL",
+    "labelKey": "pages.settings.sttSettings.custom_model_url",
+    "description": "Link to the model file (.bin) you want to run instead of a listed one — a whisper.cpp ggml build, over HTTPS. Leaving these blank or switching back to a listed model is always safe.",
+    "tab": "voice",
+    "type": "input",
+    "occurrence": 1,
+    "configKey": "stt.custom_model_url"
+  },
+  {
     "id": "voice.dictation-panel",
     "label": "Dictation panel",
     "labelKey": "pages.settings.sttSettings.dictation_panel",

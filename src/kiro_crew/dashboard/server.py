@@ -4954,7 +4954,11 @@ async def _stt_startup_prewarm() -> None:
     from kiro_crew.stt import models as stt_models
     from kiro_crew.transcribe import _whisper_language
 
-    model = stt_models.resolve(cfg.stt.model)
+    # Off the loop like every neighbouring step in this coroutine: `resolve` of the
+    # `custom` selection reaches `KiroCrewConfig.load()` (a stat + read + jsonschema
+    # validate), so calling it inline would stall the gateway on the one boot where a
+    # custom model is configured.
+    model = await asyncio.to_thread(stt_models.resolve, cfg.stt.model)
     # `is_present` is a stat, so it runs off-loop with everything else in this step.
     if not await asyncio.to_thread(stt_models.is_present, model):
         logger.debug("Speech model %s is not downloaded; skipping the boot prewarm", model.name)
@@ -4986,8 +4990,16 @@ async def _stt_startup_prewarm() -> None:
 
     available_gb = await asyncio.to_thread(_available_memory_gb)
     available_mib = int(available_gb * 1024) if available_gb > 0 else 0
-    needed_mib = 2 * model.size_bytes // (1024 * 1024)
-    if available_mib <= 0 or available_mib < needed_mib:
+    # A custom model carries no pinned size, so `model.size_bytes` is 0 and a guard
+    # keyed on it is dead -- it would admit an arbitrarily large local file into the
+    # speculative boot warm and OOM-loop on it. `prewarm_size_bytes` falls back to
+    # the file's own on-disk size (the file is confirmed present two lines above),
+    # so the guard sizes a custom model by what it actually weighs; 0 back means the
+    # size could not be read at all, which the `<= 0` arm below treats as "do not
+    # speculate".
+    guard_size_bytes = await asyncio.to_thread(stt_models.prewarm_size_bytes, model)
+    needed_mib = 2 * guard_size_bytes // (1024 * 1024)
+    if available_mib <= 0 or needed_mib <= 0 or available_mib < needed_mib:
         logger.debug(
             "Skipping the boot prewarm for %s: %d MiB available, %d MiB wanted",
             model.name,

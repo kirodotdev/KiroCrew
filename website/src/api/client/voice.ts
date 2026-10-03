@@ -24,6 +24,8 @@ export function createVoiceEndpoints({ post, put, j }: ClientTransport) {
       dictation_panel?: boolean
       transcribe_region?: string
       transcribe_profile?: string
+      custom_model_url?: string
+      custom_model_sha256?: string
       language_code?: string
       polish?: boolean
     }) => put('/api/config/stt', body).then(j),
