@@ -2071,8 +2071,12 @@ async def api_sel_verify(request: web.Request) -> web.Response:
     # Same offload rationale as api_sel_events, including deferring _sel() into
     # the callable: verify_integrity() reads the whole log file to check the HMAC
     # chain end to end and must not run on the event loop.
-    result = await asyncio.get_running_loop().run_in_executor(
-        discovery_executor(), lambda: _sel().verify_integrity(detailed=True)
+    def _verify():
+        log = _sel()
+        return log.verify_integrity(detailed=True), log.dropped_events
+
+    result, dropped = await asyncio.get_running_loop().run_in_executor(
+        discovery_executor(), _verify
     )
     if not result.history_verifiable:
         integrity = "unverifiable"
@@ -2087,6 +2091,7 @@ async def api_sel_verify(request: web.Request) -> web.Response:
             "integrity": integrity,
             "tampered": result.total - result.valid,
             "detail": result.reason,
+            "dropped_events": dropped,
         }
     )
 

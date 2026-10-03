@@ -136,6 +136,7 @@ class TestSelHandlerOffload:
         order: list[str] = []
         fake_sel = MagicMock()
         fake_sel.verify_integrity.return_value = sel_mod.SelVerification(5, 5, True, "")
+        fake_sel.dropped_events = 0
         sentinel_pool = object()
         monkeypatch.setattr(core_mod, "_sel", _tracking_sel(fake_sel, order))
         monkeypatch.setattr(core_mod, "discovery_executor", lambda: sentinel_pool)
@@ -197,6 +198,7 @@ class TestSelConstructionRunsOffTheLoop:
         seen: dict = {}
         fake_sel = MagicMock()
         fake_sel.verify_integrity.return_value = sel_mod.SelVerification(2, 2, True, "")
+        fake_sel.dropped_events = 0
         pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="test-disc")
         monkeypatch.setattr(core_mod, "_sel", self._recording_sel(fake_sel, seen))
         monkeypatch.setattr(core_mod, "discovery_executor", lambda: pool)

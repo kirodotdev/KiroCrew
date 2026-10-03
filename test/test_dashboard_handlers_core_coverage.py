@@ -110,6 +110,7 @@ def fake_sel(monkeypatch) -> MagicMock:
     package attribute is what the handler observes.
     """
     recorder = MagicMock()
+    recorder.dropped_events = 0
     monkeypatch.setattr("kiro_crew.dashboard.handlers.sel", lambda: recorder)
     return recorder
 
@@ -1836,6 +1837,7 @@ class TestSelEndpoints:
             "integrity": "ok",
             "tampered": 0,
             "detail": "",
+            "dropped_events": 0,
         }
 
     @pytest.mark.asyncio
@@ -1854,6 +1856,14 @@ class TestSelEndpoints:
         body = json.loads((await core_mod.api_sel_verify(_req())).body)
         assert body["integrity"] == "unverifiable"
         assert "refused" in body["detail"]
+
+    @pytest.mark.asyncio
+    async def test_verify_reports_dropped_events(self, fake_sel) -> None:
+        """The writer's lost-batch counter is surfaced next to the chain verdict."""
+        fake_sel.verify_integrity.return_value = _SelVerification(7, 7, True, "")
+        fake_sel.dropped_events = 4
+        body = json.loads((await core_mod.api_sel_verify(_req())).body)
+        assert body["dropped_events"] == 4
 
 
 class TestSecurityStats:
