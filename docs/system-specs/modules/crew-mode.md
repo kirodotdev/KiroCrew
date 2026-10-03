@@ -1269,7 +1269,11 @@ UI — removal only; nothing is created or rebound:
 - **Never chatted → removed** (`remove_never_chatted`): the row is deleted
   through a delta mutate under the base config lock, and only while the base
   row on disk still has the same `kiro_agent`, canonical source identity and
-  fresh-sync shape, `config.local.json` still does not name it — read under the
+  fresh-sync shape, it is still not the row the loader would select as the default
+  (`default`, or the merged `default_agent` -- the overlay's key when it carries
+  one, else the base's -- or, when that names no row and no `default` row exists,
+  the first row), `config.local.json` still does not name it — neither in its
+  `agents` section nor as its `default_agent` — read under the
   overlay's own sidecar lock — and the bound spec, when re-read from disk under
   `agents_spec_lock`, still declares the bound `kiro_agent`, remains non-private
   (`private_to` is empty) and not `kirocrew_owned`, and has the same canonical

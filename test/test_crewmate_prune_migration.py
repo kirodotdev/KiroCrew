@@ -1059,6 +1059,106 @@ class TestCandidates:
         assert "scout" in KiroCrewConfig.load().agents
         assert not mig.marker_path().exists()
 
+    def test_an_overlay_default_selected_under_the_lock_refuses_the_delete(
+        self, old_style_config, bindings_dir, log
+    ):
+        # ``config set --local default_agent scout`` writes a top-level key the
+        # overlay ``agents`` check cannot see; the locked re-check reads it too.
+        from kiro_crew.config.loader import config_local_path
+
+        original = mig.remove_never_chatted
+
+        def _select_then_remove(cfg_, names, **kw):
+            config_local_path().write_text(json.dumps({"default_agent": "scout"}))
+            return original(cfg_, names, **kw)
+
+        with patch.object(mig, "remove_never_chatted", _select_then_remove):
+            report = _run(old_style_config, log)
+        assert report.refused == ["scout"]
+        assert "scout" in KiroCrewConfig.load().agents
+        assert not mig.marker_path().exists()
+
+    def test_a_base_default_selected_under_the_lock_refuses_the_delete(
+        self, old_style_config, bindings_dir, log
+    ):
+        # ``config set default_agent scout`` after the scan lands in the base
+        # document; the locked re-check reads the fresh base document too.
+        from kiro_crew.config.loader import config_path
+
+        original = mig.remove_never_chatted
+
+        def _select_then_remove(cfg_, names, **kw):
+            doc = json.loads(config_path().read_text())
+            doc["default_agent"] = "scout"
+            config_path().write_text(json.dumps(doc))
+            return original(cfg_, names, **kw)
+
+        with patch.object(mig, "remove_never_chatted", _select_then_remove):
+            report = _run(old_style_config, log)
+        assert report.refused == ["scout"]
+        assert "scout" in KiroCrewConfig.load().agents
+        assert not mig.marker_path().exists()
+
+    def test_a_fallback_default_under_the_lock_refuses_the_delete(
+        self, old_style_config, bindings_dir, log
+    ):
+        # An empty stored default with no ``default`` row makes the loader
+        # select the first row; the locked re-check refuses that row too.
+        from kiro_crew.config.loader import config_path
+
+        original = mig.remove_never_chatted
+
+        def _invalidate_then_remove(cfg_, names, **kw):
+            doc = json.loads(config_path().read_text())
+            agents = doc["agents"]
+            agents.pop("default", None)
+            doc["agents"] = {"scout": agents.pop("scout"), **agents}
+            doc["default_agent"] = ""
+            config_path().write_text(json.dumps(doc))
+            return original(cfg_, names, **kw)
+
+        with patch.object(mig, "remove_never_chatted", _invalidate_then_remove):
+            report = _run(old_style_config, log)
+        assert report.refused == ["scout"]
+        assert not mig.marker_path().exists()
+
+    def test_an_empty_overlay_default_selects_the_fallback_row(
+        self, old_style_config, bindings_dir, log
+    ):
+        # An overlay ``default_agent`` replaces the base value even when empty;
+        # the loader then falls back to the first row, which is refused.
+        from kiro_crew.config.loader import config_local_path, config_path
+
+        original = mig.remove_never_chatted
+
+        def _blank_overlay_then_remove(cfg_, names, **kw):
+            doc = json.loads(config_path().read_text())
+            agents = doc["agents"]
+            agents.pop("default", None)
+            doc["agents"] = {"scout": agents.pop("scout"), **agents}
+            doc["default_agent"] = "radar"
+            config_path().write_text(json.dumps(doc))
+            config_local_path().write_text(json.dumps({"default_agent": ""}))
+            return original(cfg_, names, **kw)
+
+        with patch.object(mig, "remove_never_chatted", _blank_overlay_then_remove):
+            report = _run(old_style_config, log)
+        assert report.refused == ["scout"]
+
+    def test_a_base_default_the_overlay_replaces_is_still_removed(self, old_style_config, bindings_dir, log):
+        # The loader resolves the overlay's ``default_agent``; the base value
+        # it replaced names an ordinary row, which the pass removes and marks.
+        from kiro_crew.config.loader import config_local_path, config_path
+
+        doc = json.loads(config_path().read_text())
+        doc["default_agent"] = "scout"
+        config_path().write_text(json.dumps(doc))
+        config_local_path().write_text(json.dumps({"default_agent": "by-hand"}))
+        report = _run(old_style_config, log)
+        assert "scout" in report.removed
+        assert report.refused == []
+        assert mig.marker_path().exists()
+
     def test_a_teamed_row_is_never_a_candidate(self):
         # Placing a crewmate on a team is the owner's own act, so the row is
         # the owner's whatever its shape.
