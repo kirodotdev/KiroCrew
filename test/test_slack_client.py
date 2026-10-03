@@ -361,3 +361,56 @@ class TestUnfurlAlwaysOff:
             "fallback",
         )
         assert len(calls) == 1
+
+
+class TestStartStreamRequiresRecipientUser:
+    """``chat.startStream`` requires ``recipient_user_id``.
+
+    A turn with no originating Slack user -- a subagent run, or a cron job
+    streaming into a channel -- carries ``user_id=""``. Slack rejects such a
+    call with ``missing_recipient_user_id``, which the client used to catch,
+    log as a full traceback, and demote to ``chat.update``. The guard skips the
+    doomed round-trip: it returns ``None`` (the same signal the caller demotes
+    on) without touching the API. An interactive user turn is unaffected.
+    """
+
+    def _client(self) -> RealSlackClient:
+        client = RealSlackClient.__new__(RealSlackClient)
+        return client
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("user_id", ["", None])
+    async def test_empty_user_skips_the_api_call_and_returns_none(self, user_id: object) -> None:
+        client = self._client()
+
+        async def _boom(*args: object, **kwargs: object) -> None:
+            raise AssertionError("chat.startStream must not be called without a recipient user")
+
+        async def _ensure_boom(*args: object, **kwargs: object) -> None:
+            raise AssertionError("must not resolve team before the recipient guard")
+
+        client._web = SimpleNamespace(api_call=_boom)
+        client.ensure_channel_team = _ensure_boom  # type: ignore[method-assign]
+
+        ts = await client.start_stream("C1", "", user_id=user_id)  # type: ignore[arg-type]
+        assert ts is None
+
+    @pytest.mark.asyncio
+    async def test_a_real_user_reaches_the_api(self) -> None:
+        client = self._client()
+        calls: list[str] = []
+
+        async def _api_call(method: str, **kwargs: object) -> dict[str, Any]:
+            calls.append(method)
+            return {"ts": "111.222"}
+
+        async def _ensure(*args: object, **kwargs: object) -> None:
+            return None
+
+        client._web = SimpleNamespace(api_call=_api_call)
+        client.ensure_channel_team = _ensure  # type: ignore[method-assign]
+        client._channel_team = {}
+
+        ts = await client.start_stream("C1", "", user_id="U123")
+        assert ts == "111.222"
+        assert calls == ["chat.startStream"]
