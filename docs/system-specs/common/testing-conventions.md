@@ -287,6 +287,14 @@ which reads the unit on its own thread after every entry. Retention removes them
 after `eager.drain()`, and asserts the hold was granted rather than proceeding without it
 (`test_issue_radar_crew_store.py::test_a_unit_recreated_under_its_id_folds_cold_however_far_its_seq_climbed`).
 
+**A fixture that changes an input a worker thread reads publishes each value as a new
+file.** `os.replace` onto a file another thread holds open fails on Windows with
+`[WinError 5]`, and an `open` that races the rename fails too, which a lenient reader
+such as `check_memory_available` takes as "no reading" and admits on. Write the next
+value to a fresh path and rebind the attribute the reader resolves at call time, so a
+reader that took the old path finishes the old file
+(`test_spawn_floor_defaults.py::_Host.set`).
+
 ### Host tool dialects
 
 A test double for a platform-specific CLI must not depend on another host's
