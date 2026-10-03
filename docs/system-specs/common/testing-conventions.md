@@ -4490,6 +4490,15 @@ The same applies to `Event.wait()`, `Queue.get()`, `Condition.wait()`, and a
 matters when the property is broken); make it generous and keep it well under
 `--timeout`, so the failure is a named assertion and not a dead worker.
 
+**A production budget a test passes only to bound a broken run is one of these
+ceilings, and is sized like one.** `test_auto_improvement_members.py` handed each member
+assignment `timeout_s=5` around ~0.3s of config loads, sqlite commits and fsyncs; with
+four Windows CI workers in that file at once the same work took 6-8s, and the
+assignment came back `TimeoutError: timeout after 5s` with nothing wrong. When no
+assertion in the test is about the budget, route every call through one helper that
+names the budget and the wait as lost-run guards (`_run_member`), and leave a tight
+budget only to the tests that drive its expiry on purpose.
+
 A wait for something a CHILD process will write also watches the child, and quotes
 what it said. MEASURED in `test_crew_log_real_crash.py`: a marker poll with no
 `child.poll()` in it spends the whole 60 s ceiling on a child that crashed at import,
