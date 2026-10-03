@@ -2360,6 +2360,28 @@ holder cooperating (unlike cooperative drain), so it covers every kill mode:
 Observability: a successful Phase-1 recovery logs at INFO; exhausting all
 attempts logs a single grep-able WARNING before migrating to Phase 2.
 
+### Lost backend session ("Session not found")
+
+A live backend can answer every prompt with `Session not found` for the backend session id a conversation is bound to. The process is up, so the dead-provider eviction never runs. `llm_helpers.acp_error_is_session_not_found` names this answer, scoped to `AcpError`.
+
+The remedy is the same on every surface: `SessionManager.reset(key)` drops the live binding and keeps the session-map entry, so the next claim spawns a fresh runtime that `session/load`s the SAME id; Load Recovery above falls back to a new session plus history replay only when that load fails. The turn is re-run once. A second loss ends on a clear error.
+
+The reset needs the surface's own session manager and the re-run needs its own output path, so each surface routes the answer into the one replace-and-run-again seam it already owns:
+
+| Surface | Seam |
+|---|---|
+| Dashboard chat | `chat_runner` AcpError arm, queued replay with Stop guards |
+| Slack thread | `handler._replay_abandoned`, the nested replay |
+| Channel agent | `_stream_task` verdict into `_recover_busy_agent` |
+| Cron, one agent | `_cron_callback` ACP-death reset-and-retry arm |
+| Cron, sequence step | one-shot re-run of the step |
+| Subagent completion into a parent | `_inject_with_retry`, reset and re-claim |
+| Subagent run | `_schedule_cancel_recovery(reason="session_not_found")` |
+
+Invariant: the turn is never re-sent once a tool ran in it, since that could repeat a side effect. `stream_and_collect` tags the `AcpError` it raises with `turn_tool_activity` (`acp_error_after_tool_activity` reads it); the cron post-token CONTINUE marks any loss after its first prompt the same way. The Slack path gates on streamed output or a tool card, the channel path on tool events, and the subagent run on `tool_count`. A gated turn still resets, so the next message reconnects.
+
+Not armed: Telegram/Discord transport dispatch, workflows, the task-queue ACP adapter and the CLI chat surface a lost session as a plain error.
+
 ### Cross-Provider Continuity
 
 kiro session IDs and the removed provider's session IDs are NOT interchangeable:

@@ -39,7 +39,9 @@ class CancellationCoordinator(ManagerComponent):
         The default serves an unexpected cancellation. ``context_overflow``
         serves a first-turn overflow and forces the replacement onto a fresh
         dedicated runtime after the original attempt's handle (shared) or
-        process (dedicated) has finished teardown.
+        process (dedicated) has finished teardown. ``session_not_found`` serves a
+        live backend that lost the run's session: the teardown's reset keeps the
+        durable pointer, so the replacement re-loads the same id.
 
         The current task cannot continue itself, so the replacement runs on a
         new task. Each caller owns its one-shot gate. The original run's finally
@@ -221,6 +223,12 @@ class CancellationCoordinator(ManagerComponent):
                         info.error = (
                             "agent context exceeded the model window and the dedicated-session "
                             "recovery could not start"
+                        )
+                        tombstone_cause = "error"
+                    elif reason == "session_not_found":
+                        info.error = (
+                            "the backend lost this run's session and the fresh-runtime "
+                            "re-run could not start"
                         )
                         tombstone_cause = "error"
                     else:

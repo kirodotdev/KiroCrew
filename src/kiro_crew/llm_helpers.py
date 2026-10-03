@@ -279,6 +279,28 @@ def acp_error_is_session_not_found(exc: BaseException) -> bool:
     return isinstance(exc, AcpError) and "session not found" in str(exc).lower()
 
 
+#: Set by :func:`stream_and_collect` on an ``AcpError`` it propagates: True when a
+#: tool call fired during the turn, so re-sending the prompt could repeat it.
+TOOL_ACTIVITY_ATTR = "turn_tool_activity"
+
+
+def acp_error_after_tool_activity(exc: BaseException) -> bool:
+    """True when *exc* ended a turn in which a tool call had already fired."""
+    return getattr(exc, TOOL_ACTIVITY_ATTR, False) is True
+
+
+#: Shown once by a surface that re-loads a lost session and retries the turn.
+SESSION_NOT_FOUND_RETRY_NOTICE = "⟳ The agent lost its session — reconnecting…"
+#: The error a surface ends on when the one reconnect did not give it a usable session.
+SESSION_NOT_FOUND_GIVE_UP_TEXT = "Could not reconnect the agent's session."
+#: A session lost after the turn started working: replaced, but not replayed,
+#: since a tool may already have run.
+SESSION_NOT_FOUND_NOT_REPLAYED_TEXT = (
+    "The agent lost its session after it had started working. It reconnects on the "
+    "next message; this one was not re-run, so its tools do not run twice."
+)
+
+
 def transient_retry_delay(attempt: int) -> float:
     """Backoff delay (seconds) for the *attempt*-th (1-based) transient retry.
 
@@ -2771,6 +2793,9 @@ async def stream_and_collect(
                     continue
 
             # ── Case 3: fatal (auth, validation, exhausted retries) — propagate. ──
+            # Say whether a tool fired this turn, so a caller that re-runs the
+            # prompt on a fresh session can refuse to repeat a side effect.
+            setattr(exc, TOOL_ACTIVITY_ATTR, _turn_tool_activity)
             raise
         finally:
             # Runs before the value reaches the caller on success, and before the exception
