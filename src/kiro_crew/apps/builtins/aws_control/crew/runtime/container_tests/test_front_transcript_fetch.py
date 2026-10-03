@@ -95,6 +95,21 @@ def _client_error(code: str, status: int) -> Exception:
     return exc
 
 
+def _data_gets(gets):
+    """The TRANSCRIPT keys fetched, dropping the pointer/index control-plane probes.
+
+    The front resolves a transcript through the committed generation now -- a pointer read
+    then (when committed) a transcript-index read -- before the content-addressed blob. These
+    tests measure which transcript objects are consulted, so the two control-plane probes are
+    filtered out; a gen-0 bucket answers both absent and the front falls back to the legacy key.
+    """
+    return [
+        g
+        for g in gets
+        if not g.endswith("/authority_generation.json") and not g.endswith("/transcript_index.json")
+    ]
+
+
 def make_settings(backend_env, *, bucket: str | None = "smc-bucket", prefix: str = "crews"):
     """Settings for the HTTP-path tests, with a data home of their own.
 
@@ -197,7 +212,7 @@ def test_a_bare_slot_name_is_not_the_object_name(tmp_path: Path) -> None:
     outcome = asyncio.run(transcript.ensure_local_transcript(settings, "cust-8831", reader=reader))
 
     assert outcome.action == "absent"
-    assert reader.gets == ["crews/crew/data/sessions/dashboard_cust-8831.jsonl"]
+    assert _data_gets(reader.gets) == ["crews/crew/data/sessions/dashboard_cust-8831.jsonl"]
     assert not (settings.sessions_dir / "dashboard_cust-8831.jsonl").exists()
 
 
@@ -419,7 +434,7 @@ async def test_a_streamed_turn_fetches_the_transcript_before_forwarding(env) -> 
     )
 
     assert status == 200 and "[DONE]" in body
-    assert reader.gets == [key]
+    assert _data_gets(reader.gets) == [key]
     assert (settings.sessions_dir / "dashboard_cust-7.jsonl").read_bytes() == TRANSCRIPT_BODY
     assert len(env["fake"].requests) == 1
 
@@ -433,7 +448,7 @@ async def test_a_non_streamed_turn_fetches_then_forwards(env) -> None:
     resp = await drive(settings, reader, {"model": "crew", "id": "cust-8831", "messages": []})
 
     assert resp.status_code == 200
-    assert reader.gets == [key]
+    assert _data_gets(reader.gets) == [key]
     assert (settings.sessions_dir / "dashboard_cust-8831.jsonl").read_bytes() == TRANSCRIPT_BODY
 
 
@@ -485,7 +500,9 @@ async def test_two_concurrent_turns_on_one_slot_fetch_once(env) -> None:
             await backend_client.aclose()
 
     assert r1.status_code == 200 and r2.status_code == 200
-    assert reader.gets == [key], f"fetched {len(reader.gets)} times, expected once"
+    assert _data_gets(reader.gets) == [
+        key
+    ], f"fetched {len(_data_gets(reader.gets))} times, expected once"
     assert env["fake"].saw_409 == 0
 
 

@@ -43,6 +43,12 @@ class _Reader:
         self.keys: list[str] = []
 
     def get(self, key: str) -> bytes:
+        # Model a generation-0 (pre-protocol) bucket: no committed pointer and no
+        # transcript index, so the front resolves to the legacy per-stem key. Those two
+        # control-plane probes are absent and are not recorded as "a fetch" -- the tests
+        # here measure which TRANSCRIPT keys are consulted.
+        if key.endswith("/authority_generation.json") or key.endswith("/transcript_index.json"):
+            raise transcript.TranscriptAbsent(key)
         self.keys.append(key)
         return b'{"role":"user"}\n'
 
