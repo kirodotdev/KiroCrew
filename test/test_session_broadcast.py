@@ -19,6 +19,7 @@ fence tests below do by asserting the refusal comes back as a row.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -76,6 +77,47 @@ def _broadcast(state, caller, message="rebase first", mode="queue", targets=None
             **kw,
         )
     )
+
+
+#: The per-target allowance `_bound_expires_at_the_hang` patches in. A backstop for a
+#: hang that is never reached, never the trigger.
+_BOUND_BACKSTOP_SECS = 30.0
+
+
+def _bound_expires_at_the_hang(monkeypatch) -> Callable[[], None]:
+    """Make the per-target bound expire when the delivery reaches its hang.
+
+    A case that drives the REAL `send_to_target` up to a hang (the steer RPC, the
+    containment stop) is about WHERE the cancellation lands. A short wall-clock
+    allowance races the gate, audit and pre-warm work in front of that hang: on a
+    loaded runner the bound expires first, the cancellation lands before the
+    hand-over, and the case reads the wrong arm (`observation=not_handed_over`, no
+    `cancelled` audit row). So the allowance is a backstop, and the returned
+    `expire()` -- called by the hang right before it parks -- fires the real
+    `wait_for`'s own `asyncio.Timeout` at once. The product's timeout path runs
+    unchanged; only the moment it fires is chosen by the test instead of the clock.
+    """
+    bounds: list[asyncio.Timeout] = []
+    real_timeout = asyncio.timeouts.timeout
+
+    def _recording_timeout(delay):
+        bound = real_timeout(delay)
+        if delay is _BOUND_BACKSTOP_SECS:
+            bounds.append(bound)
+        return bound
+
+    monkeypatch.setattr(asyncio.timeouts, "timeout", _recording_timeout)
+    monkeypatch.setattr(sc, "BROADCAST_TARGET_ALLOWANCE_SECS", _BOUND_BACKSTOP_SECS)
+
+    def expire() -> None:
+        # Each bound fires once: a later call outside any broadcast (a test's own
+        # follow-up steer through the same fake) has no bound left to fire.
+        if bounds:
+            current = bounds[-1]
+            bounds.clear()
+            current.reschedule(asyncio.get_running_loop().time())
+
+    return expire
 
 
 class _Sends:
@@ -599,10 +641,12 @@ class TestATargetThatNeverAnswers:
 
         never = asyncio.Event()
         inner_exceptions: list[type[BaseException]] = []
+        expire = _bound_expires_at_the_hang(monkeypatch)
 
         async def _steer(_state, slot, _message, **_kwargs):
             if slot.key == "chat-3":
                 try:
+                    expire()
                     await never.wait()
                 except BaseException as exc:
                     inner_exceptions.append(type(exc))
@@ -612,7 +656,6 @@ class TestATargetThatNeverAnswers:
         audits: list[dict] = []
         monkeypatch.setattr("kiro_crew.dashboard.chat_delivery.steer_into_running_turn", _steer)
         monkeypatch.setattr(sc, "_audit", lambda **kwargs: audits.append(kwargs))
-        monkeypatch.setattr(sc, "BROADCAST_TARGET_ALLOWANCE_SECS", 0.05)
 
         out = await sc.broadcast_to_targets(
             state,
@@ -649,8 +692,10 @@ class TestATargetThatNeverAnswers:
         caller = _slot(state, "chat-1")
         target = _busy(_child(state, "chat-2", caller))
         never = asyncio.Event()
+        expire = _bound_expires_at_the_hang(monkeypatch)
 
         async def _stop_never_returns(*_args, **_kwargs):
+            expire()
             await never.wait()
 
         monkeypatch.setattr(
@@ -659,7 +704,6 @@ class TestATargetThatNeverAnswers:
         )
         monkeypatch.setattr(sc, "newly_held_constraints", lambda *_args: ["mirror_unverified"])
         monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.stop_slot_turn", _stop_never_returns)
-        monkeypatch.setattr(sc, "BROADCAST_TARGET_ALLOWANCE_SECS", 0.05)
 
         out = await sc.broadcast_to_targets(
             state,
@@ -994,14 +1038,19 @@ class TestTheShieldedSteerDelivery:
     """
 
     @staticmethod
-    def _target_with_hanging_steer(state, caller, name="chat-2"):
-        """A busy child of *caller* whose steer RPC never returns, and its gate."""
+    def _target_with_hanging_steer(state, caller, expire, name="chat-2"):
+        """A busy child of *caller* whose steer RPC never returns, and its gate.
+
+        The RPC calls *expire* (from `_bound_expires_at_the_hang`) as it parks, so
+        the per-target bound lands inside the RPC rather than wherever the clock
+        happens to reach first."""
         slot = _busy(_child(state, name, caller))
         release = asyncio.Event()
         client = MagicMock()
         client.supports_steer = True
 
         async def _steer(_message):
+            expire()
             await release.wait()
             return True
 
@@ -1016,8 +1065,9 @@ class TestTheShieldedSteerDelivery:
         state = _make_state(tmp_path)
         state.broadcast_ws = MagicMock()
         caller = _slot(state, "chat-1")
-        target, release = self._target_with_hanging_steer(state, caller)
-        monkeypatch.setattr(sc, "BROADCAST_TARGET_ALLOWANCE_SECS", 0.05)
+        target, release = self._target_with_hanging_steer(
+            state, caller, _bound_expires_at_the_hang(monkeypatch)
+        )
 
         out = await sc.broadcast_to_targets(
             state,
@@ -1080,13 +1130,14 @@ class TestTheShieldedSteerDelivery:
         caller = _slot(state, "chat-1")
         target = _busy(_child(state, "chat-2", caller))
         release = asyncio.Event()
+        expire = _bound_expires_at_the_hang(monkeypatch)
 
         async def _steer(_state, _slot, _message, **_kwargs):
+            expire()
             await release.wait()
             return STEER_UNAVAILABLE
 
         monkeypatch.setattr("kiro_crew.dashboard.chat_delivery.steer_into_running_turn", _steer)
-        monkeypatch.setattr(sc, "BROADCAST_TARGET_ALLOWANCE_SECS", 0.05)
         text = "stop, the fix already landed"
 
         out = await sc.broadcast_to_targets(
@@ -1136,8 +1187,9 @@ class TestTheShieldedSteerDelivery:
         state = _make_state(tmp_path)
         state.broadcast_ws = MagicMock()
         caller = _slot(state, "chat-1")
-        target, release = self._target_with_hanging_steer(state, caller)
-        monkeypatch.setattr(sc, "BROADCAST_TARGET_ALLOWANCE_SECS", 0.05)
+        target, release = self._target_with_hanging_steer(
+            state, caller, _bound_expires_at_the_hang(monkeypatch)
+        )
         text = "stop, the issue was already fixed"
 
         await sc.broadcast_to_targets(
