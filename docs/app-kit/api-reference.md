@@ -361,6 +361,11 @@ call `await client.authenticate()` before the first request; the context manager
 does not exchange the secret automatically. The same exchange refreshes a token
 after a 401/403 response.
 
+Inside a cron child (a script or command cron) the apps tree is masked and
+every `.app_secret` stays unreadable, the app's own included, so this path
+finds no secret there. An app cron reaches the gateway through `ScriptContext`
+(`ctx.notify()`, `ctx.call_tool()`) instead.
+
 The Gateway names its authentication cookie from the Host header it receives,
 falling back to its own listen port. The Python client normally derives that name
 from `base_url`. For a port-less URL or a reverse proxy that strips or rewrites
