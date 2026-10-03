@@ -3122,6 +3122,12 @@ can show, and `_resolve_prompt_templates` already gates the block on
 `has_dashboard_surface(session_key)`, so a session with no chat window gets
 none of it whatever the prompt says. There is no author-diligence gap to close.
 
+`{{COMPUTER_USE_BLOCK}}` is a prompt token for the same reason: it describes
+what the session's agent spec mounts, not a preference. `_resolve_prompt_templates`
+fills it from `agent._computer_use_spec_gate()`, read when the session's backend
+spawns (session start and resume); see
+[computer-use.md](computer-use.md).
+
 ### Foreign-agent import onboarding state
 
 `DashboardConfig.import_onboarded` is a separate workspace-persistent gate from

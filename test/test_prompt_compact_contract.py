@@ -12,17 +12,29 @@ from pathlib import Path
 
 import pytest
 
+from kiro_crew.context_assembly.sections import computer_use_block
+
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / "src" / "kiro_crew" / "config"
 # Absolute UTF-8 source-byte budgets, not token counts or live git baselines.
 # A maintainer may raise a budget in a reviewed change when a new rule earns
 # its space. Preserve the operational clauses below rather than cutting them
 # to fit; their tests, not a size limit, check the retained text contracts.
+# Measured on the prompt with its Computer Use slot filled by the full section,
+# so the section's bytes still count against the budget after moving into
+# `context_assembly/sections.py`. The `{{MAX_SUBAGENTS}}` and `{{WIDGET_BLOCK}}`
+# slots are still counted as their raw tokens.
 PROMPT_BYTE_CEILINGS = {"prompt.md": 40_725}
+_COMPUTER_USE_TOKEN = "{{COMPUTER_USE_BLOCK}}"
 
 
 def _read(name: str = "prompt.md") -> str:
     return (CONFIG / name).read_text(encoding="utf-8")
+
+
+def _resolved(name: str = "prompt.md", *, mounted: bool = True) -> str:
+    """The prompt with its Computer Use slot filled as a session gets it."""
+    return _read(name).replace(_COMPUTER_USE_TOKEN, computer_use_block(mounted))
 
 
 def _section(text: str, heading: str) -> str:
@@ -40,8 +52,9 @@ def _require(text: str, *patterns: str) -> None:
 @pytest.mark.parametrize("name", PROMPT_BYTE_CEILINGS)
 def test_each_selected_prompt_stays_under_its_byte_ceiling(name: str) -> None:
     # Normalize checkout line endings so Windows measures the same shipped text.
-    size = len(_read(name).encode("utf-8"))
+    size = len(_resolved(name, mounted=True).encode("utf-8"))
     assert size <= PROMPT_BYTE_CEILINGS[name], (name, size, PROMPT_BYTE_CEILINGS[name])
+    assert len(_resolved(name, mounted=False).encode("utf-8")) < size
 
 
 @pytest.mark.parametrize("name", PROMPT_BYTE_CEILINGS)
@@ -49,6 +62,7 @@ def test_template_slots_remain_complete_and_unique(name: str) -> None:
     text = _read(name)
     assert re.findall(r"\{\{([A-Z_]+)\}\}", text) == [
         "MAX_SUBAGENTS",
+        "COMPUTER_USE_BLOCK",
         "WIDGET_BLOCK",
     ]
     assert text.count("{bot_name}") == 1
@@ -244,7 +258,8 @@ def test_browser_keeps_all_four_approval_groups_and_ownership_controls() -> None
 
 
 def test_computer_use_keeps_opt_in_and_cursor_password_refusals() -> None:
-    desktop = _section(_read(), "## Computer Use (native desktop apps)")
+    # The section a session gets while its spec mounts `kirocrew-computer`.
+    desktop = _section(_resolved(mounted=True), "## Computer Use (native desktop apps)")
     _require(
         desktop,
         r"opt-in and off by default",
@@ -256,3 +271,17 @@ def test_computer_use_keeps_opt_in_and_cursor_password_refusals() -> None:
         r"Password fields.*<secure>.*never captured",
         r"own dashboard is refused, for reading as well as typing",
     )
+
+
+def test_computer_use_pointer_names_the_setting_and_the_skill() -> None:
+    # The same slot while the spec withholds the server: no tool instructions,
+    # but a user asking for a desktop app is still pointed at the setting.
+    desktop = _section(_resolved(mounted=False), "## Computer Use (native desktop apps)")
+    _require(
+        desktop,
+        r"Not available in this session.*no `computer_\*` tools are mounted",
+        r"point them to Settings → Computer Use",
+        r"tools are in your tool list anyway.*read the `computer-use` skill",
+    )
+    for tool in ("computer_get_state", "computer_click", "computer_launch_app"):
+        assert tool not in desktop

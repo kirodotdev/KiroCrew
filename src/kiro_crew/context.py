@@ -37,7 +37,9 @@ from contextlib import contextmanager  # noqa: F401 - kept bound on the facade
 from dataclasses import dataclass  # noqa: F401 - kept bound on the facade
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
+
+import kiro_crew.agent as _agent_module
 
 # Bindings below that only the ``context_assembly`` owners read stay bound here:
 # callers rebind them on this module, and the owners read them through it at call
@@ -250,6 +252,9 @@ if TYPE_CHECKING:
     from kiro_crew.vector_memory import VectorMemoryStore
 
 logger = logging.getLogger(__name__)
+
+# The value type of a per-session prompt-token reading (`ContextBuilder._session_reading`).
+_ReadingT = TypeVar("_ReadingT")
 
 # Lazy caches of per-target stores. The key is NOT a bare name: a memory store
 # and a workspace are two namespaces, and a single key cannot hold both. A crew
@@ -1671,6 +1676,9 @@ class ContextBuilder:
     # readings of it are held at once.
     _MAX_SUBAGENTS_TOKEN = "{{MAX_SUBAGENTS}}"
     _CAP_FIGURE_SESSIONS = 512
+    # The Computer Use section's slot. Its reading is held per session under the
+    # same bound as the cap figure; see `_session_computer_use_gate`.
+    _COMPUTER_USE_TOKEN = "{{COMPUTER_USE_BLOCK}}"
 
     @staticmethod
     def get_memory_for(
@@ -1820,6 +1828,10 @@ class ContextBuilder:
         # read-evict-insert transaction is guarded.
         self._cap_figures: dict[str, str] = {}
         self._cap_figures_lock = threading.Lock()
+        # The same, for the Computer Use spec-gate reading; see
+        # `_session_computer_use_gate`.
+        self._computer_use_gates: dict[str, bool] = {}
+        self._computer_use_gates_lock = threading.Lock()
         # Captured for the Jev decision point at `skills.select`. Production
         # reaches `build_message` only through `run_in_embed_pool`, a thread
         # executor with no running loop, so the point cannot obtain one where it
@@ -2001,22 +2013,87 @@ class ContextBuilder:
         would read it back. The figure is therefore returned as a local, and the
         lookup, eviction and insertion are held under one lock.
         """
-        memo = self._cap_figures
+        return self._session_reading(
+            self._cap_figures,
+            self._cap_figures_lock,
+            session_key,
+            self._live_cap_figure,
+            refresh=refresh,
+        )
+
+    def _session_reading(
+        self,
+        memo: dict[str, _ReadingT],
+        lock: threading.Lock,
+        session_key: str,
+        live: Callable[[], _ReadingT],
+        *,
+        refresh: bool,
+    ) -> _ReadingT:
+        """One session's reading of a host-derived prompt token, from *memo*.
+
+        The transaction :meth:`_session_cap_figure` describes, for any token whose
+        value a session must hold still: a session start (``refresh``) takes a
+        *live* reading, every later render reuses it, and the lookup, eviction and
+        insertion run under *lock* with the reading handed back as a local.
+        """
         key = self._cap_memo_key(session_key)
-        with self._cap_figures_lock:
+        with lock:
             if not refresh:
                 cached = memo.get(key)
                 if cached is not None:
                     memo[key] = memo.pop(key)
                     return cached
-            figure = self._live_cap_figure()
+            reading = live()
             if key not in memo and len(memo) >= self._CAP_FIGURE_SESSIONS:
                 memo.pop(next(iter(memo)), None)
-            memo[key] = figure
-            return figure
+            memo[key] = reading
+            return reading
 
     @staticmethod
-    def _resolve_prompt_templates(prompt: str, session_key: str, cap_figure: str = "") -> str:
+    def _live_computer_use_gate() -> bool:
+        """Whether the agent spec mounts ``kirocrew-computer`` on this host now.
+
+        The spec gate itself (``agent._computer_use_spec_gate``), not a second
+        reading of the keystone, so the section a prompt carries and the server the
+        spec emits answer from one predicate. It fails closed, and so does this: a
+        failure to reach it yields the short pointer, never a section describing
+        tools the session may not have.
+        """
+        try:
+            # Through the module object, so a substituted gate is the one called.
+            return bool(_agent_module._computer_use_spec_gate())
+        except Exception:
+            logger.debug(
+                "computer-use spec gate unreadable; prompt gets the pointer", exc_info=True
+            )
+            return False
+
+    def _session_computer_use_gate(self, session_key: str, *, refresh: bool) -> bool:
+        """One session's reading of the Computer Use spec gate, per backend.
+
+        The block has to match the tools the session's CURRENT backend mounted,
+        and a backend loads its MCP servers from the spec when it spawns. So the
+        reading is taken when one spawns -- at session start, and again when a
+        resume (``session/load``) starts a new backend for the same session -- and
+        a compaction's re-render reuses it. Between those points the keystone can
+        still move: the dashboard's switch rebuilds the spec and resets every
+        session, which ends in a resume, while any other writer leaves the running
+        backend as it was. A live reading at compaction would follow the second
+        kind of move to tools the session does not have.
+        """
+        return self._session_reading(
+            self._computer_use_gates,
+            self._computer_use_gates_lock,
+            session_key,
+            self._live_computer_use_gate,
+            refresh=refresh,
+        )
+
+    @staticmethod
+    def _resolve_prompt_templates(
+        prompt: str, session_key: str, cap_figure: str = "", *, computer_use: bool | None = None
+    ) -> str:
         """Resolve conditional template blocks in prompt text.
 
         Dashboard sessions get a short widget pointer; Slack/CLI get it stripped.
@@ -2024,11 +2101,23 @@ class ContextBuilder:
         the model can actually fan out to: ``cap_figure`` when the caller holds
         that session's reading, otherwise a live one. Resolved for every
         transport (not just dashboard), before the widget-block branch.
+        ``{{COMPUTER_USE_BLOCK}}`` is the full Computer Use section only when the
+        agent spec mounts ``kirocrew-computer`` (``computer_use`` when the caller
+        holds that session's reading, otherwise a live one), and a short pointer
+        to the setting when it does not.
         """
         if ContextBuilder._MAX_SUBAGENTS_TOKEN in prompt:
             prompt = prompt.replace(
                 ContextBuilder._MAX_SUBAGENTS_TOKEN,
                 cap_figure or ContextBuilder._live_cap_figure(),
+            )
+
+        if ContextBuilder._COMPUTER_USE_TOKEN in prompt:
+            mounted = (
+                ContextBuilder._live_computer_use_gate() if computer_use is None else computer_use
+            )
+            prompt = prompt.replace(
+                ContextBuilder._COMPUTER_USE_TOKEN, _sections.computer_use_block(mounted)
             )
 
         cfg = KiroCrewConfig.load()
@@ -2747,7 +2836,14 @@ class ContextBuilder:
             if self._MAX_SUBAGENTS_TOKEN in agent_prompt
             else ""
         )
-        agent_prompt = self._resolve_prompt_templates(agent_prompt, session_key or "", cap_figure)
+        computer_use = (
+            self._session_computer_use_gate(session_key or "", refresh=session_start)
+            if self._COMPUTER_USE_TOKEN in agent_prompt
+            else None
+        )
+        agent_prompt = self._resolve_prompt_templates(
+            agent_prompt, session_key or "", cap_figure, computer_use=computer_use
+        )
         return self._substitute_bot_name(agent_prompt)
 
     def build_message(
@@ -2956,6 +3052,12 @@ class ContextBuilder:
             # leave a resumed member session running on a stale
             # [PERMANENT RULES] snapshot with nothing failing.
             slim_resume = _member_turn.lifecycle is MemberLifecycle.SLIM_RESUME
+            if slim_resume and session_key:
+                # A resume runs on a backend spawned from the spec as it is now, and
+                # switching Computer Use rebuilds that spec and resets every session.
+                # Re-take the reading here so a later compaction restores the block
+                # for the tools this backend has.
+                self._session_computer_use_gate(session_key, refresh=True)
             # Agent prompt goes BEFORE session context wrapper
             # so the LLM treats it as its identity, not background info.
             agent_prompt = (
