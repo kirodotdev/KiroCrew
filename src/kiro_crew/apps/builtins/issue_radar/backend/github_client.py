@@ -98,7 +98,7 @@ parse_github_repo_url = github_runner.parse_github_repo_url
 # host's OWN authenticated session and cannot be sandbox-routed (the sandbox
 # would hide ~/.config/gh + the keychain, breaking auth). As defense-in-depth
 # WITHIN that classification, every spawn goes through ``_gh_run``, which
-# (1) resolves a trusted canonical ``gh`` (never a shim on the agent-writable
+# (1) resolves a validated ``gh`` (never a shim on the agent-writable
 # front of PATH) and (2) hands the child a MINIMAL environment — PATH/HOME/XDG
 # plus gh's own auth/network vars — instead of the gateway's full env, so
 # unrelated secrets (AWS/Slack/SSH) can never leak to a substituted or
@@ -133,7 +133,7 @@ def _gh_run(
     argv: list[str], *, timeout: float, input_text: str | None = None
 ) -> subprocess.CompletedProcess:
     """Single Issue Radar chokepoint for every ``gh`` call — delegates to the
-    shared hardened runner (``github_runner.run_gh``): trusted canonical gh as
+    shared hardened runner (``github_runner.run_gh``): validated gh as
     argv[0], minimal env, bounded timeout, and an SEL tool-invocation event on
     success, failure, and timeout. This wrapper keeps Issue Radar's error
     taxonomy (GhSetupError/GhCliError) so routes and the connect dialog are

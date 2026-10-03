@@ -954,7 +954,7 @@ the parent RUN and needs its id.
 
 - **Spawn hardening**: All `gh` calls funnel through `_gh_run`, a thin wrapper
   over the shared hardened runner (`kiro_crew.github_runner.run_gh`), which
-  resolves a canonical `gh` via `github_runner.resolve_gh`
+  resolves a validated `gh` via `github_runner.resolve_gh`
   (`KIROCREW_ISSUE_RADAR_GH` override, then `KIROCREW_GH_BIN`, then the
   well-known install dirs, then the ambient `PATH`) and validates it (and every
   parent) with `github_runner.validate_provider_executable`. The default policy
@@ -975,7 +975,7 @@ the parent RUN and needs its id.
   audit once (`github_runner.py::run_gh`), covering every caller.
 - **Every provider has the same chokepoint, one per CLI.** `gitlab_client._glab_run`
   and `azure_client._az_run` mirror `_gh_run`: one function every spawn passes
-  through, argv[0] replaced with the validated canonical binary (resolved through
+  through, argv[0] replaced with the validated binary (resolved through
   the shared `source_providers.provider_executable_candidates` +
   `_validate_provider_executable` policy, with `KIROCREW_ISSUE_RADAR_GLAB` /
   `KIROCREW_ISSUE_RADAR_AZ` as the override), a list argv rather than `shell=True`,

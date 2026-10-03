@@ -470,7 +470,7 @@ def _reject_reparsed_launcher_args(az: str, args: list[str]) -> None:
 
 def _az_run(argv: list[str], *, host: str, timeout: float) -> subprocess.CompletedProcess:
     """Single spawn chokepoint for every ``az`` call -- replaces argv[0] with the
-    trusted canonical az and passes the minimal env for the resolved host.
+    validated az and passes the minimal env for the resolved host.
 
     Order matters: the host is re-resolved, the binary is re-validated, the
     arguments are checked against the resolved launcher's parser, and the

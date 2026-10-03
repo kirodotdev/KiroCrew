@@ -414,7 +414,7 @@ async def _run_provider(
     # ``sandboxed_spawn_argv`` below owns that policy (fail closed unless the
     # operator set ``agent.sandbox_allow_unsandboxed_exec``). Every other bound
     # is platform-independent and still applies: the allowlisted executable, the
-    # validated resolved path, the strict env allowlist with a pinned PATH, the
+    # validated launch path, the strict env allowlist with a pinned PATH, the
     # output cap, the timeout and the SEL audit.
     try:
         # Off the loop: resolution walks every candidate dir and stats the whole
