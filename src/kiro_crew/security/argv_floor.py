@@ -416,7 +416,9 @@ def _self_floor_can_fire(text_lower: str) -> bool:
     return bool(_INLINE_DYNAMIC_EXEC_RE.search(stripped))
 
 
-def _is_credential_mint(text_lower: str, *, raw_text: "str | None" = None) -> bool:
+def _is_credential_mint(
+    text_lower: str, *, raw_text: "str | None" = None, _allow_neutralize: bool = True
+) -> bool:
     """True if *text_lower* invokes the ``kirocrew token`` credential mint.
 
     The mint prints a signed dashboard access URL, so it is the escalation path
@@ -521,6 +523,22 @@ def _is_credential_mint(text_lower: str, *, raw_text: "str | None" = None) -> bo
                 if depth <= 0 and _ends_argv(later):
                     break
                 depth = max(depth, 0)
+    # Quote-aware NEUTRALIZED pass.  The forward verb scan above bounds the argv
+    # with ``_substitution_depth_delta``, which miscounts a QUOTED ``)`` in a
+    # de-quoted ``$(true ')' ; true)`` as a real closer and stops at the decoy
+    # ``;`` before the verb -- missing ``kirocrew $(true ')' ; true) token``,
+    # which bash runs as ``kirocrew token``.  Re-run THIS SAME adjudication over
+    # each payload source with every substitution span collapsed to one inert
+    # word (the empty-output generator bash runs), reusing all of the core's
+    # resolution.  ``_allow_neutralize`` stops recursion; the first pass still
+    # catches a verb hidden INSIDE a span (``T=$(printf token); kirocrew $T``).
+    if _allow_neutralize:
+        for _src in _shell_payload_sources(text_lower):
+            neutralized = _shell_normalizer._neutralize_substitution_spans(_src)
+            if neutralized != _src and _is_credential_mint(
+                neutralized, raw_text=neutralized, _allow_neutralize=False
+            ):
+                return True
     return False
 
 
@@ -842,7 +860,7 @@ def _bare_kill_raw_bodies(source: str) -> "list[str]":
     return bodies
 
 
-def _is_self_kill(text_lower: str) -> bool:
+def _is_self_kill(text_lower: str, _allow_neutralize: bool = True) -> bool:
     """True if *text_lower* terminates a Kiro Crew process.
 
     Two shapes, matched separately because the two kill families take different
@@ -973,6 +991,19 @@ def _is_self_kill(text_lower: str) -> bool:
                     _shell_normalizer._resolved_word_view(word)
                 ):
                     return True
+    # Quote-aware NEUTRALIZED pass (same rationale as ``_is_credential_mint``):
+    # the by-name window's ``_substitution_depth_delta`` bound miscounts a QUOTED
+    # ``)`` in a decoy span and stops before the target name, missing
+    # ``pkill -f $(true ')' ; true) kirocrew`` (bash runs ``pkill -f kirocrew``).
+    # Re-run THIS SAME adjudication over each payload source with spans collapsed
+    # to one inert word, reusing the core's resolution.  The first pass still
+    # catches a name INSIDE a body (``kill $(pgrep -f kirocrew)``);
+    # ``_allow_neutralize`` stops recursion.
+    if _allow_neutralize:
+        for _src in _shell_payload_sources(text_lower):
+            neutralized = _shell_normalizer._neutralize_substitution_spans(_src)
+            if neutralized != _src and _is_self_kill(neutralized, _allow_neutralize=False):
+                return True
     return False
 
 

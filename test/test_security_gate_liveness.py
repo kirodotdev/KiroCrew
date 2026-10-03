@@ -158,7 +158,13 @@ def _url_payload_command(n: int) -> str:
 #: added here fails this gate and has to be re-pinned deliberately, with its reason
 #: written above. The guards that detect a monolith growing back are the per-file cap
 #: and the facade's share below, and both must stay untouched.
-_PACKAGE_LINE_BUDGET = 28_399
+#:
+#: Re-pinned for the quote-aware neutralize pass on the self-protection floors
+#: (``_neutralize_substitution_spans`` plus the per-payload re-adjudication in
+#: ``argv_floor``'s mint and kill checks): the de-quoted argv windows could not see a
+#: substitution-span decoy whose quoted ``)`` closes the window early, so the floors
+#: re-scan a copy with each span collapsed to one inert word.
+_PACKAGE_LINE_BUDGET = 28_619
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
