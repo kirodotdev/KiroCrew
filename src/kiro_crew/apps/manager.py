@@ -45,6 +45,7 @@ from kiro_crew.config.loader import (
     config_dir,
     config_local_path,
     config_path,
+    read_config_text,
     update_config_locked,
 )
 from kiro_crew.loop_lock import LoopBoundLock
@@ -1803,7 +1804,7 @@ def trust_grant_removal_blocked(name: str) -> str | None:
     local = config_local_path()
     if local.is_file():
         try:
-            raw_local = json.loads(local.read_text(encoding="utf-8"))
+            raw_local = json.loads(read_config_text(local))
         except (OSError, UnicodeError, json.JSONDecodeError):
             raw_local = {}  # the loader ignores an unreadable overlay, so do we
         agent_local = raw_local.get("agent") if isinstance(raw_local, dict) else None
@@ -1817,7 +1818,7 @@ def trust_grant_removal_blocked(name: str) -> str | None:
     path = config_path()
     if path.is_file():
         try:
-            json.loads(path.read_text(encoding="utf-8"))
+            json.loads(read_config_text(path))
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:
             # Report rather than stay silent: a quiet bail here is precisely the
             # "uninstalled but still trusted" state the caller must not reach. The
@@ -1860,7 +1861,7 @@ def _drop_trust_grant(name: str) -> None:
     if not path.is_file():
         return
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw = json.loads(read_config_text(path))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         # RAISE rather than return: a silent bail here is precisely the
         # "uninstalled but still trusted" state the caller must not reach. The
@@ -1970,7 +1971,7 @@ def _has_trust_grant(name: str) -> bool:
     if not path.is_file():
         return False
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw = json.loads(read_config_text(path))
     except (OSError, UnicodeError, json.JSONDecodeError):
         return False
     if not isinstance(raw, dict):
@@ -1988,7 +1989,7 @@ def _trust_grant_repository(name: str) -> str:
     if not path.is_file():
         return ""
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw = json.loads(read_config_text(path))
     except (OSError, UnicodeError, json.JSONDecodeError):
         return ""
     agent_raw = raw.get("agent") if isinstance(raw, dict) else None
@@ -2005,7 +2006,7 @@ def _trust_grant_local(name: str) -> bool:
     if not path.is_file():
         return False
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw = json.loads(read_config_text(path))
     except (OSError, UnicodeError, json.JSONDecodeError):
         return False
     agent_raw = raw.get("agent") if isinstance(raw, dict) else None

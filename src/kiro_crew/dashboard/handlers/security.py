@@ -71,6 +71,7 @@ from kiro_crew.config.loader import (
     config_local_path,
     config_path,
     denied_commands_path,
+    read_config_text,
     update_config_locked,
 )
 from kiro_crew.dashboard.handlers.agents import _get_config_lock
@@ -1028,7 +1029,7 @@ def _overlay_owned_trust_settings() -> list[str]:
     if not path.is_file():
         return []
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw = json.loads(read_config_text(path))
     except (OSError, UnicodeError, json.JSONDecodeError):
         # Unreadable overlay: the loader ignores it, so config.json IS effective.
         # Refusing here would block a legitimate revoke on an unrelated broken file.
@@ -1056,7 +1057,7 @@ async def _preflight_agent_config_mutable() -> None:
         path = config_path()
         if path.is_file():
             try:
-                existing = json.loads(path.read_text(encoding="utf-8"))
+                existing = json.loads(read_config_text(path))
             except (OSError, UnicodeError, json.JSONDecodeError) as exc:
                 raise ConfigCorruptError(f"{path} is unreadable: {exc}") from exc
             if not isinstance(existing, dict):
