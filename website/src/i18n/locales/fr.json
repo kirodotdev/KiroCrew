@@ -17967,5 +17967,8 @@
     "resolve_explanation": "Conservez la valeur actuelle. Appliquer enregistre cette décision et clôt ses propositions en attente.",
     "forget_count": "Oublier les souvenirs sélectionnés : {{count}}",
     "retry_preview_page": "Réessayer la page d’aperçu"
+  },
+  "queueActions": {
+    "teardownPending": "Le tour précédent est encore en cours d’arrêt. Votre message est en attente. Réessayez Envoyer maintenant dans un instant."
   }
 }

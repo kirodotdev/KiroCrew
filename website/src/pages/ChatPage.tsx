@@ -3749,7 +3749,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // A busy turn: steer into it, answer its question card, stop it, and the queued-message cards.
   const {
     queuedMessages, systemDeliveryCount, steer, stopTurn, keepQuestionAnswer, answerQuestionCard,
-    handleCancelQueued, handleInterruptQueued, handleEditQueued, handleReorderQueued, queuePendingIds,
+    handleCancelQueued, handleInterruptQueued, handleEditQueued, handleReorderQueued, queuePendingIds, queueInterruptNotice, dismissQueueInterruptNotice,
   } = useBusyTurnControls({
     activeSlot,
     currentSlot,
@@ -5402,6 +5402,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             onError={setUploadError}
           />
         )}
+        <ErrorNotice message={queueInterruptNotice} onDismiss={dismissQueueInterruptNotice} askAgent testId="queue-interrupt-notice" />
         <ChatPaneNotices
           uploadHint={uploadHint}
           setUploadHint={setUploadHint}

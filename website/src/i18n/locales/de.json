@@ -17719,5 +17719,8 @@
     "resolve_explanation": "Aktuellen Wert behalten. Anwenden speichert diese Entscheidung und schließt ausstehende Vorschläge.",
     "forget_count": "Ausgewählte Erinnerungen vergessen: {{count}}",
     "retry_preview_page": "Vorschauseite erneut laden"
+  },
+  "queueActions": {
+    "teardownPending": "Der vorherige Durchlauf wird noch beendet. Deine Nachricht bleibt in der Warteschlange. Versuche gleich erneut „Jetzt senden“."
   }
 }
