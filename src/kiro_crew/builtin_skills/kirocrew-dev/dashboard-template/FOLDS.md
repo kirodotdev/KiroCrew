@@ -146,11 +146,12 @@ Moved by: `approval/decided`, `approval/requested`.
 
 Which children this session dispatched, and for each one what happened, how long it ran and what it cost.
 
-Moved by: `subagent/completed`, `subagent/failed`, `subagent/spawned`.
+Moved by: `subagent/completed`, `subagent/dismissed`, `subagent/failed`, `subagent/spawned`.
 
 | Field | Type | Optional |
 |---|---|---|
 | `by_id` | `dict` | no |
+| `dismissed` | `int` | no |
 | `omitted` | `int` | no |
 | `running` | `int` | no |
 | `running_exact` | `bool` | no |

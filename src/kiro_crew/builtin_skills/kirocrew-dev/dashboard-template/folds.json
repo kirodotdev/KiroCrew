@@ -389,6 +389,7 @@
       "advertised": true,
       "affects": [
         "subagent/completed",
+        "subagent/dismissed",
         "subagent/failed",
         "subagent/spawned"
       ],
@@ -397,6 +398,11 @@
         {
           "name": "by_id",
           "type": "dict",
+          "optional": false
+        },
+        {
+          "name": "dismissed",
+          "type": "int",
           "optional": false
         },
         {

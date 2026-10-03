@@ -4679,21 +4679,69 @@ class SubagentManager:
                 self._clear_report_failure(snapshot)
             elif owner:
                 self.discard_report_failures(info.parent_session_key, owner)
-        # The pop is only half of a dismissal. The panel's durable half reads run
-        # folders, so without a record of its own the next rebuild found this
-        # run's folder and sent the card again -- the dismissal lasted exactly as
-        # long as the process. Recorded here rather than in the route so the two
-        # halves cannot come apart, and OFF the loop, because the record is a
-        # synchronous file write and this is a coroutine.
+        # The pop is only half of a dismissal, and the panel's durable half reads
+        # neither the manager nor the folder: it folds the session's crew log. So
+        # the dismissal is recorded in BOTH places here, in one coroutine, so the
+        # halves cannot come apart -- a route that wrote only one of them would
+        # clear the card from live state and leave the fold still offering it.
         #
         # Written BEFORE the pop, because the pop is the PUBLISH. With the write
         # second, an unwritable store still popped the run and still answered
         # "delivered", which the DELETE route reports as success -- and the card
         # came back on the next reconnect with nothing to explain it. A failed
-        # write now returns the retryable result this coroutine already uses
-        # above, leaving the run in the manager so the operator can dismiss it
-        # again. The two falsy cases are NOT the same: a run with no folder has
-        # nothing durable to resurrect its card, so its dismissal stands.
+        # write returns the retryable result this coroutine already uses above,
+        # leaving the run in the manager so the operator can dismiss it again.
+        #
+        # The folder write is OFF the loop, because it is a synchronous file write
+        # and this is a coroutine; its two falsy cases are NOT the same, since a
+        # run with no folder has nothing durable to resurrect its card, so its
+        # dismissal stands. The log write enqueues, so it needs no thread; its unit
+        # search does read files, so that part goes to a thread.
+        #
+        # The unit is found by SEARCHING the slot's logs for the child's row, not
+        # from the emitter's pin: this method waits for the terminal report, whose
+        # ``finally`` releases that pin, so by here every finished child has none.
+        # Nor from the slot's current session id, which is the unit the slot is
+        # landing work in now and not necessarily the one a child dispatched before
+        # a reset went to. A child no unit holds is not a failure -- there is no
+        # folded card to clear -- so it does not hold the pop.
+        #
+        # The log append is WAITED on, on the same terms the dismiss route's other
+        # arm uses, because the queue returns as soon as the entry is handed over
+        # and the entry can still be refused at the buffer's memory ceiling. A run
+        # whose folder is later reclaimed has only this record, so a pop on an
+        # uncommitted append is the same published-too-early failure the folder
+        # write above is ordered to avoid.
+        from kiro_crew.crew_log import emit as crew_log_emit
+        from kiro_crew.crew_log.resolve import UnitSearchFailed, unit_holding_child
+        from kiro_crew.dashboard.chat_utils import subagent_event_slot
+
+        if crew_log_emit.enabled():
+            try:
+                unit = await asyncio.to_thread(
+                    unit_holding_child,
+                    subagent_event_slot(info.parent_session_key),
+                    agent_id,
+                )
+            except UnitSearchFailed:
+                # The store would not say whether a unit holds this child, which is
+                # not the same as none holding it. Popping here would report a
+                # dismissal that was never even looked for, and the card returns
+                # once the store recovers.
+                logger.debug(
+                    "crew log: the unit search for %s failed, so the dismissal is "
+                    "left retryable rather than published",
+                    agent_id,
+                    exc_info=True,
+                )
+                return "pending"
+            if unit and not await crew_log_emit.awaiting_commit(
+                lambda on_settled: crew_log_emit.on_subagent_dismissed(
+                    unit, agent_id=agent_id, on_settled=on_settled
+                ),
+                what=f"the panel dismissal for {agent_id}",
+            ):
+                return "pending"
         outcome = await asyncio.to_thread(record_panel_dismissal_outcome, agent_id)
         if outcome == DISMISSAL_FAILED:
             return "pending"

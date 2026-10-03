@@ -86,3 +86,67 @@ def unit_for_session_key(sessions: Any, session_key: str) -> str:
         return session_id_of(get_provider(f"dashboard:{session_key}"))
     except Exception:
         return UNKNOWN
+
+
+class UnitSearchFailed(Exception):
+    """A slot's units, or one unit's fold, could not be read.
+
+    Raised rather than answered, because the thing a caller wants to know is
+    whether a later fact about a child has a unit to go into -- and "no unit holds
+    this child" and "the store would not say" are opposite answers to that. A
+    caller publishing on the strength of the search (dropping a run from live
+    state, telling a user the card is gone) must treat this as retryable; one
+    merely reading can catch it and show nothing.
+    """
+
+
+def unit_holding_child(slot_key: str, agent_id: str) -> str:
+    """The unit of *slot_key* whose ``subagents`` fold holds *agent_id*, or ``""``.
+
+    Asked by a caller that must write a LATER fact about a child into the unit that
+    recorded the child -- a dismissal is the case. The alternatives both name the
+    wrong unit for a child dispatched before a reset: the emitter's in-process pin
+    is released by the terminal report, so it answers nothing once the run has
+    finished, and :func:`unit_for_session_key` answers the unit the slot is landing
+    work in now, which the module contract above says may not be the one an earlier
+    fact went to.
+
+    The slot's units come from :func:`session_ledger.crew_log_units`, which is the
+    resolver that applies the slot's permanent-delete exclusion list; a slot key is
+    reused, so resolving through the raw store index would write a later fact into
+    a deleted conversation's log. Reversed, because that resolver answers
+    oldest-first for a fold that applies later updates over earlier ones, while a
+    search for one child's row is answered soonest from the newest unit.
+
+    Searches the fold rather than the raw entries because the fold is what the
+    reader of this answer draws, and it already carries the retention and dismissal
+    rules: a row the fold stopped offering answers ``""``, which is the right answer
+    for a dismissal, since the card is already cleared and a second entry would
+    change nothing.
+
+    ``""`` ONLY when no unit holds the child, which a caller must not read as a
+    failure: a child whose dispatch this slot's logs never recorded has no row for
+    the later fact to be about. A store that could not be read raises
+    :class:`UnitSearchFailed` instead, because answering ``""`` there reports an
+    obligation discharged that was never even looked for.
+    """
+    from kiro_crew.crew_log.projection import fold_session
+    from kiro_crew.session_ledger import crew_log_units
+
+    if not agent_id or not slot_key:
+        return ""
+    try:
+        units = tuple(reversed(crew_log_units(slot_key, strict=True)))
+    except Exception as exc:
+        raise UnitSearchFailed(f"slot {slot_key!r}'s units could not be listed") from exc
+    for unit in units:
+        try:
+            rows = fold_session(unit, names=("subagents",)).projection("subagents").value
+        except Exception as exc:
+            # Not skipped: a unit whose fold would not read is a unit that MIGHT
+            # hold the row, so continuing would answer "no unit holds it" from a
+            # search that did not finish.
+            raise UnitSearchFailed(f"unit {unit!r}'s subagents fold could not be read") from exc
+        if agent_id in (rows.get("by_id") or {}):
+            return unit
+    return ""

@@ -2942,6 +2942,7 @@ def _write(
     src: str = _SRC_ACP,
     after: Callable[[], None] | None = None,
     on_permanent_drop: Callable[[], None] | None = None,
+    on_settled: "Callable[[bool], None] | None" = None,
     ignorable: bool = False,
 ) -> None:
     """Queue one entry.
@@ -2960,29 +2961,52 @@ def _write(
 
     ``after`` runs once the append lands or the writer definitively drops it. A
     retryable failure leaves it attached to the retained job.
+
+    ``on_settled`` is handed the same answer with the OUTCOME attached: True only
+    when this entry's ``append`` returned. It is for a caller that must not
+    publish before the append commits, and it carries :class:`_TreeSettle`'s
+    reasoning -- absence of a permanent drop is not success, because an entry
+    rejected at the buffer's memory ceiling finishes with no drop hook at all,
+    which is precisely the wedged-writer condition the ceiling exists for.
     """
     if not session_id or not enabled():
         if after is not None:
             after()
+        if on_settled is not None:
+            # No record was asked for, so none is owed. A caller that must not
+            # publish without one reads False and says so.
+            on_settled(False)
         return
+
+    settle = _tree_settle_hooks(on_settled) if on_settled is not None else None
 
     def _job() -> None:
         log = _handle(session_id)
         if log is None:
+            if settle is not None:
+                settle.fail()
             return
         entry = log.append(entry_type, data, src=src, ignorable=ignorable)
+        if settle is not None:
+            settle.wrote()
         # Here rather than at each emitter: this is the append every ordinary entry type
         # goes through, so an entry type that becomes eager later is covered without a
         # second edit. The hook's own membership test drops the types no eager fold
         # names, which is nearly all of them.
         _note_eager(entry, entry_type, session_id, data)
 
+    def _after() -> None:
+        if settle is not None:
+            settle.after()
+        if after is not None:
+            after()
+
     _submit(
         _job,
         f"appending {entry_type}",
         session_id,
-        after=after,
-        on_permanent_drop=on_permanent_drop,
+        after=_after if (settle is not None or after is not None) else None,
+        on_permanent_drop=settle.fail if settle is not None else on_permanent_drop,
     )
 
 
@@ -3116,6 +3140,63 @@ def _tree_settle_hooks(on_settled: "Callable[[bool], None] | None") -> _TreeSett
     """One :class:`_TreeSettle` per emitted entry. Trivial, and named so the two tree
     emitters share the wiring rather than repeating it."""
     return _TreeSettle(on_settled)
+
+
+#: How long :func:`awaiting_commit` waits before it answers False. Bounded because a
+#: retryable write stays queued against a filesystem that may never answer, and the
+#: callers are user-facing requests. Matched to :func:`flush`'s own default, the other
+#: place that waits on this writer.
+COMMIT_WAIT_SECONDS = 5.0
+
+
+async def awaiting_commit(
+    emit_one: "Callable[[Callable[[bool], None]], None]",
+    *,
+    what: str,
+    timeout: float = COMMIT_WAIT_SECONDS,
+) -> bool:
+    """Queue one append through *emit_one* and wait, bounded, for it to COMMIT.
+
+    For a caller that will PUBLISH on the strength of the append -- tell a user the
+    card is gone, drop a run from live state. This queue returns as soon as the
+    entry is handed over, so publishing on the handover publishes a record the
+    writer may still drop, and when the log is the only record of the fact there is
+    then nothing left to explain the reversal and nothing for a retry to act on.
+
+    *emit_one* is handed the ``on_settled`` callback and must pass it to exactly one
+    emitter call, or invoke it itself when it decides there is nothing to queue --
+    otherwise this waits out the whole bound for an answer that is not coming.
+
+    False on a drop AND on a timeout, which are the same thing to the caller: the
+    record is not there to publish from. A timeout is not a failure of the append,
+    which may still land later, so the caller's own answer should be retryable
+    rather than final.
+
+    Must be called from a running loop: the callback arrives on the writer's thread
+    and is marshalled back onto this one.
+    """
+    loop = asyncio.get_running_loop()
+    settled: "asyncio.Future[bool]" = loop.create_future()
+
+    def _settle(wrote: bool) -> None:
+        def _resolve() -> None:
+            # Guarded because the timeout can win the race, and setting a result on
+            # a future that already has one raises.
+            if not settled.done():
+                settled.set_result(wrote)
+
+        loop.call_soon_threadsafe(_resolve)
+
+    emit_one(_settle)
+    try:
+        return await asyncio.wait_for(settled, timeout=timeout)
+    except asyncio.TimeoutError:
+        logger.warning(
+            "crew log: %s was not committed within %.1fs; reporting it as not recorded",
+            what,
+            timeout,
+        )
+        return False
 
 
 def on_session_adopted(
@@ -5366,6 +5447,7 @@ def on_subagent_spawned(
     agent_id: str,
     agent: str = "",
     model: str = "",
+    task: str = "",
     scope: Any = None,
 ) -> None:
     """Record a child this session dispatched.
@@ -5392,6 +5474,19 @@ def on_subagent_spawned(
     turn that never existed and match no ``turn/started``. The child is still
     recorded: it is a real child of that session, and losing it to keep a field
     populated would be the worse trade.
+
+    ``task`` is what the child was asked to do, redacted and clipped on the same
+    terms as ``plan/updated``'s item text -- the other place this module records
+    text a person wrote. It is the one thing a reader needs to tell two children
+    apart that is not derivable from anything else in the entry, and a surface
+    rebuilding a child's card after the dispatching process is gone has nowhere
+    else to read it from.
+
+    It is written only when non-empty, so a dispatch that carried no task text
+    leaves the field ABSENT rather than present-and-empty. The two are different
+    facts to a reader: absent is "this log does not say", which is also what every
+    log written before the field reads as, and a surface draws no task line for
+    it. An empty string would claim the dispatch asked for nothing.
     """
     data: dict[str, Any] = {"agent_id": agent_id}
     if turn:
@@ -5400,6 +5495,9 @@ def on_subagent_spawned(
         data["agent"] = agent
     if model:
         data["model"] = model
+    asked = _clip(_safe_text(task), _MAX_SHORT_TEXT)
+    if asked:
+        data["task"] = asked
     if isinstance(scope, dict):
         data["scope"] = {
             "memory": bool(scope.get("memory")),
@@ -5419,6 +5517,74 @@ def on_subagent_steered(session_id: str, *, agent_id: str, mode: str = "") -> No
     if mode:
         data["mode"] = mode
     _write(session_id, "subagent/steered", data, src=_SRC_GATEWAY)
+
+
+def on_subagent_dismissed(
+    session_id: str,
+    *,
+    agent_id: str,
+    on_settled: "Callable[[bool], None] | None" = None,
+) -> None:
+    """Record that the user cleared a child's card from the panel.
+
+    Written into the PARENT's log, like a steer, and for the same reason: the
+    child has no crew log of its own and the act belongs to the session the panel
+    was showing.
+
+    It lives in the log rather than in a registry beside it because the panel's
+    durable half is a FOLD of this log. A dismissal held anywhere else is a second
+    record of a fact about this session, and the two are reclaimed on different
+    schedules -- which is not hypothetical: the registry that held it was keyed on
+    the run's folder at both ends, so a dismissed card came back the moment that
+    folder was pruned while the log still carried the child.
+
+    ``on_settled`` is handed True only once the append has COMMITTED. A caller that
+    will tell the user the card is gone needs that, because this is the only record
+    of the dismissal when the run's folder has already been reclaimed: the queue
+    returns as soon as the entry is handed over, so publishing on the handover
+    reports a dismissal the next reconnect can undo, with nothing left to explain
+    it and nothing for a retry to act on.
+
+    Opens and closes nothing. A dismissal is not an ending, and the child keeps
+    whatever outcome its own closer recorded; a user may also clear a card while
+    the child is still running, so this can precede any closer.
+    """
+    _write(
+        session_id,
+        "subagent/dismissed",
+        {"agent_id": agent_id},
+        src=_SRC_GATEWAY,
+        on_settled=on_settled,
+    )
+
+
+def dismiss_child(agent_id: str, *, on_settled: "Callable[[bool], None] | None" = None) -> str:
+    """Record a dismissal against the session this process dispatched *agent_id* from.
+
+    Returns that session's id, or ``""`` when this process cannot name one -- the
+    emitter is off, or the spawn pin for this child is gone, which is what a
+    gateway restart leaves behind. A caller that must record the dismissal some
+    other way reads the empty answer as "nothing was written here".
+
+    The pin rather than a lookup, for the reason it exists: it is the session the
+    child's own ``subagent/spawned`` was written to, so the dismissal lands in the
+    log that holds the row it is about. :func:`child_origin` is gated on that entry
+    having been opened, so a child whose spawn was never recorded answers ``""``
+    rather than putting a dismissal in a log with no dispatch to match it.
+
+    ``on_settled`` is passed to :func:`on_subagent_dismissed` and so reports
+    whether the append COMMITTED. The returned session id says only that one was
+    queued: a caller publishing a dismissal to the user needs the callback, since
+    the empty-string answer and a queued-then-dropped append are the same outcome
+    from the user's side and only one of them is visible in the return value.
+    """
+    if not enabled():
+        return ""
+    session_id, _turn = child_origin(agent_id)
+    if not session_id:
+        return ""
+    on_subagent_dismissed(session_id, agent_id=agent_id, on_settled=on_settled)
+    return session_id
 
 
 def on_subagent_completed(

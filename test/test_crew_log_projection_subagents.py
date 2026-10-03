@@ -63,9 +63,12 @@ def _spawned(
     turn: int = 1,
     agent: str = "kirocrew-worker",
     model: str = "opus",
+    task: str | None = None,
     scope: dict | None = None,
 ) -> None:
     data: dict = {"agent_id": agent_id, "turn": turn, "agent": agent, "model": model}
+    if task is not None:
+        data["task"] = task
     if scope is not None:
         data["scope"] = scope
     handle.append("subagent/spawned", data, src=GATEWAY)
@@ -557,28 +560,48 @@ def test_an_orphan_closer_alone_leaves_running_exact():
 def test_a_row_retains_only_fields_something_reads():
     """A field kept against a reader that does not exist is state paid for on every copy.
 
-    The panel draws agent, model, outcome, ms, credits and -- for a child that did not
-    finish -- reason; the render orders by ``seq_spawned``. Nothing reads the child's
-    inherited scope, its spawn time, the turn that asked or a steer count, so none of those
-    is retained.
+    The panel draws agent, model, task, outcome, ms, credits and -- for a child that did
+    not finish -- reason; the render orders by ``seq_spawned`` and dates the row by
+    ``started_ms``, which is what lets a reader order rows from SEVERAL sessions and
+    bound them by age. ``dismissed`` is what stops the render offering a card the user
+    cleared. Nothing reads the child's inherited scope, the turn that asked or a steer
+    count, so none of those is retained.
     """
     handle = _log()
     _opened(handle)
     _spawned(handle, "a-1", scope={"memory": True, "lessons": True, "project": False})
 
     row = _fold()["by_id"]["a-1"]
+    # The RENDERED row, which does not carry ``dismissed``: a row the user cleared is
+    # not offered at all, so a flag saying so would have no reader on this side.
     assert set(row) == {
         "agent_id",
         "seq_spawned",
+        "started_ms",
         "agent",
         "model",
+        "task",
         "outcome",
         "ms",
         "credits",
         "reason",
     }
+    assert set(crew_log._FOLDS["subagents"].start()["by_id"]) == set()
+    retained = crew_log._FOLDS["subagents"]
+    state = retained.start()
+    retained.step(
+        state,
+        crew_log.Entry(
+            type="subagent/spawned", seq=1, time=10, src=GATEWAY, data={"agent_id": "a-1"}
+        ),
+    )
+    assert set(state["by_id"]["a-1"]) == set(row) | {"dismissed"}
     # And the state carries no container the render does not read.
-    assert set(crew_log._FOLDS["subagents"].start()) == {"by_id", "omitted", "totals"}
+    assert set(crew_log._FOLDS["subagents"].start()) == {
+        "by_id",
+        "omitted",
+        "totals",
+    }
 
 
 @pytest.mark.parametrize("planted", [True, "2.0", None, {"n": 1}, [2.0]])
@@ -634,13 +657,21 @@ def test_the_fold_is_eager_on_the_session_warm_path():
     assert "subagents" not in crew_log.EAGER_SLOT_FOLD_NAMES
 
 
-def test_the_fold_declares_the_three_subagent_types_it_reads():
+def test_the_fold_declares_the_four_subagent_types_it_reads():
+    """One opener, two closers, and the dismissal.
+
+    The dismissal is neither an opener nor a closer -- it is the user clearing a card --
+    but this fold is what the panel draws, so it is the fold that has to stop drawing
+    the row. ``subagent/steered`` stays out: a steer is an event about a child, and
+    nothing here is a count of them.
+    """
     fold = crew_log._FOLDS["subagents"]
     assert fold.affects == frozenset(
         {
             "subagent/spawned",
             "subagent/completed",
             "subagent/failed",
+            "subagent/dismissed",
         }
     )
 
@@ -690,3 +721,102 @@ def test_rows_render_in_dispatch_order():
     _spawned(handle, "a-second")
 
     assert list(_fold()["by_id"]) == ["z-first", "a-second"]
+
+
+class TestTheRowCarriesWhatACardNeeds:
+    """``task`` and ``started_ms``: the two row fields nothing else in the fold gives.
+
+    A surface rebuilding a child's card after the dispatching process is gone reads
+    them from here or from nowhere -- the task text lives in no other durable place,
+    and a cross-session list cannot be ordered by ``seq_spawned``, which is per log.
+    """
+
+    def test_the_task_the_child_was_asked_reaches_its_row(self):
+        handle = _log()
+        _opened(handle)
+        _spawned(handle, "a-1", task="audit the retry path")
+        _completed(handle, "a-1")
+
+        assert _fold()["by_id"]["a-1"]["task"] == "audit the retry path"
+
+    def test_a_log_written_before_the_field_reads_as_no_task_not_an_empty_claim(self):
+        """An older entry carries no ``task``, and the row says so with ``""``.
+
+        The distinction the consumer rests on: a card draws NO task line for this,
+        rather than a blank one. ``""`` is "this log does not say", which is what an
+        entry predating the field means; it is not a dispatch that asked for nothing.
+        """
+        handle = _log()
+        _opened(handle)
+        _spawned(handle, "old-1")  # no `task` key at all, as every older writer wrote
+        _completed(handle, "old-1")
+
+        row = _fold()["by_id"]["old-1"]
+        assert row["task"] == ""
+        # And the row is otherwise WHOLE, so the absence costs the card only the one
+        # line: an older log still rebuilds its outcome, duration and agent.
+        assert (row["outcome"], row["ms"], row["agent"]) == ("completed", 1000, "kirocrew-worker")
+
+    def test_a_non_string_task_is_not_published_as_one(self):
+        """The declaration refuses one at APPEND, so the fold is tested directly.
+
+        ``append`` validates ``task`` against the declared string type, so a dict
+        cannot reach the file through the writer. The fold still screens it,
+        because the step also runs over bytes the writer never saw -- a damaged or
+        planted line -- and a field it publishes unscreened is one a reader draws.
+        """
+        with pytest.raises(lg.errors.CrewLogError):
+            _log().append("subagent/spawned", {"agent_id": "bad-1", "task": {"a": 1}}, src=GATEWAY)
+
+        fold = crew_log._FOLDS["subagents"]
+        state = fold.start()
+        fold.step(
+            state,
+            crew_log.Entry(
+                type="subagent/spawned",
+                seq=1,
+                time=10,
+                src=GATEWAY,
+                data={"agent_id": "bad-1", "task": {"a": 1}},
+            ),
+        )
+        assert fold.render(state)["by_id"]["bad-1"]["task"] == ""
+
+    def test_the_row_is_dated_by_the_spawn_entrys_own_stamp(self):
+        """The envelope's clock, not a field the entry carries.
+
+        A ``started`` in ``data`` would be a second clock a writer could disagree
+        with. This is the log's own stamp, which is why it needs no new field.
+        """
+        handle = _log()
+        _opened(handle)
+        _spawned(handle, "a-1")
+        _completed(handle, "a-1")
+
+        entries = [e for e in handle.iter_from(1) if e.type == "subagent/spawned"]
+        assert _fold()["by_id"]["a-1"]["started_ms"] == entries[0].time
+
+    def test_two_sessions_rows_are_comparable_on_that_stamp_where_seqs_are_not(self):
+        """The property the cross-session cap rests on.
+
+        Each log numbers its own seqs from 1, so two children dispatched in
+        different sessions can carry the SAME ``seq_spawned`` while one is plainly
+        older. The stamp is what orders them.
+        """
+        first = _log("s-one", slot="dashboard:1")
+        _opened(first)
+        _spawned(first, "one-1")
+        second = _log("s-two", slot="dashboard:2")
+        _opened(second)
+        _spawned(second, "two-1")
+
+        one = _rows_of("s-one")["one-1"]
+        two = _rows_of("s-two")["two-1"]
+        assert one["seq_spawned"] == two["seq_spawned"]
+        assert one["started_ms"] <= two["started_ms"]
+
+
+def _rows_of(unit_id: str) -> dict:
+    return (
+        crew_log.fold_session(unit_id, names=("subagents",)).projection("subagents").value["by_id"]
+    )

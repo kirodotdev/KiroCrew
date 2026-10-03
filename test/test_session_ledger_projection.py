@@ -924,7 +924,13 @@ def test_the_recorded_order_beats_a_backward_header_clock():
     assert sl._recorded_unit_order(SLOT) == (SESSION, LATER_SESSION)
 
     real = store.session_units_for_slot
-    store.session_units_for_slot = lambda slot: tuple(reversed(real(slot)))  # type: ignore[assignment]
+    # ``**kwargs`` because the real function takes ``strict``, which the caller
+    # under test forwards: a double that rejects it raises TypeError, which that
+    # caller's fail-closed handler turns into an empty record -- a failure that
+    # reads as a product regression rather than as a stale double.
+    store.session_units_for_slot = (  # type: ignore[assignment]
+        lambda slot, **kwargs: tuple(reversed(real(slot, **kwargs)))
+    )
     crew_log.forget_slot_folds()
     try:
         # No live session id, so ordering is all the fold has to go on.
@@ -1424,8 +1430,9 @@ def test_the_live_unit_applies_last_even_when_the_clock_went_backwards():
     # Report the units in the inverted order a backward clock produces.
     real = store.session_units_for_slot
 
-    def _inverted(slot: str) -> "tuple[str, ...]":
-        return tuple(reversed(real(slot)))
+    def _inverted(slot: str, **kwargs: object) -> "tuple[str, ...]":
+        """``**kwargs`` so ``strict`` passes through to the real function."""
+        return tuple(reversed(real(slot, **kwargs)))
 
     store.session_units_for_slot = _inverted  # type: ignore[assignment]
     crew_log.forget_slot_folds()

@@ -2457,17 +2457,21 @@ def _approvals_render(state: dict[str, Any]) -> dict[str, Any]:
 #: the level that can hold it.
 _SUBAGENT_OUTCOMES: Final[frozenset[str]] = frozenset({"completed", "failed", "stopped", "unknown"})
 
-#: Entry types ``subagents`` reads: one opener and two closers. ``subagent/steered`` is
-#: DECLARED in the session vocabulary and deliberately not read here -- a steer is an event
-#: about a child rather than a state of one, and nothing this fold answers for is a count of
-#: them. Leaving it out of ``affects`` is safe in the direction that matters: the set may be
-#: wider than the truth but never narrower, and a type the step ignores would cost a copy
-#: per entry for a value that never changes.
+#: Entry types ``subagents`` reads: one opener, two closers, and the dismissal. A
+#: dismissal is neither an opener nor a closer -- it is the user clearing a card -- but
+#: this fold is what the panel draws, so it is the fold that has to stop drawing the
+#: row. ``subagent/steered`` is DECLARED in the session vocabulary and deliberately not
+#: read here -- a steer is an event about a child rather than a state of one, and
+#: nothing this fold answers for is a count of them. Leaving it out of ``affects`` is
+#: safe in the direction that matters: the set may be wider than the truth but never
+#: narrower, and a type the step ignores would cost a copy per entry for a value that
+#: never changes.
 SUBAGENT_TYPES: Final[frozenset[str]] = frozenset(
     {
         "subagent/spawned",
         "subagent/completed",
         "subagent/failed",
+        "subagent/dismissed",
     }
 )
 
@@ -2569,8 +2573,19 @@ def _subagents_step(state: dict[str, Any], entry: Entry) -> None:
             # not the time: two children dispatched in one millisecond tie on a clock, and
             # a seq is what the log guarantees is ordered.
             "seq_spawned": entry.seq,
+            # The envelope's own stamp, NOT a field the entry carries -- the log already
+            # records when each line was written, so a ``started`` in ``data`` would be a
+            # second clock a writer could disagree with. It is kept because a reader
+            # assembling one list from SEVERAL sessions' folds has no common order
+            # otherwise: ``seq_spawned`` orders rows inside one log and says nothing
+            # across two. It also dates a row, which is what an age window needs.
+            "started_ms": entry.time,
             "agent": _as_str(data.get("agent")),
             "model": _as_str(data.get("model")),
+            # What the child was asked to do. ``""`` when the entry carried none, which
+            # includes every log written before the field existed -- a surface draws no
+            # task line for it rather than an empty one.
+            "task": _as_str(data.get("task")),
             "outcome": None,
             # ``None``, not 0, for the same reason ``credits`` is: a closer writes ``ms``
             # only when it measured a duration above zero, and crash-repair's closer writes
@@ -2578,7 +2593,27 @@ def _subagents_step(state: dict[str, Any], entry: Entry) -> None:
             "ms": None,
             "credits": None,
             "reason": "",
+            # Whether the user has cleared this child's card. Latches true and never
+            # back: a dismissal is an act, and the log does not un-record one.
+            "dismissed": False,
         }
+        return
+
+    if entry.type == "subagent/dismissed":
+        # The user clearing a card, which is neither an opener nor a closer: the row
+        # keeps whatever outcome its own closer recorded, and a dismissal may arrive
+        # before any closer for a child cleared while it was still running. Only the
+        # ROW moves -- nothing in ``totals`` does, because what the session dispatched
+        # and what it spent are not changed by the user hiding a card, and a spend
+        # figure that fell when someone tidied the panel would be wrong.
+        row = rows.get(agent_id) if agent_id else None
+        if row is None:
+            # A dismissal naming no retained row: the dispatch was omitted past the
+            # cap, or its opener never reached the file. Nothing is drawn for that
+            # child either way, so there is nothing to stop drawing and no counter
+            # for it -- a count nothing renders is state paid for on every copy.
+            return
+        row["dismissed"] = True
         return
 
     # A closer, and the type is matched EXPLICITLY rather than reached by falling through
@@ -2618,16 +2653,34 @@ def _subagents_step(state: dict[str, Any], entry: Entry) -> None:
 def _subagents_render(state: dict[str, Any]) -> dict[str, Any]:
     """The children this session dispatched, in dispatch order.
 
-    ``totals["spawned"]`` and ``by_id`` are allowed to DISAGREE, and ``omitted`` is
-    what reconciles them: ``spawned == len(by_id) + omitted``. A reader that wants to
-    know what the session did reads the total; one that wants per-child detail reads the
-    rows and is told, by a non-zero ``omitted``, that it is holding a window rather than
-    the whole list. Reporting only the retained count would silently shrink a long
-    session's history to the cap and look exact.
+    ``totals["spawned"]`` and ``by_id`` are allowed to DISAGREE, and two counts
+    reconcile them: ``spawned == len(by_id) + omitted + dismissed``. A reader that wants
+    to know what the session did reads the total; one that wants per-child detail reads
+    the rows and is told, by a non-zero ``omitted``, that it is holding a window rather
+    than the whole list, and by a non-zero ``dismissed`` that the user cleared some of
+    the cards. Reporting only the retained count would silently shrink a long session's
+    history to the cap and look exact.
+
+    A DISMISSED row is kept in the state and left out of ``by_id``. The row has to stay,
+    because a dismissal is an act the log does not un-record and a later closer still
+    lands on it; it has to leave ``by_id``, because this fold is what the panel draws and
+    the user cleared that card. ``totals`` never moves for a dismissal: what the session
+    dispatched and what it spent are facts about the session, so a spend figure that fell
+    when someone tidied the panel would be wrong.
 
     ``credits`` on a row is ``None`` when that child reported no charge, never ``0``.
     A surface drawing this has three states to draw, not two: a number, "no charge was
     reported", and a child that has not closed yet.
+
+    ``task`` is ``""`` when the dispatch recorded none, which is also what every log
+    written before the field reads as. A surface draws no task line for it rather than
+    an empty one: the log does not say what the child was asked, which is not the same
+    claim as its having been asked for nothing.
+
+    ``started_ms`` is the ``subagent/spawned`` entry's own envelope stamp. It is here
+    for a reader assembling ONE list out of several sessions' folds, which
+    ``seq_spawned`` cannot order -- seqs are per log -- and for dating a row against an
+    age window.
 
     ``running`` is the count still open, and it is derived from TWO floors because neither
     alone is right.
@@ -2647,25 +2700,38 @@ def _subagents_render(state: dict[str, Any]) -> dict[str, Any]:
     the larger of the two and stays exact.
     """
     rows = sorted(state["by_id"].values(), key=lambda row: row["seq_spawned"])
+    # The rows a surface draws: a dismissed card is one the user cleared, and the whole
+    # point of recording the dismissal here is that this fold stops offering the row.
+    # The dismissed ones stay in ``totals`` -- what the session dispatched and what it
+    # spent are facts about the session, and a spend figure that fell when someone
+    # tidied the panel would be wrong.
+    drawn = [row for row in rows if not row["dismissed"]]
+    dismissed = len(rows) - len(drawn)
     totals = dict(state["totals"])
     closed = sum(totals[outcome] for outcome in sorted(_SUBAGENT_OUTCOMES))
     # Counted, not emitted. An id list and the cap were both in this value with no reader:
     # the panel derives the open rows by filtering `by_id` for an absent outcome, which is
     # the same filter, so the list was a second spelling of something already there.
-    still_open = sum(1 for row in rows if row["outcome"] is None)
+    #
+    # Over the DRAWN rows, so a dismissed child still in flight puts no running pill on
+    # a panel that does not show it. The totals floor below still counts it, which is
+    # right: it is running whether or not anyone is looking.
+    still_open = sum(1 for row in drawn if row["outcome"] is None)
     return {
         "by_id": {
             row["agent_id"]: {
                 "agent_id": row["agent_id"],
                 "seq_spawned": row["seq_spawned"],
+                "started_ms": row["started_ms"],
                 "agent": row["agent"],
                 "model": row["model"],
+                "task": row["task"],
                 "outcome": row["outcome"],
                 "ms": row["ms"],
                 "credits": row["credits"],
                 "reason": row["reason"],
             }
-            for row in rows
+            for row in drawn
         },
         "running": max(still_open, totals["spawned"] - closed),
         # Whether that number is the answer or a FLOOR under it. It is a floor exactly when
@@ -2679,6 +2745,12 @@ def _subagents_render(state: dict[str, Any]) -> dict[str, Any]:
         # and is drawn as exact is the same class of lie as a truncated list drawn as whole.
         "running_exact": not (state["omitted"] > 0 and totals["closed_unmatched"] > 0),
         "omitted": state["omitted"],
+        # Retained rows this render is NOT offering, because the user cleared them. It
+        # is published rather than left implicit because it is the third term in the
+        # identity above: without it a reader checking
+        # ``spawned == len(by_id) + omitted`` sees it fail the moment anyone dismisses
+        # a card, and cannot tell a tidied panel from arithmetic the fold got wrong.
+        "dismissed": dismissed,
         "totals": totals,
     }
 
@@ -6151,14 +6223,18 @@ _FOLDS: Final[dict[str, _Fold]] = {
         _subagents_render,
         affects=SUBAGENT_TYPES,
         copy_state=_subagents_copy,
-        # Two past the base, one step per change to what this fold STORES: it dropped its
-        # own credits aggregate once ``usage`` was found to fold the same number from the
-        # same closers, then its duration aggregate once no reader could be named for it.
-        # Each step retires the savepoints written under the shape before it, which is
-        # exactly what the number is for. Every sibling stays at the base, because a bump
-        # here costs a cold fold to this fold alone -- see
+        # Three past the base, one step per change to what this fold STORES: it dropped
+        # its own credits aggregate once ``usage`` was found to fold the same number from
+        # the same closers, then its duration aggregate once no reader could be named for
+        # it, then it gained everything the panel needs to rebuild a child's card from
+        # this fold after the dispatching process is gone -- ``task`` and ``started_ms``
+        # per row, and a ``dismissed`` flag per row so a card the user cleared stays
+        # cleared. Those arrived together and are ONE step: the number
+        # retires the savepoints written under the shape before it, and a shape that
+        # changed once needs retiring once. Every sibling stays at the base, because a
+        # bump here costs a cold fold to this fold alone -- see
         # :data:`_FOLD_STATE_VERSION_BASE`.
-        state_version=_FOLD_STATE_VERSION_BASE + 2,
+        state_version=_FOLD_STATE_VERSION_BASE + 3,
     ),
     "class": _Fold(
         "class",

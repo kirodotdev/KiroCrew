@@ -287,8 +287,9 @@ subject -- this entry is that history (`monitor-architecture.md`).
 | Type | `data` | Emitter |
 |---|---|---|
 | `background/completed` | `{kind: title \| memory_consolidation \| summary \| dynamic_card, model?, provider?, tokens?, credits?, ms?}` | yes |
-| `subagent/spawned` | `{turn?, agent_id, agent?, model?, scope:{memory, lessons, project}}` — no `ref` yet, see below | yes |
+| `subagent/spawned` | `{turn?, agent_id, agent?, model?, task?, scope:{memory, lessons, project}}` — no `ref` yet, see below | yes |
 | `subagent/steered` | `{agent_id, mode: interrupt \| follow_up}` | yes |
+| `subagent/dismissed` | `{agent_id}` — the user cleared that child's card; neither an opener nor a closer | yes |
 | `subagent/completed` | `{agent_id, ms?}` — no `tokens`/`credits`, see below | yes |
 | `subagent/failed` | `{agent_id, reason?, outcome: failed \| stopped \| unknown, ms?}` — `unknown` is written only by the interrupted-tail repair | yes |
 

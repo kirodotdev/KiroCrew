@@ -158,6 +158,7 @@ CANONICAL: dict[str, dict] = {
         "scope": {"memory": True, "lessons": True, "project": False},
     },
     "subagent/steered": {"agent_id": "sub-9", "mode": "follow_up"},
+    "subagent/dismissed": {"agent_id": "sub-9"},
     "subagent/completed": {"agent_id": "sub-9", "ms": 41200},
     "subagent/failed": {
         "agent_id": "sub-9",
@@ -281,7 +282,12 @@ def test_every_type_written_today_is_declared_and_nothing_else_is():
     # The one past those is the crew webview's ``panel/published``, which joins its
     # siblings for the same reason they did: a panel is a record whose history matters,
     # and one overwritable document per crew could hold none of it.
-    assert len(SESSION_ENTRY_TYPES) == 34
+    #
+    # The one past THAT is ``subagent/dismissed``, for the same reason again: the
+    # Subagents panel's durable half is a fold of this log, so a card the user cleared
+    # has to be recorded here. It was held in a registry keyed on the run's folder, and
+    # when that folder was reclaimed first the dismissed card came back.
+    assert len(SESSION_ENTRY_TYPES) == 35
     # Nine types the vocabulary owns that nothing writes. Declaring one would state
     # a shape no writer produces, and the first emitter to land would have to
     # satisfy a contract written without it. They pass through undeclared instead.
@@ -867,10 +873,12 @@ def test_every_entry_a_real_turn_produces_validates():
         agent_id="sub-1",
         agent="kirocrew-worker",
         model="claude",
+        task="audit the retry path",
         scope={"memory": True, "lessons": False, "project": True},
     )
     emit.on_subagent_steered(SESSION, agent_id="sub-1", mode="follow_up")
     emit.on_subagent_completed(SESSION, agent_id="sub-1", duration_ms=41200)
+    emit.on_subagent_dismissed(SESSION, agent_id="sub-1")
     emit.on_subagent_failed(
         SESSION, agent_id="sub-2", reason="TimeoutError", outcome="stopped", duration_ms=1800000
     )
@@ -910,6 +918,7 @@ def test_every_entry_a_real_turn_produces_validates():
         "background/completed",
         "subagent/spawned",
         "subagent/steered",
+        "subagent/dismissed",
         "subagent/completed",
         "subagent/failed",
     } <= produced

@@ -3,7 +3,7 @@
 **Local page, not a mirror.** Part of the [crew log reference](README.md), which is
 marked as a named exception in [the Reference index](../README.md).
 
-Thirty-two types. Read [envelope.md](envelope.md) first for the fields every entry
+Thirty-three types. Read [envelope.md](envelope.md) first for the fields every entry
 carries; this page covers only each type's `data`.
 
 Session entries are written with `src` `gateway` or `acp` and nothing else. They
@@ -47,6 +47,7 @@ The **Emitter** column says whether this build writes the type. Every row below 
 | [`background/completed`](#backgroundcompleted) | A model call made on the session's behalf. | live | `gateway` | — |
 | [`subagent/spawned`](#subagentspawned) | A child this session dispatched. | live | `gateway` | opener |
 | [`subagent/steered`](#subagentsteered) | A correction sent into a running child. | live | `gateway` | — |
+| [`subagent/dismissed`](#subagentdismissed) | The user cleared a finished child's card from the panel. | live | `gateway` | — |
 | [`subagent/completed`](#subagentcompleted) | A child finished its work. | live | `gateway` | closer, by `agent_id` |
 | [`subagent/failed`](#subagentfailed) | A child did not finish its work. | live | `gateway` | closer, by `agent_id` |
 | [`ledger/recorded`](#ledgerrecorded) | One session-ledger update: the fields it set and the event explaining them. | live | `gateway` | — |
@@ -955,13 +956,17 @@ A child this session dispatched.
 | `turn` | int | optional | The asking turn. Absent when no turn asked — a slash command, a cron, a hook. | |
 | `agent` | string | optional | Agent name. | |
 | `model` | string | optional | The child's model. | |
+| `task` | string | optional | What the child was asked to do, redacted and clipped. Absent when the dispatch carried no task text. | |
 | `scope` | object | optional | Context-scope flags `{memory, lessons, project}`, all bools. | |
 
 **Invariants** — Carries **no `ref`**. No subagent path opens a child crew log, so a
-citation would name a file that does not exist.
+citation would name a file that does not exist. An absent `task` means this log does
+not say what the child was asked, which is not the same claim as a dispatch that asked
+for nothing: every log written before the field reads that way too, and a surface draws
+no task line for it rather than an empty one.
 
 ```json
-{"type":"subagent/spawned","seq":32,"time":1789000000850,"src":"gateway","data":{"turn":3,"agent_id":"sub-1","agent":"kirocrew","model":"claude","scope":{"memory":false,"lessons":true,"project":true}}}
+{"type":"subagent/spawned","seq":32,"time":1789000000850,"src":"gateway","data":{"turn":3,"agent_id":"sub-1","agent":"kirocrew","model":"claude","task":"audit the retry path","scope":{"memory":false,"lessons":true,"project":true}}}
 ```
 
 **Reader hint** — A missing `turn` is normal and does not mean the entry is
@@ -994,6 +999,40 @@ none of its own.
 **Reader hint** — Several of these may sit between one spawn and its close.
 
 **Since** — type #10091; written by #11185.
+
+### `subagent/dismissed`
+
+The user cleared a finished child's card from the panel.
+
+**Kind and `src`** — `session`; `src` is `gateway`.
+
+**When written** — When the dismiss route accepts a `DELETE /api/spawn/{agent_id}` for
+a run the live manager no longer holds.
+
+**Pairing** — None. A dismissal is not an ending: the child keeps whatever outcome its
+own closer recorded, and this may arrive before any closer for a card the user cleared
+while the child was still running.
+
+| Field | Type | Required | Meaning | Enum |
+|---|---|---|---|---|
+| `agent_id` | string | required | The child's id. | |
+
+**Invariants** — A fact about the SESSION, which is why it is here rather than in a
+store beside the log: the Subagents panel's durable half is a fold of this log, so a
+dismissal kept anywhere else is a second record that has to be held in step with it.
+It was held in a registry keyed on the run's folder at both ends, and when that folder
+was reclaimed first the dismissed card came back.
+
+```json
+{"type":"subagent/dismissed","seq":41,"time":1789000001200,"src":"gateway","data":{"agent_id":"sub-1"}}
+```
+
+**Reader hint** — Stop showing that child's card, and leave every total where it is: a
+dismissal does not change what the session dispatched or what it spent, so a spend
+figure that fell when someone tidied the panel would be wrong. The flag does not come
+back off: the log does not un-record an act.
+
+**Since** — this entry type is new in this change.
 
 ### `subagent/completed`
 

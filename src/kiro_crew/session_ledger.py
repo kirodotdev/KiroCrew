@@ -570,7 +570,9 @@ def _projection() -> Any:
     return projection
 
 
-def crew_log_units(slot_key: str, live_session_id: str = "", alias: str = "") -> tuple[str, ...]:
+def crew_log_units(
+    slot_key: str, live_session_id: str = "", alias: str = "", *, strict: bool = False
+) -> tuple[str, ...]:
     """Every crew log holding *slot_key*'s ledger entries, oldest unit first.
 
     *slot_key* is the CANONICAL spelling — the one a unit header records — and *alias*
@@ -581,13 +583,34 @@ def crew_log_units(slot_key: str, live_session_id: str = "", alias: str = "") ->
     crew log is switched off. Every failure to LIST them answers the same way,
     because this runs on the read path of a loop cycle and a listing that cannot be
     made must not raise into one.
+
+    *strict* is for a caller that decides an OBLIGATION from the listing rather than
+    reading from it. For a reader, an unlistable slot and a slot with no units are
+    the same empty record; for a caller asking "is there a unit a later fact must go
+    into", they are opposite answers, and the empty one reports an obligation
+    discharged that was never looked for. ``strict`` raises instead, and is carried
+    DOWN to both store lookups -- the canonical spelling's and the alias's -- because
+    the scan that can fail is theirs: a flag that only re-raised from this function's
+    own ``except`` would never fire, since the store swallows its own scan failure
+    and answers empty before anything here sees it.
+
+    A session root that does not EXIST is not a failure under ``strict`` either. A
+    store nothing has written yet holds no unit for any slot, which is the same
+    answer a reader gets, and raising there would make every dismissal on a fresh
+    install retryable forever. Only a root that exists and could not be read, or a
+    unit that cannot be proved while holding entries, is the indeterminate case.
+
+    One link of this chain is deliberately NOT strict-gated: ``_recorded_unit_order``
+    answers ``()`` when its own file cannot be read, which reorders the units and
+    cannot drop one. The caller that matters here searches all of them, so an
+    unknown order cannot turn a unit that holds a row into "no unit holds it".
     """
     if not slot_key:
         return ()
     try:
         from kiro_crew.crew_log.store import session_units_for_slot
 
-        units = session_units_for_slot(slot_key)
+        units = session_units_for_slot(slot_key, strict=strict)
         if alias and alias != slot_key:
             # The caller's own spelling is joined BESIDE the canonical one, so a record
             # written under it keeps reading. Its units come FIRST: the canonical ones
@@ -596,7 +619,12 @@ def crew_log_units(slot_key: str, live_session_id: str = "", alias: str = "") ->
             # exclusion list and one order log however a caller spells its key.
             seen = set(units)
             units = (
-                tuple(unit for unit in session_units_for_slot(alias) if unit not in seen) + units
+                tuple(
+                    unit
+                    for unit in session_units_for_slot(alias, strict=strict)
+                    if unit not in seen
+                )
+                + units
             )
         excluded = _excluded_units(slot_key)
         if excluded:
@@ -623,12 +651,24 @@ def crew_log_units(slot_key: str, live_session_id: str = "", alias: str = "") ->
             # be wrong about which unit that is, because its caller is inside it.
             units = tuple(u for u in units if u != live_session_id) + (live_session_id,)
         return units
+    except FileNotFoundError:
+        # The session root has never been created, so no slot has a unit and this is
+        # not indeterminate: it is the same empty answer a reader gets, and the only
+        # one a store nothing has written can give. Raising here under ``strict``
+        # would make every dismissal on a fresh install permanently retryable.
+        return ()
     except Exception:
         # FAIL CLOSED to no units, which reads as the empty record. An exclusion list
         # that cannot be read is the case this matters for: answering with the units
         # anyway would serve a deleted conversation's state to whoever holds the slot
         # key now, and nothing later takes that back, while an empty record is
         # recovered by the next read that can see the list.
+        #
+        # A ``strict`` caller is not reading, it is deciding whether a later fact has
+        # a unit to go into, and the empty answer would tell it there is none -- so it
+        # gets the failure and can report a retryable outcome instead.
+        if strict:
+            raise
         logger.warning("ledger: could not list the crew logs for this slot", exc_info=True)
         return ()
 

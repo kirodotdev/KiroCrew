@@ -1174,6 +1174,17 @@ _SESSION_TYPES: tuple[EntryType, ...] = (
             Field("agent", JSON_STRING, note="The child's agent name, when one was resolved."),
             Field("model", JSON_STRING, note="The child's model, when one was resolved."),
             Field(
+                "task",
+                JSON_STRING,
+                note=(
+                    "What the child was asked to do, redacted and clipped on the same "
+                    "terms as plan/updated's item text. ABSENT when the dispatch carried "
+                    "no task text, and absent on every log written before the field, "
+                    "which a reader must not read as a dispatch that asked for nothing -- "
+                    "a surface draws no task line for it rather than an empty one."
+                ),
+            ),
+            Field(
                 "scope",
                 JSON_OBJECT,
                 fields=(
@@ -1218,6 +1229,20 @@ _SESSION_TYPES: tuple[EntryType, ...] = (
             "Written into the PARENT's log: the parent is what sent it, and the child has "
             "no crew log to receive it. Opens and closes nothing -- a steer is an event "
             "about a child, not a state of one."
+        ),
+    ),
+    EntryType(
+        "subagent/dismissed",
+        "The user cleared a finished child's card from the panel.",
+        (Field("agent_id", JSON_STRING, required=True, note="The child's run id."),),
+        note=(
+            "A fact about the SESSION, which is why it is here rather than in a store "
+            "beside the log: the panel's durable half is a fold of this log, so a "
+            "dismissal kept anywhere else is a second record that has to be held in step "
+            "with it -- and when the other store was reclaimed first, the card came back. "
+            "Opens and closes nothing: a dismissal is not an ending, and a dismissed "
+            "child keeps whatever outcome its own closer recorded. It may arrive before "
+            "any closer, for a child the user cleared while it was still running."
         ),
     ),
     EntryType(

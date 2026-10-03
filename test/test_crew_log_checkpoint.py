@@ -200,15 +200,19 @@ def _state_digest(state: dict[str, Any]) -> str:
 #: ``status``, ``timeline`` and ``class`` moved with it because the script above grew the
 #: entries that reach those buckets and a fold retaining a seq or a moment sees them. From
 #: here a bump is one fold's own, which is the whole point of the pair. ``subagents`` is the
-#: first fold to exercise that: it stands one past the base, and every sibling stays at 4,
-#: so retiring its savepoints costs a cold fold to that fold alone.
+#: fold that exercises that: it stands three past the base, and every sibling stays at 4, so
+#: retiring its savepoints costs a cold fold to that fold alone. Its third step is the one
+#: that gave its rows what the Subagents panel needs to rebuild a card from this fold --
+#: ``task`` and ``started_ms``, plus a per-row ``dismissed`` flag
+#: -- which arrived together and bump the version once, because the
+#: number retires savepoints written under the shape before it and the shape changed once.
 _FOLD_STATE_PINS: dict[str, tuple[str, int]] = {
     "status": ("929af8634f6d6a5f", 4),
     "usage": ("d59ec4857f0f69ba", 13),
     "timeline": ("4f461179faff39a3", 5),
     "tools": ("008b36fed498d32b", 4),
     "approvals": ("c9db629215cc2620", 4),
-    "subagents": ("c4930a44d9ee6cc6", 6),
+    "subagents": ("698287ed09ff8981", 7),
     "class": ("1eb292eff34fd7d9", 4),
 }
 

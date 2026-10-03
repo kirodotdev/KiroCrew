@@ -1971,6 +1971,118 @@ async def _retry_failed_run(state: "DashboardState", agent_id: str, old: Any) ->
     return web.json_response({"id": info.id, "retried_from": agent_id, "status": "spawned"})
 
 
+#: No unit holds the child, so no crew-log record was owed or written.
+DISMISSAL_LOG_ABSENT = "absent"
+#: A unit holds the child and the append COMMITTED.
+DISMISSAL_LOG_COMMITTED = "committed"
+#: A unit holds the child and the append did not commit inside the bound. The run
+#: exists, so this is not an unknown id; the dismissal simply did not happen.
+DISMISSAL_LOG_FAILED = "failed"
+
+
+async def _log_panel_dismissal(state: DashboardState, agent_id: str) -> str:
+    """Record a panel dismissal in the owning session's crew log.
+
+    Answers one of :data:`DISMISSAL_LOG_ABSENT`,
+    :data:`DISMISSAL_LOG_COMMITTED` or :data:`DISMISSAL_LOG_FAILED`. The last two
+    are the distinction a boolean could not carry: both mean a unit holds this
+    child, so the run exists and an unknown-id answer would be wrong, while only
+    one of them means the card is actually cleared.
+
+    This is the record the PANEL reads. Its durable half is a fold of the session's
+    crew log, so the dismissal belongs there: kept anywhere else it is a second
+    record of a fact about the session, reclaimed on its own schedule. The folder
+    registry below this is the case in point -- it is keyed on the run's folder at
+    both ends, so it forgets a dismissal when that folder is pruned, while the fold
+    still draws the child the log kept.
+
+    The owning UNIT is resolved in two steps, cheapest first.
+    :func:`crew_log.emit.dismiss_child` answers from the emitter's own spawn pin,
+    which is the unit the child's ``subagent/spawned`` was written to; the terminal
+    report releases that pin, so it answers only for a child still running, and a
+    gateway restart clears it entirely. Then the LOG is searched, over the units
+    each live slot has run under -- which is the same question the panel's own read
+    answers, and the only one that cannot name the wrong unit: a slot owns one ACP
+    session id at a time, so a child dispatched before a reset sits in a retired
+    unit that the slot's current id does not name.
+
+    ``ABSENT`` when no unit holds the child, which is not a failure: there is then
+    no folded card to clear, and the caller's folder record still answers for a
+    pre-existing one. ``ABSENT`` also when the crew log is switched off, where an
+    install that opted out of the record has no record to write to.
+
+    Each append is waited on until it COMMITS, because the caller publishes a
+    dismissal to the user on the strength of this answer, and once the run's folder
+    has been reclaimed this entry is the only record of it.
+    """
+    try:
+        from kiro_crew.crew_log import emit as crew_log_emit
+        from kiro_crew.crew_log.resolve import UnitSearchFailed, unit_holding_child
+
+        if not crew_log_emit.enabled():
+            return DISMISSAL_LOG_ABSENT
+
+        loop_wait = crew_log_emit.awaiting_commit
+
+        async def _committed(emit_one) -> bool:
+            return await loop_wait(emit_one, what=f"the panel dismissal for {agent_id}")
+
+        pinned = False
+
+        def _via_pin(on_settled) -> None:
+            nonlocal pinned
+            pinned = bool(crew_log_emit.dismiss_child(agent_id, on_settled=on_settled))
+            if not pinned:
+                # No pin, so nothing was queued and nothing will settle. Resolved
+                # here rather than left to the timeout, which would spend the whole
+                # bound before the unit search that is the real answer.
+                on_settled(False)
+
+        if await _committed(_via_pin):
+            return DISMISSAL_LOG_COMMITTED
+        if pinned:
+            # The pin named the unit, so the run exists, and its append did not
+            # commit. Searching the units would only queue a second entry into the
+            # same wedged writer; the caller's retry is what should decide.
+            return DISMISSAL_LOG_FAILED
+
+        slots = [
+            subagent_event_slot(effective_session_key(slot))
+            for slot in list(getattr(state, "_slots", {}).values())
+        ]
+        for slot_key in slots:
+            try:
+                unit = await asyncio.to_thread(unit_holding_child, slot_key, agent_id)
+            except UnitSearchFailed:
+                # The store would not say whether this slot holds the child. Reading
+                # that as "this slot does not" would let the loop finish and answer
+                # ABSENT, which the caller turns into a 404 or a success -- an
+                # obligation reported discharged that was never looked for.
+                logger.debug(
+                    "crew log: the unit search for %s under %s failed",
+                    agent_id,
+                    slot_key,
+                    exc_info=True,
+                )
+                return DISMISSAL_LOG_FAILED
+            if unit:
+                landed = await _committed(
+                    lambda on_settled, _unit=unit: crew_log_emit.on_subagent_dismissed(
+                        _unit, agent_id=agent_id, on_settled=on_settled
+                    )
+                )
+                return DISMISSAL_LOG_COMMITTED if landed else DISMISSAL_LOG_FAILED
+        return DISMISSAL_LOG_ABSENT
+    except Exception:
+        # FAILED, not ABSENT. Everything that reaches here is a store or emitter
+        # fault, and the caller turns ABSENT into a 404 or a plain success -- an
+        # obligation reported discharged that was never looked for. The one case
+        # that genuinely owes no record, a switched-off emitter, returns above
+        # before anything here can fail.
+        logger.debug("crew log: recording a panel dismissal failed", exc_info=True)
+        return DISMISSAL_LOG_FAILED
+
+
 async def api_spawn_delete(request: web.Request) -> web.Response:
     """DELETE /api/spawn/{agent_id} — cancel a running subagent or remove a finished one."""
     state: DashboardState = request.app["state"]
@@ -2057,15 +2169,25 @@ async def api_spawn_delete(request: web.Request) -> web.Response:
                 {"error": "app token not allowed", "code": "app_token_forbidden"}, status=403
             )
         outcome = await asyncio.to_thread(record_panel_dismissal_outcome, agent_id)
-        if outcome == DISMISSAL_NO_FOLDER:
-            # No folder, so nothing durable can rebuild this card and there is no
-            # run here to speak of. Same answer as before for a truly unknown id.
+        # The dismissal the PANEL reads: an entry in the owning session's crew log.
+        # The panel's durable half is a fold of that log, so this is the record that
+        # keeps the card cleared; the folder registry above is kept because
+        # ``GET /api/spawn`` still reads the folders, and because a dismissal made
+        # before this entry type existed lives only there.
+        logged = await _log_panel_dismissal(state, agent_id)
+        if outcome == DISMISSAL_NO_FOLDER and logged == DISMISSAL_LOG_ABSENT:
+            # Nothing durable can rebuild this card -- no folder, and no log that
+            # records the child -- so there is no run here to speak of. Same answer
+            # as before for a truly unknown id.
             return web.json_response({"error": "not found"}, status=404)
-        if outcome == DISMISSAL_FAILED:
-            # The store is unwritable, so this card returns on the next rebuild.
-            # Answering 404 would say the run does not exist, and answering ok
-            # would claim a dismissal that did not happen; both leave the user
-            # watching a dismissed card come back with nothing to explain it.
+        if outcome == DISMISSAL_FAILED or logged == DISMISSAL_LOG_FAILED:
+            # One of the two records was owed and did not land, so the dismissal is
+            # at best partial and the card comes back on a reader that still holds
+            # its own record. The folder half feeds ``GET /api/spawn``; the log half
+            # feeds the panel, and once the run's folder is reclaimed it is the only
+            # record there is. Answering ok would claim a dismissal a reader goes on
+            # contradicting, with nothing anywhere saying which half failed, so the
+            # caller cannot retry the one that did not land.
             _sel().log_api_access(
                 caller="internal",
                 operation="spawn.dismiss",

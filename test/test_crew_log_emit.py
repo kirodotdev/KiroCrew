@@ -2415,6 +2415,70 @@ def _closer(kind: str) -> dict:
     return closers[0]["data"]
 
 
+def _opener(kind: str) -> dict:
+    """The one opener of *kind* in the log, so a test reads its data directly."""
+    openers = [e for e in _body() if e["type"] == kind]
+    assert len(openers) == 1, f"expected exactly one {kind}, saw {len(openers)}"
+    return openers[0]["data"]
+
+
+def test_a_dispatch_records_the_task_the_child_was_asked_to_do():
+    """The one field a card cannot rebuild from anything else in the entry.
+
+    A surface drawing a finished child after the dispatching process is gone reads
+    the task from the log or from nowhere.
+    """
+    _open_session()
+    emit.on_turn_started(SESSION, 1, "user")
+    emit.on_subagent_spawned(SESSION, 1, agent_id="sub-1", task="audit the retry path")
+    assert emit.flush()
+    assert _opener("subagent/spawned")["task"] == "audit the retry path"
+
+
+def test_a_dispatch_with_no_task_text_writes_no_task_key_at_all():
+    """Absent means "this log does not say", and an empty string would not.
+
+    It is also how every log written before the field reads, so the two are the
+    same case to a reader: a card draws no task line rather than a blank one.
+    """
+    _open_session()
+    emit.on_turn_started(SESSION, 1, "user")
+    emit.on_subagent_spawned(SESSION, 1, agent_id="sub-1", task="")
+    assert emit.flush()
+    assert "task" not in _opener("subagent/spawned")
+
+
+def test_the_task_text_is_clipped_on_the_same_terms_as_a_plan_item():
+    """A person's words, bounded so one field cannot dominate the line.
+
+    Same helper and same cap ``plan/updated``'s item text uses -- the other place
+    this module records text a person wrote -- and the ellipsis is part of the
+    value, so a reader can tell a task that ends there from one that was cut.
+    """
+    _open_session()
+    emit.on_turn_started(SESSION, 1, "user")
+    emit.on_subagent_spawned(SESSION, 1, agent_id="sub-1", task="t" * (emit._MAX_SHORT_TEXT + 50))
+    assert emit.flush()
+    written = _opener("subagent/spawned")["task"]
+    assert len(written) == emit._MAX_SHORT_TEXT
+    assert written.endswith("\u2026")
+
+
+def test_a_credential_in_the_task_text_never_reaches_the_log():
+    """Redacted at this boundary, not trusted from the call site.
+
+    The task is raw input a person just typed, so the rule has to hold here: a
+    site added later cannot forget it.
+    """
+    _open_session()
+    emit.on_turn_started(SESSION, 1, "user")
+    emit.on_subagent_spawned(
+        SESSION, 1, agent_id="sub-1", task="deploy with AKIAIOSFODNN7EXAMPLE now"
+    )
+    assert emit.flush()
+    assert "AKIAIOSFODNN7EXAMPLE" not in _opener("subagent/spawned")["task"]
+
+
 def test_a_completed_child_records_the_credits_it_billed():
     """A child's spend is measured, so the parent's log carries it.
 

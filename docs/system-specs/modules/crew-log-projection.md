@@ -215,7 +215,7 @@ and its one caller asks the registry for it by name.
 | `timeline` | The newest turn, lifecycle and cost MOMENTS, oldest first. Message, step and tool entries are deliberately absent: they are the bulk of a log, the page route and `tools` already serve them, and including them would make the timeline a second copy of the file. |
 | `tools` | Calls matched to completions by `call_id`: totals, per name, open calls, unmatched completions. An error is `status` in `refused`/`error`/`failed` OR `is_error` true -- two independent signals, and an absent `is_error` is not a claim that the call worked. |
 | `approvals` | Requests matched to decisions by `approval_id`: pending, decided, the decision tally, the last decision. The native permission path writes both types (`on_approval_requested` / `on_approval_decided` in the chat runner); coordinator approvals and question cards are not recorded. |
-| `subagents` | The children this session dispatched, matched to their closers by `agent_id`: per child its agent, model, outcome, duration, credits and a failure reason; plus whole-session totals, how many are still running, and how many dispatches were not retained. See below for the rules a reader has to know. |
+| `subagents` | The children this session dispatched, matched to their closers by `agent_id`: per child its agent, model, the task it was asked to do, outcome, duration, credits and a failure reason; plus whole-session totals, how many are still running, and how many dispatches were not retained. See below for the rules a reader has to know. |
 | `class` (INTERNAL -- not advertised, not pushed) | What KIND of session this log belongs to, over the log's WHOLE LIFE: the memory mode, the owning app, and whether the conversation was ever published to a channel. Each of those three is held at the most RESTRICTIVE value the log ever recorded, from the `class` object on the log's first `session/opened` plus every later `session/class` move, so a session published to a channel for one turn keeps reading as channel-published after the link is dropped -- that turn's content is still in this log. It also carries `workspace`, which folds differently because it is an IDENTITY rather than a restriction: there is no more-restrictive workspace to keep, so the FIRST one stated is held and a later different one sets `workspace_moved`, which is itself the restrictive fact -- a log whose content spans two workspaces is owned by neither. `recorded` says a class was stated at all and `complete` says the history has a beginning, and a reader deciding an authorization question refuses on either being false. The only fold whose consumer is a READER of another unit rather than a panel, which is why it is held restrictive rather than current: a fold that reported the present value would answer a question nobody asks of a log. |
 
 #### `subagents` -- the two rules a reader has to know
@@ -229,6 +229,30 @@ It deliberately does NOT emit an id list of the children still open, nor the cap
 surface listing the open children filters `by_id` for an absent `outcome` -- which is the
 same filter the list was built from, so shipping both is one fact spelled twice, and the
 copy that can go stale is the one nothing checks.
+
+Two row fields exist for the surface that rebuilds a child's CARD out of this fold after
+the dispatching process is gone, and neither is derivable from anything else in it.
+`task` is what the child was asked to do, `""` when the dispatch recorded none -- which is
+also how every log written before the field reads, so a surface draws no task line for it
+rather than an empty one. `started_ms` is the `subagent/spawned` entry's own envelope
+stamp, kept because a reader assembling ONE list out of several sessions' folds cannot
+order it by `seq_spawned` (seqs are per log) and because an age window needs a row to be
+dated. Neither is a second clock or a second record: the stamp is the log's own, and the
+task text lives nowhere else.
+
+A DISMISSED row is kept in the state and left out of the render. `subagent/dismissed` is
+neither an opener nor a closer -- it is the user clearing a card -- but this fold is what
+the panel draws, so it is the fold that has to stop offering the row; it is in `affects`
+for that reason alone. The row has to stay in the state, because a dismissal is an act the
+log does not un-record and a later closer still lands on it, and because the flag latches.
+`totals` never moves for a dismissal: what the session dispatched and what it spent are
+facts about the session, so a spend figure that fell when someone tidied the panel would be
+wrong. That makes the render's identity `spawned == len(by_id) + omitted + dismissed`, and
+`dismissed` is published for exactly that reason -- without it a reader checking the
+two-term form sees it fail the moment anyone clears a card, with no way to tell a tidied
+panel from arithmetic the fold got wrong. A dismissal naming no retained row -- the dispatch
+was omitted past the cap, or its opener never reached the file -- moves nothing: that child is
+not drawn either way, so there is nothing to stop drawing and no counter for it.
 
 A row retains only what something reads: `seq_spawned` (the render orders by it), `agent`,
 `model`, `outcome`, `ms`, `credits` and `reason`. The child's inherited `scope`, its spawn

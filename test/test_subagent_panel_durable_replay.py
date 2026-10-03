@@ -61,6 +61,19 @@ from kiro_crew.subagent_persistence import (
 )
 
 DAY = 86_400.0
+
+
+def messaging_crew_log_emit():
+    """The emitter module the dismiss route imports inside its own helper.
+
+    Patched there rather than on ``messaging``: the helper does a local import, so
+    a name set on ``messaging`` is never read.
+    """
+    from kiro_crew.crew_log import emit
+
+    return emit
+
+
 CORRUPT = "__corrupt__"
 TRUNC = _PANEL_TRUNC_MARKER
 
@@ -2550,20 +2563,22 @@ class TestTheDismissalCheckRetainsNothing:
 
 
 class TestADismissalHoldsOnBothReaders:
-    """A dismissal has to hold on BOTH durable readers, not just one.
+    """A dismissal has to hold on every durable reader, not just one.
 
-    There are two, and they were reported separately: the WS reconnect replay and
-    the REST listing. Every other dismissal test above calls
-    :func:`read_panel_records` directly, which is the shared helper -- so all of
-    them would still pass if one reader obtained its records some other way and
-    never consulted the store. That is the whole shape of the original report: the
-    listing and the replay each excluded only the ids the LIVE manager held, so a
-    delete that left the folder behind came back on the next reconnect.
+    There were two folder readers and they were reported separately: the WS
+    reconnect replay and the REST listing. Each excluded only the ids the LIVE
+    manager held, so a delete that left the folder behind came back on the next
+    reconnect. The filter's position -- inside the shared helper rather than at
+    either call site -- is what let one store answer for both, and that position
+    is pinned structurally below.
 
-    So the two readers are exercised at their own entry points here, and the
-    filter's position -- inside the shared helper rather than at either call site
-    -- is pinned structurally, because that position is the only reason one test
-    can answer for both.
+    One of those two readers is gone: the replay folds the crew log, where a
+    dismissal is an ENTRY rather than a record in a store beside it. That is not a
+    softening of this class's rule but the same rule applied one level up -- the
+    folder store could only be keyed on the folder, so a dismissal in it did not
+    outlive the thing it was suppressing. What remains here is the listing, which
+    reads folders because it serves the run's own output text, and the ratchet that
+    keeps the replay from quietly becoming a second folder reader again.
     """
 
     def request(self, state, caller: str, app: str = "", *, internal: bool = True):
@@ -2597,12 +2612,13 @@ class TestADismissalHoldsOnBothReaders:
         return [entry["id"] for entry in body["agents"]]
 
     def replay_records(self, seen: set[str] | None = None):
-        """The WS reconnect replay's OWN query, with its own constants.
+        """The LISTING's query with a durable rebuild's own bounds.
 
-        ``ws.py`` asks for persisted records with the replay keep and age window and
-        an ``exclude_ids`` set built from the live frames it already sent, then turns
-        each survivor into a ``subagent_done`` frame. Asking with those arguments is
-        what makes this the replay's question rather than a generic one.
+        The WS replay asks a different source entirely: it folds the crew log,
+        where a dismissal is an entry rather than a record in a store beside it.
+        These bounds are kept because the listing applies them too, and because
+        the keep/age pair is what makes the question a durable rebuild's rather
+        than a generic read.
         """
         return read_panel_records(
             keep=PERSISTED_SUBAGENT_REPLAY_KEEP,
@@ -2621,8 +2637,14 @@ class TestADismissalHoldsOnBothReaders:
 
         assert self.run_listing(monkeypatch) == ["keep11"]
 
-    def test_a_dismissed_run_is_absent_from_the_ws_reconnect_replay(self, agent_root):
-        """The reader that actually resurrected the card, asked its own question."""
+    def test_a_dismissed_run_is_absent_from_the_durable_folder_read(self, agent_root):
+        """The reader that actually resurrected the card, asked its own question.
+
+        The WS replay's half of this moved with the reader: it folds the crew log
+        now, and ``test_subagent_panel_fold_replay.py`` pins a dismissal there --
+        including the case this store cannot answer at all, a run whose folder was
+        already reclaimed.
+        """
         write_record(agent_root, "keep22", parent_session="dashboard:chat-1")
         write_record(agent_root, "gone22", parent_session="dashboard:chat-1")
         assert sorted(ids(self.replay_records())) == ["gone22", "keep22"]
@@ -2631,14 +2653,14 @@ class TestADismissalHoldsOnBothReaders:
 
         surviving = self.replay_records()
         assert ids(surviving) == ["keep22"]
-        # And nothing downstream can put it back: the frames the replay sends are
-        # built from these records alone.
+        # And nothing downstream can put it back: the frames the listing's records
+        # would build are built from these alone.
         frames = [
             build_persisted_subagent_frame(record, redact=lambda text: text) for record in surviving
         ]
         assert [frame["data"]["id"] for frame in frames] == ["keep22"]
 
-    def test_the_replay_still_honours_its_live_exclusions(self, agent_root):
+    def test_the_folder_read_still_honours_its_live_exclusions(self, agent_root):
         """Control on the shape: the dismissal filter is added to that set, not swapped in."""
         write_record(agent_root, "live33", parent_session="dashboard:chat-1")
         write_record(agent_root, "gone33", parent_session="dashboard:chat-1")
@@ -2681,33 +2703,200 @@ class TestADismissalHoldsOnBothReaders:
             "grows with the registry inside the one function bounded on purpose"
         )
 
-    def test_both_readers_go_through_that_reader_and_nothing_lower(self):
-        """Neither reader may assemble records itself and skip the filter.
+    def test_each_durable_source_is_reached_through_the_reader_that_filters_it(self):
+        """Neither reader may assemble records itself and skip the dismissal filter.
 
         Matched on a word boundary, because ``_panel_record`` is a SUBSTRING of
-        ``read_panel_records`` -- a plain ``in`` test reports every correct reader
-        as an offender, and the failure reads exactly like a real bypass.
+        ``read_panel_records`` -- a plain ``in`` test reports a correct reader as an
+        offender, and the failure reads exactly like a real bypass.
+
+        Both files read folders, and both must do it through the shared helper that
+        consults the dismissal registry. The WS replay reads them on ONE path only,
+        the one taken when the crew log is switched off -- where there is no fold,
+        so the registry is the only dismissal record there is. With the log on it
+        folds instead, and the dismissal is an entry in that same log; the gate
+        between those two is pinned below, because a folder read reached with the
+        log ON would honour a registry entry while ignoring the log entry that
+        supersedes it.
         """
         import re
 
         builder = re.compile(r"(?<![A-Za-z0-9_])_panel_record(?![A-Za-z0-9_])")
         root = pathlib.Path(__file__).resolve().parents[1]
         for relative in (
-            "src/kiro_crew/dashboard/ws.py",
             "src/kiro_crew/dashboard/handlers/messaging.py",
+            "src/kiro_crew/dashboard/ws.py",
         ):
             source = (root / relative).read_text(encoding="utf-8")
-            # Control: this reader really is one of the two, so a renamed file
-            # cannot make the assertion below pass by matching nothing.
+            # Control: this reader really is one, so the assertion below cannot pass
+            # by matching a file that stopped reading records altogether.
             assert "read_panel_records" in source, f"{relative} no longer reads persisted records"
             assert not builder.search(source), (
                 f"{relative} reaches the per-folder record builder directly, which "
                 "skips the dismissal filter that read_panel_records applies"
             )
         # Control on the needle itself: it must match the real thing somewhere, or
-        # the two assertions above pass because the pattern is broken.
+        # the assertions above pass because the pattern is broken.
         owner = (root / "src/kiro_crew/subagent_persistence.py").read_text(encoding="utf-8")
         assert builder.search(owner), "the _panel_record needle matches nothing anywhere"
+
+    def test_the_replay_folds_the_log_when_it_is_on_and_reads_folders_when_it_is_not(self):
+        """The gate that keeps one dismissal record authoritative at a time.
+
+        Asserted on the source because the alternative is a live socket: the branch
+        sits inside the reconnect handler, which needs a real aiohttp WebSocket, and
+        the two readers it chooses between are each pinned on their own elsewhere.
+
+        What is pinned is which reader each branch REACHES, not how it is called.
+        A reader handed to :func:`asyncio.to_thread` is NAMED rather than called,
+        and the log-on branch names its own worker there, so a pattern expecting
+        the reader as the thread's first argument describes one spelling of the
+        call rather than the gate.
+        """
+        import ast
+
+        root = pathlib.Path(__file__).resolve().parents[1]
+        source = (root / "src/kiro_crew/dashboard/ws.py").read_text(encoding="utf-8")
+
+        def _names(body: list[ast.stmt]) -> set[str]:
+            """Every name this code reaches: bare, called, handed over, or attribute.
+
+            Attributes count because a value read off a returned record -- the
+            folder scan's own ``overflow_is_lower_bound`` -- is reached by
+            attribute and not by name.
+            """
+            module = ast.Module(body=body, type_ignores=[])
+            found = set()
+            for sub in ast.walk(module):
+                if isinstance(sub, ast.Name):
+                    found.add(sub.id)
+                elif isinstance(sub, ast.Attribute):
+                    found.add(sub.attr)
+            return found
+
+        tree = ast.parse(source)
+        gates = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.If)
+            and isinstance(node.test, ast.Call)
+            and isinstance(node.test.func, ast.Name)
+            and node.test.func.id == "crew_log_enabled"
+            and node.orelse
+            and "read_panel_records" in _names(node.orelse)
+        ]
+        assert len(gates) == 1, (
+            "the replay's folder read is no longer the crew-log-off branch of one "
+            "crew_log_enabled() gate, so a folder record could be replayed while "
+            "the log holds the dismissal"
+        )
+        gate = gates[0]
+        on_branch = _names(gate.body)
+        off_branch = _names(gate.orelse)
+        assert (
+            "read_fold_subagent_records" in on_branch
+        ), "the replay no longer folds the crew log behind crew_log_enabled()"
+        # Each branch reaches ONE reader. A branch reaching both would draw a card
+        # from the folders while the log holds its dismissal, which is the whole
+        # point of choosing between them.
+        assert "read_panel_records" not in on_branch
+        assert "read_fold_subagent_records" not in off_branch
+        # The log-on branch corrects the legacy registry's dismissals into the log
+        # before it folds. Without that a card dismissed before the log held
+        # dismissals comes back, which is the failure this reader exists to end.
+        assert "backfill_legacy_panel_dismissals" in on_branch
+        # And what it corrected is excluded from THIS read too. The append is
+        # queued, so the fold that follows it may not carry it yet -- a branch that
+        # passed only the live ids would draw the cleared card once, on the very
+        # reconnect that corrected it. Pinned through the NAME the backfill's
+        # result is bound to, so dropping the union is caught however it is spelt.
+        bound = [
+            target.id
+            for node in ast.walk(ast.Module(body=gate.body, type_ignores=[]))
+            if isinstance(node, ast.Assign)
+            and "backfill_legacy_panel_dismissals" in _names([ast.Expr(value=node.value)])
+            for target in node.targets
+            if isinstance(target, ast.Name)
+        ]
+        assert len(bound) == 1, "the backfill's result is no longer bound to one name"
+        excluded = [
+            node
+            for node in ast.walk(ast.Module(body=gate.body, type_ignores=[]))
+            if isinstance(node, ast.keyword)
+            and node.arg == "exclude_ids"
+            and bound[0] in _names([ast.Expr(value=node.value)])
+        ]
+        assert len(excluded) == 1, (
+            "the fold read's exclude_ids no longer carries what the backfill "
+            f"corrected ({bound[0]}), so a corrected card is drawn once"
+        )
+
+        # Every blocking read sits INSIDE the worker handed to asyncio.to_thread.
+        # Each of these lists the crew-log root, stats it, and on a cold cache
+        # opens a header file per unit, so one left in the branch body is a
+        # filesystem walk per slot on the loop that carries chat and heartbeats.
+        blocking = {
+            "crew_log_panel_units",
+            "backfill_legacy_panel_dismissals",
+            "read_fold_subagent_records",
+        }
+        workers = [
+            node
+            for node in ast.walk(ast.Module(body=gate.body, type_ignores=[]))
+            if isinstance(node, ast.FunctionDef)
+        ]
+        assert len(workers) == 1, "the log-on branch no longer has exactly one worker"
+        inside = _names(workers[0].body)
+        assert blocking <= inside, f"not every blocking read is in the worker: {blocking - inside}"
+        handed = [
+            node
+            for node in ast.walk(ast.Module(body=gate.body, type_ignores=[]))
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "to_thread"
+            and workers[0].name in _names([ast.Expr(value=arg) for arg in node.args])
+        ]
+        assert len(handed) == 1, "the worker is no longer the one thing handed to to_thread"
+        # And none of them is ALSO reached from the branch body outside it, which
+        # is how the walk creeps back onto the loop while the worker still exists.
+        on_loop = _names([stmt for stmt in gate.body if not isinstance(stmt, ast.FunctionDef)])
+        assert not (blocking & on_loop), f"a blocking read runs on the loop: {blocking & on_loop}"
+
+        # The folder scan has its own candidate window, and a window that FILLED
+        # means admissible runs past it were never inspected. The count cannot
+        # describe them -- a window full of records this socket then rejected
+        # reports an overflow of zero while older eligible runs went unseen -- so
+        # the flag has to travel with the records and reach the warning.
+        assert "overflow_is_lower_bound" in off_branch, (
+            "the crew-log-off fallback drops overflow_is_lower_bound, so a "
+            "saturated scan reads as a complete replay"
+        )
+        enclosing = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef))
+            and any(child is gate for child in ast.walk(node))
+        ]
+        assert enclosing, "the gate has no enclosing function"
+        handler = min(enclosing, key=lambda node: len(list(ast.walk(node))))
+        warnings = [
+            node
+            for node in ast.walk(handler)
+            if isinstance(node, ast.If)
+            and isinstance(node.test, ast.BoolOp)
+            and isinstance(node.test.op, ast.Or)
+            and any(
+                isinstance(call, ast.Attribute) and call.attr == "warning"
+                for call in ast.walk(ast.Module(body=node.body, type_ignores=[]))
+            )
+        ]
+        assert len(warnings) == 1, "the replay's truncation warning is no longer one or-gated if"
+        # Gated on EITHER, so a saturated window reports even at a count of zero.
+        assert len(_names(warnings[0].test.values)) >= 2
+        # Control on the needles: both readers must be reached somewhere in the
+        # module, or the assertions above pass because the names are wrong.
+        whole = _names(tree.body)
+        assert {"read_fold_subagent_records", "read_panel_records"} <= whole
 
 
 class TestTheDismissalStoreIsRegisteredEverywhereItMustBe:
@@ -2893,8 +3082,8 @@ class _DeleteRequest:
     produce both, and an instance attribute cannot: ``in`` dispatches on the type.
     """
 
-    def __init__(self, agent_id: str, app: object = "") -> None:
-        self.app = {"state": SimpleNamespace(subagents=None)}
+    def __init__(self, agent_id: str, app: object = "", slots: dict | None = None) -> None:
+        self.app = {"state": SimpleNamespace(subagents=None, _slots=slots or {})}
         self.headers: dict[str, str] = {}
         self.match_info = {"agent_id": agent_id}
         self.query: dict[str, str] = {}
@@ -2977,3 +3166,427 @@ class TestACardRebuiltFromDiskCanBeDismissed:
         write_record(agent_root, "ondisk4")
         self.delete("ondisk4")
         assert [(e["operation"], e["outcome"]) for e in recorded] == [("spawn.dismiss", "allowed")]
+
+
+class TestTheRouteRecordsTheDismissalInTheOwningSessionsLog:
+    """The record the PANEL reads, written by the route that accepts the dismissal.
+
+    The folder registry below it is kept for ``GET /api/spawn``, which reads the
+    folders for the run's own output text. This half is what keeps the card gone,
+    because the panel's durable source is a fold of the session's crew log.
+    """
+
+    def delete(self, agent_id: str, slots: dict | None = None):
+        response = asyncio.get_event_loop().run_until_complete(
+            messaging.api_spawn_delete(_DeleteRequest(agent_id, "", slots))
+        )
+        return response.status, json.loads(response.text or "{}")
+
+    @pytest.fixture(autouse=True)
+    def _crew_log_on(self, monkeypatch):
+        """The suite runs with the crew log OFF, so a test opts in.
+
+        This class is about the entry the route writes, so the record has to be
+        switched on for it. The opt-OUT is behaviour of its own and is pinned by
+        the last test here rather than left to this fixture's absence.
+        """
+        monkeypatch.setenv("KIROCREW_CREW_LOG", "1")
+        yield
+
+    def _session_with_child(self, unit_id: str, agent_id: str, slot: str = "chat-1"):
+        """One crew-log UNIT holding a finished child, with *slot* in its header.
+
+        The unit id is an ACP session id and is deliberately unlike the slot and
+        its session key: the route resolves the unit by searching the units whose
+        headers name the slot, which a unit id that happened to BE the session key
+        would not exercise.
+        """
+        from kiro_crew import crew_log as lg
+        from kiro_crew.crew_log import CrewLog
+
+        handle = CrewLog.create(
+            lg.KIND_SESSION, unit_id, owner="raymond", agent="kirocrew", slot=slot
+        )
+        handle.append("subagent/spawned", {"agent_id": agent_id}, src="gateway")
+        handle.append("subagent/completed", {"agent_id": agent_id, "ms": 5}, src="gateway")
+        return handle
+
+    def _drawn(self, unit_id: str) -> list[str]:
+        from kiro_crew.crew_log import emit
+        from kiro_crew.crew_log import projection as crew_log
+
+        # The emitter QUEUES its appends, so the route's entry has to reach the file
+        # before the fold is read: an unflushed write would leave the row drawn and
+        # read as a dismissal that did not work, or -- worse, in the other
+        # direction -- let a later flush make a failing assertion pass.
+        emit.flush()
+        value = crew_log.fold_session(unit_id, names=("subagents",)).projection("subagents").value
+        return sorted(value["by_id"])
+
+    def test_a_run_with_no_folder_is_dismissed_through_the_log(self, agent_root, monkeypatch):
+        """The case the folder registry cannot answer at all.
+
+        It refuses to record without a folder, which is the state every run reaches
+        once its folder is reclaimed -- and the log still carries the child, so the
+        card came back. The route writes the entry, and the fold stops drawing it.
+        """
+        monkeypatch.setattr(
+            messaging, "_sel", lambda: SimpleNamespace(log_api_access=lambda **_: None)
+        )
+        self._session_with_child("acp-nf", "nofolder1")
+        assert self._drawn("acp-nf") == ["nofolder1"]
+
+        slots = {"chat-1": SimpleNamespace(key="chat-1", linked_session_key="")}
+        status, body = self.delete("nofolder1", slots)
+        assert (status, body["dismissed"]) == (200, True)
+        assert self._drawn("acp-nf") == []
+
+    def test_an_id_no_log_and_no_folder_knows_is_still_not_found(self, agent_root, monkeypatch):
+        """Neither record can be written, so there is no run here to speak of."""
+        monkeypatch.setattr(
+            messaging, "_sel", lambda: SimpleNamespace(log_api_access=lambda **_: None)
+        )
+        self._session_with_child("acp-other", "other1")
+        slots = {"chat-1": SimpleNamespace(key="chat-1", linked_session_key="")}
+        assert self.delete("never-ran", slots)[0] == 404
+
+    def test_a_child_of_no_live_slots_session_is_not_resolved(self, agent_root, monkeypatch):
+        """The resolver is bounded by the live slots, like the panel read.
+
+        A child whose session is not among them is not one the panel could be
+        drawing from the log either, so there is no folded card to clear.
+        """
+        monkeypatch.setattr(
+            messaging, "_sel", lambda: SimpleNamespace(log_api_access=lambda **_: None)
+        )
+        self._session_with_child("acp-offstage", "offstage1", slot="chat-9")
+        slots = {"chat-1": SimpleNamespace(key="chat-1", linked_session_key="")}
+        assert self.delete("offstage1", slots)[0] == 404
+        assert self._drawn("acp-offstage") == ["offstage1"]
+
+    def test_an_unwritable_folder_registry_is_reported_even_when_the_log_arm_wrote(
+        self, agent_root, monkeypatch
+    ):
+        """One reader honours the dismissal and the other does not, so it is partial.
+
+        ``GET /api/spawn`` reads the folders, so an unwritable registry leaves that
+        listing offering the run however well the log arm did. Answering ok claims
+        a dismissal one reader goes on contradicting, with nothing anywhere saying
+        the write failed -- so the caller cannot retry the half that did not land.
+        """
+        denied: list[dict] = []
+        monkeypatch.setattr(
+            messaging,
+            "_sel",
+            lambda: SimpleNamespace(log_api_access=lambda **kw: denied.append(kw)),
+        )
+        self._session_with_child("acp-partial", "partial1")
+        monkeypatch.setattr(
+            messaging,
+            "record_panel_dismissal_outcome",
+            lambda agent_id: subagent_persistence.DISMISSAL_FAILED,
+        )
+
+        slots = {"chat-1": SimpleNamespace(key="chat-1", linked_session_key="")}
+        status, body = self.delete("partial1", slots)
+        assert (status, body["code"]) == (503, "dismissal_unwritable")
+        assert [(e["operation"], e["outcome"]) for e in denied] == [("spawn.dismiss", "denied")]
+        # And the log arm's own write still happened: the half that CAN land does,
+        # so a retry has less to do rather than more.
+        assert self._drawn("acp-partial") == []
+
+    def test_an_append_that_never_commits_is_not_published_as_a_dismissal(
+        self, agent_root, monkeypatch
+    ):
+        """The queue returns on handover, so handover is not the record.
+
+        With the run's folder already reclaimed this entry is the ONLY record of
+        the dismissal. Reporting success on the handover tells the user the card is
+        gone and lets the next reconnect bring it back, with nothing left to
+        explain it and nothing for a retry to act on.
+        """
+        monkeypatch.setattr(
+            messaging, "_sel", lambda: SimpleNamespace(log_api_access=lambda **_: None)
+        )
+        self._session_with_child("acp-drop", "dropped1")
+
+        def _never_commits(unit, *, agent_id, on_settled=None):
+            """Queued, then given up on -- the writer's permanent-drop outcome."""
+            if on_settled is not None:
+                on_settled(False)
+
+        monkeypatch.setattr(messaging_crew_log_emit(), "on_subagent_dismissed", _never_commits)
+        monkeypatch.setattr(messaging_crew_log_emit(), "dismiss_child", lambda agent_id, **_: "")
+
+        slots = {"chat-1": SimpleNamespace(key="chat-1", linked_session_key="")}
+        status, body = self.delete("dropped1", slots)
+        # 503, not 404: a unit holds this child, so the run exists. A 404 would say
+        # it never did, which is the answer that makes the card undismissable.
+        assert (status, body["code"]) == (503, "dismissal_unwritable")
+        assert self._drawn("acp-drop") == ["dropped1"]
+
+    def test_a_committed_append_is_published(self, agent_root, monkeypatch):
+        """Control: the gate must not refuse the dismissal that did land."""
+        monkeypatch.setattr(
+            messaging, "_sel", lambda: SimpleNamespace(log_api_access=lambda **_: None)
+        )
+        self._session_with_child("acp-ok", "ok1")
+        slots = {"chat-1": SimpleNamespace(key="chat-1", linked_session_key="")}
+
+        status, body = self.delete("ok1", slots)
+        assert (status, body["dismissed"]) == (200, True)
+        assert self._drawn("acp-ok") == []
+
+    def test_a_failed_unit_search_answers_retryable_not_not_found(self, agent_root, monkeypatch):
+        """ABSENT would become a 404 or a plain success, both of them wrong.
+
+        The run exists as far as anyone knows; the store simply would not say where
+        its row is. A 404 tells the caller the run never existed, and a success
+        tells it the card is cleared, so the only honest answer is retryable.
+        """
+        monkeypatch.setattr(
+            messaging, "_sel", lambda: SimpleNamespace(log_api_access=lambda **_: None)
+        )
+        from kiro_crew.crew_log import resolve as crew_log_resolve
+
+        self._session_with_child("acp-nosay", "nosay1")
+
+        def _boom(*_a, **_kw):
+            raise crew_log_resolve.UnitSearchFailed("the store is unreadable")
+
+        monkeypatch.setattr(crew_log_resolve, "unit_holding_child", _boom)
+        monkeypatch.setattr(messaging_crew_log_emit(), "dismiss_child", lambda agent_id, **_: "")
+
+        slots = {"chat-1": SimpleNamespace(key="chat-1", linked_session_key="")}
+        status, body = self.delete("nosay1", slots)
+        assert (status, body["code"]) == (503, "dismissal_unwritable")
+
+    def test_an_unexpected_fault_in_the_log_arm_answers_retryable(self, agent_root, monkeypatch):
+        """The catch-all is a store fault too, so it cannot read as "nothing owed".
+
+        Whatever reaches it is an emitter or store problem, and ABSENT would become
+        a 404 for a run that exists or a plain success for a card still drawn. The
+        one case that genuinely owes no record, a switched-off emitter, is decided
+        before anything here can fail.
+        """
+        monkeypatch.setattr(
+            messaging, "_sel", lambda: SimpleNamespace(log_api_access=lambda **_: None)
+        )
+        self._session_with_child("acp-fault", "fault1")
+
+        def _boom(*_a, **_kw):
+            raise ValueError("something nobody anticipated")
+
+        monkeypatch.setattr(messaging_crew_log_emit(), "dismiss_child", _boom)
+
+        slots = {"chat-1": SimpleNamespace(key="chat-1", linked_session_key="")}
+        status, body = self.delete("fault1", slots)
+        assert (status, body["code"]) == (503, "dismissal_unwritable")
+
+    def test_with_the_crew_log_switched_off_the_folder_record_is_all_there_is(
+        self, agent_root, monkeypatch
+    ):
+        """An install that opted out of the record has no record to write to.
+
+        The folder registry still answers on its own terms, which is what the
+        listing endpoint reads anyway -- so the opt-out costs the panel its durable
+        half rather than breaking the route.
+        """
+        monkeypatch.setenv("KIROCREW_CREW_LOG", "0")
+        monkeypatch.setattr(
+            messaging, "_sel", lambda: SimpleNamespace(log_api_access=lambda **_: None)
+        )
+        write_record(agent_root, "withfolder1")
+        slots = {"chat-1": SimpleNamespace(key="chat-1", linked_session_key="")}
+        status, body = self.delete("withfolder1", slots)
+        assert (status, body["dismissed"]) == (200, True)
+        assert dismissed_panel_ids() == frozenset({"withfolder1"})
+
+
+class TestTheLiveManagerPathRecordsTheDismissalToo:
+    """The dismiss route has TWO arms, and both have to reach the same records.
+
+    A finished child the manager still holds goes through
+    ``settle_before_delete``; one the manager has already dropped goes through the
+    route's own durable arm. The panel folds the crew log for both, so an arm that
+    writes only the folder registry clears the card from live state and leaves the
+    fold still
+    offering it -- the card returns on the very next reconnect, inside the same
+    process, with the user having been told the dismissal worked.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _crew_log_on(self, monkeypatch):
+        """The crew log on, and the emitter's spawn pin clear.
+
+        ``_child_origin`` is a module global that outlives one test, so a pin left
+        by an earlier test would decide a later one -- and the two cases here
+        differ by exactly whether a pin exists. Cleared both sides, so neither
+        order hides a failure.
+        """
+        from kiro_crew.crew_log import emit
+
+        monkeypatch.setenv("KIROCREW_CREW_LOG", "1")
+        emit.forget_child_origin("live1")
+        yield
+        emit.forget_child_origin("live1")
+
+    def manager(self):
+        return SimpleNamespace(
+            _agents={
+                "live1": SimpleNamespace(
+                    id="live1",
+                    _report_failure_latched=False,
+                    parent_session_key="dashboard:chat-1",
+                )
+            },
+            _tasks={"live1": object()},
+            _report_owners={},
+        )
+
+    def settle(self, manager):
+        import kiro_crew.subagent as subagent_module
+
+        return asyncio.run(
+            subagent_module.SubagentManager.settle_before_delete(manager, "live1", "")
+        )
+
+    def _session_with_child(self, unit_id: str, agent_id: str, slot: str = "chat-1"):
+        """A dispatched child, closed through the REAL terminal report.
+
+        The terminal report is what releases the emitter's spawn pin, in a
+        ``finally`` that always runs -- so by the time a finished child reaches
+        ``settle_before_delete`` there is no pin, and a test that closed the child
+        by calling ``on_subagent_completed`` directly leaves one standing and
+        proves nothing about production. Driving the real reporter is what makes
+        this the live arm's own case.
+        """
+        from kiro_crew import crew_log as lg
+        from kiro_crew.crew_log import CrewLog, emit
+        from kiro_crew.subagent_manager.terminal import TerminalCoordinator
+
+        CrewLog.create(lg.KIND_SESSION, unit_id, owner="raymond", agent="kirocrew", slot=slot)
+        emit.remember_child_origin(agent_id, unit_id, 1)
+        sid, turn = emit.open_child_origin(agent_id)
+        emit.on_subagent_spawned(sid, turn, agent_id=agent_id)
+        info = SimpleNamespace(
+            id=agent_id,
+            outcome="completed",
+            error=None,
+            user_stopped=False,
+            elapsed=0.005,
+            credits=0.0,
+        )
+        TerminalCoordinator._record_crew_log_terminal(SimpleNamespace(), info)
+        assert emit.flush()
+        assert emit.child_origin(agent_id) == ("", 0), (
+            "the terminal report left the spawn pin standing, so this test is not the "
+            "state a finished child is actually in"
+        )
+
+    def _drawn(self, unit_id: str) -> list[str]:
+        from kiro_crew.crew_log import emit
+        from kiro_crew.crew_log import projection as crew_log
+
+        assert emit.flush()
+        value = crew_log.fold_session(unit_id, names=("subagents",)).projection("subagents").value
+        return sorted(value["by_id"])
+
+    def test_the_fold_stops_offering_a_card_the_live_arm_dismissed(self, agent_root, monkeypatch):
+        self._session_with_child("acp-live", "live1")
+        write_record(agent_root, "live1")
+        assert self._drawn("acp-live") == ["live1"]
+
+        manager = self.manager()
+        assert self.settle(manager) == "delivered"
+        assert "live1" not in manager._agents
+        assert self._drawn("acp-live") == []
+        # And the folder half is written too, so the listing endpoint agrees.
+        assert dismissed_panel_ids() == frozenset({"live1"})
+
+    def test_a_child_no_unit_holds_does_not_hold_the_pop(self, agent_root, monkeypatch):
+        """Nothing to suppress is not a failure to suppress.
+
+        A child whose dispatch this slot's logs never recorded has no row for the
+        fold to offer, so there is no folded card to clear -- and holding the pop
+        on it would answer 409 for every such dismissal, which is undismissable
+        rather than safe. The folder record still answers for the listing.
+        """
+        write_record(agent_root, "live1")  # a folder, and no unit holding the row
+        manager = self.manager()
+        assert self.settle(manager) == "delivered"
+        assert "live1" not in manager._agents
+        assert dismissed_panel_ids() == frozenset({"live1"})
+
+    def test_an_unstorable_folder_record_still_holds_the_pop(self, agent_root, monkeypatch):
+        """The half that CAN fail still gates the publish.
+
+        The folder write is a synchronous file write and can genuinely fail, and
+        the listing reads that record -- so a pop on a failed write reports a
+        dismissal the listing will not honour.
+        """
+        import kiro_crew.subagent as subagent_module
+
+        self._session_with_child("acp-live", "live1")
+        monkeypatch.setattr(
+            subagent_module,
+            "record_panel_dismissal_outcome",
+            lambda agent_id: subagent_persistence.DISMISSAL_FAILED,
+        )
+        manager = self.manager()
+        assert self.settle(manager) == "pending"
+        assert "live1" in manager._agents
+
+    def test_an_append_that_never_commits_holds_the_pop(self, agent_root, monkeypatch):
+        """The pop is the publish, on this arm as much as on the route's.
+
+        The writer can refuse the entry at its memory ceiling, and the queue has
+        already returned by then. A pop on that reports a dismissal to the route as
+        200 and leaves the fold still offering the card, so it comes back on the
+        very next reconnect -- which is the same published-too-early failure the
+        folder write above this is deliberately ordered to avoid.
+        """
+        self._session_with_child("acp-live-drop", "live1")
+        write_record(agent_root, "live1")
+
+        def _never_commits(unit, *, agent_id, on_settled=None):
+            if on_settled is not None:
+                on_settled(False)
+
+        monkeypatch.setattr(messaging_crew_log_emit(), "on_subagent_dismissed", _never_commits)
+        manager = self.manager()
+        assert self.settle(manager) == "pending"
+        assert "live1" in manager._agents
+        assert "live1" in manager._tasks
+        # And the folder half was never written either, so a retry starts clean
+        # rather than from a half-recorded dismissal.
+        assert dismissed_panel_ids() == frozenset()
+
+    def test_a_failed_unit_search_holds_the_pop(self, agent_root, monkeypatch):
+        """A store that would not say is not a store that said no.
+
+        Popping on it reports a dismissal that was never looked for, and the card
+        returns once the store recovers -- with the user having been told it worked.
+        """
+        from kiro_crew.crew_log import resolve as crew_log_resolve
+
+        self._session_with_child("acp-live-search", "live1")
+        write_record(agent_root, "live1")
+
+        def _boom(*_a, **_kw):
+            raise crew_log_resolve.UnitSearchFailed("the store is unreadable")
+
+        monkeypatch.setattr(crew_log_resolve, "unit_holding_child", _boom)
+        manager = self.manager()
+        assert self.settle(manager) == "pending"
+        assert "live1" in manager._agents
+        assert dismissed_panel_ids() == frozenset()
+
+    def test_with_the_crew_log_off_the_live_arm_still_dismisses(self, agent_root, monkeypatch):
+        """The opt-out must not make every managed card undismissable."""
+        monkeypatch.setenv("KIROCREW_CREW_LOG", "0")
+        write_record(agent_root, "live1")
+        manager = self.manager()
+        assert self.settle(manager) == "delivered"
+        assert "live1" not in manager._agents
+        assert dismissed_panel_ids() == frozenset({"live1"})

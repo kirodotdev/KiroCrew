@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import heapq
 import json
 import logging
 import sys
 import time
+from collections.abc import Collection
 from typing import Any, Callable
 
 from aiohttp import WSCloseCode, WSMsgType, web
 
 from kiro_crew import __version__ as _local_version
 from kiro_crew import shutdown_event
+from kiro_crew.constants import crew_log_enabled
 from kiro_crew.dashboard.chat_utils import effective_session_key, subagent_event_slot
 from kiro_crew.dashboard.origin import check_origin
 from kiro_crew.dashboard.state import (
@@ -38,11 +41,16 @@ from kiro_crew.dashboard.ws_event_scope import (
     slots_envelope_extras,
 )
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
-from kiro_crew.subagent_persistence import PanelRecords, read_panel_records
+from kiro_crew.subagent_persistence import read_panel_records
 
 logger = logging.getLogger(__name__)
 
 _WS_STATUS_INTERVAL = 5  # seconds between dashboard status pushes
+
+#: What a card says about a child whose closer recorded no usable ending. The same
+#: wording the run-folder reader gives an orphan, because it is the same fact: the
+#: writer went away without recording how the run ended.
+_ORPHANED_UNKNOWN = "Orphaned (unknown cause)"
 
 
 async def _send_slot_projection_subscribed(ws: web.WebSocketResponse) -> None:
@@ -119,7 +127,7 @@ def _subagent_replay_has_owner(frame: object) -> bool:
 
 
 def build_persisted_subagent_frame(record: dict, *, redact: Callable[[str], str]) -> dict:
-    """Build the ``subagent_done`` replay frame for one persisted run record.
+    """Build the ``subagent_done`` replay frame for one durable run record.
 
     Separate from the reconnect handler for the same reason
     :func:`build_subagent_snapshot` is: the handler around it needs a live
@@ -128,25 +136,353 @@ def build_persisted_subagent_frame(record: dict, *, redact: Callable[[str], str]
 
     The caller's own redactor is passed in rather than imported, so these frames
     carry exactly the treatment the live frames beside them get.
+
+    ``credits``, ``model`` and ``task`` are OMITTED when the record has none, never
+    sent as ``0`` or ``""``. A child that reported no charge and a child that cost
+    nothing are different facts, only one of them a measurement; and a log that
+    does not say what a child was asked -- which is every log written before the
+    field -- is not a child asked to do nothing. The client's reducer reads an
+    absent key as "this frame does not say" and keeps any value it already held,
+    which a zero or an empty string would overwrite, and the card draws no task
+    line at all rather than a blank one.
     """
     error = str(record.get("error") or "")
-    return {
-        "type": "subagent_done",
-        "data": {
-            "id": str(record.get("id") or ""),
-            # Same mapping the live frames use; a raw prefix-strip tags a card
-            # with a slot no tab reads.
-            "slot": subagent_event_slot(str(record.get("parent_session") or "")),
-            "elapsed": float(record.get("elapsed") or 0.0),
-            "error": redact(error) if error else None,
-            # The tombstone records the run's own outcome, so a user stop stays a
-            # stop here rather than being flattened into a failure.
-            "stopped": bool(record.get("stopped")),
-            "outcome": str(record.get("outcome") or ""),
-            "task": redact(str(record.get("task") or "")),
-            "agent": redact(str(record.get("agent") or "")),
-        },
+    credits = record.get("credits")
+    model = str(record.get("model") or "")
+    task = str(record.get("task") or "")
+    data: dict = {
+        "id": str(record.get("id") or ""),
+        # The record's own slot when it carries one -- a folded record does, since
+        # its unit id is an ACP session id a slot cannot be derived from. Otherwise
+        # the session key is mapped, the same mapping the live frames use; a raw
+        # prefix-strip tags a card with a slot no tab reads.
+        "slot": str(record.get("slot") or "")
+        or subagent_event_slot(str(record.get("parent_session") or "")),
+        "elapsed": float(record.get("elapsed") or 0.0),
+        "error": redact(error) if error else None,
+        # The record carries the run's own outcome, so a user stop stays a
+        # stop here rather than being flattened into a failure.
+        "stopped": bool(record.get("stopped")),
+        "outcome": str(record.get("outcome") or ""),
+        "agent": redact(str(record.get("agent") or "")),
     }
+    if task:
+        data["task"] = redact(task)
+    if isinstance(credits, (int, float)) and not isinstance(credits, bool):
+        data["credits"] = float(credits)
+    if model:
+        data["model"] = model
+    return {"type": "subagent_done", "data": data}
+
+
+def fold_subagent_outcome(outcome: str, reason: str) -> tuple[str, str, bool]:
+    """One fold row's ending as the ``(outcome, error, stopped)`` a card draws.
+
+    The fold keeps the subagent runtime's OWN outcome string, deliberately: that
+    enum is open, so enforcing a set at the fold would turn "the upstream
+    vocabulary grew" into a lost record. A card cannot draw an open set, and the
+    client's terminal classification falls through to ``done`` for a value it does
+    not recognise -- so a child whose ending the log recorded as ``unknown`` would
+    be drawn as a success. That is the one mapping this does: a value outside the
+    three the client reads becomes ``failed``, which is what the persisted reader
+    this replaced answered for an ending it could not classify either.
+
+    The error text follows the same rule. The closer's own ``reason`` is used when
+    it wrote one; crash-repair writes none, and its row gets the wording the
+    folder reader gave an orphan, because that is the same fact -- the writer went
+    away without recording an ending.
+
+    A stop is not an error, so it carries no text: the consumers drop it for a
+    stop anyway, and a stop drawn with error text reads as a failure.
+    """
+    if outcome == "stopped":
+        return "stopped", "", True
+    if outcome == "completed":
+        return "completed", "", False
+    if outcome == "failed":
+        return "failed", reason, False
+    return "failed", reason or _ORPHANED_UNKNOWN, False
+
+
+def _replay_record_slot(record: dict) -> str:
+    """The slot a durable panel record routes to, from whichever key it carries.
+
+    The two durable sources name the owning conversation differently, and the gate
+    that reads this cannot tell which one it is holding. A folded record carries
+    ``slot`` outright, because its unit id is an ACP session id a slot cannot be
+    derived from. A folder record carries ``parent_session``, the raw session key,
+    which :func:`subagent_event_slot` maps -- the same mapping the live frames use,
+    and not a prefix-strip, which tags a card with a slot no tab reads.
+
+    ``""`` only when the record names no conversation at all, which both gates
+    refuse. Reading an absent key as an empty slot would refuse every record from
+    the source that uses the other name.
+    """
+    return str(record.get("slot") or "") or subagent_event_slot(
+        str(record.get("parent_session") or "")
+    )
+
+
+def crew_log_panel_units(slot_names: Collection[str]) -> list[tuple[str, str]]:
+    """``(slot, unit)`` pairs to fold for *slot_names*, excluding deleted units.
+
+    A slot's units come from the store's own slot-naming headers, not from its
+    session key: a unit is the ACP session id the log was opened under, a slot owns
+    one id at a time, and a finished child can sit in any unit the slot has run
+    under. The slot is carried alongside its unit because it is what a frame is
+    routed by and what the ownership gate asks about, and a unit id is not
+    something a slot can be derived back from.
+
+    Resolved through :func:`session_ledger.crew_log_units`, which is the resolver
+    that applies the slot's PERMANENT-DELETE exclusion list -- the raw store index
+    does not. A slot key is reused: the person who holds it now may not be the one
+    whose conversation was deleted, and folding an excluded unit hands them that
+    conversation's finished subagent cards, task text included, for the whole
+    retention window. It also fails CLOSED per slot: a slot whose exclusion list
+    cannot be read contributes no units rather than all of them, so an unreadable
+    list costs one slot's cards instead of serving a deleted conversation's.
+
+    The crew-log import is local so this module's own import pulls in no crew-log
+    machinery: the log is an optional subsystem behind a flag, and this module is
+    on the gateway's boot path.
+
+    Blocking. A caller on the event loop must wrap this in
+    :func:`asyncio.to_thread`, passing a snapshot of the names taken on the loop.
+    Each name costs a cached index lookup plus its own exclusion-list read.
+    """
+    from kiro_crew.session_ledger import crew_log_units
+
+    return [(name, unit) for name in slot_names for unit in crew_log_units(name)]
+
+
+def backfill_legacy_panel_dismissals(units: Collection[tuple[str, str]]) -> frozenset[str]:
+    """Write the log the dismissals only the legacy folder registry holds.
+
+    Returns the ids corrected, which the caller must ALSO exclude from the read it
+    is about to make: the append is queued, so the fold that follows it in the
+    same breath may not carry it yet, and a card hidden on the next reconnect but
+    drawn on this one is the failure this whole path exists to prevent.
+
+    A dismissal is a fact about the session, so the log is where the panel reads it
+    from. Dismissals made before that entry type existed are held only in the
+    folder registry, and a reader that just consulted the registry alongside the
+    fold would keep two records of the same fact -- which is the arrangement this
+    panel path exists to end. So the RECORD is corrected instead: a child the
+    registry marks dismissed, whose log carries no dismissal, gets one appended to
+    the unit that holds it.
+
+    Idempotent, and that is the point rather than a convenience. The fold's render
+    stops offering a row once the log carries its dismissal, so the corrected child
+    is not among the rows this walks on any later pass -- the registry is read at
+    most once per child, ever. It is never written here either: it stays a
+    read-only legacy input that a later prune can take away without resurrecting
+    anything.
+
+    A child still in flight is skipped. Its card is live, the user has not been
+    offered a dismissal of a row this reads, and a registry entry for it predates
+    nothing.
+
+    Blocking. A caller on the event loop must wrap this in :func:`asyncio.to_thread`.
+    """
+    from kiro_crew.crew_log import emit as crew_log_emit
+    from kiro_crew.crew_log import projection as _projection
+    from kiro_crew.subagent_persistence import panel_dismissal_recorded
+
+    corrected: set[str] = set()
+    for _slot_key, unit_id in units:
+        if not unit_id:
+            continue
+        try:
+            rows = _projection.fold_session(unit_id, ("subagents",)).projection("subagents")
+            for agent_id, row in (rows.value.get("by_id") or {}).items():
+                if not isinstance(row, dict) or not row.get("outcome"):
+                    continue
+                if not panel_dismissal_recorded(str(agent_id)):
+                    continue
+                crew_log_emit.on_subagent_dismissed(unit_id, agent_id=str(agent_id))
+                corrected.add(str(agent_id))
+        except Exception:
+            # The fold or the append failed for this unit. The read that follows
+            # draws whatever the log does hold, so the cost is a card the user has
+            # to clear again -- not a run hidden from them, which is the direction
+            # that must never happen by accident.
+            logger.debug("crew log: correcting %s's panel dismissals failed", unit_id)
+            continue
+    return frozenset(corrected)
+
+
+def read_fold_subagent_records(
+    units: list[tuple[str, str]],
+    *,
+    keep: int,
+    max_age_secs: float,
+    exclude_ids: Collection[str],
+    admit: Callable[[dict], bool],
+    now: float | None = None,
+) -> tuple[list[dict], int]:
+    """Bounded, newest-first panel records folded out of the CREW LOG.
+
+    The durable half of the Subagents panel, and the crew log is where it comes
+    from: the log is the record, so every count, outcome, duration and cost a card
+    draws is a fold of it rather than a second store kept in step by hand. What
+    this reads is the ``subagents`` fold's rows plus the ``class`` fold's ``app``,
+    both folded in ONE pass per unit.
+
+    *units* is ``(slot_key, unit_id)`` per crew-log UNIT, resolved on the event
+    loop by the caller. A unit id is the ACP session id the log was opened under,
+    which is NOT the slot's session key: a slot owns one id at a time, so its
+    history is spread over a unit per id it ran under and a finished child can sit
+    in any of them (``session_ledger.crew_log_units``). The slot is carried
+    alongside because it is what a frame is routed by and what the ownership gate
+    asks about, and deriving it back from a unit id is not possible.
+
+    ``app`` comes from the ``class`` fold, which keeps the FIRST owner the session
+    ever had and never moves off it. That is what the cross-app guard needs: a
+    slot key is caller-supplied and not namespaced, so the key a run was recorded
+    under can later be minted by a different app, and comparing the live slot's
+    owner against the log's own recorded owner is what refuses the old run to the
+    new one.
+
+    A dismissed run never reaches here: the user's dismissal is an entry in this
+    same log, so the ``subagents`` fold stops offering the row and this read has
+    no dismissal store to consult. The log is where it has to be recorded, because
+    a store beside the log is reclaimed on its own schedule: a registry keyed on
+    the run's folder at both ends drops its record when that folder is pruned,
+    while this read still finds the child the log kept.
+
+    Only a CLOSED child is returned. A row with no outcome is a child still in
+    flight, and this process is not the one tracking it: a card drawn from it
+    would wear a running pill nothing will ever advance. The fold's own ``running``
+    count is what states those, and the panel section draws it.
+
+    Ordered newest-first on each row's ``started_ms``, which is why the fold keeps
+    it: ``seq_spawned`` orders rows inside one log and says nothing across two.
+    What ``keep`` cut is COUNTED and returned, never silently dropped.
+
+    Blocking. A caller on the event loop must wrap this in
+    :func:`asyncio.to_thread`.
+    """
+    from kiro_crew.crew_log import projection as _projection
+    from kiro_crew.crew_log import read as _crew_log_read
+
+    if keep <= 0:
+        return [], 0
+    stamp = time.time() if now is None else now
+    cutoff = (stamp - max_age_secs) * 1000.0 if max_age_secs > 0 else float("-inf")
+    skip = set(exclude_ids)
+    # A bounded min-heap on the dispatch stamp, so the working set is capped
+    # whatever the folds hold.
+    #
+    # The two keys after the stamp are what make the order TOTAL, and a heap
+    # needs that: on any tie the tuple comparison falls through to the next key,
+    # and a dict as the next key raises ``TypeError``. Neither earlier key is
+    # enough on its own. ``started_ms`` is a millisecond clock, so a host whose
+    # granularity is coarser gives every child of one burst the same stamp.
+    # ``seq`` then orders them -- but only within ONE unit, since seqs are per
+    # log and a row the fold could not date reads 0, so two units tie on both.
+    # ``order`` is the position this row was pushed in, unique by construction,
+    # so the fall-through always stops before the record. It says nothing about
+    # time; it is there to be an arbitrary order that is at least the SAME one
+    # on every read of the same logs.
+    newest: list[tuple[float, int, int, dict]] = []
+    order = 0
+    overflow = 0
+    for slot_key, unit_id in units:
+        if not slot_key or not unit_id:
+            # No slot is no card to route to, and no unit is no log to fold.
+            continue
+        try:
+            # The OWNER comes from ``crew_log.read.recorded_class``, not from this
+            # unit's class projection directly, because an absent answer and an
+            # unowned session are different facts that the projection's own ``app``
+            # cannot tell apart: both read as "". A unit whose class history has a
+            # hole in it, or whose front was trimmed by retention, or that never
+            # recorded a class at all, would then be published as owned by nobody --
+            # which compares EQUAL to a slot with no owning app, so the cross-app
+            # guard admits the records and the old app's runs, task text included,
+            # reach the slot's new holder. That function owns all three refusals and
+            # answers None for each, so an untrustworthy history skips the unit
+            # instead of lowering the guard. Its fold is incremental and its bundle
+            # is held, so an unchanged log consumes no entries on a later read.
+            recorded = _crew_log_read.recorded_class(unit_id)
+            if recorded is None:
+                logger.debug(
+                    "crew log: %s's class history is not readable, so its subagent "
+                    "rows are skipped rather than published as owned by nobody",
+                    unit_id,
+                )
+                continue
+            app = str(recorded.get("app") or "")
+            rows = (
+                _projection.fold_session(unit_id, ("subagents",))
+                .projection("subagents")
+                .value.get("by_id")
+                or {}
+            )
+        except Exception:
+            logger.debug("crew log: folding %s for the subagent panel failed", unit_id)
+            continue
+        for agent_id, row in rows.items():
+            if not isinstance(row, dict):
+                continue
+            agent_id = str(agent_id)
+            outcome = row.get("outcome")
+            if not outcome or not isinstance(outcome, str):
+                continue
+            if agent_id in skip:
+                continue
+            started_ms = row.get("started_ms")
+            started_ms = float(started_ms) if isinstance(started_ms, (int, float)) else 0.0
+            if started_ms < cutoff:
+                continue
+            ending, error, stopped = fold_subagent_outcome(outcome, str(row.get("reason") or ""))
+            ms = row.get("ms")
+            credits = row.get("credits")
+            record = {
+                "id": agent_id,
+                "task": str(row.get("task") or ""),
+                "agent": str(row.get("agent") or ""),
+                "model": str(row.get("model") or ""),
+                "app": app,
+                "slot": slot_key,
+                "unit": unit_id,
+                "started": started_ms / 1000.0,
+                "elapsed": ms / 1000.0 if isinstance(ms, int) and not isinstance(ms, bool) else 0.0,
+                "outcome": ending,
+                "error": error,
+                "stopped": stopped,
+            }
+            # Absent, not zero: ``usage`` owns the session's credit aggregate and a
+            # row carries only what THIS child reported, so a child that was never
+            # billed must not be published as one that cost nothing.
+            if isinstance(credits, (int, float)) and not isinstance(credits, bool):
+                record["credits"] = float(credits)
+            # The caller's own visibility and ownership bounds, BEFORE the cap.
+            # Filtering afterwards lets a record the caller may not see occupy a
+            # slot its own runs need, and makes the cut count describe a
+            # population that is not the caller's.
+            if not admit(record):
+                continue
+            seq = row.get("seq_spawned")
+            seq = seq if isinstance(seq, int) and not isinstance(seq, bool) else 0
+            order += 1
+            if len(newest) < keep:
+                heapq.heappush(newest, (started_ms, seq, order, record))
+                continue
+            overflow += 1
+            # Displaced on the SAME total order the sort below reports, so what the
+            # cap keeps is the prefix of the order it publishes. Comparing the stamp
+            # alone refuses to displace on a tie, so a burst of children sharing one
+            # millisecond keeps whichever arrived FIRST and then reports them
+            # newest-first -- a list that is ordered but is not the newest runs.
+            if newest[0][:3] < (started_ms, seq, order):
+                heapq.heappushpop(newest, (started_ms, seq, order, record))
+    # Newest first on the SAME total order the heap used, so a tie resolves the
+    # same way here as it did there. Sorting on the stamp alone leaves tied rows
+    # in whatever order the heap happened to hold them, which is a different
+    # order on a different platform for identical logs.
+    ordered = sorted(newest, key=lambda item: item[:3], reverse=True)
+    return [item[3] for item in ordered], overflow
 
 
 def build_subagent_snapshot(a: Any, *, now: float | None = None) -> dict:
@@ -1142,13 +1478,14 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
                         # Durable rebuild source. Every frame above comes from
                         # gateway memory, so a replacement process has none to
                         # replay and the tab stays empty until something new
-                        # spawns. The persisted run folders answer for the runs
-                        # this process never tracked. Ids already collected are
-                        # excluded, so a live frame is never displaced by a disk
-                        # record, and the disk frames join THIS list rather than
-                        # a parallel send: the owner check, the per-socket scope
-                        # gate and the batch packaging below then apply to them
-                        # on exactly the same terms.
+                        # spawns. The CREW LOG answers for the runs this process
+                        # never tracked: it is the record, so a card's outcome,
+                        # duration and cost are a fold of it rather than a second
+                        # store. Ids already collected are excluded, so a live
+                        # frame is never displaced by a folded one, and the folded
+                        # frames join THIS list rather than a parallel send: the
+                        # owner check, the per-socket scope gate and the batch
+                        # packaging below then apply to them on the same terms.
                         try:
                             _seen = {
                                 str(_f["data"]["id"])
@@ -1161,7 +1498,7 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
                             # the row cap is sized over the records this socket may
                             # actually see; then again after the thread returns,
                             # which is the authoritative check. A slot's owner can
-                            # flip while the scan runs -- keys are caller-supplied
+                            # flip while the fold runs -- keys are caller-supplied
                             # and not app-namespaced, so another app can reclaim
                             # one -- and a decision taken off-loop would be read
                             # from state this socket does not describe.
@@ -1179,7 +1516,14 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
                                 dashboard_user=bool(ws.get("_is_dashboard_user", False)),
                             )
 
-                            def _admit_persisted(_rec: dict) -> bool:
+                            # Only the NAMES are taken here. Resolving each one to
+                            # its units reads the store -- a root listing, a stat,
+                            # and on a cold cache a header read per unit -- so it
+                            # belongs in the worker below with the fold, not on the
+                            # loop that is also carrying chat and heartbeats.
+                            _slot_names = list(getattr(state, "_slots", {}))
+
+                            def _admit_folded(_rec: dict) -> bool:
                                 """Both pre-cap bounds, sizing the cap.
 
                                 Withholding is itself the permission decision, so
@@ -1191,7 +1535,7 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
                                 _reason = persisted_precap_denial_reason(
                                     _owner_now,
                                     _visible_now,
-                                    subagent_event_slot(str(_rec.get("parent_session") or "")),
+                                    _replay_record_slot(_rec),
                                     _rec,
                                 )
                                 if _reason:
@@ -1199,18 +1543,59 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
                                     return False
                                 return True
 
-                            _persisted = await asyncio.to_thread(
-                                read_panel_records,
-                                keep=PERSISTED_SUBAGENT_REPLAY_KEEP,
-                                max_age_secs=PERSISTED_SUBAGENT_REPLAY_MAX_AGE_SECS,
-                                exclude_ids=_seen,
-                                admit=_admit_persisted,
-                            )
+                            if crew_log_enabled():
+
+                                def _fold_durable() -> tuple[list[dict], int]:
+                                    """Resolve, correct, then fold -- all off the loop.
+
+                                    A slot's units come from the store's own
+                                    slot-naming headers, NOT from its session key: a
+                                    unit is the ACP session id the log was opened
+                                    under, a slot owns one id at a time, and a
+                                    finished child can sit in any unit the slot has
+                                    run under.
+                                    """
+                                    _pairs = crew_log_panel_units(_slot_names)
+                                    _already = backfill_legacy_panel_dismissals(_pairs)
+                                    return read_fold_subagent_records(
+                                        _pairs,
+                                        keep=PERSISTED_SUBAGENT_REPLAY_KEEP,
+                                        max_age_secs=PERSISTED_SUBAGENT_REPLAY_MAX_AGE_SECS,
+                                        exclude_ids=set(_seen) | _already,
+                                        admit=_admit_folded,
+                                    )
+
+                                _folded, _overflow = await asyncio.to_thread(_fold_durable)
+                                # The fold reads every row of every unit it was
+                                # given, so its overflow is the exact count past
+                                # the cap and never a floor.
+                                _saturated = False
+                            else:
+                                # An install that switched the record off has no
+                                # fold to read, and the rebuild is not what it opted
+                                # out of: the run folders still describe the runs
+                                # this process never tracked, on the same bounds and
+                                # through the same gates. Reading them here is what
+                                # keeps the opt-out costing the panel nothing.
+                                _records = await asyncio.to_thread(
+                                    read_panel_records,
+                                    keep=PERSISTED_SUBAGENT_REPLAY_KEEP,
+                                    max_age_secs=PERSISTED_SUBAGENT_REPLAY_MAX_AGE_SECS,
+                                    exclude_ids=_seen,
+                                    admit=_admit_folded,
+                                )
+                                _folded, _overflow = _records.records, _records.overflow
+                                # The folder scan has its OWN candidate window, and
+                                # a window that filled means admissible runs past it
+                                # were never inspected. Carried because the count
+                                # cannot describe them: a window full of records this
+                                # socket then rejected reports an overflow of zero
+                                # while still having left older eligible runs unseen.
+                                _saturated = _records.overflow_is_lower_bound
                         except Exception:
-                            logger.debug("Persisted subagent replay failed", exc_info=True)
-                            _persisted = PanelRecords([], 0, False)
-                        _overflow = _persisted.overflow
-                        if _overflow or _persisted.overflow_is_lower_bound:
+                            logger.debug("Folded subagent replay failed", exc_info=True)
+                            _folded, _overflow, _saturated = [], 0, False
+                        if _overflow or _saturated:
                             # Said out loud once per rebuild, to the operator
                             # rather than the client: a cut tail otherwise reads
                             # as a population that never held those runs. The
@@ -1220,26 +1605,29 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
                             # stream, where an operator has to be able to see the
                             # ownership refusals. No client reads a count it
                             # cannot act on, so it stays off the wire too.
+                            # A saturated window reports even at a count of zero,
+                            # because that is the case where the count itself
+                            # cannot see what was left out.
                             logger.warning(
-                                "subagent replay truncated: %s%d eligible persisted run(s) "
+                                "subagent replay truncated: %s%d eligible run(s) "
                                 "past the %d cap%s",
-                                "at least " if _persisted.overflow_is_lower_bound else "",
+                                "at least " if _saturated else "",
                                 _overflow,
                                 PERSISTED_SUBAGENT_REPLAY_KEEP,
                                 (
-                                    " (scan window saturated, so older admissible runs "
-                                    "may not have been inspected)"
-                                    if _persisted.overflow_is_lower_bound
+                                    " (scan window saturated, older admissible runs "
+                                    "may be uninspected)"
+                                    if _saturated
                                     else ""
                                 ),
                             )
-                        for _rec in _persisted.records:
+                        for _rec in _folded:
                             try:
                                 # The authoritative gate, on the loop, against
                                 # state as it is NOW rather than as the snapshot
                                 # found it. A record the snapshot admitted and
                                 # this rejects had its slot reclaimed mid-scan.
-                                _slot = subagent_event_slot(str(_rec.get("parent_session") or ""))
+                                _slot = _replay_record_slot(_rec)
                                 _why = persisted_replay_denial_reason(state, _slot, _rec)
                                 if _why:
                                     _audit_deny(ws_app or "<dashboard>", "subagent_done", _why)
