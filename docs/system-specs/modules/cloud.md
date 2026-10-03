@@ -527,8 +527,9 @@ pointer -- which `kirocrew cloud list` can rediscover from the real stacks anywa
     by a FIXED ARN via a new `PermissionsBoundaryArn` parameter (AllowedPattern
     `^arn:aws:iam::[0-9]{12}:policy/kirocrew-ec2-boundary$`), which the launcher
     fills with `arn:aws:iam::<account>:policy/kirocrew-ec2-boundary`.
-  - The launcher policy grants only `iam:CreatePolicy` + `iam:GetPolicy` on that
-    **exact** ARN (`IamInstanceBoundaryCreateOnce`) — and NO
+  - The launcher policy grants only `iam:CreatePolicy` + `iam:GetPolicy` +
+    `iam:GetPolicyVersion` on that **exact** ARN
+    (`IamInstanceBoundaryCreateOnce`) — and NO
     `CreatePolicyVersion`/`DeletePolicyVersion`/`DeletePolicy`. This is the crux:
     `CreatePolicy` on a fixed name fails `EntityAlreadyExists` once the boundary
     exists, and with no version/delete verb a **leaked launcher credential cannot
@@ -544,9 +545,12 @@ pointer -- which `kirocrew cloud list` can rediscover from the real stacks anywa
     the legitimate first launch, seeding a permissive boundary at that name. That
     is materially smaller than the old "author an arbitrary boundary at any time"
     hole. Operators who want it gone entirely run `kirocrew cloud iam-boundary`
-    once as an admin, then drop the `IamInstanceBoundaryCreateOnce` statement from
-    the applied launcher policy (the launcher then only *references* the ARN, with
-    no `CreatePolicy` grant). The agent-shell deny-list also blocks
+    once as an admin, then remove the `iam:CreatePolicy` action from the
+    `IamInstanceBoundaryCreateOnce` statement in the applied launcher policy — the
+    launcher then only *references* the ARN. Keep the statement itself and its two
+    read verbs: `_ensure_boundary` reads the boundary on EVERY launch to verify its
+    content before reuse, so a launcher that cannot read it cannot launch at all,
+    whatever order the calls are made in. The agent-shell deny-list also blocks
     `aws iam create-policy`/`create-policy-version`.
   The instance role's inline `s3:GetObject` is still pinned to the **derived**
   launcher path (`kirocrew-src-${AccountId}-${Region}/${StackTag}/…`), not the

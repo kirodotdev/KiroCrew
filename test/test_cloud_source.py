@@ -1611,6 +1611,54 @@ class TestEnsureInstanceBoundary:
         with pytest.raises(aws.AWSError, match="iam:CreatePolicy"):
             source.ensure_instance_boundary("dev", "us-east-1")
 
+    def test_read_denied_names_the_read_verb_and_skips_create(self, monkeypatch):
+        # A DENIED get-policy is not an absent boundary. Reaching create-policy
+        # here would surface the CREATE verb as the missing grant, sending an
+        # operator who lacks only the read to grant iam:CreatePolicy — a write they
+        # do not want and which does not fix the launch. The read verb is named and
+        # create is never attempted.
+        monkeypatch.setattr(source, "_account_id", lambda *a: _ACCT12)
+        calls = []
+
+        def fake_run(args, *a, **k):
+            calls.append(list(args[:2]))
+            if args[:2] == ["iam", "get-policy"]:
+                return (
+                    255,
+                    "",
+                    "An error occurred (AccessDenied): User: "
+                    "arn:aws:sts::123456789012:assumed-role/launcher/s is not "
+                    "authorized to perform: iam:GetPolicy on resource: "
+                    "arn:aws:iam::123456789012:policy/kirocrew-ec2-boundary",
+                )
+            raise AssertionError(f"must not run {args[:2]} after a denied read")
+
+        monkeypatch.setattr(aws, "run_aws", fake_run)
+        with pytest.raises(aws.AWSError, match="iam:GetPolicy") as excinfo:
+            source.ensure_instance_boundary("dev", "us-east-1")
+        assert excinfo.value.missing_action == "iam:GetPolicy"
+        assert "iam:CreatePolicy" not in str(excinfo.value)
+        assert ["iam", "create-policy"] not in calls
+
+    def test_absent_boundary_still_falls_through_to_create(self, monkeypatch):
+        # The denied-read branch must not swallow the ordinary absent case: a
+        # boundary that does not exist answers NoSuchEntity, not AccessDenied, and
+        # is created as before.
+        from kiro_crew.cloud import iam
+
+        monkeypatch.setattr(source, "_account_id", lambda *a: _ACCT12)
+        calls = []
+
+        def fake_run(args, *a, **k):
+            calls.append(list(args[:2]))
+            if args[:2] == ["iam", "get-policy"]:
+                return (255, "", "An error occurred (NoSuchEntity): cannot be found.")
+            return (0, "{}", "")
+
+        monkeypatch.setattr(aws, "run_aws", fake_run)
+        assert source.ensure_instance_boundary("dev", "us-east-1") == iam.boundary_arn(_ACCT12)
+        assert ["iam", "create-policy"] in calls
+
     def test_raises_without_account_id(self, monkeypatch):
         monkeypatch.setattr(source, "_account_id", lambda *a: "")
 

@@ -607,8 +607,11 @@ def policy_document() -> dict[str, Any]:
             # mismatch, so a permissive boundary seeded at this name is refused
             # (it can never under-cap a role), it can only block launches (a DoS).
             # Operators who want to eliminate even that pre-create the boundary as an
-            # admin (kirocrew cloud iam-boundary) and drop this statement — the
-            # launcher then only *references* the boundary ARN.
+            # admin (kirocrew cloud iam-boundary) and remove the iam:CreatePolicy
+            # action from this statement — the launcher then only *references* the
+            # boundary ARN. The statement itself stays: its two read verbs are what
+            # every launch uses to verify the boundary before reusing it, so a
+            # launcher without them cannot launch at all.
             "Sid": "IamInstanceBoundaryCreateOnce",
             "Effect": "Allow",
             "Action": [
