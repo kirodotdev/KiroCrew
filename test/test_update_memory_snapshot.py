@@ -334,16 +334,32 @@ def test_a_provider_that_cannot_apply_here_takes_no_copy(
 def test_a_wheel_install_that_cannot_self_update_takes_no_copy(
     live_store, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
-    """The installer is a POSIX shell script, so the wheel path refuses on Windows.
+    """A plain-pip install refuses to self-update, so it takes no copy.
 
-    That refusal sits below the version comparison, so a newer release is announced and
+    The refusal sits below the version comparison, so a newer release is announced and
     then declined — and a copy taken above it would be spent on an update that cannot run.
+    The install here is neither the managed venv nor pipx, so the wheel path points the
+    user at an in-place ``pip install -U`` instead of running the installer.
     """
     from kiro_crew.platform.update_layout import InstallLayout
 
     _serve_feed(monkeypatch, "9999.0.0")
     monkeypatch.setattr("kiro_crew.platform.wheel_engine.running_from_managed_venv", lambda: False)
+    monkeypatch.setattr("kiro_crew.platform.wheel_engine.running_from_pipx", lambda: False)
     monkeypatch.setattr(cli_server.sys, "platform", "win32")
+
+    # The in-place hint prefers the signed pinned wheel; with no real signed CDN
+    # in the fake feed the manifest fetch fails, so the refusal takes the
+    # verification-FAILURE report path (no name-resolving command emitted).
+    from kiro_crew.platform.wheel_engine import WheelUpdateError
+
+    def _no_manifest(*a, **k):
+        raise WheelUpdateError("no CDN in test")
+
+    monkeypatch.setattr(
+        "kiro_crew.platform.wheel_engine.fetch_verified_manifest",
+        _no_manifest,
+    )
 
     db = resolve_store_path(DEFAULT_MEMORY_STORE)
     before = memory_backup.list_backups(db)
@@ -358,5 +374,9 @@ def test_a_wheel_install_that_cannot_self_update_takes_no_copy(
     assert exc.value.code == 1
     assert memory_backup.list_backups(db) == before
     out = capsys.readouterr().out
-    assert "not supported on Windows" in out
+    # The refusal reports the verification failure and points at the channel's
+    # artifact directory for a manual install — not the name-based form.
+    assert "https://cdn.example.com/cli/stable/" in out
+    assert "--extra-index-url" not in out
+    assert "-U kirocrew" not in out
     assert "Memory snapshot" not in out

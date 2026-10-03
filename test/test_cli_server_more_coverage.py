@@ -2202,6 +2202,13 @@ class TestUpdateWheelInstaller:
             b'"channel": "stable", "version": "999.0.0"}'
         )
         monkeypatch.setattr(sys, "platform", "linux")
+        # These tests exercise the installer re-run, which is the path a pipx
+        # install takes. A plain-pip install refuses before it (covered in
+        # test_update_wheel_dispatch.py), so pin the pipx shape here.
+        from kiro_crew.platform import wheel_engine
+
+        monkeypatch.setattr(wheel_engine, "running_from_managed_venv", lambda: False)
+        monkeypatch.setattr(wheel_engine, "running_from_pipx", lambda: True)
 
     def test_windows_refuses_the_posix_installer(self, monkeypatch, capsys) -> None:
         monkeypatch.setattr(sys, "platform", "win32")

@@ -9,6 +9,10 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
+import sys
+import tempfile
+from pathlib import Path
 from typing import NamedTuple
 
 from kiro_crew.atomic_write import atomic_write
@@ -52,6 +56,193 @@ EXTERNALLY_MANAGED = {
     "nsis": _app_managed_via("the NSIS installer", "Setup .exe"),
     "docker": EXTERNALLY_MANAGED_MESSAGES[UNAVAILABLE_MANAGED_BY_IMAGE],
 }
+
+#: The upgrade command a user runs for a plain ``pip`` install into an
+#: environment they manage themselves (not pipx, not the installer's managed
+#: venv). The built-in updater cannot drive this safely: re-running the
+#: installer would build a SECOND copy (a pipx venv or a managed venv plus a
+#: symlink) while the environment actually serving the user keeps the old
+#: version. So the CLI refuses and the gateway's floor warning points here
+#: instead — one source of words for both, since they describe the same state.
+#:
+#: Kiro Crew is not on PyPI, so a bare ``pip install -U kirocrew`` resolves
+#: against default PyPI and dead-ends — "no matching distribution", or worse a
+#: third-party squat of the name. The command instead installs the channel's
+#: signed, hash-pinned wheel by direct URL, so pip consults no index for
+#: ``kirocrew`` at all (see :func:`non_managed_pip_upgrade_command`). When that
+#: signed wheel cannot be resolved, the surface reports the failure and points
+#: at the channel's artifact directory rather than emit any ``kirocrew``
+#: name-resolving command — a name-based ``--extra-index-url`` form adds the
+#: channel index BESIDE default PyPI, and pip would prefer a higher-versioned
+#: public squat of the name, which is the exact dependency-confusion vector the
+#: pinned direct URL exists to close.
+_NON_MANAGED_PIP_RESTART = "kirocrew restart"
+
+
+class PipUpgradeHint(NamedTuple):
+    """The in-place upgrade step for a plain-``pip`` install.
+
+    Exactly one of two states, because the signed wheel either resolves or it
+    does not, and the two must never be confused at an emit site:
+
+    * ``command`` is the runnable ``pip install "<signed wheel>#sha256=<sha>"``
+      and ``note`` is empty — the operator runs it.
+    * ``command`` is ``None`` and ``note`` is a short failure report with retry
+      and manual-install guidance — the signed wheel could not be fetched or
+      verified (offline, a CDN failure, a missing ``openssl``), so there is NO
+      safe command to hand over. The surface shows ``note`` instead.
+
+    The failure state deliberately carries no fallback command. The only
+    index-based form that could stand in resolves ``kirocrew`` across the
+    channel index AND default PyPI, where a higher-versioned public squat of the
+    name wins — the dependency-confusion vector the signed-wheel path closes.
+    Handing that out on every verification failure (which includes a plain-pip
+    Windows host with no trusted ``openssl``, and any transient CDN outage)
+    would reopen it, so the surface reports the failure rather than emit it.
+    """
+
+    command: str | None
+    note: str
+
+
+def _running_interpreter_pip_prefix() -> str:
+    """``<this install's python> -m pip`` — the interpreter spelled out.
+
+    A bare ``pip`` resolves through the invoking shell's PATH, which may be a
+    DIFFERENT environment than the out-of-date one this install runs from (a
+    non-activated venv reached by absolute path, or the gateway logging the hint
+    for an environment that is not the shell's active one). The upgrade would
+    then land in the wrong environment. Keying the command to ``sys.executable``
+    — the interpreter of the install actually being upgraded — makes it
+    unambiguous, the same reason and quoting idiom
+    :func:`kiro_crew.extras.pip_install_command_for` uses.
+    """
+    if os.name == "nt":
+        exe = sys.executable.replace("'", "''")
+        return f"& '{exe}' -m pip"
+    return f"{shlex.quote(sys.executable)} -m pip"
+
+
+def _pinned_wheel_upgrade_command(channel: str, pip: str) -> str | None:
+    """``pip install "<signed wheel url>#sha256=<sha>"`` for the channel, or None.
+
+    Resolves the exact wheel the channel's SIGNED manifest names and pins it by
+    hash, so the emitted command installs that one artifact by direct URL and
+    pip consults NO index for ``kirocrew`` at all. This closes the
+    dependency-confusion vector that an ``--extra-index-url`` form leaves open:
+    with the channel index merely ADDED beside default PyPI, pip pools
+    ``kirocrew`` candidates across both and a higher-versioned public-PyPI squat
+    of the name wins; a pinned direct-URL install removes the name resolution
+    entirely and verifies the bytes against the signed sha256. Dependencies
+    still resolve from PyPI, which a direct-URL requirement does not constrain.
+
+    ``wheel_url`` and ``sha256`` come from
+    :func:`kiro_crew.platform.wheel_engine.fetch_verified_manifest`, which
+    fetches the per-channel ``latest-cli.json`` and verifies its RSA signature
+    against the pinned public key before returning the payload — the same signed
+    manifest the wheel-install update path already trusts. The URL is the
+    canonical ``<artifact base>/cli/<channel>/<version>/kirocrew-<version>-...``
+    the manifest validator rebuilds and refuses if it does not match, so no feed
+    value flows into the command unverified.
+
+    Returns ``None`` when the manifest cannot be fetched or verified (offline, a
+    CDN failure, a missing ``openssl``) so the caller can report the failure
+    with manual-install guidance rather than emit a name-resolving command. The
+    fetch does network and ``openssl`` work, so this runs only where blocking is
+    allowed — the synchronous CLI path and the gateway's off-event-loop
+    ``to_thread`` dispatch.
+    """
+    # Imported lazily: wheel_engine pulls in the signing/verification stack, and
+    # the failure-report path below must not depend on it being importable.
+    from kiro_crew.platform.wheel_engine import WheelUpdateError, fetch_verified_manifest
+
+    feed_base, artifact_base = cdn_bases()
+    try:
+        # fetch_verified_manifest verifies the signature with NO attacker-plantable
+        # file: on POSIX the key/signature go to openssl over anonymous pipe FDs
+        # and the payload over stdin; only the Windows fallback stages files, and
+        # it opens each O_CREAT|O_EXCL|O_NOFOLLOW so a planted symlink is refused.
+        # The workdir below is therefore only that fallback's scratch area — a
+        # fresh, gateway-private, randomly-named temp dir (0o700), NOT the
+        # agent-writable SEL ``trust`` keystone, so no agent can even see it.
+        with tempfile.TemporaryDirectory(prefix="kc-upgrade-hint-") as tmp:
+            payload = fetch_verified_manifest(
+                channel=channel,
+                feed_base=feed_base,
+                artifact_base=artifact_base,
+                workdir=Path(tmp),
+            )
+    except (WheelUpdateError, OSError):
+        return None
+    wheel_url = payload["wheel_url"]
+    sha256 = payload["sha256"]
+    # The manifest validator pins wheel_url to the canonical artifact URL and
+    # sha256 to 64 lowercase hex, and cdn_bases_are_safe gates the base against
+    # shell metacharacters, so the fragment-pinned URL carries none. Quote it
+    # anyway: a URL belongs in quotes on the command line, and the fragment is a
+    # shell comment char unquoted.
+    return f'{pip} install "{wheel_url}#sha256={sha256}"'
+
+
+def non_managed_pip_upgrade_command(channel: str | None = None) -> PipUpgradeHint:
+    """The in-place upgrade step for a plain-``pip`` install, as a hint.
+
+    Returns a :class:`PipUpgradeHint`. On success its ``command`` is the
+    channel's SIGNED, hash-pinned wheel installed by direct URL
+    (:func:`_pinned_wheel_upgrade_command`): ``pip install
+    "<wheel url>#sha256=<sha>"`` installs that one artifact, so pip consults no
+    index for ``kirocrew`` and dependency confusion has no opening. The command
+    is keyed to the RUNNING interpreter (``<sys.executable> -m pip``), not a
+    bare ``pip`` — a bare ``pip`` trusts the invoking shell's PATH, which may
+    name a different environment than the out-of-date one this install runs
+    from, so the upgrade would land in the wrong place.
+
+    When the signed wheel cannot be fetched or verified (offline, a CDN failure,
+    a missing ``openssl``), the hint's ``command`` is ``None`` and ``note``
+    reports the failure with retry and manual-install guidance pointing at the
+    channel's artifact directory. It deliberately emits NO command in this
+    state. The only index-based stand-in — ``--extra-index-url <channel index>``
+    beside default PyPI — pools ``kirocrew`` candidates across both, where a
+    higher-versioned public squat of the name wins; that is the exact
+    dependency-confusion vector the pinned direct URL closes, and a verification
+    failure (common on a plain-pip Windows host with no trusted ``openssl``, and
+    on any transient CDN outage) is not rare enough to reopen it on.
+
+    The feed base comes from :func:`cdn_bases`, which honours the
+    ``KIROCREW_CDN_BASE`` override, so a test or alternate CDN upgrades from the
+    same place it installed from. The channel is validated by
+    :func:`release_channel` and the base by :func:`cdn_bases_are_safe`, so the
+    rendered strings carry no shell metacharacters.
+    """
+    if channel is None:
+        channel = release_channel()
+    pip = _running_interpreter_pip_prefix()
+    pinned = _pinned_wheel_upgrade_command(channel, pip)
+    if pinned is not None:
+        return PipUpgradeHint(command=pinned, note="")
+    _feed_base, artifact_base = cdn_bases()
+    artifact_dir = f"{artifact_base}/cli/{channel}/"
+    note = (
+        "could not fetch or verify the signed release manifest "
+        "(offline, a CDN failure, or no trusted openssl). The install was not "
+        "changed. Retry when connectivity returns, or install the channel's "
+        f"signed wheel manually from {artifact_dir} "
+        "(verify its sha256 against the published SHA256SUMS)."
+    )
+    return PipUpgradeHint(command=None, note=note)
+
+
+def non_managed_pip_update_hint(channel: str | None = None) -> tuple[PipUpgradeHint, str]:
+    """The upgrade hint and the restart command, in order.
+
+    ``(upgrade, restart)``: the :class:`PipUpgradeHint` for upgrading in the
+    SAME environment Kiro Crew runs from, then the restart command so the
+    running process picks the new version up. Returned as a pair rather than a
+    joined string so each surface (CLI banner, gateway log line) can frame them
+    in its own layout — and so each can branch on whether ``upgrade.command`` is
+    a runnable command or ``upgrade.note`` is a failure report.
+    """
+    return non_managed_pip_upgrade_command(channel), _NON_MANAGED_PIP_RESTART
 
 
 class InstallLayout(NamedTuple):
@@ -237,6 +428,8 @@ __all__ = [
     "cdn_bases",
     "cdn_bases_are_safe",
     "wheel_update_command",
+    "non_managed_pip_update_hint",
+    "non_managed_pip_upgrade_command",
     "RELEASE_CHANNELS",
     "EXTERNALLY_MANAGED",
 ]

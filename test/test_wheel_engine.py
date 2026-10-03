@@ -30,6 +30,7 @@ from kiro_crew.platform.wheel_engine import (
     promote,
     respawn_executable,
     running_from_managed_venv,
+    running_from_pipx,
 )
 from kiro_crew.platform_compat import IS_POSIX, trusted_system_bin
 
@@ -295,6 +296,59 @@ class TestSignatureVerification:
         workdir.mkdir()
         with pytest.raises(WheelUpdateError, match="fingerprint mismatch"):
             wheel_engine._verify_signature(canonical, signature, workdir)
+
+    @pytest.mark.skipif(not IS_POSIX, reason="the /dev/fd fast path is POSIX-only")
+    def test_posix_verification_stages_no_files(self, keypair: Path, tmp_path: Path) -> None:
+        """RED-THEN-GREEN. On POSIX the key/signature go to openssl over
+        anonymous pipe FDs and the payload over stdin, so NOTHING is written to
+        the workdir — there is no attacker-plantable name for the gateway to
+        follow out of the sandbox. Fails pre-fix, which wrote the PEM, DER,
+        payload and signature into the workdir by name."""
+        canonical = b'{"v":"1"}\n'
+        signature = self._sign(keypair, canonical, tmp_path)
+        workdir = tmp_path / "work"
+        workdir.mkdir()
+        wheel_engine._verify_signature(canonical, signature, workdir)
+        assert list(workdir.iterdir()) == [], "verification wrote files into the workdir"
+
+    def test_fallback_refuses_a_symlink_planted_at_the_pem_name(
+        self, keypair: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """RED-THEN-GREEN. The non-/dev/fd fallback (Windows, or a POSIX host
+        without /dev/fd) stages files in the workdir — but opens each
+        O_CREAT|O_EXCL|O_NOFOLLOW, so a symlink an attacker pre-planted at the
+        PEM name is REFUSED, not followed and overwritten. Pre-fix the gateway's
+        pem.write_bytes() followed the symlink and clobbered the target."""
+        # Force the fallback even on a POSIX host with /dev/fd.
+        monkeypatch.setattr(wheel_engine.os.path, "isdir", lambda p: False)
+        canonical = b'{"v":"1"}\n'
+        signature = self._sign(keypair, canonical, tmp_path)
+        workdir = tmp_path / "work"
+        workdir.mkdir()
+        victim = tmp_path / "operator-secret"
+        victim.write_bytes(b"OPERATOR CREDENTIAL\n")
+        # The attacker pre-plants a symlink at the exact name the gateway writes.
+        planted = workdir / "cli-manifest-public.pem"
+        try:
+            planted.symlink_to(victim)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks not supported on this host")
+        with pytest.raises(WheelUpdateError, match="stage verification inputs"):
+            wheel_engine._verify_signature(canonical, signature, workdir)
+        # The victim file is untouched: the write was refused, not followed.
+        assert victim.read_bytes() == b"OPERATOR CREDENTIAL\n"
+
+    def test_fallback_write_is_byte_exact_no_newline_translation(self, tmp_path: Path) -> None:
+        """The fallback stages the canonical payload with O_BINARY, so the bytes
+        land verbatim. In text mode Windows would translate the payload's
+        trailing LF to CRLF, changing the signed bytes and failing verification
+        closed — a spurious Windows upgrade-refusal. The write must preserve
+        every byte, LF included."""
+        payload = b'{"v":"1","trailing":"newline"}\n'
+        assert b"\r\n" not in payload
+        dest = tmp_path / "signed-payload.json"
+        wheel_engine._create_exclusive_nofollow(dest, payload)
+        assert dest.read_bytes() == payload
 
 
 class TestWheelDownload:
@@ -693,6 +747,36 @@ class TestLayoutAndDetection:
         )
         monkeypatch.setattr(sys, "executable", str(exe))
         assert running_from_managed_venv(layout) is False
+
+
+class TestRunningFromPipx:
+    """``running_from_pipx`` keys on the metadata file pipx keeps at the venv root."""
+
+    def test_detects_a_pipx_venv_by_its_metadata_file(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        venv = tmp_path / "pipx-venvs" / "kirocrew"
+        venv.mkdir(parents=True)
+        (venv / "pipx_metadata.json").write_text("{}")
+        monkeypatch.setattr(sys, "prefix", str(venv))
+        assert running_from_pipx() is True
+
+    def test_a_plain_venv_without_the_marker_is_not_pipx(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        venv = tmp_path / "my-venv"
+        venv.mkdir()
+        monkeypatch.setattr(sys, "prefix", str(venv))
+        assert running_from_pipx() is False
+
+    def test_a_directory_named_like_the_marker_is_not_a_match(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The marker must be a FILE — a directory of that name is not pipx's."""
+        venv = tmp_path / "odd-venv"
+        (venv / "pipx_metadata.json").mkdir(parents=True)
+        monkeypatch.setattr(sys, "prefix", str(venv))
+        assert running_from_pipx() is False
 
 
 class TestRespawnExecutable:

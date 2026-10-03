@@ -356,11 +356,15 @@ are published, and they serve different needs:
 # 1. Track a channel. A PEP 503 simple index per channel, so pip resolves the
 #    newest version itself. --pre is required: every published version carries a
 #    prerelease suffix on nightly and insider.
+#    NOTE: --extra-index-url ADDS the channel index beside default PyPI, so pip
+#    pools `kirocrew` candidates across both and a higher-versioned public-PyPI
+#    package of the name would win. Prefer form 2 (or verify the installed
+#    artifact) where that exposure matters.
 pip install --pre kirocrew --extra-index-url https://updates.crew.kiro.dev/feed/stable/simple/
 
 # 2. Pin one exact wheel by hash. Every version directory publishes a SHA256SUMS
 #    file beside the wheel; take your wheel's hash from there. pip verifies it and
-#    consults no index for Kiro Crew itself.
+#    consults no index for Kiro Crew itself — so there is no name to squat.
 pip install "https://download.crew.kiro.dev/cli/stable/<version>/kirocrew-<version>-py3-none-any.whl#sha256=<sha256>"
 ```
 
@@ -371,8 +375,15 @@ distribution, which is why `KIROCREW_CDN_BASE` (or `cli.sh --cdn`) overrides bot
 at once. Use the documented name for each class rather than relying on the
 aliasing.
 
-Form 1 is the one to use unless a deployment must pin a byte-exact artifact — a
-locked requirements file, an airgapped mirror, or a reproducible image build.
+Form 2 pins a byte-exact artifact and consults no index for the `kirocrew` name,
+so it is the one to use where a public-PyPI squat of the name is a concern, or
+when a deployment must pin a byte-exact artifact anyway — a locked requirements
+file, an airgapped mirror, or a reproducible image build. The in-place upgrade
+command Kiro Crew emits for a plain-pip install uses the form-2 pinned wheel for
+exactly this reason, and when it cannot fetch or verify the signed wheel it
+reports that and points at the channel's artifact directory rather than fall
+back to the form-1 name-resolving command. Form 1 tracks a channel hands-free
+when that exposure is acceptable.
 
 Installed console script:
 

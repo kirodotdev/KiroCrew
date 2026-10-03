@@ -2270,6 +2270,7 @@ def _update_wheel(layout) -> None:
     from kiro_crew.platform.update_layout import (
         cdn_bases,
         cdn_bases_are_safe,
+        non_managed_pip_update_hint,
         release_channel,
         wheel_update_command,
     )
@@ -2277,6 +2278,7 @@ def _update_wheel(layout) -> None:
         WheelUpdateError,
         apply_wheel_update,
         running_from_managed_venv,
+        running_from_pipx,
     )
 
     channel = release_channel()
@@ -2300,12 +2302,19 @@ def _update_wheel(layout) -> None:
         sys.exit(1)
 
     print(f"  📦 Install type: {layout.kind} (channel: {channel})")
-    print(f"  📡 Checking {feed_url}…")
+    # feed_url embeds the CDN base; a userinfo-bearing KIROCREW_CDN_BASE
+    # (user:pass@host) passes cdn_bases_are_safe() and would otherwise land in
+    # terminal scrollback. Redact the displayed form; the fetch below still uses
+    # the real feed_url.
+    from kiro_crew.security import redact_credentials
+
+    shown_feed_url, _ = redact_credentials(feed_url)
+    print(f"  📡 Checking {shown_feed_url}…")
 
     # Fetch the release feed (scheme-validated to satisfy SAST — cdn_bases()
     # already enforces https but Semgrep cannot see through the indirection).
     if not feed_url.startswith("https://"):
-        print(f"  ❌ Refusing non-HTTPS feed URL: {feed_url}")
+        print(f"  ❌ Refusing non-HTTPS feed URL: {shown_feed_url}")
         sys.exit(1)
     try:
         req = urllib.request.Request(feed_url, headers={"User-Agent": "kirocrew-update/1"})
@@ -2406,6 +2415,44 @@ def _update_wheel(layout) -> None:
         print("\n  Restart the gateway to switch to it:")
         print("    kirocrew restart")
         return
+
+    # A plain `pip install` into an environment the user manages (not pipx, not
+    # the installer's managed venv) must NOT take the installer re-run: that
+    # builds a SECOND copy (a pipx venv, or a managed venv plus a ~/.local/bin
+    # symlink) while the environment serving the user keeps the old version, and
+    # prints success anyway. pipx installs keep the re-run — the installer owns
+    # that venv and upgrades it in place. Refuse with the in-place upgrade hint
+    # instead, on every platform (this also replaces the uninformative Windows
+    # exit-1 the installer path produced).
+    if not running_from_pipx():
+        upgrade, restart = non_managed_pip_update_hint()
+        from kiro_crew.security import redact_credentials
+
+        print("\n  ⚠️  This looks like a plain `pip install` in an environment you manage.")
+        print("  Re-running the installer would add a second copy and leave this one")
+        if upgrade.command is not None:
+            # The upgrade command embeds the CDN base, and a userinfo-bearing
+            # KIROCREW_CDN_BASE (user:pass@host) passes _SAFE_CDN_BASE_RE — so the
+            # PRINTED form runs the same credential redaction the gateway sibling
+            # applies to its logged form. The command stays runnable; only the
+            # displayed credential is stripped.
+            printed_upgrade, _ = redact_credentials(upgrade.command)
+            print(f"  on {local_version}. Upgrade this environment in place instead:")
+            print(f"    {printed_upgrade}")
+            print("  then restart the gateway to use the new version:")
+            print(f"    {restart}")
+        else:
+            # The signed wheel could not be fetched/verified, so there is no
+            # safe command to hand over — a name-resolving --extra-index-url form
+            # would reopen the dependency-confusion vector. Report the failure
+            # with retry/manual-install guidance instead. The note carries the
+            # channel artifact URL (which embeds the CDN base), so it runs the
+            # same credential redaction as the command would.
+            printed_note, _ = redact_credentials(upgrade.note)
+            print(f"  on {local_version}. The signed upgrade {printed_note}")
+            print("  Once upgraded, restart the gateway to use the new version:")
+            print(f"    {restart}")
+        sys.exit(1)
 
     # Run the installer
     cmd = wheel_update_command(channel)

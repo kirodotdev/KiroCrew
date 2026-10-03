@@ -308,11 +308,21 @@ class TestUpdateWheelCli:
         assert "latest version" in out.lower()
 
     def test_newer_version_runs_installer(self, monkeypatch, tmp_path, capsys) -> None:
-        """When feed has a newer version, runs the shell installer."""
+        """When feed has a newer version on a pipx install, runs the shell installer.
+
+        pipx owns its venv and the installer re-run upgrades it in place, so this
+        shape keeps the installer path. (A plain-pip install refuses instead —
+        see ``test_non_managed_pip_refuses_with_hint``.)"""
         monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
         monkeypatch.setattr("kiro_crew.platform.update_layout.distribution", lambda: "wheel")
         monkeypatch.setattr("kiro_crew.platform.update_layout.data_home", lambda: tmp_path)
         monkeypatch.delenv("KIROCREW_CDN_BASE", raising=False)
+        # The managed venv takes the shadow path; a pipx install takes the
+        # installer re-run this test asserts on.
+        monkeypatch.setattr(
+            "kiro_crew.platform.wheel_engine.running_from_managed_venv", lambda: False
+        )
+        monkeypatch.setattr("kiro_crew.platform.wheel_engine.running_from_pipx", lambda: True)
 
         monkeypatch.setattr("kiro_crew.cli_server.__version__", "0.1.3")
         monkeypatch.setattr("kiro_crew.__version__", "0.1.3")
@@ -358,6 +368,137 @@ class TestUpdateWheelCli:
         # The installer should be run via sh -c
         assert calls[0][0][0] == "sh"
         assert calls[0][0][1] == "-c"
+
+    def _drive_non_managed_pip(self, monkeypatch, tmp_path, platform: str, cdn_base: str = ""):
+        """Run ``_update_wheel`` for a newer version on a plain-pip install.
+
+        Simulates the shape the issue is about: not the managed venv, not pipx —
+        a user's own ``pip install`` into an environment they manage. Returns the
+        captured ``SystemExit`` so the caller asserts on the exit code and output.
+        Any ``subprocess.run`` is a test failure: the whole point is that the
+        installer re-run must NOT fire for this shape.
+        """
+        monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
+        monkeypatch.setattr("kiro_crew.platform.update_layout.distribution", lambda: "wheel")
+        monkeypatch.setattr("kiro_crew.platform.update_layout.data_home", lambda: tmp_path)
+        if cdn_base:
+            monkeypatch.setenv("KIROCREW_CDN_BASE", cdn_base)
+        else:
+            monkeypatch.delenv("KIROCREW_CDN_BASE", raising=False)
+        monkeypatch.setattr("kiro_crew.cli_server.__version__", "0.1.3")
+        monkeypatch.setattr("kiro_crew.__version__", "0.1.3")
+        monkeypatch.setattr(
+            "kiro_crew.platform.wheel_engine.running_from_managed_venv", lambda: False
+        )
+        monkeypatch.setattr("kiro_crew.platform.wheel_engine.running_from_pipx", lambda: False)
+        monkeypatch.setattr("sys.platform", platform)
+
+        import kiro_crew.cli_server as cs
+        from kiro_crew.platform.update_layout import InstallLayout
+
+        layout = InstallLayout(
+            kind="wheel", proj="", is_git=False, is_externally_managed=False, guidance=""
+        )
+
+        # The in-place hint prefers the signed pinned wheel, which fetches +
+        # openssl-verifies the manifest. This path drives the verification-
+        # FAILURE report deterministically (no CDN in the test), so make the
+        # fetch raise cleanly rather than hit the `subprocess.run` guard below.
+        # The refusal then reports the failure with manual-install guidance and
+        # emits no name-resolving command.
+        from kiro_crew.platform.wheel_engine import WheelUpdateError
+
+        def _no_manifest(*a, **k):
+            raise WheelUpdateError("no CDN in test")
+
+        monkeypatch.setattr("kiro_crew.platform.wheel_engine.fetch_verified_manifest", _no_manifest)
+
+        manifest = self._make_manifest("0.2.0")
+
+        class FakeResp:
+            def read(self, n=-1):
+                return manifest
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
+
+        monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: FakeResp())
+
+        def _no_installer(*a, **k):  # pragma: no cover - must not be called
+            raise AssertionError("the installer re-run must not fire for a plain-pip install")
+
+        monkeypatch.setattr("subprocess.run", _no_installer)
+        # The snapshot step would try to reach a running gateway; a refusal must
+        # happen before any of that, so stub it to a no-op to keep the test local.
+        monkeypatch.setattr(cs, "_snapshot_memory_or_exit", lambda: None)
+
+        with pytest.raises(SystemExit) as exc:
+            cs._update_wheel(layout)
+        return exc
+
+    def test_non_managed_pip_refuses_with_hint(self, monkeypatch, tmp_path, capsys) -> None:
+        """A plain-pip install refuses and never runs the installer (the
+        second-copy bug). With no CDN reachable in the test, the signed wheel
+        cannot be verified, so the refusal REPORTS the failure with manual-
+        install guidance and emits no name-resolving command."""
+        exc = self._drive_non_managed_pip(monkeypatch, tmp_path, "linux")
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        # The report points at the channel's artifact directory for a manual,
+        # hash-verified install — it must NOT hand out the dependency-confusion
+        # `--extra-index-url ... -U kirocrew` form.
+        assert "https://download.crew.kiro.dev/cli/stable/" in out
+        assert "SHA256SUMS" in out
+        assert "--extra-index-url" not in out
+        assert "-U kirocrew" not in out
+        assert "/simple/" not in out
+        assert "kirocrew restart" in out
+        # It must not have printed the installer-run banner or a success line.
+        assert "Running installer" not in out
+        assert "updated to 0.2.0" not in out.lower()
+
+    def test_non_managed_pip_refuses_with_hint_on_windows(
+        self, monkeypatch, tmp_path, capsys
+    ) -> None:
+        """On Windows the same shape gives an actionable report instead of the
+        uninformative exit 1 the installer path produced. Windows plain-pip
+        hosts often lack a trusted openssl, so this is the common path — and it
+        must still refuse the name-based form."""
+        exc = self._drive_non_managed_pip(monkeypatch, tmp_path, "win32")
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "https://download.crew.kiro.dev/cli/stable/" in out
+        assert "--extra-index-url" not in out
+        assert "-U kirocrew" not in out
+        assert "kirocrew restart" in out
+        # The old Windows message was "not supported on Windows" with no next step.
+        assert "not supported on Windows" not in out
+
+    def test_non_managed_pip_refusal_redacts_cdn_userinfo_from_the_print(
+        self, monkeypatch, tmp_path, capsys
+    ) -> None:
+        """A userinfo-bearing KIROCREW_CDN_BASE (user:pass@host) passes
+        _SAFE_CDN_BASE_RE and reaches the CLI output, which lands in terminal
+        scrollback — so the credential must be redacted everywhere it is
+        printed: the feed-fetch diagnostic AND the refusal hint. The host and
+        index path survive so the command is still recognizable."""
+        exc = self._drive_non_managed_pip(
+            monkeypatch, tmp_path, "linux", cdn_base="https://user:s3cr3t@cdn.example.invalid"
+        )
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        # The secret must not appear anywhere in the printed output — neither the
+        # "Checking <feed_url>" diagnostic nor the refusal report.
+        assert "s3cr3t" not in out
+        # The verification-failure report still shows the artifact host + path
+        # (credentials stripped) so the operator can install manually.
+        report_block = out.split("The signed upgrade", 1)[1]
+        assert "cdn.example.invalid/cli/" in report_block
+        # And the feed-fetch diagnostic still names the host (redacted of creds).
+        assert "cdn.example.invalid" in out.split("Checking", 1)[1].split("\n", 1)[0]
 
     def test_feed_unreachable_prints_manual_command(self, monkeypatch, tmp_path, capsys) -> None:
         """Network failure prints the manual update command."""

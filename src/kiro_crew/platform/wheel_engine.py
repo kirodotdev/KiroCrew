@@ -267,6 +267,37 @@ def running_from_managed_venv(layout: ManagedVenvLayout | None = None) -> bool:
     return layout.is_managed_tree(Path(sys.executable).parent)
 
 
+#: Name of the metadata file pipx writes at the root of every environment it
+#: manages (``$PIPX_HOME/venvs/<env>/pipx_metadata.json``). pipx owns it,
+#: rewrites it atomically after each operation, and reads it to drive its own
+#: ``upgrade``/``reinstall``/``uninstall`` — so its presence beside the running
+#: interpreter is an authoritative, version-stable "this venv is pipx's" signal
+#: that needs no path-guessing against ``$PIPX_HOME``.
+_PIPX_METADATA_NAME = "pipx_metadata.json"
+
+
+def running_from_pipx() -> bool:
+    """Is THIS process served by a pipx-managed environment?
+
+    Distinguishes the one non-managed shape whose installer re-run is
+    legitimate — ``cli.sh`` installs into a pipx venv when pipx is present, and
+    a re-run upgrades that same pipx venv in place — from a user's own plain
+    ``pip install`` into a venv they manage, where a re-run would build a
+    SECOND copy beside the one actually serving the user.
+
+    Identity is the metadata file pipx keeps at the environment root. A pipx
+    venv's root is ``sys.prefix`` for a process launched from it (the console
+    script runs the venv's own interpreter), so the marker sits one directory
+    up from ``bin/``. Reading ``sys.prefix`` rather than resolving
+    ``sys.executable`` keeps the answer stable across the ``bin/python3 ->``
+    base-interpreter symlink that ``python -m venv`` writes.
+    """
+    try:
+        return (Path(sys.prefix) / _PIPX_METADATA_NAME).is_file()
+    except OSError:
+        return False
+
+
 def _legacy_nested_venv() -> Path:
     """The venv an earlier ``cli.sh`` created INSIDE the data home.
 
@@ -499,55 +530,170 @@ def _no_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
     return value
 
 
-def _verify_signature(canonical: bytes, signature: bytes, workdir: Path) -> None:
-    """Verify *signature* over *canonical* against the pinned trust root.
-
-    Delegates the RSA math to the ``openssl`` binary — the same verifier
-    cli.sh uses, resolved through :func:`trusted_system_bin` so a planted
-    PATH shim cannot stand in for it. The pinned key's fingerprint is
-    self-checked first (SHA-256 of its SubjectPublicKeyInfo DER must equal
-    :data:`CLI_MANIFEST_KEY_ID`), so an accidental edit to either constant
-    fails closed before any signature is considered.
-    """
+def _openssl_bin() -> str:
     openssl = trusted_system_bin("openssl")
     if openssl is None:
         raise WheelUpdateError(
             "openssl is required to verify the signed manifest and was not "
             "found in a trusted system directory"
         )
-    pem = workdir / "cli-manifest-public.pem"
-    try:
-        pem.write_bytes(base64.b64decode(CLI_MANIFEST_PUBLIC_KEY_B64, validate=True))
-    except (ValueError, OSError) as exc:
-        raise WheelUpdateError("embedded manifest public key is malformed") from exc
+    return openssl
 
-    der = workdir / "cli-manifest-public.der"
+
+def _check_key_fingerprint(openssl: str) -> bytes:
+    """Return the embedded public key PEM after self-checking its fingerprint.
+
+    The PEM goes to ``openssl pkey`` on STDIN and the DER comes back on STDOUT —
+    no file is written, so there is no name for a concurrent same-uid process to
+    pre-plant as a symlink and have the gateway follow. The DER's SHA-256 must
+    equal :data:`CLI_MANIFEST_KEY_ID`, so an accidental edit to either constant
+    fails closed before any signature is considered.
+    """
+    try:
+        pem = base64.b64decode(CLI_MANIFEST_PUBLIC_KEY_B64, validate=True)
+    except ValueError as exc:
+        raise WheelUpdateError("embedded manifest public key is malformed") from exc
     try:
         proc = subprocess.run(
-            [openssl, "pkey", "-pubin", "-in", str(pem), "-outform", "DER", "-out", str(der)],
+            [openssl, "pkey", "-pubin", "-outform", "DER"],
+            input=pem,
             capture_output=True,
             timeout=_OPENSSL_TIMEOUT_SECS,
-            # Explicit paths carry every output, but the child's CWD is pinned
-            # to the step's own workdir anyway so nothing an openssl build
-            # chooses to drop (an .rnd seed file, a debug artifact) can land in
-            # the gateway's working directory.
-            cwd=str(workdir),
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise WheelUpdateError(f"openssl could not read the pinned key: {exc}") from exc
     if proc.returncode != 0:
         raise WheelUpdateError("embedded manifest public key is invalid")
-    fingerprint = "sha256:" + hashlib.sha256(der.read_bytes()).hexdigest()
+    fingerprint = "sha256:" + hashlib.sha256(proc.stdout).hexdigest()
     if fingerprint != CLI_MANIFEST_KEY_ID:
         raise WheelUpdateError("embedded manifest public key fingerprint mismatch")
+    return pem
 
-    payload = workdir / "signed-payload.json"
-    sig = workdir / "manifest-signature.bin"
-    payload.write_bytes(canonical)
-    sig.write_bytes(signature)
+
+def _verify_signature(canonical: bytes, signature: bytes, workdir: Path) -> None:
+    """Verify *signature* over *canonical* against the pinned trust root.
+
+    Delegates the RSA math to the ``openssl`` binary — the same verifier
+    cli.sh uses, resolved through :func:`trusted_system_bin` so a planted
+    PATH shim cannot stand in for it. The pinned key's fingerprint is
+    self-checked first.
+
+    No verification INPUT is ever written to a predictable, shared, or
+    agent-reachable path. The gateway runs OUTSIDE the sandbox, so writing the
+    PEM/signature/payload to a named file in an agent-writable directory (the
+    SEL ``trust`` keystone is sandbox read-write) would let a concurrent
+    same-uid agent pre-plant that name as a symlink to an operator file and have
+    this process clobber it through the write. So on POSIX the key and signature
+    are handed to openssl over anonymous pipe FDs (``/dev/fd/N``) the gateway
+    created, and the payload over stdin — no file exists to plant against.
+    ``workdir`` is used only as a Windows fallback (no ``/dev/fd`` there), and
+    then every file is opened ``O_CREAT|O_EXCL|O_NOFOLLOW`` so a pre-planted
+    symlink is refused rather than followed.
+    """
+    openssl = _openssl_bin()
+    _check_key_fingerprint(openssl)
+    pem = base64.b64decode(CLI_MANIFEST_PUBLIC_KEY_B64, validate=True)
+
+    devfd = IS_POSIX and os.path.isdir("/dev/fd")
+    if devfd:
+        _verify_over_fds(openssl, pem, signature, canonical)
+    else:
+        _verify_over_nofollow_files(openssl, pem, signature, canonical, workdir)
+
+
+def _verify_over_fds(openssl: str, pem: bytes, signature: bytes, canonical: bytes) -> None:
+    """POSIX path: key + signature over anonymous pipe FDs, payload over stdin.
+
+    Nothing is written to any directory, so there is no attacker-plantable name.
+    """
+    key_r, key_w = os.pipe()
+    sig_r, sig_w = os.pipe()
+    try:
+        # Write both inputs fully before the child reads them. They are small
+        # (a 2048-bit key, a 256-byte signature), well under a pipe's buffer, so
+        # a single write cannot block against a reader that has not started.
+        os.write(key_w, pem)
+        os.write(sig_w, signature)
+    finally:
+        os.close(key_w)
+        os.close(sig_w)
     try:
         proc = subprocess.run(
-            [openssl, "dgst", "-sha256", "-verify", str(pem), "-signature", str(sig), str(payload)],
+            [
+                openssl,
+                "dgst",
+                "-sha256",
+                "-verify",
+                f"/dev/fd/{key_r}",
+                "-signature",
+                f"/dev/fd/{sig_r}",
+                "/dev/stdin",
+            ],
+            input=canonical,
+            capture_output=True,
+            timeout=_OPENSSL_TIMEOUT_SECS,
+            pass_fds=(key_r, sig_r),
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise WheelUpdateError(f"openssl signature verification failed: {exc}") from exc
+    finally:
+        for fd in (key_r, sig_r):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+    if proc.returncode != 0:
+        raise WheelUpdateError("manifest signature verification failed — refusing to install")
+
+
+def _create_exclusive_nofollow(path: Path, data: bytes) -> None:
+    """Write *data* to *path*, refusing to follow or clobber anything there.
+
+    ``O_CREAT|O_EXCL`` fails if the name already exists (a pre-planted file or
+    symlink), and ``O_NOFOLLOW`` refuses a symlink at the final component — so
+    the gateway never follows an agent-planted link out of the staging dir.
+
+    ``O_BINARY`` (Windows only; 0 elsewhere) keeps the write byte-exact: in text
+    mode Windows translates the canonical payload's trailing ``\n`` to ``\r\n``,
+    which changes the signed bytes and makes verification fail closed.
+    """
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    flags |= getattr(os, "O_BINARY", 0)
+    fd = os.open(path, flags, 0o600)
+    try:
+        os.write(fd, data)
+    finally:
+        os.close(fd)
+
+
+def _verify_over_nofollow_files(
+    openssl: str, pem: bytes, signature: bytes, canonical: bytes, workdir: Path
+) -> None:
+    """Fallback (no ``/dev/fd``, e.g. Windows): stage in *workdir*, but create
+    every file ``O_CREAT|O_EXCL|O_NOFOLLOW`` so a pre-planted symlink or file is
+    refused rather than followed, and read none of them back by name after."""
+    pem_path = workdir / "cli-manifest-public.pem"
+    payload_path = workdir / "signed-payload.json"
+    sig_path = workdir / "manifest-signature.bin"
+    try:
+        _create_exclusive_nofollow(pem_path, pem)
+        _create_exclusive_nofollow(payload_path, canonical)
+        _create_exclusive_nofollow(sig_path, signature)
+    except OSError as exc:
+        raise WheelUpdateError(f"could not stage verification inputs: {exc}") from exc
+    try:
+        proc = subprocess.run(
+            [
+                openssl,
+                "dgst",
+                "-sha256",
+                "-verify",
+                str(pem_path),
+                "-signature",
+                str(sig_path),
+                str(payload_path),
+            ],
             capture_output=True,
             timeout=_OPENSSL_TIMEOUT_SECS,
             cwd=str(workdir),

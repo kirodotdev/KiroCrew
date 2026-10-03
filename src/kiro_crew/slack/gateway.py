@@ -11239,15 +11239,95 @@ class GatewayOrchestrator:
                 # update is mandated (a LOCAL determination against the policy pin,
                 # which does not need the feed) and the feed check did not complete.
                 if _remediation_command(info):
-                    logger.warning(
-                        "Version compliance: running %s is below the policy minimum %s, "
-                        "but this install (%s) cannot apply it unattended (%s) — "
-                        "run `kirocrew update`",
-                        _running_version,
-                        min_version(),
-                        info.get("managed_by") or "unknown",
-                        effect.reason,
+                    # A plain `pip install` into an environment the user manages
+                    # (not pipx, not the installer's managed venv) must not be
+                    # told to "run `kirocrew update`": that command re-runs the
+                    # installer, which adds a second copy and leaves this process
+                    # on the old version. Give it the in-place upgrade hint
+                    # instead — the same words `kirocrew update` itself now
+                    # prints for this shape. pipx and the managed venv keep the
+                    # `kirocrew update` pointer, which upgrades them correctly.
+                    from kiro_crew.platform.update_layout import (
+                        PipUpgradeHint,
+                        non_managed_pip_update_hint,
                     )
+                    from kiro_crew.platform.wheel_engine import (
+                        running_from_managed_venv,
+                        running_from_pipx,
+                    )
+
+                    # The shape probes stat the filesystem (venv layout
+                    # resolution, the pipx marker file), and building the
+                    # non-managed hint reads the channel file too — so both run
+                    # off the event loop in one dispatch, like the other
+                    # update-path probes on it. The channel is already resolved
+                    # on `info`, so pass it through rather than re-reading it.
+                    _info_channel = info.get("channel")
+                    _channel = str(_info_channel) if _info_channel else None
+
+                    def _resolve_hint() -> tuple[bool, tuple[PipUpgradeHint, str]]:
+                        self_updating = running_from_managed_venv() or running_from_pipx()
+                        hint: tuple[PipUpgradeHint, str] = (
+                            (PipUpgradeHint(command=None, note=""), "")
+                            if self_updating
+                            else non_managed_pip_update_hint(_channel)
+                        )
+                        return self_updating, hint
+
+                    is_self_updating, (upgrade, restart) = await asyncio.to_thread(_resolve_hint)
+                    if is_self_updating:
+                        logger.warning(
+                            "Version compliance: running %s is below the policy minimum %s, "
+                            "but this install (%s) cannot apply it unattended (%s) — "
+                            "run `kirocrew update`",
+                            _running_version,
+                            min_version(),
+                            info.get("managed_by") or "unknown",
+                            effect.reason,
+                        )
+                    elif upgrade.command is not None:
+                        # The upgrade command embeds the CDN base, and a
+                        # userinfo-bearing KIROCREW_CDN_BASE (user:pass@host)
+                        # passes _SAFE_CDN_BASE_RE — so this durable,
+                        # dashboard-served log line is redacted before it is
+                        # logged. The gateway composes a companion context, so it
+                        # uses the context-aware gate-side spelling
+                        # (redact_log_via_context) rather than the OSS baseline:
+                        # a host with a companion loaded gets that companion's
+                        # extra credential regexes. The command the user is told
+                        # to run is unaffected.
+                        logged_upgrade = redact_log_via_context(upgrade.command)
+                        logger.warning(
+                            "Version compliance: running %s is below the policy minimum %s, "
+                            "but this install (%s) cannot apply it unattended (%s) — upgrade "
+                            "this environment in place with `%s`, then `%s`",
+                            _running_version,
+                            min_version(),
+                            info.get("managed_by") or "unknown",
+                            effect.reason,
+                            logged_upgrade,
+                            restart,
+                        )
+                    else:
+                        # The signed wheel could not be fetched/verified, so
+                        # there is no safe upgrade command to log — a
+                        # name-resolving --extra-index-url form would reopen the
+                        # dependency-confusion vector. Log the failure report
+                        # instead. The note carries the channel artifact URL
+                        # (CDN base embedded), redacted through the context-aware
+                        # gate-side spelling like the sibling branch above.
+                        logged_note = redact_log_via_context(upgrade.note)
+                        logger.warning(
+                            "Version compliance: running %s is below the policy minimum %s, "
+                            "but this install (%s) cannot apply it unattended (%s) — the "
+                            "signed upgrade %s Once upgraded, run `%s`",
+                            _running_version,
+                            min_version(),
+                            info.get("managed_by") or "unknown",
+                            effect.reason,
+                            logged_note,
+                            restart,
+                        )
                     _badge = True
                 elif info.get("check_status") in ("unchecked", "checking"):
                     # The check no-ops while another one is in flight, so the cache

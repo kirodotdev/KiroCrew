@@ -1218,6 +1218,224 @@ class TestWheelUpdateCommandPropagatesDownloadFailure:
         assert result.returncode != 0, "a failed download must fail the command"
 
 
+class TestNonManagedPipUpgradeCommand:
+    """The plain-pip refusal hint must install the channel's signed, hash-pinned
+    wheel by direct URL, so pip consults no index for `kirocrew` and a public
+    PyPI squat of the name cannot win. When the signed wheel cannot be fetched
+    or verified it reports the failure with retry/manual-install guidance — it
+    emits NO name-resolving command, because a `--extra-index-url` fallback
+    would reopen the dependency-confusion vector the pinned URL closes."""
+
+    _PAYLOAD = {
+        "schema": "kirocrew-cli-artifact-manifest-v1",
+        "channel": "insider",
+        "version": "9.9.9rc1",
+        "wheel_url": (
+            "https://download.crew.kiro.dev/cli/insider/9.9.9rc1/"
+            "kirocrew-9.9.9rc1-py3-none-any.whl"
+        ),
+        "sha256": "a" * 64,
+    }
+
+    def _payload_for(self, channel: str, version: str):
+        wheel = (
+            f"https://download.crew.kiro.dev/cli/{channel}/{version}/"
+            f"kirocrew-{version}-py3-none-any.whl"
+        )
+        return {
+            "schema": "kirocrew-cli-artifact-manifest-v1",
+            "channel": channel,
+            "version": version,
+            "wheel_url": wheel,
+            "sha256": "b" * 64,
+        }
+
+    def test_hint_pins_the_signed_wheel_url_and_sha_not_the_index(self) -> None:
+        """When the signed manifest resolves, the command installs the exact
+        pinned wheel by URL+sha256 — no `-U kirocrew`, no `--extra-index-url`,
+        so pip never resolves the name across public PyPI."""
+        import sys
+
+        from kiro_crew.platform import update_layout
+
+        with (
+            patch(
+                "kiro_crew.platform.update_layout.cdn_bases",
+                return_value=("https://updates.crew.kiro.dev", "https://download.crew.kiro.dev"),
+            ),
+            patch(
+                "kiro_crew.platform.wheel_engine.fetch_verified_manifest",
+                return_value=self._payload_for("insider", "9.9.9rc1"),
+            ),
+        ):
+            hint = update_layout.non_managed_pip_upgrade_command("insider")
+        assert hint.command is not None
+        assert hint.note == ""
+        cmd = hint.command
+        # Dependency confusion is closed: a direct pinned URL, no name resolution.
+        assert (
+            '"https://download.crew.kiro.dev/cli/insider/9.9.9rc1/'
+            "kirocrew-9.9.9rc1-py3-none-any.whl#sha256=" + "b" * 64 + '"'
+        ) in cmd
+        assert "--extra-index-url" not in cmd
+        assert "-U kirocrew" not in cmd
+        # Still keyed to THIS interpreter, not a bare PATH-resolved `pip`.
+        assert sys.executable in cmd
+        assert "-m pip install" in cmd
+        assert not cmd.startswith("pip ")
+
+    def test_hint_does_not_stage_under_the_agent_writable_trust_keystone(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """RED-THEN-GREEN. The hint's verification workdir must be a
+        gateway-private temp dir, NOT `trust/update-staging` — `trust` is
+        sandbox read-write (an in-sandbox agent can write it), so staging there
+        lets an agent plant a symlink the gateway would follow. Fails the prior
+        attempt that staged under `_staging_dir()` (`trust/update-staging`)."""
+        from kiro_crew.platform import update_layout, wheel_engine
+
+        # Mark where the trust keystone would be, so we can assert we're NOT in it.
+        keystone = tmp_path / "trust" / "update-staging"
+        monkeypatch.setattr(wheel_engine, "_staging_dir", lambda: keystone, raising=True)
+
+        seen = {}
+
+        def _capture(*, channel, feed_base, artifact_base, workdir):
+            seen["workdir"] = Path(workdir)
+            return self._payload_for(channel, "9.9.9rc1")
+
+        with (
+            patch(
+                "kiro_crew.platform.update_layout.cdn_bases",
+                return_value=("https://updates.crew.kiro.dev", "https://download.crew.kiro.dev"),
+            ),
+            patch(
+                "kiro_crew.platform.wheel_engine.fetch_verified_manifest",
+                side_effect=_capture,
+            ),
+        ):
+            hint = update_layout.non_managed_pip_upgrade_command("insider")
+        assert hint.command is not None
+        workdir = seen["workdir"].resolve()
+        # The workdir is NOT the agent-writable trust keystone (nor under it).
+        assert workdir != keystone.resolve()
+        assert (
+            keystone.resolve() not in workdir.parents
+        ), f"hint staged under the agent-writable trust keystone {workdir}"
+
+    def test_verification_failure_reports_and_emits_no_name_based_command(self) -> None:
+        """RED-THEN-GREEN. When the signed manifest cannot be verified, the hint
+        carries NO command — just a failure report pointing at the channel's
+        artifact directory. The old `--extra-index-url ... -U kirocrew` fallback
+        must not reappear: it resolves `kirocrew` across public PyPI, where a
+        higher-versioned squat wins. This fires on a plain-pip Windows host with
+        no trusted openssl and on any transient CDN outage, so it is not rare."""
+        from kiro_crew.platform import update_layout
+        from kiro_crew.platform.wheel_engine import WheelUpdateError
+
+        with (
+            patch(
+                "kiro_crew.platform.update_layout.cdn_bases",
+                return_value=("https://updates.crew.kiro.dev", "https://download.crew.kiro.dev"),
+            ),
+            patch(
+                "kiro_crew.platform.wheel_engine.fetch_verified_manifest",
+                side_effect=WheelUpdateError("verification failed"),
+            ),
+        ):
+            hint = update_layout.non_managed_pip_upgrade_command("insider")
+        # No runnable command is handed over at all.
+        assert hint.command is None
+        # The report names the channel artifact directory for a manual install.
+        assert "https://download.crew.kiro.dev/cli/insider/" in hint.note
+        assert "SHA256SUMS" in hint.note
+        # The dependency-confusion forms must appear NOWHERE in the report.
+        assert "--extra-index-url" not in hint.note
+        assert "-U kirocrew" not in hint.note
+        assert "/simple/" not in hint.note
+
+    def test_oserror_also_reports_rather_than_falling_back(self) -> None:
+        """A missing openssl / network OSError is a verification failure too, so
+        it reports rather than emitting the name-based command."""
+        from kiro_crew.platform import update_layout
+
+        with (
+            patch(
+                "kiro_crew.platform.update_layout.cdn_bases",
+                return_value=("https://updates.crew.kiro.dev", "https://download.crew.kiro.dev"),
+            ),
+            patch(
+                "kiro_crew.platform.wheel_engine.fetch_verified_manifest",
+                side_effect=OSError("no openssl"),
+            ),
+        ):
+            hint = update_layout.non_managed_pip_upgrade_command("stable")
+        assert hint.command is None
+        assert "--extra-index-url" not in hint.note
+        assert "-U kirocrew" not in hint.note
+
+    def test_pinned_hint_follows_the_cdn_override(self, monkeypatch) -> None:
+        """A test or alternate CDN upgrades from the same place it installed
+        from, so the override flows into the pinned wheel URL too."""
+        from kiro_crew.platform import update_layout
+
+        monkeypatch.setenv("KIROCREW_CDN_BASE", "https://cdn.example.invalid")
+        payload = {
+            "schema": "kirocrew-cli-artifact-manifest-v1",
+            "channel": "nightly",
+            "version": "9.9.9rc1",
+            "wheel_url": (
+                "https://cdn.example.invalid/cli/nightly/9.9.9rc1/"
+                "kirocrew-9.9.9rc1-py3-none-any.whl"
+            ),
+            "sha256": "c" * 64,
+        }
+        with patch(
+            "kiro_crew.platform.wheel_engine.fetch_verified_manifest",
+            return_value=payload,
+        ):
+            hint = update_layout.non_managed_pip_upgrade_command("nightly")
+        assert hint.command is not None
+        assert (
+            '"https://cdn.example.invalid/cli/nightly/9.9.9rc1/'
+            "kirocrew-9.9.9rc1-py3-none-any.whl#sha256=" + "c" * 64 + '"'
+        ) in hint.command
+        assert "--extra-index-url" not in hint.command
+
+    def test_failure_report_follows_the_cdn_override(self, monkeypatch) -> None:
+        """On verification failure the manual-install guidance points at the
+        same CDN the install came from, honouring the override."""
+        from kiro_crew.platform import update_layout
+        from kiro_crew.platform.wheel_engine import WheelUpdateError
+
+        monkeypatch.setenv("KIROCREW_CDN_BASE", "https://cdn.example.invalid")
+        with patch(
+            "kiro_crew.platform.wheel_engine.fetch_verified_manifest",
+            side_effect=WheelUpdateError("offline"),
+        ):
+            hint = update_layout.non_managed_pip_upgrade_command("nightly")
+        assert hint.command is None
+        assert "https://cdn.example.invalid/cli/nightly/" in hint.note
+
+    def test_pair_hint_upgrade_matches_the_command_and_restart_is_second(self) -> None:
+        from kiro_crew.platform import update_layout
+        from kiro_crew.platform.wheel_engine import WheelUpdateError
+
+        with (
+            patch(
+                "kiro_crew.platform.update_layout.cdn_bases",
+                return_value=("https://updates.crew.kiro.dev", "https://download.crew.kiro.dev"),
+            ),
+            patch(
+                "kiro_crew.platform.wheel_engine.fetch_verified_manifest",
+                side_effect=WheelUpdateError("offline"),
+            ),
+        ):
+            upgrade, restart = update_layout.non_managed_pip_update_hint("stable")
+            assert upgrade == update_layout.non_managed_pip_upgrade_command("stable")
+        assert restart == "kirocrew restart"
+
+
 class TestTrustedEnvDropsLoaderInjection:
     """Narrowing PATH is not enough: PYTHONPATH plus a planted sitecustomize.py
     runs on every Python start, and LD_PRELOAD/DYLD_* do the same for any
