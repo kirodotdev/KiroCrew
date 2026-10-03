@@ -4027,6 +4027,16 @@ answers before its work finishes leaves the assertion racing the loop. There is 
 synchronisation point, so use it — `drain_background_tasks(state)` — and see the Rules
 entry for what it looks like when you do not (a different test failing each run).
 
+A route with a **wait budget** is the same shape from the other side: it awaits its
+work for a fixed interval, then answers a placeholder (`refreshing: True`) while the
+work continues. `/api/usage/kiro` gives its session scan 50ms, and a real scan on a
+loaded Windows runner overruns it, so a test that asserts the settled payload on the
+first response reads the zero placeholder (`assert 0 == 1`, a missing `error` key).
+A test about the settled payload waits on the task the route left running and asks
+again (`_get_settled_usage` in `test_usage.py`); a test about the placeholder sets the
+budget to `0` and holds the work. Reproduce with the budget at `0`: every test that
+races it fails on any host.
+
 An unawaited executor job holding a `file_lock` is the sharpest version, because the
 acquire on the event-loop thread is one attempt and never waits (the
 `platform_compat.file_lock` docstring). `await svc.remove(a)` leaves its trust
