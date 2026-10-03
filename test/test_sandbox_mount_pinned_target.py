@@ -1181,6 +1181,7 @@ def test_the_directory_loop_records_every_window_it_binds(tmp_path: Path) -> Non
     assert str(bed.aws) in region["_MASKED_NAMES"], "the window's mask root was not recorded"
 
 
+@_LINUX_LINK_PIN
 def test_a_leaf_absent_inside_a_bound_window_is_not_covered_by_the_mask_above(
     tmp_path: Path,
 ) -> None:
