@@ -12068,7 +12068,7 @@
       "dev_fleet": "Flotte de dev",
       "discovery_error": "Erreur de découverte",
       "live_state_unknown": "État live indisponible",
-      "live_state_unknown_help": "La passerelle n'a pas pu indiquer quel checkout est live ou préparé ; aucune ligne n'est donc marquée live — l'état est inconnu, pas vide. « Passer en live » est désactivé jusqu'à ce que la passerelle réponde ; utilisez le lien « Demander à l'agent » de cet avis.",
+      "live_state_unknown_help": "La passerelle n'a pas pu indiquer quel checkout est live (le checkout depuis lequel la passerelle elle-même s'exécute) ou préparé ; aucune ligne n'est donc marquée live — l'état est inconnu, pas vide. Demande à l'agent avant de passer un checkout en live.",
       "disk": "Disque :",
       "disk_worktrees": "Disque (worktrees)",
       "dismiss": "Masquer",

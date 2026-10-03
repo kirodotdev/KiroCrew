@@ -2240,6 +2240,12 @@ export default function DevFleetPage() {
   // Rendering those rows with no badge would read as "nothing is live" — the
   // opposite remedy (stage a cutover) from the true one (check the gateway) — so
   // the unknown state is an error notice above the list, never a bare list.
+  // The copy ends by naming the hand-off ("Ask the agent before making a
+  // checkout live"), so the link goes BELOW it, a row of its own inside the
+  // text column: beside, it floats into the copy's first line and the sentence
+  // reads around it at some widths ("use the ✨Ask the agent Ask-the-agent
+  // link…") — #10831. Opt-in on this notice only; every other ErrorNotice keeps
+  // its default layout.
   else body = (
     <div>
       {fleet?.live_state_known === false && (
@@ -2247,6 +2253,7 @@ export default function DevFleetPage() {
           title={i18nT('pages.devFleetPage.live_state_unknown')}
           message={i18nT('pages.devFleetPage.live_state_unknown_help')}
           askAgent
+          actionPlacement="below"
           testId="fleet-live-state-unknown"
         />
       )}

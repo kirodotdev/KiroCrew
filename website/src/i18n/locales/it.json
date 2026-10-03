@@ -12068,7 +12068,7 @@
       "dev_fleet": "Dev Fleet",
       "discovery_error": "Errore di rilevamento",
       "live_state_unknown": "Stato live non disponibile",
-      "live_state_unknown_help": "Il gateway non è riuscito a indicare quale checkout è live o in attesa, quindi nessuna riga è contrassegnata come live: lo stato è sconosciuto, non vuoto. «Rendi live» è disattivato finché il gateway non risponde; usa il link «Chiedi all'agente» in questo avviso.",
+      "live_state_unknown_help": "Il gateway non è riuscito a indicare quale checkout è live (il checkout da cui è in esecuzione il gateway stesso) o in attesa, quindi nessuna riga è contrassegnata come live: lo stato è sconosciuto, non vuoto. Chiedi all'agente prima di rendere live un checkout.",
       "disk": "Disco:",
       "disk_worktrees": "Disco (worktree)",
       "dismiss": "Ignora",
