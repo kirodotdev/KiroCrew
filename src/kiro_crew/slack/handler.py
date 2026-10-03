@@ -35,7 +35,7 @@ from typing import TYPE_CHECKING, Any, cast
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state import DashboardState
 
-from kiro_crew import name_grant, runtime_death
+from kiro_crew import goal_actions, name_grant, runtime_death
 from kiro_crew.acp.client import AcpError, AcpProcessDied, AcpPromptBusy, AcpTimeoutError
 from kiro_crew.acp.types import (
     STOP_REASON_CANCELLED,
@@ -1868,10 +1868,17 @@ async def _handle_slash_command(
         # Against the thread's OWNING session -- a linked thread's turns run
         # under the dashboard session that owns it, and that is the key the
         # replay reads -- resolved the way the OPTIONS expiry below resolves it.
+        control_key = sessions.get_session_for_thread(reply_ts) or session_key
+        goal_state = get_dashboard_state()
+
+        def stop_reply(text: str) -> str:
+            warning = goal_actions.goal_pause_warning(control_key, state=goal_state)
+            return f"{text}\n\n{warning}" if warning else text
+
         force_stop = False
-        if compaction_in_flight(sessions, session_key):
-            force_stop = consume_stop_declined(session_key, user_id)
-        if compaction_in_flight(sessions, session_key) and not force_stop:
+        if compaction_in_flight(sessions, control_key):
+            force_stop = consume_stop_declined(control_key, user_id)
+        if compaction_in_flight(sessions, control_key) and not force_stop:
             # Declined before the Stop is recorded: see slack/events.py. A repeat
             # within the window by the SAME presser is the second press and forces.
             sel().log_tool_invocation(
@@ -1892,11 +1899,12 @@ async def _handle_slash_command(
                     await slack.post_message(channel, STOP_DECLINED_COMPACTING_TEXT, reply_ts)
                 )
 
-            await decline_stop(session_key, user_id, _say_declined)
+            await decline_stop(control_key, user_id, _say_declined)
             return ""
-        note_user_stop(sessions, sessions.get_session_for_thread(reply_ts) or session_key)
-        has_session = sessions.has_session(session_key)
+        note_user_stop(sessions, control_key)
+        has_session = sessions.has_session(control_key)
         if not has_session:
+            await goal_actions.pause_session_goal(control_key, state=goal_state)
             sel().log_tool_invocation(
                 session_key=session_key,
                 source="slack",
@@ -1905,7 +1913,7 @@ async def _handle_slash_command(
                 outcome="no_session",
                 metadata={"user": user_id, "channel": channel},
             )
-            await slack.post_message(channel, "Nothing running.", reply_ts)
+            await slack.post_message(channel, stop_reply("Nothing running."), reply_ts)
             return ""
 
         # Post ephemeral "Stopping…" block with Kill Now button
@@ -1915,25 +1923,29 @@ async def _handle_slash_command(
             channel,
             user_id,
             "Stopping…",
-            blocks=build_stopping_blocks(session_key),
+            blocks=build_stopping_blocks(control_key),
             thread_ts=reply_ts,
         )
 
         async def _on_soft() -> None:
-            await slack.post_message(channel, "⏹ Execution stopped.", reply_ts)
+            await slack.post_message(channel, stop_reply("⏹ Execution stopped."), reply_ts)
 
         async def _on_hard() -> None:
-            await slack.post_message(channel, "⛔ Execution stopped — session reset.", reply_ts)
+            await slack.post_message(
+                channel, stop_reply("⛔ Execution stopped — session reset."), reply_ts
+            )
 
         # ``preserve_queue`` with the force: the hard reset pops the session and
         # its queue, which in a shared thread holds co-tenants' messages;
         # ``stop_turn`` parks them for the successor instead.
         _kw = {"force": True, "preserve_queue": True} if force_stop else {}
-        outcome = await sessions.stop_turn(session_key, on_soft=_on_soft, on_hard=_on_hard, **_kw)
+        outcome = await sessions.stop_turn(
+            control_key, on_soft=_on_soft, on_hard=_on_hard, goal_state=goal_state, **_kw
+        )
         # If stop_turn returned "idle" (no active turn), neither callback
         # fired — dismiss the stale "Stopping…" ephemeral explicitly.
         if outcome == "idle":
-            await slack.post_message(channel, "Nothing running.", reply_ts)
+            await slack.post_message(channel, stop_reply("Nothing running."), reply_ts)
         elif outcome == "compacting":
             # The race decline arms the marker too: the reply promises that a
             # repeat forces, so the repeat must find one -- after the reply
@@ -1945,7 +1957,7 @@ async def _handle_slash_command(
                     await slack.post_message(channel, STOP_DECLINED_COMPACTING_TEXT, reply_ts)
                 )
 
-            await decline_stop(session_key, user_id, _say_declined_race)
+            await decline_stop(control_key, user_id, _say_declined_race)
         sel().log_tool_invocation(
             session_key=session_key,
             source="slack",

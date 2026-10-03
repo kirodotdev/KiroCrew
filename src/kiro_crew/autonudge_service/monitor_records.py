@@ -40,6 +40,9 @@ from kiro_crew.autonudge_service.timers import (
     _MONITOR_RETRY_MAX_BACKOFF_SECS,
     _REARM_BACKOFF_MAX_SHIFT,
 )
+from kiro_crew.goal import (
+    GOAL_TERMINAL_STATUSES,
+)
 from kiro_crew.monitoring.decision import (
     decide_monitor,
     monitor_budget_reason,
@@ -91,6 +94,7 @@ async def add_monitor(
     now: float | None = None,
     replace_existing: bool = True,
     replace_stopped: bool = False,
+    replace_suggested_goal: bool = False,
     expected_existing_monitor_id: str | None = None,
     expected_existing_config_generation: int | None = None,
     admission_check: Callable[[], bool] | None = None,
@@ -112,6 +116,7 @@ async def add_monitor(
             now=now,
             replace_existing=replace_existing,
             replace_stopped=replace_stopped,
+            replace_suggested_goal=replace_suggested_goal,
             expected_existing_monitor_id=expected_existing_monitor_id,
             expected_existing_config_generation=expected_existing_config_generation,
             admission_check=admission_check,
@@ -145,6 +150,7 @@ async def _add_monitor_locked(
     now: float | None,
     replace_existing: bool,
     replace_stopped: bool = False,
+    replace_suggested_goal: bool = False,
     expected_existing_monitor_id: str | None,
     expected_existing_config_generation: int | None,
     admission_check: Callable[[], bool] | None,
@@ -170,6 +176,25 @@ async def _add_monitor_locked(
                 ):
                     raise MonitorUpdateConflict("monitor changed before restart")
             if existing:
+                # Only the explicit owner watch route grants this exception.
+                # Recheck under the mutation lock so an owner Start that won
+                # admission preserves the goal, even if the watch saw a suggestion.
+                replacing_suggestion = (
+                    replace_suggested_goal
+                    and existing.goal is not None
+                    and existing.goal.status == "suggested"
+                    and not existing.active
+                    and existing.monitor is None
+                )
+                if (
+                    existing.goal is not None
+                    and existing.goal.status not in GOAL_TERMINAL_STATUSES
+                    and not replacing_suggestion
+                ):
+                    raise MonitorUpdateConflict(
+                        "this session has an unfinished goal; start the new automation or watch "
+                        "in another session to keep this goal intact"
+                    )
                 # Same split as the legacy add: create-only refuses ANY
                 # record unless the caller opted into ``replace_stopped``,
                 # which under the owner's ruling displaces only
@@ -177,11 +202,15 @@ async def _add_monitor_locked(
                 # A consumer-recorded stop — including a USER_STOP record
                 # retained by monitor_stop — is preserved; the dashboard
                 # restart route (conditional replace) is the sanctioned way
-                # to succeed one. Dashboard creates never opt in, so their
-                # any-record 409 keeps retained evidence intact. The
+                # to succeed one. The owner watch exception above applies only
+                # to an unstarted goal, preserving retained monitor evidence. The
                 # wake-in-flight guard below still covers a terminal record
                 # that owns an accepted, uncompleted wake.
-                if not replace_existing and (existing.active or not replace_stopped):
+                if (
+                    not replace_existing
+                    and not replacing_suggestion
+                    and (existing.active or not replace_stopped)
+                ):
                     raise MonitorUpdateConflict("session already has an automation")
                 existing_monitor = existing.monitor
                 if (

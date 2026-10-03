@@ -608,7 +608,18 @@ class TestStopCardTeardownRace:
         slot.running = True
         state = _FakeState(slot)
 
-        async def _stop_turn(_key, force=False, preserve_queue=False, on_soft=None, on_hard=None):
+        async def _stop_turn(
+            _key,
+            *,
+            force=False,
+            preserve_queue=False,
+            on_soft=None,
+            on_hard=None,
+            goal_state,
+            pause_goal,
+        ):
+            assert goal_state is state
+            assert pause_goal is True
             # The budget expires, then the dying turn's _finish_queue_cycle
             # resets the stop posture before the escalation callback runs.
             slot._stop_state = "idle"

@@ -53,6 +53,7 @@ from kiro_crew.dashboard.handlers.work_ledger import (
     _tail_events,
 )
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.goal import GOAL_PAUSE_UNSAVED_MESSAGE
 from kiro_crew.platform.context import redact_via_context
 
 logger = logging.getLogger(__name__)
@@ -523,11 +524,11 @@ async def api_work_ledger_board_action(request: web.Request) -> web.Response:
     # session, and an unreachable worker recorded as ``ok`` is an audit line that
     # disagrees with what happened -- written once, read later, never corrected. The
     # refusal code goes in ``resources`` so the line says which failure it was.
-    stopped = bool(result.get("ok", False))
+    stopped = bool(result.get("ok", False)) and not result.get("compacting", False)
     if stopped:
         _audit(caller, "crew_board_action", "ok", resources=f"conductor={key} item={item_id}:stop")
     else:
-        code = str(result.get("code") or "unknown")
+        code = "compacting" if result.get("compacting") else str(result.get("code") or "unknown")
         _audit(
             caller,
             "crew_board_action",
@@ -538,15 +539,16 @@ async def api_work_ledger_board_action(request: web.Request) -> web.Response:
     # to ``WorkItem`` later reaches the page by default; the opposite is right here,
     # because this body belongs to another module. A field it gains later must not
     # reach a browser that is deliberately not allowed to know which session this
-    # acted on, so only these three are copied out.
+    # acted on, so only the action fields and the fixed pause warning leave here.
     #
     # ``ok`` is load-bearing, not decoration: the delegate answers 200 with
     # ``ok: False`` when it cannot reach the worker's session, so a page that reads
     # only the status code cannot tell a stopped worker from a running one.
-    return web.json_response(
-        {
-            "ok": stopped,
-            "action": "stop",
-            "item_id": item_id,
-        }
-    )
+    payload: dict[str, Any] = {
+        "ok": stopped,
+        "action": "stop",
+        "item_id": item_id,
+    }
+    if result.get("goal_pause_saved") is False:
+        payload.update(goal_pause_saved=False, warning=GOAL_PAUSE_UNSAVED_MESSAGE)
+    return web.json_response(payload)

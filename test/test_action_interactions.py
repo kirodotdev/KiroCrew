@@ -111,6 +111,7 @@ def _make_orch(post_ts: str = "9999.000") -> MagicMock:
     orch.slack.post_message = AsyncMock(return_value=post_ts)
     orch.slack.delete_message = AsyncMock()
     orch.sessions = MagicMock()
+    orch.sessions.get_session_for_thread.return_value = None
     orch.ctx_builder = MagicMock()
     orch.cron_svc = MagicMock()
     orch.conv_log = MagicMock()
@@ -372,7 +373,8 @@ async def test_slack_kill_now_posts_to_thread_not_session_key(
     orch = orch_fixture
     # stop_turn must invoke on_hard for the post_message branch to run
 
-    async def _fake_stop_turn(key, *, force=False, on_soft=None, on_hard=None):
+    async def _fake_stop_turn(key, *, force=False, on_soft=None, on_hard=None, goal_state=None):
+        assert goal_state is orch.dashboard_state
         if on_hard:
             await on_hard()
         return "hard"

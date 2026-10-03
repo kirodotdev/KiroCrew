@@ -31,6 +31,7 @@ from kiro_crew import autonudge_provider_trust
 from kiro_crew.autonudge import (
     MAX_BANNER_CHARS,
     AutoNudgeStaleBaseline,
+    GoalUpdateConflict,
     MonitorUpdateConflict,
     NudgeAdmissionRefused,
     is_channel_key,
@@ -38,6 +39,7 @@ from kiro_crew.autonudge import (
 )
 from kiro_crew.autonudge_selfarm import forget_self_arm, record_self_arm
 from kiro_crew.config.loader import workspace_dir_for
+from kiro_crew.goal import GoalState, continuation_message
 from kiro_crew.monitoring.limits import validate_runtime_secs
 from kiro_crew.monitoring.models import (
     MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS,
@@ -65,6 +67,16 @@ logger = logging.getLogger(__name__)
 # request came from a turn of the bound session itself. See
 # :func:`is_self_arm`.
 _EXTERNAL_ARM_REFUSED_MODES = frozenset({"crew", "member"})
+_GOAL_MESSAGE_ERROR = "goal message must be the host-generated continuation"
+
+
+def _is_goal_continuation(goal: GoalState | None, message: Any) -> bool:
+    """Match raw host output before redaction or projection normalization changes it."""
+    return (
+        isinstance(goal, GoalState)
+        and isinstance(message, str)
+        and message == continuation_message(goal)
+    )
 
 
 def is_self_arm(slot_key: str, initiator_slot_key: str) -> bool:
@@ -589,6 +601,10 @@ async def authorize_and_update_nudge(
     #: its watch through a metadata edit would look armed and observe nothing.
     watch: Any = None,
     expect_fingerprint: Any = None,
+    expected_generation: Any = None,
+    goal: GoalState | None = None,
+    goal_admission_check: Callable[[], bool] | None = None,
+    stopped_reason: str | None = None,
     source: str,
     caller: str = "",
 ) -> tuple[Any | None, str | None, int]:
@@ -622,6 +638,7 @@ async def authorize_and_update_nudge(
     resolve the id from their own binding key so a cross-session update is
     unrepresentable; the REST route is user-token gated for the dashboard UI.
     """
+    canonical_goal_message = _is_goal_continuation(goal, message)
     loop_id = (loop_id or "").strip()
 
     def _audit(outcome: str, err: str | None = None, **extra: Any) -> None:
@@ -646,13 +663,19 @@ async def authorize_and_update_nudge(
         return None, "auto-nudge disabled (KIROCREW_AUTONUDGE not set)", 503
     if not loop_id:
         return _deny("loop_id required", 400)
+    if expected_generation is not None and (
+        type(expected_generation) is not int or expected_generation < 0
+    ):
+        return _deny("expected_generation must be a nonnegative integer", 400)
+    if goal is not None and not canonical_goal_message:
+        return _deny(_GOAL_MESSAGE_ERROR, 400)
     # ONE read serving BOTH consumers below. Called directly, NOT behind a ``hasattr``
     # probe, which would fail open and hide an attribute-name error at runtime.
     row = svc.get_by_id(loop_id)
     if message is not None:
         if not isinstance(message, str):
             return _deny("message must be a string", 400)
-        if len(message) > 8000:
+        if len(message) > 8000 and not canonical_goal_message:
             return _deny("message too long (max 8000 chars)", 400)
         # A client that RE-SUBMITS the served projection has not edited the message, so
         # applying it would destroy the stored instruction with no error and no warning.
@@ -764,6 +787,8 @@ async def authorize_and_update_nudge(
                         ("active", active),
                         ("banner", banner),
                         ("watch", watch),
+                        ("goal", goal),
+                        ("stopped_reason", stopped_reason),
                     )
                     if v is not None
                 ),
@@ -777,6 +802,13 @@ async def authorize_and_update_nudge(
         logger.error("autonudge update denied: SEL audit unavailable", exc_info=True)
         return None, "audit log unavailable — nudge loop not updated", 503
     try:
+        goal_patch: dict[str, Any] = {}
+        if goal is not None:
+            goal_patch = {
+                "goal": goal,
+                "admission_check": goal_admission_check,
+                "stopped_reason": stopped_reason,
+            }
         loop = await svc.update(
             loop_id,
             message=message,
@@ -789,6 +821,8 @@ async def authorize_and_update_nudge(
             judge=judge,
             watch=watch,
             expect_fingerprint=expect_fingerprint,
+            expected_generation=expected_generation,
+            **goal_patch,
         )
     except AutoNudgeStaleBaseline:
         # Refused under the store's own lock, so the newer goal is still there. 409 rather
@@ -800,6 +834,8 @@ async def authorize_and_update_nudge(
             "and choose.",
             409,
         )
+    except GoalUpdateConflict as exc:
+        return _deny(str(exc), 409)
     except ValueError as exc:
         return _deny(str(exc), 400)
     except Exception as exc:  # noqa: BLE001 - audit the failure, then propagate
@@ -850,9 +886,12 @@ async def authorize_and_add_nudge(
     # monitor_update's own refusal message prescribes. Consumer-recorded
     # stops (manual pauses, user stops, session-close retention, research
     # tombstones, quarantined records) stay refused as retained evidence.
-    # Dashboard REST creates never set it: their documented contract is
-    # any-record 409, preserving retained inspection records.
+    # Dashboard REST creates never set it, preserving retained inspection records.
     replace_stopped: bool = False,
+    # Internal opt-in from the owner-checked POST /api/monitors route only.
+    # The audit source and a model directive's session binding are not proof
+    # that the owner chose to replace a suggestion with this watch.
+    replace_suggested_goal: bool = False,
     expected_existing_monitor_id: str | None = None,
     expected_existing_config_generation: int | None = None,
     # Binding key of the session whose OWN TURN issued this arm request, or ""
@@ -861,6 +900,8 @@ async def authorize_and_add_nudge(
     initiator_slot_key: str = "",
     creation_surface: MonitorCreationSurface = MonitorCreationSurface.DASHBOARD,
     grant_owner_provider_credentials: bool = False,
+    goal: GoalState | None = None,
+    goal_admission_check: Callable[[], bool] | None = None,
 ) -> tuple[Any | None, str | None, int]:
     """Validate + authorize + arm a nudge loop; return ``(loop, error, status)``.
 
@@ -883,6 +924,7 @@ async def authorize_and_add_nudge(
     failure — returns the ``(error, status)`` so the REST handler can map it to
     an HTTP response and the workflow bridge can log-and-skip.
     """
+    canonical_goal_message = _is_goal_continuation(goal, message)
     slot_key = (slot_key or "").strip()
     message = (message or "").strip()
     # The nudge message is LLM-influenced (workflow-authored ctx.nudge and
@@ -922,6 +964,8 @@ async def authorize_and_add_nudge(
     if svc is None:
         _audit("error", "autonudge disabled")
         return None, "auto-nudge disabled (KIROCREW_AUTONUDGE not set)", 503
+    if goal is not None and not canonical_goal_message:
+        return _deny(_GOAL_MESSAGE_ERROR, 400)
     monitor_wake_instructions = ""
     if monitor is not None:
         monitor_wake_instructions = monitor.wake_instructions
@@ -1094,7 +1138,14 @@ async def authorize_and_add_nudge(
             )
 
         admission_check = _dashboard_admission
-    if len(message) > 8000:
+    if goal_admission_check is not None:
+        binding_admission = admission_check
+
+        def _goal_admission() -> bool:
+            return binding_admission() and goal_admission_check()
+
+        admission_check = _goal_admission
+    if len(message) > 8000 and not canonical_goal_message:
         return _deny("message too long (max 8000 chars)", 400)
     if monitor is None:
         get_by_slot = getattr(svc, "get_by_slot", None)
@@ -1295,6 +1346,8 @@ async def authorize_and_add_nudge(
                 # this dict by equality, so a caller that named no watch must produce
                 # the kwargs it produced before the field existed.
                 add_kwargs["watch"] = watch
+            if goal is not None:
+                add_kwargs["goal"] = goal
             if replace_stopped:
                 add_kwargs["replace_stopped"] = True
             if self_armed:
@@ -1322,6 +1375,8 @@ async def authorize_and_add_nudge(
                 add_monitor_kwargs["replace_existing"] = False
             if replace_stopped:
                 add_monitor_kwargs["replace_stopped"] = True
+            if replace_suggested_goal:
+                add_monitor_kwargs["replace_suggested_goal"] = True
             if self_armed:
                 add_monitor_kwargs["self_armed"] = True
             if reserved_loop_id is not None:

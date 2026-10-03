@@ -139,6 +139,7 @@ _STRUCTURAL_MARKER_RES: tuple[re.Pattern[str], ...] = (
     re.compile(r"\[\s*AGENT\s*SYSTEM\s*PROMPT\s*\]", re.IGNORECASE),
     re.compile(r"\[\s*END\s*AGENT\s*SYSTEM\s*PROMPT\s*\]", re.IGNORECASE),
     re.compile(r"\[\s*END\s*CRITICAL\s*RULES\s*\]", re.IGNORECASE),
+    re.compile(r"\[\s*(?:END\s*)?GOAL\s*PURSUIT\s*\]", re.IGNORECASE),
     re.compile(r"\[\s*END\s*OF\s*SESSION\s*CONTEXT\s*\]", re.IGNORECASE),
     _REPLY_FORMAT_RULES_RE,
     re.compile(r"\[\s*CRITICAL\s*RULES\s*[-]{1,2}", re.IGNORECASE),

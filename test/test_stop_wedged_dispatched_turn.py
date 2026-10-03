@@ -111,7 +111,15 @@ class TestStopIdleWhileRunning:
         state = _FakeState(slot)
         calls: list[dict] = []
 
-        async def _stop_turn(_key, force=False, preserve_queue=False, on_soft=None, on_hard=None):
+        async def _stop_turn(
+            _key,
+            force=False,
+            preserve_queue=False,
+            on_soft=None,
+            on_hard=None,
+            goal_state=None,
+            pause_goal=False,
+        ):
             calls.append({"force": force})
             # The provider holds no active turn to cancel.
             return "idle"
@@ -152,7 +160,15 @@ class TestStopIdleWhileRunning:
         state = _FakeState(slot)
         calls: list[dict] = []
 
-        async def _stop_turn(_key, force=False, preserve_queue=False, on_soft=None, on_hard=None):
+        async def _stop_turn(
+            _key,
+            force=False,
+            preserve_queue=False,
+            on_soft=None,
+            on_hard=None,
+            goal_state=None,
+            pause_goal=False,
+        ):
             calls.append({"force": force})
             # The turn settles during the cooperative cancel: the slot reads
             # not-running by the time idle lands.

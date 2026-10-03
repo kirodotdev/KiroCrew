@@ -1069,34 +1069,50 @@ async def _handler_cancelled_inside_the_steer_rpc(tmp_path, *, accepted: bool):
     # The hand-off task has no await left after the RPC; a few iterations let it finish.
     for _ in range(10):
         await asyncio.sleep(0)
-    return client, slot, enqueued
+    return client, state, slot, enqueued
 
 
 @pytest.mark.asyncio
 async def test_a_cancelled_handler_still_reconciles_an_accepted_steer(tmp_path) -> None:
-    """The hand-off finishes without its caller: row written, bookkeeping released.
+    """The hand-off writes its row after cancellation; consumption settles it.
 
-    Awaited inline, the handler's cancellation lands inside the steer RPC: the
-    client has the text, and everything behind the RPC -- the transcript row, the
-    pop of the per-steer maps -- is skipped, so the text runs with no row while
-    the maps keep its entry for the slot's lifetime (the ``steering_consumed``
-    settle only removes the pending entry and patches an existing row). Shielded
-    and strongly held, the hand-off task completes the reconciliation; the caller
-    unwinds without the outcome, so no confirmation reaches the closing DM.
+    Shielding lets the accepted RPC finish without its cancelled caller, so the
+    row is written and no confirmation reaches the closing DM. Human and channel
+    provenance and the ingress admission remain while the steer is pending; the
+    real consumption echo promotes the row and releases those three records.
     """
-    client, slot, enqueued = await _handler_cancelled_inside_the_steer_rpc(tmp_path, accepted=True)
+    client, state, slot, enqueued = await _handler_cancelled_inside_the_steer_rpc(
+        tmp_path, accepted=True
+    )
 
     steer_row = next((m for m in slot.messages if m.get("meta", {}).get("steer")), None)
     assert steer_row is not None, "the accepted steer has its transcript row"
     assert steer_row["content"] == "keep the old name"
     assert steer_row["meta"].get(HUMAN_TURN_META_KEY) is True
-    assert slot._steer_delivery_ids == {} and slot._steer_user_origin == {}
-    assert slot._steer_channel_origin == {} and slot._steer_admissions == {}
+    assert steer_row["meta"]["steerState"] == "written"
+    assert slot._steer_delivery_ids == {}
+    assert slot._steer_user_origin == {"keep the old name": True}
+    assert slot._steer_channel_origin == {"keep the old name": True}
     assert slot._pending_steers == ["keep the old name"], "delivered and live: the turn consumes it"
     assert len(slot._steer_audience_fences) == 1, "the audience's record stays for the turn"
+    (admission,) = slot._steer_audience_fences.values()
+    assert sc.QUEUED_CONTAINMENT_META_KEY in admission
+    assert slot._steer_admissions == {"keep the old name": admission}
     assert slot._queue == [] and enqueued == []
     assert ch._HANDOFFS_IN_FLIGHT == set(), "the strong reference is released on completion"
     assert not any("Steering" in t or "Queued" in t for t in _sent_texts(client))
+
+    consumed_human = cr._settle_consumed_steers(
+        slot, "<user_message>\nkeep the old name\n</user_message>", state
+    )
+    assert consumed_human is True
+    assert slot._pending_steers == []
+    assert steer_row["meta"]["steerState"] == "consumed"
+    assert slot._steer_user_origin == {}
+    assert slot._steer_channel_origin == {}
+    assert slot._steer_admissions == {}
+    assert len(slot._steer_audience_fences) == 1, "consumption does not release the turn's fence"
+    assert slot._turn_channel_narrowed is True, "channel authority still applies to this turn"
 
 
 @pytest.mark.asyncio
@@ -1110,7 +1126,9 @@ async def test_a_cancelled_handler_still_takes_the_queue_fallback_for_a_declined
     standing and the text nowhere: a pending entry the teardown requeues onto a
     queue the DM was never told about, or discards on a hard kill.
     """
-    client, slot, enqueued = await _handler_cancelled_inside_the_steer_rpc(tmp_path, accepted=False)
+    client, _state, slot, enqueued = await _handler_cancelled_inside_the_steer_rpc(
+        tmp_path, accepted=False
+    )
 
     assert [q["content"] for q in slot._queue] == ["keep the old name"]
     assert slot._pending_steers == [] and slot._steer_delivery_ids == {}

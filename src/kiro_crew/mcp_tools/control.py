@@ -31,6 +31,14 @@ from kiro_crew import autonudge, mcp_core, platform_compat, session_directive
 from kiro_crew.autonudge_judge import ending_phrase, screen_phrase
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.constants import WAIT_TOOL_MAX_SECS
+from kiro_crew.goal import (
+    GOAL_ACTIONS,
+    GOAL_MAX_ITEM_CHARS,
+    GOAL_MAX_ITEMS,
+    GOAL_MAX_OBJECTIVE_CHARS,
+    GOAL_MAX_PROGRESS_CHARS,
+    GoalState,
+)
 from kiro_crew.mcp_shared import ToolCancelled, is_tool_cancelled
 from kiro_crew.mcp_tools._limits import (
     _MONITOR_DEFAULT_MAX_CYCLES,
@@ -68,6 +76,7 @@ from kiro_crew.validation import (
     ASK_QUESTION_SCHEMA,
     AUTONUDGE_STOP_SCHEMA,
     CHAT_TAG_SCHEMA,
+    GOAL_SCHEMA,
     MONITOR_INSPECT_SCHEMA,
     MONITOR_START_SCHEMA,
     MONITOR_STOP_SCHEMA,
@@ -199,6 +208,52 @@ def schemas() -> list[dict[str, Any]]:
         except Exception:
             logger.debug("monitor runtime descriptor unavailable; using default", exc_info=True)
     return [
+        {
+            "name": "goal",
+            "description": (
+                "Manage this session's /goal pursuit. Use suggest for a multi-step outcome "
+                "that could benefit from continued work, while doing useful work in this turn. "
+                "Suggestions are inactive: only the user's Start control or explicit /goal "
+                "command enables continuation. The legacy start action also only suggests. Preserve "
+                "the goal across steering and status questions. Use monitor_inspect for goal_id and "
+                "generation for subsequent mutations. Update concise progress; use waiting "
+                "only for an operation you verified is running, needs_input for a required "
+                "human answer. Complete only after verifying the full outcome, with evidence. "
+                "Pause on Stop; resume only on a human request. Questions need no goal. "
+                "Field bounds do not guarantee delivery. All mutations, even with strict "
+                "session identity, must fit the "
+                f"{session_directive.MAX_DIRECTIVE_CHARS}-character encoded envelope, "
+                "counting JSON escaping, all fields and acknowledgment text. Oversize calls "
+                "explicitly refuse without applying changes; use concise wording that "
+                "preserves the full requested outcome."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": list(GOAL_ACTIONS)},
+                    "goal_id": {"type": "string"},
+                    "generation": {"type": "integer", "minimum": 0},
+                    "objective": {"type": "string", "maxLength": GOAL_MAX_OBJECTIVE_CHARS},
+                    "criteria": {
+                        "type": "array",
+                        "maxItems": GOAL_MAX_ITEMS,
+                        "items": {"type": "string", "maxLength": GOAL_MAX_ITEM_CHARS},
+                    },
+                    "progress": {"type": "string", "maxLength": GOAL_MAX_PROGRESS_CHARS},
+                    "evidence": {
+                        "type": "array",
+                        "maxItems": GOAL_MAX_ITEMS,
+                        "items": {"type": "string", "maxLength": GOAL_MAX_ITEM_CHARS},
+                    },
+                    "status": {
+                        "type": "string",
+                        "enum": ["suggested", "working", "waiting", "needs_input"],
+                    },
+                },
+                "required": ["action"],
+                "additionalProperties": False,
+            },
+        },
         {
             "name": "task_run",
             "description": (
@@ -1847,6 +1902,35 @@ def monitor_watch(name: str, args: dict[str, Any]) -> str:
     )
 
 
+def goal(name: str, args: dict[str, Any]) -> str:
+    validate_tool_args(args, GOAL_SCHEMA)
+    sk, strict_err = mcp_core.require_strict_session_key(
+        "Goal management requires an authenticated strict session binding."
+    )
+    if sk and mcp_core._autonudge_binding_key(sk) is None:
+        return _monitor_context_refusal("goal", sk, strict_err or "Unsupported session type.")
+    try:
+        if args["action"] in {"start", "suggest"}:
+            candidate = GoalState.from_dict(args)
+            if not candidate.criteria:
+                return "Error: A goal needs concise completion criteria."
+        else:
+            if not args.get("goal_id") or type(args.get("generation")) is not int:
+                return "Error: Inspect the goal for its goal_id and generation before changing it."
+            # Validate partial text/list changes through the same stored-state boundary.
+            GoalState.from_dict({"objective": "Current goal", **args})
+    except ValueError as exc:
+        return f"Error: {exc}"
+    payload = {field.name: args[field.name] for field in GOAL_SCHEMA.fields if field.name in args}
+    return _emit_directive(
+        "goal",
+        payload,
+        "Goal change requested for this session. Continue useful work in this turn. "
+        "Use monitor_inspect to verify the host applied it and obtain the current "
+        "goal_id and generation before the next update. This acknowledgment is not completion.",
+    )
+
+
 def monitor_inspect(name: str, args: dict[str, Any]) -> str:
     """Read the monitor bound to a verified strict session identity.
 
@@ -1877,6 +1961,7 @@ def monitor_inspect(name: str, args: dict[str, Any]) -> str:
         return f"Error: Monitor inspection failed: {result['error']}"
     return json.dumps(
         _compact_monitor_inspection(result),
+        ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
         default=str,
@@ -2166,6 +2251,7 @@ def suggest_followup(name: str, args: dict[str, Any]) -> str:
 
 
 HANDLERS: dict[str, Callable[[str, dict[str, Any]], str]] = {
+    "goal": goal,
     "task_run": task_run,
     "wait": wait,
     "route_crew": route_crew,

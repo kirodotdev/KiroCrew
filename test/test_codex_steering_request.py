@@ -24,7 +24,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_KIRO,
     METHOD_CANCEL,
 )
-from kiro_crew.dashboard.steer_settle import settle_consumed_steers
+from kiro_crew.steer_settle import settle_consumed_steers
 
 
 class _Runtime:

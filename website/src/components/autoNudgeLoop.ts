@@ -8,6 +8,7 @@
  */
 import { i18nT } from '../i18n/t'
 import { fmtDuration, fmtTimeNumeric } from '../i18n/format'
+import type { PursuedGoal } from '../monitoring/automation'
 
 export interface AutoNudgeLoop {
   id: string
@@ -17,6 +18,7 @@ export interface AutoNudgeLoop {
   max_cycles: number
   cycle_count: number
   active: boolean
+  goal?: PursuedGoal
   last_fire_ts: number
   /** Absolute wall-clock deadline for the next fire; 0 = not yet scheduled.
    *  Already serialized by the backend's `asdict(loop)` — the field simply

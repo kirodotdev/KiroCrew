@@ -353,10 +353,9 @@ function ChatInput({
   const isMobile = useIsMobile()
   const directFilePicker = isMobile || isTouchDevice()
   const [attachControlRow, controlRowEdges, remeasureControlRow] = useScrollEdges<HTMLDivElement>()
-  // The control row's chips are prop-driven (the auto-nudge loop chip, the
-  // approval-mode picker) and appear or change label while the row keeps its
-  // own box, so neither the ResizeObserver nor a scroll event reports the new
-  // content width — only this remeasure can refresh the cue. Boolean presence,
+  // The control row's approval-mode picker can appear or change label while
+  // the row keeps its own box, so neither the ResizeObserver nor a scroll event
+  // reports the new content width — only this remeasure can refresh the cue. Boolean presence,
   // not the callback itself: the handler's identity may change every render
   // and would re-run the effect for nothing.
   const hasAutomation = !!onAutomationClick
@@ -794,7 +793,28 @@ function ChatInput({
         // With an approval box attached above, that pane wears `approval-glow`,
         // whose warn glow takes the shadow slot.
         style={{ overflow: 'hidden' }}
-      >{/* File drag-and-drop target. Drag-drop is inherently pointer-only; the
+      >
+        {onAutomationClick && (
+          <div data-testid="composer-automation-row" className="flex min-w-0 shrink-0 px-2.5 pt-2 pb-1">
+            <Suspense fallback={null}>
+              <SessionAutomationPopover
+                slotKey={slotId || ''}
+                automation={automation || null}
+                open={automationOpen || false}
+                onOpenChange={v => onAutomationClick(v)}
+                onChange={onAutomationChange || (() => {})}
+                creationReady={automationCreationReady}
+                snapshotFailed={automationSnapshotFailed}
+                sessionMode={sessionMode}
+                // Same condition as the Resume placeholder (`resumeOffered`):
+                // whenever the composer says "press Resume", the loop chip
+                // must not pulse as if a cycle were executing.
+                interrupted={resumeOffered}
+              />
+            </Suspense>
+          </div>
+        )}
+      {/* File drag-and-drop target. Drag-drop is inherently pointer-only; the
            keyboard-accessible path is the "Attach files" button that opens the
            hidden file input above. Hence the scoped disable for the drop zone. */}
       {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions */}
@@ -1032,32 +1052,13 @@ function ChatInput({
                 row. */}
             <div className="relative min-w-0 flex-1">
               <div ref={attachControlRow} data-testid="composer-control-row" className="flex items-center gap-0.5 overflow-x-auto">
-
-              {onAutomationClick && (
-                <Suspense fallback={null}>
-                  <SessionAutomationPopover
-                    slotKey={slotId || ''}
-                    automation={automation || null}
-                    open={automationOpen || false}
-                    onOpenChange={v => onAutomationClick(v)}
-                    onChange={onAutomationChange || (() => {})}
-                    creationReady={automationCreationReady}
-                    snapshotFailed={automationSnapshotFailed}
-                    sessionMode={sessionMode}
-                    // Same condition as the Resume placeholder (`resumeOffered`):
-                    // whenever the composer says "press Resume", the loop chip
-                    // must not pulse as if a cycle were executing.
-                    interrupted={resumeOffered}
-                  />
-                </Suspense>
-              )}
               {!isMobile && approvalMode && (
                 <ApprovalModePicker mode={approvalMode} slotKey={activeSlot || ''} openSignal={approvalPickerSignal} nudge={approvalNudgeActive} onNudgeDismiss={dismissApprovalNudge} onNudgeHide={hideApprovalNudge} />
               )}
               </div>
               {/* Edge cues, same treatment as the sibling strips that already
                   ship it (FollowUpBar's scroll row, SidePanelLayout's tab
-                  strip): at narrow widths the loop chip and approval picker
+                  strip): at narrow widths the approval picker can
                   clip silently, and the overlay scrollbar on macOS/iOS leaves
                   no idle trace. from-bg-elevated matches the composer surface.
                   Deliberately NO z-index: positioned elements already paint

@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 import aiohttp
 
+from kiro_crew import goal_actions
 from kiro_crew.config.loader import (
     ACTIVATION_REVIEW,
     ConfigReadError,
@@ -39,7 +40,9 @@ from kiro_crew.dashboard.chat_utils import (
     slack_options_slot,
 )
 from kiro_crew.loop_lock import LoopBoundLock
+from kiro_crew.messaging import commands as messaging_commands
 from kiro_crew.messaging.identity import channel_inbound_permitted
+from kiro_crew.messaging.link import canonical_key, is_legacy_slack_key, legacy_key
 from kiro_crew.messaging.renderer import count_redaction_tags, redaction_notice
 from kiro_crew.security import (
     redact_and_truncate,
@@ -2486,6 +2489,25 @@ async def _handle_channels_select(
     )
 
 
+def _stop_session_key(sessions: Any, key: str) -> str:
+    """Resolve a Slack thread's owner while preserving explicit session keys."""
+    thread_ts = legacy_key(key) or (key if is_legacy_slack_key(key) else "")
+    if thread_ts:
+        owner = sessions.get_session_for_thread(thread_ts)
+        if owner:
+            return owner
+    return key
+
+
+def _goal_stop_reply(session_key: str, text: str) -> str:
+    """Disclose an unsaved goal pause alongside the current turn's outcome."""
+
+    warning = goal_actions.goal_pause_warning(
+        canonical_key(session_key), state=getattr(_orch, "dashboard_state", None)
+    )
+    return f"{text}\n\n{warning}" if warning else text
+
+
 async def _handle_stop_confirm(payload: dict, channel: str, msg_ts: str, user_id: str) -> None:
     """Stop the current session when user confirms.
 
@@ -2512,7 +2534,8 @@ async def _handle_stop_confirm(payload: dict, channel: str, msg_ts: str, user_id
 
     # Find the active session in this channel/thread
     thread_ts = payload.get("message", {}).get("thread_ts") or msg_ts
-    has_session = _orch.sessions.has_session(thread_ts)
+    cancel_key = _stop_session_key(_orch.sessions, thread_ts)
+    has_session = _orch.sessions.has_session(cancel_key)
     # READ, not popped: removed below only once the cancel went through.
     active_task = _orch._session_tasks.get(thread_ts)
 
@@ -2548,7 +2571,9 @@ async def _handle_stop_confirm(payload: dict, channel: str, msg_ts: str, user_id
 
             await _update_ephemeral(build_stopped_blocks(), "⏹ [Stopped]")
             if _orch and _orch.slack:
-                await _orch.slack.post_message(channel, "⏹ Execution stopped.", thread_ts)
+                await _orch.slack.post_message(
+                    channel, _goal_stop_reply(cancel_key, "⏹ Execution stopped."), thread_ts
+                )
 
         async def _on_hard() -> None:
             from kiro_crew.slack.blocks import build_stop_failed_blocks
@@ -2556,21 +2581,27 @@ async def _handle_stop_confirm(payload: dict, channel: str, msg_ts: str, user_id
             await _update_ephemeral(build_stop_failed_blocks(), "⛔ [Stop Failed, Session Reset]")
             if _orch and _orch.slack:
                 await _orch.slack.post_message(
-                    channel, "⛔ Execution stopped — session reset.", thread_ts
+                    channel,
+                    _goal_stop_reply(cancel_key, "⛔ Execution stopped — session reset."),
+                    thread_ts,
                 )
 
         # A repeat press within the window by the same presser, while the
         # compaction still holds the session, is the forcing second press the
         # decline reply promised; the marker is spent either way.
-        _force = consume_stop_declined(thread_ts, user_id) and compaction_in_flight(
-            _orch.sessions, thread_ts
+        _force = consume_stop_declined(cancel_key, user_id) and compaction_in_flight(
+            _orch.sessions, cancel_key
         )
         # ``preserve_queue`` with the force: the hard reset pops the session and
         # its queue, which in a shared thread holds co-tenants' messages;
         # ``stop_turn`` parks them for the successor instead.
         _kw = {"force": True, "preserve_queue": True} if _force else {}
         outcome = await _orch.sessions.stop_turn(
-            thread_ts, on_soft=_on_soft, on_hard=_on_hard, **_kw
+            cancel_key,
+            on_soft=_on_soft,
+            on_hard=_on_hard,
+            goal_state=getattr(_orch, "dashboard_state", None),
+            **_kw,
         )
         if outcome == "compacting":
             # Nothing was stopped: the task stays tracked and nothing is cancelled.
@@ -2595,7 +2626,7 @@ async def _handle_stop_confirm(payload: dict, channel: str, msg_ts: str, user_id
                 except Exception:
                     return False
 
-            await decline_stop(thread_ts, user_id, _say_declined)
+            await decline_stop(cancel_key, user_id, _say_declined)
         else:
             # Pop only the task this Stop ended; a successor dispatched during
             # the await from pending work is cancelled with it (see the same
@@ -2609,7 +2640,10 @@ async def _handle_stop_confirm(payload: dict, channel: str, msg_ts: str, user_id
         # If stop_turn returned "idle" (no active turn), neither callback
         # fired — dismiss the stale ephemeral with a "Nothing running" message.
         if outcome == "idle":
-            await _update_ephemeral([], "Nothing running.")
+            label = _goal_stop_reply(cancel_key, "Nothing running.")
+            await _update_ephemeral([], label)
+            if not response_url and label != "Nothing running." and _orch.slack:
+                await _orch.slack.post_message(channel, label, thread_ts)
         sel().log_tool_invocation(
             session_key=thread_ts,
             source="slack",
@@ -2619,9 +2653,21 @@ async def _handle_stop_confirm(payload: dict, channel: str, msg_ts: str, user_id
             metadata={"user": user_id, "channel": channel},
         )
     else:
+        messaging_commands.note_user_stop(_orch.sessions, cancel_key)
+        await goal_actions.pause_session_goal(
+            canonical_key(cancel_key), state=getattr(_orch, "dashboard_state", None)
+        )
+        sel().log_tool_invocation(
+            session_key=cancel_key,
+            source="slack",
+            tool_name="/kirocrew stop",
+            tool_kind="command",
+            outcome="no_session",
+            metadata={"user": user_id, "channel": channel},
+        )
         # Replace buttons with confirmation
         response_url = payload.get("response_url", "")
-        label = "Nothing running."
+        label = _goal_stop_reply(cancel_key, "Nothing running.")
         if response_url:
             try:
                 async with aiohttp.ClientSession() as sess:
@@ -2685,6 +2731,7 @@ async def _handle_stop_kill_now(
     if not session_key:
         return
 
+    session_key = _stop_session_key(_orch.sessions, session_key)
     response_url = payload.get("response_url", "")
 
     async def _on_hard() -> None:
@@ -2709,10 +2756,22 @@ async def _handle_stop_kill_now(
             # differ, and session_key would not be a valid Slack thread.
             thread_ts = payload.get("message", {}).get("thread_ts") or msg_ts
             await _orch.slack.post_message(
-                channel, "⛔ Execution stopped — session reset.", thread_ts
+                channel,
+                _goal_stop_reply(session_key, "⛔ Execution stopped — session reset."),
+                thread_ts,
             )
 
-    outcome = await _orch.sessions.stop_turn(session_key, force=True, on_hard=_on_hard)
+    outcome = await _orch.sessions.stop_turn(
+        session_key,
+        force=True,
+        on_hard=_on_hard,
+        goal_state=getattr(_orch, "dashboard_state", None),
+    )
+    if outcome == "idle" and _orch.slack:
+        reply = _goal_stop_reply(session_key, "Nothing running.")
+        if reply != "Nothing running.":
+            thread_ts = payload.get("message", {}).get("thread_ts") or msg_ts
+            await _orch.slack.post_message(channel, reply, thread_ts)
     sel().log_tool_invocation(
         session_key=session_key,
         source="slack",
@@ -3270,6 +3329,7 @@ async def _handle_inline_stop(
         )
         return
 
+    session_key = _stop_session_key(_orch.sessions, session_key)
     sel().log_api_access(
         caller=user_id,
         operation="slack.inline_stop",
@@ -3288,7 +3348,9 @@ async def _handle_inline_stop(
     async def _on_soft() -> None:
         if _orch.slack and channel and msg_ts:
             try:
-                await _orch.slack.update_message(channel, msg_ts, text="⏹ Execution stopped.")
+                await _orch.slack.update_message(
+                    channel, msg_ts, text=_goal_stop_reply(session_key, "⏹ Execution stopped.")
+                )
             except Exception:
                 pass
 
@@ -3296,7 +3358,9 @@ async def _handle_inline_stop(
         if _orch.slack and channel and msg_ts:
             try:
                 await _orch.slack.update_message(
-                    channel, msg_ts, text="⛔ Execution stopped — session reset."
+                    channel,
+                    msg_ts,
+                    text=_goal_stop_reply(session_key, "⛔ Execution stopped — session reset."),
                 )
             except Exception:
                 pass
@@ -3308,7 +3372,13 @@ async def _handle_inline_stop(
     )
     # ``preserve_queue`` with the force, for the reason the confirm button gives.
     _kw = {"force": True, "preserve_queue": True} if _force else {}
-    outcome = await _orch.sessions.stop_turn(session_key, on_soft=_on_soft, on_hard=_on_hard, **_kw)
+    outcome = await _orch.sessions.stop_turn(
+        session_key,
+        on_soft=_on_soft,
+        on_hard=_on_hard,
+        goal_state=getattr(_orch, "dashboard_state", None),
+        **_kw,
+    )
     if outcome == "compacting":
         # The reply promises that a repeat forces, so arm the marker -- and only
         # once the reply landed. This update is conditional on a client and a
@@ -3329,7 +3399,9 @@ async def _handle_inline_stop(
         await decline_stop(session_key, user_id, _say_declined)
     elif outcome == "idle" and _orch.slack and channel and msg_ts:
         try:
-            await _orch.slack.update_message(channel, msg_ts, text="⏹ Nothing running.")
+            await _orch.slack.update_message(
+                channel, msg_ts, text=_goal_stop_reply(session_key, "⏹ Nothing running.")
+            )
         except Exception:
             pass
     sel().log_tool_invocation(

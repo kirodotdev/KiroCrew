@@ -2430,6 +2430,7 @@ class TestRouteMessageStopCommand:
         with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
             with patch("kiro_crew.slack.events.is_owner", return_value=True):
                 await ev._route_message(orch, _event(text="!stop"), ev.SeenCache())
+        assert orch.sessions.stop_turn.await_args.kwargs["goal_state"] is orch.dashboard_state
         posted = [c[0][1] for c in orch.slack.post_message.await_args_list]
         assert "⏹ Execution stopped." in posted
         assert "⛔ Execution stopped — session reset." in posted

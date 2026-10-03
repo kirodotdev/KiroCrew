@@ -4178,11 +4178,12 @@
       "sensitive": false,
       "tags": [],
       "label": "Monitoring",
-      "help": "How a session's choice between the two monitoring paths is framed. Neither path is gated by this section; both are armable with it at its default.",
+      "help": "Goal suggestions, monitor arming guidance and finite runtime limits. Turning off goal suggestions leaves running goals, manual goals and monitoring available.",
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": {
         "max_runtime_secs": 604800,
+        "goal_suggestions": true,
         "prefer_structured_arming": false
       }
     },
@@ -4199,6 +4200,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 604800
+    },
+    {
+      "path": "monitoring.goal_suggestions",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Goal suggestions",
+      "help": "Suggest goals from new human requests. Turning this off disables new goal proposals only; running goals, manually created goals and monitoring continue. Applies to subsequent requests without a gateway restart.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
     },
     {
       "path": "monitoring.prefer_structured_arming",

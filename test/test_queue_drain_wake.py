@@ -54,6 +54,35 @@ def _tg_msg(user: int, chat: int, text: str, *, message_id: int = 0) -> Any:
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("spent", [False, True])
+async def test_generated_exemption_ends_before_local_and_peer_queue_work(spent):
+    from kiro_crew.messaging import turn_ceiling
+
+    observed = []
+    ceiling = turn_ceiling.ConversationTurnCeiling(max_turns=1)
+
+    async def pump(foreign):
+        observed.append(("local", turn_ceiling.generated_turn_pending()))
+        turn_ceiling.gate("local", ceiling=ceiling)()
+        foreign.add("webex")
+
+    async def peer(session_key):
+        observed.append(("peer", turn_ceiling.generated_turn_pending()))
+        turn_ceiling.gate("peer", ceiling=ceiling)()
+
+    register_drain("webex", peer)
+    with turn_ceiling.generated_turn():
+        if spent:
+            turn_ceiling.gate("generated", ceiling=ceiling)()
+        await queue_drain.drain_until_quiet(channel="discord", session_key=_UNIFIED, pump=pump)
+        assert not turn_ceiling.generated_turn_pending()
+    assert observed == [("local", False), ("peer", False)]
+    for key in ("local", "peer"):
+        with pytest.raises(turn_ceiling.TurnCeilingExceeded):
+            turn_ceiling.gate(key, ceiling=ceiling)()
+
+
 class TestTheKeyIsGenuinelyShared:
     """The premise, measured rather than asserted from the issue text."""
 

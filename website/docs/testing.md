@@ -196,6 +196,11 @@ gate that reds on someone else's pull request".
 
 ## Determinism: establish the state you assert on
 
+For locale tests that need all catalogues, import `i18n/all` at module scope.
+Loading the corpus inside a test makes its behaviour timeout also measure the
+cold catalogue transform. Prepare those fixtures during collection and keep the
+interaction timeout and assertions unchanged.
+
 Reset owned API mocks before reseeding per-test defaults. `vi.clearAllMocks()`
 clears call history but preserves queued `mockResolvedValueOnce` and
 `mockRejectedValueOnce` responses. If a test stops before consuming one, that
