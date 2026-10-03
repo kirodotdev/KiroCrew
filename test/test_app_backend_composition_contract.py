@@ -281,6 +281,7 @@ FROZEN_NAMES: tuple[str, ...] = (
     "resolve_app_python",
     "retire_windows_app_tracking",
     "run_limited",
+    "running_spawned_backend_pids",
     "sel",
     "shipped_builtin_app_root",
     "shipped_builtin_module_path",

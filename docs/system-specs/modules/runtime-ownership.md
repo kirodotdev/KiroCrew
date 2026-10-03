@@ -310,6 +310,25 @@ reading that cannot be taken, and a registry that cannot be read, each refuse th
 entire pass rather than acting on the half that answered. An incomplete active-pid
 union does the same.
 
+The registry is every record this process can read for the data home, because the
+slice is scoped to the data home too: the manager's live-pid union, the MCP backend
+pidfile, both tracked pid files across every gateway pid, and the app backend's own
+process table. An app backend runs in the slice and is none of the others.
+`apps.backend.running_spawned_backend_pids` names the root pid of each backend this
+process spawned, while its `Popen` handle says the child is running: a child that has
+not been reaped keeps its pid, so the number provably names the backend, and one that
+has exited leaves the registry instead of reading as a dead runtime. Where this
+gateway's own wrap inserted a forking sandbox launcher -- the Linux namespace
+launcher, whose `Popen` root is the launcher parent and whose forked child is the real
+server -- that root's direct children are named too, because the handle alone would
+leave the server (a sibling in the same slice) claimed by nothing. The table is
+in-process memory, never `app_backends.pids.json`. That file lives in the
+agent-writable data home and is only the stale-reap's record, so reading it for
+membership would let a written row make any pid owned. The table claims a spawned
+backend's root process, plus the launcher's forked server child where the wrap forks:
+an adopted backend, the processes a backend forks BELOW that server child, and a
+backend another process on this data home spawned are not in it.
+
 ### Leaked untracked runtimes: read every pass, reclaimed only on a user confirm
 
 `session_pid`'s report-only arm finds a managed runtime reparented to init with our marker and in neither pid file. Every pass copies its current hits into the reading as `leaked_untracked`, `leaked_rss_bytes` (each root counted with its descendants) and `leaked`, Linux only. No scheduled arm acts on them.
@@ -400,8 +419,9 @@ an unsignalable pid is an unknown, not an absence.
 
 Retraction is three-valued (`retracted` / `failed` / `not-mine`) rather than a
 bool. A row owned by a concurrent CLI or a predecessor gateway is a real dead
-record this pass cannot remove, and a pid known only to the MCP backend pidfile or
-the manager's in-memory union has no row in either tracking file. Folding those
+record this pass cannot remove, and a pid known only to the MCP backend pidfile, the
+app backend table or the manager's in-memory union has no row in either tracking
+file. Folding those
 into the same `False` a real failure gets would publish one WARNING per stale pid
 per tick for the gateway's life — a steady state reported as a fault.
 
@@ -568,12 +588,16 @@ recover.
 - **`cap` is not open.** Raising `CHAT_RUNTIME_CAP` needs eligibility rules that
   decide which sessions may share a process, and a flag to stage it. Neither
   exists, so every runtime serves one session.
-- **Membership is narrower than the slice it is compared against.** An app
-  backend's pid record (`app_backends.pids.json`) is in none of the sources
-  `recorded()` reads, so a running backend is unowned by construction on every
-  pass, and what keeps it unsignalled is the argv condition rather than an
-  ownership record. Issue #15019 carries the membership source that would close
-  it. A long-lived sandboxed subprocess is the other case and answers by identity
+- **Membership is narrower than the slice it is compared against.** The app
+  backend table claims each spawned backend's root process, plus that root's direct
+  children where the gateway's wrap inserted a forking sandbox launcher (so the
+  launcher's forked server child is covered). An adopted backend
+  (one found already listening on its port), the processes a spawned backend forks
+  BELOW that server child, and a backend spawned by another process on this data home
+  are in no record, so
+  when they run in the slice they are unowned on every pass, and what keeps them
+  unsignalled is the argv condition rather than an ownership record. A long-lived
+  sandboxed subprocess is the other case and answers by identity
   instead: the sandbox chokepoint stamps `KIROCREW_SANDBOX_TOOL` on its whole tree
   and `_unowned` excludes a pid that carries it and is not a managed harness, so
   tool work leaves the candidate population on exec-time evidence rather than on

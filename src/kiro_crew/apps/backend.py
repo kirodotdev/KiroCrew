@@ -1153,6 +1153,13 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
         if not carveout_shadowed_by_foreign_mask(_cache_target):
             _visible = _visible + (_cache_target,)
     sandboxed_cmd, cleanup_path = wrap_argv(cmd, mode="standard", extra_visible_dirs=_visible)
+    # On Linux a non-null cleanup path is the namespace launcher script this process
+    # generated, whose main() forks once: the Popen root waits for the server child.
+    # IS_LINUX excludes the macOS seatbelt profile. A no-op wrap returns None, so an
+    # app's argv can never set this flag. Compute it before cgroup_scope_argv, which
+    # execs without adding a fork. A future Linux tier writing a cleanup artifact
+    # without forking must revisit this predicate.
+    _forking_sandbox_launcher = platform_compat.IS_LINUX and cleanup_path is not None
     if _cache_visible and list(sandboxed_cmd) == list(cmd):
         # The wrap was a no-op, so this host has no OS confinement at all: no sandbox backend,
         # or agent.sandbox='off' with the sandbox_allow_no_isolation opt-in. Said once,
@@ -1287,6 +1294,7 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
         gateway_started=True,
         admitted_builtin=_admitted_builtin,
         spawn_instance=spawn_instance,
+        forking_sandbox_launcher=_forking_sandbox_launcher,
     )
 
     retired = False
@@ -1630,6 +1638,7 @@ if _typing.TYPE_CHECKING:
         health_reconcile_lock,
         list_app_processes,
         re,
+        running_spawned_backend_pids,
         spawned_backend_names,
         threading,
     )

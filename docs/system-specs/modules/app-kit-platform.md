@@ -2623,7 +2623,7 @@ change lands in its owner.
 | Module under `src/kiro_crew/apps/` | Owns |
 |---|---|
 | `backend.py` | The facade: the only import path and patch surface, plus the spawn transaction (`start_app_backend`, `_start_app_backend`, `_clear_failed_spawn_state`, and `_start_app_backend_body` with the entry-point classification, child environment, sandbox wrap, and spawn and adoption records it builds) and `_pid_alive` |
-| `backend_runtime/tracking.py` | The process table: `AppProcess`, `_processes` under `_lock`, the STARTING placeholder's owner (`_spawn_publication_owner`), `_restart_attempts`, the lifecycle generation (`_advance_lifecycle_locked`), `_health_reconcile_lock`, the cross-process spawn flock, the wait on an in-flight spawn, and the table reads the proxy and routes use |
+| `backend_runtime/tracking.py` | The process table: `AppProcess`, `_processes` under `_lock`, the STARTING placeholder's owner (`_spawn_publication_owner`), `_restart_attempts`, the lifecycle generation (`_advance_lifecycle_locked`), `_health_reconcile_lock`, the cross-process spawn flock, the wait on an in-flight spawn, the table reads the proxy and routes use, and `running_spawned_backend_pids`, the read the runtime reconciler's membership uses |
 | `backend_runtime/probe.py` | The loopback health probe: the `healthCheck` path gate, `HealthProbeOutcome`, and the failure detail and hint the logs print |
 | `backend_runtime/pidfile.py` | `app_backends.pids.json`: the start-identity probe, the read and the atomic write, the record, the identity-conditional forget, and the strict Windows retirement writer |
 | `backend_runtime/ports.py` | Port reservation (`_find_free_port`, `_reserve_free_port`, `_claim_port`) and listener attribution (the survival check, the bounded ancestry walk, the adoption owner capture), plus the recorded and unstopped port reads uninstall uses |
@@ -2642,8 +2642,8 @@ facade imports every owner at its own import, so an owner's `from ... import`
 bindings are taken once, as the one-module backend took them. `backend.py`
 re-exports every name an owner holds, one hop, so `routes.py`, `teardown.py`,
 `hooks_integration.py`, `bridges.py`, `manager.py`, `interpreter.py`,
-`cli_commands.py`, `member_memory_auth.py`, `platform_compat.py` and the dashboard
-server keep one import path.
+`cli_commands.py`, `member_memory_auth.py`, `platform_compat.py`, `runtime_reconcile.py`
+and the dashboard server keep one import path.
 
 Every patch seam stays on the facade. A write to `backend.<name>` reaches every module
 that binds that name, and each owner reads its own bindings, so a
