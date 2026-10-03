@@ -656,7 +656,7 @@ def _wire(monkeypatch, reads: dict, replies: list[str]):
     lifecycle.publisher.budget = CardBudget(debounce=0, per_session=0)
     monkeypatch.setattr(card_lifecycle, "_read_card_folds", lambda key: reads["now"])
     cfg = SimpleNamespace(
-        dashboard=SimpleNamespace(dynamic_dashboard_cards=True),
+        dashboard=SimpleNamespace(dynamic_dashboard_cards=True, language=""),
         agent=SimpleNamespace(resolve_model=lambda role: "m"),
     )
     monkeypatch.setattr(card_lifecycle.KiroCrewConfig, "load", lambda: cfg)
