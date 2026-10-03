@@ -6607,6 +6607,140 @@ class TestDanglingDefaultAgentReset(unittest.TestCase):
             assert raced, "the locked write was reached"
             assert self._on_disk(config)["default_agent"] == "pkg"
 
+    def test_a_default_its_workspace_still_declares_is_not_reset(self):
+        # ``pkg`` runs ``reviewer`` in workspace ``proj``. The global
+        # ``reviewer.json`` is uninstalled, but the project checkout still
+        # declares ``reviewer``, and kiro-cli resolves ``--agent`` against the
+        # project first, so the default still dispatches there: the removal of
+        # the global namesake must not reset it.
+        import kiro_crew.config.loader as loader
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            project = root / "proj"
+            (project / ".kiro" / "agents").mkdir(parents=True)
+            (project / ".kiro" / "agents" / "reviewer.json").write_text(
+                json.dumps({"name": "reviewer"}), encoding="utf-8"
+            )
+            config, d = self._home(
+                root,
+                {
+                    "default": {"kiro_agent": "kirocrew"},
+                    "pkg": {"kiro_agent": "reviewer", "workspace": "proj"},
+                },
+                "pkg",
+                {"kirocrew.json": {"name": "kirocrew"}, "reviewer.json": {"name": "reviewer"}},
+            )
+            data = json.loads(config.read_text(encoding="utf-8"))
+            data["workspaces"] = {"proj": {"dir": str(project)}}
+            config.write_text(json.dumps(data), encoding="utf-8")
+            loader._invalidate_config_cache()
+            p1, p2 = self._patched(config, d)
+            with p1, p2:
+                loader.refresh_materialized_agents(heal_default=True)
+                (d / "reviewer.json").unlink()
+                loader.refresh_materialized_agents(heal_default=True)
+                assert self._on_disk(config)["default_agent"] == "pkg"
+                # Once the checkout drops it too, the default is dangling.
+                (project / ".kiro" / "agents" / "reviewer.json").unlink()
+                loader.refresh_materialized_agents(heal_default=True)
+            assert self._on_disk(config)["default_agent"] == "default"
+
+    def _project_home(self, root: Path, workspace_dir: str, project_spec: str | None):
+        """``pkg`` -> ``reviewer`` in workspace ``proj``, global ``reviewer.json`` present,
+        and a checkout at ``root / "proj"`` whose ``reviewer.json`` holds *project_spec*."""
+        import kiro_crew.config.loader as loader
+
+        project = root / "proj"
+        (project / ".kiro" / "agents").mkdir(parents=True)
+        if project_spec is not None:
+            (project / ".kiro" / "agents" / "reviewer.json").write_text(
+                project_spec, encoding="utf-8"
+            )
+        config, d = self._home(
+            root,
+            {
+                "default": {"kiro_agent": "kirocrew"},
+                "pkg": {"kiro_agent": "reviewer", "workspace": "proj"},
+            },
+            "pkg",
+            {"kirocrew.json": {"name": "kirocrew"}, "reviewer.json": {"name": "reviewer"}},
+        )
+        data = json.loads(config.read_text(encoding="utf-8"))
+        data["workspaces"] = {"proj": {"dir": workspace_dir}}
+        config.write_text(json.dumps(data), encoding="utf-8")
+        loader._invalidate_config_cache()
+        return config, d, project
+
+    def test_a_relative_workspace_is_placed_under_the_data_home(self):
+        # A relative ``dir`` is placed by ``workspace_dir_from_entry`` under the
+        # data home, not the gateway's cwd; the checkout there still declares it.
+        import kiro_crew.config.loader as loader
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            config, d, _project = self._project_home(root, "proj", json.dumps({"name": "reviewer"}))
+            p1, p2 = self._patched(config, d)
+            with p1, p2, unittest.mock.patch.object(loader, "config_dir", lambda: root):
+                loader.refresh_materialized_agents(heal_default=True)
+                (d / "reviewer.json").unlink()
+                loader.refresh_materialized_agents(heal_default=True)
+            assert self._on_disk(config)["default_agent"] == "pkg"
+
+    def test_a_workspace_spec_that_cannot_be_read_is_not_evidence_either(self):
+        # The checkout's spec is torn: the project scan is partial, so it cannot
+        # show the template is gone from there, and the healer declines.
+        import kiro_crew.config.loader as loader
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            config, d, project = self._project_home(root, "", '{"name": "revi')
+            data = json.loads(config.read_text(encoding="utf-8"))
+            data["workspaces"]["proj"]["dir"] = str(project)
+            config.write_text(json.dumps(data), encoding="utf-8")
+            loader._invalidate_config_cache()
+            p1, p2 = self._patched(config, d)
+            with p1, p2:
+                loader.refresh_materialized_agents(heal_default=True)
+                (d / "reviewer.json").unlink()
+                loader.refresh_materialized_agents(heal_default=True)
+            assert self._on_disk(config)["default_agent"] == "pkg"
+
+    def test_a_row_repointed_at_another_workspace_inside_the_locked_write_is_kept(self):
+        # The healer checked workspace ``proj`` (empty), then the row was moved to
+        # a workspace that was never checked while it waited for the config lock.
+        import kiro_crew.config.loader as loader
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            config, d, project = self._project_home(root, "", None)
+            data = json.loads(config.read_text(encoding="utf-8"))
+            other = root / "other"
+            (other / ".kiro" / "agents").mkdir(parents=True)
+            data["workspaces"] = {"proj": {"dir": str(project)}, "other": {"dir": str(other)}}
+            config.write_text(json.dumps(data), encoding="utf-8")
+            loader._invalidate_config_cache()
+            real_read = loader.read_config_for_update
+            moved: list[bool] = []
+
+            def _moved_in_the_window(path=None):
+                current = real_read(path)
+                current["agents"]["pkg"]["workspace"] = "other"
+                moved.append(True)
+                return current
+
+            p1, p2 = self._patched(config, d)
+            with p1, p2:
+                loader.refresh_materialized_agents(heal_default=True)
+                (d / "reviewer.json").unlink()
+                loader.refresh_materialized_agents()
+                with unittest.mock.patch.object(
+                    loader, "read_config_for_update", _moved_in_the_window
+                ):
+                    assert loader.reset_dangling_default_agent() is False
+            assert moved, "the locked write was reached"
+            assert self._on_disk(config)["default_agent"] == "pkg"
+
     def test_a_template_the_directory_never_declared_is_not_reset(self):
         # ``scout`` runs ``reviewer``, which only a project checkout (or an
         # edition) declares: it dispatches, though no file in this directory
