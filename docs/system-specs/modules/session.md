@@ -2418,7 +2418,19 @@ refused at the same gate, tightening a row already retained is never refused,
 and no retained row is ever evicted -- it is the record the channel gate
 hydrates from. Retiring rows once the header carries the mode needs the channel
 gate to read the header, a separate change. Immortality of durable
-settings stays opt-in (`_DURABLE_FLAGS`).
+settings stays opt-in (`_DURABLE_FLAGS`). `EXPLICIT_EFFORT_DEFAULT_FLAG` is one
+of them: an explicit Default that could not remove the model's workspace
+`cli.json` effort entry itself leaves it on the key, and the first cold start of
+that key that applies it clears it. It is carried there, not applied at the
+pick, because the cold start resolves the work directory and the model whose
+entry it removes, and either can change after the pick. Explicit-Default rows
+are bounded, and a pick
+past that bound is refused before it changes the slot. Clearing the flag on a
+row that holds nothing else removes the row, so none is left outside that bound.
+A start or a pick that
+clears a key's flag holds its row until it ends
+(`SessionMap.hold_explicit_effort_default`), so arming the flag again after a
+failed start or a rollback needs no new row and cannot be refused.
 
 **Mapped-session enumeration:** `SessionMap.mapped_sids_by_key()` returns session
 key → kiro-cli session ID for every entry that has one. Disk accounting

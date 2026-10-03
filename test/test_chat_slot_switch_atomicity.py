@@ -13,6 +13,7 @@ the mid-turn 409 (clones of the concurrency template in
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -68,6 +69,13 @@ def _mock_state(slot: _ChatSlot, provider: object = None) -> DashboardState:
     state.broadcast_context_usage = MagicMock()
     state.sessions = MagicMock()
     state.sessions.reset = AsyncMock()
+    # The effort switch saves its explicit-Default intent through the map.
+    state.sessions.aflush = AsyncMock()
+    state.sessions.explicit_effort_default_pending = MagicMock(return_value=False)
+    state.sessions.effort_basis_locked = MagicMock(return_value=False)
+    state.sessions.effort_intent_write = MagicMock(
+        side_effect=lambda _key: contextlib.nullcontext()
+    )
     # No live AcpProvider by default → the model handler takes the reset path.
     state.sessions.get_provider = MagicMock(return_value=provider)
     return state

@@ -166,6 +166,22 @@ class TestBatchLifecycle(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(FakeRuntime.instances), 1)
         await pool.end_batch()
 
+    async def test_effort_overlay_write_runs_off_event_loop_thread(self):
+        _install_fake_runtime(self)
+        loop_thread = threading.current_thread()
+        writer_threads = []
+
+        def _record_writer_thread(*_args, **_kwargs):
+            writer_threads.append(threading.current_thread())
+
+        with unittest.mock.patch.object(rp, "_write_effort_overlay", _record_writer_thread):
+            pool = ReviewPool(work_dir=_work_dir(self))
+            await pool.begin_batch()
+            await pool.end_batch()
+
+        self.assertEqual(len(writer_threads), 1)
+        self.assertIsNot(writer_threads[0], loop_thread)
+
     async def test_end_batch_kills_runtime_only_when_drained(self):
         _install_fake_runtime(self)
         pool = ReviewPool(work_dir=_work_dir(self))
@@ -600,7 +616,14 @@ class TestReviewEffort(unittest.TestCase):
             published = json.loads(cli.read_text(encoding="utf-8"))
             self.assertNotIn("borrowed_key", published,
                              "the aliased document's keys were republished")
-            self.assertEqual(list(published), ["chat.modelDefaults"])
+            self.assertEqual(
+                list(published),
+                [
+                    "chat.modelDefaults",
+                    "kirocrew.effortOwned",
+                    "kirocrew.effortOwnedStamp",
+                ],
+            )
 
     def test_reviewer_model_falls_back_to_default(self):
         self.assertEqual(
