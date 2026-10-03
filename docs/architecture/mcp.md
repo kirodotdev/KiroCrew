@@ -2537,6 +2537,21 @@ or the watcher failed at runtime, which the skip cannot see: `POST
 harness, the warm pool holds pre-spawned processes carrying the old config. Use
 Apply & Restart, or `kirocrew config set`, which triggers a restart.
 
+**`-32602 Invalid request parameters` with empty data, only under the gateway.**
+That frame is the Python MCP SDK refusing a request on a session that never got
+`initialize` + `notifications/initialized`; the arguments were not lost. It
+happens when a pooling multiplexer behind the pipe (the configured command is
+its thin client) respawns the real server cold while its own connection stays
+up: the gateway sent
+`initialize` once for that backend and answers every later stub from its cache,
+so nothing re-handshakes the new process. A standalone kiro-cli run works
+because it is a fresh connection with a fresh handshake. The backend now
+recovers by itself (`Backend._retry_after_rehandshake`): on that exact frame, for
+a method in `_REHANDSHAKE_RETRY_METHODS`, it re-sends the cached `initialize`
+and `initialized` and the request, in one write, once. The gateway log line
+`refused ... as not initialized; its MCP session was lost behind the pipe` marks
+each recovery.
+
 ## Workflow execution identity
 
 Workflow writes resolve the current strict MCP session and pass that same key
