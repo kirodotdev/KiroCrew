@@ -10589,7 +10589,7 @@ async def _run_chat(
                 depth=_prompt_depth,
             )
             try:
-                state.broadcast_ws("chat_done", chat_done_payload(state, slot))
+                state.broadcast_ws("chat_done", await chat_done_payload(state, slot))
             except Exception:  # pragma: no cover - unblock is best-effort
                 logger.debug("chat_done broadcast failed for aborted replay", exc_info=True)
             return
