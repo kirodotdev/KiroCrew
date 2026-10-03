@@ -95,9 +95,16 @@ interface SeedOpts {
   save?: SaveResult | { reject: unknown } | { pending: true }
 }
 
-/** Install the three Slack API seams and mount the panel. */
+/** What GET /api/slack/channels answers: the DM row plus one channel the bot can post in. */
+const CHANNELS = [
+  { id: 'dm', name: 'Direct Message' },
+  { id: 'C000TEAM', name: 'team-room' },
+]
+
+/** Install the Slack API seams and mount the panel. */
 function seed(cfgOver: Partial<SlackConfigData> = {}, opts: SeedOpts = {}) {
   vi.spyOn(api, 'getSlackConfig').mockResolvedValue(config(cfgOver))
+  vi.spyOn(api, 'slackChannels').mockResolvedValue(CHANNELS)
 
   const manifest = vi.spyOn(api, 'getSlackManifest')
   if (opts.manifestFails) manifest.mockRejectedValue(new Error('manifest unavailable'))
@@ -362,8 +369,66 @@ describe('SlackPanel save payload', () => {
       reactions_enabled: true,
       show_thinking: true,
       session_folder: '',
+      auto_link_sessions: false,
+      auto_link_channel: '',
     })
     expect(await screen.findByText('Saved.', undefined, { timeout: 5_000 })).toBeInTheDocument()
+  })
+
+  it('keeps the auto-connect target hidden until the toggle is on, then saves the DM default', async () => {
+    const { save } = seed()
+    await hydrated()
+
+    expect(screen.queryByText('Auto-connect target')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('switch', { name: 'Connect new sessions to Slack automatically' }))
+    expect(await screen.findByText('Auto-connect target')).toBeInTheDocument()
+    // The DM is the shown default; the channel the bot can post in is offered too.
+    expect(await screen.findByText('Direct message with the bot')).toBeInTheDocument()
+    fireEvent.click(saveBtn())
+
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(save.mock.calls[0][0]).toMatchObject({ auto_link_sessions: true, auto_link_channel: '' })
+  })
+
+  it('says so when the channel list fails, and still offers the DM and the stored target', async () => {
+    const { save } = seed({ auto_link_sessions: true, auto_link_channel: 'C000TEAM' })
+    vi.mocked(api.slackChannels).mockRejectedValue(new Error('channels unavailable'))
+    await hydrated()
+
+    expect(await screen.findByText(/Could not load the channels the bot can post in/)).toBeInTheDocument()
+    // A failed list says nothing about the channel itself: the stored ID reads as the
+    // saved channel, with no line about the channel list.
+    expect(screen.getByText('Saved channel (C000TEAM)')).toBeInTheDocument()
+    expect(screen.queryByText(/is not in the bot's channel list/)).not.toBeInTheDocument()
+    fireEvent.click(saveBtn())
+
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(save.mock.calls[0][0]).toMatchObject({ auto_link_sessions: true, auto_link_channel: 'C000TEAM' })
+
+    // Retry refetches in place: the toggle stays on and the list now names the channel.
+    vi.mocked(api.slackChannels).mockResolvedValue(CHANNELS)
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByText('#team-room')).toBeInTheDocument()
+    expect(screen.queryByText(/Could not load the channels the bot can post in/)).not.toBeInTheDocument()
+  })
+
+  it('renders a stored channel as the current target even when the list does not name it', async () => {
+    const { save } = seed({ auto_link_sessions: true, auto_link_channel: 'C000GONE' })
+    await hydrated()
+
+    expect(screen.getByRole('switch', { name: 'Connect new sessions to Slack automatically' })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    )
+    // The saved ID stands in for a channel the list does not name, so the select
+    // never silently shows the DM while the backend keeps posting elsewhere.
+    expect(await screen.findByText('Saved channel (C000GONE)')).toBeInTheDocument()
+    // Once the list has loaded, the line under it says sessions still go there and how to change it.
+    expect(await screen.findByText(/is not in the bot's channel list\. New sessions still try to open there/)).toBeInTheDocument()
+    fireEvent.click(saveBtn())
+
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(save.mock.calls[0][0]).toMatchObject({ auto_link_sessions: true, auto_link_channel: 'C000GONE' })
   })
 
   it('falls back to the channel name when the folder is on but unnamed', async () => {

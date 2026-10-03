@@ -122,6 +122,22 @@
       "description": "Azure Bot client secret. Stored only in .env (never config.json)."
     },
     {
+      "id": "channels.auto-connect-target-slack",
+      "label": "Auto-connect target (Slack)",
+      "tab": "channels",
+      "route": "/settings/channels/slack?highlight=key%3Aslack.auto_link_channel",
+      "description": "Where the thread opens. Everyone in a channel can read the session's title, first prompt and replies.",
+      "configKey": "slack.auto_link_channel"
+    },
+    {
+      "id": "channels.connect-new-sessions-to-slack-automatically-slack",
+      "label": "Connect new sessions to Slack automatically (Slack)",
+      "tab": "channels",
+      "route": "/settings/channels/slack?highlight=key%3Aslack.auto_link_sessions",
+      "description": "Every new dashboard session gets a Slack thread on its first message. The thread opens in your private direct message with the bot by default; when this is on, a target picker appears below where you can choose a channel instead. Sessions started by cron, apps or sub-agents, sessions that began in Slack or another messaging app, and incognito or temporary sessions are left alone.",
+      "configKey": "slack.auto_link_sessions"
+    },
+    {
       "id": "channels.enable-imessage-channel-imessage",
       "label": "Enable iMessage channel (iMessage)",
       "tab": "channels",

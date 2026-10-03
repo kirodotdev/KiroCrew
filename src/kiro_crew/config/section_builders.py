@@ -91,6 +91,7 @@ from kiro_crew.config.sections import (
     WeComConfig,
     WeixinConfig,
     WhatsAppConfig,
+    _coerce_auto_link_channel,
     _coerce_int_ids,
     _coerce_opaque_str_ids,
     _coerce_session_folder,
@@ -688,6 +689,10 @@ def _build_slack_config(slack_data: dict) -> SlackConfig:
         dm_single_session=bool(slack_data.get("dm_single_session", False)),
         home_tab_sessions_per_kind=_safe_int(slack_data.get("home_tab_sessions_per_kind", 5), 5),
         sessions_limit=_safe_int(slack_data.get("sessions_limit", 10), 10),
+        # Default False: a missing or unparseable value must mean "open no
+        # thread", never the reverse.
+        auto_link_sessions=_safe_bool(slack_data.get("auto_link_sessions", False), False),
+        auto_link_channel=_coerce_auto_link_channel(slack_data.get("auto_link_channel")),
     )
 
 

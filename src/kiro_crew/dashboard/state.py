@@ -16,6 +16,7 @@ import threading
 import time
 import traceback
 import uuid
+import weakref
 from collections.abc import Coroutine, Iterable, Iterator
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
@@ -2719,7 +2720,9 @@ class _ChatSlot:
         "messages",
         "total_messages",
         "_task",
+        "_turn_admission_reserved",
         "_turn_generation",
+        "_slack_live_since",
         "_chunk_seq",
         "event",
         "_pending",
@@ -3152,10 +3155,18 @@ class _ChatSlot:
         self._dismissed_txn_pending: set[str] = set()
         self.total_messages: int = 0  # lifetime count (survives trimming)
         self._task: asyncio.Task[Any] | None = None
+        # A send reserved the next turn and is between admission and dispatch.
+        self._turn_admission_reserved: bool = False
         # Monotonic publication history for turn ownership. ``task`` returns to
         # None after teardown, so consumers that span awaits cannot distinguish
         # "stayed idle" from "ran and finished" by comparing task references.
         self._turn_generation: int = 0
+        # ``(thread_ts, last_row_before)`` for the first turn whose start-of-turn
+        # link read found ``thread_ts``: that turn and every later one are
+        # mirrored live, so a late link replays only the rows up to and
+        # including ``last_row_before`` (``None``: no row precedes the live
+        # turn). See ``note_slack_live_mirror``.
+        self._slack_live_since: tuple[str, dict[str, Any] | None] | None = None
         # Wire seq of the newest chat_chunk this slot has emitted, across turns:
         # the counter never restarts, so a client's replay floor (the seq its
         # transcript already holds) orders every later chunk above it without
@@ -5243,6 +5254,29 @@ class _ChatSlot:
             self._turn_generation += 1
         self._task = value
 
+    def note_slack_live_mirror(self, thread_ts: str, *, echoed: bool) -> None:
+        """Record that the turn starting now is mirrored live into *thread_ts*.
+
+        Only the FIRST such turn per thread is recorded: everything from its
+        opening row on reaches Slack live, and everything before it is what a
+        late automatic link still owes the thread. *echoed* says the turn posts
+        its own opening user row (a person's send). That row was appended just
+        before dispatch and a concurrent send queues rather than appending, so it
+        is the newest ``user`` row and the live part starts there. The boundary
+        is the row object, not a count, because queued rows are removed from
+        ``messages`` without touching ``total_messages``.
+        """
+        if self._slack_live_since is not None and self._slack_live_since[0] == thread_ts:
+            return
+        rows = self.messages
+        start = len(rows)
+        if echoed:
+            start = next(
+                (i for i in range(len(rows) - 1, -1, -1) if rows[i].get("role") == "user"),
+                start,
+            )
+        self._slack_live_since = (thread_ts, rows[start - 1] if start else None)
+
     @property
     def turn_running(self) -> bool:
         """Whether an active model turn still owns the slot."""
@@ -5255,7 +5289,11 @@ class _ChatSlot:
 
         See ``docs/system-specs/modules/session.md``.
         """
-        return bool(self.turn_running or self.stage_boundary.stage is not None)
+        return bool(
+            self.turn_running
+            or self._turn_admission_reserved
+            or self.stage_boundary.stage is not None
+        )
 
     @property
     def queue_depth(self) -> int:
@@ -5940,6 +5978,12 @@ class DashboardState:
         self.consolidator = consolidator
         self.task_runner = task_runner
         self.slack_client = slack_client
+        # One lock per effective session key serialises the whole Slack link
+        # attempt. Weak values: the holder and every waiter keep the lock alive
+        # through their own reference, and the entry goes with the last of them.
+        self._slack_link_locks: "weakref.WeakValueDictionary[str, asyncio.Lock]" = (
+            weakref.WeakValueDictionary()
+        )
         # True only when the Slack socket-mode connect actually succeeded this
         # session. slack_client being set proves tokens existed at boot, not
         # that they are valid — the gateway records the real outcome after

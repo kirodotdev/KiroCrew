@@ -95,6 +95,11 @@ from kiro_crew.dashboard.chat_runner import (
     context_entry_expired,
     schedule_eager_spawn,
 )
+from kiro_crew.dashboard.chat_slack import (
+    maybe_auto_link_slack,
+    replay_unechoed_first_turn,
+    slot_is_live,
+)
 from kiro_crew.dashboard.chat_summary import generate_session_summary, read_cached_intent_summary
 from kiro_crew.dashboard.chat_tags import (
     _bump_slot_tags_revision,
@@ -838,7 +843,12 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         )
 
     _pending_stage_boundary = stage_boundary_for(slot).stage is not None
-    if slot.turn_running or slot._in_stage_execution or _pending_stage_boundary:
+    if (
+        slot.turn_running
+        or slot._turn_admission_reserved
+        or slot._in_stage_execution
+        or _pending_stage_boundary
+    ):
         # Mid-turn steer: inject into the RUNNING turn instead of queueing for
         # the next turn. Gated on an explicit `steer` flag + a live, steer-capable
         # inner AcpClient that _run_chat published on the slot. App-authenticated
@@ -1257,76 +1267,117 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         state._background_tasks.add(_at)
         _at.add_done_callback(state._background_tasks.discard)
 
-    # Edition message observer (CPP seam). Fire-and-forget, fail-safe: a
-    # companion uses this to auto-ingest doc links pasted into chat. The public
-    # Default is a no-op. Guarded so an observer error never blocks the turn;
-    # deferred context read via the sel.py pattern (no platform import at load).
+    _reserve_turn_admission = not request_app
+    _auto_linked = False
+    if _reserve_turn_admission:
+        slot._turn_admission_reserved = True
     try:
-        from kiro_crew.platform.context import current_context, safe_context_call
+        # Optional Slack thread for a NEW session (slack.auto_link_sessions), made
+        # here rather than in the turn: the runner's echo below reads the link at
+        # turn start, so the link has to exist before dispatch or the first message
+        # never reaches the thread. Awaited, not fire-and-forget, for the same
+        # reason; bounded inside. Only a person's own send qualifies: an app-token
+        # send is an injection into the slot, not the person opening it, and the
+        # eligibility test rules out every non-dashboard origin besides.
+        if _reserve_turn_admission:
+            # Counts Stop presses; read before the await so one that lands inside it
+            # is seen even though it found no task to cancel and settled at once.
+            _stop_gen_before_hold = slot._stop_generation
+            _auto_linked = await maybe_auto_link_slack(state, slot)
+            # The await above is the one suspension between accepting the row and
+            # dispatching the turn; a close that lands inside it must not have its
+            # turn run on the detached slot.
+            if not slot_is_live(state, slot):
+                return web.json_response(
+                    {"error": "session closed", "code": "slot_closed"}, status=409
+                )
+            # A Stop pressed during the hold was aimed at this turn: it does not
+            # start, and the row stays as a message that was stopped unanswered.
+            # A send queued behind it during the hold starts now, as it would at
+            # the end of a stopped turn.
+            if slot._stop_generation != _stop_gen_before_hold:
+                slot._turn_admission_reserved = False
+                if slot._queue:
+                    await _start_next_queued_turn(state, slot)
+                return web.json_response({"ok": True, "slot": slot.key, "stopped": True})
 
-        safe_context_call(
-            lambda: current_context().dashboard.on_user_message(request.app, message),
-            fallback=None,
-            log_message="dashboard.on_user_message observer failed",
-        )
-    except Exception:
-        logger.debug("on_user_message observer raised; ignoring", exc_info=True)
+        # Edition message observer (CPP seam). Fire-and-forget, fail-safe: a
+        # companion uses this to auto-ingest doc links pasted into chat. The public
+        # Default is a no-op. Guarded so an observer error never blocks the turn;
+        # deferred context read via the sel.py pattern (no platform import at load).
+        try:
+            from kiro_crew.platform.context import current_context, safe_context_call
 
-    # A slot bound to a peer crew runs its turn THERE. The dispatch branch sits
-    # here, at the single dispatch point, so every validation above applies
-    # identically to a remote-bound session — a remote slot is an ordinary slot
-    # that executes elsewhere, not a second kind of session. The two remote
-    # refusals (incomplete binding, tunnel down) ran earlier, ahead of the user
-    # row append, so a refused send is never recorded locally.
-    #
-    # Attach the mirror BEFORE dispatch, not after the response is prepared: the
-    # turn task can emit its first frames as soon as the event loop yields, and a
-    # mirror armed later would miss them.
-    _relay_owned = remote_mirror.attach(slot.key) if relay_mode else False
+            safe_context_call(
+                lambda: current_context().dashboard.on_user_message(request.app, message),
+                fallback=None,
+                log_message="dashboard.on_user_message observer failed",
+            )
+        except Exception:
+            logger.debug("on_user_message observer raised; ignoring", exc_info=True)
 
-    # An unattended app-owned turn runs under the background concurrency
-    # cap; run_background_turn passes an attended slot straight through, so the
-    # interactive path is unchanged (no semaphore is even created).
-    #
-    # The remote arm is a conditional expression INSIDE the dispatch rather than a
-    # coroutine hoisted into a local: `test_chat_turn_timeout_consistency` scans
-    # the text of each `spawn_guarded_turn(...)` body for `_run_chat(`, so hoisting
-    # the call out would take this site — the primary user-typed turn — out of the
-    # static guard that every dispatch carries a CHAT_TURN_TIMEOUT ceiling.
-    # Both arms are wrapped identically: a hung peer must hit the same wall a hung
-    # local turn does.
-    # The attachment ids this handler just accepted, so the ledger names the file
-    # instead of leaving the turn's input unexplained. Passed only when there ARE
-    # some: an ordinary send then calls `_run_chat` with exactly the arguments it
-    # always did, which is what keeps the many test doubles of it valid.
-    _accepted_attachment_meta = attachment_meta(user_meta)
-    _accepted_attachments = [path for paths in _accepted_attachment_meta.values() for path in paths]
-    # ``request_app`` is stamped by the app-token auth middleware, not read from
-    # the request body, so it is a fact about the caller a person cannot write --
-    # which is what lets the turn's actor come from it. Passing it is what keeps
-    # an app-authored send out of the ledger's ``user`` bucket: the actor
-    # resolver's fallback is ``user``, so a site that observes an app and stays
-    # silent records a person who never typed anything.
-    _turn_kwargs: dict = {"_directive_user_origin": not bool(request_app)}
-    if request_app:
-        _turn_kwargs["_turn_actor"] = "app"
-    if _accepted_attachments:
-        _turn_kwargs["_attachments"] = _accepted_attachments
-        # Typed form for the refusal replay: keeps ``dirs`` entries as folders.
-        _turn_kwargs["_attachment_meta"] = _accepted_attachment_meta
-    task = spawn_guarded_turn(
-        state,
-        slot,
-        state.run_background_turn(
+        # A slot bound to a peer crew runs its turn THERE. The dispatch branch sits
+        # here, at the single dispatch point, so every validation above applies
+        # identically to a remote-bound session — a remote slot is an ordinary slot
+        # that executes elsewhere, not a second kind of session. The two remote
+        # refusals (incomplete binding, tunnel down) ran earlier, ahead of the user
+        # row append, so a refused send is never recorded locally.
+        #
+        # Attach the mirror BEFORE dispatch, not after the response is prepared: the
+        # turn task can emit its first frames as soon as the event loop yields, and a
+        # mirror armed later would miss them.
+        _relay_owned = remote_mirror.attach(slot.key) if relay_mode else False
+
+        # An unattended app-owned turn runs under the background concurrency
+        # cap; run_background_turn passes an attended slot straight through, so the
+        # interactive path is unchanged (no semaphore is even created).
+        #
+        # The remote arm is a conditional expression INSIDE the dispatch rather than a
+        # coroutine hoisted into a local: `test_chat_turn_timeout_consistency` scans
+        # the text of each `spawn_guarded_turn(...)` body for `_run_chat(`, so hoisting
+        # the call out would take this site — the primary user-typed turn — out of the
+        # static guard that every dispatch carries a CHAT_TURN_TIMEOUT ceiling.
+        # Both arms are wrapped identically: a hung peer must hit the same wall a hung
+        # local turn does.
+        # The attachment ids this handler just accepted, so the ledger names the file
+        # instead of leaving the turn's input unexplained. Passed only when there ARE
+        # some: an ordinary send then calls `_run_chat` with exactly the arguments it
+        # always did, which is what keeps the many test doubles of it valid.
+        _accepted_attachment_meta = attachment_meta(user_meta)
+        _accepted_attachments = [
+            path for paths in _accepted_attachment_meta.values() for path in paths
+        ]
+        # ``request_app`` is stamped by the app-token auth middleware, not read from
+        # the request body, so it is a fact about the caller a person cannot write --
+        # which is what lets the turn's actor come from it. Passing it is what keeps
+        # an app-authored send out of the ledger's ``user`` bucket: the actor
+        # resolver's fallback is ``user``, so a site that observes an app and stays
+        # silent records a person who never typed anything.
+        _turn_kwargs: dict = {"_directive_user_origin": not bool(request_app)}
+        if request_app:
+            _turn_kwargs["_turn_actor"] = "app"
+        if _accepted_attachments:
+            _turn_kwargs["_attachments"] = _accepted_attachments
+            # Typed form for the refusal replay: keeps ``dirs`` entries as folders.
+            _turn_kwargs["_attachment_meta"] = _accepted_attachment_meta
+        task = spawn_guarded_turn(
+            state,
             slot,
-            (
-                relay_remote_turn(state, slot, message)
-                if slot.is_remote
-                else _run_chat(state, slot, message, **_turn_kwargs)
+            state.run_background_turn(
+                slot,
+                (
+                    relay_remote_turn(state, slot, message)
+                    if slot.is_remote
+                    else _run_chat(state, slot, message, **_turn_kwargs)
+                ),
             ),
-        ),
-    )
-    slot.task = task
+        )
+        slot.task = task
+        if _auto_linked:
+            replay_unechoed_first_turn(state, slot)
+    finally:
+        if _reserve_turn_admission:
+            slot._turn_admission_reserved = False
     stage_boundary_for(slot).recovery_retrigger_count = 0
     state.push_slots_update()
 

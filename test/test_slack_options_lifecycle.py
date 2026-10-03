@@ -2214,7 +2214,7 @@ class TestControlPostedAfterTheWindowIsSpent:
 
         from kiro_crew.dashboard import chat_slack
 
-        src = inspect.getsource(chat_slack.api_chat_slot_slack_link)
+        src = inspect.getsource(chat_slack.link_slot_to_slack)
         snap = src.find("_prior_owner_keys = slack_options_owner_keys_snapshot(")
         link = src.find("state.link_slack(slot.key, thread_ts, target_channel)")
         assert snap != -1 and link != -1, "both the snapshot and the link must be present"

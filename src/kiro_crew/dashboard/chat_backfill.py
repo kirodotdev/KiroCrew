@@ -157,6 +157,7 @@ def select_backfill_messages(
     *,
     recent_turns: int = DEFAULT_RECENT_TURNS,
     include_first_turn: bool = True,
+    window: list[dict[str, Any]] | None = None,
 ) -> BackfillSelection:
     """Pick the messages a fresh channel thread should be seeded with.
 
@@ -174,8 +175,14 @@ def select_backfill_messages(
     as one sequence, so the turn count is exact and a turn split across the flush
     boundary (a question on disk, its answer still in memory) is joined rather
     than counted twice.
+
+    ``window`` replaces ``slot.messages`` as the in-memory rows when a caller
+    owes the thread only a prefix of them (a late Slack link stops below the
+    first turn mirrored live). Cut it on the event loop, where rows are
+    appended, so the cut cannot race an append.
     """
-    rows = [row for row in slot.messages if _is_conversational(row)]
+    source = slot.messages if window is None else window
+    rows = [row for row in source if _is_conversational(row)]
     prefix: list[dict[str, Any]] = []
     if include_first_turn:
         # Deliberately the all-rows counter: it slices the DISK read below

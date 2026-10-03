@@ -2037,6 +2037,36 @@ class SlackConfig:
             tags=["slack"],
         ),
     )
+    auto_link_sessions: bool = field(
+        default=False,
+        metadata=_meta(
+            "Connect New Sessions To Slack Automatically",
+            "Open a Slack thread for every new dashboard session on its first "
+            "message, exactly as the Connect to Slack button does, so you can "
+            "follow and reply from Slack without clicking the button each time. "
+            "The thread is created when the first message is sent, not when the "
+            "tab opens, so an abandoned tab leaves nothing behind. Only sessions "
+            "a person starts in the dashboard qualify: cron, app, sub-agent, "
+            "incognito, temporary and channel-born sessions are never connected "
+            "this way. Off by default because the thread carries the session's "
+            "title and first prompt to wherever `auto_link_channel` points. Takes "
+            "effect on the next new session; no restart.",
+            tags=["slack"],
+        ),
+    )
+    auto_link_channel: str = field(
+        default="",
+        metadata=_meta(
+            "Auto-Connect Target Channel",
+            "Where the automatic thread is opened. Empty (the default) uses the "
+            "owner's DM with the bot, which only the owner can read. A Slack "
+            "channel ID (starts with C or G) posts the thread in that channel "
+            "instead, where every member can read the session's title, first "
+            "prompt and mirrored replies. Ignored while "
+            "`auto_link_sessions` is off.",
+            tags=["slack"],
+        ),
+    )
 
 
 @dataclass
@@ -5395,6 +5425,32 @@ def _coerce_session_folder(raw: object) -> str:
     if any(ch in name for ch in ("/", "\\")) or any(ord(ch) < 0x20 for ch in name):
         return ""
     return name
+
+
+#: A Slack conversation ID the bot can post a thread into: a public or private
+#: channel (``C...``) or a legacy private group (``G...``). A DM (``D...``) is
+#: deliberately excluded: the owner DM is the empty-string default and is
+#: resolved live from the owner's member ID, never stored as a channel.
+SLACK_AUTO_LINK_CHANNEL_RE = _re.compile(r"[CG][A-Z0-9]{2,31}")
+
+
+def _coerce_auto_link_channel(raw: object) -> str:
+    """Coerce ``slack.auto_link_channel`` to a channel ID, or "" for the owner DM.
+
+    Empty string means the automatic thread opens in the owner's DM with the
+    bot. Any other value must be a channel ID; anything else, including a
+    channel NAME such as ``#general``, fails closed to the DM. The DM is the
+    narrower audience, so a value nobody can parse never widens who reads a
+    session's first prompt.
+    """
+    if not isinstance(raw, str):
+        return ""
+    channel = raw.strip()
+    if not channel or channel.lower() == "dm":
+        return ""
+    if not SLACK_AUTO_LINK_CHANNEL_RE.fullmatch(channel):
+        return ""
+    return channel
 
 
 @dataclass

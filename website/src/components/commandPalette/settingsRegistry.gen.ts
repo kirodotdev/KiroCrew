@@ -214,6 +214,34 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "channels.auto-connect-target-slack",
+    "label": "Auto-connect target (Slack)",
+    "labelKey": "pages.settings.slackPanel.auto_link_target",
+    "labelSuffix": "Slack",
+    "description": "Where the thread opens. Everyone in a channel can read the session's title, first prompt and replies.",
+    "tab": "channels",
+    "type": "select",
+    "occurrence": 1,
+    "params": {
+      "channel": "slack"
+    },
+    "configKey": "slack.auto_link_channel"
+  },
+  {
+    "id": "channels.connect-new-sessions-to-slack-automatically-slack",
+    "label": "Connect new sessions to Slack automatically (Slack)",
+    "labelKey": "pages.settings.slackPanel.auto_link_sessions",
+    "labelSuffix": "Slack",
+    "description": "Every new dashboard session gets a Slack thread on its first message. The thread opens in your private direct message with the bot by default; when this is on, a target picker appears below where you can choose a channel instead. Sessions started by cron, apps or sub-agents, sessions that began in Slack or another messaging app, and incognito or temporary sessions are left alone.",
+    "tab": "channels",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "channel": "slack"
+    },
+    "configKey": "slack.auto_link_sessions"
+  },
+  {
     "id": "channels.enable-imessage-channel-imessage",
     "label": "Enable iMessage channel (iMessage)",
     "labelKey": "pages.settings.iMessagePanel.enable",
