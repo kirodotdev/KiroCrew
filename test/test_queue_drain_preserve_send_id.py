@@ -51,6 +51,11 @@ def _user_rows(slot) -> list[dict]:
     return [m for m in slot.messages if m.get("role") == "user"]
 
 
+def _live_turn() -> MagicMock:
+    """A stand-in for a turn still running on the slot."""
+    return MagicMock(done=MagicMock(return_value=False))
+
+
 class TestBusySlotQueueEntry:
     @pytest.mark.asyncio
     async def test_entry_carries_the_client_send_id(self, tmp_path, monkeypatch):
@@ -59,7 +64,7 @@ class TestBusySlotQueueEntry:
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         slot = state.get_or_create_slot("busy-chat")
-        slot._in_stage_execution = True  # force the busy queue path
+        slot.task = _live_turn()  # force the busy queue path
         monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", MagicMock())
 
         payload = await _post_busy(state, "busy-chat", _TEXT, {"sendId": _SEND_ID})
@@ -82,7 +87,7 @@ class TestBusySlotQueueEntry:
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         slot = state.get_or_create_slot("busy-chat")
-        slot._in_stage_execution = True
+        slot.task = _live_turn()  # force the busy queue path
         monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", MagicMock())
 
         await _post_busy(state, "busy-chat", _TEXT, None)
@@ -107,7 +112,7 @@ class TestBusySlotQueueEntry:
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         slot = state.get_or_create_slot("busy-chat")
-        slot._in_stage_execution = True
+        slot.task = _live_turn()  # force the busy queue path
         monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", MagicMock())
 
         await _post_busy(state, "busy-chat", _TEXT, {"sendId": bad_id})
@@ -144,13 +149,13 @@ class TestDrainedRow:
         state = _make_state(tmp_path)
         state.broadcast_ws = MagicMock()
         slot = state.get_or_create_slot("busy-chat")
-        slot._in_stage_execution = True
+        slot.task = _live_turn()  # force the busy queue path
         monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", MagicMock())
 
         await _post_busy(state, "busy-chat", _TEXT, {"sendId": _SEND_ID})
 
         state.subagents = None
-        slot._in_stage_execution = False
+        slot.task = None
         await _drain_once(state, slot)
 
         rows = _user_rows(slot)
@@ -170,13 +175,13 @@ class TestDrainedRow:
         state = _make_state(tmp_path)
         state.broadcast_ws = MagicMock()
         slot = state.get_or_create_slot("busy-chat")
-        slot._in_stage_execution = True
+        slot.task = _live_turn()  # force the busy queue path
         monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", MagicMock())
 
         await _post_busy(state, "busy-chat", _TEXT, None)
 
         state.subagents = None
-        slot._in_stage_execution = False
+        slot.task = None
         await _drain_once(state, slot)
 
         rows = _user_rows(slot)

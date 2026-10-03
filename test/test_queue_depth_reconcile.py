@@ -5,7 +5,7 @@ from a reconnect's snapshot. A frame it missed, or one that arrived after the
 frame that superseded it, leaves "N waiting to start" and the old wait reason on
 the card after every run has finished. So the authoritative depth is re-published
 at every point a wave settles -- each terminal report of a run that started, each
-stop of a waiting row, and a Stop all or stage Cancel that stopped nothing -- and
+stop of a waiting row, and a Stop all that stopped nothing -- and
 the emit is coalesced per parent, so a bulk stop costs about one frame. A read
 answers every request made before it started, because a posted store write is
 queued on the writer thread by the call that posts it; the count covers
@@ -235,49 +235,6 @@ async def test_stop_all_with_nothing_to_stop_publishes_zero_and_forgets_the_labe
 @pytest.mark.asyncio
 @pytest.mark.timeout(30)
 @PUMP_MODES
-async def test_stage_cancel_with_nothing_to_stop_publishes_zero_and_forgets_the_label(
-    monkeypatch: pytest.MonkeyPatch, pump_off_loop: bool
-) -> None:
-    mgr = await _manager(monkeypatch, pump_off_loop=pump_off_loop)
-    try:
-        mgr._queue_wait[_PARENT] = dict(_STALE_WAIT)
-        events = _record(mgr)
-
-        assert await mgr.cancel_for_boundary(_PARENT, "stage-1") == (0, 0)
-        await _settle(mgr)
-
-        assert _depths(events) == [{"queued": 0}]
-        assert _PARENT not in mgr._queue_wait
-    finally:
-        _close(mgr)
-
-
-@pytest.mark.asyncio
-@pytest.mark.timeout(30)
-@PUMP_MODES
-async def test_a_refused_stage_cancel_still_publishes_the_depth_once(
-    monkeypatch: pytest.MonkeyPatch, pump_off_loop: bool
-) -> None:
-    mgr = await _manager(monkeypatch, pump_off_loop=pump_off_loop)
-    try:
-        mgr._queue_wait[_PARENT] = dict(_STALE_WAIT)
-        events = _record(mgr)
-        monkeypatch.setattr(
-            mgr, "_hold_boundary_cancellation", lambda parent, owner: "pending_scope_cap"
-        )
-
-        assert await mgr.cancel_for_boundary(_PARENT, "stage-1") == (0, 0)
-        await _settle(mgr)
-
-        assert _depths(events) == [{"queued": 0}]
-        assert _PARENT not in mgr._queue_wait
-    finally:
-        _close(mgr)
-
-
-@pytest.mark.asyncio
-@pytest.mark.timeout(30)
-@PUMP_MODES
 async def test_a_terminal_report_republishes_its_parents_queued_depth(
     monkeypatch: pytest.MonkeyPatch, pump_off_loop: bool
 ) -> None:
@@ -438,33 +395,6 @@ async def test_stop_all_over_thirty_queued_and_ten_running_sends_at_most_three_f
         assert 1 <= len(_depths(events)) <= (3 if pump_off_loop else 6)
         assert _depths(events)[-1] == {"queued": 0}
         assert _store_waiting(mgr) == 0
-    finally:
-        _close(mgr)
-
-
-@pytest.mark.asyncio
-@pytest.mark.timeout(30)
-@PUMP_MODES
-async def test_a_stage_cancel_over_several_rows_sends_at_most_two_frames(
-    monkeypatch: pytest.MonkeyPatch, pump_off_loop: bool
-) -> None:
-    mgr = await _manager(monkeypatch, pump_off_loop=pump_off_loop, max_concurrent=1)
-    try:
-        with patch.object(SubagentManager, "_run", new=_park):
-            mgr.spawn("holds the slot", parent_session_key="dash:elsewhere")
-            for i in range(4):
-                mgr.spawn(f"t{i}", parent_session_key=_PARENT, _stage_boundary_owner="stage-1")
-            await _settle(mgr)
-            assert mgr.queued_count_for(_PARENT) == 4
-            events = _record(mgr)
-
-            assert await mgr.cancel_for_boundary(_PARENT, "stage-1") == (0, 4)
-            await _settle(mgr)
-
-        assert 1 <= len(_depths(events)) <= 2
-        assert _depths(events)[-1] == {"queued": 0}
-        assert _store_waiting(mgr) == 0
-        await mgr.cancel_all()
     finally:
         _close(mgr)
 
@@ -864,9 +794,7 @@ async def test_a_store_that_stays_unreadable_gets_a_bounded_number_of_retries(
 @pytest.mark.asyncio
 @pytest.mark.timeout(30)
 @PUMP_MODES
-@pytest.mark.parametrize(
-    "stop", ["single-cancel", "stage-cancel", "stop-all-store-rows", "stop-all-window-rows"]
-)
+@pytest.mark.parametrize("stop", ["single-cancel", "stop-all-store-rows", "stop-all-window-rows"])
 async def test_every_stop_converges_after_one_unreadable_read(
     monkeypatch: pytest.MonkeyPatch, pump_off_loop: bool, stop: str
 ) -> None:
@@ -880,9 +808,8 @@ async def test_every_stop_converges_after_one_unreadable_read(
                 # Behind a pool another parent fills, so nothing the stop
                 # leaves can start while the retry waits.
                 mgr.spawn("holds the slot", parent_session_key="dash:elsewhere")
-                owner = "stage-1" if stop == "stage-cancel" else ""
                 rows = [
-                    mgr.spawn(f"t{i}", parent_session_key=_PARENT, _stage_boundary_owner=owner)
+                    mgr.spawn(f"t{i}", parent_session_key=_PARENT)
                     for i in range(2 if stop == "single-cancel" else 4)
                 ]
             await _settle(mgr)
@@ -891,8 +818,6 @@ async def test_every_stop_converges_after_one_unreadable_read(
 
             if stop == "single-cancel":
                 assert await mgr.cancel(rows[0].id) is True
-            elif stop == "stage-cancel":
-                assert await mgr.cancel_for_boundary(_PARENT, "stage-1") == (0, 4)
             else:
                 assert (await mgr.cancel_for_parent(_PARENT))[1] in (3, 4)
             left = 1 if stop == "single-cancel" else 0
@@ -1070,37 +995,6 @@ async def test_a_row_whose_report_failed_still_counts_as_stopped(
         _close(mgr)
 
 
-@pytest.mark.asyncio
-@pytest.mark.timeout(30)
-async def test_a_retried_queued_stop_report_adds_no_depth_frame(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A queued-stop report that failed is retried from its retained snapshot,
-    which keeps ``queued``: the retry is still the stop's terminal, not a run's."""
-    mgr = await _manager(monkeypatch, pump_off_loop=False)
-    try:
-        parent, owner = _PARENT, "stage-1"
-        info = SubagentInfo(
-            id="q-retry",
-            task="t",
-            parent_session_key=parent,
-            _stage_boundary_owner=owner,
-            batch_id="b1",
-            user_stopped=True,
-            queued=True,
-            done=True,
-        )
-        mgr._latch_report_failure(info)
-        events = _record(mgr)
-
-        assert await mgr._redeliver_boundary_report_payloads(parent, owner) is True
-        await _settle(mgr)
-
-        assert _kinds(events) == ["subagent_done"]
-    finally:
-        _close(mgr)
-
-
 # ── after every exit, the parent is told what the store holds ────────────────
 
 
@@ -1119,7 +1013,7 @@ async def _end_run(mgr: SubagentManager, info: SubagentInfo) -> None:
 @pytest.mark.asyncio
 @pytest.mark.timeout(60)
 @PUMP_MODES
-@pytest.mark.parametrize("path", ["complete", "cancel", "stop_all", "stage_cancel", "parent_end"])
+@pytest.mark.parametrize("path", ["complete", "cancel", "stop_all", "parent_end"])
 async def test_after_each_exit_the_published_depth_equals_the_store_count(
     monkeypatch: pytest.MonkeyPatch, pump_off_loop: bool, path: str
 ) -> None:
@@ -1152,8 +1046,6 @@ async def test_after_each_exit_the_published_depth_equals_the_store_count(
             assert await mgr.cancel(deferred.id) is True
         elif path == "stop_all":
             await mgr.cancel_for_parent(_PARENT)
-        elif path == "stage_cancel":
-            await mgr.cancel_for_boundary(_PARENT, "owner-of-nothing")
         else:
             selected = mgr.snapshot_teardown_children(_PARENT)
             await mgr.cancel_for_teardown(selected, parent_session_key=_PARENT, verb="test")

@@ -449,6 +449,7 @@ on the loop) and the window refill (`taskq_refill_window_async`: `pending_lanes`
 / `fetch_dispatchable_fair` / `next_eligible_at` through `store.run`, the
 eviction and the append on the loop) BEFORE the sync pick-and-spawn half
 (`_drain_queue_sync_impl`, whose *refill* callable is then a no-op).
+Both refill variants retire any fetched row carrying `_stage_boundary_owner` (written by the retired chat Autopilot) before it can join the window: `_retire_legacy_stage_rows` cancels it on the writer thread and `_report_retired_stage_rows` announces it stopped-before-start with a non-user `_stop_origin`; a store outage mid-pass still reports every cancel already committed.
 
 **The pick's LANE question is resolved off the loop too.** A window entry that
 carries no `_lane` resolves its parent chain, and a parent with no live run is a
@@ -478,13 +479,7 @@ the slot is reserved -- running count and stagger token taken synchronously,
 so a concurrent admission during the await sees the cap spent;
 `claim_and_start` awaits `store.run(taskq_claim)` and re-enters with
 `_claimed=`, which consumes the reservation instead of re-checking capacity.
-A pre-claim refusal releases it. Once the row is `admitted`, an unavailable
-boundary-generation check moves the claim into the process-local
-`_retained_claims` map with its reservation still spent; one retry timer opens a
-later pump settlement pass, and that pass retries one retained generation before
-ordinary refill. The map is bounded by already-reserved capacity. A successful
-retry registers exactly once and consumes the reservation; a durable refusal
-releases it). The same split serves the ACCEPT
+A refusal releases it). The same split serves the ACCEPT
 path -- `spawn_async` awaits the window decision (`taskq_should_window_async`)
 and the claim on the writer thread and posts a pressure defer
 (`taskq_defer_posted`), so the sync re-entry with `_store_accepted` performs

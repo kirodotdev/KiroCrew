@@ -116,7 +116,6 @@ def _slot(messages, *, title="My session", memory_mode="persistent", app="", **o
         _dirty_gen=0,
         memory_mode=memory_mode,
         running=False,
-        _in_stage_execution=False,
         _app=app,
     )
     for k, v in over.items():

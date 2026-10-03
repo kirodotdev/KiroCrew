@@ -760,9 +760,8 @@ class TestWorkerRunning:
     class _RealShapedSlot:
         """Both predicates, as the real slot has them.
 
-        ``running`` on a real slot is ``turn_running or stage_boundary.stage is not
-        None`` -- an admission predicate -- and its own docstring says to use
-        ``turn_running`` for execution. This double carries both so a test can pin
+        ``running`` on a real slot is the admission predicate, and its own docstring
+        says to use ``turn_running`` for execution. This double carries both so a test can pin
         that the resolver reads the right one when they disagree.
         """
 

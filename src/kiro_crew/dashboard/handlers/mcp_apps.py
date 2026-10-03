@@ -640,10 +640,10 @@ async def api_mcp_apps_message(request: web.Request) -> web.Response:
 
         wrapped = f'{APP_MESSAGE_PREFIX}"{label}"]\n{text}\n{APP_MESSAGE_END}'
 
-        # Queue while a turn is live OR a multi-stage plan is mid-flight — same
-        # predicate as the cron origin-injection and user-typed paths, for the
-        # same reason: an injection must never start a concurrent turn.
-        if slot.running or slot._in_stage_execution:
+        # Queue while a turn is live — same predicate as the cron
+        # origin-injection and user-typed paths, for the same reason: an
+        # injection must never start a concurrent turn.
+        if slot.running:
             if len(slot._queue) >= MAX_LIVE_QUEUE_ENTRIES:
                 return web.json_response(
                     {"error": "session queue is full", "code": "queue_full"}, status=429

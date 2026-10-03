@@ -2137,9 +2137,6 @@ class TestFireDashboardNudgeDispatch:
         ds = _mock_dashboard_state()
         slot = MagicMock()
         slot.running = False
-        # Real _ChatSlot defaults this False; a bare MagicMock returns a truthy
-        # Mock and would make the nudge defer on the busy guard.
-        slot._in_stage_execution = False
         slot.key = "chat-1"
         ds.get_slot.return_value = slot
         orch.dashboard_state = ds
@@ -2168,7 +2165,7 @@ class TestFireDashboardNudgeDispatch:
     async def test_structured_delivery_distinguishes_busy_and_unavailable(self, monkeypatch):
         busy = _make_orchestrator()
         busy_state = _mock_dashboard_state()
-        busy_slot = MagicMock(running=True, _in_stage_execution=False)
+        busy_slot = MagicMock(running=True)
         busy_state.get_slot.return_value = busy_slot
         busy.dashboard_state = busy_state
         unavailable = _make_orchestrator()
@@ -2197,7 +2194,6 @@ class TestFireDashboardNudgeDispatch:
 
         restored = MagicMock()
         restored.running = False
-        restored._in_stage_execution = False
         restored.key = "chat-9"
 
         async def _rehydrate(_state, _key, *, adopt_closed=False):

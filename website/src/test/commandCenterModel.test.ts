@@ -245,7 +245,6 @@ describe('command center projection', () => {
   it.each([
     ['delegated work before live subagent frames arrive', { subagents_running: true }],
     ['a queued message', { queue_depth: 1 }],
-    ['orchestration outside the active turn', { orchestrating: true }],
   ] satisfies [string, Partial<ChatSlot>][])('keeps an idle turn unsettled while %s remains', (_description, activity) => {
     const model = buildCommandCenter(sources({ slots: [slot('root', activity)] }))
     expect(model.nodes[0].state).toBe('running')

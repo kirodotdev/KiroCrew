@@ -2708,25 +2708,6 @@ class TestStartNextQueuedTurn:
         assert [item["id"] for item in slot._queue] == [qid]
 
     @pytest.mark.asyncio
-    async def test_run_now_does_not_bypass_an_active_stage(self, tmp_path):
-        """The override is narrow: an orchestrator stage still owns dispatch."""
-        state, slot = _state(tmp_path), _slot()
-        q1 = slot.queue_append("stage-owned first")
-        q2 = slot.queue_append("wait for the stage")
-        slot._in_stage_execution = True
-        state.subagents = MagicMock(running_agents_for=MagicMock(return_value=["agent-1"]))
-
-        started = await chat_runner._start_next_queued_turn(
-            state,
-            slot,
-            allow_user_during_subagents=True,
-            required_queue_id=q2,
-        )
-
-        assert started is False
-        assert [item["id"] for item in slot._queue] == [q1, q2]
-
-    @pytest.mark.asyncio
     async def test_reset_notice_is_emitted_for_a_stopping_slot(self, tmp_path):
         state, slot = _state(tmp_path), _slot()
         slot.queue_append("next please")
@@ -2768,42 +2749,6 @@ class TestStartNextQueuedTurn:
         assert "user" in roles
         assert contents.index("held") < roles.index("user")
         assert slot._deferred_notes == []
-
-    @pytest.mark.asyncio
-    async def test_a_held_note_is_withheld_from_a_plans_next_stage(self, tmp_path):
-        """A plain user message queued during a plan must not release the note.
-
-        This is the flush that leaks FIRST. A queued user message carries no
-        ``kind``, so the origin-tag guard admits the flush -- and it runs ABOVE the
-        ``in_stage`` dequeue gate that then holds that message back. So the note
-        was released while no user turn started at all, and the next stage drained
-        its context half. ``_stage_loop``'s exit flush is the seam that owes it
-        delivery, so withholding delays rather than loses it.
-        """
-        state, slot = _state(tmp_path), _slot()
-        slot._deferred_notes.append({"content": "held", "cls": "reconcile-note"})
-        slot.queue_append("a plain user message")  # carries no `kind`
-        slot._in_stage_execution = True
-        state.subagents = None
-
-        assert await chat_runner._start_next_queued_turn(state, slot) is False
-
-        assert len(slot._queue) == 1, "fixture: the user message must be held back"
-        assert len(slot._deferred_notes) == 1, "the note was released into the next stage"
-        assert "held" not in [m["content"] for m in slot.messages]
-
-        # Control: the same fixture with the plan gate CLEAR does flush, so the
-        # assertion above measures the stage guard rather than the dequeue hold.
-        state2, slot2 = _state(tmp_path), _slot()
-        slot2._deferred_notes.append({"content": "held", "cls": "reconcile-note"})
-        slot2.queue_append("a plain user message")
-        state2.subagents = None
-        with (
-            patch.object(chat_runner, "spawn_guarded_turn", return_value=MagicMock()),
-            patch.object(chat_runner, "_run_chat", return_value=MagicMock()),
-        ):
-            assert await chat_runner._start_next_queued_turn(state2, slot2) is True
-        assert slot2._deferred_notes == [], "control: the note should flush off-plan"
 
 
 def _no_children() -> MagicMock:
@@ -3187,41 +3132,6 @@ class TestFinishQueueCycle:
         flush.assert_not_called()
         if slot.task is not None:
             slot.task.cancel()
-
-    @pytest.mark.asyncio
-    async def test_a_held_note_is_withheld_from_a_plans_next_stage(self, tmp_path):
-        """This function runs per stage, so a flush here feeds stage N+1.
-
-        Each stage of a plan is its own ``_run_chat``, and this is called from that
-        turn's ``finally`` while ``_in_stage_execution`` is still set -- so the note
-        reached the next stage instead of the next USER turn. Distinct from the
-        synthesis case above: here ``will_synthesize`` is False, which is exactly
-        why the old guard admitted the flush.
-        """
-        state, slot = _state(tmp_path), _slot()
-        state._slots[slot.key] = slot
-        slot._in_stage_execution = True
-        state.subagents = _no_children()
-
-        with patch.object(type(slot), "flush_deferred_notes", return_value=0) as flush:
-            await chat_runner._finish_queue_cycle(state, slot)
-            await asyncio.sleep(0)
-        flush.assert_not_called()
-        if slot.task is not None:
-            slot.task.cancel()
-
-        # Control: identical state with the plan gate clear DOES flush, so the
-        # assertion above cannot pass for some reason unrelated to the stage.
-        state2, slot2 = _state(tmp_path), _slot()
-        state2._slots[slot2.key] = slot2
-        state2.subagents = _no_children()
-
-        with patch.object(type(slot2), "flush_deferred_notes", return_value=0) as flush2:
-            await chat_runner._finish_queue_cycle(state2, slot2)
-            await asyncio.sleep(0)
-        flush2.assert_called_once()
-        if slot2.task is not None:
-            slot2.task.cancel()
 
     @pytest.mark.asyncio
     async def test_a_closing_slot_does_not_lose_its_held_note_to_synthesis(self, tmp_path):

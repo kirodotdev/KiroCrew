@@ -190,7 +190,6 @@ from kiro_crew.dashboard.state import (
     parse_cls_meta,
     request_slot_origin,
     row_mid,
-    stage_boundary_for,
 )
 from kiro_crew.dashboard.system_notices import SESSION_RELOAD_KIND, is_system_notice
 from kiro_crew.dashboard.turn_dispatch import spawn_guarded_turn
@@ -837,8 +836,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             {"error": "message is required", "code": "message_required"}, status=400
         )
 
-    _pending_stage_boundary = stage_boundary_for(slot).stage is not None
-    if slot.turn_running or slot._in_stage_execution or _pending_stage_boundary:
+    if slot.turn_running:
         # Mid-turn steer: inject into the RUNNING turn instead of queueing for
         # the next turn. Gated on an explicit `steer` flag + a live, steer-capable
         # inner AcpClient that _run_chat published on the slot. App-authenticated
@@ -850,12 +848,6 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         # client / unsupported backend / RPC error), fall through to the queue
         # path so the user's text is NEVER silently dropped.
         #
-        # ``slot._in_stage_execution`` extends this to autopilot: during a multi-stage
-        # plan ``slot.running`` briefly reads False between stages (each stage's
-        # _run_chat closes its own turn), so a mid-plan message would otherwise
-        # start a concurrent turn. The orchestrating flag keeps it on the queue
-        # path (steer is unavailable between stages, so it falls through to the
-        # queue below and is held until the plan ends).
         # `steer: "auto"` is the composer's third mode: the sender asked Jev which
         # of the two shipped paths this message takes. Decided HERE, above both
         # branches, because the answer chooses between them -- and only here, where
@@ -1327,7 +1319,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         ),
     )
     slot.task = task
-    stage_boundary_for(slot).recovery_retrigger_count = 0
+    slot.recovery_retrigger_count = 0
     state.push_slots_update()
 
     if ws_mode:
@@ -5767,7 +5759,7 @@ async def _settle_discarded_stage_deliveries(
     slot: "_ChatSlot",
     contents: list[str],
 ) -> None:
-    """Settle queued completion and boundary report debt through one seam."""
+    """Settle the queued completion debt a discarded queue owed."""
     manager = getattr(state, "subagents", None)
     if manager is None:
         return
@@ -5783,13 +5775,6 @@ async def _settle_discarded_stage_deliveries(
                 slot.key,
                 exc_info=True,
             )
-    boundary = stage_boundary_for(slot)
-    owner = boundary.owner or boundary.generation
-    parents = tuple(boundary.parent_session_keys) or (effective_session_key(slot),)
-    discard_failures = getattr(manager, "discard_report_failures", None)
-    if owner and callable(discard_failures):
-        for parent in parents:
-            discard_failures(parent, owner)
 
 
 async def stop_slot_turn(
@@ -5909,7 +5894,6 @@ async def stop_slot_turn(
     # timeout retry. A withheld escalation falls into the no-op branch below.
     if escalate and slot._stop_state == "soft_pending":
         slot._stop_state = "killing"
-        stage_boundary_for(slot).preserve_stop_generation = -1
         # A decline settled its own card and left no open one; the hard kill
         # that follows needs a row of its own, or the last stop row the user
         # sees still reads "nothing was stopped" for a session that was reset.
@@ -6071,7 +6055,6 @@ async def stop_slot_turn(
     # pending ask_question card.
     _unblock_pending_waits(state, slot)
 
-    stage_boundary_for(slot).preserve_stop_generation = slot._stop_generation
     outcome = await state.sessions.stop_turn(
         cancel_key,
         force=False,
@@ -6249,14 +6232,6 @@ async def api_chat_slot_continue(request: web.Request) -> web.Response:
         if slot.running:
             return web.json_response(
                 {"error": "slot is running", "code": "slot_running"}, status=409
-            )
-        if slot._in_stage_execution:
-            # An autopilot plan reads `running` False BETWEEN stages while it is
-            # still mid-plan, so `running` alone would let a Continue dispatch
-            # concurrently with the next stage — two turns interleaving tool calls
-            # and repository writes on one slot.
-            return web.json_response(
-                {"error": "slot is orchestrating", "code": "slot_orchestrating"}, status=409
             )
         if slot._stopping or slot._stop_state != "idle":
             return web.json_response(
@@ -6594,11 +6569,6 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
             if slot.running:
                 return web.json_response(
                     {"error": "slot started running", "code": "slot_running"}, status=409
-                )
-            if slot._in_stage_execution:
-                return web.json_response(
-                    {"error": "slot is orchestrating", "code": "slot_orchestrating"},
-                    status=409,
                 )
             if slot._stopping or slot._stop_state != "idle":
                 return web.json_response(
@@ -7198,12 +7168,11 @@ async def api_chat_slot_reset_conversation(request: web.Request) -> web.Response
     the shared sub-agent runtime — so it takes the same guards the sibling
     teardown route does, through the same shared helpers rather than a third
     policy of its own: authorization on the SESSION (not merely the slot),
-    ``provider.has_active_turn()``, ``running`` widened with
-    ``_in_stage_execution``, and the sub-agent gate. Each of the four protects
-    work the caller cannot see from the outside: a turn running on the session
-    with no dashboard task behind it (an inbound channel message), a turn
-    mid-write, a plan between stages, and children still running after their
-    parent's turn ended.
+    ``provider.has_active_turn()``, ``running``, and the sub-agent gate. Each of
+    the three protects work the caller cannot see from the outside: a turn
+    running on the session with no dashboard task behind it (an inbound channel
+    message), a turn mid-write, and children still running after their parent's
+    turn ended.
 
     The ``has_active_turn()`` check is a best-effort fast path; the
     authoritative guard is the discard's ``skip_if_busy``, which probes the
@@ -7283,14 +7252,6 @@ async def api_chat_slot_reset_conversation(request: web.Request) -> web.Response
                 "code": "turn_in_flight",
                 "slot": name,
             },
-            status=409,
-        )
-    if slot._in_stage_execution:
-        # An autopilot plan reads ``running`` False BETWEEN stages while it is
-        # still mid-plan, so ``running`` alone would discard the conversation the
-        # plan is writing into and cold-start its next stage.
-        return web.json_response(
-            {"error": "slot is orchestrating", "code": "slot_orchestrating", "slot": name},
             status=409,
         )
     # ``discard_conversation`` is a full teardown: it also releases the shared
@@ -7597,29 +7558,6 @@ async def _close_slot(
     from kiro_crew.execution_context import read_live_session_execution
 
     closing_key = effective_session_key(slot)
-    closing_boundary = stage_boundary_for(slot)
-    closing_failure_parents = {
-        f"dashboard:{slot.key}",
-        closing_key,
-        *closing_boundary.parent_session_keys,
-    }
-    failure_scope_manager = getattr(state, "subagents", None)
-    closing_boundary_owner = closing_boundary.owner or closing_boundary.generation
-    closing_failure_scopes = (
-        tuple((parent, closing_boundary_owner) for parent in closing_failure_parents if parent)
-        if closing_boundary_owner
-        else ()
-    )
-
-    def discard_closing_failure_scopes() -> None:
-        discard_failure_scopes = getattr(
-            failure_scope_manager,
-            "discard_report_failure_scopes",
-            None,
-        )
-        if callable(discard_failure_scopes):
-            discard_failure_scopes(closing_failure_scopes)
-
     closing_execution = read_live_session_execution(closing_key)
     # Retire the auto-nudge loop BEFORE the awaits below, so no nudge can expire
     # into the session being closed and resurrect it. See
@@ -7818,7 +7756,6 @@ async def _close_slot(
         _resettle_restricted_key(state, name)
         _sync_dashboard_slots(state)
         state.push_slots_update()
-        discard_closing_failure_scopes()
         if slot._app:
             # Same decision the failure arm below takes, and it must be as visible:
             # this is the MORE common hand-over, so a silent one would hide every
@@ -7870,7 +7807,6 @@ async def _close_slot(
             # arm already ends in `SlotCloseError`, so a lost tail is reported to the
             # caller either way. The drain only decides whether the rows survived.
             await _persist_handover_tail(state, name, slot)
-            discard_closing_failure_scopes()
         # Whichever way that went, the key-scoped restricted marker has to describe
         # whoever holds `name` when this frame ends — the restored original, or the
         # replacement that kept the key. This arm never reaches the discard below
@@ -7931,7 +7867,6 @@ async def _close_slot(
         # Durable, so no rollback can retract this frame — a client pruning its
         # per-slot cards on it can never be pruning a slot that comes back.
         state.push_slot_removed(name)
-        discard_closing_failure_scopes()
         # Committed, so the conductor may be told now and not before.
         await _wake_conductor_for_closed_worker(name)
     # The app was already told, and compensated if the persist above failed — see
@@ -15716,7 +15651,7 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
     # written at the turn's end, which is why `appended` is reported separately.
     # This is decided BEFORE either write: a note rejected for a full hold must
     # not leave its context half behind to reach the next turn anyway.
-    deferred = slot.running or slot._in_stage_execution
+    deferred = slot.running
     if deferred and len(slot._deferred_notes) >= _MAX_DEFERRED_NOTES:
         return web.json_response(
             {

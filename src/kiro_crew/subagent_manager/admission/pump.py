@@ -6,7 +6,7 @@ import logging as _logging
 from typing import TYPE_CHECKING, Any
 
 from .._component import ManagerComponent
-from .types import MIN_RECHECK_DELAY_SECS, ClaimPoint
+from .types import ClaimPoint
 
 _glue_logger = _logging.getLogger("kiro_crew.subagent_manager.admission")
 
@@ -174,78 +174,6 @@ class _PumpMixin(ManagerComponent):
             if not getattr(self._manager, "_drain_again", False):
                 return
 
-    def _schedule_retained_claim_retry(self) -> None:
-        """Arm one later pump pass for an admitted claim awaiting the store."""
-        if not self._manager._retained_claims or self._manager._shutting_down:
-            return
-        pending = self._manager._retained_claim_retry_handle
-        if pending is not None and not pending.cancelled():
-            return
-        import asyncio as _asyncio
-
-        try:
-            loop = _asyncio.get_running_loop()
-        except RuntimeError:
-            return
-
-        def _retry() -> None:
-            self._manager._retained_claim_retry_handle = None
-            self._manager._drain_queue()
-
-        delay = max(MIN_RECHECK_DELAY_SECS, self.taskq_admit_wait_secs())
-        self._manager._retained_claim_retry_handle = loop.call_later(delay, _retry)
-
-    def _retain_claim(
-        self,
-        point: ClaimPoint,
-        generation: int,
-        reenter: "Callable[[tuple[int, bool, str]], Any]",
-        stop_params: "Mapping[str, Any] | None",
-    ) -> None:
-        """Keep one admitted generation and its reserved slot for retry."""
-        self._manager._retained_claims[point.agent_id] = (
-            point,
-            generation,
-            reenter,
-            dict(stop_params or {}),
-        )
-        self._schedule_retained_claim_retry()
-
-    async def retry_retained_claims(self) -> None:
-        """Retry one held generation before the pump considers queued rows."""
-        retained = self._manager._retained_claims
-        try:
-            agent_id, entry = next(iter(retained.items()))
-        except StopIteration:
-            return
-        retained.pop(agent_id, None)
-        point, generation, reenter, stop_params = entry
-        result = await self.claim_and_start(
-            point,
-            reenter,
-            stop_params=stop_params,
-            retained_generation=generation,
-        )
-        if result is not None and not result.done and result.id in self._manager._agents:
-            await self.taskq_child_registered_async(result)
-        # The retry settled the row -- it registered, was refused, or stopped --
-        # unless it re-retained on a still-failing store. Drop its queryability
-        # window only when it did NOT re-retain; a still-retained row stays
-        # pending work the done-probe must keep the serial guard for.
-        if agent_id not in self._manager._retained_claims:
-            self._manager._dispatch_window_ids.discard(agent_id)
-        self._after_dispatch_impl(stop_params, result, refill=lambda **_kw: 0)
-        if retained:
-            self._schedule_retained_claim_retry()
-        else:
-            pending = self._manager._retained_claim_retry_handle
-            if pending is not None and not pending.cancelled():
-                self._manager._cancel_task_intentionally(
-                    pending,
-                    reason="retained claim settled",
-                )
-            self._manager._retained_claim_retry_handle = None
-
     async def _drain_queue_pass_impl(self) -> None:
         admission = self._manager._admission
         retain_error_detail = True
@@ -255,8 +183,6 @@ class _PumpMixin(ManagerComponent):
         picked: list[dict[str, Any]] = []
         granting: list[dict[str, Any]] = []
         try:
-            await self._manager.retry_pending_boundary_cancellations()
-            await admission.retry_retained_claims()
             store = admission.taskq_store()
             if store is not None:
                 try:
@@ -299,14 +225,8 @@ class _PumpMixin(ManagerComponent):
                     # ``spawn`` answered -- started, re-queued, parked, refused,
                     # or raised -- the row is either registered (live-excluded)
                     # or back in the store as waiting, and either way the
-                    # count and the refill must see it as the store does. A
-                    # retained claim is the exception: it holds a reserved slot
-                    # and is still pending with no ``_agents`` row, so its
-                    # queryability window survives until the retry settles it.
-                    retained = str(params.get("_preassigned_id") or "") in (
-                        self._manager._retained_claims
-                    )
-                    self._unmark_dispatching(params, retained=retained)
+                    # count and the refill must see it as the store does.
+                    self._unmark_dispatching(params)
                 self._after_dispatch_impl(params, drained, refill=lambda **_kw: 0)
         except Exception:
             logger.error("drain pump failed", exc_info=retain_error_detail)
@@ -315,29 +235,19 @@ class _PumpMixin(ManagerComponent):
             # granting loop, or a cancelled pass) would otherwise keep its mark
             # for the process lifetime and be skipped by every refill: the
             # durable row would never run again. The store is the truth for
-            # every row this pass did not dispatch. A row the inner loop
-            # retained is the exception: its claim is held for the retry and it
-            # is still pending with no ``_agents`` row, so its queryability
-            # window must survive this sweep exactly as it survived the inner
-            # one -- erasing it here would let the done-probe read the id as
-            # finished before the retry runs.
+            # every row this pass did not dispatch.
             for params in picked:
-                retained = str(params.get("_preassigned_id") or "") in (
-                    self._manager._retained_claims
-                )
-                self._unmark_dispatching(params, retained=retained)
+                self._unmark_dispatching(params)
 
     def _unmark_dispatching(self, params: "Mapping[str, Any]", *, retained: bool = False) -> None:
         """Drop the popped row's dispatching mark, if it carries an id.
 
         ``_dispatching_ids`` is the depth-count exclusion and is always dropped
-        once the attempt ends -- a retained claim holds a reserved slot, so it
-        is already out of the waiting count. ``_dispatch_window_ids`` is the
-        queryability window the done-probe reads: a retained claim is still
-        pending work with no ``_agents`` row, so its id is KEPT until the
-        retained claim registers or is refused (``retry_retained_claims``);
-        dropping them here would let the probe read the id as finished and
-        release the caller's serial guard.
+        once the attempt ends. ``_dispatch_window_ids`` is the queryability
+        window the done-probe reads: a retained call is still pending work with
+        no ``_agents`` row, so its id is kept until the caller registers or
+        is refused; dropping it here would let the probe read the id as finished
+        and release the caller's serial guard.
         """
         agent_id = str(params.get("_preassigned_id") or "")
         self._manager._dispatching_ids.discard(agent_id)
@@ -424,82 +334,19 @@ class _PumpMixin(ManagerComponent):
         reenter: "Callable[[tuple[int, bool, str]], Any]",
         *,
         stop_params: "Mapping[str, Any] | None" = None,
-        retained_generation: int | None = None,
     ) -> "SubagentInfo | None":
-        """Claim a reserved row, settle its durable authority, then register it.
+        """Claim a reserved row off-loop, then register it.
 
         A failure before the claim leaves the row queued and releases the
-        reservation. A store outage after the claim retains the admitted
-        generation and reservation for a later pump pass. Registration consumes
-        the reservation; every durably refused outcome releases it.
+        reservation. Registration consumes the reservation; every refused
+        outcome releases it.
         """
         store = self.taskq_store()
         assert store is not None
-        report_params: dict[str, Any] | None = None
         claim_will_register = False
-        claim_retained = False
         result: Any = None
         try:
-            claimed = (
-                (retained_generation, True, "")
-                if retained_generation is not None
-                else await store.run(self.taskq_claim, point.agent_id)
-            )
-            generation, proceed, _reason = claimed
-            if proceed and point.boundary_owner:
-                from kiro_crew import taskq as _taskq
-
-                try:
-                    still_current = await store.run(
-                        self.taskq_claim_still_current,
-                        point.agent_id,
-                        generation,
-                    )
-                    cancellation_pending = getattr(
-                        self._manager,
-                        "_boundary_cancellation_pending",
-                        None,
-                    )
-                    pending = callable(cancellation_pending) and cancellation_pending(
-                        {
-                            "parent_session_key": point.parent_session_key,
-                            "_stage_boundary_owner": point.boundary_owner,
-                        }
-                    )
-                    if still_current and pending:
-                        stopped = await store.run(
-                            store.cancel,
-                            point.agent_id,
-                            reason="boundary_cancel_before_registration",
-                            only_from=frozenset({_taskq.ADMITTED}),
-                            generation=generation,
-                        )
-                        claimed = (generation, False, self.CLAIM_REFUSED)
-                        if stopped is not None:
-                            report_params = dict(stop_params or {})
-                            report_params.setdefault("_preassigned_id", point.agent_id)
-                            report_params.setdefault("parent_session_key", point.parent_session_key)
-                            report_params.setdefault("_stage_boundary_owner", point.boundary_owner)
-                except _taskq.TaskStoreUnavailable:
-                    still_current = None
-                    _glue_logger.warning(
-                        "taskq: post-claim settlement of %s failed; retaining generation %d",
-                        point.agent_id,
-                        generation,
-                        exc_info=True,
-                    )
-                if still_current is None:
-                    self._retain_claim(point, generation, reenter, stop_params)
-                    claim_retained = True
-                    if retained_generation is None:
-                        result = reenter((generation, False, self.CLAIM_RETAINED))
-                    return result
-                if not still_current:
-                    claimed = (generation, False, self.CLAIM_REFUSED)
-            # No await between a successful final durable/boundary check and
-            # registration: cancellation cannot interleave after the
-            # revalidation a registered start relies on. A refused claim may
-            # await its terminal store write because it never registers.
+            claimed = await store.run(self.taskq_claim, point.agent_id)
             claim_will_register = bool(claimed[1])
             if not claim_will_register:
                 # The claim did not take the row (store unavailable, refused,
@@ -515,9 +362,9 @@ class _PumpMixin(ManagerComponent):
             # Queued-stop reporting temporarily installs a synthetic terminal
             # record under this id. Only a still-proceeding claim that really
             # registered may consume the reservation; terminal report identity
-            # is not a registered start. A retained claim keeps the reservation.
+            # is not a registered start.
             registered = claim_will_register and point.agent_id in self._manager._agents
-            if not registered and not claim_retained:
+            if not registered:
                 self.release_reservation(point.agent_id)
             if registered:
                 # Every registered start re-publishes the parent's queued depth.
@@ -529,8 +376,6 @@ class _PumpMixin(ManagerComponent):
                 # coalesces it into at most one more read.
                 started = self._manager._agents[point.agent_id]
                 self._manager._emit_queue_depth(started.parent_session_key, started.batch_id)
-            if report_params is not None:
-                self._manager._report_queued_stop(report_params)
         assert not isinstance(result, ClaimPoint)
         return result
 
@@ -586,24 +431,10 @@ class _PumpMixin(ManagerComponent):
         # this pump so a wake never bypasses capacity, but a resume is not a
         # process start -- the run is already resident -- so it neither waits
         # for the spawn stagger nor consumes it; granting hands the slot back
-        # to the waiting coroutine instead of spawning. Compatibility doubles
-        # can expose no cancellation predicate and therefore have no matching
-        # authority to apply.
-        boundary_cancellation_pending = getattr(
-            self._manager,
-            "_boundary_cancellation_pending",
-            None,
-        )
+        # to the waiting coroutine instead of spawning.
         while self._manager._queue:
             index = next(
-                (
-                    i
-                    for i, p in enumerate(self._manager._queue)
-                    if self.entry_is_resident_resume(p)
-                    and not (
-                        callable(boundary_cancellation_pending) and boundary_cancellation_pending(p)
-                    )
-                ),
+                (i for i, p in enumerate(self._manager._queue) if self.entry_is_resident_resume(p)),
                 None,
             )
             if index is None:
@@ -1382,10 +1213,6 @@ class _PumpMixin(ManagerComponent):
     #: the claim. The row is NOT started -- an unclaimed start would run at
     #: generation 0 with no lease for reconcile to find -- it stays queued.
     CLAIM_UNAVAILABLE = "claim_unavailable"
-    #: ``claim_and_start`` reason: the row is already ADMITTED under this
-    #: process, but its post-claim durable check could not finish. The caller
-    #: receives a queued handle while the retained-claim pump owns retry.
-    CLAIM_RETAINED = "claim_retained"
     #: ``taskq_claim`` reason: the store knows the row and refuses it
     #: (cancelled, or claimed by another dispatcher).
     CLAIM_REFUSED = "claim_refused"
@@ -1423,34 +1250,6 @@ class _PumpMixin(ManagerComponent):
             return (rec.generation if rec else 0, True, "")
         _glue_logger.info("taskq: %s not started, store state is %s", agent_id, state)
         return (0, False, self.CLAIM_REFUSED)
-
-    def taskq_claim_still_current(self, agent_id: str, generation: int) -> bool | None:
-        """Whether this dispatcher still owns the admitted claim generation.
-
-        ``None`` means the store could not answer and makes re-entry retry rather
-        than registering work whose durable lease cannot be proved. Called only
-        through :meth:`TaskStore.run`, immediately before loop registration.
-        """
-        store = self.taskq_store()
-        if store is None:
-            return False
-        from kiro_crew import taskq as _taskq
-
-        try:
-            rec = store.get(agent_id)
-        except _taskq.TaskStoreUnavailable:
-            _glue_logger.warning(
-                "taskq: claim revalidation of %s failed",
-                agent_id,
-                exc_info=True,
-            )
-            return None
-        return bool(
-            rec is not None
-            and rec.state == _taskq.ADMITTED
-            and rec.generation == generation
-            and rec.lease_owner == store.incarnation
-        )
 
     def taskq_lease_is_ours(self, agent_id: str) -> bool:
         store = self.taskq_store()

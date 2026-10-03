@@ -11,7 +11,7 @@ import { transcriptTsMs } from './transcript'
  * not a boundary. An OPTIMISTIC steer bubble (`meta.optimistic`, set at dispatch
  * and cleared when the server's `steer_push` echo reconciles it) IS treated as a
  * boundary, because it may not be a steer at all: the backend's steer branch is
- * gated on `slot.running or slot._in_stage_execution`, so text sent while
+ * gated on `slot.turn_running`, so text sent while
  * `chat_done` is still in flight takes the NEW TURN path instead, and no echo
  * ever arrives to clear the flag. Exempting that row would splice the new turn's
  * reasoning onto the previous turn's block — corrupting content rather than

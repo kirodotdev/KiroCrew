@@ -482,18 +482,10 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
         session_key = effective_session_key(slot)
 
         # The slot admission reservation is not the whole "is this session
-        # busy" question, and ``discard_conversation`` is a full teardown. Both guards below are the
-        # ones the sibling teardown route (``reset-conversation``) already
-        # applies before the SAME call, in the same order and with the same
-        # codes -- reused rather than respelled, so the two cannot drift.
-        if slot._in_stage_execution:
-            # Defensive fallback for stage execution that has not yet
-            # published its task or boundary reservation. An ordinary pending
-            # stage was already refused by the admission guard above.
-            return web.json_response(
-                {"error": "slot is orchestrating", "code": "slot_orchestrating", "slot": name},
-                status=409,
-            )
+        # busy" question, and ``discard_conversation`` is a full teardown. The guard below is the
+        # one the sibling teardown route (``reset-conversation``) already
+        # applies before the SAME call, with the same code -- reused rather
+        # than respelled, so the two cannot drift.
         # The discard also releases the shared sub-agent runtime the parent's
         # children run on. ``slot.running`` can be False while they keep going
         # (the parent turn ends first), so nothing above catches it and a child's

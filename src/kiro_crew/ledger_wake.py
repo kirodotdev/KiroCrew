@@ -170,9 +170,9 @@ def worker_running(slot_table: Any, session_key: str) -> bool:
             continue
         if slot is not None:
             # ``turn_running``, NOT ``running``. The slot's own docstring says so:
-            # ``running`` is an admission predicate, true when a turn is executing OR
-            # when a stage boundary is merely armed, so a PAUSED stage would read as a
-            # live worker. Here that is the dangerous direction -- a worker read as
+            # ``running`` is an admission predicate, ``turn_running`` the execution
+            # one, and only an executing turn proves a live worker. Here that is the
+            # dangerous direction -- a worker read as
             # live has its stall wake SUPPRESSED, which is what this module's
             # docstring forbids an uncertain liveness from doing. A slot that does not
             # answer this attribute at all is treated as idle for the same reason.

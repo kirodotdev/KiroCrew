@@ -117,21 +117,6 @@ class TestLiveness:
         row = _rows(_status(state, caller))["chat-2"]
         assert row["status"] == "working" and row["running"] is True
 
-    def test_a_session_between_a_plans_stages_still_reads_as_working(self, tmp_path):
-        """`running` alone is not busy: a multi-stage plan closes each stage's own
-        turn, so it reads False in the gap while the plan is live.
-
-        Mutation guard: drop `_in_stage_execution` and a patrol concludes a worker
-        mid-plan is idle and needs a decision, then steers into a plan that is
-        about to open its next stage.
-        """
-        state = _make_state(tmp_path)
-        caller = _slot(state, "chat-1")
-        child = _child(state, "chat-2", caller)
-        child._in_stage_execution = True
-        row = _rows(_status(state, caller))["chat-2"]
-        assert row["status"] == "working" and row["running"] is True
-
     def test_an_idle_session_with_messages_waiting_is_queued(self, tmp_path):
         """Distinct from `idle` because a steer would land on nothing, and distinct
         from `working` because nothing is running yet."""

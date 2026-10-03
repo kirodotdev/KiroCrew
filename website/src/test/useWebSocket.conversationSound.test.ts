@@ -94,7 +94,7 @@ describe('conversation attention sounds', () => {
 
   it('the fresh frame overrides stale running child snapshots', async () => {
     const ws = await connect()
-    ws.frame('slots', [{ key: SLOT, messages: 1, running: true, subagents_running: true, orchestrating: true }])
+    ws.frame('slots', [{ key: SLOT, messages: 1, running: true, subagents_running: true }])
     ws.frame('subagent_spawn', { slot: SLOT, id: 'child', task: 'work', agent: 'worker' })
     ws.frame('workflow_run_event', { run_id: 'stale-workflow', session_key: `dashboard:${SLOT}`, type: 'run_started' })
     ws.frame('chat_done', { slot: SLOT, continuing: false })

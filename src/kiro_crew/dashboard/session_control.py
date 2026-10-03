@@ -6295,7 +6295,7 @@ async def send_to_target(
     # consumed by the turn at that point, so the failure travels in the audit trail
     # and the caller still sees the delivery it got.
     steer_containment_stop_failed = False
-    if steer and (slot.running or slot._in_stage_execution):
+    if steer and slot.running:
         # The mid-turn arm. ONE text is handed to both arms, so what the target
         # reads and what its transcript keeps are the same bytes either way:
         # already redacted, already carrying the provenance envelope, so an
@@ -6304,14 +6304,10 @@ async def send_to_target(
         # appends the row, which is a second pass over text that already cleared
         # the same guard.
         #
-        # Gated on ``slot.running or slot._in_stage_execution`` because a steer
-        # needs a turn to cut into: the turn publishes the steer-capable client and
-        # clears it at teardown, so on an idle slot there is nothing to inject and
-        # the queue-or-run arm below is the whole delivery. The second half is the
-        # predicate every producer that must not start a concurrent turn reads --
-        # between a plan's stages ``slot.running`` reads False while the plan is
-        # still live. There is no steer client in that window, so this arm's own
-        # re-gate hands the text to the queue branch below rather than to a turn.
+        # Gated on ``slot.running`` because a steer needs a turn to cut into: the
+        # turn publishes the steer-capable client and clears it at teardown, so on
+        # an idle slot there is nothing to inject and the queue-or-run arm below is
+        # the whole delivery.
         #
         # Deferred import for the cycle `_run_chat` above documents.
         from kiro_crew.dashboard.chat_delivery import (
@@ -7382,10 +7378,7 @@ async def created_session_status(
             # clause that has to be restated again on every change to the predicate.
             continue
         queue_depth = len(slot._queue)
-        # `slot.running` alone is not "busy": between a multi-stage plan's stages
-        # each stage closes its own turn, so it reads False while the plan is live
-        # -- the same reason `read_messages` ors in `_in_stage_execution`.
-        running = bool(slot.running or getattr(slot, "_in_stage_execution", False))
+        running = bool(slot.running)
         rows.append(
             {
                 "target": key,
@@ -7565,11 +7558,8 @@ def read_messages(
         "target": slot.key,
         "title": sanitize_outbound(slot.display_title),
         # Busy means "more output is coming", which is exactly what a poller needs
-        # to decide whether to wait. `slot.running` alone is not that: during a
-        # multi-stage plan each stage's `_run_chat` closes its own turn, so it
-        # briefly reads False BETWEEN stages and a poller would conclude the work
-        # had finished and stop before the later stages produced anything.
-        "running": bool(slot.running or getattr(slot, "_in_stage_execution", False)),
+        # to decide whether to wait.
+        "running": bool(slot.running),
         # True when the target is mid-reply: rows exist that the cursor
         # deliberately does not cover yet, so "nothing new" here does not mean
         # "nothing happening".
@@ -7693,7 +7683,7 @@ async def read_summary(
         )
 
     slot = _authorize(recheck=False)
-    running = bool(slot.running or getattr(slot, "_in_stage_execution", False))
+    running = bool(slot.running)
 
     cfg = await asyncio.to_thread(KiroCrewConfig.load)
     enabled = bool(cfg.session_summary.enabled)
