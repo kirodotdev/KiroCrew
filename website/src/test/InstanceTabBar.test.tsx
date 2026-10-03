@@ -543,3 +543,59 @@ describe('clippedChipIds', () => {
     expect(clippedChipIds([], 300).size).toBe(0)
   })
 })
+
+describe('InstanceTabBar — navigation (rail) variant', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    localStorage.clear()
+    setCrewPins([])
+    setStableOrder(false)
+    vi.mocked(isEmbeddedPane).mockReturnValue(false)
+  })
+
+  it('renders the current-crew identity trigger even with NO remote crews (entry point to add the first)', async () => {
+    vi.mocked(api.listInstances).mockResolvedValue(listResp([]))
+    renderWithProviders(<InstanceTabBar variant="navigation" />)
+    // The strip/inline variants render nothing with no remote crews; the rail
+    // identity must still be present so the first remote can be added.
+    expect(await screen.findByTestId('navigation-crew-switcher')).toBeInTheDocument()
+  })
+
+  it('shows the identity mark on the trigger and names a crew', async () => {
+    vi.mocked(api.listInstances).mockResolvedValue(listResp([conn()]))
+    const store = createTestStore({
+      instances: { warm: {}, activeId: 'cd-1', mru: ['cd-1'], unread: {} },
+    })
+    renderWithProviders(<InstanceTabBar variant="navigation" />, { store })
+    const trigger = await screen.findByTestId('navigation-crew-switcher')
+    expect(within(trigger).getByTestId('crew-identity-mark')).toBeInTheDocument()
+    // The accessible name folds the active crew's name and the switch action.
+    expect(trigger).toHaveAccessibleName(/Switch crew/i)
+  })
+
+  it('hides the crew name (sr-only) when collapsed, keeping only the identity mark', async () => {
+    vi.mocked(api.listInstances).mockResolvedValue(listResp([conn()]))
+    const store = createTestStore({
+      instances: { warm: {}, activeId: 'cd-1', mru: ['cd-1'], unread: {} },
+    })
+    renderWithProviders(<InstanceTabBar variant="navigation" collapsed />, { store })
+    const trigger = await screen.findByTestId('navigation-crew-switcher')
+    // The identity mark is always present; whichever crew the trigger names,
+    // its text is rendered sr-only when the rail is collapsed.
+    expect(within(trigger).getByTestId('crew-identity-mark')).toBeInTheDocument()
+    const srName = trigger.querySelector('.sr-only')
+    expect(srName).not.toBeNull()
+  })
+
+  it('opens the destination menu from the identity trigger', async () => {
+    vi.mocked(api.listInstances).mockResolvedValue(listResp([conn()]))
+    const store = createTestStore({
+      instances: { warm: {}, activeId: 'cd-1', mru: ['cd-1'], unread: {} },
+    })
+    const u = userEvent.setup()
+    renderWithProviders(<InstanceTabBar variant="navigation" />, { store })
+    await u.click(await screen.findByTestId('navigation-crew-switcher'))
+    expect(await screen.findByRole('menuitemradio', { name: /Local/i })).toBeInTheDocument()
+    expect(screen.getByRole('menuitemradio', { name: /Cloud One/i })).toBeInTheDocument()
+  })
+})

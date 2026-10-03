@@ -132,7 +132,7 @@ describe('focus mode — shell layout', () => {
     // Not focus mode: the rows come from the Tailwind class and the style object
     // must not override them.
     expect(shell.style.gridTemplateRows).toBe('')
-    expect(shell.style.gridTemplateColumns).toMatch(/^236px /)
+    expect(shell.style.gridTemplateColumns).toMatch(/^74px /)
     expect(screen.queryByTestId('focus-peek-top')).toBeNull()
     expect(screen.queryByTestId('focus-peek-rail')).toBeNull()
     const content = document.querySelector('[style*="grid-area: content"]') as HTMLElement
@@ -522,10 +522,10 @@ describe('focus mode — shell layout', () => {
     }
   })
 
-  it('honours the collapse preference and toggles it from the collapse control', async () => {
-    // The overlay rail is as wide as the docked rail would be, and the brand row's
-    // collapse control flips the preference exactly as it does outside focus mode.
-    localStorage.setItem('mc-nav', '1')
+  it('shows the focus-mode overlay rail at the fixed collapsed width with no toggle', async () => {
+    // The desktop rail is fixed-collapsed, so in focus mode the overlay rail is
+    // the collapsed width and carries no expand/collapse control; a peek reveals
+    // it (translateX 0) but it never widens.
     renderWithProviders(<App />, { route: '/chat' })
     const toggle = await screen.findByTestId('focus-mode-toggle')
 
@@ -542,15 +542,11 @@ describe('focus mode — shell layout', () => {
       fireEvent.mouseEnter(screen.getByTestId('focus-peek-rail'))
       act(() => { vi.advanceTimersByTime(150) })
       expect(rail.style.transform).toBe('translateX(0)')
-      act(() => { fireEvent.click(screen.getByLabelText('Expand sidebar')) })
-      // Expanded, still shown, and the preference written.
-      expect(rail.style.width).toBe('220px')
-      expect(rail.style.transform).toBe('translateX(0)')
-      expect(localStorage.getItem('mc-nav')).toBe('0')
-
-      act(() => { fireEvent.click(screen.getByLabelText('Collapse sidebar')) })
+      // No expand/collapse control exists on the fixed-collapsed rail, so the
+      // overlay cannot be widened and never writes the collapse preference.
+      expect(screen.queryByLabelText('Expand sidebar')).toBeNull()
+      expect(screen.queryByLabelText('Collapse sidebar')).toBeNull()
       expect(rail.style.width).toBe('58px')
-      expect(localStorage.getItem('mc-nav')).toBe('1')
     } finally {
       vi.useRealTimers()
     }

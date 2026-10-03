@@ -29,7 +29,7 @@ const APPROVAL_MODE_LEVELS = ['normal', 'trust_reads', 'trust', 'yolo']
  * on the active session (and the notice a failed switch leaves), the panel
  * toggles, and the instance-pane and auto-connect hooks registered once here.
  */
-export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, isPopout, isEmbed, terminalPoppedOut, activeSlotProject }: {
+export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, isPopout, isEmbed, terminalPoppedOut, activeSlotProject, isMobile }: {
   toggleFocusMode: () => void
   toggleNav: () => void
   terminalEnabled: boolean
@@ -37,6 +37,7 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
   isEmbed: boolean
   terminalPoppedOut: boolean
   activeSlotProject: string | undefined
+  isMobile: boolean
 }) {
   const navigate = useNavigate()
   const dispatch = useAppDispatch()
@@ -240,7 +241,11 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
     // Panel toggles. The sidebar lives here in App; the session list and the
     // activity panel live on the chat page and already listen for these window
     // events (their in-header buttons dispatch the same ones).
-    onToggleLeftSidebar: () => toggleNav(),
+    // Desktop rail is fixed-collapsed, so toggleNav is a no-op there; pass
+    // undefined (like onToggleTerminal does when disabled) so the shortcut layer
+    // leaves the chord UNBOUND rather than binding a handler that preventDefaults
+    // and silently swallows the key.
+    onToggleLeftSidebar: isMobile ? () => toggleNav() : undefined,
     onToggleSessionPanel: () => window.dispatchEvent(new Event('toggle-pin-chat-sidebar')),
     onToggleSidePanel: () => window.dispatchEvent(new Event('toggle-activity-panel')),
     // Same command as the nav rail's Terminal row: focus the popped-out window
