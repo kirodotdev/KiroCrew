@@ -47,6 +47,7 @@ vi.mock('../api/client', () => ({
     agentDetail: vi.fn().mockResolvedValue({ model: 'claude-opus-5' }),
     agentResolvedModel: vi.fn().mockResolvedValue({ model: 'claude-opus-5' }),
     recentProjects: vi.fn().mockResolvedValue({ dirs: ['/home/user/proj-x'] }),
+    favoriteProjects: vi.fn().mockResolvedValue({ dirs: [] }),
     browseDirs: vi.fn().mockResolvedValue({ path: '/home/user', parent: '/home', dirs: [] }),
     projectGit: vi.fn().mockRejectedValue(new Error('not a repo')),
     workspaces: vi.fn().mockResolvedValue({ workspaces: [] }),

@@ -12348,6 +12348,219 @@ async def api_recent_projects(request: web.Request) -> web.Response:
     return web.json_response({"dirs": dirs})
 
 
+# Favourites are a SEPARATE file from the recents list, not a flag on its rows, because
+# the two have different lifetimes: recents is a rolling window capped at
+# _MAX_RECENT_PROJECTS and rewritten on every project switch, so a favourite stored
+# there would fall off the end of a busy week. The cap here is a denial-of-service
+# bound on the file, not a window -- a user who reaches it is told, rather than having
+# their oldest favourite silently dropped the way a recent is.
+_MAX_FAVORITE_PROJECTS = 100
+
+
+def _favorite_projects_path() -> Path:
+    return config_dir() / "favorite_projects.json"
+
+
+def _load_favorite_projects() -> list[str]:
+    """The stored favourites, de-duplicated, with NO filesystem probing.
+
+    This is the list the write paths edit, so it keeps entries whose directory is
+    currently unreachable: a favourite on a detached volume or a not-yet-cloned
+    worktree must survive a round trip through add or remove rather than being
+    deleted as a side effect of someone else's write. `_read_favorite_projects`
+    applies the display filter instead.
+    """
+
+    fp = _favorite_projects_path()
+    try:
+        stored = json.loads(fp.read_text(encoding="utf-8")) if fp.is_file() else []
+    except Exception:
+        stored = []
+    if not isinstance(stored, list):
+        stored = []
+    out: list[str] = []
+    for entry in stored:
+        if isinstance(entry, str) and entry and entry not in out:
+            out.append(entry)
+    return out
+
+
+def _read_favorite_projects() -> list[str]:
+    """Favourites for display: existing, non-sensitive directories, stored order kept.
+
+    Insertion order is the answer, not recency or the alphabet -- the list is one the
+    user curates by hand, so a favourite stays where they put it. The sensitive-path
+    filter matches the recents read: a path that became sensitive after it was
+    favourited is withheld from the response, and removing it stays possible because
+    the delete path reads `_load_favorite_projects` instead of this.
+    """
+
+    return [d for d in _load_favorite_projects() if os.path.isdir(d) and not is_sensitive_path(d)]
+
+
+def _write_favorite_projects(paths: list[str]) -> None:
+    """Replace the favourites file atomically (same temp-file dance as the recents write)."""
+
+    fp = _favorite_projects_path()
+    fp.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=fp.parent, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as tmp_fh:
+            tmp_fh.write(json.dumps(paths))
+        os.replace(tmp, fp)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+
+
+def _add_favorite_project(path: str) -> tuple[list[str], bool]:
+    """Append `path` to the favourites. Returns the display list and whether it fit.
+
+    Appends rather than prepends so the order the user built stays put. Already
+    favourited is a no-op success -- the button is a toggle whose "on" state can be
+    requested twice (two tabs, a double click) and neither caller should see an error
+    for a list that already says what they asked it to say. `False` means the cap was
+    reached and nothing was written; the caller turns that into a 409 so the user hears
+    it, instead of dropping an entry the way the recents window legitimately does.
+    """
+
+    stored = _load_favorite_projects()
+    if path in stored:
+        return _read_favorite_projects(), True
+    if len(stored) >= _MAX_FAVORITE_PROJECTS:
+        return _read_favorite_projects(), False
+    stored.append(path)
+    _write_favorite_projects(stored)
+    return _read_favorite_projects(), True
+
+
+def _remove_favorite_project(path: str) -> list[str]:
+    """Drop `path` from the favourites; returns the display list.
+
+    Both the path as given and its resolved form are dropped. The add path stores the
+    resolved form, but an entry can sit in the file unresolved -- a hand-edited file, or
+    a spelling whose symlink chain has since moved -- and a remove that matched only one
+    spelling would leave a row the user cannot get rid of. Missing is a no-op.
+    """
+
+    resolved = os.path.realpath(os.path.expanduser(path))
+    stored = _load_favorite_projects()
+    kept = [p for p in stored if p != path and p != resolved]
+    if len(kept) != len(stored):
+        _write_favorite_projects(kept)
+    return _read_favorite_projects()
+
+
+async def api_favorite_projects(request: web.Request) -> web.Response:
+    """GET /api/favorite-projects — list the favourited project directories."""
+
+    dirs = await asyncio.to_thread(_read_favorite_projects)
+    sel().log_api_access(
+        caller=request.get("user", "dashboard"),
+        operation="favorite_projects",
+        outcome="allowed",
+        resources=f"count={len(dirs)}",
+    )
+    return web.json_response({"dirs": dirs})
+
+
+async def api_favorite_project_add(request: web.Request) -> web.Response:
+    """POST /api/favorite-projects — favourite one project directory.
+
+    Validated the way setting a slot's project is (`api_chat_slot_project`): a real
+    directory, resolved, and not a sensitive path. Storing the resolved form is what
+    lets the picker's star compare a row against this list by string.
+
+    Owner-gated, unlike the GET beside it: the favourites file is the owner's own
+    config, so an installed app whose manifest covers this path may read the list but
+    must not edit it. The gate goes BEFORE the body is read and before any filesystem
+    probe, so a refused caller gets no directory-existence oracle out of it.
+    """
+
+    denied = deny_non_dashboard_caller(request, "favorite_project_add")
+    if denied is not None:
+        return denied
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
+    path = body.get("path", "")
+    if not isinstance(path, str):
+        return web.json_response(
+            {"error": "path must be a string", "code": "path_not_a_string"}, status=400
+        )
+    path = path.strip()
+    if not path:
+        return web.json_response({"error": "path is required", "code": "path_required"}, status=400)
+    path = os.path.realpath(os.path.expanduser(path))
+    if not await asyncio.to_thread(os.path.isdir, path):
+        return web.json_response(
+            {"error": "Not a directory", "code": "not_a_directory"}, status=400
+        )
+    if is_sensitive_path(path):
+        sel().log_api_access(
+            caller=request.get("user", "dashboard"),
+            operation="favorite_project_add",
+            outcome="denied",
+            resources=f"path={path}",
+            error="sensitive path",
+        )
+        return web.json_response({"error": "Access denied", "code": "denied"}, status=403)
+    dirs, stored = await asyncio.to_thread(_add_favorite_project, path)
+    if not stored:
+        sel().log_api_access(
+            caller=request.get("user", "dashboard"),
+            operation="favorite_project_add",
+            outcome="denied",
+            resources=f"path={path} count={len(dirs)}",
+            error="favorites full",
+        )
+        return web.json_response(
+            {
+                "error": f"Favorites are full ({_MAX_FAVORITE_PROJECTS}); remove one first",
+                "code": "favorites_full",
+                "dirs": dirs,
+            },
+            status=409,
+        )
+    sel().log_api_access(
+        caller=request.get("user", "dashboard"),
+        operation="favorite_project_add",
+        outcome="allowed",
+        resources=f"path={path} count={len(dirs)}",
+    )
+    return web.json_response({"dirs": dirs})
+
+
+async def api_favorite_project_remove(request: web.Request) -> web.Response:
+    """DELETE /api/favorite-projects?path=… — un-favourite one project directory.
+
+    The path comes from the query string, not a body, because a DELETE body is not
+    carried reliably by every client. None of the add path's filesystem checks run
+    here: a favourite whose directory was deleted, or which became sensitive after it
+    was stored, is exactly the row a user needs to be able to remove, and demanding it
+    still be a listable directory would strand it.
+
+    Owner-gated for the same reason as the add above.
+    """
+
+    denied = deny_non_dashboard_caller(request, "favorite_project_remove")
+    if denied is not None:
+        return denied
+    path = (request.query.get("path") or "").strip()
+    if not path:
+        return web.json_response({"error": "path is required", "code": "path_required"}, status=400)
+    dirs = await asyncio.to_thread(_remove_favorite_project, path)
+    sel().log_api_access(
+        caller=request.get("user", "dashboard"),
+        operation="favorite_project_remove",
+        outcome="allowed",
+        resources=f"path={path} count={len(dirs)}",
+    )
+    return web.json_response({"dirs": dirs})
+
+
 async def _reconcile_slot_window(state: DashboardState, slot: "_ChatSlot") -> None:
     """Detect and reconcile stale in-memory window from disk.
 

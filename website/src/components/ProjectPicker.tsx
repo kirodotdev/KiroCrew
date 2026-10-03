@@ -1,7 +1,7 @@
-import { useState, useEffect, useRef, useCallback, RefObject } from 'react'
+import { useState, useEffect, useMemo, useRef, useCallback, RefObject } from 'react'
 import { useImeGuard } from '../hooks/useImeGuard'
 import { createPortal } from 'react-dom'
-import { FolderOpen, ChevronRight, ChevronLeft, Clock, Search } from 'lucide-react'
+import { FolderOpen, ChevronRight, ChevronLeft, Clock, Search, Star } from 'lucide-react'
 import { api } from '../api/client'
 import { useListKeyboardNav } from '../hooks/useListKeyboardNav'
 import ErrorNotice from './ErrorNotice'
@@ -73,6 +73,18 @@ const RECENT_TAB_FAILED_KEYS: Record<SearchErrorCause, string> = {
   root_missing: 'components.projectPicker.recent_failed_recent_tab',
   failed: 'components.projectPicker.recent_failed_recent_tab',
 }
+// The favourites read's failure, told on the Favourites pane alone -- the tab the user has
+// to be looking at to see it. Two arms with copy of their own, on the same argument as
+// RECENT_FAILED_KEYS: `/api/favorite-projects` answers a read error with `{"dirs": []}`
+// rather than a coded body, so `denied` and `root_missing` cannot be produced for it (a 403
+// carrying `authRequired` classifies as `failed`) and both take the generic copy rather
+// than keys no request can reach.
+const FAVORITE_FAILED_KEYS: Record<SearchErrorCause, string> = {
+  timed_out: 'components.projectPicker.favorites_failed_timed_out',
+  denied: 'components.projectPicker.favorites_failed',
+  root_missing: 'components.projectPicker.favorites_failed',
+  failed: 'components.projectPicker.favorites_failed',
+}
 type ListFailureKind = 'dir' | 'drives'
 
 /**
@@ -89,10 +101,11 @@ function namesListing(path: string, shown: string): boolean {
   return isWindowsPath(candidate) ? candidate.toLowerCase() === shown.toLowerCase() : candidate === shown
 }
 
-/** The recents read's own failure. One record per read family: `ListFailure` is the folder or
- *  drive listing, this is the recents read, and a rejection writes only its own. Precedence is a
- *  render rule -- Browse tells the listing failure if there is one, else this; the Recent pane
- *  tells only this -- so the order the two reads settle in cannot matter. */
+/** A NON-LISTING read's own failure. One record per read family: `ListFailure` is the folder or
+ *  drive listing, this is the recents read and (in its own state) the favourites read, and a
+ *  rejection writes only its own. Precedence is a render rule -- Browse tells the listing failure
+ *  if there is one, else the recents one; the Recent pane tells only the recents one and the
+ *  Favourites pane only the favourites one -- so the order the reads settle in cannot matter. */
 interface RecentFailure {
   cause: SearchErrorCause
   report?: ErrorReport
@@ -103,6 +116,45 @@ interface ListFailure {
   path: string
   cause: SearchErrorCause
   report?: ErrorReport
+}
+
+/**
+ * The favourite toggle that rides each project row, and the Browse pane's directory.
+ *
+ * A sibling of the row button rather than a child, because a button inside a button is not
+ * valid HTML. `tabIndex={-1}` is honest about its reach: on the two list panes the listbox's
+ * own document-capture keyboard handler claims Enter and Tab, so a tab stop here could never
+ * be activated -- Alt/Option+Enter on the highlighted row is the keyboard path, and the title
+ * says so. The hit area is 24x24 against a 13px glyph, so a touch landing beside the glyph
+ * still hits the star and not the row underneath.
+ */
+function FavoriteStar({ path, on, busy, onToggle, testId, className = 'absolute right-1 top-1/2 -translate-y-1/2' }: {
+  path: string
+  on: boolean
+  busy: boolean
+  onToggle: (path: string) => void
+  testId: string
+  className?: string
+}) {
+  const label = i18nT(on ? 'components.projectPicker.remove_favorite' : 'components.projectPicker.add_favorite', { path })
+  return (
+    <button
+      type="button"
+      // `onMouseDown` with `preventDefault`, matching the row beside it: the rows commit on
+      // mousedown, so a star that waited for `click` would fire after the row had already
+      // selected the project and closed the popover.
+      onMouseDown={e => { e.preventDefault(); e.stopPropagation(); if (!busy) onToggle(path) }}
+      aria-pressed={on}
+      aria-disabled={busy || undefined}
+      aria-label={label}
+      title={i18nT('components.projectPicker.favorite_hint', { action: label })}
+      tabIndex={-1}
+      data-testid={testId}
+      className={`${className} flex items-center justify-center w-6 h-6 rounded hover:bg-bg-hover aria-disabled:opacity-50 ${on ? 'text-accent' : 'text-muted'}`}
+    >
+      <Star size={13} {...(on ? { fill: 'currentColor' } : {})} />
+    </button>
+  )
 }
 
 interface Props {
@@ -123,7 +175,7 @@ interface Props {
 }
 
 export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRect, onSelect, errorHandoff = false }: Props) {
-  const [tab, setTab] = useState<'recent' | 'browse'>('recent')
+  const [tab, setTab] = useState<'favorites' | 'recent' | 'browse'>('recent')
   const [input, setInput] = useState('')
   const ime = useImeGuard()
   const [browsePath, setBrowsePath] = useState('')
@@ -131,6 +183,20 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
   const [browseDirs, setBrowseDirs] = useState<{ name: string; path: string }[]>([])
   const [recentDirs, setRecentDirs] = useState<string[]>([])
   const [recentQuery, setRecentQuery] = useState('')
+  const [favoriteDirs, setFavoriteDirs] = useState<string[]>([])
+  const [favoriteQuery, setFavoriteQuery] = useState('')
+  // The favourites READ's failure, told on the Favourites pane. Separate from the write
+  // failure below: a list that could not be read and a star that could not be flipped have
+  // different remedies, and a failed write must not erase the rows still on screen.
+  const [favoriteFailure, setFavoriteFailure] = useState<RecentFailure | null>(null)
+  // The last star toggle's rejection, as text. Not an `ErrorReport`: this is a WRITE the user
+  // just asked for, so the message the gateway sent (a refused path, `favorites_full`) is the
+  // whole answer, and there is no read to re-ask.
+  const [favoriteWriteError, setFavoriteWriteError] = useState<string | null>(null)
+  // The path whose toggle is in flight, so that row's star alone goes inert. One at a time:
+  // every write answers with the WHOLE list, so two overlapping writes would race to be the
+  // list on screen.
+  const [favoriteBusy, setFavoriteBusy] = useState<string | null>(null)
   const [browseSel, setBrowseSel] = useState(0)
   // The listing read that failed last: a directory (`browse`) or the drive list
   // (`browseDrives`). The related path, cause, and report live in the same state
@@ -167,10 +233,18 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
   // retired by a newer recents read (for example, after close/reopen), never by
   // borrowing the ticket from an unrelated directory or drive-list request.
   const recentSeq = useRef(0)
+  // The favourites read has its own ticket, for the same reason the recents read does: only a
+  // newer favourites read may retire this one's settlement.
+  const favoriteSeq = useRef(0)
+  // Which tab an open lands on is decided from BOTH list reads, so it cannot depend on which
+  // answered first. Each read writes its own outcome here -- rows, or `null` for a rejection --
+  // and the second one to arrive picks the tab. Reset on every open, keyed to the open's ticket.
+  const landing = useRef<{ ticket: number; favorites?: string[] | null; recent?: string[] | null }>({ ticket: 0 })
   const btnRef = anchorRef
   const dropRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const recentSearchRef = useRef<HTMLInputElement>(null)
+  const favoriteSearchRef = useRef<HTMLInputElement>(null)
   const browseItemRefs = useRef<(HTMLElement | null)[]>([])
   const anchorRectRef = useRef<DOMRect | null>(anchorRect ?? null)
   anchorRectRef.current = anchorRect ?? null
@@ -279,6 +353,8 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
   useEffect(() => {
     if (!open) return
     setRecentQuery('')
+    setFavoriteQuery('')
+    setFavoriteWriteError(null)
     // The mount outlives a close (ChatPage toggles `open`), so the last open's rows are
     // still in state here and stay on screen until this open's read answers. They are NOT
     // cleared up front: with the Recent tab persisted, an empty list would paint "No recent
@@ -288,17 +364,41 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
     // the same ticket that sets the notice, so a rejected reopen never shows old rows under it.
     setListFailure(null)
     setRecentFailure(null)
+    setFavoriteFailure(null)
     const ticket = ++recentSeq.current
+    const favTicket = ++favoriteSeq.current
+    landing.current = { ticket }
+    // The tab is chosen once BOTH reads have settled, by whichever settles second. Favourites
+    // win when the user has any -- they are the list they curated -- then recents, and Browse
+    // is where an install with neither starts. A read that REJECTED counts as settled with no
+    // rows, so one failing read cannot strand the picker on a tab it should have left.
+    const settle = (which: 'favorites' | 'recent', dirs: string[] | null) => {
+      if (landing.current.ticket !== ticket) return
+      landing.current[which] = dirs
+      const { favorites, recent } = landing.current
+      if (favorites === undefined || recent === undefined) return
+      setTab(favorites?.length ? 'favorites' : recent?.length ? 'recent' : 'browse')
+    }
     browse()
     api.recentProjects().then(d => {
       if (ticket !== recentSeq.current) return
       setRecentDirs(d.dirs || [])
-      setTab(d.dirs?.length ? 'recent' : 'browse')
+      settle('recent', d.dirs || [])
     }).catch((err: unknown) => {
       if (ticket !== recentSeq.current) return
       setRecentDirs([])
       setRecentFailure({ cause: searchErrorCause(err), report: reportForError(err) })
-      setTab('browse')
+      settle('recent', null)
+    })
+    api.favoriteProjects().then(d => {
+      if (favTicket !== favoriteSeq.current) return
+      setFavoriteDirs(d.dirs || [])
+      settle('favorites', d.dirs || [])
+    }).catch((err: unknown) => {
+      if (favTicket !== favoriteSeq.current) return
+      setFavoriteDirs([])
+      setFavoriteFailure({ cause: searchErrorCause(err), report: reportForError(err) })
+      settle('favorites', null)
     })
   }, [open, browse])
 
@@ -333,6 +433,34 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
   }
   const rq = recentQuery.trim().toLowerCase()
   const filteredRecent = rq ? recentDirs.filter(d => d.toLowerCase().includes(rq)) : recentDirs
+  const fq = favoriteQuery.trim().toLowerCase()
+  const filteredFavorites = fq ? favoriteDirs.filter(d => d.toLowerCase().includes(fq)) : favoriteDirs
+  // Membership by string, against the list the SERVER returned. The add path stores a resolved
+  // path, and so does every writer of the recents list, so a recents row and its favourite
+  // entry are the same bytes.
+  const favoriteSet = useMemo(() => new Set(favoriteDirs), [favoriteDirs])
+
+  /**
+   * Flip one directory's favourite state. The response carries the whole list as the server
+   * now holds it and that is what gets rendered -- no locally-guessed list, so a refused add
+   * (a path gone since it was listed, a full list) leaves the rows exactly as the server says
+   * they are. A toggle never commits the project: `select` is the row's own job.
+   */
+  const toggleFavorite = (path: string) => {
+    const clean = stripTrailingSeparator(path.trim())
+    if (!clean || favoriteBusy) return
+    setFavoriteBusy(clean)
+    setFavoriteWriteError(null)
+    const write = favoriteSet.has(clean) ? api.removeFavoriteProject(clean) : api.addFavoriteProject(clean)
+    write.then(d => {
+      setFavoriteDirs(d.dirs || [])
+      // A write that answered proves the list is readable, so a stale READ notice above it
+      // would contradict the rows it just delivered.
+      setFavoriteFailure(null)
+    }).catch((err: unknown) => {
+      setFavoriteWriteError(err instanceof Error ? err.message : String(err))
+    }).finally(() => setFavoriteBusy(null))
+  }
 
   // Recent tab uses the shared selected-index keyboard nav (same model as the
   // Skill/File pickers). The Browse tab has its own combobox input handler
@@ -341,11 +469,29 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
     open: open && tab === 'recent',
     count: filteredRecent.length,
     onChoose: i => { const d = filteredRecent[i]; if (d) select(d) },
+    // The star is a pointer target inside a listbox whose own document-capture listener
+    // claims Enter and Tab, so no tab stop could reach it. Alt/Option+Enter is the hook's
+    // sanctioned second action on the highlighted row, and it is what gives the toggle a
+    // keyboard path at all.
+    onAltEnter: i => { const d = filteredRecent[i]; if (!d) return false; toggleFavorite(d); return true },
+    onClose: () => onOpenChange(false),
+  })
+
+  // Favourites tab: the same nav, armed on its own tab so the two listeners are never both
+  // live. Alt/Option+Enter un-favourites the highlighted row, the mirror of Recent's add.
+  const favoriteNav = useListKeyboardNav({
+    open: open && tab === 'favorites',
+    count: filteredFavorites.length,
+    onChoose: i => { const d = filteredFavorites[i]; if (d) select(d) },
+    onAltEnter: i => { const d = filteredFavorites[i]; if (!d) return false; toggleFavorite(d); return true },
     onClose: () => onOpenChange(false),
   })
 
   // Reset the Recent highlight whenever the filtered list changes.
   useEffect(() => { recentNav.setSelected(0) }, [recentQuery]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Same for Favourites, on its own filter.
+  useEffect(() => { favoriteNav.setSelected(0) }, [favoriteQuery]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Reset the Browse highlight whenever the visible list changes (tab switch,
   // drill into a new dir, or filter edit).
@@ -469,6 +615,9 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
     })()}>
       {/* Tabs */}
       <div className="flex border-b border-border">
+        <button className={`flex-1 px-3 py-2 text-[12px] font-medium flex items-center justify-center gap-1.5 transition-colors ${tab === 'favorites' ? 'text-accent border-b-2 border-accent' : 'text-muted hover:text-text'}`} onMouseDown={e => { e.preventDefault(); setTab('favorites') }}>
+          <Star size={12} /> {i18nT('components.projectPicker.favorites')}
+        </button>
         <button className={`flex-1 px-3 py-2 text-[12px] font-medium flex items-center justify-center gap-1.5 transition-colors ${tab === 'recent' ? 'text-accent border-b-2 border-accent' : 'text-muted hover:text-text'}`} onMouseDown={e => { e.preventDefault(); setTab('recent') }}>
           <Clock size={12} /> {i18nT('components.projectPicker.recent')}
         </button>
@@ -477,7 +626,99 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
         </button>
       </div>
 
-      {tab === 'recent' ? (
+      {favoriteWriteError && (
+        <div className="px-3 py-2 border-b border-border">
+          {/* The WRITE failure, told on whichever pane the star was clicked from -- above the
+              rows, which are still the server's own answer. No agent hand-off and no Retry:
+              the gateway's message names what it refused, and the control that asked is one
+              click away. */}
+          <ErrorNotice
+            variant="inline"
+            className="whitespace-normal"
+            message={i18nT('components.projectPicker.favorite_write_failed', { error: favoriteWriteError })}
+            testId="pp-favorite-write-error"
+          />
+        </div>
+      )}
+
+      {tab === 'favorites' ? (
+        <>
+          {favoriteDirs.length > 0 && (
+            <div className="p-2 border-b border-border">
+              <div className="relative">
+                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted pointer-events-none" />
+                <input
+                  ref={favoriteSearchRef}
+                  autoFocus
+                  type="text"
+                  aria-label={i18nT('components.projectPicker.search_favorite_projects')}
+                  aria-controls="pp-favorite-list"
+                  placeholder={i18nT('components.projectPicker.search_favorite_projects_2')}
+                  value={favoriteQuery}
+                  onChange={e => setFavoriteQuery(e.target.value)}
+                  className="w-full bg-bg-elevated border border-border rounded pl-7 pr-3 py-1.5 text-[13px] text-text placeholder:text-muted focus:outline-hidden focus-visible:border-accent"
+                />
+              </div>
+            </div>
+          )}
+          {favoriteFailure && (
+            <div className="px-3 py-2 border-b border-border">
+              {/* Same hand-off contract as the other two panes: off unless the mount opts in,
+                  and the popover closes itself when it hands off. */}
+              <ErrorNotice
+                variant="inline"
+                className="whitespace-normal"
+                askAgent={errorHandoff}
+                onHandoff={() => onOpenChange(false)}
+                report={favoriteFailure.report}
+                message={i18nT(FAVORITE_FAILED_KEYS[favoriteFailure.cause])}
+                testId="pp-favorites-error"
+              />
+            </div>
+          )}
+          <div id="pp-favorite-list" role="listbox" aria-label={i18nT('components.projectPicker.favorite_projects')} className="overflow-y-auto flex-1 min-h-0">
+            {favoriteDirs.length === 0 ? (
+              // Silent under the notice above, for the reason the Recent pane is: an empty list
+              // after a FAILED read is not an empty result, and the empty-state would claim one.
+              favoriteFailure ? null : (
+                <div className="px-3 py-6 text-[12px] text-muted text-center">{i18nT('components.projectPicker.no_favorite_projects')}</div>
+              )
+            ) : filteredFavorites.length === 0 ? (
+              <div className="px-3 py-6 text-[12px] text-muted text-center">{i18nT('components.projectPicker.no_matching_projects')}</div>
+            ) : filteredFavorites.map((d, i) => (
+              /* `role="presentation"` on the wrapper, so the listbox still OWNS the option
+                 directly: the star has to be a sibling of the row (a button inside a button is
+                 not valid HTML), and an unmarked wrapper would insert a generic element between
+                 the listbox and its options. */
+              <div key={d} role="presentation" className="relative">
+                <button
+                  role="option"
+                  aria-selected={i === favoriteNav.selected}
+                  id={`pp-favorite-${i}`}
+                  tabIndex={-1}
+                  ref={el => { favoriteNav.itemRefs.current[i] = el }}
+                  className={`w-full text-left pl-3 pr-9 py-2 flex items-center gap-2 cursor-pointer transition-colors ${i === favoriteNav.selected ? 'bg-bg-hover' : 'hover:bg-bg-hover'}`}
+                  onMouseEnter={() => favoriteNav.setSelected(i)}
+                  onMouseDown={e => { e.preventDefault(); select(d) }}
+                >
+                  <FolderOpen size={12} className="text-accent shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-[13px] font-mono font-semibold text-text truncate">{d.split('/').pop()}</div>
+                    <div className="text-[11px] text-muted truncate">{d}</div>
+                  </div>
+                </button>
+                <FavoriteStar
+                  path={d}
+                  on
+                  busy={favoriteBusy === d}
+                  onToggle={toggleFavorite}
+                  testId={`pp-favorite-star-${i}`}
+                />
+              </div>
+            ))}
+          </div>
+        </>
+      ) : tab === 'recent' ? (
         <>
           {recentDirs.length > 0 && (
             <div className="p-2 border-b border-border">
@@ -522,23 +763,33 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
             ) : filteredRecent.length === 0 ? (
               <div className="px-3 py-6 text-[12px] text-muted text-center">{i18nT('components.projectPicker.no_matching_projects')}</div>
             ) : filteredRecent.map((d, i) => (
-              <button
-                key={d}
-                role="option"
-                aria-selected={i === recentNav.selected}
-                id={`pp-recent-${i}`}
-                tabIndex={-1}
-                ref={el => { recentNav.itemRefs.current[i] = el }}
-                className={`w-full text-left px-3 py-2 flex items-center gap-2 cursor-pointer transition-colors ${i === recentNav.selected ? 'bg-bg-hover' : 'hover:bg-bg-hover'}`}
-                onMouseEnter={() => recentNav.setSelected(i)}
-                onMouseDown={e => { e.preventDefault(); select(d) }}
-              >
-                <FolderOpen size={12} className="text-accent shrink-0" />
-                <div className="flex-1 min-w-0">
-                  <div className="text-[13px] font-mono font-semibold text-text truncate">{d.split('/').pop()}</div>
-                  <div className="text-[11px] text-muted truncate">{d}</div>
-                </div>
-              </button>
+              /* Wrapper marked `presentation` for the same reason as the Favourites rows:
+                 the listbox keeps owning the option, and the star sits beside it. */
+              <div key={d} role="presentation" className="relative">
+                <button
+                  role="option"
+                  aria-selected={i === recentNav.selected}
+                  id={`pp-recent-${i}`}
+                  tabIndex={-1}
+                  ref={el => { recentNav.itemRefs.current[i] = el }}
+                  className={`w-full text-left pl-3 pr-9 py-2 flex items-center gap-2 cursor-pointer transition-colors ${i === recentNav.selected ? 'bg-bg-hover' : 'hover:bg-bg-hover'}`}
+                  onMouseEnter={() => recentNav.setSelected(i)}
+                  onMouseDown={e => { e.preventDefault(); select(d) }}
+                >
+                  <FolderOpen size={12} className="text-accent shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-[13px] font-mono font-semibold text-text truncate">{d.split('/').pop()}</div>
+                    <div className="text-[11px] text-muted truncate">{d}</div>
+                  </div>
+                </button>
+                <FavoriteStar
+                  path={d}
+                  on={favoriteSet.has(d)}
+                  busy={favoriteBusy === d}
+                  onToggle={toggleFavorite}
+                  testId={`pp-recent-star-${i}`}
+                />
+              </div>
             ))}
           </div>
         </>
@@ -606,6 +857,19 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
               }}
               className="flex-1 min-w-0 bg-bg-elevated border border-border rounded px-2 py-1.5 text-[13px] font-mono text-text placeholder:text-muted focus:outline-hidden focus-visible:border-accent"
             />
+            {/* Favourite the directory the pane is ON, without committing it as the project.
+                Gated on there BEING one: the drive list has no path of its own, and a typed
+                path that has not listed yet is not a directory the gateway would accept. */}
+            {browsePath && (
+              <FavoriteStar
+                path={browsePath}
+                on={favoriteSet.has(browsePath)}
+                busy={favoriteBusy === browsePath}
+                onToggle={toggleFavorite}
+                testId="pp-browse-star"
+                className="shrink-0"
+              />
+            )}
             <button disabled={!canCommit} onMouseDown={e => { e.preventDefault(); if (canCommit) select(input.trim() || browsePath) }} className="px-2 py-1 text-[11px] bg-accent/20 text-accent rounded hover:bg-accent/30 disabled:opacity-40 disabled:cursor-not-allowed shrink-0">{i18nT('components.projectPicker.select')}</button>
           </div>
           {browseNotice && (
