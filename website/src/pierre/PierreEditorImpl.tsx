@@ -181,16 +181,49 @@ export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
   const editorContents = remountDraft ?? seedContentsRef.current
   const editorKey = remountDraft === null ? seedKeyRef.current : contentCacheKey(file.name, remountDraft)
   // The seam owns Pierre's `file` contract so no caller has to. While an edit
-  // session is live, Pierre's own document owns the text, so the `file` handed to
-  // it must not move with the caller's echo of each keystroke:
+  // session is live, Pierre's own document owns the text, and the `file` handed
+  // to it is ONE object per session, keyed by the seed:
   //  - a new `cacheKey` makes the editor rebuild its document and reset its
-  //    selections, so every keystroke drops focus and puts the caret at line 1;
-  //  - new `contents` under an unchanged key re-render against a stale line cache
-  //    (`isLineCacheForFile` trusts the key alone), and Return throws "Line
-  //    doesnt exist".
-  // So the file is the session seed: it changes, with a content-derived key, only
-  // on an external source change or a worker-recovery remount.
-  const editorFile = useMemo<FileContents>(
+  //    selections, so a key that moved with each keystroke would drop focus and
+  //    put the caret at line 1 every time;
+  //  - a new object under the same key cannot be sequenced against the render
+  //    Pierre schedules for the object it still holds, so that render reads the
+  //    old object's text, and once the document has grown past it Return throws
+  //    "Line doesnt exist".
+  // A new object appears, with a content-derived key, only on an external source
+  // change or a worker-recovery remount.
+  //
+  // The object's `contents`, though, mirror the buffer: the editor's `onChange`
+  // writes each new text into this same object. Pierre reads a file's `contents`
+  // again whenever it renders one without a grammar, which it does for a
+  // plain-text file on every line added or removed (an untagged chat fence is
+  // `snippet.txt`, and a fence tag that is not a file extension -- `python`,
+  // `typescript` -- also resolves to plain text), and for any file whose grammar
+  // is still loading. From a frozen seed that render puts the removed line back
+  // on screen while the document keeps the edit, so the next keystroke lands on
+  // the line that moved into that row. A highlighted file reads its rows from
+  // the editor's render cache instead and never looks at `contents` again, so
+  // the mirror costs it nothing. Pierre treats the held file's `contents` as the
+  // session's text as well: it writes the edited lines back into that object
+  // whenever it drops the render cache. `name`, `lang` and `header` are read
+  // when the object is created: every caller changes them only by remounting.
+  const sessionFileRef = useRef<FileContents | null>(null)
+  let editorFile = sessionFileRef.current
+  if (editorFile === null || editorFile.cacheKey !== editorKey) {
+    editorFile = {
+      name: file.name,
+      contents: editorContents,
+      ...(file.lang === undefined ? {} : { lang: file.lang }),
+      ...(file.header === undefined ? {} : { header: file.header }),
+      cacheKey: editorKey,
+    }
+  }
+  sessionFileRef.current = editorFile
+  // The live-diff surface keeps the opening text, as before: its renderer
+  // re-parses the pair whenever the baseline changes, and the premise above
+  // (the renderer re-reads the held file and writes edits back into it) is
+  // the single-file renderer's.
+  const diffNewFile = useMemo<FileContents>(
     () => ({
       name: file.name,
       contents: editorContents,
@@ -207,7 +240,7 @@ export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
     [diffBase, file.name, surfaceId],
   )
   const renderLiveDiff = diffBase !== undefined
-    && isPierreFilePairWithinBudget(baseFile, editorFile)
+    && isPierreFilePairWithinBudget(baseFile, diffNewFile)
   const editorRef = useRef<Editor<undefined> | null>(null)
   /** A jump requested before Pierre bound its editor, replayed on attach. */
   const pendingJumpRef = useRef<{ line: number; endLine?: number } | null>(null)
@@ -274,8 +307,15 @@ export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
         }
       },
       onChange(changed) {
-        latestContentsRef.current = changed.contents
-        onChangeRef.current(changed.contents)
+        // `contents` is a getter that joins the whole document: read it once.
+        const contents = changed.contents
+        latestContentsRef.current = contents
+        // The editor reports the change before it re-renders, so the held
+        // file carries the new text for every render this change triggers,
+        // Pierre's own included.
+        const session = sessionFileRef.current
+        if (session !== null) session.contents = contents
+        onChangeRef.current(contents)
         reportCursor()
       },
     }),
@@ -349,7 +389,7 @@ export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
             <MultiFileDiff
               key="diff"
               oldFile={baseFile}
-              newFile={editorFile}
+              newFile={diffNewFile}
               edit
               editorOptions={editorOptions}
               options={resolvedDiff}

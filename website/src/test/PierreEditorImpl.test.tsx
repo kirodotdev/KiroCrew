@@ -450,6 +450,180 @@ describe('PierreEditorImpl cacheKey contract', () => {
   })
 })
 
+describe('PierreEditorImpl session file contract', () => {
+  // Pierre renders a file whose language resolves to `text` without a grammar,
+  // and renders it again from `file.contents` every time a line is added or
+  // removed; it does the same for a file whose grammar is still loading. A
+  // highlighted file keeps its rows from the render cache the editor realigns
+  // with its document. So the seam hands Pierre ONE object per session, keyed
+  // by the seed, and mirrors every edit into that object's `contents`: the
+  // plain file's re-render reads the buffer, the highlighted file never reads
+  // it, and neither sees a new object or a new key (which would rebuild the
+  // document and drop the caret).
+  const plainFile = (contents: string): FileContents => ({
+    name: 'snippet.txt',
+    contents,
+    cacheKey: 'chat-edit:txt:0',
+  })
+  const announce = (contents: string) => {
+    const announceChange = attachEditor().options.onChange as (file: FileContents) => void
+    act(() => announceChange({ name: 'snippet.txt', contents }))
+  }
+
+  it('mirrors the buffer into the held file when a plain file loses a line', () => {
+    mount({ file: plainFile('a\nb\nc\nd\n') })
+    const seeded = lastSurface().props.file as FileContents
+    const seededKey = seeded.cacheKey
+    const surfaces = pierre.surfaces.length
+
+    announce('a\nb\nd\n')
+
+    expect(seeded.contents).toBe('a\nb\nd\n')
+    expect(seeded.cacheKey).toBe(seededKey)
+    expect(seeded.name).toBe('snippet.txt')
+    // Mirrored in place: no render, no new object, so Pierre's own re-render
+    // of the object it holds reads the buffer whenever it runs.
+    expect(pierre.surfaces).toHaveLength(surfaces)
+    expect(lastSurface().props.file).toBe(seeded)
+  })
+
+  it('mirrors the buffer when a plain file gains a line', () => {
+    mount({ file: plainFile('a\nb\nc\n') })
+    const seeded = lastSurface().props.file as FileContents
+
+    announce('a\nb\n\nc\n')
+
+    expect(seeded.contents).toBe('a\nb\n\nc\n')
+    expect(lastSurface().props.file).toBe(seeded)
+  })
+
+  it('mirrors an edit that keeps the line count too', () => {
+    // A grammar still loading when the session opened renders from `contents`
+    // once it lands, whatever the edit was, so the text must always be current.
+    mount({ file: plainFile('a\nb\nc\n') })
+    const seeded = lastSurface().props.file as FileContents
+
+    announce('a\nbb\nc\n')
+
+    expect(seeded.contents).toBe('a\nbb\nc\n')
+    expect(lastSurface().props.file).toBe(seeded)
+  })
+
+  it('treats a fence tag that is not a file extension the same way', () => {
+    // `snippet.python` has no grammar behind its extension, so Pierre renders
+    // it as plain text and re-reads the held file on a line-count change.
+    mount({ file: { name: 'snippet.python', contents: 'a\nb\nc\n', cacheKey: 'chat-edit:python:0' } })
+    const seeded = lastSurface().props.file as FileContents
+    const announceChange = attachEditor().options.onChange as (file: FileContents) => void
+
+    act(() => announceChange({ name: 'snippet.python', contents: 'a\nc\n' }))
+
+    expect(seeded.contents).toBe('a\nc\n')
+  })
+
+  it('keeps one object and one key for a highlighted file across a line-count change', () => {
+    // The caret contract: a new object or key would rebuild the document.
+    mount({ file: { name: 'a.ts', contents: 'a\nb\nc\nd\n', cacheKey: 'a.ts:0' } })
+    const seeded = lastSurface().props.file as FileContents
+    const seededKey = seeded.cacheKey
+    const surfaces = pierre.surfaces.length
+    const announceChange = attachEditor().options.onChange as (file: FileContents) => void
+
+    act(() => announceChange({ name: 'a.ts', contents: 'a\nb\nd\n' }))
+
+    expect(pierre.surfaces).toHaveLength(surfaces)
+    expect(lastSurface().props.file).toBe(seeded)
+    expect(seeded.cacheKey).toBe(seededKey)
+    expect(seeded.contents).toBe('a\nb\nd\n')
+  })
+
+  it('reseeds a fresh object from an outside change and leaves the edited one behind', () => {
+    const { rerender } = mount({ file: plainFile('a\nb\nc\n') })
+    const seeded = lastSurface().props.file as FileContents
+    announce('a\nc\n')
+    rerender({ file: plainFile('a\nc\n') }) // the caller echoing the edit: no reseed
+    expect(lastSurface().props.file).toBe(seeded)
+    expect(seeded.contents).toBe('a\nc\n')
+
+    // Cancel puts the seed text back: a new object, a moved key, the restored text.
+    rerender({ file: plainFile('a\nb\nc\n') })
+    const reseeded = lastSurface().props.file as FileContents
+    expect(reseeded).not.toBe(seeded)
+    expect(reseeded.contents).toBe('a\nb\nc\n')
+    expect(reseeded.cacheKey).not.toBe(seeded.cacheKey)
+  })
+
+  it('reseeds a fresh object when a later outside change brings the original key round again', () => {
+    const { rerender } = mount({ file: plainFile('a\nb\nc\n') })
+    const seeded = lastSurface().props.file as FileContents
+    const seededKey = seeded.cacheKey
+    announce('a\nc\n')
+    rerender({ file: plainFile('a\nc\n') })
+
+    // Outside change to other text, then back to the original: the original's
+    // content key comes round again and must carry the original text, not the
+    // edit the first object mirrored under that key.
+    rerender({ file: plainFile('x\n') })
+    rerender({ file: plainFile('a\nb\nc\n') })
+    const restored = lastSurface().props.file as FileContents
+    expect(restored.cacheKey).toBe(seededKey)
+    expect(restored.contents).toBe('a\nb\nc\n')
+    expect(restored).not.toBe(seeded)
+  })
+
+  it('keeps the same object across an unrelated re-render', () => {
+    // A parent re-render (markers, a theme flip) must not hand Pierre a new
+    // object: the one it holds carries the edits, a fresh one would carry the
+    // seed and read as an outside change.
+    const { rerender } = mount({ file: plainFile('a\nb\nc\n') })
+    const seeded = lastSurface().props.file as FileContents
+    announce('a\nc\n')
+
+    rerender({ markers: [{ severity: 'info', message: 'note', line: 1 }] })
+
+    expect(lastSurface().props.file).toBe(seeded)
+    expect(seeded.contents).toBe('a\nc\n')
+  })
+
+  it('leaves the live-diff surface on the opening text after an edit', () => {
+    // The diff renderer re-parses the pair whenever the baseline changes and
+    // has no counterpart to the single-file renderer's write-back, so its
+    // `newFile` stays the opening text, as before.
+    const { rerender } = mount({ file: plainFile('a\nb\nc\n'), diffBase: 'a\nb\n' })
+    expect(lastSurface().kind).toBe('diff')
+    const seeded = lastSurface().props.newFile as FileContents
+    const announceChange = attachEditor().options.onChange as (file: FileContents) => void
+
+    act(() => announceChange({ name: 'snippet.txt', contents: 'a\nc\n' }))
+    rerender({ file: plainFile('a\nc\n'), diffBase: 'a\nb\n' })
+
+    expect(lastSurface().props.newFile).toBe(seeded)
+    expect(seeded.contents).toBe('a\nb\nc\n')
+  })
+
+  it('carries the mirrored buffer through a worker-recovery remount', () => {
+    const mounted = mount({ file: plainFile('a\nb\nc\n') })
+    announce('a\nc\n')
+    announce('a\nc\nd\n')
+
+    pierre.poolState.current = { phase: 'recovering', generation: 1 }
+    mounted.rerender()
+    expect(mounted.view.getByRole('textbox')).toHaveValue('a\nc\nd\n')
+
+    pierre.poolState.current = { phase: 'ready', generation: 2, pool: {} }
+    mounted.rerender()
+    const remounted = lastSurface().props.file as FileContents
+    expect(remounted.contents).toBe('a\nc\nd\n')
+    expect(remounted.cacheKey).toBe(contentCacheKey('snippet.txt', 'a\nc\nd\n'))
+
+    // The replacement editor mirrors into the remount's object.
+    const replacement = attachEditor().options.onChange as (file: FileContents) => void
+    act(() => replacement({ name: 'snippet.txt', contents: 'a\nd\n' }))
+    expect(remounted.contents).toBe('a\nd\n')
+    expect(lastSurface().props.file).toBe(remounted)
+  })
+})
+
 
   it('preserves the latest in-memory draft across worker recovery and later edits', () => {
     const mounted = mount()
