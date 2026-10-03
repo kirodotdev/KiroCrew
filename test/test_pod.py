@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import contextlib
 import json
 import os
 import shutil
@@ -3751,6 +3752,585 @@ class TestLinuxTeardownOrdering:
         assert "NOT zero-residue" in cp.stderr
 
 
+class TestStopNamesMissingUnit:
+    """The classifier that separates "the unit is absent" from every stop
+    failure that may have left the unit live — only the former may go on to a
+    delete."""
+
+    @pytest.mark.parametrize(
+        "stderr,expected",
+        [
+            (
+                "Failed to stop kirocrew-pod@x.service: " "Unit kirocrew-pod@x.service not loaded.",
+                True,
+            ),
+            (
+                "Failed to stop kirocrew-pod@x.service: " "Unit kirocrew-pod@x.service not found.",
+                True,
+            ),
+            ("Job for kirocrew-pod@x.service failed.", False),
+            ("Failed to connect to bus: No medium found", False),
+            ("", False),
+        ],
+    )
+    def test_only_an_absent_unit_is_classified(self, stderr: str, expected: bool) -> None:
+        assert rt._stop_names_missing_unit(_cp(returncode=5, stderr=stderr)) is expected
+
+
+@requires_posix_pod_lifecycle
+class TestReclaimBlocker:
+    """The pod-derived liveness judgment behind the unit-less reclaim. Each
+    signal must be able to block on its own, a provably foreign responder must
+    not block, and not knowing must block — an unreadable signal defaulting to
+    "delete" is the one direction with no retry."""
+
+    def _plane(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> PodConfig:
+        monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path / "pods"))
+        c = PodConfig.load()
+        c.home_dir("demo").mkdir(parents=True)
+        # Signals staged to "provably dead"; each test flips exactly one.
+        monkeypatch.setattr(rt, "derive_port", lambda cc, n: 7867)
+        monkeypatch.setattr(rt, "_pod_recorded_pid", lambda cc, n, p: None)
+        monkeypatch.setattr(rt, "_probe_health", lambda port, timeout=3: 0)
+        monkeypatch.setattr(rt, "_home_holders", lambda home: [])
+        return c
+
+    def test_a_silent_dead_pod_is_reclaimable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        c = self._plane(tmp_path, monkeypatch)
+        assert rt.reclaim_blocker(c, "demo") is None
+
+    def test_a_proven_fresh_pid_record_blocks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        c = self._plane(tmp_path, monkeypatch)
+        monkeypatch.setattr(rt, "_pod_recorded_pid", lambda cc, n, p: 4242)
+        blocker = rt.reclaim_blocker(c, "demo")
+        assert blocker is not None and "pid record" in blocker
+
+    def test_an_unattributed_responder_blocks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Something answers on the derived port and cannot be attributed either
+        way — it may be this pod's gateway, so the delete is refused."""
+        c = self._plane(tmp_path, monkeypatch)
+        monkeypatch.setattr(rt, "_probe_health", lambda port, timeout=3: 200)
+        monkeypatch.setattr(rt, "port_owner", lambda cc, n, p: rt.OWNER_UNPROVEN)
+        blocker = rt.reclaim_blocker(c, "demo")
+        assert blocker is not None and "answers" in blocker
+
+    def test_a_provably_foreign_responder_does_not_block(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """199 derived-port slots make collisions ordinary: a recycled port
+        proves somebody ELSE is serving there, never that this pod is — treating
+        it as liveness would make every collided orphan unreclaimable."""
+        c = self._plane(tmp_path, monkeypatch)
+        monkeypatch.setattr(rt, "_probe_health", lambda port, timeout=3: 200)
+        monkeypatch.setattr(rt, "port_owner", lambda cc, n, p: rt.OWNER_FOREIGN)
+        assert rt.reclaim_blocker(c, "demo") is None
+
+    def test_a_process_holding_the_home_blocks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        c = self._plane(tmp_path, monkeypatch)
+        monkeypatch.setattr(rt, "_home_holders", lambda home: [123, 456])
+        blocker = rt.reclaim_blocker(c, "demo")
+        assert blocker is not None and "files under its HOME" in blocker and "123" in blocker
+
+    def test_an_unreadable_signal_blocks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        c = self._plane(tmp_path, monkeypatch)
+
+        def _boom(port: int, timeout: int = 3) -> int:
+            raise OSError("cannot probe")
+
+        monkeypatch.setattr(rt, "_probe_health", _boom)
+        blocker = rt.reclaim_blocker(c, "demo")
+        assert blocker is not None and "could not be judged" in blocker
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc")
+class TestHomeHolders:
+    def test_an_open_descriptor_under_the_home_is_reported(self, tmp_path: Path) -> None:
+        home = (tmp_path / "pods" / "demo").resolve()
+        home.mkdir(parents=True)
+        with open(home / "audit.log", "w"):
+            assert os.getpid() in rt._home_holders(home)
+        assert os.getpid() not in rt._home_holders(home)
+
+    def _staged_proc(
+        self,
+        tmp_path: Path,
+        home: Path,
+        *,
+        uid: int,
+        names_home: bool,
+        fd_mode: int,
+        ppid: int | None = None,
+        parent_uid: int | None = None,
+        state: str = "S (sleeping)",
+    ) -> Path:
+        """One fake ``/proc`` entry (pid 123) in the non-dumpable shape: status
+        and cmdline readable, links present, fd dir at *fd_mode* — a real
+        credential transition is what produces this, which a test cannot do.
+        *ppid*/*parent_uid* stage its parent as pid ``ppid`` owned by that uid."""
+        proc = tmp_path / "proc"
+        entry = proc / "123"
+        (entry / "fd").mkdir(parents=True)
+        status = f"Name:\tagent\nState:\t{state}\n"
+        if ppid is not None:
+            status += f"PPid:\t{ppid}\n"
+        status += f"Uid:\t{uid}\t{uid}\t{uid}\t{uid}\n"
+        (entry / "status").write_text(status)
+        args = f"agent\0--homedir\0{home}\0" if names_home else "agent\0--daemon\0"
+        (entry / "cmdline").write_bytes(args.encode())
+        for special in ("cwd", "root", "exe"):
+            os.symlink("/", entry / special)
+        (entry / "fd").chmod(fd_mode)
+        if ppid is not None and parent_uid is not None:
+            parent = proc / str(ppid)
+            parent.mkdir()
+            pu = parent_uid
+            (parent / "status").write_text(f"Name:\tsshd\nPPid:\t1\nUid:\t{pu}\t{pu}\t{pu}\t{pu}\n")
+        return proc
+
+    def test_a_nondumpable_holder_named_in_cmdline_blocks(self, tmp_path: Path) -> None:
+        """A same-user process whose links are unreadable still exposes its
+        command line, and one pointed into the HOME (a --homedir, a socket
+        path) is a holder the delete must not run behind."""
+        home = (tmp_path / "pods" / "demo").resolve()
+        home.mkdir(parents=True)
+        proc = self._staged_proc(tmp_path, home, uid=os.getuid(), names_home=True, fd_mode=0o000)
+        try:
+            assert rt._home_holders(home, proc_root=str(proc)) == [123]
+        finally:
+            (proc / "123" / "fd").chmod(0o700)
+
+    def test_an_uninspectable_process_with_no_exemption_blocks(self, tmp_path: Path) -> None:
+        """A non-dumpable pod child handed the HOME through its environment
+        names it nowhere this scan can read, and the unit-less arm has no drain
+        and no post-delete holder check behind it — so a same-user process
+        that cannot be inspected blocks unless it is positively exempt."""
+        home = (tmp_path / "pods" / "demo").resolve()
+        home.mkdir(parents=True)
+        uid = os.getuid()
+        proc = self._staged_proc(
+            tmp_path, home, uid=uid, names_home=False, fd_mode=0o000, ppid=77, parent_uid=uid
+        )
+        try:
+            assert rt._home_holders(home, proc_root=str(proc)) == [123]
+        finally:
+            (proc / "123" / "fd").chmod(0o700)
+
+    def test_a_pod_child_orphaned_to_init_still_blocks(self, tmp_path: Path) -> None:
+        """A child whose gateway died is reparented to init, so a privileged
+        parent that is init is no proof of a credential transition."""
+        home = (tmp_path / "pods" / "demo").resolve()
+        home.mkdir(parents=True)
+        proc = self._staged_proc(
+            tmp_path, home, uid=os.getuid(), names_home=False, fd_mode=0o000, ppid=1
+        )
+        try:
+            assert rt._home_holders(home, proc_root=str(proc)) == [123]
+        finally:
+            (proc / "123" / "fd").chmod(0o700)
+
+    def test_the_sshd_session_shape_is_exempt(self, tmp_path: Path) -> None:
+        """Every ssh session's own sshd is same-user, non-dumpable and the child
+        of another user's live, non-init process; refusing on it would refuse
+        every reclaim on any host with an ssh session."""
+        home = (tmp_path / "pods" / "demo").resolve()
+        home.mkdir(parents=True)
+        proc = self._staged_proc(
+            tmp_path,
+            home,
+            uid=os.getuid(),
+            names_home=False,
+            fd_mode=0o000,
+            ppid=50,
+            parent_uid=os.getuid() + 1,
+        )
+        try:
+            assert rt._home_holders(home, proc_root=str(proc)) == []
+        finally:
+            (proc / "123" / "fd").chmod(0o700)
+
+    def test_an_exempt_shape_naming_the_home_still_blocks(self, tmp_path: Path) -> None:
+        home = (tmp_path / "pods" / "demo").resolve()
+        home.mkdir(parents=True)
+        proc = self._staged_proc(
+            tmp_path,
+            home,
+            uid=os.getuid(),
+            names_home=True,
+            fd_mode=0o000,
+            ppid=50,
+            parent_uid=os.getuid() + 1,
+        )
+        try:
+            assert rt._home_holders(home, proc_root=str(proc)) == [123]
+        finally:
+            (proc / "123" / "fd").chmod(0o700)
+
+    def test_a_zombie_holds_nothing(self, tmp_path: Path) -> None:
+        home = (tmp_path / "pods" / "demo").resolve()
+        home.mkdir(parents=True)
+        proc = self._staged_proc(
+            tmp_path, home, uid=os.getuid(), names_home=False, fd_mode=0o000, state="Z (zombie)"
+        )
+        try:
+            assert rt._home_holders(home, proc_root=str(proc)) == []
+        finally:
+            (proc / "123" / "fd").chmod(0o700)
+
+    def test_a_foreign_users_process_is_skipped(self, tmp_path: Path) -> None:
+        """A pod HOME is 0700, so another non-root user cannot hold a file
+        under it — ownership is read from status, which stays truthful for a
+        non-dumpable process whose /proc entries are re-owned to root."""
+        home = (tmp_path / "pods" / "demo").resolve()
+        home.mkdir(parents=True)
+        proc = self._staged_proc(
+            tmp_path, home, uid=os.getuid() + 1, names_home=True, fd_mode=0o000
+        )
+        try:
+            assert rt._home_holders(home, proc_root=str(proc)) == []
+        finally:
+            (proc / "123" / "fd").chmod(0o700)
+
+    def test_a_vanished_process_is_skipped(self, tmp_path: Path) -> None:
+        home = (tmp_path / "pods" / "demo").resolve()
+        home.mkdir(parents=True)
+        proc = tmp_path / "proc"
+        entry = proc / "123"
+        entry.mkdir(parents=True)
+        uid = os.getuid()
+        (entry / "status").write_text(f"Name:\tagent\nUid:\t{uid}\t{uid}\t{uid}\t{uid}\n")
+        (entry / "cmdline").write_bytes(b"agent\0")
+        assert rt._home_holders(home, proc_root=str(proc)) == []
+
+
+@requires_posix_pod_lifecycle
+class TestStopPodToleratesAMissingUnit:
+    """An orphaned HOME has no loaded unit, so its stop step fails with `Unit …
+    not loaded` — the one stop failure that cannot mean a live unit. The reclaim
+    proceeds for a pod proven dead by its own evidence, refuses for anything
+    less, and every other stop failure keeps aborting before the delete."""
+
+    _NOT_LOADED = (
+        "Failed to stop kirocrew-pod@demo.service: " "Unit kirocrew-pod@demo.service not loaded."
+    )
+
+    def _systemctl_with_absent_unit(self):
+        def _fake(*args: str, **kwargs: object) -> subprocess.CompletedProcess:
+            if args[0] == "stop":
+                return _cp(returncode=5, stderr=self._NOT_LOADED)
+            return _cp()
+
+        return _fake
+
+    def test_a_missing_unit_no_longer_blocks_the_reclaim(
+        self, cfg: PodConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(rt, "systemctl", self._systemctl_with_absent_unit())
+        monkeypatch.setattr(rt, "reclaim_blocker", lambda c, n: None)
+        deleted: list[str] = []
+        monkeypatch.setattr(rt, "cleanup_home", lambda c, n: deleted.append(n) or 0)
+        cp = rt.stop_pod(cfg, "demo")
+        assert cp.returncode == 0
+        assert deleted == ["demo"]
+
+    def test_a_pod_the_blocker_calls_live_is_refused(
+        self, cfg: PodConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(rt, "systemctl", self._systemctl_with_absent_unit())
+        monkeypatch.setattr(rt, "reclaim_blocker", lambda c, n: "its gateway is still serving")
+        monkeypatch.setattr(
+            rt, "cleanup_home", lambda c, n: pytest.fail("deleted a possibly live pod's HOME")
+        )
+        cp = rt.stop_pod(cfg, "demo")
+        assert cp.returncode != 0
+        assert "its gateway is still serving" in cp.stderr
+        assert "refusing to delete" in cp.stderr
+        assert "kirocrew pod down demo" in cp.stderr
+
+    def test_the_boot_pin_is_revoked_before_the_delete(
+        self, cfg: PodConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A systemd or direct `pod _run` boot reads the checkout pin first, so
+        the pin must be gone before the delete begins, turning a boot that
+        arrives during the sweep into a recorded terminal refusal instead of a
+        gateway rebuilding its HOME under it."""
+        rt.pin_checkout(cfg, "demo", Path("/co"))
+        monkeypatch.setattr(rt, "systemctl", self._systemctl_with_absent_unit())
+        monkeypatch.setattr(rt, "reclaim_blocker", lambda c, n: None)
+        pin_present_at_delete: list[bool] = []
+
+        def _delete(c: PodConfig, n: str) -> int:
+            pin_present_at_delete.append(cfg.env_file("demo").exists())
+            return 0
+
+        monkeypatch.setattr(rt, "cleanup_home", _delete)
+        assert rt.stop_pod(cfg, "demo").returncode == 0
+        assert pin_present_at_delete == [False], "the pin must be revoked before the delete"
+
+    def test_a_failed_reclaim_restores_the_boot_pin(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The pin carries settings a retry must keep answering with (PORT=
+        drives which port the liveness judgment probes), so a delete that did
+        not take puts back what it revoked."""
+        monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path / "pods"))
+        monkeypatch.setenv("KIROCREW_POD_ENV_DIR", str(tmp_path / "env"))
+        c = PodConfig.load()
+        c.home_dir("demo").mkdir(parents=True)
+        rt.pin_checkout(c, "demo", tmp_path / "co")
+        pinned = c.env_file("demo").read_bytes()
+        monkeypatch.setattr(rt, "systemctl", self._systemctl_with_absent_unit())
+        monkeypatch.setattr(rt, "reclaim_blocker", lambda cc, n: None)
+        monkeypatch.setattr(rt.shutil, "rmtree", lambda *a, **k: None)
+        cp = rt.stop_pod(c, "demo")
+        assert cp.returncode != 0
+        assert c.env_file("demo").read_bytes() == pinned, "a failed delete must restore the pin"
+
+    def test_an_unrevokable_pin_refuses_the_delete(
+        self, cfg: PodConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The fail direction of the revocation: a pin that cannot be removed
+        leaves the boot door open, so the delete must not proceed behind it."""
+        rt.pin_checkout(cfg, "demo", Path("/co"))
+        monkeypatch.setattr(rt, "systemctl", self._systemctl_with_absent_unit())
+        monkeypatch.setattr(rt, "reclaim_blocker", lambda c, n: None)
+        monkeypatch.setattr(
+            rt,
+            "cleanup_home",
+            lambda c, n: pytest.fail("deleted while a boot could still claim the name"),
+        )
+
+        def _refuse_unlink(self, missing_ok: bool = False) -> None:
+            raise OSError("pin locked")
+
+        monkeypatch.setattr(type(cfg.env_file("demo")), "unlink", _refuse_unlink)
+        cp = rt.stop_pod(cfg, "demo")
+        assert cp.returncode != 0
+        assert "could not be revoked" in cp.stderr
+
+    def test_any_other_stop_failure_still_aborts_before_the_delete(
+        self, cfg: PodConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A stop job that genuinely failed may have left the unit live — judging
+        pod liveness there would substitute a weaker signal for a stronger one."""
+
+        def _fake(*args: str, **kwargs: object) -> subprocess.CompletedProcess:
+            if args[0] == "stop":
+                return _cp(returncode=1, stderr="Job for kirocrew-pod@demo.service failed.")
+            return _cp()
+
+        monkeypatch.setattr(rt, "systemctl", _fake)
+        monkeypatch.setattr(
+            rt, "reclaim_blocker", lambda c, n: pytest.fail("judged a possibly live unit")
+        )
+        monkeypatch.setattr(
+            rt, "cleanup_home", lambda c, n: pytest.fail("deleted behind a failed stop")
+        )
+        cp = rt.stop_pod(cfg, "demo")
+        assert cp.returncode == 1
+        assert "Job for" in cp.stderr
+
+
+@requires_posix_pod_lifecycle
+class TestBootGateOrdersBootAgainstAUnitLessReclaim:
+    """A unit-less reclaim revokes the checkout pin so a racing boot refuses,
+    but a boot that read the pin BEFORE the revocation would build its HOME
+    after the delete. The boot gate closes that: every boot takes it shared
+    before its pin read and carries it into the gateway through the exec, and
+    the reclaim takes it exclusive across judge, revoke, delete and verify."""
+
+    _NOT_LOADED = (
+        "Failed to stop kirocrew-pod@demo.service: " "Unit kirocrew-pod@demo.service not loaded."
+    )
+
+    def _absent_unit(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def _fake(*args: str, **kwargs: object) -> subprocess.CompletedProcess:
+            if args[0] == "stop":
+                return _cp(returncode=5, stderr=self._NOT_LOADED)
+            return _cp()
+
+        monkeypatch.setattr(rt, "systemctl", _fake)
+
+    def test_a_boot_holding_the_gate_refuses_the_reclaim(
+        self, cfg: PodConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The interleaving the finding names: a boot has read its pin and not
+        yet built its HOME. It holds the gate, so the reclaim refuses before it
+        judges, revokes or deletes anything."""
+        rt.pin_checkout(cfg, "demo", Path("/co"))
+        self._absent_unit(monkeypatch)
+        monkeypatch.setattr(rt, "reclaim_blocker", lambda c, n: pytest.fail("judged under a boot"))
+        monkeypatch.setattr(rt, "cleanup_home", lambda c, n: pytest.fail("deleted under a boot"))
+        with rt.pod_boot_gate(cfg, "demo"):
+            cp = rt.stop_pod(cfg, "demo")
+        assert cp.returncode != 0
+        assert "boot gate" in cp.stderr
+        assert "refusing to delete" in cp.stderr
+        assert cfg.env_file("demo").exists(), "a refused reclaim must leave the pin alone"
+
+    def test_a_boot_arriving_mid_reclaim_waits_then_refuses_on_the_revoked_pin(
+        self, cfg: PodConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """While the reclaim holds the gate, a new boot blocks BEFORE its pin
+        read; released, it reads a pin that is gone and refuses terminally, so
+        no HOME is rebuilt behind the delete."""
+        rt.pin_checkout(cfg, "demo", Path("/co"))
+        self._absent_unit(monkeypatch)
+        monkeypatch.setattr(rt, "reclaim_blocker", lambda c, n: None)
+        home = cfg.home_dir("demo")
+        results: list[int] = []
+        booted = threading.Thread(target=lambda: results.append(rt.boot(cfg, "demo")))
+        blocked_during_delete: list[bool] = []
+
+        def _delete(c: PodConfig, n: str) -> int:
+            booted.start()
+            booted.join(timeout=0.5)
+            blocked_during_delete.append(booted.is_alive())
+            return 0
+
+        monkeypatch.setattr(rt, "cleanup_home", _delete)
+        assert rt.stop_pod(cfg, "demo").returncode == 0
+        booted.join(timeout=30)
+        assert blocked_during_delete == [True], "a boot must wait while the reclaim holds the gate"
+        assert results == [3], "the released boot must refuse on the revoked pin"
+        assert not home.exists()
+
+    @pytest.mark.skipif(not platform_compat.IS_LINUX, reason="the gate is systemd-host only")
+    def test_the_gate_is_carried_into_the_exec_and_released_with_the_process(
+        self, cfg: PodConfig
+    ) -> None:
+        """The gateway, not only the boot, must hold the gate: a gateway whose
+        command line names no path is otherwise invisible to the reclaim."""
+        child = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "import os\n"
+                "from kiro_crew.pod import runtime as rt\n"
+                "from kiro_crew.pod.config import PodConfig\n"
+                "with rt.pod_boot_gate(PodConfig.load(), 'demo'):\n"
+                "    os.execv('/bin/sleep', ['sleep', '60'])\n",
+            ],
+            env={
+                **os.environ,
+                "KIROCREW_POD_ENV_DIR": str(cfg.pods_dir),
+                "KIROCREW_POD_ROOT": str(cfg.pod_root),
+            },
+        )
+        try:
+            deadline = time.monotonic() + 30
+            while not rt.boot_gate_busy(cfg, "demo"):
+                assert child.poll() is None, "the child exited before holding the gate"
+                assert time.monotonic() < deadline, "the exec'd process never held the gate"
+                time.sleep(0.05)
+            assert "boot gate" in (rt.reclaim_blocker(cfg, "demo") or "")
+        finally:
+            child.kill()
+            child.wait(timeout=10)
+        assert rt.boot_gate_busy(cfg, "demo") is False
+
+    def test_the_reclaims_own_hold_is_not_read_as_a_live_boot(self, cfg: PodConfig) -> None:
+        with rt.pod_reclaim_gate(cfg, "demo"):
+            assert rt.boot_gate_busy(cfg, "demo") is False
+        assert rt.boot_gate_busy(cfg, "demo") is False
+
+    def test_an_unavailable_gate_is_a_retryable_exit_not_a_refusal(
+        self, cfg: PodConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        @contextlib.contextmanager
+        def _stuck(c: PodConfig, n: str):
+            raise OSError("lock timeout")
+            yield
+
+        monkeypatch.setattr(rt, "pod_boot_gate", _stuck)
+        code = rt.boot(cfg, "demo")
+        assert code == 1 and code not in TERMINAL_BOOT_EXIT_CODES
+        assert rt.refusal_reason(cfg, "demo") is None
+
+
+@requires_posix_pod_lifecycle
+class TestDownAndPruneReclaimAnOrphan:
+    """`pod ls` prints `reclaim: kirocrew pod down <name>` beside every orphan
+    and `pod prune` is the bulk form of the same delete; both must actually
+    reclaim a HOME whose unit is gone, or the CLI advertises a command that
+    always fails."""
+
+    _NOT_LOADED = (
+        "Failed to stop kirocrew-pod@demo.service: " "Unit kirocrew-pod@demo.service not loaded."
+    )
+
+    def _plane(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> PodConfig:
+        monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path / "pods"))
+        monkeypatch.setenv("KIROCREW_POD_ENV_DIR", str(tmp_path / "env"))
+        c = PodConfig.load()
+        home = c.home_dir("demo")
+        home.mkdir(parents=True)
+        (home / "config.json").write_text("{}")
+        rt.pin_checkout(c, "demo", tmp_path / "co")
+
+        def _systemctl(*args: str, **kwargs: object) -> subprocess.CompletedProcess:
+            if args[0] == "stop":
+                return _cp(returncode=5, stderr=self._NOT_LOADED)
+            return _cp()
+
+        monkeypatch.setattr(rt, "systemctl", _systemctl)
+        monkeypatch.setattr(rt, "is_active", lambda cc, n: False)
+        # The pod is provably dead: no fresh pid record, a silent port, no
+        # process holding the HOME. Staged at the signal level so the blocker
+        # itself runs for real through the whole verb.
+        monkeypatch.setattr(rt, "derive_port", lambda cc, n: 7867)
+        monkeypatch.setattr(rt, "_pod_recorded_pid", lambda cc, n, p: None)
+        monkeypatch.setattr(rt, "_probe_health", lambda port, timeout=3: 0)
+        monkeypatch.setattr(rt, "_home_holders", lambda home: [])
+        monkeypatch.setattr(pod_cli, "_audit", lambda *a, **k: None)
+        return c
+
+    def test_down_reclaims_an_orphan_whose_unit_is_gone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        c = self._plane(tmp_path, monkeypatch)
+        pod_cli._down(c, argparse.Namespace(name="demo"))
+        assert not c.home_dir("demo").exists()
+        assert not c.env_file("demo").exists()
+        assert "reclaimed the isolated HOME" in capsys.readouterr().out
+
+    def test_prune_reclaims_an_orphan_whose_unit_is_gone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        c = self._plane(tmp_path, monkeypatch)
+        monkeypatch.setattr(rt, "require_backend", lambda: None)
+        monkeypatch.setattr(rt, "active_names", lambda cc: set())
+        monkeypatch.setattr(rt, "unit_state", lambda cc, n: ("inactive", 0))
+        pod_cli._prune(
+            c,
+            argparse.Namespace(older_than="3d", json=False, dry_run=False, prune_all=True),
+        )
+        assert not c.home_dir("demo").exists()
+        assert "pruned: 1 reclaimed" in capsys.readouterr().out
+
+    def test_down_refuses_when_the_pod_may_be_alive(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The missing unit is the only thing standing between a live unit-less
+        pod and its advertised delete — the pod-derived judgment must be what
+        stands there instead."""
+        c = self._plane(tmp_path, monkeypatch)
+        monkeypatch.setattr(rt, "_pod_recorded_pid", lambda cc, n, p: 4242)
+        with pytest.raises(SystemExit):
+            pod_cli._down(c, argparse.Namespace(name="demo"))
+        assert c.home_dir("demo").exists()
+        assert c.env_file("demo").exists(), "a live pod's checkout pin must survive"
+
+
 @requires_posix_pod_lifecycle
 class TestTheUnitFileNeverOutlivesAFailedLoad:
     """The invariant behind three separate defects: a unit file present on disk has
@@ -3955,10 +4535,28 @@ class TestOrphanHomes:
             (c.pod_root / n).mkdir(parents=True)
         (c.pod_root / ".e2e-artifacts").mkdir()  # dot dirs are not pods
         monkeypatch.setattr(rt, "active_names", lambda cc: {"running"})
+        # Every candidate judged dead: the liveness signals have their own
+        # tests, and unstubbed they would probe this host's real ports.
+        monkeypatch.setattr(rt, "reclaim_blocker", lambda cc, n: None)
         return c
 
     def test_reported_on_linux(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         c = self._plane(tmp_path, monkeypatch)
+        assert rt.orphan_homes(c) == ["orphan"]
+
+    def test_a_home_the_blocker_calls_live_is_not_an_orphan(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The active-unit exclusion cannot see a gateway running outside the
+        template unit, so the pod-derived judgment is what keeps `pod ls` from
+        printing a delete command against a serving pod."""
+        c = self._plane(tmp_path, monkeypatch)
+        (c.pod_root / "live-no-unit").mkdir()
+        monkeypatch.setattr(
+            rt,
+            "reclaim_blocker",
+            lambda cc, n: "its gateway is serving" if n == "live-no-unit" else None,
+        )
         assert rt.orphan_homes(c) == ["orphan"]
 
     def test_ls_surfaces_them_with_the_reclaim_command(
@@ -4058,6 +4656,9 @@ class TestPrune:
         monkeypatch.setattr(rt, "active_names", lambda cc: set())
         monkeypatch.setattr(rt, "is_active", lambda cc, n: False)
         monkeypatch.setattr(rt, "unit_state", lambda cc, n: ("inactive", 0))
+        # Every candidate judged dead: the liveness signals have their own
+        # tests, and unstubbed they would probe this host's real ports.
+        monkeypatch.setattr(rt, "reclaim_blocker", lambda cc, n: None)
         monkeypatch.setattr(pod_cli, "_audit", lambda *a, **k: None)
         # cleanup_home directly from prune would BE the race stop_pod exists to
         # close — any call that does not come through stop_pod is a regression.

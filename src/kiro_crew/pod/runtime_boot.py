@@ -13,6 +13,7 @@ because that is the namespace the pod suite patches.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 from pathlib import Path
@@ -547,16 +548,33 @@ def boot(cfg: PodConfig, name: str) -> int:
         # there is no pod this could be a refusal FOR.
         print(f"FATAL: {exc}")
         return EXIT_PROVISIONING
+    # The boot gate is taken BEFORE the body reads the checkout pin, and the
+    # POSIX success path never releases it: the exec carries it into the
+    # gateway. A unit-less HOME reclaim holds it exclusive while it judges the
+    # pod, revokes the pin and deletes the HOME, so this boot either read its
+    # pin before that reclaim began -- and holds a gate the reclaim refuses on --
+    # or reads it after, and finds it gone.
+    gate = contextlib.ExitStack()
     try:
-        return _boot_unguarded(cfg, name)
+        gate.enter_context(runtime.pod_boot_gate(cfg, name))
     except OSError as exc:
-        if not runtime.IS_WINDOWS:
-            raise
-        return _refuse(cfg, name, EXIT_REFUSED_UNRECOVERABLE, str(exc))
-    except PodError as exc:
-        # Already-recorded refusals return through _refuse and never arrive here;
-        # this is the escape hatch closing, so record and give it a terminal code.
-        return _refuse(cfg, name, EXIT_REFUSED_UNRECOVERABLE, str(exc))
+        # Not a refusal: a reclaim of this name is running or stuck, and the
+        # service manager's retry is the right answer, so nothing is recorded and
+        # the exit code is not terminal.
+        print(f"kirocrew-pod: {name}: boot gate unavailable ({exc}); a retry will re-check")
+        return 1
+    with gate:
+        try:
+            return _boot_unguarded(cfg, name)
+        except OSError as exc:
+            if not runtime.IS_WINDOWS:
+                raise
+            return _refuse(cfg, name, EXIT_REFUSED_UNRECOVERABLE, str(exc))
+        except PodError as exc:
+            # Already-recorded refusals return through _refuse and never arrive
+            # here; this is the escape hatch closing, so record and give it a
+            # terminal code.
+            return _refuse(cfg, name, EXIT_REFUSED_UNRECOVERABLE, str(exc))
 
 
 def _boot_unguarded(cfg: PodConfig, name: str) -> int:

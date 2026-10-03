@@ -270,6 +270,40 @@ them in bulk — by default only HOMEs whose last activity is older than 3 days
 (`--all` sweeps every age; each delete still routes through the same
 stop-drain-verify path `down` uses, with liveness re-checked per name).
 
+An orphan by definition has no loaded unit, so the reclaim's stop step reports
+`Unit … not loaded` — the one stop failure that cannot mean a live unit. The
+delete is then gated on the pod's own evidence rather than the service
+manager's (`runtime_home.reclaim_blocker`), because a gateway started outside
+the template unit serves with no unit at all: the pod's boot gate (below), the
+gateway pid record in the HOME
+(accepted only with a matching start-time identity, so a recycled pid cannot
+attest), whether anything answers on the derived port that is not provably a
+foreign process, and whether any process still holds a file under the HOME (a
+`/proc` scan). A same-user process whose links cannot be read — it made
+itself non-dumpable — counts as a possible holder and blocks, unless it is a
+zombie (which holds no files) or its live parent is another user's process
+other than init, the shape of a credential transition such as every ssh
+session's own `sshd`; a pod child orphaned by a dead gateway is reparented to
+init or a same-user subreaper and so still blocks.
+Only a HOME all four signals call dead is deleted — or listed as an orphan by
+`pod ls` in the first place — and an unreadable signal refuses, because a
+wrong default here deletes a live pod's data while the other way merely leaves
+a directory to retry. Before the delete, the pod's checkout pin
+(`~/.kiro/crew/pods/<name>.env`) is revoked: every boot reads that pin first
+and refuses terminally without it — the unit-less mirror of the stop step that
+guards the unit path.
+
+The revocation alone would not cover a boot that read the pin just before it.
+Every boot therefore takes the pod's boot gate (`<unit-prefix>@<name>@boot.lock`
+beside the pin, `runtime.pod_boot_gate`) shared before its pin read, and the
+exec carries it into the gateway, so it is held for the gateway's whole life.
+The unit-less reclaim takes the same gate exclusive, without waiting, and holds
+it across the judgment, the revocation, the delete and the verification: a
+held gate is a live boot or gateway and refuses the reclaim, and a boot that
+arrives while the reclaim holds it waits before its pin read and then refuses
+on the revoked pin. Only systemd-host boots take the gate, because the
+unit-less reclaim and the orphan judgment that read it are systemd-only.
+
 ### Port derivation and allocation
 
 `port = base + (cksum(name) % 199) + 1` (base `7810` → `7811..8009`), unless a

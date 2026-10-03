@@ -1094,6 +1094,117 @@ def pod_plane_mutex(cfg: PodConfig):
         yield
 
 
+def _boot_gate_path(cfg: PodConfig, name: str) -> Path:
+    """The per-name boot gate's lock file.
+
+    ``@`` separates the suffix because ``_NAME_RE`` forbids it in a pod name, so
+    no pod's :func:`pod_name_mutex` file can ever share this path.
+    """
+    return cfg.pods_dir / f"{cfg.unit_prefix}@{name}@boot.lock"
+
+
+_GATE_STATE = threading.local()
+
+
+@contextlib.contextmanager
+def pod_boot_gate(cfg: PodConfig, name: str):
+    """Hold pod *name*'s boot gate SHARED from before the boot reads its pin.
+
+    The one ordering a unit-less HOME reclaim can rely on. That reclaim has no
+    unit to stop, so it revokes the checkout pin to turn a racing boot into a
+    terminal refusal -- but a boot that read the pin BEFORE the revocation
+    would still build its HOME after the delete and serve on it. Taking this
+    gate before the pin read closes that: :func:`pod_reclaim_gate` takes it
+    EXCLUSIVE across judge, revoke, delete and verify, so a boot either finished
+    reading its pin before the reclaim began (and then holds the gate, which the
+    reclaim sees and refuses on) or blocks until the reclaim is done and reads a
+    pin that is gone.
+
+    Held for the gateway's whole life, not just the boot: the descriptor is made
+    inheritable, so it survives the ``execve`` into the gateway and the shared
+    lock stays on the open file description until that process exits. A held
+    gate is therefore a liveness signal that needs no pid record, no port and no
+    ``/proc`` visibility -- a hand-run ``pod _run`` whose command line names no
+    path is caught by it.
+
+    Separate from :func:`pod_name_mutex` on purpose: ``pod up`` holds the name
+    mutex across the health wait for the very process that takes this gate, so
+    the two can never be one lock (see :func:`write_env_file`). Shared, so any
+    number of boots of one name coexist; only a reclaim excludes them. The wait
+    is ``acquire_lock``'s bounded one and fails closed with ``OSError``. Taken
+    only where its readers run: the unit-less reclaim and the ``pod ls`` orphan
+    judgment that read it are systemd-only, so a launchd or Task Scheduler boot
+    takes no gate.
+
+    On a return from the boot the descriptor is closed, releasing the gate; on
+    the POSIX success path the ``execve`` means that never runs.
+    """
+    if IS_MACOS or IS_WINDOWS:
+        yield
+        return
+    cfg.pods_dir.mkdir(parents=True, exist_ok=True)
+    fd = os.open(os.fspath(_boot_gate_path(cfg, name)), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        platform_compat.acquire_lock(fd, exclusive=False)
+        os.set_inheritable(fd, True)
+        yield
+    finally:
+        os.close(fd)
+
+
+@contextlib.contextmanager
+def pod_reclaim_gate(cfg: PodConfig, name: str):
+    """Hold pod *name*'s boot gate EXCLUSIVE for a unit-less HOME reclaim.
+
+    Never waits: a gate held by anyone else means a boot is between its pin read
+    and its gateway, or a gateway it exec'd is still alive, and either is a pod
+    whose HOME must not be deleted -- so a contended acquire raises
+    :class:`BlockingIOError` at once and the caller refuses. While held, every
+    new boot of the name blocks in :func:`pod_boot_gate` BEFORE its pin read,
+    which is what makes the pin revocation inside the reclaim final.
+
+    Recorded per thread, so :func:`boot_gate_busy` called by the same reclaim
+    does not read its own hold as a live boot.
+    """
+    held = getattr(_GATE_STATE, "held", None)
+    if held is None:
+        held = _GATE_STATE.held = set()
+    key = f"{cfg.unit_prefix}@{name}"
+    cfg.pods_dir.mkdir(parents=True, exist_ok=True)
+    with open_lock_file(_boot_gate_path(cfg, name)) as fd:
+        with file_lock(fd, exclusive=True, wait=False):
+            held.add(key)
+            try:
+                yield
+            finally:
+                held.discard(key)
+
+
+def boot_gate_busy(cfg: PodConfig, name: str) -> bool:
+    """Whether a boot or a gateway of pod *name* holds its boot gate right now.
+
+    A probe: takes and drops the gate exclusive without waiting. ``False`` when
+    this thread already holds it through :func:`pod_reclaim_gate`, and when no
+    gate file exists (nothing ever booted under it). Only a systemd-host boot
+    takes the gate, and only a systemd-host reclaim reads it.
+    """
+    held = getattr(_GATE_STATE, "held", None) or set()
+    if f"{cfg.unit_prefix}@{name}" in held:
+        return False
+    path = _boot_gate_path(cfg, name)
+    try:
+        fd = os.open(os.fspath(path), os.O_RDWR)
+    except FileNotFoundError:
+        return False
+    try:
+        with file_lock(fd, exclusive=True, wait=False):
+            return False
+    except BlockingIOError:
+        return True
+    finally:
+        os.close(fd)
+
+
 # --------------------------------------------------------------------------- #
 # Seed sanitization — deny-by-default. A seeded pod must NEVER be able to grab a
 # live messaging identity, so we only ever return a config with the tunnel and
@@ -1490,13 +1601,17 @@ _EXPORTS_BY_OWNER: dict[str, tuple[str, ...]] = {
         "_RUNTIME_AUTH_STORE_FILE_CAP",
         "_SQLITE_SIDECAR_SUFFIXES",
         "_SQLITE_SUFFIXES",
+        "_cmdline_names_path",
         "_fixture_name_from_manifest_text",
+        "_home_holders",
         "_is_sqlite_sidecar",
         "_open_seed_regular_file",
         "_pin_created_dir_windows",
         "_pin_outermost_existing_windows",
         "_prepare_seeded_home_dir",
         "_prepare_seeded_home_fd",
+        "_proc_status",
+        "_proc_uids",
         "_refuse_reparse_chain",
         "_rmtree_bounded",
         "_runtime_auth_store_mappings",
@@ -1509,6 +1624,7 @@ _EXPORTS_BY_OWNER: dict[str, tuple[str, ...]] = {
         "_stage_runtime_auth_store",
         "_stage_runtime_auth_store_windows",
         "_surviving_entries",
+        "_uninspectable_is_exempt",
         "atomic_write_at",
         "cleanup_home",
         "is_link_or_junction",
@@ -1516,6 +1632,7 @@ _EXPORTS_BY_OWNER: dict[str, tuple[str, ...]] = {
         "open_file_no_reparse",
         "orphan_homes",
         "pin_directory",
+        "reclaim_blocker",
         "resolve_seed_scenario",
         "resolved_pod_home",
         "seed_home_from_scenario",
@@ -1530,8 +1647,10 @@ _EXPORTS_BY_OWNER: dict[str, tuple[str, ...]] = {
         "_CGROUP_ROOT",
         "_install_pod_dropin",
         "_refresh_stale_unit",
+        "_stop_names_missing_unit",
         "_stop_pod_launchd",
         "_stop_pod_windows",
+        "_unit_less_refusal",
         "_write_and_load_unit",
         "cgroup_procs_file",
         "drain_cgroup",

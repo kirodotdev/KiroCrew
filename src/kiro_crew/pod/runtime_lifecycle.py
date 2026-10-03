@@ -13,6 +13,7 @@ The systemd adapter, the mutex and the platform flags are read from
 
 from __future__ import annotations
 
+import contextlib
 import subprocess
 import time
 from pathlib import Path
@@ -253,6 +254,22 @@ def halt_pod(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:
         return runtime.systemctl("stop", runtime.pod_unit(cfg, name))
 
 
+def _stop_names_missing_unit(cp: subprocess.CompletedProcess) -> bool:
+    """Whether a failed ``systemctl stop`` refused because the unit is ABSENT.
+
+    ``stop`` acts only on loaded units -- unlike ``start`` it never instantiates
+    a template -- so a name with nothing running under systemd fails with
+    ``Unit <unit> not loaded.`` (``not found.`` on some systemd versions). Both
+    are stable C-locale messages: ``_systemctl_env`` pins ``LC_ALL=C`` exactly
+    so classifiers like this one cannot be defeated by a host locale. Every
+    other stop failure (a bus that cannot be reached, a timeout, a stop job
+    that genuinely failed) stays unclassified, because there the unit may
+    still be live.
+    """
+    err = cp.stderr or ""
+    return "Unit" in err and ("not loaded" in err or "not found" in err)
+
+
 def stop_pod(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:
     """Stop pod *name* and reclaim its isolated HOME, or say why it could not.
 
@@ -295,83 +312,191 @@ def stop_pod(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:
             refused = _refresh_stale_unit(cfg)
             if refused is not None:
                 return refused
-        # Read the cgroup path BEFORE stopping: systemd clears ControlGroup on
-        # an inactive unit.
-        procs_file = cgroup_procs_file(cfg, name)
-        cp = runtime.systemctl("stop", runtime.pod_unit(cfg, name))
-        if cp.returncode != 0:
-            # The unit may still be live; deleting its HOME here is exactly the
-            # race this ordering exists to avoid.
+        # Holds the boot gate once the unit-less arm below takes it, until
+        # this function returns.
+        with contextlib.ExitStack() as reclaim:
+            # Read the cgroup path BEFORE stopping: systemd clears ControlGroup on
+            # an inactive unit.
+            procs_file = cgroup_procs_file(cfg, name)
+            cp = runtime.systemctl("stop", runtime.pod_unit(cfg, name))
+            # Set only by the unit-less arm below, which revokes the boot pin
+            # before its delete; a failed delete puts the pin back from here.
+            revoked_pin: bytes | None = None
+            if cp.returncode != 0:
+                if not _stop_names_missing_unit(cp):
+                    # The unit may still be live; deleting its HOME here is exactly
+                    # the race this ordering exists to avoid.
+                    return cp
+                # systemd holds nothing under this name -- the shape every orphaned
+                # HOME presents, and the one stop failure that cannot mean a live
+                # unit. Still not proof of a dead pod: a gateway started outside
+                # the template unit serves with no unit at all, so the delete
+                # below is gated on the pod's own evidence instead of the service
+                # manager's, and an unprovable answer refuses.
+                #
+                # The boot gate is taken FIRST and held to the end of this
+                # function. A boot takes it shared before it reads the pin and its
+                # gateway keeps it, so a held gate is a live boot or gateway and is
+                # refused on; once this call holds it, every new boot waits BEFORE
+                # its pin read and then reads the revoked pin. That is what makes
+                # the judgment, the revocation and the delete one step against
+                # every boot -- including one that read the pin before this began.
+                try:
+                    reclaim.enter_context(runtime.pod_reclaim_gate(cfg, name))
+                except BlockingIOError:
+                    return _unit_less_refusal(
+                        cp, cfg, name, "a boot or gateway of it holds its boot gate"
+                    )
+                except OSError as exc:
+                    return _unit_less_refusal(
+                        cp, cfg, name, f"its boot gate could not be taken ({exc})"
+                    )
+                blocker = runtime_home.reclaim_blocker(cfg, name)
+                if blocker is not None:
+                    return _unit_less_refusal(cp, cfg, name, blocker)
+                # Proven dead. Close the boot door before deleting: a boot must
+                # read the checkout pin first and refuses terminally without it,
+                # and with the gate held no boot can be between that read and its
+                # HOME, so a pin that is gone makes every later boot a recorded
+                # terminal refusal instead of a gateway building its HOME under
+                # this delete. The unit path gets the equivalent protection from
+                # the stop itself.
+                #
+                # SNAPSHOT before revoking, so a reclaim that fails after this
+                # point can put the pin back: the pin carries settings a retry
+                # must keep answering with (PORT= drives which port every later
+                # liveness judgment probes), and losing them on a failed delete
+                # would make the retry judge a different pod than the first
+                # attempt did.
+                try:
+                    pin = cfg.env_file(name)
+                    try:
+                        revoked_pin = pin.read_bytes()
+                    except FileNotFoundError:
+                        revoked_pin = None
+                    pin.unlink(missing_ok=True)
+                except OSError as exc:
+                    return subprocess.CompletedProcess(
+                        args=[],
+                        returncode=1,
+                        stdout=cp.stdout or "",
+                        stderr=(
+                            f"pod {name!r} is provably dead, but its boot pin at "
+                            f"{cfg.env_file(name)} could not be revoked ({exc}) -- "
+                            f"refusing to delete its HOME while a boot could still "
+                            f"claim it. Fix the pin file, then retry "
+                            f"`kirocrew pod down {name}`."
+                        ),
+                    )
+                # There is nothing to stop and no cgroup to drain, so the reclaim
+                # below is what this call has left to do.
+                cp = subprocess.CompletedProcess(
+                    args=cp.args, returncode=0, stdout=cp.stdout or "", stderr=""
+                )
+            survivors = drain_cgroup(procs_file) if procs_file is not None else []
+            # Resolved, because cleanup_home reports the resolved path: on a host
+            # whose home is a symlink, naming it both ways reads as two directories.
+            leftover = runtime_home.resolved_pod_home(cfg, name)
+            if survivors:
+                # Deleting now would BE the original defect. A process that outlived
+                # the drain either holds the tree open or reopens its audit log in
+                # append mode right behind the delete, and the verification below
+                # cannot catch that because the recreation lands after it. So leave
+                # the HOME alone and name what is holding it.
+                shown = ", ".join(survivors[:5])
+                return subprocess.CompletedProcess(
+                    args=[],
+                    returncode=1,
+                    stdout=cp.stdout or "",
+                    stderr=(
+                        f"pod stopped but {len(survivors)} pod process(es) are still in "
+                        f"its cgroup (pid {shown}) after {DRAIN_TIMEOUT_SECS:.0f}s, so "
+                        f"its isolated HOME at {leftover} was NOT deleted — this pod is "
+                        f"NOT zero-residue. Reclaim it with `kirocrew pod down {name}` "
+                        "once nothing is writing there."
+                    ),
+                )
+            rc = runtime_home.cleanup_home(cfg, name)
+            dropin_path = unit_mod.dropin_path(cfg, name)
+            # Linux-only (a systemd drop-in): junctions do not exist on this
+            # platform, so ``is_symlink()`` is the complete link test here.
+            had_dropin = dropin_path.exists() or dropin_path.is_symlink()
+            dropin_gone = unit_mod.remove_dropin(cfg, name)
+            reload_cp: subprocess.CompletedProcess | None = None
+            if had_dropin and dropin_gone:
+                reload_cp = runtime.systemctl("daemon-reload")
+            if rc != 0 or leftover.exists():
+                # A failed delete on the unit-less arm restores the pin it revoked:
+                # the pin carries the settings a retry must keep answering with
+                # (PORT= drives which port every later liveness judgment probes),
+                # so losing it here would make the retry judge a different pod
+                # than this attempt did.
+                restore_note = ""
+                if revoked_pin is not None:
+                    try:
+                        runtime.atomic_write(
+                            cfg.env_file(name),
+                            revoked_pin.decode("utf-8", errors="replace"),
+                            newline="",
+                        )
+                    except OSError as exc:
+                        restore_note = (
+                            f" Its boot pin could not be restored ({exc}); a later "
+                            f"`kirocrew pod up {name}` re-resolves and re-pins."
+                        )
+                return subprocess.CompletedProcess(
+                    args=[],
+                    returncode=1,
+                    stdout=cp.stdout or "",
+                    stderr=(
+                        f"pod stopped but its isolated HOME is still at {leftover} — "
+                        f"teardown is incomplete, so this pod is NOT zero-residue. "
+                        f"Reclaim it with `kirocrew pod down {name}` once nothing is "
+                        f"writing there.{restore_note}"
+                    ),
+                )
+            if not dropin_gone:
+                return subprocess.CompletedProcess(
+                    args=[],
+                    returncode=1,
+                    stdout=cp.stdout or "",
+                    stderr=(
+                        f"pod stopped and its HOME was reclaimed, but the boot override at "
+                        f"{unit_mod.dropin_path(cfg, name)} could not be removed — this pod "
+                        f"is NOT zero-residue. Delete it, then run `systemctl --user "
+                        "daemon-reload`."
+                    ),
+                )
+            if reload_cp is not None and reload_cp.returncode != 0:
+                detail = f" {reload_cp.stderr.strip()}" if (reload_cp.stderr or "").strip() else ""
+                return subprocess.CompletedProcess(
+                    args=[],
+                    returncode=reload_cp.returncode or 1,
+                    stdout=cp.stdout or "",
+                    stderr=(
+                        "pod stopped and its on-disk override was removed, but `systemctl "
+                        "--user daemon-reload` failed, so systemd may still retain it in "
+                        f"memory — this pod is NOT zero-residue.{detail}"
+                    ),
+                )
             return cp
-        survivors = drain_cgroup(procs_file) if procs_file is not None else []
-        # Resolved, because cleanup_home reports the resolved path: on a host
-        # whose home is a symlink, naming it both ways reads as two directories.
-        leftover = runtime_home.resolved_pod_home(cfg, name)
-        if survivors:
-            # Deleting now would BE the original defect. A process that outlived
-            # the drain either holds the tree open or reopens its audit log in
-            # append mode right behind the delete, and the verification below
-            # cannot catch that because the recreation lands after it. So leave
-            # the HOME alone and name what is holding it.
-            shown = ", ".join(survivors[:5])
-            return subprocess.CompletedProcess(
-                args=[],
-                returncode=1,
-                stdout=cp.stdout or "",
-                stderr=(
-                    f"pod stopped but {len(survivors)} pod process(es) are still in "
-                    f"its cgroup (pid {shown}) after {DRAIN_TIMEOUT_SECS:.0f}s, so "
-                    f"its isolated HOME at {leftover} was NOT deleted — this pod is "
-                    f"NOT zero-residue. Reclaim it with `kirocrew pod down {name}` "
-                    "once nothing is writing there."
-                ),
-            )
-        rc = runtime_home.cleanup_home(cfg, name)
-        dropin_path = unit_mod.dropin_path(cfg, name)
-        # Linux-only (a systemd drop-in): junctions do not exist on this
-        # platform, so ``is_symlink()`` is the complete link test here.
-        had_dropin = dropin_path.exists() or dropin_path.is_symlink()
-        dropin_gone = unit_mod.remove_dropin(cfg, name)
-        reload_cp: subprocess.CompletedProcess | None = None
-        if had_dropin and dropin_gone:
-            reload_cp = runtime.systemctl("daemon-reload")
-        if rc != 0 or leftover.exists():
-            return subprocess.CompletedProcess(
-                args=[],
-                returncode=1,
-                stdout=cp.stdout or "",
-                stderr=(
-                    f"pod stopped but its isolated HOME is still at {leftover} — "
-                    f"teardown is incomplete, so this pod is NOT zero-residue. "
-                    f"Reclaim it with `kirocrew pod down {name}` once nothing is "
-                    "writing there."
-                ),
-            )
-        if not dropin_gone:
-            return subprocess.CompletedProcess(
-                args=[],
-                returncode=1,
-                stdout=cp.stdout or "",
-                stderr=(
-                    f"pod stopped and its HOME was reclaimed, but the boot override at "
-                    f"{unit_mod.dropin_path(cfg, name)} could not be removed — this pod "
-                    f"is NOT zero-residue. Delete it, then run `systemctl --user "
-                    "daemon-reload`."
-                ),
-            )
-        if reload_cp is not None and reload_cp.returncode != 0:
-            detail = f" {reload_cp.stderr.strip()}" if (reload_cp.stderr or "").strip() else ""
-            return subprocess.CompletedProcess(
-                args=[],
-                returncode=reload_cp.returncode or 1,
-                stdout=cp.stdout or "",
-                stderr=(
-                    "pod stopped and its on-disk override was removed, but `systemctl "
-                    "--user daemon-reload` failed, so systemd may still retain it in "
-                    f"memory — this pod is NOT zero-residue.{detail}"
-                ),
-            )
-        return cp
+
+
+def _unit_less_refusal(
+    cp: subprocess.CompletedProcess, cfg: PodConfig, name: str, blocker: str
+) -> subprocess.CompletedProcess:
+    """The refusal :func:`stop_pod` returns when a unit-less HOME is not provably dead."""
+    return subprocess.CompletedProcess(
+        args=[],
+        returncode=1,
+        stdout=cp.stdout or "",
+        stderr=(
+            f"pod {name!r} has no unit loaded, but {blocker} -- "
+            f"refusing to delete its isolated HOME at "
+            f"{runtime_home.resolved_pod_home(cfg, name)}. Stop whatever runs "
+            f"there, then retry `kirocrew pod down {name}`."
+        ),
+    )
 
 
 def _stop_pod_launchd(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:

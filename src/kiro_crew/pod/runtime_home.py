@@ -21,12 +21,12 @@ import time
 import urllib.parse
 from pathlib import Path
 
-from kiro_crew import pinned_fs
+from kiro_crew import pinned_fs, platform_compat
 from kiro_crew import seed as seed_mod
 from kiro_crew.atomic_write import atomic_write_at
 from kiro_crew.identity_stores import StoreMapping, store_mappings
 from kiro_crew.platform_compat import is_link_or_junction, open_file_no_reparse, pin_directory
-from kiro_crew.pod import launchd, runtime
+from kiro_crew.pod import launchd, runtime, runtime_attestation, runtime_client, runtime_ports
 from kiro_crew.pod import windows as win_backend
 from kiro_crew.pod.config import PodConfig
 from kiro_crew.pod.runtime import PodError
@@ -1255,6 +1255,226 @@ def resolved_pod_home(cfg: PodConfig, name: str) -> Path:
         return runtime.pod_home(cfg, name)
 
 
+def _proc_status(base: str) -> dict[str, str]:
+    """The ``Key:\tvalue`` fields of ``/proc`` entry *base*'s ``status`` file.
+
+    Read from ``status``, never from the directory's owner: a process that made
+    itself non-dumpable has its ``/proc`` entries re-owned to root while its
+    ``status`` still names the true uids, state and parent -- and that process
+    is exactly the one the ownership question must not misfile as somebody
+    else's. A whole-file read, because ``status`` is a kernel pseudo-file with a
+    kernel-bounded size, the same reading
+    :func:`kiro_crew.platform_compat.get_ppid` applies to it. Empty when the
+    process vanished or the file cannot be read.
+    """
+    try:
+        text = Path(f"{base}/status").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {}
+    fields: dict[str, str] = {}
+    for line in text.splitlines():
+        key, sep, value = line.partition(":")
+        if sep:
+            fields[key] = value.strip()
+    return fields
+
+
+def _proc_uids(base: str) -> tuple[int, ...]:
+    """The uid set (real, effective, saved, fs) of ``/proc`` entry *base*.
+
+    Empty when the process vanished or its ``status`` is unparsable.
+    """
+    try:
+        return tuple(int(f) for f in _proc_status(base).get("Uid", "").split()[:4])
+    except ValueError:
+        return ()
+
+
+def _uninspectable_is_exempt(proc_root: str, base: str, my_uid: int) -> bool:
+    """Whether a same-user process whose links cannot be read still provably
+    holds nothing under a pod HOME.
+
+    Two shapes only, each a positive fact rather than an absence of evidence:
+
+    * a zombie (``State: Z``/``X``) -- it has released every descriptor, its
+      cwd and its root, so it holds nothing;
+    * a process whose live parent is ANOTHER user's process and is not init --
+      the shape a credential transition leaves (every ssh session's own
+      ``sshd`` is a child of the root ``sshd [priv]`` that dropped to this
+      user, and ``su``/``sudo``/``login`` look the same). A pod never produces
+      it: the gateway and its children are this user's, and a pod child whose
+      gateway died is reparented to init or to a same-user subreaper, both of
+      which fail this test.
+
+    Anything else -- a parent that is this user's, is init, or cannot be read --
+    is not exempt, because a non-dumpable pod child that received the HOME
+    through its environment rather than its argv looks exactly like that.
+    """
+    status = _proc_status(base)
+    if status.get("State", "")[:1] in ("Z", "X"):
+        return True
+    try:
+        ppid = int(status.get("PPid", ""))
+    except ValueError:
+        return False
+    if ppid <= 1:
+        return False
+    parent_uids = _proc_uids(f"{proc_root}/{ppid}")
+    return bool(parent_uids) and my_uid not in parent_uids
+
+
+def _cmdline_names_path(base: str, root: str) -> bool:
+    """Whether ``/proc`` entry *base*'s command line mentions *root*.
+
+    The one holder signal a non-dumpable process still exposes: ``cmdline``
+    stays world-readable when ``cwd``/``fd`` turn root-only, and a daemon
+    pointed into a pod HOME usually carries that path as an argument (a
+    ``--homedir``, a socket path, a config file). Best-effort by nature — a
+    path delivered through the environment is invisible here — which is why
+    this is a narrowing of the blind spot, never the primary detection.
+    """
+    try:
+        raw = Path(f"{base}/cmdline").read_bytes()
+    except OSError:
+        return False
+    return root.encode() in raw
+
+
+def _home_holders(home: Path, proc_root: str = "/proc") -> list[int]:
+    """PIDs of this user's processes holding *home* (or anything under it) open.
+
+    The unit-less reclaim path has no cgroup to drain, so this ``/proc`` scan
+    stands in for it: a process whose cwd, root, exe, or any open descriptor
+    resolves under the HOME would recreate or corrupt the tree right behind
+    the delete — the exact defect the drain exists to prevent on the unit
+    path. *proc_root* exists for the tests: the non-dumpable shape below
+    requires a credential transition to produce for real, so they stage it.
+
+    Another user's process is skipped — a pod HOME is created ``0700``, so no
+    other non-root user can hold a file under it, and a root process inside a
+    user pod HOME is not a state this cooperative plane can produce or
+    arbitrate. Ownership is read from ``status``, which stays truthful for
+    the non-dumpable case below. A pid that vanishes mid-scan stopped
+    mattering.
+
+    A SAME-user process whose links are unreadable made itself non-dumpable,
+    and nothing it holds can be observed from here -- including a HOME it was
+    handed through its environment, which no readable signal names. It is
+    therefore reported as a possible holder and blocks the delete, unless
+    :func:`_uninspectable_is_exempt` proves it holds nothing: this path has no
+    cgroup drain behind it, and the post-delete check cannot see a descriptor
+    left open into the unlinked tree, so a missed holder here is silent data
+    loss. The exemption is what keeps an ordinary host reclaimable: every ssh
+    session's own ``sshd`` presents this shape, and refusing on the shape alone
+    would refuse every reclaim on any host with an ssh session.
+    """
+    my_uid = platform_compat.local_user_id()
+    root = str(home).rstrip("/")
+    prefix = root + "/"
+    held: list[int] = []
+    for entry in os.listdir(proc_root):
+        if not entry.isdigit():
+            continue
+        base = f"{proc_root}/{entry}"
+        if my_uid not in _proc_uids(base):
+            continue
+        links: list[str] = []
+        unreadable = False
+        try:
+            for special in ("cwd", "root", "exe"):
+                links.append(os.readlink(f"{base}/{special}"))
+            fd_names = os.listdir(f"{base}/fd")
+        except (FileNotFoundError, ProcessLookupError):
+            # The whole process vanished mid-scan; it stopped mattering.
+            continue
+        except OSError:
+            fd_names = []
+            unreadable = True
+        for fd in fd_names:
+            try:
+                links.append(os.readlink(f"{base}/fd/{fd}"))
+            except (FileNotFoundError, ProcessLookupError):
+                # ONE descriptor closed mid-scan — expected, not a verdict on
+                # the process: the fd this scan's own directory listing holds
+                # is gone by the time it is read back, so treating a vanished
+                # descriptor as a vanished process would skip the scanner's
+                # own process and any holder that closes a file while being
+                # scanned.
+                continue
+            except OSError:
+                unreadable = True
+        if any(ln == root or ln.startswith(prefix) for ln in links):
+            held.append(int(entry))
+        elif unreadable and (
+            _cmdline_names_path(base, root) or not _uninspectable_is_exempt(proc_root, base, my_uid)
+        ):
+            held.append(int(entry))
+    return held
+
+
+def reclaim_blocker(cfg: PodConfig, name: str) -> str | None:
+    """Why pod *name*'s HOME must NOT be deleted with no unit behind it, or
+    ``None`` when the pod is provably dead and the HOME is reclaimable.
+
+    The service manager cannot answer this question. systemd's template unit
+    is machine-wide, so a pod running outside it — a gateway started by hand,
+    or by anything other than ``pod up`` — is live with NO unit, and from the
+    unit's side an abandoned directory and that live pod look identical.
+    Liveness is therefore judged from the pod's own evidence, four signals
+    none of which consults a unit:
+
+    * whether a boot or its gateway holds the pod's boot gate
+      (:func:`kiro_crew.pod.runtime.pod_boot_gate`) -- taken before every boot
+      reads its pin and carried into the gateway by its exec, so it catches a
+      hand-run ``pod _run`` that no other signal can attribute;
+    * the gateway pid record inside the HOME, accepted only when the process
+      it names still carries the start-time identity it was recorded with —
+      the same recycled-pid rule :func:`port_owner` applies, so crash residue
+      cannot attest;
+    * whether anything answers on the derived port that is not PROVABLY a
+      foreign process — a recycled port proves somebody else is serving,
+      never that this pod is, so a foreign responder does not block;
+    * whether any process holds, or cannot be shown not to hold, a file under
+      the HOME -- the stand-in for the cgroup drain that a unit-less pod does
+      not get.
+
+    Fails CLOSED on every way of not knowing: a signal that cannot be read,
+    or a responder that cannot be attributed, blocks the delete. Whichever
+    way this defaults is either an unreclaimable directory or a deleted live
+    pod's data, and only one of those has a retry.
+
+    Consulted by BOTH the reporting path (:func:`orphan_homes`, so ``pod ls``
+    never advertises a delete against a pod that may be serving) and the
+    deleting path (:func:`kiro_crew.pod.runtime_lifecycle.stop_pod`, under the
+    per-name mutex and the boot gate, so the answer is re-derived at the moment
+    it is acted on and no boot can start between the two).
+    """
+    try:
+        if runtime.boot_gate_busy(cfg, name):
+            return "a boot or gateway of it holds its boot gate"
+        port = runtime_ports.derive_port(cfg, name)
+        if runtime_attestation._pod_recorded_pid(cfg, name, port) is not None:
+            return f"its gateway pid record still names a live process on port {port}"
+        if (
+            runtime_client._probe_health(port) != 0
+            and runtime_attestation.port_owner(cfg, name, port) != runtime_attestation.OWNER_FOREIGN
+        ):
+            return (
+                f"something answers on its port {port} and cannot be proven "
+                "to be another process"
+            )
+        holders = _home_holders(resolved_pod_home(cfg, name))
+        if holders:
+            shown = ", ".join(str(p) for p in holders[:5])
+            return (
+                f"{len(holders)} process(es) hold, or cannot be shown not to hold, "
+                f"files under its HOME (pid {shown})"
+            )
+    except Exception as exc:
+        return f"its liveness could not be judged ({exc})"
+    return None
+
+
 def orphan_homes(cfg: PodConfig) -> list[str]:
     """Pod HOMEs left on disk with no live pod and no installed definition.
 
@@ -1264,6 +1484,10 @@ def orphan_homes(cfg: PodConfig) -> list[str]:
     host reboot — leaves its isolated HOME behind. Reported rather than deleted so
     the operator decides, and so the delete still routes through
     :func:`cleanup_home`'s re-validation via ``kirocrew pod down <name>``.
+
+    On Linux a name is reported only when :func:`reclaim_blocker` proves the
+    pod dead: the active-unit exclusion cannot see a gateway running outside
+    the template unit, and an orphan report is a printed delete command.
     """
     try:
         # never follow a link: a link under pod_root can point at a LIVE
@@ -1291,11 +1515,22 @@ def orphan_homes(cfg: PodConfig) -> list[str]:
             continue
         # macOS writes a per-pod plist at `up` and drops it at `down`, so its
         # presence means the pod is installed rather than orphaned. Windows does
-        # the same with its per-pod `.cmd` wrapper. systemd's template unit is
-        # machine-wide, so liveness is the only signal there.
+        # the same with its per-pod `.cmd` wrapper.
         if runtime.IS_MACOS and launchd.plist_path(cfg, p.name).exists():
             continue
         if runtime.IS_WINDOWS and win_backend.task_script_path(cfg, p.name).exists():
+            continue
+        # systemd's template unit is machine-wide, so no per-pod artifact can
+        # vouch for a name here -- and a gateway started outside the template
+        # unit is live with no active unit, which the exclusion above cannot
+        # see. Only a HOME the pod's own evidence proves dead is an orphan;
+        # anything less would print a reclaim command that deletes a serving
+        # pod's data.
+        if (
+            not runtime.IS_MACOS
+            and not runtime.IS_WINDOWS
+            and reclaim_blocker(cfg, p.name) is not None
+        ):
             continue
         out.append(p.name)
     return sorted(out)
