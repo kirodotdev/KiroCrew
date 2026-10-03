@@ -44,6 +44,7 @@ import kiro_crew
 from kiro_crew import link_unfurl, platform_compat, sandbox
 from kiro_crew.apps.manager import is_app_enabled
 from kiro_crew.config.paths import config_dir
+from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.security import (
     DENIED_ROOT_PARTS,
     is_sensitive_path,
@@ -638,6 +639,22 @@ def _require_enabled(handler):
     return _wrapped
 
 
+async def _owner_gate(request: web.Request, operation: str) -> web.Response | None:
+    """Owner gate for the host-touching POSTs (discover, render).
+
+    Both start host work: a git clone, a route scan over a host directory, a
+    headless Chromium run, PNGs written under the owner's data home. So a
+    dashboard caller must be the owner, and gets the shared 403 ``owner_only``
+    otherwise. A request with no app claim is judged the same way, so a
+    missing claim fails closed. An app token passes here: the token
+    middleware has already confirmed it holds this path, as its own namespace
+    or through a manifest ``permissions.api`` grant.
+    """
+    if not request.get("app"):
+        return await require_owner_dashboard_request(request, operation)
+    return None
+
+
 async def _json_object(
     request: web.Request,
 ) -> tuple[dict[str, Any] | None, web.Response | None]:
@@ -1093,6 +1110,9 @@ async def _discover_repo_job(value: str, vetted: list[str], git_bin: str) -> dic
 
 
 async def _handle_discover(request: web.Request) -> web.Response:
+    owner_denied = await _owner_gate(request, "design_critique.discover")
+    if owner_denied is not None:
+        return owner_denied
     body, err = await _json_object(request)
     if body is None:
         return err or _bad_request("invalid JSON", "invalid_json")
@@ -1373,6 +1393,9 @@ async def _render_capture_job(
 
 
 async def _handle_render(request: web.Request) -> web.Response:
+    owner_denied = await _owner_gate(request, "design_critique.render")
+    if owner_denied is not None:
+        return owner_denied
     body, err = await _json_object(request)
     if body is None:
         return err or _bad_request("invalid JSON", "invalid_json")
