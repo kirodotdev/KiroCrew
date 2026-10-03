@@ -741,14 +741,14 @@ enforced nowhere:
   `_mark_superseded_rows`, which runs before `_normalize_checks` groups rows and before
   the row cap is spent -- capping first can cut a successor while keeping the row it
   replaced, and that kept row then wins its own key and is reported live. The
-  skill's status tool collapses in `collapse_superseded`, and the two **diverge on both
-  halves of the rule**. On identity, that one keys CheckRuns on
-  `("run", workflowName, name)`, so it groups two workflow files sharing a single
-  `name:` and ignores the run's trigger. On ordering, it takes the newest by the check
-  row's `startedAt`, which is when the JOB got a runner, so a queue can invert it. Both
-  drop a live row rather than over-report, and its displaced row is overwritten instead
-  of joining its `undecidable` list. Tracked as issue #11832; this module's rule is what
-  the provider enforces, not what that tool does.
+  skill's status tool applies the same rule in `collapse_superseded`, by removal rather
+  than by flag, and reads the rollup through the same GraphQL selection for the same
+  reason: `gh pr view --json statusCheckRollup` exposes only the workflow's display name,
+  none of the run fields the rule keys on. It differs in one bound only: a board past
+  its page cap reads UNKNOWN rather than incomplete, because a partial read could keep a
+  displaced row whose successor sits on the page never fetched. (Issue #11832 recorded
+  the divergence this replaced: a label-keyed, `startedAt`-ordered collapse that
+  overwrote a live row of the same run.)
   Identity is the workflow DEFINITION plus the check name
   (`checkSuite.workflowRun.workflow.databaseId`) and the RUN's triggering
   `checkSuite.workflowRun.event`, because one workflow file can declare several

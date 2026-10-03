@@ -873,6 +873,14 @@ def err(msg):
 # push landing between the two reads can never pair one head's metadata with
 # another head's checks. The parity-pinned copy in pr_findings.py keeps each
 # command's check-rollup path explicit.
+#
+# That own call is GraphQL rather than `gh pr view --json statusCheckRollup`:
+# the rows gh returns carry the workflow's display NAME and nothing else about
+# the run (measured: __typename completedAt conclusion context detailsUrl name
+# startedAt state status targetUrl workflowName), and collapse_superseded keys
+# on the run itself -- its id, its triggering event, its workflow definition's
+# id and its own conclusion -- all reached through the check suite. Nothing in
+# the --json field set exposes them, so there is no selection to extend there.
 ROLLUP_UNAVAILABLE_NOTICE = (
     "CI check status UNAVAILABLE - the statusCheckRollup fetch failed (a token "
     "without Checks read access, e.g. any fine-grained PAT, cannot fetch it); "
@@ -883,21 +891,130 @@ ROLLUP_HEAD_MOVED_NOTICE = (
     "the rollup read (concurrent push); treat CI as UNKNOWN and re-run for a "
     "consistent snapshot"
 )
+# Owner, repository, number and cursor travel as GraphQL variables; the document
+# is fixed text. The three strings go through gh's `-f` (raw string): `-F` is
+# the TYPED form and turns an all-digit value into a JSON integer, which the
+# host then rejects against `String!`, so an owner or repository named `2048`
+# would read as UNAVAILABLE forever. Only `n` is `-F`, because `Int!` needs it.
+# Both ids are nullable Int on the wire (an app-created check run has a
+# checkSuite but no workflowRun); event, status and conclusion are what the
+# collapse and classify_check read.
+ROLLUP_QUERY = (
+    "query($o:String!,$r:String!,$n:Int!,$c:String){repository(owner:$o,name:$r)"
+    "{pullRequest(number:$n){headRefOid commits(last:1){nodes{commit{oid "
+    "statusCheckRollup{contexts(first:100,after:$c){pageInfo{hasNextPage endCursor} "
+    "nodes{__typename ... on CheckRun{name status conclusion startedAt detailsUrl "
+    "checkSuite{conclusion workflowRun{databaseId event workflow{databaseId name}}}} "
+    "... on StatusContext{context state targetUrl}}}}}}}}}}"
+)
+# A board past this many pages reads UNKNOWN rather than in part: a partial read
+# could keep a displaced row whose successor sits on the page never fetched.
+_MAX_ROLLUP_PAGES = 10
 
 
-def fetch_check_rollup(pr, expected_head):
-    """Return (rollup entries, notice); the notice is non-empty when degraded."""
-    rc, out, _ = run(["gh", "pr", "view", pr, "--json", "headRefOid,statusCheckRollup"])
-    if rc == 0 and out.strip():
+def _host_id(value):
+    """``value`` when it can serve as a host-supplied id, else None.
+
+    bool is refused because it is an int subclass and would group rows under True.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def flatten_rollup_row(node):
+    """One rollup node in the flat shape the rest of this file reads, or None.
+
+    A CheckRun's run fields are lifted out of its check suite and travel beside
+    the row's own: ``workflowName`` (the display label the report prints),
+    ``workflowRunId``, ``workflowRunEvent``, ``workflowDefinitionId`` and
+    ``workflowRunConclusion``. The suite's conclusion IS the run's: WorkflowRun
+    exposes none of its own, and CheckSuite.workflowRun is the inverse edge of
+    the one followed here. A field the host withheld is left absent rather than
+    defaulted, so a missing id reads as "unidentified" downstream and never as
+    a shared key. A StatusContext passes through untouched. None for anything
+    that is not a well-formed node, so the caller can refuse the whole page.
+    """
+    if not isinstance(node, dict) or not isinstance(node.get("__typename"), str):
+        return None
+    row = {k: v for k, v in node.items() if k != "checkSuite"}
+    if node["__typename"] != "CheckRun":
+        return row
+    suite = node.get("checkSuite")
+    run = suite.get("workflowRun") if isinstance(suite, dict) else None
+    workflow = run.get("workflow") if isinstance(run, dict) else None
+    name = workflow.get("name") if isinstance(workflow, dict) else None
+    if isinstance(name, str):
+        row["workflowName"] = name
+    if isinstance(run, dict):
+        if _host_id(run.get("databaseId")) is not None:
+            row["workflowRunId"] = run["databaseId"]
+        if isinstance(run.get("event"), str) and run["event"]:
+            row["workflowRunEvent"] = run["event"]
+    if isinstance(workflow, dict) and _host_id(workflow.get("databaseId")) is not None:
+        row["workflowDefinitionId"] = workflow["databaseId"]
+    if isinstance(suite, dict) and isinstance(suite.get("conclusion"), str) and suite["conclusion"]:
+        row["workflowRunConclusion"] = suite["conclusion"]
+    return row
+
+
+def fetch_check_rollup(repo, number, expected_head):
+    """Return (rollup rows, notice); the notice is non-empty when degraded.
+
+    Pages through the head commit's statusCheckRollup. Every page re-reads the
+    pull request's head AND names the commit the rollup hangs off; either
+    disagreeing with ``expected_head`` discards the whole read, so a push that
+    lands mid-pagination can never pair one head's metadata with another's
+    checks. Any failed or malformed page, or a board past the page cap, reads
+    UNAVAILABLE: rows so far are dropped, never reported as the board.
+    """
+    if "/" not in (repo or "") or not number:
+        return [], ROLLUP_UNAVAILABLE_NOTICE
+    owner, name = repo.split("/", 1)
+    rows: list[dict] = []
+    cursor = None
+    for _ in range(_MAX_ROLLUP_PAGES):
+        args = ["gh", "api", "graphql", "-f", "query=" + ROLLUP_QUERY]
+        if cursor:
+            args += ["-f", "c=" + cursor]
+        args += ["-f", "o=" + owner, "-f", "r=" + name, "-F", "n=" + str(number)]
+        rc, out, _ = run(args)
+        if rc != 0 or not out.strip():
+            return [], ROLLUP_UNAVAILABLE_NOTICE
         try:
-            d = json.loads(out)
-        except ValueError:
-            d = None
-        if isinstance(d, dict):
-            if expected_head and (d.get("headRefOid") or "").strip() != expected_head:
-                return [], ROLLUP_HEAD_MOVED_NOTICE
-            return d.get("statusCheckRollup") or [], ""
-    return [], ROLLUP_UNAVAILABLE_NOTICE
+            pr = json.loads(out)["data"]["repository"]["pullRequest"]
+            head = (pr.get("headRefOid") or "").strip()
+            commits = pr["commits"]["nodes"]
+            commit = commits[0]["commit"] if commits else None
+        except (ValueError, KeyError, TypeError, AttributeError, IndexError):
+            return [], ROLLUP_UNAVAILABLE_NOTICE
+        if expected_head and head != expected_head:
+            return [], ROLLUP_HEAD_MOVED_NOTICE
+        if commit is None:
+            return [], ""  # a pull request with no commit has no checks
+        if not isinstance(commit, dict) or not isinstance(commit.get("oid"), str):
+            return [], ROLLUP_UNAVAILABLE_NOTICE
+        if expected_head and commit["oid"] != expected_head:
+            return [], ROLLUP_HEAD_MOVED_NOTICE
+        rollup = commit.get("statusCheckRollup")
+        if rollup is None:
+            return rows, ""  # the host reports no checks for this head
+        try:
+            contexts = rollup["contexts"]
+            nodes = contexts["nodes"]
+            page = contexts["pageInfo"] or {}
+            flat = [flatten_rollup_row(n) for n in nodes]
+        except (KeyError, TypeError):
+            return [], ROLLUP_UNAVAILABLE_NOTICE
+        if any(r is None for r in flat):
+            return [], ROLLUP_UNAVAILABLE_NOTICE
+        rows.extend(flat)
+        if not page.get("hasNextPage"):
+            return rows, ""
+        cursor = page.get("endCursor")
+        if not isinstance(cursor, str) or not cursor:
+            return [], ROLLUP_UNAVAILABLE_NOTICE
+    return [], ROLLUP_UNAVAILABLE_NOTICE  # page cap with pages left: UNKNOWN, never partial
 
 
 def classify_check(entry):
@@ -925,12 +1042,14 @@ def classify_check(entry):
 def failing_check_identity(entry):
     """Workflow-qualified label for a failing check, for ``progress_key``.
 
-    Mirrors ``collapse_superseded()``'s identity notion -- a StatusContext is
+    Follows ``collapse_superseded()``'s identity axis -- a StatusContext is
     keyed by its context name, a CheckRun by (workflow, name) -- because a
     display name alone is not an identity: two workflows can publish the same
     check name. If one workflow's copy starts failing while the other's stops,
     a name-only list is byte-identical across that change, and a stall streak
-    would run straight through a PR whose blocking check actually moved.
+    would run straight through a PR whose blocking check actually moved. The
+    workflow is named by its display label here, not its definition id: this
+    string is read by a person in the report as well as compared by the loop.
     """
     context = entry.get("context")
     if context:
@@ -940,38 +1059,108 @@ def failing_check_identity(entry):
     return "{} / {}".format(workflow, name) if workflow else name
 
 
-def collapse_superseded(rollup):
-    """Collapse re-run check attempts to the newest run per check identity.
+def superseded_key(entry):
+    """The identity a CheckRun row can be superseded within, or None to exempt it.
 
-    GitHub keeps superseded attempts (typically CANCELLED) in the rollup next
-    to the run that replaced them; counting them inflates the failure count
-    with entries that are not live. Identity is the workflow-qualified
-    check name for CheckRuns and the context name for StatusContexts; newest
-    is decided by startedAt (ISO-8601, so string comparison orders correctly).
-    Entries that cannot be strictly ordered against the current winner are all
-    kept -- when in doubt, over-report rather than hide a live failure.
+    The workflow DEFINITION's id, the run's triggering EVENT and the check name.
+    Never the workflow's display name: a host permits two workflow files to carry
+    one ``name:``, and each may publish a check of the same name, so a label would
+    group two independent workflows and the collapse would drop one of them. The
+    event is in it because one file can declare several triggers, and a file on
+    ``push`` and ``pull_request`` produces two runs of itself on one commit --
+    concurrent dispatches rather than an attempt and its replacement, so only a
+    later run of the SAME trigger may replace an earlier one.
+
+    None whenever the host did not supply a component, as for a check run an app
+    created outside Actions (a checkSuite with no workflowRun). Grouping such rows
+    under a missing key would put every one of them into one identity and drop
+    all but the newest; the only thing left to key on would be the display name,
+    which is what this refuses.
     """
-    winners = {}
-    order = []
-    undecidable = []
+    name = entry.get("name")
+    if not isinstance(name, str) or not name:
+        return None
+    definition = _host_id(entry.get("workflowDefinitionId"))
+    if definition is None:
+        return None
+    event = entry.get("workflowRunEvent")
+    if not isinstance(event, str) or not event:
+        return None
+    return (definition, event, name)
+
+
+def _displaced(entry):
+    """Whether removing this row of an OLDER run takes no verdict with it.
+
+    The rollup carries no lineage edge: a greater run id proves only that a run
+    started later, and a later run of one identity can be an independent dispatch
+    (``synchronize`` and ``edited`` are both ``pull_request``), so recency alone
+    never licenses dropping a row. A run the concurrency group CANCELLED in favour
+    of its successor is the one displacement the rollup does establish, and it is
+    a property of the RUN, read from the run: a row reaches CANCELLED inside live
+    runs too -- fail-fast cancelling a matrix job's siblings, a job cancelled
+    because something in its ``needs`` failed, an operator cancelling one job --
+    and in each the run concluded FAILURE. The row's own COMPLETED+CANCELLED is
+    required as well, because a cancelled run can still hold a row that reached a
+    real FAILURE before the cancel landed.
+    """
+    if entry.get("workflowRunConclusion") != "CANCELLED":
+        return False
+    status = (entry.get("status") or "").upper()
+    conclusion = (entry.get("conclusion") or "").upper()
+    return status == "COMPLETED" and conclusion == "CANCELLED"
+
+
+def collapse_superseded(rollup):
+    """Drop the check rows a newer run of the same check has displaced.
+
+    A host keeps a replaced round's rows in the rollup beside the round that
+    replaced them, so counting every row inflates the failure count with
+    attempts that are not live. This is the rule the structured monitor's GitHub
+    provider enforces (``_mark_superseded_rows``), applied by removal:
+
+    * Identity is ``superseded_key``: workflow definition, run event, check name.
+    * Newest is the greatest RUN id, which increases monotonically. Not the row's
+      ``startedAt`` -- that is when a JOB got a runner, and a busy queue starts an
+      older run's job after a newer run's.
+    * A row is removed only when it belongs to an older run than the newest of
+      its identity AND ``_displaced`` holds. A replaced round's FAILURE rows stay;
+      a cancelled row inside a live run stays; a cancelled NEWEST run stays, since
+      dropping it would revive the verdict it superseded.
+    * Two rows of ONE run never displace each other: a workflow can publish a
+      check run under its own job's display name, so both are live.
+    * A row without a key or a run id is exempt and takes no part in choosing the
+      newest run, since it may BE the run that would supersede the others.
+    * A StatusContext is never collapsed. The host reports one status per
+      context, the latest, so there is nothing to order; the provider keeps every
+      status row too, and a rule here would be a second place to be wrong.
+
+    Input order is preserved. When in doubt, over-report rather than hide a
+    live failure.
+    """
+    newest_run: dict[tuple, int] = {}
     for e in rollup:
-        context = e.get("context")
-        if context:
-            key = ("ctx", context, "")
-        else:
-            key = ("run", e.get("workflowName") or "", e.get("name") or "")
-        started = e.get("startedAt") or ""
-        if key not in winners:
-            winners[key] = (started, e)
-            order.append(key)
+        if e.get("context"):
             continue
-        prev_started, prev = winners[key]
-        if started and prev_started:
-            if started > prev_started:
-                winners[key] = (started, e)
-        else:
-            undecidable.append(e)  # no ordering evidence -> keep both
-    return [winners[k][1] for k in order] + undecidable
+        key = superseded_key(e)
+        run_id = _host_id(e.get("workflowRunId"))
+        if key is None or run_id is None:
+            continue
+        if key not in newest_run or run_id > newest_run[key]:
+            newest_run[key] = run_id
+    kept = []
+    for e in rollup:
+        if e.get("context"):
+            kept.append(e)
+            continue
+        key = superseded_key(e)
+        run_id = _host_id(e.get("workflowRunId"))
+        if key is None or run_id is None or run_id == newest_run[key]:
+            kept.append(e)
+            continue
+        if not _displaced(e):
+            kept.append(e)
+    return kept
 
 
 def unresolved_thread_count(number):
@@ -2014,7 +2203,11 @@ def main(argv):
     merge_state = (d.get("mergeStateStatus") or "").upper()
     decision = (d.get("reviewDecision") or "NONE").upper()
     head_sha = (d.get("headRefOid") or "").strip()
-    rollup_entries, rollup_notice = fetch_check_rollup(pr, head_sha)
+    # The viewed PR's own repository: the rollup read addresses it by owner,
+    # name and number, and the positional argument may be a URL for a repository
+    # other than the cwd's checkout.
+    repo = detect_repo(d.get("url") or "")
+    rollup_entries, rollup_notice = fetch_check_rollup(repo, d.get("number"), head_sha)
     rollup = collapse_superseded(rollup_entries)
 
     print("=" * 54)
@@ -2064,7 +2257,6 @@ def main(argv):
     # act on. So report the gap where the author will see it and let them
     # decide -- blocking a green PR on bookkeeping costs more than it saves,
     # and an issue-less PR is legitimate.
-    repo = detect_repo(d.get("url") or "")
     _closing = closing_link_reason(d.get("body"), _closes, repo)
     if _closing:
         print("  NOTICE: " + _closing)

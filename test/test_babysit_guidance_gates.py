@@ -19,6 +19,8 @@ import inspect
 import re
 from pathlib import Path
 
+from skill_script_helpers import load_skill_script
+
 from kiro_crew.autonudge_authz import authorize_and_add_nudge
 from kiro_crew.monitoring import github_pull_request
 from kiro_crew.monitoring.github_pull_request import _normalize_checks
@@ -31,6 +33,16 @@ BABYSIT_SKILL = (
 )
 SPEC = ROOT / "docs" / "system-specs" / "modules" / "babysit-pr-watch.md"
 MONITOR_SPEC = ROOT / "docs" / "system-specs" / "modules" / "monitor-architecture.md"
+PR_STATUS_SCRIPT = (
+    ROOT
+    / "src"
+    / "kiro_crew"
+    / "builtin_skills"
+    / "kirocrew-dev"
+    / "prepare-pr"
+    / "scripts"
+    / "pr_status.py"
+)
 
 _URL = re.compile(r"https://github\.com/\S+?/pull/\d+")
 
@@ -73,32 +85,41 @@ def test_a_bare_number_is_still_refused_so_the_ratchet_means_something() -> None
 def test_the_monitor_spec_names_the_function_that_enforces_the_collapse() -> None:
     """A rule whose named enforcer does not exist is a rule enforced nowhere.
 
-    That section's own framing is that each rule is code, or says in its own text
-    where an implementation still diverges. So it names the function carrying this
-    one: a rename leaves the sentence pointing at nothing while still reading as an
-    enforced guarantee, and a note that the two implementations diverge sends an
-    agent to reconcile by hand what the engine settles for it.
+    That section's own framing is that each rule is code, so it names the
+    function carrying it on each side: a rename leaves the sentence pointing at
+    nothing while still reading as an enforced guarantee. Both sides are named
+    because the skill's status tool collapses the same rollup; a spec declaring
+    them divergent would send an agent to reconcile by hand what the two
+    implementations settle identically.
     """
     spec = " ".join(MONITOR_SPEC.read_text(encoding="utf-8").split())
 
     assert "_mark_superseded_rows" in spec
     assert callable(github_pull_request._mark_superseded_rows)
-    assert "diverge on both halves of the rule" in spec, (
-        "a divergence declared for one half sends a reader to reconcile the wrong one; "
-        "the sibling differs on identity AND on ordering"
+    assert "applies the same rule in `collapse_superseded`" in spec, (
+        "the spec has to name the status tool's enforcer and say it is the same rule; "
+        "a reader told only that the tool collapses cannot tell a label-keyed collapse "
+        "from this one"
     )
-    assert (
-        "On ordering, it takes the newest by the check row's `startedAt`" in spec
-    ), "the ordering half has to name the field, or the declaration cannot be checked"
+    assert callable(_status_tool().collapse_superseded)
+    assert "diverge on both halves of the rule" not in spec, (
+        "a divergence note that outlives the divergence sends an agent to reconcile "
+        "two implementations that already agree"
+    )
     skill = " ".join(BABYSIT_SKILL.read_text(encoding="utf-8").split())
-    assert "does NOT yet follow this rule" in skill, (
-        "an agent reading the bundled tool's output has to know it can drop a live "
-        "failure the typed provider keeps"
+    assert "The bundled `pr_status.py` applies this rule" in skill, (
+        "an agent reading the bundled tool's output has to know it keeps the live "
+        "failures the typed provider keeps"
     )
+    assert "does NOT yet follow this rule" not in skill
     assert "workflow DEFINITION plus the check name" in spec, (
         "the spec has to name the identity the engine keys on; a reader told only "
         "that it collapses cannot tell a label-keyed collapse from this one"
     )
+
+
+def _status_tool():
+    return load_skill_script("babysit_gates_pr_status", PR_STATUS_SCRIPT)
 
 
 def test_the_skill_states_the_collapse_rule_the_typed_provider_implements() -> None:
@@ -159,6 +180,13 @@ def test_the_skill_states_the_collapse_rule_the_typed_provider_implements() -> N
         "the row's own cancellation is not displacement: its RUN concluded FAILURE, "
         "so the row is live and dropping it would report a failed run as ready"
     )
+    # The skill's status tool reads the same flat rows and must reach the same
+    # three answers, by removal: the displaced attempt gone, both rows of one run
+    # kept, a cancelled row of a live run kept. One rule, two enforcers.
+    collapse = _status_tool().collapse_superseded
+    assert collapse([superseded, replacement]) == [replacement]
+    assert collapse([superseded, same_run_publisher]) == [superseded, same_run_publisher]
+    assert collapse([live_run_cancelled_row, replacement]) == [live_run_cancelled_row, replacement]
     body = BABYSIT_SKILL.read_text(encoding="utf-8")
     collapsed = " ".join(body.split())
     assert "keyed on the workflow DEFINITION's id plus the check name" in collapsed

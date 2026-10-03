@@ -215,8 +215,7 @@ is never droppable; that revives the verdict it superseded. Two
 rows of ONE run are not a retry and both stay, because a workflow can publish a check
 run under its own job's display name. Finally,
 any completed row of a replaced round still reads as live, not only a cancelled one.
-The bundled `pr_status.py` does NOT yet follow this rule and can drop a live failure;
-issue #11832 tracks it.
+The bundled `pr_status.py` applies this rule.
 
 Green checks do not answer review threads or advisory findings. Establish once
 per repo what its reviewer check means, and repeat when its fleet changes:

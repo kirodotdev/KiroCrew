@@ -24,7 +24,7 @@ from pathlib import Path
 from types import ModuleType
 
 import pytest
-from skill_script_helpers import load_skill_script
+from skill_script_helpers import is_rollup_graphql_read, load_skill_script, rollup_graphql_response
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = (
@@ -512,9 +512,48 @@ class TestRollupHelperParity:
         status = _load_status()
         assert findings.ROLLUP_UNAVAILABLE_NOTICE == status.ROLLUP_UNAVAILABLE_NOTICE
         assert findings.ROLLUP_HEAD_MOVED_NOTICE == status.ROLLUP_HEAD_MOVED_NOTICE
+        # The whole read path, not only its entry point: the selection decides
+        # which fields a row carries, the flattener decides the row shape, and
+        # the page cap decides when a board reads UNKNOWN.
+        assert findings.ROLLUP_QUERY == status.ROLLUP_QUERY
+        assert findings._MAX_ROLLUP_PAGES == status._MAX_ROLLUP_PAGES
+        assert inspect.getsource(findings.flatten_rollup_row) == inspect.getsource(
+            status.flatten_rollup_row
+        )
         assert inspect.getsource(findings.fetch_check_rollup) == inspect.getsource(
             status.fetch_check_rollup
         )
+
+    def test_the_findings_collector_lists_every_failing_row_it_fetched(self, capsys) -> None:
+        """Pins the one asymmetry between the two readers. `pr_status.py`
+        collapses displaced rows before counting; this collector does not, so a
+        round the concurrency group cancelled still lists its CANCELLED rows
+        beside the live run's. That direction only ever OVER-reports (a log
+        fetch for a dead attempt), never hides a live failure, which is why it
+        is pinned rather than changed."""
+        module = _load_script()
+        displaced = {
+            "name": "Backend Tests",
+            "status": "COMPLETED",
+            "conclusion": "CANCELLED",
+            "workflowRunId": 100,
+            "workflowRunEvent": "pull_request",
+            "workflowDefinitionId": 7,
+            "workflowRunConclusion": "CANCELLED",
+            "detailsUrl": "https://github.com/example/repo/actions/runs/100/job/1",
+        }
+        live = dict(
+            displaced, conclusion="FAILURE", workflowRunId=200, workflowRunConclusion="FAILURE"
+        )
+        live["detailsUrl"] = "https://github.com/example/repo/actions/runs/200/job/2"
+        _run_findings(module, [], checks=[displaced, live])
+        module.failing_jobs = lambda _run_id: []
+
+        module.main(["pr_findings.py", "42"])
+
+        out = capsys.readouterr().out
+        assert out.count("--- Backend Tests") == 2
+        assert "actions/runs/100/job/1" in out and "actions/runs/200/job/2" in out
 
 
 class TestDegradedRollup:
@@ -538,9 +577,10 @@ class TestDegradedRollup:
                 return 0, "", ""
             if args[:3] == ["gh", "pr", "view"]:
                 fields = args[args.index("--json") + 1] if "--json" in args else ""
-                if "statusCheckRollup" in fields:
-                    return 1, "", "Resource not accessible by personal access token"
+                assert "statusCheckRollup" not in fields, "the core read must not name the rollup"
                 return 0, payload, ""
+            if is_rollup_graphql_read(args):
+                return 1, "", "Resource not accessible by personal access token"
             raise AssertionError("unexpected command: {}".format(args))
 
         module.run = fake_run
@@ -566,28 +606,25 @@ class TestDegradedRollup:
                 "headRefOid": _OLD,
             }
         )
-        moved_rollup = json.dumps(
-            {
-                "headRefOid": _HEAD,
-                "statusCheckRollup": [
-                    {
-                        "name": "CI",
-                        "status": "COMPLETED",
-                        "conclusion": "FAILURE",
-                        "detailsUrl": "https://github.com/example/repo/actions/runs/1",
-                    }
-                ],
-            }
+        moved_rollup = rollup_graphql_response(
+            [
+                {
+                    "name": "CI",
+                    "status": "COMPLETED",
+                    "conclusion": "FAILURE",
+                    "detailsUrl": "https://github.com/example/repo/actions/runs/1",
+                }
+            ],
+            _HEAD,
         )
 
         def fake_run(args: list[str]) -> tuple[int, str, str]:
             if args[:3] == ["gh", "auth", "status"]:
                 return 0, "", ""
             if args[:3] == ["gh", "pr", "view"]:
-                fields = args[args.index("--json") + 1] if "--json" in args else ""
-                if "statusCheckRollup" in fields:
-                    return 0, moved_rollup, ""
                 return 0, payload, ""
+            if is_rollup_graphql_read(args):
+                return 0, moved_rollup, ""
             raise AssertionError("unexpected command: {}".format(args))
 
         module.run = fake_run
@@ -1072,13 +1109,14 @@ def _design_body(verdict: str = "CONCERNS", head: str = _HEAD) -> str:
     )
 
 
-def _run_findings(module: ModuleType, comments: list[dict]) -> None:
+def _run_findings(
+    module: ModuleType, comments: list[dict], checks: list[dict] | None = None
+) -> None:
     payload = json.dumps(
         {
             "number": 42,
             "url": "https://github.com/example/repo/pull/42",
             "headRefOid": _HEAD,
-            "statusCheckRollup": [],
         }
     )
 
@@ -1087,6 +1125,10 @@ def _run_findings(module: ModuleType, comments: list[dict]) -> None:
             return 0, "", ""
         if args[:3] == ["gh", "pr", "view"]:
             return 0, payload, ""
+        if is_rollup_graphql_read(args):
+            return 0, rollup_graphql_response(checks or [], _HEAD), ""
+        if args[:3] == ["gh", "run", "view"]:
+            return 1, "", ""  # no log archive; the drill-down degrades to annotations
         raise AssertionError("unexpected command: {}".format(args))
 
     module.run = fake_run
