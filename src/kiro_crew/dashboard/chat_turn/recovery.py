@@ -517,7 +517,7 @@ async def _refusal_replay_vetoed_at_consume(state: DashboardState, slot: _ChatSl
             _rv_superseded,
         )
         try:
-            state.broadcast_ws("chat_done", chat_done_payload(state, slot))
+            state.broadcast_ws("chat_done", await chat_done_payload(state, slot))
         except Exception:  # pragma: no cover - unblock is best-effort
             logger.debug("chat_done broadcast failed for aborted replay", exc_info=True)
         return True
