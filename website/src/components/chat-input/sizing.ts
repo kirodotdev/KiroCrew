@@ -404,6 +404,11 @@ export function useTextareaAutosize({ inputRef, mirrorRef, value, prefillHint, m
     // This IS the user's edit, so the caret is followed.
     if (!dragging.current) applyHeight(e.target as HTMLTextAreaElement, manualHeight, prefillHint, parkedRef.current, true)
   }, [manualHeight, prefillHint, dragging])
+  /** The same caret-following re-measure for a composer-owned edit that fires
+   *  no `input` event (list indent). */
+  const followCaret = useCallback((ta: HTMLTextAreaElement) => {
+    if (!dragging.current) applyHeight(ta, manualHeight, prefillHint, parkedRef.current, true)
+  }, [manualHeight, prefillHint, dragging])
 
   // Auto-resize textarea to fit content.
   const lastMeasuredValueRef = useRef(value)
@@ -481,5 +486,5 @@ export function useTextareaAutosize({ inputRef, mirrorRef, value, prefillHint, m
     if (el && !dragging.current) applyHeight(el, manualHeight, prefillHint, parkedRef.current, false)
   }, [activePlaceholder, manualHeight, prefillHint, inputRef, dragging])
 
-  return { handleInput }
+  return { handleInput, followCaret }
 }

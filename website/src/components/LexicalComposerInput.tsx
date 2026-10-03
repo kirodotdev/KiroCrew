@@ -37,10 +37,12 @@ import {
   KEY_ARROW_UP_COMMAND,
   KEY_ENTER_COMMAND,
   KEY_MODIFIER_COMMAND,
+  KEY_TAB_COMMAND,
   PASTE_COMMAND,
 } from 'lexical'
 import { INPUT_TYPO } from './PasteHighlightLayer'
 import { MacLineEdgePlugin } from './composerLineEdge'
+import { listIndentEdit, type ListIndentEdit } from './composerListIndent'
 import { createImeLatch } from '../hooks/useImeGuard'
 import { IS_MAC } from '../hooks/useKeyboardShortcuts'
 import type { ComposerControl, ComposerSelection } from './composerControl'
@@ -100,6 +102,9 @@ interface LexicalComposerInputProps {
    *  Fired by the editor only from an EMPTY composer, so it cannot shadow
    *  ordinary caret movement or the ↑/↓ history recall below. */
   onEditLastRequest?: () => void
+  /** True while a suggestion menu (slash, @file, $skill, path) is open. Tab
+   *  belongs to the menu then, so list indent stays out of its way. */
+  isMenuOpen?: () => boolean
 }
 
 function appendPlainText(text: string, append: (node: ReturnType<typeof $createTextNode> | ReturnType<typeof $createLineBreakNode>) => void) {
@@ -228,6 +233,20 @@ function $applyListLineBreak(): boolean {
   return true
 }
 
+/** Apply a list indent splice in place and park the caret where it says. */
+function $applyListIndent(edit: ListIndentEdit): void {
+  const range = $createRangeSelection()
+  $setPointAtOffset(range.anchor, edit.start)
+  $setPointAtOffset(range.focus, edit.start + edit.deleteCount)
+  $setSelection(range)
+  if (edit.insert) range.insertText(edit.insert)
+  else range.removeText()
+  const caret = $createRangeSelection()
+  $setPointAtOffset(caret.anchor, edit.selectionStart)
+  $setPointAtOffset(caret.focus, edit.selectionEnd)
+  $setSelection(caret)
+}
+
 function ComposerControlPlugin({
   controlRef,
   onReady,
@@ -338,7 +357,8 @@ function InteractionPlugin({
   readOnly,
   sendOnEnter,
   showFullPastes,
-}: Pick<LexicalComposerInputProps, 'blocks' | 'onBlocksChange' | 'onChange' | 'onSend' | 'onUploadFiles' | 'sentMessages' | 'historyScope' | 'onEditLastRequest' | 'disabled' | 'readOnly' | 'sendOnEnter' | 'showFullPastes'>) {
+  isMenuOpen,
+}: Pick<LexicalComposerInputProps, 'blocks' | 'onBlocksChange' | 'onChange' | 'onSend' | 'onUploadFiles' | 'sentMessages' | 'historyScope' | 'onEditLastRequest' | 'disabled' | 'readOnly' | 'sendOnEnter' | 'showFullPastes' | 'isMenuOpen'>) {
   const [editor] = useLexicalComposerContext()
   const blocksRef = useRef(blocks)
   const rawPasteRef = useRef(false)
@@ -512,6 +532,32 @@ function InteractionPlugin({
       COMMAND_PRIORITY_HIGH,
     )
 
+    // Tab / Shift+Tab on a list line indents or outdents it (composerListIndent).
+    // A plain line, a ranged selection or an open menu is left unclaimed so Tab
+    // keeps moving focus.
+    const unregisterTab = editor.registerCommand(
+      KEY_TAB_COMMAND,
+      (event) => {
+        if (disabled || readOnly || event.metaKey || event.ctrlKey || event.altKey) return false
+        if (event.target && event.target !== editor.getRootElement()) return false
+        if (isMenuOpen?.()) return false
+        if (!$isRangeSelection($getSelection())) return false
+        const selection = $canonicalSelection()
+        if (!selection) return false
+        const edit = listIndentEdit($getRoot().getTextContent(), selection.start, selection.end, event.shiftKey)
+        if (!edit) return false
+        // A composing Tab cycles IME candidates. `claimKey` consults the shared
+        // latch as well as the native flags (WebKit's post-`compositionend`
+        // commit keydown) and consumes the declined key per the useImeGuard
+        // contract; claim the command so nothing else acts on it.
+        if (!latch.claimKey(event)) return true
+        event.preventDefault()
+        $applyListIndent(edit)
+        return true
+      },
+      COMMAND_PRIORITY_HIGH,
+    )
+
     const moveAfterRecall = (value: string, position: 'start' | 'end') => {
       requestAnimationFrame(() => {
         editor.update(() => {
@@ -574,6 +620,7 @@ function InteractionPlugin({
       unregisterEnter()
       unregisterLineBreak()
       unregisterParagraph()
+      unregisterTab()
       unregisterArrowUp()
       unregisterArrowDown()
       rootListeners()
@@ -581,7 +628,7 @@ function InteractionPlugin({
       // timer cannot write to the latch after teardown (useImeGuard contract).
       latch.reset()
     }
-  }, [disabled, editor, onBlocksChange, onChange, onEditLastRequest, onSend, onUploadFiles, readOnly, sendOnEnter, sentMessages, showFullPastes])
+  }, [disabled, editor, isMenuOpen, onBlocksChange, onChange, onEditLastRequest, onSend, onUploadFiles, readOnly, sendOnEnter, sentMessages, showFullPastes])
 
   return null
 }
@@ -608,6 +655,7 @@ export default function LexicalComposerInput({
   sentMessages,
   historyScope,
   onEditLastRequest,
+  isMenuOpen,
 }: LexicalComposerInputProps) {
   const initialValueRef = useRef({ value, blocks })
   const lastEmittedRef = useRef({ value, blocks })
@@ -679,6 +727,7 @@ export default function LexicalComposerInput({
           disabled={disabled}
           readOnly={readOnly}
           sendOnEnter={sendOnEnter}
+          isMenuOpen={isMenuOpen}
         />
       </div>
     </LexicalComposer>

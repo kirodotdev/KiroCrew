@@ -12,6 +12,7 @@ import type { usePromptHistory } from './draftHistory'
 import type { PromptHistoryItem } from '../composerPromptHistory'
 import type { PasteBlock } from '../../utils/pasteTokens'
 import { applyTextareaListBreak } from './listContinuation'
+import { listIndentEdit } from '../composerListIndent'
 
 /* The composer's keyboard and focus: autofocus on a session switch, the
    global `/` shortcut, the textarea's keydown (raw paste, undo, token keys,
@@ -103,7 +104,7 @@ export function useComposerFocus({ autoFocusKey, disabled, isMobile, composerCon
   }, [typedCommandMenus, composerCollapsed, expandComposer, composerControl])
 }
 
-export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, handleTokenKey, promptOptimizer, connected, optimizePrompt, sendOnEnter, onChange, optimizingRef, fireComposer, ime, sentMessages, onEditLastRequest, anyPickerOpenRef, promptHistory, valueRef, inputRef, pasteBlocksRef }: {
+export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, handleTokenKey, promptOptimizer, connected, optimizePrompt, sendOnEnter, onChange, optimizingRef, fireComposer, ime, sentMessages, onEditLastRequest, anyPickerOpenRef, promptHistory, valueRef, inputRef, pasteBlocksRef, valueFromUserRef, followCaretRef }: {
   rawPasteRef: React.MutableRefObject<boolean>
   handleUndoKey: (e: React.KeyboardEvent<HTMLTextAreaElement>) => boolean
   endUndoBurst: () => void
@@ -123,6 +124,10 @@ export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, h
   valueRef: React.MutableRefObject<string>
   inputRef: React.RefObject<HTMLTextAreaElement>
   pasteBlocksRef: React.RefObject<readonly PasteBlock[]>
+  valueFromUserRef: React.MutableRefObject<boolean>
+  /** Re-measures the textarea following the caret (chat-input/sizing.ts);
+   *  assigned after the autosize hook runs, read at event time. */
+  followCaretRef: React.MutableRefObject<((ta: HTMLTextAreaElement) => void) | null>
 }) {
   return useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // Cmd/Ctrl+Shift+V (or Cmd+Option+Shift+V on macOS) → next paste inserts
@@ -136,6 +141,34 @@ export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, h
     // composer's on every path, including a textarea whose native undo stack a
     // programmatic reset already wiped.
     if (handleUndoKey(e)) return
+    // Tab / Shift+Tab on a list line indents or outdents that line
+    // (composerListIndent). Everything else keeps Tab's focus move, and an
+    // open suggestion menu owns Tab even when it has no rows.
+    if (e.key === 'Tab' && !e.metaKey && !e.ctrlKey && !e.altKey &&
+      !optimizingRef.current && !anyPickerOpenRef.current) {
+      const ta = e.currentTarget
+      const edit = listIndentEdit(valueRef.current, ta.selectionStart ?? 0, ta.selectionEnd ?? 0, e.shiftKey)
+      if (edit) {
+        // Claim before the rewrite: IMEs cycle candidates with Tab, and on
+        // WebKit the commit keydown lands after `compositionend` with
+        // `isComposing` already false, so only the shared latch can tell.
+        if (!ime.claimKey(e)) return
+        e.preventDefault()
+        valueFromUserRef.current = true
+        // Start a fresh undo boundary so one Ctrl/Cmd+Z reverts exactly this step.
+        endUndoBurst()
+        // Put the new value and caret on the textarea before the commit, so
+        // the undo recorder (which reads the live selection) snapshots the
+        // indented caret, and React sees an equal value and leaves it alone.
+        ta.value = edit.value
+        ta.setSelectionRange(edit.selectionStart, edit.selectionEnd)
+        onChange(edit.value)
+        // No `input` event fires for this edit, and the value effect treats a
+        // changed value as parent-set; follow the caret here as handleInput does.
+        followCaretRef.current?.(ta)
+        return
+      }
+    }
     // Atomic paste-token handling (chat-input/paste.ts) runs before
     // Enter/history, so edits on or around a token never reach the default
     // textarea handling.
@@ -221,7 +254,7 @@ export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, h
       e.metaKey || e.ctrlKey || e.altKey || e.shiftKey
     ) return
     promptHistory.recall(e, { sentMessages, current: valueRef.current, onChange, inputRef })
-  }, [rawPasteRef, handleUndoKey, endUndoBurst, handleTokenKey, promptOptimizer, connected, optimizePrompt, sendOnEnter, onChange, optimizingRef, fireComposer, ime, sentMessages, onEditLastRequest, anyPickerOpenRef, promptHistory, valueRef, inputRef, pasteBlocksRef])
+  }, [rawPasteRef, handleUndoKey, endUndoBurst, handleTokenKey, promptOptimizer, connected, optimizePrompt, sendOnEnter, onChange, optimizingRef, fireComposer, ime, sentMessages, onEditLastRequest, anyPickerOpenRef, promptHistory, valueRef, inputRef, pasteBlocksRef, valueFromUserRef, followCaretRef])
 }
 
 /** The editor's change handlers. Both mark the edit as the user's (the undo

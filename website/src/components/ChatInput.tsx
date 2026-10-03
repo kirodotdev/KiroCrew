@@ -465,10 +465,16 @@ function ChatInput({
     mirrorRef, hoverRef, pastePreviewPanelId, setPastePreviewPanelId, rawPasteRef,
     handleTokenKey, handlePaste, handleTextareaClick, handleSelectSnap, handleCopy, handleCut, handleFileInputChange,
   } = usePasteTokens({ value, onChange, pasteBlocks, onPasteBlocksChange, showFullPastes, onUploadFiles, inputRef, valueRef, valueFromUserRef, recordCaret, ime })
+  // Assigned from useTextareaAutosize below; the keydown handler reads it at
+  // event time to follow the caret after a list indent.
+  const followCaretRef = useRef<((ta: HTMLTextAreaElement) => void) | null>(null)
   const handleKeyDown = useComposerKeyDown({
     rawPasteRef, handleUndoKey, endUndoBurst, handleTokenKey, promptOptimizer, connected, optimizePrompt, sendOnEnter, onChange, optimizingRef,
-    fireComposer, ime, sentMessages, onEditLastRequest, anyPickerOpenRef, promptHistory, valueRef, inputRef, pasteBlocksRef,
+    fireComposer, ime, sentMessages, onEditLastRequest, anyPickerOpenRef, promptHistory, valueRef, inputRef, pasteBlocksRef, valueFromUserRef, followCaretRef,
   })
+  // A suggestion menu owns Tab while it is open, so the Lexical editor's list
+  // indent stays out of its way too.
+  const composerMenuOpen = useCallback(() => anyPickerOpenRef.current, [anyPickerOpenRef])
   const { handleTextareaChange, handleLexicalChange } = useEditorInput({ onChange, valueFromUserRef, openPickersForText, recordCaret, lexicalControlRef, voiceCaretRef })
 
   const hasSessionRefs = pendingSessions.length > 0
@@ -507,7 +513,8 @@ function ChatInput({
   // placeholder here is a sentence the user needs whole, so it still wraps —
   // including a caller's own `placeholder`, which `resolvedPlaceholder` carries.
   const placeholderIsHint = !placeholder && activePlaceholder === resolvedPlaceholder
-  const { handleInput } = useTextareaAutosize({ inputRef, mirrorRef, value, prefillHint, manualHeight, dragging, textareaParked, activePlaceholder })
+  const { handleInput, followCaret } = useTextareaAutosize({ inputRef, mirrorRef, value, prefillHint, manualHeight, dragging, textareaParked, activePlaceholder })
+  followCaretRef.current = followCaret
 
   return (
     // 'input-area' is a stable theming hook — see website/docs/theming-contract.md
@@ -883,6 +890,7 @@ function ChatInput({
                 sentMessages={sentMessages}
                 historyScope={slotId}
                 onEditLastRequest={onEditLastRequest}
+                isMenuOpen={composerMenuOpen}
                 ariaLabel={inputAriaLabel ?? i18nT('components.chatInput.message_input')}
                 placeholder={activePlaceholder}
                 disabled={disabled}
