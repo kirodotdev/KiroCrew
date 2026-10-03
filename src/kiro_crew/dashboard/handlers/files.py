@@ -105,6 +105,7 @@ from kiro_crew.security import (
     BINARY_MIME_ALLOWLIST,
     is_sensitive_path,
     is_sensitive_resolved_path,
+    path_contains_sensitive,
     redact_credentials,
     redact_exfiltration_urls,
     redact_path_segments,
@@ -8496,13 +8497,53 @@ def _project_tree_entries(
     *dirpath*, ancestors above the project root included, so a project rooted
     inside one (``~/.config``) is fenced too. Runs on the walk's worker thread,
     so the pre-resolved gate answers inline.
+
+    What the gate costs is paid per CALL: it resolves its own anchors --
+    ``$HOME``, the override roots, the keystone leaves -- every time, then
+    compares the candidate against every resolved target. A call per entry
+    therefore pays both of those per entry, and under a dot-named root
+    ``under_dot`` holds for every directory, so every entry in the project is a
+    candidate. Most of them are settled by two questions about the DIRECTORY,
+    asked once: whether it is itself inside a store, and whether a store lies
+    beneath it. When neither holds, a name whose real path is this directory's
+    own real path plus that name cannot spell a fenced path. That settles the
+    publish-artifact clause with it: a directory holding a keystone leaf holds a
+    sensitive target as well, so it is never one of these. When either holds,
+    the directory's entries are asked about one at a time.
+
+    Which entries that covers is read off the ``realpath`` the fence needs
+    anyway, never off a separate link check. An entry whose real path is the
+    expected join resolved to itself: no component of it was a link, so the
+    directory's answer binds it. One whose real path came back different led
+    somewhere else, and the gate answers on the path it actually led to. The
+    resolve is therefore the only question asked of the filesystem, which is
+    what makes a link planted mid-walk harmless rather than a window: there is
+    no earlier verdict about the name for the resolve to contradict.
+
+    The comparison is exact, and a mismatch it did not mean is safe by
+    construction: it costs the entry its shortcut and sends it to the gate,
+    which is the answer the walk gave every entry before. That is what makes it
+    sound on a case-insensitive host, where ``realpath`` may hand back the
+    on-disk spelling of a name -- the names come from the directory listing, so
+    they already carry that spelling and match, and a host that spells one
+    differently anyway loses a shortcut rather than a check.
     """
-    under_dot = any(part.startswith(".") for part in PurePath(os.path.realpath(dirpath)).parts)
+    real_dirpath = os.path.realpath(dirpath)
+    under_dot = any(part.startswith(".") for part in PurePath(real_dirpath).parts)
+    # Decided once for the whole directory: whether an entry that stays inside it
+    # still has to be asked about on its own. Both calls compare lists against
+    # the resolved targets and walk nothing.
+    ask_per_entry = is_sensitive_resolved_path(real_dirpath) or path_contains_sensitive(
+        real_dirpath, pre_resolved=True
+    )
 
     def fenced(name: str) -> bool:
         if not (under_dot or name.startswith(".")):
             return False
-        return is_sensitive_resolved_path(os.path.realpath(os.path.join(dirpath, name)))
+        resolved = os.path.realpath(os.path.join(dirpath, name))
+        if not ask_per_entry and resolved == os.path.join(real_dirpath, name):
+            return False
+        return is_sensitive_resolved_path(resolved)
 
     dirs = sorted(d for d in dirnames if d not in _PROJECT_TREE_SKIP_DIRS and not fenced(d))
     return dirs, [f for f in filenames if not fenced(f)]

@@ -3546,7 +3546,9 @@ def sensitive_path_refusal(path_str: str, base_dir: str | None = None) -> str | 
     return None
 
 
-def path_contains_sensitive(dir_str: str, base_dir: str | None = None) -> bool:
+def path_contains_sensitive(
+    dir_str: str, base_dir: str | None = None, *, pre_resolved: bool = False
+) -> bool:
     """Return True if a read+write-sensitive location lies UNDER *dir_str*.
 
     The REVERSE direction of :func:`is_sensitive_path`: that gate answers "is
@@ -3564,12 +3566,21 @@ def path_contains_sensitive(dir_str: str, base_dir: str | None = None) -> bool:
     *dir_str* is a huge tree. Shares :func:`_candidate_forms` and
     :func:`_home_dir_targets` with :func:`_path_in_home_dirs` so the
     symlink/casefold hardening cannot drift between the two directions.
+
+    ``pre_resolved`` is :func:`_candidate_forms`'s flag of the same name, paired
+    with inline anchors exactly as :func:`_path_in_home_dirs` pairs them, and it
+    carries :func:`is_sensitive_resolved_path`'s preconditions verbatim: no
+    ``mc-pathres`` submission on either half, *dir_str* MUST be the
+    ``os.path.realpath`` the caller computed on its OWN worker thread, and a
+    caller on the event loop forfeits the bound the pool exists to give it. See
+    there for why a bulk walk may claim it. One question per directory, so the
+    walk that asks it would pay a pool hop per directory for nothing.
     """
     if not dir_str:
         return False
     try:
-        sensitive_targets = _home_dir_targets(_SENSITIVE_HOME_DIRS)
-        candidates = _candidate_forms(dir_str, base_dir)
+        sensitive_targets = _home_dir_targets(_SENSITIVE_HOME_DIRS, inline=pre_resolved)
+        candidates = _candidate_forms(dir_str, base_dir, pre_resolved=pre_resolved)
     except PathResolutionStalled:
         return True  # fail closed: see _path_in_home_dirs
     for cand in candidates:

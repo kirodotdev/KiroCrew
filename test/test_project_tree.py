@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import json
 import os
@@ -17,6 +18,43 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew.dashboard.handlers import api_project_tree
 from kiro_crew.security.redaction import _PATH_SEGMENT_DISCRIMINATOR_SEP, _path_segment_label
+from kiro_crew.testing.links import make_dir_link
+
+
+@contextlib.contextmanager
+def _fence_targets(*paths: Path):
+    """Double BOTH halves of the fence the walk consults, from one target set.
+
+    The walk asks two questions about each directory -- whether the directory is
+    itself inside a store (``is_sensitive_resolved_path``) and whether a store
+    lies beneath it (``path_contains_sensitive``) -- and the second is
+    what lets it settle a whole directory of entries without asking about each
+    one. Doubling one alone leaves the pair disagreeing: a directory that holds
+    nothing, whose entries are fenced. So both answer from *paths* here, matched
+    the way the real gates match them -- a target and everything under it is
+    inside a store, and a directory with a target under it holds one.
+    """
+    targets = [os.path.normcase(os.path.realpath(p)) for p in paths]
+
+    def inside(path: str) -> bool:
+        candidate = os.path.normcase(path)
+        return any(
+            candidate == target or candidate.startswith(target + os.sep) for target in targets
+        )
+
+    def holds(directory: str, *args, **kwargs) -> bool:
+        # Accepts the containment gate's full signature: the walk claims
+        # ``pre_resolved=True``, and a double that refused the keyword would
+        # pass while the real call site raised.
+        prefix = os.path.normcase(directory).rstrip(os.sep) + os.sep
+        return any(target.startswith(prefix) for target in targets)
+
+    handlers = "kiro_crew.dashboard.handlers.files"
+    with (
+        patch(f"{handlers}.is_sensitive_resolved_path", side_effect=inside),
+        patch(f"{handlers}.path_contains_sensitive", side_effect=holds),
+    ):
+        yield
 
 
 def _deny_directory_read(monkeypatch, *denied: os.PathLike[str] | str) -> None:
@@ -332,16 +370,8 @@ class TestProjectTree:
         (plain / ".docker").mkdir()
         (plain / ".docker" / "config.json").write_text("x")
         (plain / "top.txt").write_text("x")
-        fenced = {
-            os.path.normcase(os.path.realpath(plain / rel))
-            for rel in (".creds", ".config/gcloud", ".docker/config.json")
-        }
-
-        def is_sens(p: str) -> bool:
-            return os.path.normcase(p) in fenced
-
-        with patch(
-            "kiro_crew.dashboard.handlers.files.is_sensitive_resolved_path", side_effect=is_sens
+        with _fence_targets(
+            plain / ".creds", plain / ".config/gcloud", plain / ".docker/config.json"
         ):
             async with TestClient(TestServer(_make_app(str(plain)))) as client:
                 resp = await client.get(f"/api/project/tree?path={plain}")
@@ -361,20 +391,121 @@ class TestProjectTree:
         (project / "gcloud").mkdir(parents=True)
         (project / "gcloud" / "key").write_text("x")
         (project / "app.toml").write_text("x")
-        fenced = {os.path.normcase(os.path.realpath(project / "gcloud"))}
-
-        def is_sens(p: str) -> bool:
-            return os.path.normcase(p) in fenced
-
-        with patch(
-            "kiro_crew.dashboard.handlers.files.is_sensitive_resolved_path", side_effect=is_sens
-        ):
+        with _fence_targets(project / "gcloud"):
             async with TestClient(TestServer(_make_app(str(project)))) as client:
                 resp = await client.get(f"/api/project/tree?path={project}")
                 data = await resp.json()
         assert data["repo"] is False
         assert data["paths"] == ["app.toml"]
         assert data["directories"] == []
+
+    @pytest.mark.asyncio
+    async def test_the_real_fence_hides_a_sensitive_dot_entry_under_a_dot_root(
+        self, plain_project, mock_sel, monkeypatch
+    ):
+        # No double: the gates that ship decide, so a shortcut that read one of
+        # them wrongly shows up here as a leaked credential rather than as a
+        # passing test against a stand-in. ``KIROCREW_HOME`` re-anchors the crew
+        # leaves (``.env``, ``.vault``) under the project root, which is itself
+        # under a dot-name -- the shape the Files tab reported, where every entry
+        # is a fence candidate because the ROOT's real path carries the dot.
+        project = plain_project.parent / ".state"
+        (project / "sub").mkdir(parents=True)
+        (project / "sub" / "note.md").write_text("x")
+        (project / ".env").write_text("TOKEN=x")
+        (project / ".vault").mkdir()
+        (project / ".vault" / "key").write_text("x")
+        (project / "app.toml").write_text("x")
+        monkeypatch.setenv("KIROCREW_HOME", str(project))
+        async with TestClient(TestServer(_make_app(str(project)))) as client:
+            resp = await client.get(f"/api/project/tree?path={project}")
+            data = await resp.json()
+        assert sorted(data["paths"]) == ["app.toml", "sub/note.md"]
+        assert data["directories"] == ["sub"]
+
+    @pytest.mark.asyncio
+    async def test_the_real_fence_follows_a_link_out_of_a_clear_directory(
+        self, plain_project, mock_sel, monkeypatch
+    ):
+        # The directory holds no store, so its entries are settled from the
+        # directory itself -- but only the ones whose real path IS the
+        # directory's plus the name. A link's is somewhere else, so it is asked
+        # about on its own, and this one lands in a store.
+        #
+        # ``make_dir_link``, not ``symlink_to``: a directory symlink needs a
+        # privilege an unelevated Windows shell does not have, and a test that
+        # skipped there would leave these assertions unrun on the one platform
+        # whose junctions are why the resolved path is compared at all.
+        home = plain_project.parent / "home"
+        (home / ".vault").mkdir(parents=True)
+        (home / ".vault" / "key").write_text("x")
+        monkeypatch.setenv("KIROCREW_HOME", str(home))
+        project = plain_project.parent / ".proj"
+        (project / "sub").mkdir(parents=True)
+        (project / "sub" / "note.md").write_text("x")
+        make_dir_link(project / "sub" / ".secrets", home / ".vault")
+        async with TestClient(TestServer(_make_app(str(project)))) as client:
+            resp = await client.get(f"/api/project/tree?path={project}")
+            data = await resp.json()
+        assert data["paths"] == ["sub/note.md"]
+        assert data["directories"] == ["sub"]
+        # Fenced, so it is not a link row either -- the listing never names it.
+        assert data["linkedDirectories"] == []
+
+    def test_the_fence_resolves_its_anchors_per_directory_not_per_entry(
+        self, plain_project, monkeypatch
+    ):
+        # What this pins is a COST, so it is measured as one: the gate resolves
+        # ``$HOME``, the override roots and the keystone leaves on every call,
+        # and a call per entry makes that resolution a cost per entry. Under a
+        # dot-named root every entry is a fence candidate, so a 980-directory
+        # project pays it ~11,700 times for one listing and the Files tab misses
+        # its timeout. Counted rather than timed: a wall-clock bound would be
+        # the host's number, not this walk's.
+        from kiro_crew.dashboard.handlers import files as files_mod
+        from kiro_crew.security import paths as paths_mod
+
+        project = plain_project.parent / ".counted"
+        (project / "sub").mkdir(parents=True)
+
+        def resolutions(entries: int) -> int:
+            for stale in project.glob("sub/f*.txt"):
+                stale.unlink()
+            for i in range(entries):
+                (project / "sub" / f"f{i}.txt").write_text("x")
+            calls = 0
+            real = paths_mod._resolve_root_anchors
+
+            def counting(logical_home: str):
+                nonlocal calls
+                calls += 1
+                return real(logical_home)
+
+            def walk() -> None:
+                for dirpath, dirnames, filenames in os.walk(project):
+                    files_mod._project_tree_entries(dirpath, dirnames, filenames)
+
+            # Uncounted first, so the gate's target cache is warm either way: a
+            # cold build resolves the anchors a second time under its own lock,
+            # and counting that would make the number say which call came first
+            # rather than how many entries the walk saw.
+            walk()
+            monkeypatch.setattr(paths_mod, "_resolve_root_anchors", counting)
+            try:
+                walk()
+            finally:
+                monkeypatch.setattr(paths_mod, "_resolve_root_anchors", real)
+            return calls
+
+        few = resolutions(4)
+        many = resolutions(400)
+        # Same two directories either way, so the same number of resolutions --
+        # a hundred times the entries buys none. Equality, not a ratio: the
+        # count is a property of the walk's shape, and the two directories are
+        # the only thing in this project that has one.
+        assert few == many
+        # And it is the directories that set it, so it is small and bounded.
+        assert many <= 2 * len(list(os.walk(project)))
 
     @pytest.mark.asyncio
     async def test_non_repo_walk_lists_a_junction_as_a_link_and_never_walks_it(
