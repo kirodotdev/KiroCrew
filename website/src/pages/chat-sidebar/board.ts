@@ -149,12 +149,14 @@ export function useColumnPopover() {
 }
 
 /** Column writes and the state-lane seeding. */
-export function useBoardColumnMutations({ queryClient, setBoardError, orderedColumns, rawColumns, sidebarWidthRef, widenForBoard, setSeedError }: {
+export function useBoardColumnMutations({ queryClient, setBoardError, orderedColumns, rawColumns, paintedWidthRef, widenForBoard, setSeedError }: {
   queryClient: QueryClient
   setBoardError: Dispatch<SetStateAction<string>>
   orderedColumns: TagColumn[]
   rawColumns: TagColumn[]
-  sidebarWidthRef: MutableRefObject<number>
+  /** The width the sidebar is painted at, which a window narrower than the
+   *  saved width holds below it (see sidebarPaintWidth). */
+  paintedWidthRef: MutableRefObject<number>
   widenForBoard: (next: number) => void
   setSeedError: Dispatch<SetStateAction<string>>
 }) {
@@ -261,9 +263,14 @@ export function useBoardColumnMutations({ queryClient, setBoardError, orderedCol
       // A board is a horizontal strip inside a 260px-default sidebar, so lanes
       // that do not fit are reachable only by discovering the resize handle.
       // Widen once to fit them; never shrink, so a width the user chose stands.
-      const next = boardSidebarWidth(columnCount, sidebarWidthRef.current, window.innerWidth)
-      // Remembering what the user had is the width owner's job (widenForBoard).
-      if (next !== sidebarWidthRef.current) widenForBoard(next)
+      // Compare against the painted width, what the lanes actually get: a
+      // saved width wider than this window allows is clipped on screen, so it
+      // says nothing about whether the lanes fit.
+      const painted = paintedWidthRef.current
+      const next = boardSidebarWidth(columnCount, painted, window.innerWidth)
+      // Remembering what the user had (the saved width, not the painted one)
+      // is the width owner's job (widenForBoard).
+      if (next !== painted) widenForBoard(next)
     },
     onError: (err) => {
       // Without this the toggle has already flipped to board view and nothing

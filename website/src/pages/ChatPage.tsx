@@ -280,7 +280,7 @@ import { useSidePanelDock } from '../hooks/useSidePanelDock'
 import { REASONING_ROLES, stripAppEnvelope } from './chat/groupDisplayItems'
 import { PREVIEW_EXPAND_EVENT } from '../components/WebPreviewPanel'
 import ChatSidebar from './ChatSidebar'
-import { SIDEBAR_MIN, SIDEBAR_MAX, clampSidebarWidth } from './chat/sidebarWidth'
+import { SIDEBAR_MAX, clampSidebarWidth, parseStoredSidebarWidth, sidebarPaintWidth } from './chat/sidebarWidth'
 import { mergeIntoDraft, mergeRecoveredDraft, setDraft } from '../utils/chatDrafts'
 import { setFileDraft } from '../utils/chatFileDrafts'
 import { setPasteDraft } from '../utils/chatPasteDrafts'
@@ -2897,10 +2897,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // flip, so both axes have to stay named or the flipped-away one gets driven
   // back to its base (see sidePanelDockMotion).
   const sidePanelDockAnim = useMemo(() => sidePanelDockMotion(sidePanelDock), [sidePanelDock])
-  const [sidebarWidth, setSidebarWidth] = useState(() => {
-    const v = parseInt(localStorage.getItem('mc-sidebar-width') || '', 10)
-    return !isNaN(v) && v >= SIDEBAR_MIN && v <= SIDEBAR_MAX ? v : 260
-  })
+  // The seat width ChatSidebar reports (see effectiveSidebarWidth). Until it
+  // reports, read the stored width as the list views seat it: board view
+  // raises it from its first layout effect, before the frame paints.
+  const [sidebarWidth, setSidebarWidth] = useState(() =>
+    Math.min(parseStoredSidebarWidth(localStorage.getItem('mc-sidebar-width')) ?? 260, SIDEBAR_MAX))
   const [sidebarDragging, setSidebarDragging] = useState(false)
   // Pinned to the slot the rename opened on: activeSlot moves the instant the user
   // switches sessions, and a live-resolved commit would rename the wrong session.
@@ -3253,9 +3254,16 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     window.addEventListener('resize', onResize)
     return () => window.removeEventListener('resize', onResize)
   }, [])
-  // Stored width is validated against SIDEBAR_MIN..SIDEBAR_MAX only, never the
-  // window; clamp for render but leave the preference for the wide viewport.
-  const effectiveSidebarWidth = clampSidebarWidth({ stored: sidebarWidth, winW, railW: railWidth })
+  // sidebarWidth is the seat width ChatSidebar reports: the stored width, held
+  // to SIDEBAR_MAX outside board view. Clamp for render but
+  // leave the preference for the wide viewport. A width past SIDEBAR_MAX is
+  // first held to this window's ceiling, the width the sidebar paints at, so a
+  // window narrowed after a wide drag keeps the chat pane its minimum.
+  const effectiveSidebarWidth = clampSidebarWidth({
+    stored: sidebarPaintWidth({ stored: sidebarWidth, winW, railW: railWidth, chatMin: CHAT_PANE_MIN_W }),
+    winW,
+    railW: railWidth,
+  })
   const toggleAct = useCallback(() => {
     // Opening with no tabs shows the empty-state launcher grid (no seeded
     // default view) -- the user picks what to open.
@@ -5250,7 +5258,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             slots={filteredSlots}
             activeSlot={activeSlot}
             unreadSlots={surfaceUnreadSlots}
-            panelWidth={effectiveSidebarWidth}
+            // The flyout is a session list, which gains nothing past
+            // SIDEBAR_MAX; the last seat width may be a board view's.
+            panelWidth={Math.min(effectiveSidebarWidth, SIDEBAR_MAX)}
             // The panel's own height (OverlayDrawer carries pb-2), so the
             // flyout can never be taller than the thing it grows into.
             maxHeight={Math.max(0, containerH - 8)}
@@ -5280,6 +5290,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             mode={mode}
             onWidthChange={setSidebarWidth}
             onDragChange={setSidebarDragging}
+            winW={winW}
+            fillsHost
             onSelectSlot={navigateToEmbeddedSlot}
           />
         </div>
@@ -5329,6 +5341,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           mode={mode}
           onWidthChange={setSidebarWidth}
           onDragChange={setSidebarDragging}
+          winW={winW}
+          fillsHost={isMobile}
           collapsible={!isMobile}
           staticRows={isMobile}
           onSelectSlot={clearSplitOnSelect}

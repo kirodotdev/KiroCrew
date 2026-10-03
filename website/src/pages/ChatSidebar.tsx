@@ -2280,6 +2280,11 @@ interface ChatSidebarProps {
   mode?: string
   onWidthChange?: (w: number) => void
   onDragChange?: (dragging: boolean) => void
+  /** The live window width, tracked by the parent (ChatPage). */
+  winW: number
+  /** The host stretches the sidebar to its own width (the mobile drawer, the
+   *  sessions embed), so its paint reserves no chat pane beside it. */
+  fillsHost?: boolean
   /** Optional callback fired when the user explicitly clicks a slot.
    *  When provided, this fires AFTER the switchSlot dispatch so consumers
    *  can react to user-driven selection (e.g. to navigate the URL). */
@@ -2405,7 +2410,7 @@ interface ConductorRowExtras {
   anchorOnly?: boolean
 }
 
-import { SIDEBAR_MIN, SIDEBAR_MAX } from './chat/sidebarWidth'
+import { SIDEBAR_MIN } from './chat/sidebarWidth'
 export { SIDEBAR_MIN, SIDEBAR_MAX } from './chat/sidebarWidth'
 
 /**
@@ -2431,7 +2436,7 @@ function ChatSidebar({
   // only the binding is scoped, which forces every call site inside this file
   // to say which collection it means.
   slots: localSlots, activeSlot, unreadSlots, history, historyHasMore,
-  defaultAgent, installedAgents, mode, onWidthChange, onDragChange, onSelectSlot, onOpenSlotInNewTab, onOpenSource, collapsible,
+  defaultAgent, installedAgents, mode, onWidthChange, onDragChange, winW, fillsHost, onSelectSlot, onOpenSlotInNewTab, onOpenSource, collapsible,
   chatDropTarget, onDropSessionRef, staticRows,
 }: ChatSidebarProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
@@ -2925,10 +2930,6 @@ function ChatSidebar({
     folderEditInputRef, editingId, setEditingId, editScope, setEditScope, editName, setEditName,
   } = useFolderRename({ renamingSlot, suppressMenuRestoreRef })
 
-  const {
-    sidebarWidth, sidebarWidthRef, sidebarResize, nudgeSidebar, widenForBoard, restorePreBoardWidth,
-  } = useSidebarResize({ onWidthChange, onDragChange })
-
   // Folders via React Query. `isSuccess` gates the stale-collapse move
   // watcher below: before folder data has actually ARRIVED `folders` is the
   // [] default, so every filed slot would read as "just moved" the moment
@@ -2944,6 +2945,10 @@ function ChatSidebar({
     rawColumns, tagColumnsSettled, columnsFailed, columnsError, refetchColumns, tagColumnsEnabled,
     hideEmptyFolderBody, orderedColumns,
   } = useBoardColumns()
+  // After the columns: only board view may widen the sidebar past SIDEBAR_MAX.
+  const {
+    paintedSidebarWidth, sidebarMax, paintedWidthRef, sidebarResize, nudgeSidebar, widenForBoard, restorePreBoardWidth,
+  } = useSidebarResize({ onWidthChange, onDragChange, winW, fillsHost, boardActive: orderedColumns.length > 0 })
   usePinnedOrderAuthority({ orderState: pinnedOrderState, slotsLoaded, tagColumnsSettled, orderedColumns })
   const {
     columnEditId, setColumnEditId, popoverPos, columnPopoverRef, columnPopoverImeLatch, closeColumnPopover,
@@ -2952,7 +2957,7 @@ function ChatSidebar({
   const {
     updateColumnMutation, deleteColumnMutation, reorderColumnsMutation, addColumnAfterMutation,
     dropSlotMutation, missingLanes, seedStateLanesMutation,
-  } = useBoardColumnMutations({ queryClient, setBoardError, orderedColumns, rawColumns, sidebarWidthRef, widenForBoard, setSeedError })
+  } = useBoardColumnMutations({ queryClient, setBoardError, orderedColumns, rawColumns, paintedWidthRef, widenForBoard, setSeedError })
   const {
     columnMatches,
   } = useColumnMatches({ subagentCounts, subagentApprovalCounts, workflowActiveSet, automationRunningSet })
@@ -4425,12 +4430,12 @@ function ChatSidebar({
   // Narrow-sidebar header responsiveness: below ~256px the full "New chat"
   // label no longer fits next to the label + kebab, so collapse the create
   // button to icon-only; below ~200px also drop the "Sessions" label.
-  const compactHeader = sidebarWidth < 256
-  const tinyHeader = sidebarWidth < 200
+  const compactHeader = paintedSidebarWidth < 256
+  const tinyHeader = paintedSidebarWidth < 200
 
   return (
     // stable theming hook 'sidebar' — see website/docs/theming-contract.md
-    <div ref={sidebarRootRef} onPointerOver={onRootPointerOver} onPointerLeave={releaseHoverPin} className={`${LIST_SHELL_CLS} flex flex-col shrink-0 relative h-full`} style={{ width: sidebarWidth }}>
+    <div ref={sidebarRootRef} onPointerOver={onRootPointerOver} onPointerLeave={releaseHoverPin} className={`${LIST_SHELL_CLS} flex flex-col shrink-0 relative h-full`} style={{ width: paintedSidebarWidth }}>
       {/* Drag handle — the shared column grip (components/ResizeHandle), so
           this edge looks and behaves exactly like the Crew Members roster's and
           the app workspaces'. Positioned absolutely on the card's right border
@@ -4442,9 +4447,9 @@ function ChatSidebar({
         handleProps={sidebarResize}
         label={i18nT('pages.chatSidebar.resize_sidebar')}
         onNudge={nudgeSidebar}
-        value={sidebarWidth}
+        value={paintedSidebarWidth}
         min={SIDEBAR_MIN}
-        max={SIDEBAR_MAX}
+        max={sidebarMax}
         inset={12}
         // z-40: above the floating search dock (ListDock, z-30). Once a filter
         // chip or a notice mounts, the dock's opaque shelf spans the card's full
@@ -6500,7 +6505,7 @@ function ChatSidebar({
             paused={undoBar.paused}
             /* Same width ladder as the header's compact/tiny steps: below this the
                prefix + shortcut would eat the row and truncate the destination. */
-            compact={sidebarWidth < 220} />
+            compact={paintedSidebarWidth < 220} />
         )}
         {folderMove?.live && (
           <MoveUndoBar key={folderMove.id} moved={folderMove}
@@ -6508,7 +6513,7 @@ function ChatSidebar({
             onHoldChange={folderUndoBar.onHoldChange}
             remainingMs={folderUndoBar.remainingMs}
             paused={folderUndoBar.paused}
-            compact={sidebarWidth < 220} />
+            compact={paintedSidebarWidth < 220} />
         )}
       </AnimatePresence>
 
