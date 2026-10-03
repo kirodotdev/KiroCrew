@@ -89,6 +89,12 @@ the reconcile tick re-arms it once a target answers.
 
 ## Cross-platform
 
+Pending dropped attachments display the basename of Windows drive and UNC
+producer paths in the chip, tooltip and accessible labels. Display calculation
+uses `normalizeWindowsPath`; the staged attachment path stays unchanged for
+removal and send serialization. POSIX filenames containing a literal backslash
+retain that character.
+
 Shortcut hints resolve `CommandOrControl` for the current platform via
 `website/src/apps/mochi/src/shared/shortcut.ts` (⌘ on macOS, `Ctrl` on
 Windows/Linux) — the pet's Hide hint is the only recovery path once hidden, so a

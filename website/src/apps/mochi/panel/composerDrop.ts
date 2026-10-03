@@ -27,7 +27,7 @@
  * (snip) path, which produces base64 without ever touching disk.
  */
 
-import { mdImageDest } from '../../../utils/fileTokens'
+import { mdImageDest, normalizeWindowsPath } from '../../../utils/fileTokens'
 
 /**
  * A base64 screen-capture crop, as a File the upload route accepts.
@@ -185,8 +185,23 @@ export function attachmentsFrom(result: IngestResult): PendingAttachment[] {
   ]
 }
 
+/**
+ * Chip label for an uploaded path.
+ *
+ * The upload route returns `str(dest)`, which is a NATIVE path: on Windows that
+ * is `C:\...\uploads\pic.png`, carrying no forward slash to split on, so the
+ * whole absolute path became the label — and `PendingAttachments` renders this
+ * string as the chip's text, its tooltip, an image `alt`, and two aria-labels,
+ * so a screen reader read the path out in full.
+ *
+ * `normalizeWindowsPath` is the same producer-side rule `mdImageDest` already
+ * applies to these very paths, so the two agree on what a path here is. It only
+ * rewrites a Windows-SHAPED path (drive letter or UNC), which is what makes it
+ * safe: on POSIX a backslash is a legal filename character, and `weird\name.txt`
+ * has to stay one name rather than split into a nonexistent directory.
+ */
 function basename(path: string): string {
-  return path.split('/').pop() || path
+  return normalizeWindowsPath(path).split('/').pop() || path
 }
 
 // ── Pending-attachment strip ──────────────────────────────────────
