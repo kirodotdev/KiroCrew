@@ -279,8 +279,10 @@ async def _handle_connection(
             "pool_label": pool_key.human_readable(),
             # A Kiro Crew-owned stub requires an exact match before it entrusts
             # its session to this broker. An older daemon omits this field, so a
-            # new stub takes its existing direct-exec fallback instead of mixing
-            # protocol generations after an in-place package upgrade.
+            # new stub takes its existing direct-exec fallback at cold start
+            # instead of mixing protocol generations after an in-place package
+            # upgrade; a stub reconnecting mid-session has no exec left and
+            # refuses that generation terminally rather than retrying it.
             "fingerprint": code_fingerprint(),
             # Capability advertisement: lets a new stub detect a
             # new gateway and run the ensure_backend pre-flight. Absent on an
