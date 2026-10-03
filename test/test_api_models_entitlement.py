@@ -773,3 +773,56 @@ async def test_endpoint_keeps_exactly_the_rows_the_shared_verdict_keeps():
     ]
     assert len(rows) == len(expected)
     assert _names(rows) == ["auto", "claude-sonnet-5", "claude-opus-4.8"]
+
+
+# ── A row whose model_id differs from its printed model_name ──
+
+# kiro-cli prints a ``model_id`` beside each ``model_name`` and ``session/new``
+# advertises the id. When the two differ, the row must reach the picker under the
+# id: the entitlement narrowing, the pin validators and ``session/set_model`` all
+# treat ``model_name`` as the id.
+_RENAMED = {
+    "model_name": "example-chat-2",
+    "model_id": "example-chat-inference",
+    "description": "Example chat model",
+}
+
+
+def test_api_models_offers_a_row_under_the_model_id_the_session_advertises(tmp_path):
+    payload = json.dumps({"models": CATALOG + [_RENAMED]}).encode()
+    advertised = ["auto", "claude-sonnet-5", "example-chat-inference"]
+    request = _kiro_request(tmp_path, _provider([{"modelId": m} for m in advertised]))
+    resp = _run_api_models(request, payload)
+    assert resp.status == 200
+    rows = json.loads(resp.body)
+    assert _names(rows) == ["auto", "claude-sonnet-5", "example-chat-inference"]
+    renamed = rows[-1]
+    assert renamed["display_name"] == "example-chat-2"
+    assert renamed["description"] == "Example chat model"
+    # The picked value survives the raw predicate the pin validators and
+    # set_model's pre-flight apply.
+    assert not model_is_unusable(renamed["model_name"], advertised)
+
+
+def test_api_models_serves_the_model_id_with_no_live_session(tmp_path):
+    # Cold dashboard: nothing narrows the catalog, but a pick must still send the
+    # id a session will advertise, not the printed name.
+    payload = json.dumps({"models": CATALOG + [_RENAMED]}).encode()
+    resp = _run_api_models(_kiro_request(tmp_path), payload)
+    assert resp.status == 200
+    names = _names(json.loads(resp.body))
+    assert "example-chat-inference" in names
+    assert "example-chat-2" not in names
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        {"model_name": "claude-sonnet-5", "model_id": "claude-sonnet-5"},
+        {"model_name": "claude-sonnet-5"},
+        {"model_name": "claude-sonnet-5", "model_id": ""},
+        {"model_name": "claude-sonnet-5", "model_id": None},
+    ],
+)
+def test_a_row_without_a_distinct_model_id_is_served_as_printed(row: dict) -> None:
+    assert agents._kiro_wire_row(row) is row
