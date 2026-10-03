@@ -9,6 +9,7 @@ import SendToInstanceSubmenu from './SendToInstanceSubmenu'
 import ExportSessionItem from './ExportSessionItem'
 import ImportSessionItem from './ImportSessionItem'
 import CrewBoardMenuItem from './CrewBoardMenuItem'
+import MergeBackMenuItem from './MergeBackMenuItem'
 import SessionColorSwatches from './SessionColorSwatches'
 import SourceLinksSubmenu from './SourceLinksSubmenu'
 import LinkedSurfacesSection from './LinkedSurfacesSection'
@@ -116,7 +117,7 @@ export function collapseGroups<T>(groups: (T | false | null | undefined)[][]): T
  * with dividers auto-collapsing between them):
  *   [informational]  MCP servers ▸  (header only)
  *   [tab modifiers]  Rename · Mark read/unread · Pin · Move to folder ▸ · Tags…
- *   [nav / access]   Reveal in sidebar (header only) · Crew board (conductors only) · Copy link · Send a copy ▸ · Export to a file · Connected surfaces
+ *   [nav / access]   Reveal in sidebar (header only) · Crew board (conductors only) · Copy link · Merge into parent… (forks only) · Send a copy ▸ · Export to a file · Connected surfaces
  *   [colour]         colour swatches
  *   [close]          Close session
  */
@@ -306,6 +307,11 @@ export default function SessionActionsMenu({
       <Item key="copy" onSelect={() => copyLink(slotKey)}>
         <Link2 size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.copy_link')}
       </Item>,
+      // A fork's way back: summarize what it did and write that into the chat
+      // it was forked from. Ahead of the "send a copy" rows because it is the
+      // one whose destination is in this dashboard. Self-hiding on a chat that
+      // is not a fork (see MergeBackMenuItem).
+      <MergeBackMenuItem key="merge-back" Item={Item} slotKey={slotKey} />,
       // Copy this session to another Kiro Crew instance. Sits in nav/access
       // rather than the tab-modifier group above because it changes nothing
       // about this tab — the peer gets its own copy under its own key.

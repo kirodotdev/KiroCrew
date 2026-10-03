@@ -22,9 +22,12 @@ Two harnesses are used and the choice between them is deliberate:
 
 from __future__ import annotations
 
+import ast
 import asyncio
+import inspect
 import json
 import os
+import textwrap
 import threading
 from contextlib import contextmanager
 from pathlib import Path
@@ -737,6 +740,532 @@ class TestDrainPendingContext:
 
         assert '[Background context from "app"]' in out
         assert 'from ""' not in out
+
+
+class TestAdoptAliasNoteContext:
+    """A merge card queued on one slot of a session reaches the turn another slot runs."""
+
+    @staticmethod
+    def _aliases():
+        # A parent session open in two slots: a ``workflow-<run_id>`` slot bound
+        # to the chat's session and the chat itself, minted beside it by a create
+        # that names the chat's key.
+        first, twin = _slot("chat-cov-first"), _slot("chat-cov-twin")
+        twin.linked_session_key = chat_runner.effective_session_key(first)
+        return first, twin
+
+    @staticmethod
+    def _card(content: str, session: str, *, source: str = "fork merge", n: int = 0) -> dict:
+        """A merge card's context half, as the flush stamps it."""
+        return {
+            "content": content,
+            "source": source,
+            "noteSession": session,
+            "noteId": f"card-{n}",
+            "noteTranscript": "dashboard:chat-cov-first",
+        }
+
+    def test_a_card_queued_on_the_other_slot_is_drained_by_this_turn(self):
+        first, twin = self._aliases()
+        session = chat_runner.effective_session_key(first)
+        first._pending_context = [
+            self._card("merged summary", session),
+            {"content": "panel state", "source": "panel"},
+        ]
+
+        assert chat_runner.adopt_alias_note_context(twin, [first, twin]) == 1
+        out = chat_runner.drain_pending_context(twin)
+
+        assert "merged summary" in out
+        # Context with no session stamp is the first slot's own.
+        assert first._pending_context == [{"content": "panel state", "source": "panel"}]
+
+    def test_a_plain_note_stays_on_the_slot_it_was_queued_on(self):
+        first, twin = self._aliases()
+        session = chat_runner.effective_session_key(first)
+        # A /note's context half names its session but carries no card identity.
+        note = {"content": "plain note", "source": "note", "noteSession": session}
+        first._pending_context = [note]
+
+        assert chat_runner.adopt_alias_note_context(twin, [first, twin]) == 0
+        assert first._pending_context == [note]
+        assert twin._pending_context == []
+        assert "plain note" in chat_runner.drain_pending_context(first)
+
+    def test_a_card_for_another_session_stays_where_it_was_queued(self):
+        first, twin = self._aliases()
+        card = self._card("elsewhere", "dashboard:other")
+        first._pending_context = [card]
+
+        assert chat_runner.adopt_alias_note_context(twin, [first, twin]) == 0
+        assert first._pending_context == [card]
+        assert twin._pending_context == []
+
+    def test_a_card_never_crosses_an_app_boundary(self):
+        first, twin = self._aliases()
+        first._app = "some-app"
+        session = chat_runner.effective_session_key(first)
+        card = self._card("app card", session)
+        first._pending_context = [card]
+
+        assert chat_runner.adopt_alias_note_context(twin, [first, twin]) == 0
+        assert first._pending_context == [card]
+
+    def test_a_source_at_its_cap_leaves_the_rest_on_the_other_slot(self):
+        first, twin = self._aliases()
+        session = chat_runner.effective_session_key(first)
+        cap = chat_runner._MAX_CONTEXT_PER_SOURCE
+
+        def card(n: int) -> dict:
+            return self._card(f"card {n}", session, source="watch", n=n)
+
+        twin._pending_context = [card(n) for n in range(4)]
+        first._pending_context = [card(n) for n in range(4, 4 + cap)]
+
+        assert chat_runner.adopt_alias_note_context(twin, [first, twin]) == cap - 4
+        assert [e["content"] for e in twin._pending_context] == [f"card {n}" for n in range(cap)]
+        # The newest wait on their own slot for a later turn, in order.
+        assert [e["content"] for e in first._pending_context] == [
+            f"card {n}" for n in range(cap, cap + 4)
+        ]
+
+    def test_a_full_queue_leaves_the_rest_on_the_other_slot(self):
+        first, twin = self._aliases()
+        session = chat_runner.effective_session_key(first)
+        cap = chat_runner._MAX_PENDING_CONTEXT
+        # One source each, so only the queue's total binds.
+        twin._pending_context = [{"content": f"own {n}", "source": f"s{n}"} for n in range(cap - 2)]
+        first._pending_context = [
+            self._card(f"card {n}", session, source=f"t{n}", n=n) for n in range(5)
+        ]
+
+        assert chat_runner.adopt_alias_note_context(twin, [first, twin]) == 2
+        assert len(twin._pending_context) == cap
+        assert [e["content"] for e in first._pending_context] == ["card 2", "card 3", "card 4"]
+
+    def test_an_expired_card_stays_for_its_own_slot_to_discard(self):
+        first, twin = self._aliases()
+        session = chat_runner.effective_session_key(first)
+        stale = self._card("stale", session, source="watch")
+        first._pending_context = [{**stale, "injectedAt": 0, "maxAge": 1}]
+
+        assert chat_runner.adopt_alias_note_context(twin, [first, twin]) == 0
+        assert [e["content"] for e in first._pending_context] == ["stale"]
+        assert twin._pending_context == []
+
+    def test_an_expired_entry_holds_no_place_in_its_sources_cap(self):
+        first, twin = self._aliases()
+        session = chat_runner.effective_session_key(first)
+        cap = chat_runner._MAX_CONTEXT_PER_SOURCE
+        twin._pending_context = [
+            {"content": f"dead {n}", "source": "watch", "injectedAt": 0, "maxAge": 1}
+            for n in range(cap)
+        ]
+        first._pending_context = [self._card("live", session, source="watch")]
+
+        assert chat_runner.adopt_alias_note_context(twin, [first, twin]) == 1
+        assert twin._pending_context[-1]["content"] == "live"
+
+    def test_expired_entries_hold_no_place_in_the_queue_cap(self):
+        first, twin = self._aliases()
+        session = chat_runner.effective_session_key(first)
+        twin._pending_context = [
+            {"content": f"dead {n}", "source": f"dead-{n}", "injectedAt": 0, "maxAge": 1}
+            for n in range(chat_runner._MAX_PENDING_CONTEXT)
+        ]
+        first._pending_context = [self._card("live merge", session)]
+
+        assert chat_runner.adopt_alias_note_context(twin, [first, twin]) == 1
+        assert twin._pending_context[-1]["content"] == "live merge"
+        assert first._pending_context == []
+
+
+class TestTakeTurnContext:
+    """A turn moves context between slots and reports cards consumed only when its session holds a merge card."""
+
+    @staticmethod
+    def _card(content: str, session: str, *, n: int = 0) -> dict:
+        return {
+            "content": content,
+            "source": "fork merge",
+            "noteSession": session,
+            "noteId": f"card-{n}",
+            "noteTranscript": "dashboard:chat-cov-first",
+        }
+
+    @staticmethod
+    def _register(state: DashboardState, *slots: _ChatSlot) -> None:
+        for slot in slots:
+            state._slots[slot.key] = slot
+
+    def test_a_turn_whose_session_holds_no_card_changes_no_other_queue(self, tmp_path, monkeypatch):
+        """The ordinary turn: no merge card anywhere on its session, while a slot of
+        another session holds one. The drain is the slot's own and the other
+        slot's queue is left untouched."""
+        state = _state(tmp_path)
+        own, other = _slot("chat-cov-own"), _slot("chat-cov-other")
+        own._pending_context = [{"content": "panel state", "source": "panel"}]
+        other_queue = [
+            self._card("someone else's merge", chat_runner.effective_session_key(other)),
+            {"content": "their note", "source": "note"},
+        ]
+        other._pending_context = other_queue
+        self._register(state, own, other)
+        control = _slot("chat-cov-control")
+        control._pending_context = [dict(entry) for entry in own._pending_context]
+
+        def never(*args, **kwargs):
+            raise AssertionError("a turn whose session holds no card moved context between slots")
+
+        monkeypatch.setattr(chat_runner, "adopt_alias_note_context", never)
+
+        prefix, _without_cards, consumed = chat_runner.take_turn_context(state, own)
+
+        assert prefix == chat_runner.drain_pending_context(control)
+        assert "panel state" in prefix
+        assert consumed == []
+        assert own._pending_context == []
+        assert other._pending_context is other_queue
+        assert other_queue == [
+            self._card("someone else's merge", chat_runner.effective_session_key(other)),
+            {"content": "their note", "source": "note"},
+        ]
+
+    def test_a_card_on_the_other_slot_of_the_session_is_taken_and_reported(self, tmp_path):
+        state = _state(tmp_path)
+        first, twin = _slot("chat-cov-first"), _slot("chat-cov-twin")
+        twin.linked_session_key = chat_runner.effective_session_key(first)
+        card = self._card("merged summary", chat_runner.effective_session_key(first))
+        first._pending_context = [card, {"content": "panel state", "source": "panel"}]
+        self._register(state, first, twin)
+
+        prefix, _without_cards, consumed = chat_runner.take_turn_context(state, twin)
+
+        assert "merged summary" in prefix
+        assert consumed == [card] and consumed[0] is card
+        assert twin._pending_context == []
+        assert first._pending_context == [{"content": "panel state", "source": "panel"}]
+
+    def test_a_card_on_the_turn_slot_is_consumed_whatever_session_it_names(self, tmp_path):
+        """A card the slot's rebinding made another session's is dropped by the drain,
+        and the drop is this turn's consumption of it, so the slot's own queue counts
+        by card identity alone."""
+        state = _state(tmp_path)
+        own = _slot("chat-cov-own")
+        card = self._card("foreign summary", "dashboard:chat-cov-before-rebind")
+        own._pending_context = [card]
+        self._register(state, own)
+
+        prefix, _without_cards, consumed = chat_runner.take_turn_context(state, own)
+
+        assert "foreign summary" not in prefix
+        assert consumed == [card]
+        assert own._pending_context == []
+
+    def test_a_card_that_stays_on_the_other_slot_is_not_reported_consumed(self, tmp_path):
+        state = _state(tmp_path)
+        first, twin = _slot("chat-cov-first"), _slot("chat-cov-twin")
+        twin.linked_session_key = chat_runner.effective_session_key(first)
+        session = chat_runner.effective_session_key(first)
+        cap = chat_runner._MAX_CONTEXT_PER_SOURCE
+        twin._pending_context = [self._card(f"own {n}", session, n=n) for n in range(cap)]
+        waiting = self._card("waits", session, n=cap)
+        first._pending_context = [waiting]
+        self._register(state, first, twin)
+
+        prefix, _without_cards, consumed = chat_runner.take_turn_context(state, twin)
+
+        assert "waits" not in prefix
+        assert len(consumed) == cap and waiting not in consumed
+        assert first._pending_context == [waiting]
+
+
+# ── verbatim replay of a turn that drained a merge card ──────────────────
+
+
+class TestVerbatimReplayMergeCards:
+    """A turn that does not land puts its merge-card context back on the queue,
+    so a verbatim replay of its message must not carry the card's frame as
+    well: the replay turn drains the restored entry and would otherwise hand
+    the model the same card twice in one prompt."""
+
+    CARD = "merged summary of the fork"
+    PLAIN = "panel state"
+
+    @classmethod
+    def _queue_card_and_plain(cls, state: DashboardState, slot: _ChatSlot) -> None:
+        slot._pending_context = [
+            {
+                "content": cls.CARD,
+                "source": "fork merge",
+                "noteSession": chat_runner.effective_session_key(slot),
+                "noteId": "card-replay",
+                "noteTranscript": "dashboard:chat-cov-1",
+            },
+            {"content": cls.PLAIN, "source": "panel"},
+        ]
+        state._slots[slot.key] = slot
+
+    @staticmethod
+    def _script(client, *turns) -> None:
+        """Script ``client.stream`` turn by turn; a turn given an exception raises it."""
+        calls = {"n": 0}
+
+        async def _raising(exc):
+            raise exc
+            yield  # pragma: no cover
+
+        def _stream(*_args, **_kwargs):
+            calls["n"] += 1
+            turn = turns[min(calls["n"], len(turns)) - 1]
+            if isinstance(turn, BaseException):
+                return _raising(turn)
+            return _async_iter(turn)
+
+        client.stream = MagicMock(side_effect=_stream)
+
+    @classmethod
+    def _state_with_context_builder(cls, tmp_path):
+        """The pending-context drain runs on the context-builder prompt path only."""
+        from kiro_crew.context import ContextBuilder
+        from kiro_crew.memory import MemoryStore
+        from kiro_crew.skills import SkillsLoader
+
+        builder = ContextBuilder(
+            memory=MemoryStore(workspace=tmp_path / "ws"),
+            skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
+        )
+        state, client = _runner_state(tmp_path, context_builder=builder)
+        client.client = MagicMock(pop_pending_oauth_requests=MagicMock(return_value=[]))
+        slot = _slot()
+        cls._queue_card_and_plain(state, slot)
+        return state, client, slot
+
+    @staticmethod
+    def _delivered(prompt: str) -> str:
+        """The prompt past any replayed conversation history: what this turn delivers."""
+        history_end = "[END CONVERSATION HISTORY]"
+        if history_end in prompt:
+            return prompt[prompt.rindex(history_end) + len(history_end) :]
+        return prompt
+
+    @staticmethod
+    async def _run_and_await_replay(state, slot, message: str) -> None:
+        with (
+            _quiet_sel(),
+            patch.object(chat_runner, "generate_session_summary", new=AsyncMock(return_value=None)),
+        ):
+            await chat_runner._run_chat(state, slot, message)
+            replay = slot.task
+            assert replay is not None, "the empty turn queued no replay"
+            try:
+                await replay
+            except Exception:  # pragma: no cover — the replay's own error arm reports it
+                pass
+            await _settle(slot)
+            await asyncio.gather(*list(state._background_tasks), return_exceptions=True)
+
+    def test_the_prefix_without_cards_is_the_drain_of_the_other_entries(self, tmp_path):
+        """Pins ``prefix_without_cards`` to the drain of the same queue without its card."""
+        state = _state(tmp_path)
+        whole, plain_only = _slot("chat-cov-whole"), _slot("chat-cov-plain")
+        card = {
+            "content": self.CARD,
+            "source": "fork merge",
+            "noteSession": "dashboard:chat-cov-whole",
+            "noteId": "card-frame",
+            "noteTranscript": "dashboard:chat-cov-whole",
+        }
+        plain = {"content": self.PLAIN, "source": "panel"}
+        whole._pending_context = [plain, card, dict(plain, content="second panel")]
+        plain_only._pending_context = [plain, dict(plain, content="second panel")]
+        state._slots[whole.key] = whole
+
+        taken = chat_runner.take_turn_context(state, whole)
+
+        assert taken.prefix_without_cards == chat_runner.drain_pending_context(plain_only)
+        assert taken.consumed == [card]
+        assert taken.prefix.count(self.CARD) == 1
+        assert self.CARD not in taken.prefix_without_cards
+
+    def test_a_queue_without_a_card_strips_nothing(self, tmp_path):
+        state = _state(tmp_path)
+        slot = _slot("chat-cov-plain")
+        slot._pending_context = [{"content": self.PLAIN, "source": "panel"}]
+        state._slots[slot.key] = slot
+
+        taken = chat_runner.take_turn_context(state, slot)
+
+        assert taken.prefix_without_cards == taken.prefix
+        assert self.PLAIN in taken.prefix
+        assert taken.consumed == []
+
+    # The refusal-fallback replay queues ``_replay_body``, which may be the
+    # turn's whole message: that replay turn lands and retires the card itself,
+    # so the frames it carries are delivered once.
+    _REPLAY_ALLOWED_BY_NAME = frozenset({"_replay_body"})
+
+    def test_every_verbatim_replay_passes_the_message_without_merge_cards(self):
+        """Enumerates every ``_queue_recovery`` and ``build_recovery_requeue`` call in
+        ``_run_chat`` and requires the one that re-queues the turn's message to pass
+        ``_message_without_merge_cards``: a call passing ``message``, or a name bound
+        from ``message`` (directly or through a transform) after the drain prepended
+        the card frames, fails."""
+        source = textwrap.dedent(inspect.getsource(chat_runner._run_chat))
+        run_chat = ast.parse(source).body[0]
+        drain = [
+            node
+            for node in ast.walk(run_chat)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "take_turn_context"
+        ]
+        assert len(drain) == 1, "the drain is called once in _run_chat"
+        drained_at = drain[0].lineno
+
+        # Names bound from ``message`` after the drain, directly or through a
+        # transform, carry the card frames too. A binding before it
+        # (``_incoming_message``, the stripped name's own default) reads the
+        # message before any frame is prepended, and the stripped name itself is
+        # the one sanctioned derivation of ``message`` after it.
+        tainted = {"message"}
+        exempt = {"_message_without_merge_cards"}
+
+        def bound(target: ast.expr) -> set[str]:
+            # A name an assignment binds. An attribute or subscript target
+            # mutates an object it does not bind, so it taints nothing.
+            if isinstance(target, ast.Name):
+                return {target.id}
+            if isinstance(target, (ast.Tuple, ast.List)):
+                return set().union(*(bound(element) for element in target.elts))
+            if isinstance(target, ast.Starred):
+                return bound(target.value)
+            return set()
+
+        while True:
+            added: set[str] = set()
+            for node in ast.walk(run_chat):
+                if not isinstance(node, ast.Assign) or node.lineno <= drained_at:
+                    continue
+                reads = {leaf.id for leaf in ast.walk(node.value) if isinstance(leaf, ast.Name)}
+                if not reads & tainted:
+                    continue
+                for target in node.targets:
+                    added |= bound(target)
+            added -= tainted | exempt
+            if not added:
+                break
+            tainted |= added
+        assert "_message_without_merge_cards" not in tainted
+
+        offending: list[str] = []
+        stripped: list[int] = []
+        allowed: list[int] = []
+        for node in ast.walk(run_chat):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):
+                continue
+            if node.func.id == "_queue_recovery" and len(node.args) >= 2:
+                text = node.args[1]
+            elif node.func.id == "build_recovery_requeue" and node.args:
+                text = node.args[0]
+            else:
+                continue
+            if isinstance(text, ast.Name) and text.id in self._REPLAY_ALLOWED_BY_NAME:
+                allowed.append(node.lineno)
+                continue
+            names = {leaf.id for leaf in ast.walk(text) if isinstance(leaf, ast.Name)}
+            if "_message_without_merge_cards" in names:
+                stripped.append(node.lineno)
+            if names & tainted:
+                offending.append(
+                    f"line {node.lineno}: {ast.unparse(text)} reads {sorted(names & tainted)}"
+                )
+
+        assert not offending, "\n".join(offending)
+        assert len(allowed) == 1, allowed
+        assert len(stripped) >= 8, stripped
+
+    @pytest.mark.asyncio
+    async def test_an_empty_first_response_replays_the_card_once(self, tmp_path):
+        state, client, slot = self._state_with_context_builder(tmp_path)
+        self._script(
+            client,
+            [_complete()],
+            [LLMEvent(kind=EVENT_TEXT_CHUNK, text="ok"), _complete()],
+        )
+
+        await self._run_and_await_replay(state, slot, "what landed?")
+
+        prompts = [self._delivered(call.args[0]) for call in client.stream.call_args_list]
+        assert len(prompts) == 2, prompts
+        first, replay = prompts
+        assert first.count(self.CARD) == 1 and first.count(self.PLAIN) == 1
+        assert replay.count(self.CARD) == 1, replay
+        assert replay.count(self.PLAIN) == 1, replay
+        assert replay.endswith("what landed?")
+        # The landed replay retired the card: nothing is left for a later turn.
+        assert slot._pending_context == []
+        assert slot._inflight_merge_contexts == []
+
+    @pytest.mark.asyncio
+    async def test_a_failed_replay_keeps_the_card_for_the_next_landed_turn(self, tmp_path):
+        state, client, slot = self._state_with_context_builder(tmp_path)
+        self._script(
+            client,
+            [_complete()],
+            RuntimeError("provider went away"),
+            [LLMEvent(kind=EVENT_TEXT_CHUNK, text="ok"), _complete()],
+        )
+
+        await self._run_and_await_replay(state, slot, "what landed?")
+
+        assert client.stream.call_count == 2
+        assert [entry["content"] for entry in slot._pending_context] == [self.CARD]
+
+        with patch.object(
+            chat_runner, "generate_session_summary", new=AsyncMock(return_value=None)
+        ):
+            await _drive(state, slot, "and again?")
+            await asyncio.gather(*list(state._background_tasks), return_exceptions=True)
+
+        prompts = [self._delivered(call.args[0]) for call in client.stream.call_args_list]
+        assert len(prompts) == 3, prompts
+        assert prompts[2].count(self.CARD) == 1, prompts[2]
+        # Plain context rode the replayed message and is not put back by a
+        # failed turn, so it reaches no later turn.
+        assert self.PLAIN not in prompts[2]
+        assert slot._pending_context == []
+
+    @pytest.mark.asyncio
+    async def test_a_retained_image_recovery_replays_the_card_once(self, tmp_path):
+        """The no-activity image-poison recovery re-queues the turn's text; the
+        turn raised before the card retired, so the recovery turn drains the
+        restored card and the replayed text must not carry its frame as well."""
+        from kiro_crew.acp.client import AcpError
+
+        state, client, slot = self._state_with_context_builder(tmp_path)
+        poisoned = AcpError("The model could not process an image", transient=False)
+        poisoned.structural_terminal = True
+        poisoned.image_format_unsupported = True
+        self._script(
+            client,
+            poisoned,
+            [LLMEvent(kind=EVENT_TEXT_CHUNK, text="ok"), _complete()],
+        )
+
+        with patch.object(chat_runner, "_recovery_delay", new=AsyncMock()):
+            await self._run_and_await_replay(state, slot, "what landed?")
+
+        state.sessions.discard_conversation.assert_awaited_once()
+        prompts = [self._delivered(call.args[0]) for call in client.stream.call_args_list]
+        assert len(prompts) == 2, prompts
+        first, replay = prompts
+        assert first.count(self.CARD) == 1 and first.count(self.PLAIN) == 1
+        assert replay.count(self.CARD) == 1, replay
+        assert replay.count(self.PLAIN) == 1, replay
+        assert replay.endswith("what landed?")
+        assert slot._pending_context == []
+        assert slot._inflight_merge_contexts == []
 
 
 # ── turn metric ───────────────────────────────────────────────────────────

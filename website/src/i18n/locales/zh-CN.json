@@ -7999,7 +7999,7 @@
       "open_in_new_tab": "在会话标签页中打开",
       "pin": "置顶",
       "pop_out_to_window": "弹出为独立窗口",
-      "reload_blocked_running": "轮次进行中",
+      "reload_blocked_running": "一个轮次仍在进行中",
       "reload_blocked_subagents": "子代理工作中",
       "reload_session": "重新加载会话",
       "reload_session_tooltip": "重启代理进程以加载新的 MCP/配置更改。对话会保留。",
@@ -9240,6 +9240,45 @@
       "moreCols": "增加列",
       "fewerRows": "减少行",
       "moreRows": "增加行"
+    },
+    "mergeBackMenuItem": {
+      "merge_into_parent": "合并到原会话…",
+      "running": "一个轮次仍在进行中",
+      "incognito": "隐身会话不会流出任何内容",
+      "temporary": "临时会话不会流出任何内容",
+      "parent_not_dashboard": "原会话在控制面板外运行",
+      "parent_channel": "原会话是 {{channel}} 会话",
+      "parent_direct_message": "原会话是私信",
+      "parent_scheduled_job": "原会话是计划任务"
+    },
+    "mergeBackDialog": {
+      "title": "合并到原会话",
+      "title_named": "合并到“{{parent}}”",
+      "description": "把这段摘要发给原会话的 agent。这个分叉保持打开。",
+      "drafting": "正在撰写新消息的摘要…",
+      "covers_other": "摘要涵盖 {{count}} 条尚未合并的消息",
+      "covers_partial_other": "摘要涵盖 {{count}} 条尚未合并消息中最早的 {{covered}} 条",
+      "remaining_other": "还有 {{count}} 条消息没有放进这份草稿。这次合并之后再合并一次，才能把它们发出去。",
+      "length": "{{chars}} / {{max}}",
+      "placeholder": "原会话需要从这个分叉中知道什么？",
+      "edit_hint": "原样发送，包括末尾说明。",
+      "gap_sentence": "如果原会话在这个分叉创建之后继续进行了，那么这个分叉没有看到那些消息。",
+      "merge": "合并",
+      "merging": "正在合并…",
+      "cancel": "取消",
+      "close": "关闭",
+      "draft_again": "重新撰写",
+      "redraft_confirm": "用新草稿替换你修改过的文字？",
+      "redraft_replace": "替换",
+      "redraft_keep": "保留我的文字",
+      "redraft_outdated_confirm": "撰写这份草稿之后会话发生了变化，所以合并需要新的草稿。保留你的文字不动，还是用新草稿替换？",
+      "redraft_outdated_keep": "重新撰写并保留我的文字",
+      "close_confirm": "关闭并丢失你修改过的文字？",
+      "close_discard": "丢弃并关闭",
+      "cut": "摘要已被截短以符合限制。它在末尾说明正上方的“…”处结束。合并前请检查那一行。",
+      "open_parent": "打开原会话",
+      "parent_not_reopened": "无法打开原会话。请从历史记录中打开它，然后重试。",
+      "held": "已合并。原会话正在进行一轮，所以摘要会在这一轮结束后出现在那里。"
     }
   },
   "hooks": {
@@ -11091,6 +11130,11 @@
         "rate_right": "Jev 判断正确",
         "rate_wrong": "Jev 判断错误",
         "not_scored": "（另有 {{count}} 次未评分）"
+      },
+      "mergedFromLabel": {
+        "merged_from": "合并自 <fork>{{title}}</fork>",
+        "untitled_fork": "一个分叉",
+        "messages_other": "{{count}} 条消息"
       }
     },
     "chatPage": {
@@ -17312,6 +17356,26 @@
       "search_in": "在 {{path}} 中搜索“{{query}}”",
       "search_web": "在网上搜索“{{query}}”",
       "view_image": "查看图片 {{path}}"
+    },
+    "mergeBackError": {
+      "parent_not_open": "原会话已关闭。",
+      "parent_deleted": "原会话已被删除。这个分叉无法合并到取代它的会话中。",
+      "parent_unconfirmed": "无法确认原会话就是这个分叉所源自的会话，因此这个分叉无法合并到其中。",
+      "parent_not_dashboard": "合并只能进入在控制面板中运行的会话。此会话的原会话在控制面板外运行。",
+      "parent_channel": "合并只能进入在控制面板中运行的会话。此会话的原会话是 {{channel}} 会话。",
+      "parent_direct_message": "合并只能进入在控制面板中运行的会话。此会话的原会话是私信。",
+      "parent_scheduled_job": "合并只能进入在控制面板中运行的会话。此会话的原会话是计划任务。",
+      "nothing_to_merge": "原会话已经包含这个分叉的全部内容。",
+      "fork_running": "这个分叉仍在运行一轮。等它结束后再合并。",
+      "restricted": "隐身或临时会话不会派生任何内容，因此无法合并。",
+      "draft_in_flight": "已经在为这个分叉撰写摘要。",
+      "summary_failed": "无法撰写摘要。请重试。",
+      "merge_point_missing": "撰写摘要后这个分叉发生了变化。请重新撰写。",
+      "already_merged": "原会话已通过另一次合并收到了这些消息。",
+      "queue_full": "原会话中有 agent 尚未读取的合并。请先给它发一条消息。",
+      "parent_holds_too_many": "原会话在当前这一轮中暂存的笔记太多。请在这一轮结束后重试。",
+      "summary_too_long": "摘要超出了长度限制。请缩短。",
+      "failed": "合并未成功。请重试。"
     }
   },
   "memoryV2": {

@@ -34,6 +34,7 @@ Multi-session parallel chat with full Markdown rendering, syntax-highlighted cod
 - **Auto-titles**: sessions get auto-generated titles after a few turns.
 - **Edit & resend**: edit and resend previous user messages with history preserved.
 - **Fork session**: fork a session into a new tab with full context carried over.
+- **Merge a fork back**: on a fork, session menu → **Merge into parent…** drafts a summary of the fork's new messages, lets you edit it, and writes it into the chat it was forked from as a card that chat's agent reads on its next turn. The fork stays open; merging again covers only what is new. A fork cannot merge into a parent that takes turns outside the dashboard; the menu explains this on its greyed row.
 - **Regenerate replies**: regenerate assistant replies with variant history navigation.
 - **Prompt history**: ↑/↓ arrow keys navigate through previous prompts.
 - **Tool purpose pills**: tool call labels show purpose text, persisted across reloads.

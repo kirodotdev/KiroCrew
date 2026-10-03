@@ -79,6 +79,7 @@ from kiro_crew.history_projection import (  # noqa: F401 - facade re-exports
     SessionMetadataProjection,
     TranscriptPage,
     TranscriptReadProjection,
+    drop_persisted_tail_prefix,
 )
 from kiro_crew.history_rewrite import HistoryRewriteCoordinator
 from kiro_crew.history_search import (  # noqa: F401 - facade re-exports
@@ -252,6 +253,7 @@ SLOT_OWNED_META_KEYS: frozenset[str] = frozenset(
         "color_theme",
         "tags",
         "forked_from",
+        "forked_from_created_at",
         "linked_session_key",
         "tab_id",
     }
@@ -2932,6 +2934,36 @@ class ConversationLog:
         """Guarded twin of :meth:`read_messages_chained` (see :meth:`derive_messages`)."""
         rows, _keys = self.derive_messages_chained_with_keys(key)
         return rows
+
+    def derive_messages_chained_full_with_keys(
+        self, key: str
+    ) -> tuple[list[dict], tuple[str, ...]]:
+        """Return guarded full chained rows and the exact chain validated with them.
+
+        The full corpus includes each chain member's rotated archive head. The
+        chain is resolved, locked and validated exactly as it is for
+        :meth:`derive_messages_chained_with_keys`, then only that settled set is
+        read. Returning the settled keys lets a publication revalidate the same
+        chain after work derived from these rows is ready to commit.
+        """
+        keys = self.chained_keys(key) or [key]
+        stems = {stem for chained in keys for stem in transcript_lock_stems(chained)}
+        with self.derivation_hold(stems):
+            settled_chain = self.chained_keys(key)
+            settled = settled_chain or [key]
+            if set(settled) - set(keys):
+                raise TranscriptBusy(
+                    f"transcript chain for {key!r} changed while it was being locked"
+                )
+            for chained in settled:
+                self._withhold_if_restricted(chained)
+            rows: list[dict] = []
+            for chained in settled:
+                live = self._read_messages(chained)
+                rotated = self._read_projection.read_rotated_messages(chained)
+                rows.extend(rotated)
+                rows.extend(drop_persisted_tail_prefix(rotated, live))
+            return rows, tuple(settled)
 
     def derive_messages_chained_with_keys(self, key: str) -> tuple[list[dict], tuple[str, ...]]:
         """Return guarded chained rows and the exact chain validated with them.

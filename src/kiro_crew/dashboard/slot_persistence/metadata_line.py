@@ -20,7 +20,11 @@ from itertools import chain
 from typing import TYPE_CHECKING
 
 from kiro_crew.dashboard.chat_utils import slot_history_key
-from kiro_crew.dashboard.slot_buffers import serialize_deferred_notes, union_deferred_notes
+from kiro_crew.dashboard.slot_buffers import (
+    persistable_deferred_notes,
+    serialize_deferred_notes,
+    union_deferred_notes,
+)
 from kiro_crew.dashboard.slot_queue_repository import queue_persist_signature
 from kiro_crew.dashboard.state import _MAX_DISMISSED_SOURCE_LINKS
 from kiro_crew.execution_context import (
@@ -445,6 +449,8 @@ def merge_empty_window(
             fields["channel_origin"] = True
         if slot.forked_from is not None:
             fields["forked_from"] = slot.forked_from
+            if slot.forked_from_created_at:
+                fields["forked_from_created_at"] = slot.forked_from_created_at
         # CLEARABLE: the merge cannot delete a key and rehydrate reads
         # zero as "no local turn outstanding", so the current value is
         # written either way -- a forced save after a turn's teardown
@@ -554,7 +560,7 @@ def merge_empty_window(
         # snapshot alone.
         merged_fields["deferred_notes"] = union_deferred_notes(
             meta.get("deferred_notes"),
-            serialize_deferred_notes(slot._deferred_notes[:]),
+            serialize_deferred_notes(persistable_deferred_notes(slot._deferred_notes[:])),
         )
         return True
 
@@ -587,6 +593,18 @@ def merge_empty_window(
         _merged_queue = merged_fields.get("queued_prompts")
         if isinstance(_merged_queue, list):
             slot._queue_persisted_sig = queue_persist_signature(_merged_queue)
+
+
+def _stamp_delivered_merge_cards(entries: Iterable[dict], window_note_ids: set[str]) -> list[dict]:
+    """Mark held merge cards whose rows commit in the saved window."""
+    return [
+        (
+            {**entry, "delivered": True}
+            if isinstance(entry.get("merged_from"), dict) and entry.get("id") in window_note_ids
+            else entry
+        )
+        for entry in entries
+    ]
 
 
 def build_full_line(
@@ -832,10 +850,9 @@ def build_full_line(
         meta_line["human_seen"] = True
     # Durable copy of the held /note lines. OWNED
     # (in SLOT_OWNED_META_KEYS), so this rebuild decides the key's
-    # whole value — and retirement is ROW-DERIVED: an entry is
-    # retired exactly when the window THIS save writes contains its
-    # delivered row (``meta.noteId``, stamped by the flush) or its id
-    # was recorded as dropped at the rebind seam. Everything else —
+    # whole value. Plain notes retire with their committed row. Merge
+    # cards retire only when their context drain records the id. Any
+    # note dropped at a rebind seam also retires by its recorded id. Everything else —
     # the on-disk hold and the live hold, both read HERE, under the
     # same history lock the merge writers commit under — is kept, so
     # a /note persist that won the lock during this save's patient
@@ -871,14 +888,21 @@ def build_full_line(
             if isinstance(row_note_id, str) and row_note_id:
                 window_note_ids.add(row_note_id)
     dropped_note_ids = set(slot._dropped_note_ids)
-    surviving_hold = [
-        entry
-        for entry in union_deferred_notes(
+    surviving_hold = []
+    for entry in _stamp_delivered_merge_cards(
+        union_deferred_notes(
             existing_meta.get("deferred_notes"),
-            serialize_deferred_notes(slot._deferred_notes[:]),
-        )
-        if entry.get("id") not in window_note_ids and entry.get("id") not in dropped_note_ids
-    ]
+            serialize_deferred_notes(persistable_deferred_notes(slot._deferred_notes[:])),
+        ),
+        window_note_ids,
+    ):
+        entry_id = entry.get("id")
+        if entry_id in dropped_note_ids:
+            continue
+        if isinstance(entry.get("merged_from"), dict):
+            surviving_hold.append(entry)
+        elif entry_id not in window_note_ids:
+            surviving_hold.append(entry)
     if surviving_hold:
         meta_line["deferred_notes"] = surviving_hold
     # Durable copy of the queued user prompts. OWNED, and the whole
@@ -927,6 +951,8 @@ def build_full_line(
     retired_drop_ids = dropped_note_ids if not rows_only else set()
     if slot.forked_from is not None:
         meta_line["forked_from"] = slot.forked_from
+        if slot.forked_from_created_at:
+            meta_line["forked_from_created_at"] = slot.forked_from_created_at
     if slot.linked_session_key:
         # The slot's conversation lives on another session (a channel
         # thread, a cron job). Nothing recreates that binding on
@@ -1014,6 +1040,13 @@ def build_full_line(
         for meta_key in ROWS_ONLY_DEFERRED_META_KEYS:
             meta_line.pop(meta_key, None)
         carry_unowned_metadata(meta_line, existing_meta, ROWS_ONLY_OWNED_META_KEYS)
+        carried_hold = meta_line.get("deferred_notes")
+        if isinstance(carried_hold, list):
+            # This mark commits atomically with the card row, so restore
+            # needs no archive read to know the row was delivered.
+            meta_line["deferred_notes"] = _stamp_delivered_merge_cards(
+                carried_hold, window_note_ids
+            )
         # ``memory_mode`` is deferred with the rest, but it is the line's
         # privacy contract -- every reader that learns from the file gates
         # on it -- and the contract is a RATCHET that any writer may

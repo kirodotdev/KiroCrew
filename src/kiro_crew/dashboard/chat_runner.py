@@ -260,10 +260,20 @@ from kiro_crew.dashboard.chat_turn.tool_approval import (  # noqa: F401
     _spec_keys_notice,
 )
 from kiro_crew.dashboard.chat_turn.turn_context import (  # noqa: F401
+    TurnContext,
+    _consumed_merge_contexts,
     _detach_appended_context,
+    _drain_pending_frames,
     _folder_steering_turn,
+    _join_context_frames,
+    _merge_card_identity,
     _read_and_tighten_turn_execution,
+    _record_consumed_merge_contexts,
+    _restore_consumed_merge_contexts,
+    _same_merge_card,
+    adopt_alias_note_context,
     drain_pending_context,
+    take_turn_context,
 )
 from kiro_crew.dashboard.chat_turn.turn_marker import (  # noqa: F401
     _LOCAL_TURN_OPENER_ROLES,
@@ -322,6 +332,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     slot_history_key,
     tighten_live_slot_memory_mode,
     tighten_replacement_to_restricted_original,
+    transcripts_share_file,
     user_text_span,
     with_bounded_redaction_records,
 )
@@ -344,6 +355,8 @@ from kiro_crew.dashboard.session_directive_apply import (
 )
 from kiro_crew.dashboard.slot_queue_repository import RESTORED_QUEUE_KEY
 from kiro_crew.dashboard.state import (  # noqa: F401
+    _MAX_CONTEXT_PER_SOURCE,
+    _MAX_PENDING_CONTEXT,
     _MAX_SLOT_MESSAGES,
     CRON_NOTIFY_PREFIX,
     CRON_NOTIFY_RE,
@@ -8002,9 +8015,10 @@ async def _run_chat(
             directive_user_origin=_directive_user_origin,
             directive_channel_origin=_directive_channel_origin,
         )
-        if slot._in_stage_execution and not _consumed_reported and content == message:
+        _replays_this_turn = content in (message, _message_without_merge_cards)
+        if slot._in_stage_execution and not _consumed_reported and _replays_this_turn:
             stage_boundary_for(slot).retry_queue_id = _recovery_qid
-        if _is_refusal_retry_turn and index == 0 and content == message:
+        if _is_refusal_retry_turn and index == 0 and _replays_this_turn:
             # A verbatim requeue of the refusal retry's own message REPLACES
             # the consumed replay, whichever recovery family issued it: carry
             # the retry identity and fresh stop snapshots onto the new entry.
@@ -8358,6 +8372,13 @@ async def _run_chat(
     # re-queue), every `except` arm, and a hard CancelledError — not just the
     # graceful-cancel and empty-re-queue paths that reach the success check.
     _turn_landed = False
+    # Merge-card context is retired only after the turn carrying it lands. Every
+    # other exit returns it to the draining slot from the outer finally below.
+    _drained_merge_contexts: list[dict[str, Any]] = []
+    _merge_contexts_completed = False
+    # What a verbatim replay of this turn re-queues: the message without the
+    # merge-card frames the drain below prepends (``TurnContext.prefix_without_cards``).
+    _message_without_merge_cards = message
     # Replay settlement also lives in ``finally``. Bind at turn scope because
     # config, binding and session-start failures can reach teardown before the
     # acquisition block determines whether replay is pending.
@@ -9786,8 +9807,13 @@ async def _run_chat(
             # mirror — avoids leaking injected context to the linked thread.
             _user_msg_for_mirror = message
             # Drain pending context injections (silent background context
-            # from apps/subagents).  Expired entries are discarded.
-            _ctx_prefix = drain_pending_context(slot)
+            # from apps/subagents).  Expired entries are discarded. A merge card
+            # queued on another slot of this session is this turn's as well.
+            _turn_context = take_turn_context(state, slot)
+            _ctx_prefix = _turn_context.prefix
+            _drained_merge_contexts = _turn_context.consumed
+            slot._inflight_merge_contexts = _drained_merge_contexts
+            _message_without_merge_cards = _turn_context.prefix_without_cards + message
             if _ctx_prefix:
                 message = _ctx_prefix + message
             # Use resolved kiro agent name (e.g. "kirocrew"), not the slot
@@ -14500,7 +14526,7 @@ async def _run_chat(
                 # replay already sits between this queue and the retry.
                 _queue_recovery(
                     0,
-                    message,
+                    _message_without_merge_cards,
                     kind=SYNTHETIC_RECOVERY_KIND,
                     # Verbatim replay, so ORIGINAL only when the incoming text
                     # was the user's own — on a recovery turn it is the
@@ -14560,7 +14586,7 @@ async def _run_chat(
                 else:
                     runtime_death.note_shared_death(slot.key)
                 _requeue_text, _requeue_payload = build_recovery_requeue(
-                    message,
+                    _message_without_merge_cards,
                     _turn_emitted,
                     cause=ResetCause.CONNECTION_LOST,
                     message_is_synthetic=_is_synthetic,
@@ -14950,9 +14976,12 @@ async def _run_chat(
                 # turn-complete report is still True would drop that callback
                 # and strand a durable producer after the replay succeeds.
                 await _report_consumed(False)
+                # Without this turn's merge-card frames: _retrying_empty keeps
+                # the turn from landing, so the finally puts those contexts back
+                # and the replay turn drains them itself.
                 _queue_recovery(
                     0,
-                    message,
+                    _message_without_merge_cards,
                     kind=SYNTHETIC_RECOVERY_KIND,
                     # Verbatim replay: ORIGINAL only if the incoming text was the
                     # user's. On a recovery turn it is the runner's continuation.
@@ -15613,6 +15642,17 @@ async def _run_chat(
                 "Any raw `<invoke>` text above is that leak, not a reply.",
                 "msg msg-info",
             )
+        # Whether this turn lands. The save below retires the merge cards the
+        # turn consumed and the success record after it counts the turn; both
+        # read this one answer, so they cannot disagree.
+        _turn_lands = (
+            _stop_reason != STOP_REASON_CANCELLED
+            and not _retrying_empty
+            and not _recovering_promise
+            and not _recovering_compaction
+            and not _noticed_leak
+            and not _recovering_infra
+        )
         # On an empty-response re-queue the turn produced nothing and will
         # immediately re-run; skip persistence entirely so we don't save a
         # spurious empty turn or skew reliability metrics.
@@ -15654,6 +15694,12 @@ async def _run_chat(
             # finally's shutdown check must still see the marker to preserve it.
             if _stop_reason != STOP_REASON_CANCELLED:
                 _retire_local_turn_marker(slot, _local_turn_marker_generation)
+            # A landed turn's consumed merge-card hold must retire in this write;
+            # otherwise a restart can replay context the turn already consumed.
+            if _turn_lands:
+                _record_consumed_merge_contexts(state, _drained_merge_contexts)
+                _merge_contexts_completed = True
+                slot._inflight_merge_contexts = []
             # Save to history and trigger memory consolidation
             await save_slot_off_loop(state, slot)
         # Reset ALL retry budgets once the cycle completes (success OR the
@@ -15791,14 +15837,7 @@ async def _run_chat(
         state.sessions.check_context_usage(session_key, client)
         pct = client.context_usage_pct()
         state.broadcast_context_usage(slot.key, _context_usage_payload(slot.key, client))
-        if (
-            _stop_reason != STOP_REASON_CANCELLED
-            and not _retrying_empty
-            and not _recovering_promise
-            and not _recovering_compaction
-            and not _noticed_leak
-            and not _recovering_infra
-        ):
+        if _turn_lands:
             # An unacted turn (promise-only, or a tool call leaked as text) is
             # deliberately NOT recorded as a landed success: it announced or
             # serialized work it never did, so counting it would tell the
@@ -16206,7 +16245,7 @@ async def _run_chat(
             _retry_msg = "⟳ Connection lost — retrying…"
             slot.append("error", _retry_msg, "msg msg-err", meta={"kind": TRANSIENT_RETRY_KIND})
             _requeue_text, _requeue_payload = build_recovery_requeue(
-                message,
+                _message_without_merge_cards,
                 _turn_emitted,
                 cause=ResetCause.CONNECTION_LOST,
                 message_is_synthetic=_is_synthetic,
@@ -16364,7 +16403,7 @@ async def _run_chat(
                 )
                 slot.append("error", _status, "msg msg-err", meta={"kind": TRANSIENT_RETRY_KIND})
                 _requeue_text, _requeue_payload = build_recovery_requeue(
-                    message,
+                    _message_without_merge_cards,
                     _turn_emitted,
                     # Shared branch: `_status` above already told the user
                     # which of the two happened, so the continuation must
@@ -16416,7 +16455,7 @@ async def _run_chat(
                     meta={"kind": TRANSIENT_RETRY_KIND},
                 )
                 _requeue_text, _requeue_payload = build_recovery_requeue(
-                    message,
+                    _message_without_merge_cards,
                     _turn_emitted,
                     cause=ResetCause.CONNECTION_LOST,
                     message_is_synthetic=_is_synthetic,
@@ -16479,7 +16518,9 @@ async def _run_chat(
             else:
                 # No model activity landed, so the current text is safe to
                 # replay verbatim after removing the poisoned native history.
-                _image_recovery_text = message
+                # Without its merge-card frames: the finally puts the cards'
+                # contexts back on the queue and the replay turn drains them.
+                _image_recovery_text = _message_without_merge_cards
                 _image_recovery_payload = payload_for_replay(_is_synthetic)
             slot.append(
                 "error",
@@ -16621,7 +16662,7 @@ async def _run_chat(
                 else:
                     _queue_recovery(
                         0,
-                        message,
+                        _message_without_merge_cards,
                         kind=SYNTHETIC_RECOVERY_KIND,
                         # Verbatim replay: ORIGINAL only if the incoming text was
                         # the user's. On a recovery turn it is the runner's
@@ -16731,7 +16772,7 @@ async def _run_chat(
                 # long-running jobs most likely to hit throttle fallback.
                 _queue_recovery(
                     0,
-                    message,
+                    _message_without_merge_cards,
                     kind=SYNTHETIC_RECOVERY_KIND,
                     # Verbatim replay, same rule as the same-model retry above.
                     payload=payload_for_replay(_is_synthetic),
@@ -17108,7 +17149,7 @@ async def _run_chat(
                                     _ma_replay_extra = None
                                 _ma_replay_qid = _queue_recovery(
                                     0,
-                                    message,
+                                    _message_without_merge_cards,
                                     kind=SYNTHETIC_RECOVERY_KIND,
                                     # Verbatim replay, same rule as the
                                     # transient/throttle retries.
@@ -17292,7 +17333,7 @@ async def _run_chat(
                 # The verbatim requeue carries the retry identity forward via
                 # _queue_recovery itself (one mechanism for every recovery
                 # family), so this site needs no site-local re-stamp.
-                _queue_recovery(0, message, kind=SYNTHETIC_RECOVERY_KIND)
+                _queue_recovery(0, _message_without_merge_cards, kind=SYNTHETIC_RECOVERY_KIND)
                 # Fresh conversation ⇒ fresh ladder for the recovery cycle.
                 slot._transient_5xx_retries = 0
                 slot._infra_retries = 0
@@ -17461,6 +17502,9 @@ async def _run_chat(
         if not (isinstance(exc, MemoryStartupUnavailable) and not _memory_preparation_admitted):
             await state.sessions.record_failure(session_key)
     finally:
+        if _drained_merge_contexts and not _merge_contexts_completed:
+            _restore_consumed_merge_contexts(slot, _drained_merge_contexts)
+        slot._inflight_merge_contexts = []
         # First: hand back the session-switch lock if this turn exited between
         # its acquire and its post-registration release. Before anything that
         # can await, and before the refusal-fallback restore below takes the

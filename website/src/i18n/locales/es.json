@@ -8237,7 +8237,7 @@
       "open_in_new_tab": "Abrir en una pestaña de sesión",
       "pin": "Fijar",
       "pop_out_to_window": "Abrir en una ventana aparte",
-      "reload_blocked_running": "turno en curso",
+      "reload_blocked_running": "Un turno sigue en curso",
       "reload_blocked_subagents": "subagentes trabajando",
       "reload_session": "Recargar sesión",
       "reload_session_tooltip": "Reinicia el proceso del agente para aplicar cambios de MCP/configuración. La conversación se conserva.",
@@ -9492,6 +9492,51 @@
       "moreCols": "más columnas",
       "fewerRows": "menos filas",
       "moreRows": "más filas"
+    },
+    "mergeBackMenuItem": {
+      "merge_into_parent": "Fusionar en el chat original…",
+      "running": "Un turno sigue en curso",
+      "incognito": "Nada sale de un chat de incógnito",
+      "temporary": "Nada sale de un chat temporal",
+      "parent_not_dashboard": "El chat original se ejecuta fuera del panel",
+      "parent_channel": "El chat original es un chat de {{channel}}",
+      "parent_direct_message": "El chat original es un mensaje directo",
+      "parent_scheduled_job": "El chat original es un trabajo programado"
+    },
+    "mergeBackDialog": {
+      "title": "Fusionar en el chat original",
+      "title_named": "Fusionar en «{{parent}}»",
+      "description": "Envía este resumen al agente del chat original. Esta bifurcación sigue abierta.",
+      "drafting": "Escribiendo un resumen de los mensajes nuevos…",
+      "covers_one": "Resume {{count}} mensaje aún sin fusionar",
+      "covers_many": "Resume {{count}} mensajes aún sin fusionar",
+      "covers_other": "Resume {{count}} mensajes aún sin fusionar",
+      "covers_partial_one": "Resume el primer {{covered}} de {{count}} mensaje aún sin fusionar",
+      "covers_partial_many": "Resume los primeros {{covered}} de {{count}} mensajes aún sin fusionar",
+      "covers_partial_other": "Resume los primeros {{covered}} de {{count}} mensajes aún sin fusionar",
+      "remaining_one": "{{count}} mensaje más no cupo en este borrador. Vuelve a fusionar después de este para enviarlo.",
+      "remaining_many": "{{count}} mensajes más no cupieron en este borrador. Vuelve a fusionar después de este para enviarlos.",
+      "remaining_other": "{{count}} mensajes más no cupieron en este borrador. Vuelve a fusionar después de este para enviarlos.",
+      "length": "{{chars}} / {{max}}",
+      "placeholder": "¿Qué debe saber el chat original de esta bifurcación?",
+      "edit_hint": "Se envía tal como está escrito, nota final incluida.",
+      "gap_sentence": "Si el chat original siguió adelante después de crearse esta bifurcación, la bifurcación no vio esos mensajes.",
+      "merge": "Fusionar",
+      "merging": "Fusionando…",
+      "cancel": "Cancelar",
+      "close": "Cerrar",
+      "draft_again": "Redactar de nuevo",
+      "redraft_confirm": "¿Reemplazar el texto que editaste por un borrador nuevo?",
+      "redraft_replace": "Reemplazar",
+      "redraft_keep": "Conservar mi texto",
+      "redraft_outdated_confirm": "Los chats cambiaron desde que se escribió este borrador, así que Fusionar necesita un borrador nuevo. ¿Conservar tu texto tal como está o reemplazarlo por el borrador nuevo?",
+      "redraft_outdated_keep": "Redactar de nuevo, conservar mi texto",
+      "close_confirm": "¿Cerrar y perder el texto que editaste?",
+      "close_discard": "Descartar y cerrar",
+      "cut": "El resumen se recortó para caber en el límite. Termina en «…» justo encima de la nota final. Revisa esa línea antes de fusionar.",
+      "open_parent": "Abrir el chat original",
+      "parent_not_reopened": "No se pudo abrir el chat original. Ábrelo desde el historial y vuelve a intentarlo.",
+      "held": "Fusionado. El chat original está en medio de un turno, así que el resumen aparecerá allí cuando ese turno termine."
     }
   },
   "hooks": {
@@ -11403,6 +11448,13 @@
         "rate_right": "Jev leyó bien esta compactación",
         "rate_wrong": "Jev leyó mal esta compactación",
         "not_scored": "(+{{count}} sin evaluar)"
+      },
+      "mergedFromLabel": {
+        "merged_from": "Fusionado desde <fork>{{title}}</fork>",
+        "untitled_fork": "una bifurcación",
+        "messages_one": "{{count}} mensaje",
+        "messages_many": "{{count}} mensajes",
+        "messages_other": "{{count}} mensajes"
       }
     },
     "chatPage": {
@@ -17808,6 +17860,26 @@
       "search_in": "Buscar '{{query}}' en {{path}}",
       "search_web": "Buscar “{{query}}” en la web",
       "view_image": "Ver imagen {{path}}"
+    },
+    "mergeBackError": {
+      "parent_not_open": "El chat original está cerrado.",
+      "parent_deleted": "El chat original se eliminó. Esta bifurcación no se puede fusionar en el chat que lo reemplazó.",
+      "parent_unconfirmed": "No se puede confirmar que el chat original sea aquel del que se hizo esta bifurcación, así que la bifurcación no se puede fusionar en él.",
+      "parent_not_dashboard": "Una fusión solo puede ir a un chat que se ejecuta en el panel. El chat original de este chat se ejecuta fuera de él.",
+      "parent_channel": "Una fusión solo puede ir a un chat que se ejecuta en el panel. El chat original de este chat es un chat de {{channel}}.",
+      "parent_direct_message": "Una fusión solo puede ir a un chat que se ejecuta en el panel. El chat original de este chat es un mensaje directo.",
+      "parent_scheduled_job": "Una fusión solo puede ir a un chat que se ejecuta en el panel. El chat original de este chat es un trabajo programado.",
+      "nothing_to_merge": "El chat original ya tiene todo lo de esta bifurcación.",
+      "fork_running": "Esta bifurcación aún está ejecutando un turno. Fusiónala cuando termine.",
+      "restricted": "Un chat de incógnito o temporal no se puede fusionar, porque no se deriva nada de él.",
+      "draft_in_flight": "Ya se está escribiendo un resumen para esta bifurcación.",
+      "summary_failed": "No se pudo escribir el resumen. Vuelve a intentarlo.",
+      "merge_point_missing": "Esta bifurcación cambió desde que se escribió el resumen. Redáctalo de nuevo.",
+      "already_merged": "El chat original ya tiene estos mensajes de otra fusión.",
+      "queue_full": "El chat original tiene fusiones que su agente aún no ha leído. Envíale un mensaje primero.",
+      "parent_holds_too_many": "El chat original retiene demasiadas notas durante su turno actual. Vuelve a intentarlo cuando termine.",
+      "summary_too_long": "El resumen supera el límite de longitud. Acórtalo.",
+      "failed": "La fusión no se completó. Vuelve a intentarlo."
     }
   },
   "memoryV2": {

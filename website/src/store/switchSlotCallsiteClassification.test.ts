@@ -37,6 +37,7 @@ const PINNED: Record<string, Counts> = {
   'src/components/ArtifactChatPanel.tsx': { announced: 0, keepTarget: 0, plain: 1, reason: 'panel binds to a slot supplied programmatically' },
   'src/components/ChatInput.tsx': { announced: 1, keepTarget: 0, plain: 0, reason: 'mic-owner status-row click announces' },
   'src/components/ImportSessionItem.tsx': { announced: 0, keepTarget: 1, plain: 0, reason: 'the just-imported slot is new, so a 404 is a create/fetch race (#6309)' },
+  'src/components/MergeBackDialog.tsx': { announced: 1, keepTarget: 0, plain: 1, reason: 'the Open-the-parent button announces; the post-merge switch goes to the parent the merge response named moments before' },
   'src/components/commandPalette/providers/recentsProvider.ts': { announced: 1, keepTarget: 0, plain: 0, reason: 'palette recents row announces' },
   'src/components/notifications/NotificationDetailPanel.tsx': { announced: 3, keepTarget: 0, plain: 2, reason: 'go-to-chat buttons announce; the two plain sites switch to a slot a server API call resolved moments before, inside try/catch' },
   'src/hooks/useKeyboardShortcuts.ts': { announced: 1, keepTarget: 0, plain: 0, reason: 'keyboard session jump announces' },
@@ -49,6 +50,7 @@ const PINNED: Record<string, Counts> = {
   'src/pages/chat/SubagentRunCard.tsx': { announced: 1, keepTarget: 0, plain: 0, reason: 'run-card session link announces' },
   'src/pages/chat/WorkflowRunCard.tsx': { announced: 1, keepTarget: 0, plain: 0, reason: 'run-card session link announces' },
   'src/pages/chat/useChatPageSessionController.ts': { announced: 3, keepTarget: 0, plain: 6, reason: 'tab-strip select + foreground open-in-tab + late-frame deep-link recovery announce; the plain sites are close-tab successor selection, URL deep-link restore (x2), mount re-sync, tab fallback and app-launch activation with its own sidError notice' },
+  'src/pages/chat/useOpenMergedFork.ts': { announced: 1, keepTarget: 0, plain: 0, reason: 'the merge card\'s fork link announces' },
   'src/pages/overview/PromptsTab.tsx': { announced: 0, keepTarget: 0, plain: 1, reason: 'switches to a just-created slot' },
   'src/store/chatSlice.ts': { announced: 0, keepTarget: 0, plain: 1, reason: 'deleteSlot internal fallback navigation; self-handles via unwrap().catch' },
 }

@@ -80,7 +80,10 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: F401
 )
 from kiro_crew.dashboard.slot_buffers import (  # noqa: F401
     committed_filtered_note_ids,
+    committed_merge_card_contexts,
     drop_committed_restored_notes,
+    persistable_deferred_notes,
+    restore_deferred_note_hold,
     sanitize_restored_deferred_notes,
     serialize_deferred_notes,
     union_deferred_notes,
@@ -1419,19 +1422,6 @@ def _rehydrate_slot_from_history(
             # been working in keeps the full approval window instead of silently
             # dropping to the unattended deny-fast (state._ChatSlot.unattended).
             slot._human_seen = True
-        restored_notes = sanitize_restored_deferred_notes(meta.get("deferred_notes"))
-        if restored_notes:
-            # Replay the persisted deferred-note hold so the
-            # existing flush_deferred_notes() call sites deliver it on the
-            # first turn after the restart. Sanitized, and bounded by the
-            # DURABLE CEILING (2x the live cap): every durable entry is a
-            # 200-acknowledged note, and the first flush drains the surplus
-            # while the live cap still binds new enqueues. Entries whose
-            # delivered row is already committed (the rows-only handover
-            # window) are dropped below, once the message window is loaded —
-            # the filter is pure and scans that in-memory window, never the
-            # transcript file (this function runs on the event loop).
-            slot._deferred_notes = restored_notes
         _restored_queue = sanitize_restored_queue(meta.get("queued_prompts"))
         if _restored_queue:
             # Hand the queued prompts back as queue cards. They are the user's
@@ -1448,8 +1438,7 @@ def _rehydrate_slot_from_history(
         slot.memory_mode = mm
         if mm != "persistent":
             state._restricted_keys.add(f"dashboard:{slot_name}")
-        if meta.get("forked_from") is not None:
-            slot.forked_from = meta["forked_from"]
+        _restore_fork_lineage(slot, meta)
         if meta.get("linked_session_key"):
             # Rebind the slot to the session its conversation actually runs on.
             # Skipped, the slot would answer from a dashboard-only session and the
@@ -1485,18 +1474,7 @@ def _rehydrate_slot_from_history(
             if _prefetched_messages is not None
             else state.conversation_log.read_messages_chained(history_key)
         )
-        if slot._deferred_notes:
-            # The committed-row dedup deferred from the hold restore above:
-            # pure scan of the in-memory window, no file I/O on the loop.
-            _pre_filter_notes = slot._deferred_notes
-            slot._deferred_notes = drop_committed_restored_notes(messages, _pre_filter_notes)
-            # A filtered entry's row is committed (often by a rows-only
-            # handover save, into the frozen prefix no later save window
-            # carries) — record its id so the next full save retires the
-            # durable entry row-lessly instead of retaining it forever.
-            slot._dropped_note_ids.update(
-                committed_filtered_note_ids(_pre_filter_notes, slot._deferred_notes)
-            )
+        restore_deferred_note_hold(slot, meta.get("deferred_notes"), messages, history_key)
         if needs_tab_id_backfill:
             # Persist the freshly-minted tab_id AFTER reading the transcript above,
             # never before. update_metadata_off_loop dispatches an os.replace() of
@@ -2045,20 +2023,7 @@ def _apply_recent_session(
         # been working in keeps the full approval window instead of silently
         # dropping to the unattended deny-fast (state._ChatSlot.unattended).
         slot._human_seen = True
-    _sanitized_notes = sanitize_restored_deferred_notes(meta.get("deferred_notes"))
-    restored_notes = drop_committed_restored_notes(messages, _sanitized_notes)
-    # A filtered entry's row is committed (often by a rows-only handover save,
-    # into the frozen prefix no later save window carries) — record its id so
-    # the next full save retires the durable entry row-lessly instead of
-    # retaining it forever. Sanitizer-dropped entries are NOT recorded: only
-    # the committed-filter delta has a transcript owner.
-    slot._dropped_note_ids.update(committed_filtered_note_ids(_sanitized_notes, restored_notes))
-    if restored_notes:
-        # Replay the persisted deferred-note hold — see the
-        # mirror in _rehydrate_slot_from_history (committed rows dropped by a
-        # pure scan of the already-prefetched messages; no file I/O here,
-        # this apply half runs on the event loop).
-        slot._deferred_notes = restored_notes
+    restore_deferred_note_hold(slot, meta.get("deferred_notes"), messages, key)
     _restored_queue = sanitize_restored_queue(meta.get("queued_prompts"))
     if _restored_queue:
         # Mirror of the hand-back in _rehydrate_slot_from_history.
@@ -2069,8 +2034,7 @@ def _apply_recent_session(
     slot.memory_mode = mm
     if mm != "persistent":
         state._restricted_keys.add(f"dashboard:{slot_name}")
-    if meta.get("forked_from") is not None:
-        slot.forked_from = meta["forked_from"]
+    _restore_fork_lineage(slot, meta)
     if meta.get("linked_session_key"):
         slot.linked_session_key = str(meta["linked_session_key"])
     elif is_channel_session_key(key) and state.sessions:
@@ -3260,6 +3224,7 @@ from kiro_crew.dashboard.slot_persistence.restored_metadata import (  # noqa: E4
     _rehydrate_title_origin,
     _rehydrate_title_refresh_mark,
     _restore_dismissed_source_links,
+    _restore_fork_lineage,
     _validate_autocompact_pct,
 )
 from kiro_crew.dashboard.slot_persistence.transcript_merge import (  # noqa: E402,F401
@@ -3286,11 +3251,13 @@ from kiro_crew.dashboard.slot_persistence.turn_marker import (  # noqa: E402,F40
 )
 from kiro_crew.dashboard.slot_persistence.write_guards import (  # noqa: E402,F401
     _FLUSH_SNAPSHOT_RETRIES,
+    DeleteWitness,
     _keep_owed_after_refusal,
     _line_is_this_slots,
     _queue_snapshot_is_stale,
     _stable_durable_queue,
     register_guarded_history_write,
+    session_delete_witness,
     session_transcript_remains,
     session_was_deleted,
 )

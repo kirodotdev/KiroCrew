@@ -133,6 +133,24 @@ def _validate_autocompact_pct(raw: object) -> float | None:
     return None
 
 
+def _restore_fork_lineage(slot: _ChatSlot, meta: dict) -> None:
+    """A fork's link to its parent, and the parent transcript it was copied from.
+
+    ``forked_from_created_at`` is that transcript's ``created_at``: a merge back
+    checks a chat on the parent's key against it.
+    """
+    forked_from = meta.get("forked_from")
+    if not isinstance(forked_from, str) or not forked_from:
+        if "forked_from" in meta:
+            logger.warning("Discarding invalid persisted forked_from: %r", forked_from)
+        return
+    slot.forked_from = forked_from
+    forked_from_created_at = meta.get("forked_from_created_at")
+    slot.forked_from_created_at = (
+        forked_from_created_at if isinstance(forked_from_created_at, str) else ""
+    )
+
+
 def _restore_dismissed_source_links(slot: "_ChatSlot", raw: object) -> None:
     """Rehydrate the per-slot dismissed source-link identity set from metadata.
 

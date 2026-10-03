@@ -6,6 +6,7 @@
  */
 
 import type { ChatSlot } from '../../types'
+import type { MergeBackDraft, MergeBackResult } from '../../types/mergeBack'
 import type { SessionSummary } from '../../types/sessionSummary'
 import type { DynamicDashboardCard } from '../../types/dynamicDashboard'
 import { getStoredConsent } from '../../utils/themeConsent'
@@ -150,8 +151,16 @@ export function createChatEndpoints({ post, put, del, patch, j, sessionKeyHeader
      *  a click on a leftover countdown is rejected rather than ending a later wait. */
     endWait: (slot: string, waitId: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/end-wait', { wait_id: waitId }).then(j),
     approveChatSlot: (slot: string, action: string, extra?: Record<string, string>) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/approve', { action, ...extra }).then(j),
-    resumeChatSlot: (key: string, title?: string) => post('/api/chat/slots/' + encodeURIComponent(key) + '/resume', { name: key, key, title: title || key }).then(j),
+    resumeChatSlot: (key: string, title?: string, expectedCreatedAt?: string) => post('/api/chat/slots/' + encodeURIComponent(key) + '/resume', { name: key, key, title: title || key, ...(expectedCreatedAt !== undefined ? { expected_created_at: expectedCreatedAt } : {}) }).then(j),
     forkChatSlot: (slot: string, atIndex?: number, prompt?: string, mode?: string, direction?: string, messageId?: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/fork', { ...(atIndex !== undefined ? { at_message_index: atIndex } : {}), ...(messageId ? { at_message_id: messageId } : {}), ...(prompt ? { prompt } : {}), ...(mode ? { mode } : {}), ...(direction ? { direction } : {}) }).then(j),
+    /** Draft a summary of the fork messages its parent does not have yet. Writes
+     *  nothing; rejects with the body's `code` (`parent_not_open`, `parent_deleted`,
+     *  `parent_unconfirmed`, `nothing_to_merge`, `fork_running`, `merge_back_restricted`, ...). */
+    mergeBackDraft: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/merge-back/draft', {}).then(j) as Promise<MergeBackDraft>,
+    /** Write the reviewed summary into the fork's parent as a merge card.
+     *  `through` and `digest` are the draft's values; a fork whose covered
+     *  messages changed since rejects with `merge_draft_stale`. */
+    mergeBack: (slot: string, summary: string, through: string, digest: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/merge-back', { summary, through, digest }).then(j) as Promise<MergeBackResult>,
     sideOpen: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/side/open', {}).then(j) as Promise<{ ok: boolean; open: boolean; messages: number; last_run_id: string; created_at: string }>,
     sideTurn: (slot: string, question: string, opts?: { steer?: boolean }) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/side/turn', { question, ...(opts?.steer ? { steer: true } : {}) }).then(j) as Promise<{ ok: boolean; run_id?: string; messages?: number; steered?: boolean; pending?: boolean; queued?: boolean; demoted?: boolean; queue_id?: string; still_queued?: boolean; depth?: number; steer_id?: string }>,
     sideQueueCancel: (slot: string, queueId: string) => del('/api/chat/slots/' + encodeURIComponent(slot) + '/side/queue/' + encodeURIComponent(queueId), { client: TAB_ID }).then(j) as Promise<{ ok: boolean; content: string; depth: number }>,

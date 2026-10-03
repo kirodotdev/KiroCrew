@@ -246,5 +246,9 @@
   "pages.overview.memoryTab.consolidate_failed_session",
   "pages.overview.memoryTab.skipped_temporary_count",
   "pages.overview.memoryTab.skipped_incognito_count",
-  "pages.chat.crewLog.subagents_unmatched"
+  "pages.chat.crewLog.subagents_unmatched",
+  "components.mergeBackDialog.covers",
+  "components.mergeBackDialog.covers_partial",
+  "components.mergeBackDialog.remaining",
+  "pages.chat.mergedFromLabel.messages"
 ]

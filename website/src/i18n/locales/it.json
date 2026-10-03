@@ -8237,7 +8237,7 @@
       "open_in_new_tab": "Apri in una scheda di sessione",
       "pin": "Fissa",
       "pop_out_to_window": "Apri in una finestra",
-      "reload_blocked_running": "turno in corso",
+      "reload_blocked_running": "Un turno è ancora in corso",
       "reload_blocked_subagents": "sub-agenti al lavoro",
       "reload_session": "Ricarica la sessione",
       "reload_session_tooltip": "Riavvia il processo dell'agente per applicare le modifiche MCP/configurazione. La conversazione viene conservata.",
@@ -9492,6 +9492,51 @@
       "moreCols": "più colonne",
       "fewerRows": "meno righe",
       "moreRows": "più righe"
+    },
+    "mergeBackMenuItem": {
+      "merge_into_parent": "Unisci alla chat d'origine…",
+      "running": "Un turno è ancora in corso",
+      "incognito": "Nulla esce da una chat in incognito",
+      "temporary": "Nulla esce da una chat temporanea",
+      "parent_not_dashboard": "La chat d'origine funziona fuori dalla dashboard",
+      "parent_channel": "La chat d'origine è una chat {{channel}}",
+      "parent_direct_message": "La chat d'origine è un messaggio diretto",
+      "parent_scheduled_job": "La chat d'origine è un lavoro pianificato"
+    },
+    "mergeBackDialog": {
+      "title": "Unisci alla chat d'origine",
+      "title_named": "Unisci a «{{parent}}»",
+      "description": "Invia questo riepilogo all'agente della chat d'origine. Questa diramazione resta aperta.",
+      "drafting": "Scrittura di un riepilogo dei nuovi messaggi…",
+      "covers_one": "Riassume {{count}} messaggio non ancora unito",
+      "covers_many": "Riassume {{count}} messaggi non ancora uniti",
+      "covers_other": "Riassume {{count}} messaggi non ancora uniti",
+      "covers_partial_one": "Riassume il primo {{covered}} di {{count}} messaggio non ancora unito",
+      "covers_partial_many": "Riassume i primi {{covered}} di {{count}} messaggi non ancora uniti",
+      "covers_partial_other": "Riassume i primi {{covered}} di {{count}} messaggi non ancora uniti",
+      "remaining_one": "{{count}} altro messaggio non è entrato in questa bozza. Unisci di nuovo dopo questa per inviarlo.",
+      "remaining_many": "{{count}} altri messaggi non sono entrati in questa bozza. Unisci di nuovo dopo questa per inviarli.",
+      "remaining_other": "{{count}} altri messaggi non sono entrati in questa bozza. Unisci di nuovo dopo questa per inviarli.",
+      "length": "{{chars}} / {{max}}",
+      "placeholder": "Cosa deve sapere la chat d'origine da questa diramazione?",
+      "edit_hint": "Inviato esattamente com'è scritto, nota finale compresa.",
+      "gap_sentence": "Se la chat d'origine è andata avanti dopo la creazione di questa diramazione, la diramazione non ha visto quei messaggi.",
+      "merge": "Unisci",
+      "merging": "Unione in corso…",
+      "cancel": "Annulla",
+      "close": "Chiudi",
+      "draft_again": "Riscrivi",
+      "redraft_confirm": "Sostituire il testo che hai modificato con una nuova bozza?",
+      "redraft_replace": "Sostituisci",
+      "redraft_keep": "Tieni il mio testo",
+      "redraft_outdated_confirm": "Le chat sono cambiate da quando è stata scritta questa bozza, quindi Unisci ha bisogno di una bozza nuova. Tenere il tuo testo com’è o sostituirlo con la bozza nuova?",
+      "redraft_outdated_keep": "Riscrivi, tieni il mio testo",
+      "close_confirm": "Chiudere e perdere il testo che hai modificato?",
+      "close_discard": "Scarta e chiudi",
+      "cut": "Il riepilogo è stato tagliato per rientrare nel limite. Termina con «…» appena sopra la nota finale. Controlla quella riga prima di unire.",
+      "open_parent": "Apri la chat d'origine",
+      "parent_not_reopened": "Non è stato possibile aprire la chat d'origine. Aprila dalla cronologia, poi riprova.",
+      "held": "Unito. La chat d'origine è nel mezzo di un turno, quindi il riepilogo comparirà lì quando quel turno finisce."
     }
   },
   "hooks": {
@@ -11403,6 +11448,13 @@
         "rate_right": "Jev ha letto bene questa compattazione",
         "rate_wrong": "Jev ha letto male questa compattazione",
         "not_scored": "(+{{count}} non valutate)"
+      },
+      "mergedFromLabel": {
+        "merged_from": "Unito da <fork>{{title}}</fork>",
+        "untitled_fork": "una diramazione",
+        "messages_one": "{{count}} messaggio",
+        "messages_many": "{{count}} messaggi",
+        "messages_other": "{{count}} messaggi"
       }
     },
     "chatPage": {
@@ -17808,6 +17860,26 @@
       "search_in": "Cerca '{{query}}' in {{path}}",
       "search_web": "Cerca “{{query}}” sul web",
       "view_image": "Visualizza immagine {{path}}"
+    },
+    "mergeBackError": {
+      "parent_not_open": "La chat d'origine è chiusa.",
+      "parent_deleted": "La chat d'origine è stata eliminata. Questa diramazione non può essere unita alla chat che l'ha sostituita.",
+      "parent_unconfirmed": "Non è possibile confermare che la chat d'origine sia quella da cui è stata creata questa diramazione, quindi la diramazione non può esservi unita.",
+      "parent_not_dashboard": "Un'unione può andare solo in una chat che funziona nella dashboard. La chat d'origine di questa chat funziona fuori da essa.",
+      "parent_channel": "Un'unione può andare solo in una chat che funziona nella dashboard. La chat d'origine di questa chat è una chat {{channel}}.",
+      "parent_direct_message": "Un'unione può andare solo in una chat che funziona nella dashboard. La chat d'origine di questa chat è un messaggio diretto.",
+      "parent_scheduled_job": "Un'unione può andare solo in una chat che funziona nella dashboard. La chat d'origine di questa chat è un lavoro pianificato.",
+      "nothing_to_merge": "La chat d'origine ha già tutto ciò che c'è in questa diramazione.",
+      "fork_running": "Questa diramazione sta ancora eseguendo un turno. Uniscila quando finisce.",
+      "restricted": "Una chat in incognito o temporanea non può essere unita, perché da essa non si ricava nulla.",
+      "draft_in_flight": "Un riepilogo per questa diramazione è già in fase di scrittura.",
+      "summary_failed": "Non è stato possibile scrivere il riepilogo. Riprova.",
+      "merge_point_missing": "Questa diramazione è cambiata da quando è stato scritto il riepilogo. Riscrivilo.",
+      "already_merged": "La chat d'origine ha già questi messaggi da un'altra unione.",
+      "queue_full": "La chat d'origine ha unioni che il suo agente non ha ancora letto. Mandale prima un messaggio.",
+      "parent_holds_too_many": "La chat d'origine trattiene troppe note durante il turno in corso. Riprova quando il turno finisce.",
+      "summary_too_long": "Il riepilogo supera il limite di lunghezza. Accorcialo.",
+      "failed": "L'unione non è riuscita. Riprova."
     }
   },
   "memoryV2": {
