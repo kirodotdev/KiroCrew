@@ -1,4 +1,8 @@
-"""Running an app's own lifecycle scripts (``onEnable`` / ``onDisable`` / ``onUpdate`` / ``onUninstall``).
+"""Running an app's own lifecycle scripts (``onEnable`` / ``onDisable`` / ``onUninstall``).
+
+``setup.onInstall`` is run by the install transaction in ``registry_pipeline/install.py``,
+not here, and ``setup.onUpdate`` is declared but dispatched by nothing (see the
+declared-not-wired paragraph in ``docs/system-specs/modules/app-kit-platform.md``).
 
 Extracted out of ``apps/routes.py`` so that ``apps/teardown.py`` can run
 ``setup.onDisable`` as part of the ONE shared teardown. ``routes.py`` imports
@@ -51,7 +55,7 @@ async def run_lifecycle_script(
     extra_env: dict[str, str] | None = None,
     action: str = "lifecycle_script",
 ) -> dict[str, Any]:
-    """Run a lifecycle script (onEnable/onDisable/onUpdate/onUninstall) in the app directory.
+    """Run a lifecycle script (onEnable/onDisable/onUninstall) in the app directory.
 
     Returns dict with ``output`` (str) and ``failed`` (bool).
     """
