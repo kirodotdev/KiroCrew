@@ -15,6 +15,7 @@ from ..subagent_persistence import (
     write_run_agent,
 )
 from ._component import ManagerComponent
+from .admission.types import WINDOW_ENTRY_RECOVERING
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -995,7 +996,7 @@ class RunEventCoordinator(ManagerComponent):
         # must see them.
         return in_window + self._manager._admission.taskq_overflow(parent_session_key)
 
-    def _window_depth(self, parent_session_key: str) -> int:
+    def _window_depth(self, parent_session_key: str, *, include_recovering: bool = True) -> int:
         """Unstarted spawns *parent_session_key* holds in the in-memory window.
 
         A ``_resume_id`` entry is not one: it is a RESIDENT run asking for its
@@ -1005,12 +1006,19 @@ class RunEventCoordinator(ManagerComponent):
         leave "1 waiting to start" on the card for work that has started. An
         approval-released start (``_startup_release``) has not started its run
         yet, so it is still waiting and still counts.
+
+        *include_recovering* False is the chip's reading: it also leaves out an
+        entry hydrated from a ``recovering`` row (``WINDOW_ENTRY_RECOVERING``),
+        a run being rebuilt after a restart, exactly as its store half does.
+        The reset-deferral guards keep it: it is still work this parent is owed.
         """
         resident = self._manager._admission.entry_is_resident_resume
         return sum(
             1
             for q in self._manager._queue
-            if q.get("parent_session_key", "") == parent_session_key and not resident(q)
+            if q.get("parent_session_key", "") == parent_session_key
+            and not resident(q)
+            and (include_recovering or not q.get(WINDOW_ENTRY_RECOVERING))
         )
 
     async def _queued_depth_async_impl(self, parent_session_key: str) -> int:
@@ -1301,7 +1309,7 @@ class RunEventCoordinator(ManagerComponent):
         (in the store: the snapshot did not exclude it) and one the pump pops
         is counted once (in the window half).
         """
-        in_window = self._window_depth(parent_session_key)
+        in_window = self._window_depth(parent_session_key, include_recovering=False)
         overflow = await self._manager._admission.taskq_chip_overflow_async(parent_session_key)
         return None if overflow is None else in_window + overflow
 

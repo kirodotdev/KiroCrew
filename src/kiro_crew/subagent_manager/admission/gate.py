@@ -67,6 +67,7 @@ class _GateMixin(ManagerComponent):
         CLAIM_RETAINED: str
 
         TASK_STORE_UNAVAILABLE_CODE: str
+        WINDOW_ENTRY_RECOVERING: str
 
     def resolve_spawn_execution(
         self,
@@ -234,6 +235,7 @@ class _GateMixin(ManagerComponent):
         _stage_boundary_owner: str = "",
         _parent_spawn_policy: "ParentSpawnPolicy | None" = None,
         _agent_check: "AgentCheck | None" = None,
+        _recovering_row: bool = False,
     ) -> "SubagentInfo | PreparedSpawn | ClaimPoint | None":
         """Spawn a subagent for *task*.
 
@@ -654,6 +656,12 @@ class _GateMixin(ManagerComponent):
             "_agent_prevalidated": _agent_prevalidated,
             "_preassigned_id": agent_id,
         }
+        if _recovering_row:
+            # The window's ``recovering`` mark (``WINDOW_ENTRY_RECOVERING``)
+            # rides the round-trip like the id: a drained restart survivor
+            # this gate re-queues is still unclaimed, so its row is still
+            # ``recovering`` and the chip must keep leaving it out.
+            queue_params[self.WINDOW_ENTRY_RECOVERING] = True
         if _prepare_only and _memory_mode == "persistent":
             # ``spawn_async``: every policy gate above has passed; hand back the
             # row to write OFF-LOOP, then re-enter with ``_store_accepted``.

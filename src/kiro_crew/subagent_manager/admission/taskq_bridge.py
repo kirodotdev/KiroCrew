@@ -18,6 +18,7 @@ from kiro_crew.subagent_wait_reasons import (
 from .._component import ManagerComponent
 from .types import (
     MIN_RECHECK_DELAY_SECS,
+    WINDOW_ENTRY_RECOVERING,
     DeferPoint,
     FairnessSettings,
     QueuedReadUnavailable,
@@ -218,7 +219,9 @@ class _TaskqBridgeMixin(ManagerComponent):
             if p.get("_preassigned_id")
         ]
 
-    def taskq_excluded_ids(self, *, counted: Collection[str] = ()) -> list[str]:
+    def taskq_excluded_ids(
+        self, *, counted: Collection[str] = (), window: bool = True
+    ) -> list[str]:
         """Rows the refill must never claim: those already in the window AND
         those with a LIVE run in this process. A live run's row can be
         claimable for a moment (a wake lands in ``retry_wait`` until the pump
@@ -226,7 +229,9 @@ class _TaskqBridgeMixin(ManagerComponent):
         run that is still resident.
 
         *counted* names admitting rows a COUNT should still see (the chip's,
-        :meth:`taskq_chip_excluded_ids`); every other part stays excluded."""
+        :meth:`taskq_chip_excluded_ids`); every other part stays excluded.
+        *window* False keeps the window's rows in (the parent-end sweep,
+        :meth:`taskq_pending_ids_for_async`)."""
         live = self._live_run_ids()
         # Rows whose accept path is still in flight (``spawn_async``: written,
         # not yet claimed or windowed) belong to that caller, not to the pump.
@@ -235,7 +240,7 @@ class _TaskqBridgeMixin(ManagerComponent):
         # iterating the live set raises if it changes size mid-pass.
         admitting_now = list(getattr(self._manager, "_admitting_ids", ()) or ())
         admitting = [aid for aid in admitting_now if aid not in counted]
-        return self.taskq_window_ids() + live + admitting
+        return (self.taskq_window_ids() if window else []) + live + admitting
 
     def taskq_dispatch_excluded_ids(self, *, counted: Collection[str] = ()) -> list[str]:
         """:meth:`taskq_excluded_ids` plus the rows the pump has popped from the
@@ -480,7 +485,15 @@ class _TaskqBridgeMixin(ManagerComponent):
         # scans nothing on the loop; the durable pump re-resolves it off-loop
         # before every re-check, so the row never carries a snapshot that an
         # edited spec would leave stale across a restart.
-        _PROCESS_LOCAL_PARAMS = ("_agent_prevalidated", "approval_mode", "_parent_spawn_policy")
+        #
+        # ``WINDOW_ENTRY_RECOVERING`` is window bookkeeping read off the row's
+        # state at hydration (``_window_entry``), never a fact a row carries.
+        _PROCESS_LOCAL_PARAMS = (
+            "_agent_prevalidated",
+            "approval_mode",
+            "_parent_spawn_policy",
+            WINDOW_ENTRY_RECOVERING,
+        )
         durable_params = {k: v for k, v in params.items() if k not in _PROCESS_LOCAL_PARAMS}
         return _taskq.TaskRecord(
             id=agent_id,
@@ -525,6 +538,8 @@ class _TaskqBridgeMixin(ManagerComponent):
                 root_id = parent_rec.root_id or parent_rec.id
         record.parent_id = parent_id
         record.root_id = root_id
+        # Before the write, so no parent-end sweep can read the row unrecorded.
+        self._manager._cancellation.note_teardown_store_accept(record.session_key, record.id)
         try:
             store.accept_one(record)
         except _taskq.TaskStoreUnavailable as exc:
@@ -1052,7 +1067,8 @@ class _TaskqBridgeMixin(ManagerComponent):
         """The ``count_pending`` arguments every overflow entry takes (the
         "accepted, no run yet" definition), snapshotted from manager state on the
         caller's thread (the loop, for the async ones). *exclude_ids* defaults to
-        :meth:`taskq_excluded_ids`; the chip passes its own set."""
+        :meth:`taskq_excluded_ids`; the chip passes its own set, and also leaves
+        out ``recovering`` rows (:meth:`taskq_chip_overflow_async`)."""
         return {
             "exclude_ids": self.taskq_excluded_ids() if exclude_ids is None else exclude_ids,
             "session_key": parent_session_key,
@@ -1155,9 +1171,14 @@ class _TaskqBridgeMixin(ManagerComponent):
 
         The chip's one reader, excluding :meth:`taskq_chip_excluded_ids`. Like
         :meth:`taskq_overflow` it counts ``admitted`` rows no run is registered
-        for (a claim retained across an outage is still waiting work). The
-        exclusion sets are snapshotted here, on the loop, before the read; on the
-        inline pump (``pump_off_loop`` off) the read itself runs here too.
+        for (a claim retained across an outage is still waiting work). Unlike
+        it, a ``recovering`` row is not counted: it is a run that had started
+        before its owner was lost (a gateway restart), waiting to be rebuilt,
+        not a spawn waiting to start -- the queued listing names it "waiting to
+        resume", and counting it would put "N waiting to start" on the card
+        after every restart. Work still owed (the pending-work guards) keeps it. The
+        exclusion sets are snapshotted here, on the loop, before the read; on
+        the inline pump (``pump_off_loop`` off) the read itself runs here too.
 
         An unreadable store answers ``None``, not :data:`UNKNOWN_PENDING`: the
         chip then publishes nothing, because any number it sent would be a
@@ -1174,6 +1195,7 @@ class _TaskqBridgeMixin(ManagerComponent):
                 store.count_pending,
                 _taskq.KIND_SUBAGENT,
                 **self._overflow_query(parent_session_key, self.taskq_chip_excluded_ids()),
+                include_recovering=False,
             )
             return int(await store.run(count) if type(self).pump_off_loop else count())
         except _taskq.TaskStoreUnavailable:
@@ -1203,14 +1225,24 @@ class _TaskqBridgeMixin(ManagerComponent):
             return []
         return [r.id for r in rows]
 
-    async def taskq_pending_ids_for_async(self, parent_session_key: str) -> list[str]:
-        """:meth:`taskq_pending_ids_for` with its store read on the writer thread."""
+    async def taskq_pending_ids_for_async(
+        self, parent_session_key: str, *, include_window: bool = False
+    ) -> list[str]:
+        """:meth:`taskq_pending_ids_for` with its store read on the writer thread.
+
+        *include_window* is the parent-end teardown's reading
+        (``cancel_for_teardown_impl``): the window's rows too. The teardown
+        unqueues a window entry together with its row, and an entry the refill
+        hydrated after the teardown's snapshot was named by nobody; the
+        snapshot's fence, not the window, is what tells a retired
+        conversation's row from one its successor under the same key queued.
+        """
         from kiro_crew import taskq as _taskq
 
         store = self.taskq_store()
         if store is None or not parent_session_key:
             return []
-        exclude = self.taskq_excluded_ids()
+        exclude = self.taskq_excluded_ids(window=not include_window)
         try:
             rows = await store.run(
                 store.list_pending,
@@ -1811,9 +1843,18 @@ class _TaskqBridgeMixin(ManagerComponent):
 
     @staticmethod
     def _window_entry(rec: "_taskq.TaskRecord") -> dict[str, Any]:
+        from kiro_crew import taskq as _taskq
+
         params = dict(rec.params)
         params["_preassigned_id"] = rec.id
         params["_lane"] = rec.lane
+        # The row is a run being rebuilt after its owner was lost, so the
+        # chip's window half leaves it out as its store half does; ``spawn``
+        # takes the mark as its keyword and puts it back on a re-queued entry.
+        # Set from the row's state alone, never from its params.
+        params.pop(WINDOW_ENTRY_RECOVERING, None)
+        if rec.state == _taskq.RECOVERING:
+            params[WINDOW_ENTRY_RECOVERING] = True
         params.pop("_legacy_import", None)
         # Both process-local params are stripped on the READ side as well as by
         # ``taskq_build_record``, because a row is written by one build and

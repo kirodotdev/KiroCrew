@@ -821,8 +821,21 @@ lanes). The adapter's in-memory queue
   listing (`list_pending(include_admitted=True, app=…)`) shares. When the
   dashboard chip asks, a row the pump has popped and not yet claimed is left
   out (a row a `spawn_async` caller is still admitting does count once the
-  gate has queued it). Wave accounting consults `fetch_pending_by_batch` the
-  same way.
+  gate has queued it), and so is a `recovering` row, in the store
+  (`count_pending(include_recovering=False)`) and in the window (the refill
+  marks its entry `WINDOW_ENTRY_RECOVERING`, and a gate re-queue of the
+  still-unclaimed entry keeps it): claimable, but a run that had
+  started and lost its owner, not one waiting for its first start. Every count
+  of work still owed keeps it. Wave accounting consults `fetch_pending_by_batch`
+  the same way.
+- A parent-end teardown stops the parent's waiting rows the store accepted
+  before its snapshot (`taskq_pending_ids_for_async(…, include_window=True)`,
+  window rows included, live runs and rows a `spawn_async` caller is still
+  admitting left out, less the ids the snapshot's fence recorded as accepted
+  after it, by accept order rather than `created_at`, which a stepped-back
+  wall clock would misorder), so a row held only by the store does not
+  outlive the conversation that queued it, and a row a successor under the
+  same key queued after the snapshot is never swept. See [subagent.md](subagent.md) § `cancel_for_teardown`.
 - When a pass finds nothing and the window is empty, the pump arms one
   `call_later` at `next_eligible_at`: the earliest moment a row held only by
   time (deferred by `next_run_at`, or leased by `lease_expires_at`) becomes

@@ -3502,6 +3502,18 @@ class SubagentManager:
         # runs, queued runs and follow-up synthetics are all covered by the one
         # place the teardown writes.
         self._teardown_cancelled_ids = _AgingIdSet(_TEARDOWN_GATE_TTL_SECS)
+        # The parent-end store sweep's fence (``CancellationCoordinator``
+        # ``note_teardown_snapshot``): per parent key, the ids of the rows
+        # accepted for it since its latest snapshot -- a successor's, which the
+        # sweep must spare. Pending here until the cancel takes it, then in
+        # ``_teardown_store_sweeps`` until that cancel is done, recording all
+        # along. Accept-ordered, not clock-ordered: a wall clock stepped back
+        # would stamp a successor's row "before" the snapshot. Under the lock
+        # because the accept that records runs on the store's writer thread.
+        # A snapshot whose cancel never ran is replaced by the next one.
+        self._teardown_store_fences: dict[str, set[str]] = {}
+        self._teardown_store_sweeps: list[tuple[str, set[str]]] = []
+        self._teardown_fence_lock = threading.Lock()
         self._memory_mode_for_session = memory_mode_for_session
         self._stage_boundary_for_scope = stage_boundary_for_scope
         self._ctx_builder = ctx_builder
@@ -5395,6 +5407,7 @@ class SubagentManager:
         _stage_boundary_owner: str = "",
         _parent_spawn_policy: "ParentSpawnPolicy | None" = None,
         _agent_check: "AgentCheck | None" = None,
+        _recovering_row: bool = False,
     ) -> SubagentInfo | None:
         result = self._admission.spawn_impl(
             task,
@@ -5434,6 +5447,7 @@ class SubagentManager:
             _stage_boundary_owner=_stage_boundary_owner,
             _parent_spawn_policy=_parent_spawn_policy,
             _agent_check=_agent_check,
+            _recovering_row=_recovering_row,
         )
         assert not isinstance(result, PreparedSpawn)
         # Every synchronous gate return (started, queued, or refused) receives
@@ -6596,8 +6610,14 @@ class SubagentManager:
         finish on its own during the provider-teardown awaits that follow — so marking
         later, when the cancel actually runs, is too late for exactly the runs whose
         report is already on its way.
+
+        Also opens the fence that records every row the store accepts for this parent
+        from here on, so the cancel can stop the rows accepted before it -- the rows
+        held only by the store, which no snapshot can name -- and spare a successor's.
         """
-        return self._cancellation.snapshot_teardown_children_impl(parent_session_key)
+        selected = self._cancellation.snapshot_teardown_children_impl(parent_session_key)
+        self._cancellation.note_teardown_snapshot(parent_session_key)
+        return selected
 
     async def cancel_for_teardown(
         self,
@@ -6610,13 +6630,21 @@ class SubagentManager:
 
         ``parent_session_key`` is carried so the teardown's one audit line can name the
         conversation whose runs these were; the ids themselves come from the snapshot,
-        which is the only reading of them that cannot drift.
+        which is the only reading of them that cannot drift. The store rows accepted
+        before that snapshot are stopped after them.
         """
-        return await self._cancellation.cancel_for_teardown_impl(
-            agent_ids,
-            parent_session_key=parent_session_key,
-            verb=verb,
-        )
+        fence = self._cancellation.take_teardown_snapshot(parent_session_key)
+        try:
+            return await self._cancellation.cancel_for_teardown_impl(
+                agent_ids,
+                parent_session_key=parent_session_key,
+                verb=verb,
+                accepted_since=fence,
+            )
+        finally:
+            # Recording stops only once the sweep's store read is behind it: a row
+            # a successor queues during the awaits above must still be spared.
+            self._cancellation.release_teardown_snapshot(fence)
 
     async def cancel_all(self) -> None:
         return await self._cancellation.cancel_all_impl()

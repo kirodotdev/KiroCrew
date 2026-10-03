@@ -21,6 +21,14 @@ TASK_STORE_UNAVAILABLE_CODE = "task_store_unavailable"
 #: pass cannot make progress.
 MIN_RECHECK_DELAY_SECS = 0.05
 
+#: The window entry key that marks an entry the refill hydrated from a
+#: ``recovering`` row: a run being rebuilt after its owner was lost, which the
+#: queue-depth chip does not count as waiting to start. It is also ``spawn``'s
+#: keyword of the same name, so the pump hands it on with the rest of the entry
+#: and a gate that re-queues the still-unclaimed row (stagger, cap, child
+#: reserve) puts the mark back on the entry it appends. Never persisted.
+WINDOW_ENTRY_RECOVERING = "_recovering_row"
+
 
 def tombstone_terminal_state(cause: str) -> str | None:
     """The terminal task state a tombstone cause proves, loaded on first use."""
