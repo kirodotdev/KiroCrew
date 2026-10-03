@@ -962,6 +962,229 @@ async def test_a_stop_that_got_there_first_owns_the_ending_and_no_flag_is_writte
     assert info.outcome == "stopped" and info.error == ""
     assert delivered == ["stopped"]
     assert (sp.read_state(info.id) or {}).get("result_complete") is False
+    sessions.record_success.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_deadline_reap_that_got_there_first_owns_the_ending():
+    """A deadline reap in flight when the whole answer arrives owns the run's
+    ending, as a Stop does: the run is recorded and reported as the reap's
+    failure, and nothing counts it a success. Recording a bare ``done`` from
+    the run's tail let the reap's record guard skip, so a deadline-stopped run
+    was reported completed and cleared its session's failure count."""
+    import kiro_crew.subagent_persistence as sp
+
+    complete_go = asyncio.Event()
+    reset_go = asyncio.Event()
+
+    def factory(msg: str, *a, **kw):
+        async def _gen():
+            yield _text(_ANSWER)
+            await complete_go.wait()
+            yield _complete(STOP_REASON_END_TURN)
+
+        return _gen()
+
+    sessions = _mock_sessions(factory)
+    resets: list[str] = []
+
+    async def _reset(key, **_kw):
+        resets.append(key)
+        if len(resets) == 1:  # the reap's reset; the run's own teardown is quick
+            await reset_go.wait()
+
+    sessions.reset = AsyncMock(side_effect=_reset)
+    mgr = _manager(sessions)
+    delivered: list[str] = []
+
+    async def _on_done(done_info):
+        delivered.append(done_info.outcome)
+
+    mgr._on_done = _on_done
+    try:
+        with patch("kiro_crew.subagent.Stats") as stats, patch("kiro_crew.subagent.sel"):
+            info = mgr.spawn("do work")
+            assert info is not None
+            run = mgr._tasks[info.id]
+            await _wait_until(lambda: info.streaming_text, "the first chunk")
+            reaping = asyncio.ensure_future(
+                mgr._force_reap(info.id, info, 601.0, reason="deadline")
+            )
+            await _wait_until(lambda: resets, "the reap's reset")
+            complete_go.set()
+            await _wait_until(lambda: run.done(), "the run's own ending")
+            reset_go.set()
+            await asyncio.wait_for(reaping, 15)
+            await _wait_settled(mgr, info)
+    finally:
+        complete_go.set()
+        reset_go.set()
+
+    assert not info._ending_claimed
+    assert info.outcome == "failed" and "deadline" in info.error
+    assert delivered == ["failed"]
+    assert (sp.read_state(info.id) or {}).get("result_complete") is False
+    sessions.record_success.assert_not_called()
+    stats.return_value.inc_subagent_completed.assert_not_called()
+    assert stats.return_value.inc_subagent_failed.call_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("stream_end", "unfinished"),
+    [
+        ("complete event", "the run was stopped as it finished its answer"),
+        ("stream stopped", "the runtime was torn down before the run finished"),
+    ],
+)
+async def test_a_reap_in_flight_names_whether_the_answer_had_finished(
+    stream_end: str, unfinished: str
+):
+    """A successful ending a deadline reap got to first is the reap's, and its
+    record says how far the answer got: a complete event finished it, while a
+    stream that just stopped, which also classifies as a normal end of turn,
+    had not, so the record names the teardown."""
+    complete_go = asyncio.Event()
+    reset_go = asyncio.Event()
+
+    def factory(msg: str, *a, **kw):
+        async def _gen():
+            yield _text(_ANSWER)
+            await complete_go.wait()
+            if stream_end == "complete event":
+                yield _complete(STOP_REASON_END_TURN)
+
+        return _gen()
+
+    sessions = _mock_sessions(factory)
+    resets: list[str] = []
+
+    async def _reset(key, **_kw):
+        resets.append(key)
+        if len(resets) == 1:  # the reap's reset; the run's own teardown is quick
+            await reset_go.wait()
+
+    sessions.reset = AsyncMock(side_effect=_reset)
+    mgr = _manager(sessions)
+    try:
+        with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
+            info = mgr.spawn("do work")
+            assert info is not None
+            run = mgr._tasks[info.id]
+            await _wait_until(lambda: info.streaming_text, "the first chunk")
+            reaping = asyncio.ensure_future(
+                mgr._force_reap(info.id, info, 601.0, reason="deadline")
+            )
+            await _wait_until(lambda: resets, "the reap's reset")
+            complete_go.set()
+            await _wait_until(lambda: run.done(), "the run's own ending")
+            reset_go.set()
+            await asyncio.wait_for(reaping, 15)
+            await _wait_settled(mgr, info)
+    finally:
+        complete_go.set()
+        reset_go.set()
+
+    assert info.outcome == "failed"
+    assert info.error.endswith(f" — {unfinished}"), info.error
+    sessions.record_success.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_user_stop_no_reap_has_reached_yet_records_the_neutral_stop():
+    """``cancel()`` stamps ``user_stopped`` synchronously and only then awaits
+    its reap, so a whole answer can arrive between the two: no reap is in
+    flight yet, and the run still records the stop's neutral ending and counts
+    no success."""
+    import kiro_crew.subagent_persistence as sp
+
+    complete_go = asyncio.Event()
+    reap_go = asyncio.Event()
+
+    def factory(msg: str, *a, **kw):
+        async def _gen():
+            yield _text(_ANSWER)
+            await complete_go.wait()
+            yield _complete(STOP_REASON_END_TURN)
+
+        return _gen()
+
+    sessions = _mock_sessions(factory)
+    mgr = _manager(sessions)
+    real_reap = mgr._force_reap
+
+    async def _held_reap(*a, **kw):
+        await reap_go.wait()
+        return await real_reap(*a, **kw)
+
+    mgr._force_reap = _held_reap
+    delivered: list[str] = []
+
+    async def _on_done(done_info):
+        delivered.append(done_info.outcome)
+
+    mgr._on_done = _on_done
+    try:
+        with patch("kiro_crew.subagent.Stats") as stats, patch("kiro_crew.subagent.sel"):
+            info = mgr.spawn("do work")
+            assert info is not None
+            run = mgr._tasks[info.id]
+            await _wait_until(lambda: info.streaming_text, "the first chunk")
+            stopping = asyncio.ensure_future(mgr.cancel(info.id))
+            await _wait_until(lambda: info.user_stopped, "the stop's stamp")
+            complete_go.set()
+            await _wait_until(lambda: info.done, "the run's own ending")
+            assert not info._reap_started, "the reap was meant to be held"
+            reap_go.set()
+            await asyncio.wait_for(stopping, 15)
+            done, _ = await asyncio.wait({run}, timeout=15)
+            assert run in done, "the run task never finished"
+            await _wait_settled(mgr, info)
+    finally:
+        complete_go.set()
+        reap_go.set()
+
+    assert not info._ending_claimed
+    assert info.outcome == "stopped" and info.error == ""
+    assert delivered == ["stopped"]
+    assert (sp.read_state(info.id) or {}).get("result_complete") is False
+    sessions.record_success.assert_not_called()
+    stats.return_value.inc_subagent_completed.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_run_another_path_already_ended_counts_no_success():
+    """A whole answer that arrives after another path recorded the run's
+    ending (``done`` set first, standing in for any first-arrival recorder)
+    claims nothing and leaves the success to that record: no success stat,
+    and the session's failure count is not cleared."""
+    import kiro_crew.subagent_persistence as sp
+
+    holder: dict = {}
+
+    def factory(msg: str, *a, **kw):
+        async def _gen():
+            yield _text(_ANSWER)
+            holder["info"].done = True
+            yield _complete(STOP_REASON_END_TURN)
+
+        return _gen()
+
+    sessions = _mock_sessions(factory)
+    mgr = _manager(sessions)
+    with patch("kiro_crew.subagent.Stats") as stats, patch("kiro_crew.subagent.sel"):
+        info = mgr.spawn("do work")
+        assert info is not None
+        holder["info"] = info
+        await asyncio.wait_for(mgr._tasks[info.id], _RUN_CEILING)
+        await _wait_settled(mgr, info)
+
+    assert not info._ending_claimed
+    assert info.stop_class == STOP_CLASS_SUCCEEDED
+    assert (sp.read_state(info.id) or {}).get("result_complete") is False
+    sessions.record_success.assert_not_called()
+    stats.return_value.inc_subagent_completed.assert_not_called()
+    stats.return_value.inc_subagent_failed.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -1256,6 +1479,61 @@ async def test_a_partial_result_txt_cannot_hold_is_still_delivered_whole(
 
     assert info.outcome == "stopped"
     assert info.result == "".join(chunks)
+
+
+@pytest.mark.asyncio
+async def test_the_live_partial_takes_a_chunk_before_its_file_write_starts(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The off-loop write that starts result.txt is an await, so a Stop can
+    land while it runs. The chunk that write carries is already in the live
+    partial by then, so that Stop still delivers it."""
+    import threading
+
+    import kiro_crew.subagent as subagent
+
+    real_write = subagent.write_result_chunk
+    run: dict = {}
+    partial_at_start: list[str] = []
+    write_started = threading.Event()
+    release_write = threading.Event()
+
+    def _held(agent_id, text, *, fresh=False):
+        if fresh:
+            partial_at_start.append(run["info"].streaming_text)
+            write_started.set()
+            # Held in the worker until the Stop has landed, so the Stop
+            # provably arrives while this write is still in flight.
+            release_write.wait(15)
+        return real_write(agent_id, text, fresh=fresh)
+
+    monkeypatch.setattr(subagent, "write_result_chunk", _held)
+
+    def factory(msg: str, *a, **kw):
+        async def _gen():
+            yield _text("alpha ")
+            await asyncio.Event().wait()  # cut off before any ending
+
+        return _gen()
+
+    mgr = _manager(_mock_sessions(factory))
+    try:
+        with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
+            info = mgr.spawn("do work")
+            assert info is not None
+            run["info"] = info
+            await _wait_until(write_started.is_set, "the start write")
+            stop = asyncio.ensure_future(mgr.cancel(info.id))
+            await _wait_until(lambda: info.user_stopped, "the Stop")
+            release_write.set()
+            await asyncio.wait_for(stop, 15)
+            await _wait_settled(mgr, info)
+    finally:
+        release_write.set()
+
+    assert partial_at_start == ["alpha "]
+    assert info.outcome == "stopped"
+    assert info.result == "alpha "
 
 
 @pytest.mark.asyncio

@@ -70,6 +70,7 @@ def tombstone_terminal_state(cause: str, outcome: str = "") -> str | None:
         "child_escalation_limit": taskq.FAILED,
         "reaped": taskq.FAILED,
         "startup_timeout": taskq.FAILED,
+        "start_queue_saturated": taskq.FAILED,
     }.get(cause)
 
 

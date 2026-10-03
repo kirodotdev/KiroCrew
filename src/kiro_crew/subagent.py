@@ -2861,6 +2861,10 @@ class SubagentInfo:
     # shutdown or the deadline only ends the run's tail early. A respawn would
     # re-run finished work and a failure would discard a whole answer.
     _ending_claimed: bool = False
+    # Set by the tail for a successful ending a reap in flight got to first:
+    # True when a complete event ended the answer, False when the stream just
+    # stopped. ``_run`` names the reap's ending from it.
+    _answer_finished: bool = False
     # True while a cancelled run is draining an in-flight off-loop state.json
     # write worker (every off-loop writer). _run's
     # unexpected-cancel recovery gate reads it: on Python 3.10 a second outer
@@ -6346,6 +6350,9 @@ class SubagentManager:
 
     async def _cap_unclaimed_result(self, info: SubagentInfo) -> None:
         await self._run_events._cap_unclaimed_result_impl(info)
+
+    def _record_reap_ending(self, info: SubagentInfo, unfinished: str) -> None:
+        self._run_events._record_reap_ending_impl(info, unfinished)
 
     async def _run_inner(self, info: SubagentInfo, session_key: str) -> None:
         usage = _RunCreditAccounting(info)
