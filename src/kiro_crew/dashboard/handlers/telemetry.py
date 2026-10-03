@@ -43,10 +43,13 @@ from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.paths import config_dir
 from kiro_crew.dashboard.chat_utils import slot_transcript_key
 from kiro_crew.dashboard.handlers.usage import (
+    MAX_WINDOW_DAYS,
     SPEND_WINDOW_DAYS,
+    TimeWindow,
     context_occupancy,
     context_trace,
     cost_breakdown,
+    resolve_window,
     slot_turn_usage,
 )
 from kiro_crew.dashboard.state import NEW_SESSION_TITLE
@@ -75,12 +78,16 @@ _TURN_COST_METRIC = TURN_COST_METRIC
 # The end-to-end startup point. The claude path emits no ``phase`` attribute at
 # all, so an absent phase is treated as the total (see _aggregate).
 _PHASE_TOTAL = "total"
+# The OTEL shards' and the occupancy rows' window when the request names none,
+# and the per-session context trace's fixed lookback. Main's value, unchanged:
+# the range control moves a card's window only once the reader picks one.
 _WINDOW_DAYS = 14
 
-# Spend is compared against the preceding period of the same length, so the
-# window is a week: "more or less than last week" is the question, and a
-# 14-day window would have no equal-length predecessor inside the retention.
-_COST_WINDOW_DAYS = 7
+# The panel's window (OTEL and context cards) when the request names none. The
+# spend block keeps its own default, SPEND_WINDOW_DAYS, in that case: with no
+# pick every card reports over exactly the window it reported over on main.
+# A pick (``days`` / ``since`` / ``until``, up to MAX_WINDOW_DAYS) drives all.
+_DEFAULT_WINDOW_DAYS = _WINDOW_DAYS
 
 # Attribute keys the generic ``other`` histograms are additionally split on, so
 # one side of a split can be reported on its own.
@@ -213,6 +220,10 @@ class _TelemetryState(NamedTuple):
     env_pinned: bool
     env_var: str
     otlp_configured: bool
+    # ``telemetry.retention_days``: the exporter prunes metric shards older than
+    # this, so the OTEL cards cannot cover a wider window. 0 means no age
+    # pruning (``telemetry.max_total_mb`` can still drop the oldest shards).
+    retention_days: int = 0
 
 
 def _telemetry_cfg() -> _TelemetryState:
@@ -232,10 +243,12 @@ def _telemetry_cfg() -> _TelemetryState:
     enabled = False
     env_pinned = False
     otlp_configured = False
+    retention_days = 0
     directory = config_dir() / "metrics"
     try:
         cfg = KiroCrewConfig.load().telemetry
         enabled = bool(cfg.enabled)
+        retention_days = max(0, int(getattr(cfg, "retention_days", 0) or 0))
         if getattr(cfg, "local_dir", None):
             directory = Path(cfg.local_dir).expanduser()
         # Presence only, and resolved the same way _build_recorder resolves it:
@@ -265,11 +278,15 @@ def _telemetry_cfg() -> _TelemetryState:
     if pin is not None:
         enabled = pin
         env_pinned = True
-    return _TelemetryState(enabled, directory, env_pinned, env_var, otlp_configured)
+    return _TelemetryState(enabled, directory, env_pinned, env_var, otlp_configured, retention_days)
 
 
-def _shards_in_window(directory: Path, days: int) -> list[Path]:
-    """Shards whose filename date falls inside the last ``days`` days."""
+def _shards_in_window(directory: Path, days: float, until: float | None = None) -> list[Path]:
+    """Shards whose filename date falls inside the last ``days`` days.
+
+    ``until`` (an epoch) ends the window there instead of now, which also drops
+    shards dated after it. Shard names carry the UTC day.
+    """
     if not directory.exists():
         return []
     # Security: telemetry.local_dir is user-configurable (and
@@ -279,7 +296,11 @@ def _shards_in_window(directory: Path, days: int) -> list[Path]:
     if validate_file_path(str(directory)) is None:
         logger.warning("telemetry metrics dir failed sensitive-path check; skipping read")
         return []
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).date()
+    end = (
+        datetime.now(timezone.utc) if until is None else datetime.fromtimestamp(until, timezone.utc)
+    )
+    cutoff = (end - timedelta(days=days)).date()
+    last = end.date()
     out: list[Path] = []
     for p in directory.glob("metrics-*.jsonl"):
         # Defensive: skip any shard that resolves to a sensitive path (symlink).
@@ -294,7 +315,7 @@ def _shards_in_window(directory: Path, days: int) -> list[Path]:
             d = datetime.strptime("-".join(parts[1:4]), "%Y-%m-%d").date()
         except ValueError:
             continue
-        if d >= cutoff:
+        if cutoff <= d and (until is None or d <= last):
             out.append(p)
     return out
 
@@ -332,8 +353,8 @@ class _Hist:
     Data points are grouped by their EXACT ``explicit_bounds``, and every
     reported statistic comes from a single group. This matters whenever bucket
     boundaries change: a data point's bounds are baked in at record time, so a
-    14-day scan window straddling a boundary change holds two incompatible
-    generations of the same metric.
+    scan window (the request's, up to ``MAX_WINDOW_DAYS``) straddling a boundary
+    change holds two incompatible generations of the same metric.
 
     Merging them positionally fabricates values. Two generations with the same
     bucket-count length would pass a naive length check while meaning entirely
@@ -349,7 +370,8 @@ class _Hist:
     The reported group is the one holding the **newest** data point, not the
     largest. Majority selection would let a stale generation keep winning for as
     long as it out-counted the new one: right after a boundary change the window
-    still holds up to ``_WINDOW_DAYS`` of old samples against a handful of new
+    still holds up to a whole request window (``MAX_WINDOW_DAYS`` at most) of old
+    samples against a handful of new
     ones, so the OLD bounds would be reported — for the turn metric that means
     serving the very ceiling-pinned percentiles this grouping exists to eliminate,
     while omitting the new samples entirely. Recency makes a boundary change take
@@ -699,6 +721,7 @@ def _iter_export_cycles(
 
 def _iter_metric_points(
     shard_paths: list[Path],
+    span_ns: tuple[float, float] | None = None,
 ) -> Iterator[tuple[str, dict[str, Any], str, str, str, dict[str, Any]]]:
     """Yield ``(name, data point, shard day, shard pid, identity, data block)``.
 
@@ -722,7 +745,35 @@ def _iter_metric_points(
     The metric-level ``data`` block rides along because a Sum's block carries
     ``aggregation_temporality``/``is_monotonic`` while a Gauge's carries neither
     — the scalar branch of :func:`_aggregate` classifies on it.
+
+    ``span_ns`` is the ``[start, end)`` window in epoch nanoseconds. Shard files
+    are picked by their whole UTC day, so a point outside the window is dropped
+    here by its own ``time_unix_nano``. A point with no usable timestamp has
+    only its shard's day for a date, so it is kept only when that whole day
+    (up to now, since nothing is written in the future) lies inside the window;
+    a boundary day of a partial-day range drops it rather than counting a point
+    that may sit outside the range.
     """
+    untimed_ok: dict[str, bool] = {}
+
+    def _untimed_inside(shard_day: str) -> bool:
+        if span_ns is None:
+            return True
+        if shard_day not in untimed_ok:
+            try:
+                day0 = (
+                    datetime.strptime(shard_day, "%Y-%m-%d")
+                    .replace(tzinfo=timezone.utc)
+                    .timestamp()
+                    * 1e9
+                )
+            except ValueError:
+                untimed_ok[shard_day] = False
+            else:
+                day_end = min(day0 + 86400 * 1e9, time.time() * 1e9)
+                untimed_ok[shard_day] = span_ns[0] <= day0 and day_end <= span_ns[1]
+        return untimed_ok[shard_day]
+
     for obj, shard_day, shard_pid in _iter_export_cycles(shard_paths):
         for rm in obj.get("resource_metrics", []) or []:
             resource = rm.get("resource")
@@ -739,6 +790,13 @@ def _iter_metric_points(
                         continue
                     data = metric.get("data") or {}
                     for dp in data.get("data_points", []) or []:
+                        if span_ns is not None:
+                            ns = _finite(dp.get("time_unix_nano"))
+                            if ns is not None and ns > 0:
+                                if not span_ns[0] <= ns < span_ns[1]:
+                                    continue
+                            elif not _untimed_inside(shard_day):
+                                continue
                         yield name, dp, shard_day, shard_pid, identity, data
 
 
@@ -1038,7 +1096,9 @@ def _gauge_series(
     return out
 
 
-def _aggregate(shard_paths: list[Path]) -> dict[str, Any]:
+def _aggregate(
+    shard_paths: list[Path], span_ns: tuple[float, float] | None = None
+) -> dict[str, Any]:
     overall = _Hist()
     cold = _Hist()  # spawned == True
     warm = _Hist()  # spawned == False
@@ -1088,7 +1148,7 @@ def _aggregate(shard_paths: list[Path]) -> dict[str, Any]:
     # is a cached lookup.
     lifetime_totals = _lifetime_total_gauge_names()
 
-    for name, dp, shard_day, shard_pid, identity, data in _iter_metric_points(shard_paths):
+    for name, dp, shard_day, shard_pid, identity, data in _iter_metric_points(shard_paths, span_ns):
         attrs = dp.get("attributes") or {}
         is_hist = "bucket_counts" in dp
         if name == _STARTUP_METRIC and is_hist:
@@ -1243,17 +1303,32 @@ def _aggregate(shard_paths: list[Path]) -> dict[str, Any]:
     }
 
 
-def _parse_startup_metrics() -> dict[str, Any]:
-    """Windowed + fingerprint-cached aggregation over the metric shards."""
+def _parse_startup_metrics(window: TimeWindow, *, whole_shards: bool = False) -> dict[str, Any]:
+    """Windowed + fingerprint-cached aggregation over the metric shards.
+
+    The cache keys on the window as well as the shard fingerprint: two ranges
+    over the same shards are two different answers. A rolling window keys on
+    its LENGTH (``until`` is None), so the 5s poll still hits the cache while the
+    TTL bounds how far its moving start can drift.
+
+    ``whole_shards`` (the request named no window) reads main's way: the shard
+    FILES are still picked by day, but every point in them counts, with no
+    per-point cut at the window's start.
+    """
     global _CACHE, _CACHE_KEY, _CACHE_TS
     directory = _telemetry_cfg().directory
-    shards = _shards_in_window(directory, _WINDOW_DAYS)
+    shards = _shards_in_window(directory, window.days, window.until)
     if not shards:
         _CACHE, _CACHE_KEY = None, None
         return {"startup": None, "turn": None, "other": [], "shard_count": 0}
 
     try:
-        key = tuple(sorted((str(p), p.stat().st_mtime, p.stat().st_size) for p in shards))
+        key: tuple[Any, ...] | None = (
+            round(window.days, 6),
+            window.until,
+            whole_shards,
+            tuple(sorted((str(p), p.stat().st_mtime, p.stat().st_size) for p in shards)),
+        )
     except OSError:
         key = None
     now = time.time()
@@ -1265,43 +1340,77 @@ def _parse_startup_metrics() -> dict[str, Any]:
     ):
         return _CACHE
 
-    result = _aggregate(shards)
+    span_ns: tuple[float, float] | None = None
+    if not whole_shards:
+        # A rolling window ends "now", wherever now is when the shards are read,
+        # so its end stays open; only a fixed range cuts at its end.
+        end_ns = math.inf if window.rolling else window.end * 1e9
+        span_ns = (window.start * 1e9, end_ns)
+    result = _aggregate(shards, span_ns)
     result["shard_count"] = len(shards)
     if key is not None:
         _CACHE, _CACHE_KEY, _CACHE_TS = result, key, now
     return result
 
 
-def _context_block() -> dict[str, Any] | None:
+def _context_block(window: TimeWindow) -> dict[str, Any] | None:
     """Per-turn context-window occupancy, or None when nothing is recorded.
 
     Best-effort: this panel must still render its OTEL sections if the token row
     store is unreadable.
     """
     try:
-        block = context_occupancy(_WINDOW_DAYS)
+        block = context_occupancy(window.days, window.until)
     except Exception:
         logger.debug("context occupancy aggregation failed", exc_info=True)
         return None
     return block if block.get("turns") else None
 
 
-def _cost_block() -> dict[str, Any] | None:
+def _cost_block(window: TimeWindow) -> dict[str, Any] | None:
     """Per-turn spend attribution, or None when nothing is recorded.
 
     Best-effort for the same reason as :func:`_context_block`: an unreadable row
     store must not take the OTEL sections down with it.
     """
     try:
-        block = cost_breakdown(_COST_WINDOW_DAYS)
+        block = cost_breakdown(window.days, window.until)
     except Exception:
         logger.debug("cost breakdown aggregation failed", exc_info=True)
         return None
     return block if block.get("turns") else None
 
 
+def _request_window(request: web.Request, default_days: float) -> TimeWindow:
+    """The window a request asks for via ``days`` or ``since``/``until``, clamped."""
+    q = request.query
+    return resolve_window(
+        days=q.get("days"),
+        since=q.get("since"),
+        until=q.get("until"),
+        default_days=default_days,
+    )
+
+
+def _iso_utc(epoch: float) -> str:
+    return datetime.fromtimestamp(epoch, timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 async def api_telemetry_startup(request: web.Request) -> web.Response:
     """GET /api/telemetry/startup — session-startup latency + all kirocrew.* metrics.
+
+    The window comes from ``?days=N`` (rolling, ending now) or ``?since=&until=``
+    (a fixed range in epoch seconds). With neither, every block keeps main's
+    default (``window_default``): spend over ``SPEND_WINDOW_DAYS`` (echoed as
+    ``cost_window_days``), the OTEL and context blocks over ``_WINDOW_DAYS``.
+    A named window is CLAMPED to ``MAX_WINDOW_DAYS`` rather
+    than refused, and every block covers it. The effective result is echoed back as ``window_days``,
+    ``window_start`` and ``window_end`` (UTC ISO-8601) so the panel labels what
+    was actually measured; ``window_rolling`` says whether it ends now. Every
+    block below covers that one window; the spend
+    block's comparison is the equal-length period just before it.
+    ``metrics_retention_days`` is the exporter's pruning age (0 = no age pruning): OTEL
+    figures cannot reach further back than that, whatever the window says.
 
     Returns ``enabled`` (telemetry main switch), ``window_days``, ``shard_count``,
     a detailed ``startup`` block (overall/cold/warm p50/p90 + outcome + daily +
@@ -1318,9 +1427,13 @@ async def api_telemetry_startup(request: web.Request) -> web.Response:
     are always written — so they are fetched even when OTEL export is off.
     """
     state = _telemetry_cfg()
-    data = await asyncio.to_thread(_parse_startup_metrics)
-    context = await asyncio.to_thread(_context_block)
-    cost = await asyncio.to_thread(_cost_block)
+    window = _request_window(request, _DEFAULT_WINDOW_DAYS)
+    # No window named: each block keeps main's default (spend 7d, the rest 14d).
+    defaulted = not any((request.query.get(k) or "").strip() for k in ("days", "since", "until"))
+    cost_window = resolve_window(default_days=SPEND_WINDOW_DAYS) if defaulted else window
+    data = await asyncio.to_thread(_parse_startup_metrics, window, whole_shards=defaulted)
+    context = await asyncio.to_thread(_context_block, window)
+    cost = await asyncio.to_thread(_cost_block, cost_window)
     if cost:
         cost = await _with_conversation_titles(request, cost)
     return web.json_response(
@@ -1328,7 +1441,16 @@ async def api_telemetry_startup(request: web.Request) -> web.Response:
             "enabled": state.enabled,
             "env_pinned": state.env_pinned,
             "env_var": state.env_var,
-            "window_days": _WINDOW_DAYS,
+            "window_days": round(window.days, 2),
+            "window_start": _iso_utc(window.start),
+            "window_end": _iso_utc(window.end),
+            "window_rolling": window.rolling,
+            # True when the request named no window, so the spend block below
+            # covers ``cost_window_days`` and every other block ``window_days``.
+            "window_default": defaulted,
+            "cost_window_days": round(cost_window.days, 2),
+            "max_window_days": MAX_WINDOW_DAYS,
+            "metrics_retention_days": state.retention_days,
             "metrics_dir": str(state.directory),
             "shard_count": data.get("shard_count", 0),
             "startup": data.get("startup"),
@@ -1408,8 +1530,10 @@ async def api_usage_turns(request: web.Request) -> web.Response:
     Every app-caller decision is SEL-logged — including a malformed request's
     refusal, so a probing app leaves a trail — and all SEL calls plus the
     enablement check run off-loop (first use initialises SEL's key material on
-    disk). ``days`` clamps to the spend window's ceiling rather than refusing:
-    shards beyond it have been retired anyway.
+    disk). The window is ``days`` or ``since``/``until``, read the same way as
+    the Telemetry panel's (it defaults to the spend week) and clamped to
+    ``MAX_WINDOW_DAYS`` rather than refused, so the drill-down covers the same
+    range as the aggregate row it opens under.
     """
     request_app = str(request.get("app", "") or "")
     slot = (request.query.get("slot") or "").strip()
@@ -1431,17 +1555,26 @@ async def api_usage_turns(request: web.Request) -> web.Response:
         if request_app:
             await asyncio.to_thread(_audit, "denied", "slot missing")
         return web.json_response({"error": "slot is required", "code": "slot_required"}, status=400)
-    try:
-        days = int(request.query.get("days") or SPEND_WINDOW_DAYS)
-    except ValueError:
-        days = SPEND_WINDOW_DAYS
-    days = max(1, min(days, SPEND_WINDOW_DAYS))
+    window = _request_window(request, SPEND_WINDOW_DAYS)
     turns = await asyncio.to_thread(
-        slot_turn_usage, slot, days, app=request_app if request_app else None
+        slot_turn_usage,
+        slot,
+        window.days,
+        app=request_app if request_app else None,
+        until=window.until,
     )
     if request_app:
         await asyncio.to_thread(_audit, "allowed", "", f"slot={slot} rows={len(turns)}")
-    return web.json_response({"slot": slot, "days": days, "turns": turns})
+    # ``days`` echoes the clamped length. No start/end: the one caller (the
+    # Spend drill-down) sends the bounds the panel's payload measured, so an
+    # echo of them would have no reader.
+    return web.json_response(
+        {
+            "slot": slot,
+            "days": round(window.days, 2),
+            "turns": turns,
+        }
+    )
 
 
 def _app_is_enabled(app_name: str) -> bool:

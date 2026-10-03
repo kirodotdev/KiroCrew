@@ -144,11 +144,17 @@ class TestApiUsageTurns:
     async def test_days_is_clamped_not_refused(self, _isolated_shards):
         _write(_isolated_shards, [_row("s1")])
         async with TestClient(TestServer(self._app())) as client:
-            for bad in ("9999", "0", "-3", "banana"):
+            for bad in ("9999", "0", "-3", "banana", "0.001"):
                 resp = await client.get("/api/usage/turns", params={"slot": "s1", "days": bad})
                 assert resp.status == 200, f"days={bad} must clamp, not fail"
                 body = await resp.json()
-                assert 1 <= body["days"] <= usage_mod.SPEND_WINDOW_DAYS
+                assert 1 <= body["days"] <= usage_mod.MAX_WINDOW_DAYS
+            # Main clamped a too-small finite ``days`` UP to one day; it must not
+            # widen to the seven-day default instead.
+            for small in ("0", "-3"):
+                resp = await client.get("/api/usage/turns", params={"slot": "s1", "days": small})
+                body = await resp.json()
+                assert body["days"] == 1, f"days={small} must clamp to one day"
 
 
 class TestAppIsolation:

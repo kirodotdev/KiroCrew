@@ -36,7 +36,7 @@ def store(tmp_path, monkeypatch):
         d.mkdir(parents=True, exist_ok=True)
         shard = d / "shard.jsonl"
         shard.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
-        monkeypatch.setattr(usage_mod, "_shards_in_window", lambda days: [shard])
+        monkeypatch.setattr(usage_mod, "_shards_in_window", lambda days, until=None: [shard])
         # The 30s memo would otherwise serve a previous test's answer.
         monkeypatch.setattr(usage_mod, "_COST_CACHE", None)
         monkeypatch.setattr(usage_mod, "_COST_CACHE_KEY", None)
@@ -387,7 +387,7 @@ class TestDegenerateInputs:
             + json.dumps(_row(slot="chat-1-1", credits=2.0)) + "\n",
             encoding="utf-8",
         )
-        monkeypatch.setattr(usage_mod, "_shards_in_window", lambda days: [shard])
+        monkeypatch.setattr(usage_mod, "_shards_in_window", lambda days, until=None: [shard])
         monkeypatch.setattr(usage_mod, "_COST_CACHE", None)
         monkeypatch.setattr(usage_mod, "_COST_CACHE_KEY", None)
         assert usage_mod.cost_breakdown(7)["credits"] == 2.0
