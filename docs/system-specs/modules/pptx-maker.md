@@ -272,6 +272,12 @@ place, so no source marker survives to make `is_installed()` short-circuit the r
 templates would silently vanish), stages this app's prompt files into the
 install dir, and renders the agent templates against the resolved engine paths.
 
+Prompt staging repairs owner directory permissions on the existing copy before
+forced removal, then normalizes the fresh copy's directories to owner rwx.
+This replaces copies inherited from read-only packaged sources on POSIX and
+Windows while preserving copied file modes. A failed removal raises an `OSError`
+that staging records in its log; it never copies over a surviving stale tree.
+
 **It does NOT register those resources.** The enable path and the boot reconcile both
 call `bridges.register_app`, and `bridges._placeholder_values` computes this app's
 `{UV_BIN}` / `{ENGINE_ROOT}` / `{ENGINE_MCP_DIR}` / `{APP_PROMPTS}` in the GATEWAY from
