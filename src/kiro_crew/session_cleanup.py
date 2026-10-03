@@ -161,6 +161,18 @@ def _no_background_launch(provider: LLMProvider) -> tuple[float, str] | None:
     return None
 
 
+def _last_activity(session: SessionEntry, timeout_secs: int) -> float:
+    """Backend frames grant at most one extra idle window after a turn.
+
+    Passive traffic is not proof of finite work. Capping its contribution keeps
+    a looping backend from retaining an unlocked session indefinitely.
+    """
+    at = getattr(getattr(session, "provider", None), "session_activity_at", None)
+    if isinstance(at, (int, float)) and not isinstance(at, bool):
+        return max(session.last_used, min(at, session.last_used + timeout_secs))
+    return session.last_used
+
+
 @dataclass(slots=True)
 class CleanupState:
     """Mutable state exclusively owned by :class:`SessionCleanup`."""
@@ -1569,7 +1581,7 @@ class SessionCleanup:
                 total_checked += 1
                 if session.semaphore.locked():
                     continue
-                idle = now - session.last_used > timeout_secs
+                idle = now - _last_activity(session, timeout_secs) > timeout_secs
                 orphaned = self._owner_is_gone(key)
                 if idle or orphaned:
                     expired.append((key, orphaned, session))
@@ -1693,9 +1705,12 @@ class SessionCleanup:
             # finished inside the await released the semaphore again but bumped
             # ``last_used`` on its way in, so the session is not idle now.
             # The orphan axis ignores the clock and re-asks the live set below.
-            if not is_orphan and self._deps.monotonic() - scanned.last_used <= timeout_secs:
+            if (
+                not is_orphan
+                and self._deps.monotonic() - _last_activity(scanned, timeout_secs) <= timeout_secs
+            ):
                 self._deps.logger.info(
-                    "Idle sweep: %s took a turn mid-sweep - left running",
+                    "Idle sweep: %s became active mid-sweep - left running",
                     key,
                 )
                 continue

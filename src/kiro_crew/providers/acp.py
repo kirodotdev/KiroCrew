@@ -662,6 +662,13 @@ class AcpProvider(LLMProvider):
         return str(self._client._work_dir)
 
     @property
+    def session_activity_at(self) -> float | None:
+        # AcpSessionProvider answers for the shared runtime's sessions. A
+        # transport that does not read between turns has no such attribute,
+        # which leaves the sweep on the turn clock.
+        return getattr(self._client, "session_activity_at", None)
+
+    @property
     def is_claude_backend(self) -> bool:
         """True when this ACP provider talks to claude-agent-acp (vs kiro-cli).
 

@@ -1011,7 +1011,13 @@ against sweep completeness, and are torn down at `close_all`.
   whatever the link names. A refused spec is skipped like a malformed one, so
   the resolution falls through to `"auto"` exactly as an absent spec does.
 - **Idle cleanup**: expires sessions after `session.timeout_secs` (default
-  60min). Never expires `BACKGROUND_KEY`. Dashboard per-tab sessions
+  60min) since the later of `last_used` and the provider's per-session
+  `session_activity_at` monotonic stamp. Backend activity contributes at most
+  one additional timeout window after `last_used`: even continuous passive
+  frames cannot keep an unlocked session alive beyond twice the timeout since
+  its last dispatched turn. Providers without a numeric stamp use `last_used`
+  alone. Busy-turn, attached-subagent and injection guards still apply on both
+  axes. Never expires `BACKGROUND_KEY`. Dashboard per-tab sessions
   (`dashboard:{slot_key}`) idle-expire like any other session.
   A session is also expired on a second, clock-independent axis: its owning
   dashboard slot is gone. `SessionCleanup._owner_is_gone()` answers that, and it
@@ -1109,7 +1115,8 @@ against sweep completeness, and are torn down at `close_all`.
   then the semaphore (a turn that took it during the await is exactly as live
   as one the scan skipped); then, on the idle axis only, the clock (a turn that
   began AND finished inside the await released the semaphore again but bumped
-  `last_used` on its way in, so the session is not idle now -- the orphan axis
+  `last_used` on its way in, or backend activity within the bounded grace
+  window advanced the effective clock, so the session is not idle now -- the orphan axis
   ignores the clock and re-asserts against the live set instead, below).
   Nothing between the probe's return and `reset` suspends. Neither read is the atomic
   one, though: `reset` itself suspends on the registry lock before it validates

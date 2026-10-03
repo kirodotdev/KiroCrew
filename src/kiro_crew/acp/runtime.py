@@ -1388,6 +1388,13 @@ class AcpRuntime:
         # believe a consumer exists and park a child request unread.
         self._turn_active_sessions: set[str] = set()
         self._dropped_frames_flushed_at: float = 0.0
+        # Monotonic time of the last attributable backend frame observed.
+        # The idle sweep reads it (``session_activity_at``) because a session's
+        # own clock moves only when a turn is dispatched, while its backend and
+        # the children it spawned keep emitting between turns. Per session, not
+        # ``_last_activity``: that one is process-wide, and on a shared runtime
+        # it would keep every tenant alive whenever any one of them worked.
+        self._session_activity_at: dict[str, float] = {}
 
     @property
     def pid(self) -> int | None:
@@ -4078,6 +4085,7 @@ class AcpRuntime:
                     # every other session would be cross-talk.
                     queue = self._session_queues.get(session_id)
                     if queue is not None:
+                        self._session_activity_at[session_id] = time.monotonic()
                         await queue.put(msg)
                     elif (
                         session_id in self._subagent_sessions
@@ -4128,6 +4136,10 @@ class AcpRuntime:
                         # would sit unanswered — the original hang with extra
                         # steps. Answer it fail-closed NOW instead.
                         _owner_turn_active = self._subagent_owner in self._turn_active_sessions
+                        # The child is working for its owner whatever happens
+                        # to the frame below -- answered, routed or dropped
+                        # between turns -- so it counts as the owner's activity.
+                        self._session_activity_at[self._subagent_owner] = time.monotonic()
                         if (
                             msg.id is not None
                             and msg.is_method(METHOD_REQUEST_PERMISSION)
@@ -5366,9 +5378,20 @@ class AcpRuntime:
             self._mark_dead(f"pipe broken: {exc}")
             raise AcpRuntimeDead(f"pipe broken: {exc}") from exc
 
+    def session_activity_at(self, session_id: str) -> float | None:
+        """Monotonic time of the last backend frame attributable to *session_id*.
+
+        Counts only frames with an owner: a session-tagged frame, or a child's
+        frame observed for the session that owns the child, even if dropped.
+        An ownerless broadcast says nothing about which tenant is working,
+        so it is not counted.
+        """
+        return self._session_activity_at.get(session_id)
+
     def unregister_session(self, session_id: str) -> None:
         """Unregister a session queue (called by AcpSessionHandle.destroy)."""
         self._session_queues.pop(session_id, None)
+        self._session_activity_at.pop(session_id, None)
         # Clean up any pending routed requests for this session
         stale = [k for k, v in self._routed_requests.items() if v == session_id]
         for k in stale:
