@@ -28,7 +28,6 @@ import type { AppDispatch } from '../../store'
 import { openActivityPanel } from '../../store/chatSlice'
 import type { ChatMessage } from '../../types'
 import { mergeIntoDraft, setDraft } from '../../utils/chatDrafts'
-import { setFileDraft } from '../../utils/chatFileDrafts'
 import { classifyDrop } from '../../utils/dropClassify'
 import { spliceDirTokens, VIDEO_EXT } from '../../utils/fileTokens'
 import {
@@ -49,9 +48,17 @@ import {
 } from '../../utils/pullRequestLinks'
 import type { ResizeInfo } from '../../utils/resizeImage'
 import { errMessage } from '../../utils/thunkError'
-import { fileLandingSlot } from '../../utils/uploadRouting'
 import { usePanelDocumentActions } from '../../hooks/usePanelDocumentActions'
 import { fetchDashboardConfig } from '../../api/dashboardConfigQuery'
+import {
+  cancelComposerUploads,
+  holdComposerSend,
+  registerComposerUpload,
+  finishComposerAttachment,
+  releaseComposerSend,
+  unregisterComposerUpload,
+  useComposerUploadCancellable,
+} from '../../utils/composerSendHolds'
 
 type MutableRef<T> = { current: T }
 
@@ -59,8 +66,6 @@ interface ChatPageResourcesComposerPorts {
   inputRef: MutableRef<string>
   setInput: Dispatch<SetStateAction<string>>
   drafts: MutableRef<Record<string, string>>
-  fileDrafts: MutableRef<Record<string, string[]>>
-  setPendingFiles: Dispatch<SetStateAction<string[]>>
   currentProjectRef: MutableRef<string | undefined>
   voiceCaretRef: MutableRef<{ start: number; end: number } | null>
   voicePendingCaretRef: MutableRef<number | null>
@@ -111,8 +116,6 @@ export function useChatPageResourcesController({
     inputRef,
     setInput,
     drafts,
-    fileDrafts,
-    setPendingFiles,
     currentProjectRef,
     voiceCaretRef,
     voicePendingCaretRef,
@@ -569,20 +572,14 @@ export function useChatPageResourcesController({
     // screenshot promise resolves, we must land the file in the slot the user
     // was looking at when they clicked — not whatever slot is now active.
     const requestSlot = activeSlotRef.current
+    // A capture needs a session to land in, so none starts without one.
+    if (!requestSlot) return
     setUploading(true)
+    holdComposerSend(requestSlot)
+    let completedPaths: string[] = []
     try {
       const { path } = await api.screenshot()
-      if (path) {
-        if (activeSlotRef.current === requestSlot) {
-          setPendingFiles(prev => [...prev, path])
-        } else if (requestSlot) {
-          // Slot changed during the await — divert the file into the request
-          // slot's persisted draft so it's waiting when the user goes back.
-          const cur = fileDrafts.current[requestSlot] ?? []
-          setFileDraft(fileDrafts.current, requestSlot, [...cur, path])
-          saveDrafts()
-        }
-      }
+      if (path) completedPaths = [path]
     } catch (e) {
       // Cancellation is NOT an error path, so nothing that lands here is one:
       // a cancelled capture answers 200 with `{"path": ""}` (the `if (path)`
@@ -592,17 +589,63 @@ export function useChatPageResourcesController({
       // user clicking Screenshot with no attachment and no notice. The server
       // states the cause, so pass it through rather than paraphrasing it.
       showActionError(i18nT('pages.chatPage.screenshot_failed_reason', { reason: errMessage(e) || i18nT('pages.chatPage.unknown_error') }))
+    } finally {
+      finishComposerAttachment(requestSlot, completedPaths)
+      setUploading(false)
     }
-    setUploading(false)
-  }, [activeSlotRef, setUploading, setPendingFiles, fileDrafts, saveDrafts, showActionError])
+  }, [activeSlotRef, setUploading, showActionError])
+
+  // Every capture owns a token and a counted hold. The active overlay releases
+  // only its token, while capture failure and unmount release the specific
+  // tokens they own. A stale capture cannot publish over a newer generation.
+  const snipTokenRef = useRef(0)
+  const latestSnipTokenRef = useRef<number | null>(null)
+  const activeSnipTokenRef = useRef<number | null>(null)
+  const snipHoldsRef = useRef(new Map<number, string | null>())
+  const endSnipHold = useCallback((token = activeSnipTokenRef.current) => {
+    if (token === null) return
+    const held = snipHoldsRef.current.get(token)
+    if (held === undefined) return
+    snipHoldsRef.current.delete(token)
+    if (activeSnipTokenRef.current === token) activeSnipTokenRef.current = null
+    releaseComposerSend(held)
+  }, [])
+  const beginSnipHold = useCallback((slot: string | null) => {
+    const token = ++snipTokenRef.current
+    latestSnipTokenRef.current = token
+    holdComposerSend(slot)
+    snipHoldsRef.current.set(token, slot)
+    return token
+  }, [])
+  useEffect(() => () => {
+    for (const token of [...snipHoldsRef.current.keys()]) endSnipHold(token)
+  }, [endSnipHold])
+  /** Hold the send, then capture. A capture with no frame releases its own
+   * hold. A capture superseded by a newer generation drops its frame too. */
+  const snipFrom = useCallback(async (capture: () => Promise<HTMLCanvasElement | null>) => {
+    const token = beginSnipHold(activeSlotRef.current)
+    let canvas: HTMLCanvasElement | null = null
+    try {
+      canvas = await capture()
+    } finally {
+      if (!canvas) endSnipHold(token)
+    }
+    if (!canvas) return
+    if (token !== latestSnipTokenRef.current) {
+      endSnipHold(token)
+      return
+    }
+    activeSnipTokenRef.current = token
+    setSnipFrame(canvas)
+  }, [beginSnipHold, endSnipHold, activeSlotRef, setSnipFrame])
 
   /** Screen capture entry: cross-platform snip+crop when supported, else native macOS screenshot. */
   const handleCapture = useCallback(async () => {
+    if (!activeSlotRef.current) return
     snipSlotRef.current = activeSlotRef.current
     if (!screenSnipSupported) { takeScreenshot(); return }
-    const canvas = await captureScreen()
-    if (canvas) setSnipFrame(canvas)
-  }, [snipSlotRef, activeSlotRef, takeScreenshot, setSnipFrame])
+    await snipFrom(() => captureScreen())
+  }, [snipSlotRef, activeSlotRef, takeScreenshot, snipFrom])
 
   // The Web Preview tab's crop button asks for an area screenshot via a window
   // event. Same crop→attach pipeline as the composer button, but capture pre-
@@ -611,30 +654,31 @@ export function useChatPageResourcesController({
   // no prompt either way via setDisplayMediaRequestHandler.)
   useEffect(() => {
     const onSnip = async () => {
+      if (!activeSlotRef.current) return
       snipSlotRef.current = activeSlotRef.current
       if (!screenSnipSupported) { takeScreenshot(); return }
-      const canvas = await captureScreen(currentTabCaptureDeps())
-      if (canvas) setSnipFrame(canvas)
+      await snipFrom(() => captureScreen(currentTabCaptureDeps()))
     }
     window.addEventListener(PREVIEW_SNIP_EVENT, onSnip)
     return () => window.removeEventListener(PREVIEW_SNIP_EVENT, onSnip)
-  }, [snipSlotRef, activeSlotRef, takeScreenshot, setSnipFrame])
+  }, [snipSlotRef, activeSlotRef, takeScreenshot, snipFrom])
 
-  // EVERY live upload's controller, not one slot. The disabled attach button is
-  // not the only entry point: paste (ChatInput's paste handler), a drop and a
-  // Sketch insert all reach `uploadFiles` with no `uploading` gate, so two
-  // requests genuinely can be in flight and a single slot would leave the
-  // first one running with nothing holding its controller.
-  const uploadAbortsRef = useRef(new Set<AbortController>())
-  // Whether there is an upload to cancel, as STATE rather than a read of
-  // `uploading`. That flag is SHARED with takeScreenshot, so gating the control
-  // on it would offer a cancel during a macOS `screencapture -i` with no
-  // request behind it, and pressing it would abort nothing.
-  const [uploadCancellable, setUploadCancellable] = useState(false)
-  /** Abort every composer upload in flight. */
+  // Each upload's controller is registered per slot in the shared
+  // composerSendHolds registry, not kept on this hook: the hold outlives a
+  // remount of the page, so a page remounted mid-upload must be able to cancel
+  // a request it did not start. The registry keeps EVERY live one: paste,
+  // drop and a Sketch insert all reach `uploadFiles` with no `uploading` gate,
+  // so two requests can be in flight and one cancel has to end both.
+  //
+  // Cancellable is read from the registry rather than from `uploading`. That
+  // flag is SHARED with takeScreenshot, which registers no controller, so a
+  // control gated on it would offer a cancel during a macOS `screencapture -i`
+  // with nothing to abort.
+  const uploadCancellable = useComposerUploadCancellable(activeSlot)
+  /** Abort every upload in flight for the ACTIVE slot, whichever host started it. */
   const cancelUpload = useCallback(() => {
-    uploadAbortsRef.current.forEach(controller => controller.abort())
-  }, [])
+    cancelComposerUploads(activeSlotRef.current)
+  }, [activeSlotRef])
 
   /** Upload files via browser File API (cross-platform) */
   const uploadFiles = useCallback(async (files: File[], targetSlot?: string | null) => {
@@ -654,22 +698,16 @@ export function useChatPageResourcesController({
     const big = files.find(f => !VIDEO_EXT.test(f.name) && f.size > 50 * 1024 * 1024)
     if (big) { setUploadHint(i18nT('pages.chatPage.file_too_large', { name: big.name })); return }
     setUploading(true)
+    holdComposerSend(requestSlot)
     const controller = new AbortController()
-    uploadAbortsRef.current.add(controller)
-    setUploadCancellable(true)
+    registerComposerUpload(requestSlot, controller)
+    let completedPaths: string[] = []
     try {
       const res = await api.uploadFiles(files, controller.signal)
       if (res.error) {
         setUploadError(i18nT('pages.chatPage.upload_failed_error', { error: res.error }))
       } else if (res.paths?.length) {
-        const landing = fileLandingSlot(requestSlot, activeSlotRef.current)
-        if (landing.target === 'pending') {
-          setPendingFiles(prev => [...prev, ...res.paths])
-        } else if (landing.target === 'draft') {
-          const cur = fileDrafts.current[landing.slot] ?? []
-          setFileDraft(fileDrafts.current, landing.slot, [...cur, ...res.paths])
-          saveDrafts()
-        }
+        completedPaths = res.paths
       }
       if (!res.error && res.resizedByPath && Object.keys(res.resizedByPath).length) {
         setResizedInfo(prev => ({ ...prev, ...res.resizedByPath }))
@@ -682,16 +720,30 @@ export function useChatPageResourcesController({
         setUploadError(i18nT('pages.chatPage.upload_failed_check_file_type_and_size_max_50_mb'))
       }
     } finally {
-      // Drop only THIS request's controller, and keep the control offered while
-      // a sibling upload is still running.
-      uploadAbortsRef.current.delete(controller)
-      setUploadCancellable(uploadAbortsRef.current.size > 0)
+      // Drop only THIS request's controller: the registry keeps Cancel offered
+      // while a sibling upload of the slot is still running.
+      unregisterComposerUpload(requestSlot, controller)
+      finishComposerAttachment(requestSlot, completedPaths)
       // Unchanged from main, and still wrong for concurrent uploads: the first
       // request to settle clears the shared flag while a sibling runs. Left
-      // alone deliberately -- the cancel control reads the set above, not this.
+      // alone deliberately -- the cancel control reads the registry, not this.
       setUploading(false)
     }
-  }, [activeSlotRef, setUploadError, setUploadHint, setUploading, setPendingFiles, fileDrafts, saveDrafts, setResizedInfo])
+  }, [activeSlotRef, setUploadError, setUploadHint, setUploading, setResizedInfo])
+
+  /** The overlay's crop: `uploadFiles` takes its own hold synchronously (before
+   *  its first await) and only then is the snip's released, so Send is never
+   *  free between the two. */
+  const handleSnipComplete = useCallback((file: File) => {
+    uploadFiles([file], snipSlotRef.current)
+    endSnipHold()
+    setSnipFrame(null)
+  }, [uploadFiles, snipSlotRef, endSnipHold, setSnipFrame])
+  /** Escape, the Cancel button, or an encode failure (onError then onCancel). */
+  const handleSnipCancel = useCallback(() => {
+    endSnipHold()
+    setSnipFrame(null)
+  }, [endSnipHold, setSnipFrame])
 
   // The Browser panel's element annotations arrive as a DRAFT plus a marker
   // screenshot. The text goes into the composer (never sent -- the user adds
@@ -789,6 +841,8 @@ export function useChatPageResourcesController({
     handleOpenDiff,
     handleFileSave,
     handleCapture,
+    handleSnipComplete,
+    handleSnipCancel,
     uploadFiles,
     cancelUpload,
     uploadCancellable,

@@ -70,6 +70,11 @@ export interface ChatInputProps {
   onUploadFiles?: (files: File[]) => void
   /** Whether file actions are in progress */
   uploading?: boolean
+  /** An attachment for THIS composer is still on its way (upload or
+   *  screenshot). Holds every composer send (Send, Enter, steer, queue): a
+   *  message fired now would leave without the file, which would then land in
+   *  the emptied composer as a stray attachment. */
+  holdSend?: boolean
   /** Abort the upload in flight; turns the upload spinner into a cancel control */
   onCancelUpload?: () => void
   /** Pending file paths (images + non-images) for preview strip */

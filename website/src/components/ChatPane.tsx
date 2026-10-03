@@ -86,6 +86,17 @@ import { Composer, type ComposerHandle, type ComposerVoiceOptions } from '../cha
 import { displayModel, modelChipMarker } from '../lib/model'
 import { useSettingsDefaultModel } from '../hooks/useSettingsDefaultModel'
 import { slotApprovalMode } from '../utils/slotApprovalMode'
+import {
+  cancelComposerUploads,
+  holdComposerSend,
+  isComposerSendHeld,
+  registerComposerUpload,
+  finishComposerAttachment,
+  unregisterComposerUpload,
+  useComposerArrivals,
+  useComposerSendHeld,
+  useComposerUploadCancellable,
+} from '../utils/composerSendHolds'
 
 
 import { i18nT } from '../i18n/t'
@@ -353,15 +364,14 @@ export default function ChatPane({
       writePaneDraft(slotKeyRef.current, { text: inputRef.current, files: pendingFilesRef.current, pastes: pasteBlocksRef.current })
     }
   }, [slotKey, carryIntoComposer])
-  /** Stage uploaded attachment paths for the slot they were picked in. A slow
-   *  upload can resolve after the pane was rebound to another member; the
-   *  paths then belong to the ORIGINATING slot's parked draft, not to whoever
-   *  is on screen now. */
-  const stagePendingFiles = useCallback((paths: string[], forSlot: string) => {
-    if (!paths.length) return
-    if (!mountedRef.current || forSlot !== slotKeyRef.current) { mergePaneDraft(forSlot, '', paths); return }
-    setPendingFiles((prev) => [...prev, ...paths.filter(p => !prev.includes(p))])
-  }, [])
+  useComposerArrivals(slotKey, (paths, arrivalSlot) => {
+    if (arrivalSlot !== slotKeyRef.current) return false
+    setPendingFiles(previous => [
+      ...previous,
+      ...paths.filter(path => !previous.includes(path)),
+    ])
+    return true
+  })
   /** Report an upload failure to the slot whose files failed. On screen it is
    *  the banner. Anywhere else — the pane rebound to another slot, or gone —
    *  it goes into that slot's TRANSCRIPT as an error row, the same place a
@@ -870,25 +880,33 @@ export default function ChatPane({
   //
   // The variables carry the slot the files were picked in: the pane can be
   // rebound to another slot while the upload is in flight, and the result
-  // must follow the files' slot, not the screen: paths stage into that slot's
-  // live or parked composer, failures into that slot's banner (or, after
-  // unmount, its transcript) — see stagePendingFiles / reportUploadFailure.
+  // must follow the files' slot, not the screen: completed paths enter that
+  // slot's arrivals inbox, while failures reach its banner or transcript.
   //
-  // The variables also carry the request's own AbortController, so the
-  // composer's cancel control can abort it. The set holds EVERY live one: the
-  // disabled attach button is not the only entry point, since paste, a drop
-  // and a Sketch insert all reach `uploadFiles` ungated, so two requests can be
-  // in flight at once.
-  const uploadAbortsRef = useRef(new Set<AbortController>())
+  // The variables also carry the request's own AbortController. It is
+  // registered per slot in the shared composerSendHolds registry, not kept on
+  // this pane: the hold below outlives the pane, so a pane remounted mid-upload
+  // must be able to cancel a request it did not start, or a hung request leaves
+  // its Send dead. The registry holds EVERY live one, since paste, a drop and a
+  // Sketch insert all reach `uploadFiles` ungated and two can be in flight.
+  //
+  // Shared per-slot holds survive a pane remount. Mutation callbacks still
+  // release their hold after the pane that started the upload unmounts.
+  const sendHeld = useComposerSendHeld(slotKey)
+  const uploadCancellable = useComposerUploadCancellable(slotKey)
   const uploadMutation = useMutation({
+    // 'always', not the default 'online': an offline browser would PAUSE the
+    // mutation before mutationFn, so onSettled (the only release of the shared
+    // hold below) would never run and the slot's Send would stay dead. Running
+    // it lets the fetch fail fast and the hold clear through the usual path.
+    networkMode: 'always',
     mutationFn: ({ files, controller }: UploadVars) => api.uploadFiles(files, controller.signal),
     // api.uploadFiles does NOT throw on a server refusal (unsupported type,
     // signature mismatch, over-cap): it resolves with { paths: [], error }.
     // So a refusal lands here in onSuccess, not onError — surface res.error
     // (matching ChatPage) instead of silently doing nothing.
     onSuccess: (res, { forSlot }) => {
-      if (res.error) { reportUploadFailure(i18nT('pages.chatPage.upload_failed_error', { error: res.error }), forSlot); return }
-      if (res.paths?.length) stagePendingFiles(res.paths, forSlot)
+      if (res.error) reportUploadFailure(i18nT('pages.chatPage.upload_failed_error', { error: res.error }), forSlot)
     },
     // api.uploadFiles throws for three distinct reasons: a client-side image
     // resize failure, a session expiry, and a transport reject. The first two
@@ -904,13 +922,14 @@ export default function ChatPane({
         : message
       reportUploadFailure(i18nT('pages.chatPage.upload_failed_error', { error: reason }), forSlot)
     },
-    onSettled: (_data, _err, { controller }: UploadVars) => {
-      uploadAbortsRef.current.delete(controller)
+    onSettled: (data, _err, { controller, forSlot }: UploadVars) => {
+      unregisterComposerUpload(forSlot, controller)
+      finishComposerAttachment(forSlot, data && !data.error ? data.paths ?? [] : [])
     },
   })
-  /** Abort every composer upload in flight. */
+  /** Abort every upload in flight for this pane's slot, whichever host started it. */
   const cancelUpload = useCallback(() => {
-    uploadAbortsRef.current.forEach(controller => controller.abort())
+    cancelComposerUploads(slotKeyRef.current)
   }, [])
   const uploadFiles = useCallback((files: File[]) => {
     if (!files.length) return
@@ -927,8 +946,10 @@ export default function ChatPane({
     const big = files.find((f) => !VIDEO_EXT.test(f.name) && f.size > 50 * 1024 * 1024)
     if (big) { setUploadError(i18nT('pages.chatPage.file_too_large', { name: big.name })); return }
     const controller = new AbortController()
-    uploadAbortsRef.current.add(controller)
-    uploadMutation.mutate({ files, forSlot: slotKeyRef.current, controller })
+    const forSlot = slotKeyRef.current
+    holdComposerSend(forSlot)
+    registerComposerUpload(forSlot, controller)
+    uploadMutation.mutate({ files, forSlot, controller })
   }, [uploadMutation, setUploadError])
 
   // Classify BEFORE acting (issue #743): a dropped folder inserts its path
@@ -1020,6 +1041,16 @@ export default function ChatPane({
     // start a real turn instead of queueing. Same `/api/chat` flag as a steer.
     const text = (optionText || input).trim()
     if (!text && !pendingFiles.length) return
+    // An attachment for this composer is still on its way: a composer send now
+    // would leave without it (see ChatInput's `holdSend`). Checked here as well
+    // as in the view because voice auto-submit reaches doSend directly.
+    if (!optionText && isComposerSendHeld(slotKey)) {
+      // Voice auto-submit relies on this send to stop a streaming dictation
+      // (see `useComposerVoice.onEndpoint`); nothing re-fires when the hold
+      // clears, so end it here or later speech keeps appending to the draft.
+      composerRef.current?.voice()?.disarmForSend()
+      return
+    }
     // A send while STREAMING dictation is live ends the dictation, before the
     // composer is read and cleared (see useComposerVoice.disarmForSend).
     composerRef.current?.voice()?.disarmForSend()
@@ -2039,10 +2070,12 @@ export default function ChatPane({
           // addresses it by name rather than the product ("Message Kiro Crew…").
           placeholder={crewmate ? i18nT('components.chatInput.message_placeholder', { bot: crewmate.label || crewmate.name }) : undefined}
           onUploadFiles={uploadFiles}
-          onCancelUpload={cancelUpload}
+          onCancelUpload={uploadCancellable ? cancelUpload : undefined}
           pendingFiles={pendingFiles}
           onRemoveFile={(p) => setPendingFiles((prev) => prev.filter((x) => x !== p))}
-          uploading={uploadMutation.isPending}
+          /* `isPending` tracks only the latest mutation; the counted hold keeps the spinner up until the last concurrent upload settles. Cancel is gated separately above. */
+          uploading={uploadMutation.isPending || sendHeld}
+          holdSend={sendHeld}
           onDrop={dropTargetProps.onDrop}
           onDragOver={dropTargetProps.onDragOver}
           onDragLeave={dropTargetProps.onDragLeave}

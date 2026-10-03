@@ -168,6 +168,7 @@ export default function BusySendButton({
   onModeChange,
   onFire,
   disabled = false,
+  disabledReason,
   altChordAvailable = false,
   autoAvailable = false,
 }: {
@@ -176,6 +177,8 @@ export default function BusySendButton({
   /** Fire the currently selected mode with the composer's text. */
   onFire: () => void
   disabled?: boolean
+  /** Why the fire half is disabled, shown as its tooltip in place of the mode's. */
+  disabledReason?: string
   /**
    * Whether `Auto (Jev)` may be offered: the gateway reports the Decisions seam
    * as permitted by governance AND consented to. Only the host knows, and it
@@ -246,7 +249,7 @@ export default function BusySendButton({
           className="w-8 h-8 bg-transparent border-none flex items-center justify-center cursor-pointer disabled:cursor-not-allowed disabled:opacity-40 hover:bg-black/15 transition-all text-inherit"
           onClick={onFire}
           disabled={disabled}
-          title={FIRE_TITLE_KEY[mode] ? i18nT(FIRE_TITLE_KEY[mode]) : ''}
+          title={disabled && disabledReason ? disabledReason : FIRE_TITLE_KEY[mode] ? i18nT(FIRE_TITLE_KEY[mode]) : ''}
           aria-label={FIRE_LABEL_KEY[mode] ? i18nT(FIRE_LABEL_KEY[mode]) : ''}
           data-testid="busy-send-button"
           data-mode={mode}

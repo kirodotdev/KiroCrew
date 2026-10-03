@@ -117,6 +117,7 @@ function ChatInput({
   onScreenshot,
   onUploadFiles,
   uploading = false,
+  holdSend = false,
   onCancelUpload,
   pendingFiles = [],
   pendingDirs = [],
@@ -208,6 +209,7 @@ function ChatInput({
   // subscribed HERE, so a keystroke re-renders this composer and not its host.
   const draftText = useComposerDraftText()
   const value = draftText ?? valueProp ?? ''
+  const holdSendReason = i18nT('components.chatInput.send_waits_for_upload')
   // Dictation state comes from the Composer root's Voice atom (mounted by the
   // root beside this input), not from host-wired props: one hook, the same
   // values the atom computes for every surface, and a host cannot forget to
@@ -346,7 +348,7 @@ function ChatInput({
     setPlusOpen(false)
   }
   const { effectiveBusyMode, setBusySendMode, steerOnly, overLimitPending, fireComposer, stopWithTap, sendFollowUp } = useComposerSend({
-    slotId, busyMode, isRunning, stopState, canSteer, onSteer, jevAutoAvailable, disabled, voiceTranscribing, value, pasteBlocks, contextWindowTokens,
+    slotId, busyMode, isRunning, stopState, canSteer, onSteer, jevAutoAvailable, disabled, holdSend, voiceTranscribing, value, pasteBlocks, contextWindowTokens,
     pendingFilesCount: pendingFiles.length, pendingSessionsCount: pendingSessions.length, onSend, onStop, onFollowUpSend,
   })
   const { botName } = useBranding()
@@ -833,6 +835,24 @@ function ChatInput({
         <SessionRefStrip refs={pendingSessions} onRemove={onRemoveSessionRef} rootRef={sessionStripRef} />
         <FilePreviewStrip files={pendingFiles} dirs={pendingDirs} resizedInfo={resizedInfo} onRemove={removeFileEndingUndoBurst} onRemoveDir={removeDirEndingUndoBurst} rootRef={fileStripRef} />
 
+        {/* Why Send is dimmed, in words, while a draft waits on an attachment.
+            The Send tooltip alone reaches no touch, keyboard or screen-reader
+            user, and a held Enter or voice auto-submit otherwise does nothing
+            visible. Shown only with a draft: an upload with nothing to send
+            already has its spinner. Refs count here because the idle Send
+            they explain counts them (`hasSessionRefs`), unlike composerHasDraft. */}
+        {holdSend && (composerHasDraft || hasSessionRefs) && (
+          <div
+            role="status"
+            aria-live="polite"
+            data-testid="composer-send-held"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-[11.5px] text-muted"
+          >
+            <Loader2 size={12} className="animate-spin shrink-0" aria-hidden="true" />
+            {holdSendReason}
+          </div>
+        )}
+
         <VoiceCaptureStatus
           voiceHoldMode={voiceHoldMode} touchPtt={touchPtt} showDictation={showDictation} value={value} voicePartial={voicePartial}
           voiceDeviceLabel={voiceDeviceLabel} voiceDeviceId={voiceDeviceId} onSelectVoiceDevice={onSelectVoiceDevice} voiceDeviceSwitchIsLive={voiceDeviceSwitchIsLive}
@@ -1096,7 +1116,7 @@ function ChatInput({
               // user with something to say is never left without a send.
               <CompactingIndicator />
             ) : (isRunning || stopState === 'soft_pending' || stopState === 'killing') && (onStop || (canSteer && onSteer)) ? (
-              <BusySendControls stopState={stopState} killingEscaped={killingEscaped} stopWithTap={stopWithTap} isQueued={isQueued} composerHasDraft={composerHasDraft} canSteer={canSteer} onSteer={onSteer} steerOnly={steerOnly} fireComposer={fireComposer} disabled={disabled} connected={connected} effectiveBusyMode={effectiveBusyMode} setBusySendMode={setBusySendMode} sendOnEnter={sendOnEnter} jevAutoAvailable={jevAutoAvailable} onStop={onStop} stopDeclinedArmed={stopDeclinedArmed} />
+              <BusySendControls stopState={stopState} killingEscaped={killingEscaped} stopWithTap={stopWithTap} isQueued={isQueued} composerHasDraft={composerHasDraft} canSteer={canSteer} onSteer={onSteer} steerOnly={steerOnly} fireComposer={fireComposer} disabled={disabled} holdSend={holdSend} holdSendReason={holdSendReason} connected={connected} effectiveBusyMode={effectiveBusyMode} setBusySendMode={setBusySendMode} sendOnEnter={sendOnEnter} jevAutoAvailable={jevAutoAvailable} onStop={onStop} stopDeclinedArmed={stopDeclinedArmed} />
             ) : (<>
               {promptOptimizer && <button
                 className={`w-8 h-8 rounded-lg border-none flex items-center justify-center cursor-pointer transition-all disabled:cursor-not-allowed ${optimizing ? 'bg-accent/20 text-accent animate-pulse' : 'bg-transparent text-muted hover:text-accent hover:bg-accent/10 disabled:opacity-40 disabled:hover:text-muted disabled:hover:bg-transparent'}`}
@@ -1157,7 +1177,8 @@ function ChatInput({
               <button
                 className="primary w-8 h-8 rounded-full bg-accent text-accent-fg border-none flex items-center justify-center cursor-pointer hover:bg-accent-hover disabled:opacity-30 disabled:cursor-not-allowed transition-all"
                 onClick={fireComposer}
-                disabled={(!value.trim() && !pendingFiles.length && !hasSessionRefs) || disabled || optimizing || !connected}
+                disabled={(!value.trim() && !pendingFiles.length && !hasSessionRefs) || disabled || holdSend || optimizing || !connected}
+                title={holdSend ? holdSendReason : undefined}
                 aria-label={i18nT('components.chatInput.send')}
                 {...offlineProps(connected, 'send', 'Send')}
               >

@@ -240,6 +240,7 @@ import { mcpAppTabTitle } from '../lib/mcpAppSrcdoc'
 import { countCompletedTurns } from '../lib/completedTurns'
 import { pinIsWithheld } from '../lib/model'
 import { slotApprovalMode } from '../utils/slotApprovalMode'
+import { isComposerSendHeld, useComposerArrivals, useComposerSendHeld } from '../utils/composerSendHolds'
 import FollowUpCard from '../components/FollowUpCard'
 import { useMoveSlotToFolder } from '../hooks/useMoveSlotToFolder'
 import PendingQuestionCard from '../components/PendingQuestionCard'
@@ -1488,8 +1489,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       inputRef,
       setInput,
       drafts,
-      fileDrafts,
-      setPendingFiles,
       currentProjectRef,
       voiceCaretRef,
       voicePendingCaretRef,
@@ -1530,6 +1529,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     handleOpenDiff,
     handleFileSave,
     handleCapture,
+    handleSnipComplete,
+    handleSnipCancel,
     uploadFiles,
     cancelUpload,
     uploadCancellable,
@@ -1537,6 +1538,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     dragOver,
     dropTargetProps,
   } = resources
+  const sendHeld = useComposerSendHeld(activeSlot)
 
   // Open the Subagents panel from a completion card. A per-agent event
   // deep-links to the agent it reports on, so the panel lands on that
@@ -1713,6 +1715,31 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const { data: dashCfg } = useQuery<{ quick_send?: boolean; session_grid?: boolean; link_previews?: boolean; social_share_enabled?: boolean }>({ queryKey: ['dashboardConfig'], queryFn: fetchDashboardConfig, staleTime: 30_000 })
   // Session grid (split view) is an opt-in feature flag (Settings › Chat › Split View). Gates ⌘D, the Columns2 button, and the grid render.
   const splitFeatureEnabled = dashCfg?.session_grid === true
+  // ChatPage shows the slot only while its own composer is rendered. The ref is
+  // written here, not only by the sync effect, because the producer releases
+  // the hold right after this runs and a send in that gap reads the ref.
+  useComposerArrivals(
+    activeSlot,
+    (paths, arrivalSlot) => {
+      // activeSlotRef changes during render, so it names the session this page
+      // commits before any layout-phase arrival can mutate the composer.
+      if (arrivalSlot !== activeSlotRef.current) return false
+      const merge = (previous: string[]) => [...previous, ...paths.filter(path => !previous.includes(path))]
+      // The live list is the base only once the composer owns this slot; during
+      // the switch commit the passive restore still reads the slot's file draft,
+      // so the arrival goes into that draft too and survives the restore.
+      const base = composerSlotRef.current === arrivalSlot
+        ? pendingFilesRef.current
+        : fileDrafts.current[arrivalSlot] ?? []
+      const merged = merge(base)
+      pendingFilesRef.current = merged
+      setFileDraft(fileDrafts.current, arrivalSlot, merged)
+      saveDrafts()
+      setPendingFiles(merged)
+      return true
+    },
+    !(splitMode && splitFeatureEnabled),
+  )
   // Link previews are opt-in too (Settings › Chat › Link Previews): enabling them
   // lets this machine fetch every http(s) link the model emits. Hoisted to a
   // stable primitive so it can sit in the transcript renderer's dep list — flipping
@@ -1782,6 +1809,24 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // message with no recovery path is the offline-UX regression we're
     // guarding against. Cheap belt-and-braces.
     if (!connected) return false
+    // An attachment for either the active slot or the slot that still owns the
+    // live composer is still on its way. Composer ownership trails activeSlot
+    // for one commit during a switch, so checking only the active slot can let
+    // an auto-submit send the outgoing slot's draft without its attachment.
+    // ChatInput holds its own controls (`holdSend`); this also covers voice
+    // auto-submit, which calls send() directly. Option sends keep the composer.
+    // Before anything below consumes composer state (widget prefill included).
+    const activeSendSlot = activeSlotRef.current
+    const composerSendSlot = composerSlotRef.current
+    const composerHeld = isComposerSendHeld(activeSendSlot)
+      || (composerSendSlot !== activeSendSlot && isComposerSendHeld(composerSendSlot))
+    if (!isolated && !optionText && composerHeld) {
+      // Voice auto-submit relies on this send to stop a streaming dictation
+      // (see `useComposerVoice.onEndpoint`); nothing re-fires when the hold
+      // clears, so end it here or later speech keeps appending to the draft.
+      composerRef.current?.voice()?.disarmForSend()
+      return false
+    }
     const raw = (isolated ? optionText ?? '' : optionText || inputRef.current).trim()
     // App launches own only their explicit text, not the composer's staged data.
     const widgetOrigin = !isolated && !!widgetPrefillRef.current && raw.includes(widgetPrefillRef.current)
@@ -5397,8 +5442,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         {snipFrame && (
           <SnipOverlay
             frame={snipFrame}
-            onComplete={f => { uploadFiles([f], snipSlotRef.current); setSnipFrame(null) }}
-            onCancel={() => setSnipFrame(null)}
+            onComplete={handleSnipComplete}
+            onCancel={handleSnipCancel}
             onError={setUploadError}
           />
         )}
@@ -6148,14 +6193,17 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               onDismissHint={() => setPrefillHint(false)}
               onScreenshot={handleCapture}
               onUploadFiles={uploadFiles}
-              /* Only while a real upload is abortable. `uploading` is shared
-                 with the screenshot path, which has no request to cancel. */
+              /* Only while the active slot has a live upload request, whichever
+                 host started it. `uploading` is shared with the screenshot
+                 path, which has no request to cancel. */
               onCancelUpload={uploadCancellable ? cancelUpload : undefined}
               /* The one collapsible composer. Opt-in rather than default so the
                  shared preference key and the window-level expand event stay
                  correct by construction -- see ChatInput's `collapsible` prop. */
               collapsible
-              uploading={uploading}
+              /* `uploading` clears when the FIRST of several producers settles; the counted hold keeps the spinner and cancel control up until the last one does. */
+              uploading={uploading || sendHeld}
+              holdSend={sendHeld}
               pendingFiles={pendingFiles}
               pendingDirs={pendingDirs}
               resizedInfo={resizedInfo}
