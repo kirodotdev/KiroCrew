@@ -6,7 +6,18 @@ a small crew of background agents (structured notes, an HTML/Mermaid diagram, an
 action-item list), and gates the meeting's close behind a review of the extracted
 action items.
 
+Around that core it also **records** the meeting to a WAV file, capturing the far
+side of a call as well as the microphone — see *Recording* below.
+
 `defaultEnabled: false` — it appears in the App Store and is opt-in.
+
+**One capture, many consumers.** The single most important structural fact about
+the audio path: a meeting prompts for the microphone once and for a display
+surface once, however many things want the audio.
+`hooks/useMeetingTranscription.ts` owns the one pipeline and TEES every PCM chunk
+to the recording through an `onPcm` option, so transcription and recording are two
+readers of one stream rather than two captures. `useMeetingSession` instantiates
+the recording hook BEFORE transcription, because the tee points that way.
 
 ## Layout
 
@@ -19,14 +30,18 @@ action items.
 | `.../backend/domain/session.py` | batching dispatcher + meeting state machine |
 | `.../backend/domain/translate.py` | live per-line translation queue + its prompt |
 | `.../backend/domain/audio.py` | splitting an imported transcript into lines |
+| `.../backend/recording_store.py` | the `MeetingStore` adapter core recording resolves paths through |
 | `.../backend/providers/tasks.py` | **task-provider seam** + the local ledger |
 | `.../backend/providers/calendar.py` | **calendar-provider seam** + the `.ics` reader |
 | `.../backend/calendar_sync.py` | one calendar sync (provider fetch → cache), shared by the route and the poller |
 | `.../backend/calendar_poller.py` | background calendar poll: keeps the cache fresh, pre-creates the meeting about to start |
 | `.../backend/routes/` | `_common` (gate + validation + the dispatch transaction), `meeting_lifecycle`, `agents`, `audio_import`, `tasks`, `calendar`, `settings` |
 | `.../agents/*.json` | the three shipped agent specs |
+| `src/kiro_crew/recording/` | **core**, not this app: WAV writer, session, `/api/ws/recording`, storage registry |
 | `src/kiro_crew/builtin_skills/meetings/SKILL.md` | the bundled skill (data layout, lifecycle, provider config) |
 | `website/src/apps/meetings/` | `MeetingsPage` (list) → `MeetingView` → `TaskReviewView`, `SettingsView` |
+| `.../meetings/audio/systemAudio.ts` | requests the display surface and drops its video track |
+| `.../meetings/hooks/useMeetingRecording.ts` | owns the `/api/ws/recording` socket |
 | `website/public/app-assets/meetings/` | icon + hero art |
 
 ## Routes
@@ -81,6 +96,10 @@ POST   /meetings/{id}/tasks/file    file through the task provider  {id}
 POST   /meetings/{id}/tasks/review  {id, review_status} — pending | archived
 ```
 
+Audio itself does **not** travel over these routes. Recording uses core's own
+`/api/ws/recording` socket (`src/kiro_crew/recording/ws.py`) — see *Recording*
+below for why the app still owns the path it writes to.
+
 Every handler is wrapped by `_common.route`, which applies the enable gate and
 turns validation failures into 4xx. `_common.error_response` maps an exception's
 status to a LITERAL `web.json_response(..., status=NNN)` per branch — repetitive on
@@ -115,6 +134,8 @@ meetings/<safe_id>/<agent>.md    a markdown agent's output
 meetings/<safe_id>/<agent>.html  an HTML agent's output
 meetings/<safe_id>/translations.json  live translation, reset on language change
 edits/<safe_id>/<agent>.md        the user's edit of that agent's minutes (sidecar)
+meetings/<safe_id>/audio.wav     the first recording (written by core, path resolved here)
+meetings/<safe_id>/audio-<n>.wav every later recording of the same meeting, n from 2
 ```
 
 `edits/` is an **app-owned sidecar root outside every agent-writable meeting
@@ -473,6 +494,74 @@ empty room, filler) is a real outcome the user must be able to see.
 There is **no UI for this yet** — it is an API surface. A host-path picker in the
 meeting view is a separate UI decision.
 
+## Recording
+
+The writer, the session, and the `/api/ws/recording` socket are **core**
+(`src/kiro_crew/recording/`), not this app — recording a meeting is not
+meetings-specific. But the file has to land in the right per-meeting directory, and
+core must not import an app.
+
+That is resolved through the `MeetingStore` registry in `recording/recovery.py`:
+`start` takes an optional `meeting_id`, and core asks the registered store to
+`resolve_meeting_dir`. This app registers `backend/recording_store.py` from
+`register_routes`. So `safe_meeting_id` + `contain` stay in the app, and an id core
+cannot place is REFUSED rather than started. A registration failure costs recording
+persistence, not gateway startup.
+
+The socket refuses non-loopback clients by default
+(`recording.require_local_gateway`, a core config key): raw room audio is the most
+sensitive artifact this app produces, and streaming it to a remotely reachable
+gateway is an explicit opt-out, not a silent default.
+
+**Audio goes in; nothing derived from it comes back out.** The socket emits only
+`ready`, `level` (an RMS meter reading) and `error`. It does NOT transcribe: the
+browser already streams the same PCM to `/api/ws/stt`, and this app persists that
+transcript itself, so a second recognizer here would double the work (and, on AWS
+Transcribe, the bill) for a duplicate result. There is therefore no text egress on
+this socket and no redaction sink to register for it in `security_posture.py` —
+`test_recording_ws.py::TestNoTranscriptOnTheWire` pins both facts.
+
+**One file per recording, and an existing recording is never opened for
+writing.** The first recording of a meeting is `audio.wav`; every later one
+(stop then Record again, or a dropped socket) gets the next free `audio-<n>.wav`
+(`recording/session.py:next_audio_path`), and `ready` names the file
+(`"audio_file"`). `WavWriter.open` creates the path exclusively (`"xb"`), so a
+race on the same name fails the start with an `error` instead of truncating. A
+fixed `audio.wav` opened with `"wb"` would erase the previous recording the
+moment the user recorded a second time; the guard is pinned end to end by
+`test_recording_storage.py::test_a_second_recording_of_the_same_meeting_keeps_the_first`.
+
+**One recording is capped at four hours of audio** (`_MAX_RECORDING_BYTES` in
+`recording/ws.py`, 16 kHz Int16 mono ≈ 461 MB), independent of the STT provider.
+The frame and concurrency caps bound a message and a session count, not how long
+one session streams, so a client that never sends `stop` would otherwise grow the
+file until the disk fills. At the ceiling the socket writes what still fits,
+finalizes the WAV normally (so the captured audio is kept), and reports
+`recording size limit reached` as an `error`. Four hours is the longest meeting
+this app allows and stays well under the 4 GiB a RIFF size field can describe.
+
+### Capturing the far side of a call
+
+`audio/systemAudio.ts` requests the display surface, and the shape of that request
+is load-bearing: **`getDisplayMedia({audio: true})` does not work and must not be
+put back.** The spec requires a video track — omitting `video`, or passing
+`video: false`, rejects with a `TypeError` in every browser. The code asks for a
+1 fps video track and then stops and removes it. `systemAudioConstraints`' test is
+the regression guard.
+
+The two sources are mixed **inside the worklet, ahead of the resampler**.
+`useMeetingTranscription` constructs `/pcm-worklet.js` with `numberOfInputs: 2`,
+connects the microphone to input 0 and the display-surface audio to input 1, and
+the processor sums the two blocks sample-wise before the polyphase anti-alias
+filter, so the mix is filtered and decimated exactly once. The check is per block,
+not latched at construction: a share granted mid-meeting joins the mix, a share
+the user stops leaves it, and the microphone keeps flowing either way. Sources are
+summed and clipped rather than averaged — only one side usually talks, and halving
+that side's level costs transcription accuracy on every utterance. A node built
+with the default single input is unaffected (input 1 is simply absent), which is
+what keeps the dashboard's dictation (`useStreamingStt.ts`, same file) untouched.
+`pcmWorklet.test.ts`' *two-input mixing* block pins all of this.
+
 ## The two provider seams
 
 Both follow `kiro_crew.embeddings`' `EmbeddingBackend` /
@@ -741,9 +830,10 @@ broadcast bar remains available when speech input is unavailable.
   runs on the canonical source, so a symlink cannot use its own name to pass it.
 * **No blocking call on the loop.** The calendar fetch is aiohttp; transcript
   reads/appends, DNS validation, the local `.ics` read, the data-dir seed, the
-  enable check, the task-provider `create`, the import's path vetting and
-  speech-to-text availability probe, and every store read and the init
-  transaction inside a calendar-poller tick all run on an executor.
+  enable check, the recording-path resolution, the task-provider `create`, the
+  import's path vetting and speech-to-text availability probe, and every store
+  read and the init transaction inside a calendar-poller tick all run on an
+  executor.
 
 ## What the port changed
 
@@ -772,7 +862,9 @@ injection guard, the bounded queue, off-by-default), and
 ORDER, and the shared dispatch transaction), with the shared fixtures and the
 fake session manager in `test/meetings_helpers.py`. Every dispatch goes through
 that fake session manager; no test spawns a process, opens a socket, calls a
-model, or decodes audio.
+model, or decodes audio. The core recording package has its own suite: `test_recording.py` (writer + session),
+`test_recording_storage.py` (the `MeetingStore` registry and this app's adapter),
+and `test_recording_ws.py` (the socket protocol and loopback guard).
 
 The app's current tests live in the repo-level `test/` tree. `setup.cfg` sets
 `testpaths = test src/kiro_crew/apps/builtins`, so a future in-package Meetings
@@ -785,5 +877,7 @@ transition table), `MeetingsPage.test.tsx` and `MeetingsPageCov80.test.tsx` (lis
 refresh, deletion, and calendar rows), `MeetingsSettingsViewCoverage.test.tsx`,
 `MeetingsAgentPillBar.test.tsx`, `MeetingsBroadcastBar.test.tsx`,
 `MeetingsAgentPanel.test.tsx` (including the iframe sandbox),
-`MeetingsTranslation.test.tsx`, and `MeetingsTranscriptPanel.test.tsx`
+`MeetingsTranslation.test.tsx`, `MeetingsRecording.test.ts`,
+`MeetingsSystemAudio.test.ts` (including the `getDisplayMedia` constraint guard),
+and `MeetingsTranscriptPanel.test.tsx`
 (durable/live rows, follow mode, and the split-to-primary layout transition).

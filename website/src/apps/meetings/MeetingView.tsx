@@ -6,8 +6,11 @@ import { AnimatePresence, motion } from 'framer-motion'
 import {
   AlertTriangle,
   ArrowLeft,
+  CircleDot,
+  CircleStop,
   Languages,
   ListChecks,
+  MonitorSpeaker,
   MoreHorizontal,
   Pause as PauseIcon,
   Play,
@@ -31,6 +34,7 @@ import AgentPillBar from './components/AgentPillBar'
 import BroadcastBar from './components/BroadcastBar'
 import MeetingTitle from './components/MeetingTitle'
 import MeetingWorkspace from './components/MeetingWorkspace'
+import RecordingMeter from './components/RecordingMeter'
 import TaskSidebar from './components/TaskSidebar'
 import TranscriptPanel from './components/TranscriptPanel'
 import TranslationSidebar from './components/TranslationSidebar'
@@ -82,6 +86,10 @@ export default function MeetingView({
     actions,
     pending,
     translation,
+    transcription,
+    recording,
+    recordingError,
+    systemAudio,
   } = session
 
   if (loading) return <Skeleton className="h-40 m-6" />
@@ -136,6 +144,12 @@ export default function MeetingView({
     setAttachMenuOpen(false)
   }
 
+  const recordingDisabledReason = !recording.supported
+    ? i18nT('apps.meetings.session.recUnsupported')
+    : !transcription.active
+      ? i18nT('apps.meetings.session.sttUnavailable')
+      : null
+
   return (
     // Stacks below `lg`, the same shape MeetingWorkspace and TaskReviewView
     // already use in this app: a 340px task sidebar beside the meeting left the
@@ -177,6 +191,29 @@ export default function MeetingView({
             )}
             {status === 'ended' && (
               <Badge variant="muted">{i18nT('apps.meetings.meeting.ended')}</Badge>
+            )}
+            {/* The recording's state lives with the other status badges, not in the
+                action row: that row is capped at two controls (the primary status
+                action plus the overflow trigger), so the record/stop ACTIONS are menu
+                items and the evidence that audio is arriving -- the badge, the level
+                meter, the meeting-audio icon -- reads here alongside "Live". */}
+            {recording.active && (
+              <span className="inline-flex items-center gap-2">
+                <Badge variant={recording.paused ? 'warn' : 'err'}>
+                  {recording.paused
+                    ? i18nT('apps.meetings.meeting.recordingPaused')
+                    : i18nT('apps.meetings.meeting.recording')}
+                </Badge>
+                <RecordingMeter subscribe={recording.subscribeLevel} />
+                {systemAudio && (
+                  <span title={i18nT('apps.meetings.meeting.meetingAudioOn')}>
+                    <MonitorSpeaker
+                      className="lucide-inline text-muted"
+                      aria-label={i18nT('apps.meetings.meeting.meetingAudioOn')}
+                    />
+                  </span>
+                )}
+              </span>
             )}
           </div>
 
@@ -248,6 +285,33 @@ export default function MeetingView({
                 </Btn>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="min-w-[200px]">
+                {/* Recording is offered only while the meeting is live, because the
+                    capture pipeline that feeds it belongs to the live transcription --
+                    there is no audio to record before that. Once running, the stop
+                    item stays available at any status so a recording can always be
+                    ended deliberately. Both live in the menu rather than the row: the
+                    row is at its two-control cap (max-two-buttons-per-row). */}
+                {status === 'active' && !recording.active && (
+                  <DropdownMenuItem
+                    disabled={recordingDisabledReason !== null}
+                    onSelect={() => void actions.startRecording()}
+                    title={recordingDisabledReason ?? i18nT('apps.meetings.meeting.recordHint')}
+                  >
+                    <CircleDot size={13} className="shrink-0 text-danger" />
+                    <span className="flex flex-col">
+                      <span>{i18nT('apps.meetings.meeting.record')}</span>
+                      <span className="text-xs text-muted">
+                        {recordingDisabledReason ?? i18nT('apps.meetings.meeting.recordHint')}
+                      </span>
+                    </span>
+                  </DropdownMenuItem>
+                )}
+                {recording.active && (
+                  <DropdownMenuItem onSelect={() => void actions.stopRecording()}>
+                    <CircleStop size={13} className="shrink-0 text-danger" />
+                    <span>{i18nT('apps.meetings.meeting.stopRecording')}</span>
+                  </DropdownMenuItem>
+                )}
                 {(status === 'active' || status === 'paused') && (
                   <>
                     <DropdownMenuItem
@@ -337,6 +401,15 @@ export default function MeetingView({
             </motion.div>
           )}
         </AnimatePresence>
+
+        {recordingError && (
+          <ErrorNotice
+            message={recordingError}
+            askAgent
+            className="flex-none mx-6 mt-3"
+            testId="meeting-recording-error"
+          />
+        )}
 
         <MeetingWorkspace
           hasAgentPanels={enabledAgents.length > 0}

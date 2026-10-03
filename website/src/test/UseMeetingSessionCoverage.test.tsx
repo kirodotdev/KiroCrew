@@ -48,6 +48,8 @@ const stt = vi.hoisted(() => ({
   active: false,
   start: vi.fn(() => Promise.resolve()),
   stop: vi.fn(),
+  attachSystemAudio: vi.fn(() => Promise.resolve(null)),
+  detachSystemAudio: vi.fn(),
   onCaption: undefined as ((text: string) => void) | undefined,
   onFinal: undefined as ((text: string) => string | boolean | void) | undefined,
   onError: undefined as ((code: string) => void) | undefined,
@@ -75,7 +77,15 @@ vi.mock('../apps/meetings/hooks/useMeetingTranscription', async importOriginal =
       stt.onCaption = opts.onCaption
       stt.onFinal = opts.onFinal
       stt.onError = opts.onError
-      return { active: stt.active, start: stt.start, stop: stt.stop, supported: true }
+      return {
+        active: stt.active,
+        start: stt.start,
+        stop: stt.stop,
+        supported: true,
+        systemAudio: false,
+        attachSystemAudio: stt.attachSystemAudio,
+        detachSystemAudio: stt.detachSystemAudio,
+      }
     },
   }
 })
@@ -142,6 +152,7 @@ async function mountLoaded(overrides: Partial<SessionProps> = {}) {
 beforeEach(() => {
   vi.clearAllMocks()
   stt.active = false
+  stt.attachSystemAudio.mockResolvedValue(null)
   stt.onCaption = undefined
   stt.onFinal = undefined
   stt.onError = undefined

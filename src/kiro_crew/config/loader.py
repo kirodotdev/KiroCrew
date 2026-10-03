@@ -3319,6 +3319,10 @@ class KiroCrewConfig:
         default_factory=SttConfig,
         metadata=_meta("STT", "Speech-to-text transcription settings."),
     )
+    recording: _sections.RecordingConfig = field(
+        default_factory=_sections.RecordingConfig,
+        metadata=_meta("Recording", "Recording session settings."),
+    )
     computer_use: ComputerUseConfig = field(
         default_factory=ComputerUseConfig,
         metadata=_meta(
@@ -4623,6 +4627,7 @@ class KiroCrewConfig:
             "memory_stores": {name: asdict(ms_cfg) for name, ms_cfg in self.memory_stores.items()},
             "default_memory_store": self.default_memory_store,
             "stt": asdict(self.stt),
+            "recording": asdict(self.recording),
             "computer_use": asdict(self.computer_use),
             "instances": asdict(self.instances),
             "mcp_gateway": asdict(self.mcp_gateway),
