@@ -351,6 +351,15 @@ REDOS_LARGE_BUDGET_SECONDS = 2.0
 #: Pump lengths for the polynomial class, ascending so a cubic overruns at 2 000
 #: (8e9 steps) before 20 000 is ever attempted.
 REDOS_LARGE_PUMPS = (200, 2_000, 20_000)
+#: Each long pump is 10x the one before, so a linear scan costs about 10x as much
+#: and a quadratic one about 100x. The absolute budget alone cannot see the
+#: difference for a quadratic scan whose steps are cheap: a C-level rescan of the
+#: rest of the text per opener measured 1.8 s at 20 000, under 2.0 s.
+REDOS_SCALING_RATIO = 25
+#: Below this the ratio is not asserted: a cost this small is a few clock ticks on
+#: Windows (15.6 ms), where the cheaper reading can round to zero. The shipped
+#: grammars measured 0.06 s or less at 20 000.
+REDOS_SCALING_FLOOR_SECONDS = 0.25
 
 # The PEM anchor is ASSEMBLED from fragments and split mid-word, so no source line
 # here carries a whole BEGIN...KEY header for the internal content scan to flag.
@@ -414,13 +423,20 @@ def assert_rejected_without_backtracking(reject, build_pump) -> None:
       first over-budget size costs at most ~growth x budget, and the assertion
       fires there; only when the whole ramp passes is a long pump tried at all.
     * **Ascending long pumps** for the polynomial class, so a cubic overruns at
-      2 000 before 20 000 is attempted.
+      2 000 before 20 000 is attempted. Each must also cost at most
+      ``REDOS_SCALING_RATIO`` times the one before (above a small floor): a
+      quadratic scan built from cheap steps stays under the absolute budget at
+      20 000 but grows ~100x per 10x of input where a linear one grows ~10x.
     * **Minimum of two readings, and the second is taken only if the first
       overran.** A gen-2 garbage collection charged to this thread mid-search is
       the one thing that can still spend CPU here; it cannot hit two consecutive
       readings, so a first reading under budget is a verdict on its own and two
-      over-budget readings are a verdict the other way -- the measurement never
-      pays a regression's cost more than twice per size.
+      over-budget readings are a verdict the other way. A long pump is held to
+      the absolute budget and, past the first, to the ratio bound as well; two
+      readings over either line end that size, so the measurement never pays a
+      regression's cost more than twice per size. A long pump the next one is
+      compared against otherwise takes three readings, since its cheapest is
+      that comparison's baseline.
 
     The budgets are generous on purpose (a decade or more over the shipped cost):
     a real complexity regression is orders of magnitude, and a tight bound only
@@ -445,12 +461,43 @@ def assert_rejected_without_backtracking(reject, build_pump) -> None:
             "backtracks catastrophically (a body class now shares a character with "
             "an adjacent quantified run, or two alternatives can consume one span?)"
         )
+
+    def refused(cost: float, bound: float) -> bool:
+        return cost >= REDOS_LARGE_BUDGET_SECONDS or cost > bound
+
+    def floor_of_readings(text: str, settle_below: float, bound: float) -> float:
+        # Up to three readings; stop at the first one under ``settle_below``, and
+        # stop after two once both are over the line this size is held to (a verdict).
+        best = float("inf")
+        for attempt in range(3):
+            start = time.thread_time()
+            reject(text)
+            best = min(best, time.thread_time() - start)
+            if best < settle_below or (attempt and refused(best, bound)):
+                break
+        return best
+
+    previous: tuple[int, float] | None = None
     for n in REDOS_LARGE_PUMPS:
-        cost = cheapest(build_pump(n), REDOS_LARGE_BUDGET_SECONDS)
+        bound = REDOS_LARGE_BUDGET_SECONDS
+        if previous is not None:
+            bound = max(REDOS_SCALING_RATIO * previous[1], REDOS_SCALING_FLOOR_SECONDS)
+        # A size the next one is compared against keeps all three readings: its
+        # cheapest is the baseline, and an inflated baseline would hide a regression.
+        settle_below = bound if n == REDOS_LARGE_PUMPS[-1] else 0.0
+        cost = floor_of_readings(build_pump(n), settle_below, bound)
         assert cost < REDOS_LARGE_BUDGET_SECONDS, (
             f"handling a {n}-unit pump cost {cost:.2f}s of CPU -- superlinear in the "
             "pump length"
         )
+        if previous is not None:
+            assert cost <= bound, (
+                f"handling a {n}-unit pump cost {cost:.3f}s of CPU against "
+                f"{previous[1]:.4f}s at {previous[0]} units -- "
+                f"{cost / max(previous[1], 1e-9):.0f}x for {n // previous[0]}x the "
+                f"input, past the {REDOS_SCALING_RATIO}x a linear scan stays under"
+            )
+        previous = (n, cost)
 
 
 def cap_project_root_walk(monkeypatch, ceiling: pathlib.Path) -> None:

@@ -2335,7 +2335,14 @@ the host, not the suite — see the section above.
   fails the assertion — so the cost of catching a regression is bounded by one
   growth step times the budget, measured 6 s against both mutants — then ascending
   long pumps (200, 2 000, 20 000) for the polynomial class, taking a second reading
-  only when the first overran (a GC pause cannot hit two in a row). The property
+  only when the first overran (a GC pause cannot hit two in a row). Each long pump
+  must also cost at most `REDOS_SCALING_RATIO` (25x) the one before it, above
+  `REDOS_SCALING_FLOOR_SECONDS` (0.25 s): a quadratic rescan built from cheap C
+  steps measured 1.8 s at 20 000, under the 2 s absolute budget, and only the ratio
+  refuses it. The 200 and 2 000 pumps take three readings, since each one's
+  cheapest is the next comparison's baseline; at any long pump, two readings over
+  the line that pump is held to end it, so a regression is paid at most twice per
+  size. The property
   itself is also asserted structurally where it can be: no
   closer, opener or wrapper character `isspace()` or is a label separator.
 - **A refused "system directory" is platform-shaped, and the refusal path CREATES
@@ -4452,7 +4459,9 @@ worker would die at `--timeout` (class 6) — and no single "small" size is safe
 harsher mutant grew ~8x per pumped block. The helper therefore RAMPS the pump one unit
 at a time from 1 to 24, on thread CPU, failing at the first size that overruns its
 budget (so catching any regression costs about one growth step), and only then tries
-ascending long pumps for the polynomial class. Size any complexity guard so the
+ascending long pumps for the polynomial class, each held both to an absolute budget and to
+at most 25x the cost of the pump 10x shorter (above a 0.25 s floor, so a coarse clock tick
+cannot read a linear cost as an unbounded ratio). Size any complexity guard so the
 regression it exists to catch FAILS it, not hangs it.
 
 **First check that the time is even the algorithm's.** `test_chained_cd_expansions` asserted
