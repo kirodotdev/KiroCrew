@@ -492,31 +492,47 @@ class TestFilterLiteralsStillMatchWhatTheGatesReject:
 
 
 class TestFiltersStillNarrowTheTree:
-    """A filter that keeps everything is cost with no benefit left in it."""
+    """A filter that keeps everything is cost with no benefit left in it.
+
+    The bar is a share of the tree, not a file count: every change that adds a
+    source file containing the literal grows the kept count, so a count ceiling
+    fails a branch for growing the tree it was meant to measure. A share only
+    moves when the literal does -- a literal that matches every file keeps the
+    whole tree, which no ceiling here admits.
+    """
 
     @pytest.mark.parametrize(
-        ("label", "require_all", "require_any", "ceiling"),
+        ("label", "require_all", "require_any", "max_share"),
         [
             (
                 "sandbox-bare-hop",
                 sandbox.TestNoBareSandboxedSpawnArgvHops._REQUIRE_ALL,
                 sandbox.TestNoBareSandboxedSpawnArgvHops._REQUIRE_ANY,
-                100,
+                0.05,
             ),
-            ("session-map-batch", session_map.TestNoAwaitInsideBatch._REQUIRE_ALL, (), 100),
-            ("security-census", _CENSUS_REQUIRE_ALL, (), 700),
-            ("blocking-on-loop", blocking._REQUIRE_ALL, (), 911),
+            ("session-map-batch", session_map.TestNoAwaitInsideBatch._REQUIRE_ALL, (), 0.05),
+            ("security-census", _CENSUS_REQUIRE_ALL, (), 0.45),
+            ("blocking-on-loop", blocking._REQUIRE_ALL, (), 0.6),
         ],
     )
-    def test_the_filter_narrows_the_tree(self, label, require_all, require_any, ceiling):
+    def test_the_filter_narrows_the_tree(self, label, require_all, require_any, max_share):
         # Counted off the stream: the broad filters keep up to half the tree, and
         # a tuple of those texts is most of the corpus resident again.
         kept = sum(1 for _pair in iter_candidate_sources(require_all, require_any))
+        total = sum(1 for _pair in iter_source_texts())
         assert kept, f"{label}: matched nothing, so that gate now scans an empty tree"
-        assert kept < ceiling, (
-            f"{label}: kept {kept} of {sum(1 for _pair in iter_source_texts())} files, so "
-            "the filter is no longer buying anything -- either the tree or the literal moved."
+        assert kept <= max_share * total, (
+            f"{label}: kept {kept} of {total} files ({kept / total:.0%}, bar {max_share:.0%}), "
+            "so the filter is not narrowing the tree -- the literal matches too much."
         )
+
+    def test_the_share_bar_refuses_a_literal_that_matches_everything(self):
+        """The negative control: ``import`` is in nearly every file, so the widest
+        bar above must refuse it, or the share bar could not catch a literal that
+        stopped narrowing."""
+        kept = sum(1 for _pair in iter_candidate_sources(("import",), ()))
+        total = sum(1 for _pair in iter_source_texts())
+        assert kept > 0.6 * total, (kept, total)
 
 
 def _plant_nested_checkout(root: Path) -> None:

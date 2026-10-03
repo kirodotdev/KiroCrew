@@ -4655,6 +4655,17 @@ annotation -- red. `test_only_a_compatible_addition_is_tolerated` proves each of
 still reds. Use the same shape for any new pin over a surface that ordinary feature
 work grows; a byte-exact pin is right only for a surface nobody else edits.
 
+### An absolute count over a tree that grows
+
+A prefilter-cost check that says "this filter keeps fewer than 907 files" is a
+ratchet set one file above main: the next branch that adds any file containing the
+literal reds, and its own diff holds nothing to fix. What such a check is FOR is
+"the filter still narrows the tree", which is a share, not a count. Bound
+`kept / total`, with the bar well above today's share and well below one, and pair
+it with a negative control that runs a literal found in nearly every file and
+asserts the widest bar refuses it -- that is the regression the check exists to
+catch. `TestFiltersStillNarrowTheTree` in `test/test_source_corpus.py` has both.
+
 ## Keeping the suite fast
 
 The measured runs above exceeded 100k tests. At that scale, setup overhead rather
