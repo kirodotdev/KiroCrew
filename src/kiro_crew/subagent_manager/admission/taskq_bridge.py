@@ -538,6 +538,8 @@ class _TaskqBridgeMixin(ManagerComponent):
                 root_id = parent_rec.root_id or parent_rec.id
         record.parent_id = parent_id
         record.root_id = root_id
+        # Before the write, so no parent-end sweep can read the row unrecorded.
+        self._manager._cancellation.note_teardown_store_accept(record.session_key, record.id)
         try:
             store.accept_one(record)
         except _taskq.TaskStoreUnavailable as exc:
@@ -1224,16 +1226,15 @@ class _TaskqBridgeMixin(ManagerComponent):
         return [r.id for r in rows]
 
     async def taskq_pending_ids_for_async(
-        self, parent_session_key: str, *, accepted_before: float | None = None
+        self, parent_session_key: str, *, include_window: bool = False
     ) -> list[str]:
         """:meth:`taskq_pending_ids_for` with its store read on the writer thread.
 
-        *accepted_before* is the parent-end teardown's reading
-        (``cancel_for_teardown_impl``): only rows the store accepted before that
-        instant (its own clock), and the window's rows among them too. The
-        teardown unqueues a window entry together with its row, and an entry
-        the refill hydrated after the teardown's snapshot was named by nobody;
-        the accept time, not the window, is what tells a retired
+        *include_window* is the parent-end teardown's reading
+        (``cancel_for_teardown_impl``): the window's rows too. The teardown
+        unqueues a window entry together with its row, and an entry the refill
+        hydrated after the teardown's snapshot was named by nobody; the
+        snapshot's fence, not the window, is what tells a retired
         conversation's row from one its successor under the same key queued.
         """
         from kiro_crew import taskq as _taskq
@@ -1241,7 +1242,7 @@ class _TaskqBridgeMixin(ManagerComponent):
         store = self.taskq_store()
         if store is None or not parent_session_key:
             return []
-        exclude = self.taskq_excluded_ids(window=accepted_before is None)
+        exclude = self.taskq_excluded_ids(window=not include_window)
         try:
             rows = await store.run(
                 store.list_pending,
@@ -1251,8 +1252,6 @@ class _TaskqBridgeMixin(ManagerComponent):
             )
         except _taskq.TaskStoreUnavailable:
             return []
-        if accepted_before is not None:
-            rows = [r for r in rows if r.created_at < accepted_before]
         return [r.id for r in rows]
 
     def _live_run_ids(self) -> list[str]:

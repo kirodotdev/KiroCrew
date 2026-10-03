@@ -829,12 +829,13 @@ lanes). The adapter's in-memory queue
   of work still owed keeps it. Wave accounting consults `fetch_pending_by_batch`
   the same way.
 - A parent-end teardown stops the parent's waiting rows the store accepted
-  strictly before its snapshot (`taskq_pending_ids_for_async(…,
-  accepted_before=)`: `created_at` on the store's clock, window rows included,
-  live runs and rows a `spawn_async` caller is still admitting left out), so a
-  row held only by the store does not outlive the conversation that queued
-  it, and a row a successor under the same key queued after the snapshot is
-  never swept. See [subagent.md](subagent.md) § `cancel_for_teardown`.
+  before its snapshot (`taskq_pending_ids_for_async(…, include_window=True)`,
+  window rows included, live runs and rows a `spawn_async` caller is still
+  admitting left out, less the ids the snapshot's fence recorded as accepted
+  after it, by accept order rather than `created_at`, which a stepped-back
+  wall clock would misorder), so a row held only by the store does not
+  outlive the conversation that queued it, and a row a successor under the
+  same key queued after the snapshot is never swept. See [subagent.md](subagent.md) § `cancel_for_teardown`.
 - When a pass finds nothing and the window is empty, the pump arms one
   `call_later` at `next_eligible_at`: the earliest moment a row held only by
   time (deferred by `next_run_at`, or leased by `lease_expires_at`) becomes

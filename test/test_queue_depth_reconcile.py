@@ -18,7 +18,6 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
-import time
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1128,26 +1127,6 @@ async def _end_run(mgr: SubagentManager, info: SubagentInfo) -> None:
     )
 
 
-def _ticking_store_clock(monkeypatch: pytest.MonkeyPatch, mgr: SubagentManager) -> None:
-    """Give the store a wall clock that never answers the same reading twice.
-
-    A parent end fences its store sweep on accept time: only a row accepted
-    BEFORE the snapshot is the retired conversation's. A host whose clock ticks
-    coarsely (about 15.6 ms on Windows before Python 3.13) can stamp a row the
-    test wrote just before the snapshot with the snapshot's own reading, which
-    the fence then spares -- the safe direction in production, and a guessed
-    outcome in a test.
-    """
-    store = mgr._taskq
-    last = [0.0]
-
-    def _tick() -> float:
-        last[0] = max(time.time(), last[0] + 1e-6)
-        return last[0]
-
-    monkeypatch.setattr(store, "_clock", _tick)
-
-
 def _survivor_of_a_restart(mgr: SubagentManager, *, due: bool) -> str:
     """A run the previous gateway incarnation was executing for the parent,
     settled the way the boot reconcile settles it: ``recovering``, unleased.
@@ -1213,7 +1192,6 @@ async def test_after_each_exit_the_published_depth_equals_the_store_count(
     window, so the first settle point after the boot leaves it out.
     """
     mgr = await _manager(monkeypatch, pump_off_loop=pump_off_loop, max_concurrent=1)
-    _ticking_store_clock(monkeypatch, mgr)
     try:
         resident, running = await _resident_with_resume_entry(mgr)
         with patch.object(SubagentManager, "_run", new=_park):
@@ -1292,7 +1270,6 @@ async def test_a_parent_end_stops_its_store_rows_without_reporting_them_home(
     """A row held only by the store is the ended conversation's work too: it is
     cancelled, and its stop is recorded without injecting into the parent."""
     mgr = await _manager(monkeypatch, pump_off_loop=pump_off_loop)
-    _ticking_store_clock(monkeypatch, mgr)
     try:
         on_done = AsyncMock()
         mgr._on_done = on_done
@@ -1312,7 +1289,83 @@ async def test_a_parent_end_stops_its_store_rows_without_reporting_them_home(
             assert row is not None and row.state == model.CANCELLED
         on_done.assert_not_awaited()
         assert _store_waiting(mgr) == 0
-        assert mgr._teardown_store_cutoffs == {}
+        assert mgr._teardown_store_fences == {} and mgr._teardown_store_sweeps == []
+    finally:
+        _close(mgr)
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(30)
+@PUMP_MODES
+async def test_a_wall_clock_stepped_back_mid_teardown_never_sweeps_the_successors_row(
+    monkeypatch: pytest.MonkeyPatch, pump_off_loop: bool
+) -> None:
+    """The host's clock is stepped back an hour between the snapshot and the
+    successor's first spawn (an NTP correction): the store stamps the
+    successor's row EARLIER than the retired conversation's. The sweep orders
+    by accept, not by that stamp, so the retired row is stopped and the
+    successor's is left queued."""
+    mgr = await _manager(monkeypatch, pump_off_loop=pump_off_loop)
+    clock = {"now": 1_000_000.0}
+    monkeypatch.setattr(mgr._taskq, "_clock", lambda: clock["now"])
+    try:
+        (retired,) = _defer(mgr, 1)
+        await _settle(mgr)
+        clock["now"] += 1.0
+        selected = mgr.snapshot_teardown_children(_PARENT)
+        clock["now"] -= 3600.0
+        (successor,) = _defer(mgr, 1)
+        successor_row = mgr._taskq.get(successor.id)
+        retired_row = mgr._taskq.get(retired.id)
+        assert successor_row is not None and retired_row is not None
+        assert successor_row.created_at < retired_row.created_at
+
+        await mgr.cancel_for_teardown(selected, parent_session_key=_PARENT, verb="session_reset")
+        await _settle(mgr)
+
+        row = mgr._taskq.get(successor.id)
+        assert row is not None and row.state == model.QUEUED, "the successor's row was swept"
+        gone = mgr._taskq.get(retired.id)
+        assert gone is not None and gone.state == model.CANCELLED
+    finally:
+        _close(mgr)
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(30)
+@PUMP_MODES
+async def test_a_successor_row_accepted_while_the_teardown_cancel_runs_is_spared(
+    monkeypatch: pytest.MonkeyPatch, pump_off_loop: bool
+) -> None:
+    """The successor queues its spawn after the cancel has taken the snapshot's
+    fence, while it is still stopping the named runs: the fence keeps recording
+    until the sweep has read the store, so that row is spared too, and nothing
+    is left recording once the cancel returns."""
+    mgr = await _manager(monkeypatch, pump_off_loop=pump_off_loop)
+    real = SpawnAdmissionCoordinator.taskq_pending_ids_for_async
+    late: list[SubagentInfo] = []
+
+    async def _successor_spawns_first(self: Any, parent: str, **kwargs: Any) -> list[str]:
+        late.extend(_defer(mgr, 1))
+        return await real(self, parent, **kwargs)
+
+    monkeypatch.setattr(
+        SpawnAdmissionCoordinator, "taskq_pending_ids_for_async", _successor_spawns_first
+    )
+    try:
+        (retired,) = _defer(mgr, 1)
+        await _settle(mgr)
+        selected = mgr.snapshot_teardown_children(_PARENT)
+
+        await mgr.cancel_for_teardown(selected, parent_session_key=_PARENT, verb="session_reset")
+        await _settle(mgr)
+
+        (successor,) = late
+        row = mgr._taskq.get(successor.id)
+        assert row is not None and row.state == model.QUEUED, "the successor's row was swept"
+        gone = mgr._taskq.get(retired.id)
+        assert gone is not None and gone.state == model.CANCELLED
+        assert mgr._teardown_store_fences == {} and mgr._teardown_store_sweeps == []
     finally:
         _close(mgr)
 
@@ -1322,9 +1375,9 @@ async def test_a_parent_end_stops_its_store_rows_without_reporting_them_home(
 async def test_a_teardown_cancel_no_snapshot_preceded_sweeps_no_store_row(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The sweep is fenced by the snapshot's instant; with none recorded (a
-    recycle takes no snapshot, and its children deliver into the resumed
-    conversation) no store row is touched."""
+    """The sweep is fenced by the snapshot; with none taken (a recycle takes no
+    snapshot, and its children deliver into the resumed conversation) no store
+    row is touched."""
     mgr = await _manager(monkeypatch, pump_off_loop=True)
     try:
         (deferred,) = _defer(mgr, 1)
@@ -1347,11 +1400,10 @@ async def test_a_parent_end_sweeps_a_row_the_refill_windowed_after_its_snapshot(
 ) -> None:
     """A row the retired conversation's store held when the snapshot was taken
     is swept even if the refill pulls it into the window before the sweep reads:
-    the sweep keeps the window's rows in its read, and its accept-time fence is
+    the sweep keeps the window's rows in its read, and the snapshot's fence is
     what tells it from a successor's row. Left out, the row would stay queued
     and start into whatever the key serves next."""
     mgr = await _manager(monkeypatch, pump_off_loop=pump_off_loop)
-    _ticking_store_clock(monkeypatch, mgr)
     try:
         mgr._queue_dispatch_held = True
         rec = model.TaskRecord(
