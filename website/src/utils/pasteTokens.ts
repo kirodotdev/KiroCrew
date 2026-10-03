@@ -1,5 +1,6 @@
 import { safeSetItem } from './safeStorage'
 import { mergeRecoveredDraft } from './chatDrafts'
+import { KNOWLEDGE_ENVELOPE_OPEN, KNOWLEDGE_ENVELOPE_END } from '../pages/chat/knowledgeMarkers'
 /**
  * Paste-token utilities.
  *
@@ -287,15 +288,42 @@ export function recollapsePastes(content: string, blocks: PasteBlock[]): string 
 }
 
 /**
+ * Strip a leading `[KNOWLEDGE CONTEXT …] … [END KNOWLEDGE CONTEXT]` envelope
+ * from wire text, if present. The send path prepends
+ * `expandKnowledgeBlock(block) + '\n' + llmTxt` (useKnowledgeFetch.ts), so the
+ * envelope is always a prefix: from the opening `[KNOWLEDGE CONTEXT` marker
+ * through the `[END KNOWLEDGE CONTEXT]` line and the single joining newline.
+ * Everything after it is the ORIGINAL wire text — which, for a busy-drain
+ * merged row, is several queued messages, not just the knowledge send. Returns
+ * the remainder, or null when no envelope prefix is found (so the caller can
+ * fall through rather than clobber).
+ */
+export function stripKnowledgeEnvelope(content: string): string | null {
+  if (!content.startsWith(KNOWLEDGE_ENVELOPE_OPEN)) return null
+  const end = content.indexOf(KNOWLEDGE_ENVELOPE_END)
+  if (end < 0) return null
+  let rest = content.slice(end + KNOWLEDGE_ENVELOPE_END.length)
+  // Drop the newline that expandKnowledgeBlock appends after the end marker and
+  // the single '\n' join between the envelope and the original text.
+  if (rest.startsWith('\n')) rest = rest.slice(1)
+  if (rest.startsWith('\n')) rest = rest.slice(1)
+  return rest
+}
+
+/**
  * Merge preserved paste state from `existing` onto `incoming` (from backend
  * refresh). For each user message in `existing` with `meta.pastes`, the
  * tokenized content + pastes are re-applied to the matching incoming user
- * message — matched by expansion equality (`expandAll(old.content, old.pastes)
- * === new.content`). Consumed FIFO so repeated sends don't collide.
+ * message. Matched in priority order: (1) exact `meta.sendId` identity, then
+ * (2) expansion equality (`expandAll(old.content, old.pastes) === new.content`),
+ * consumed FIFO so repeated sends don't collide. Id identity runs first so a
+ * repeated paste sent with different files cannot have its FIFO entry consumed
+ * by the wrong send.
  *
  * Falls back to `readStoredPaste(incoming.content)` for messages that have no
  * in-memory counterpart (e.g. after page reload or chat switch) — this reads
- * from the localStorage side table populated by `saveStoredPaste`.
+ * from the localStorage side table populated by `saveStoredPaste` — and
+ * finally to self-contained re-collapse from the row's own `meta.pastes`.
  *
  * Why: the backend only sees/stores the LLM-facing expanded text. Without
  * this merge, the user bubble would "expand" to full text as soon as the
@@ -305,7 +333,22 @@ export function mergePreservedPastes<M extends { role: string; content: string; 
   existing: M[],
   incoming: M[],
 ): M[] {
-  const preserved: Array<{ content: string; pastes: PasteBlock[]; expanded: string; files: string[] | null }> = []
+  type PreservedEntry = { content: string; pastes: PasteBlock[]; expanded: string; files: string[] | null; mid: string }
+  const preserved: PreservedEntry[] = []
+  // Id-keyed preservation, keyed on the stable `meta.sendId` the plain-send and
+  // steer paths both stamp (and the backend re-serves on the persisted row).
+  // This is the resolution that must NOT regress: once ANY earlier reconcile
+  // established `meta.pastes` on a row, every later reconcile of the same send
+  // keeps it — even when the in-memory FIFO queue has been consumed and the
+  // localStorage side table has evicted the entry (200-entry / 30-day cap). A
+  // row whose pastes come and go across reconciles is exactly what makes the
+  // chip flip to raw text and back as the virtualized transcript remounts it on
+  // scroll; carrying by id keeps the representation stable and remount-proof.
+  // Each id maps to the SAME entry object that is pushed into the FIFO queue,
+  // so an id hit can splice that entry out of the queue — otherwise the entry
+  // stays FIFO-matchable and a later id-less row with identical expanded
+  // content would inherit this send's pastes/files (a cross-row leak).
+  const byId = new Map<string, PreservedEntry>()
   for (const m of existing) {
     const pastes = (m.meta?.pastes as PasteBlock[] | undefined) || []
     if (m.role === 'user' && pastes.length) {
@@ -313,10 +356,25 @@ export function mergePreservedPastes<M extends { role: string; content: string; 
       // Normalize trailing whitespace — the backend strips it before storing,
       // so our expanded text (which may have a trailing newline/space from the
       // token + newline pattern) won't match the incoming content byte-for-byte.
-      preserved.push({ content: m.content, pastes, expanded: expandAll(m.content, pastes).trimEnd(), files })
+      const entry: PreservedEntry = {
+        content: m.content,
+        pastes,
+        expanded: expandAll(m.content, pastes).trimEnd(),
+        files,
+        mid: typeof m.meta?.mid === 'string' && m.meta.mid ? m.meta.mid : '',
+      }
+      preserved.push(entry)
+      const sid = typeof m.meta?.sendId === 'string' && m.meta.sendId ? m.meta.sendId : ''
+      // First writer wins per sendId: a duplicate sendId is anomalous, and the
+      // earliest row is the authoritative resolution to carry forward.
+      if (sid && !byId.has(sid)) byId.set(sid, entry)
     }
   }
   const queue = preserved.slice()
+  const incomingSid = (m: M): string =>
+    typeof m.meta?.sendId === 'string' && m.meta.sendId ? m.meta.sendId : ''
+  const incomingMid = (m: M): string =>
+    typeof m.meta?.mid === 'string' && m.meta.mid ? m.meta.mid : ''
   // A backend-served user message that carries its own `meta.pastes` but whose
   // content is still fully expanded (no `[ Paste #N ]` token) needs fallback 3
   // (self-contained re-collapse) even when there is no optimistic bubble and no
@@ -334,6 +392,7 @@ export function mergePreservedPastes<M extends { role: string; content: string; 
   // common no-pastes case.
   if (
     !queue.length &&
+    !byId.size &&
     !incoming.some(m => m.role === 'user' && readStoredPaste(m.content.trimEnd())) &&
     !incoming.some(needsSelfCollapse)
   ) {
@@ -341,8 +400,130 @@ export function mergePreservedPastes<M extends { role: string; content: string; 
   }
   return incoming.map(m => {
     if (m.role !== 'user') return m
-    // 1) In-memory preservation (optimistic bubble still present)
-    if (queue.length) {
+    // Set when a reused-sendId mid-conflict proves the held entry belongs to a
+    // DIFFERENT row: this row then bypasses the FIFO content match too, so it
+    // cannot inherit the foreign entry's pastes by coincidental expansion
+    // equality — while the entry stays in the queue for its true owner row.
+    let skipFifo = false
+    // 1) Id-keyed carry-forward — keyed on the stable `meta.sendId` both send
+    // paths stamp and the backend re-serves. This MUST run before the FIFO
+    // match (2): FIFO matches purely on expansion-equality, so when the same
+    // paste text is sent twice with DIFFERENT files it would consume the wrong
+    // optimistic entry for a later send (and surface the older send's
+    // attachment) before any `sendId` lookup. An exact id match is the precise
+    // identity, so it wins. Once ANY earlier reconcile established `meta.pastes`
+    // on a row, every later reconcile of the same send keeps it — even when the
+    // FIFO queue is empty (plain refresh/chat-switch) and the localStorage side
+    // table (3) has evicted the entry (200-entry / 30-day cap). A row whose
+    // pastes come and go across reconciles is exactly what flips the chip to
+    // raw text and back as the virtualized transcript remounts it on scroll;
+    // carrying by id keeps the representation stable and remount-proof.
+    const sid = incomingSid(m)
+    if (sid) {
+      const held = byId.get(sid)
+      // Guard against a reused sendId naming two DIFFERENT persisted rows. The
+      // server-minted `meta.mid` is the stable per-row identity; a client could
+      // (maliciously or by a bug) reuse another row's `sendId` while carrying a
+      // different paste body, and an older-history merge would then match by id
+      // and hand the older row the newer row's pastes/files. When BOTH rows
+      // carry a non-empty `mid` and they DIFFER, they are provably different
+      // rows — skip the id path and fall through to the content-/cache-keyed
+      // routes. A missing `mid` on either side (the optimistic pre-confirm
+      // window, where carry-forward is exactly what prevents the chip flip)
+      // leaves the sendId match intact.
+      const midHeld = held ? held.mid : ''
+      const midIn = incomingMid(m)
+      const midConflict = !!held && !!midHeld && !!midIn && midHeld !== midIn
+      if (held && midConflict) {
+        // Proven-different rows share a reused sendId. The held entry belongs
+        // to a DIFFERENT persisted row (different mid), so skip the id path for
+        // THIS row and let it resolve via the content-/cache-keyed routes
+        // below. Do NOT evict the held entry: a later row carrying the matching
+        // mid is the entry's true owner, and evicting here would strand it
+        // (dropping that row's pastes and, for a merged/large paste, rendering
+        // it expanded). Bypass FIFO for only this conflicting row instead.
+        skipFifo = true
+      } else if (held) {
+        const newMeta: Record<string, unknown> = { ...m.meta, pastes: held.pastes }
+        if (held.files && held.files.length) newMeta.files = held.files
+        // Consume the held entry from BOTH the id map and the FIFO queue once
+        // we commit to using it. Leaving it in `queue` would let a later
+        // id-less row with identical expanded content match it by expansion
+        // equality (fallback 2) and inherit this send's pastes/files — a
+        // cross-row leak. Deleting the id key keeps a second row sharing this
+        // sendId from double-consuming it. Only consume on a path that actually
+        // returns the carried pastes; if neither form below applies we fall
+        // through WITHOUT consuming, leaving the entry available to the FIFO
+        // and side-table routes.
+        const consumeHeld = () => {
+          byId.delete(sid)
+          const qi = queue.indexOf(held)
+          if (qi >= 0) queue.splice(qi, 1)
+        }
+        // Choose a content form that is NEVER the raw expanded wire text:
+        //  - held content expands to the incoming text  → use held (keeps a
+        //    collapsed chip collapsed; identical to the last-shown render);
+        //  - otherwise the incoming wire text diverges from the bubble text.
+        //    Prefer the exact side-table entry keyed on the wire text, because
+        //    the composer saved the TRUE display form there (saveStoredPaste
+        //    stores the LLM wire text as the key and the display text as the
+        //    value). The wire text can contain send-only material the bubble
+        //    never showed — attached-file markers, and critically a prepended
+        //    `[KNOWLEDGE CONTEXT …]` block — so reconstructing the display from
+        //    the wire via recollapsePastes would fold only the paste body and
+        //    leave that injected block visible in the bubble. The side table's
+        //    displayTxt has none of it. Only if the side table misses do we
+        //    fall back to a generic re-collapse (attached-file-marker case with
+        //    no stored entry), and only if that folds a token.
+        // Reuse the entry's precomputed `expanded` (built identically from the
+        // same content/pastes, never mutated) instead of re-materializing a
+        // potentially multi-hundred-KB paste body on the main thread per
+        // reconcile just to run one equality check.
+        const heldExpanded = held.expanded
+        if (heldExpanded === m.content.trimEnd()) {
+          consumeHeld()
+          return { ...m, content: held.content, meta: newMeta }
+        }
+        const storedForWire = readStoredPaste(m.content.trimEnd())
+        if (storedForWire) {
+          consumeHeld()
+          const sideMeta: Record<string, unknown> = { ...m.meta, pastes: storedForWire.pastes }
+          const sideFiles = (storedForWire.files && storedForWire.files.length)
+            ? storedForWire.files
+            : (held.files && held.files.length ? held.files : null)
+          if (sideFiles) sideMeta.files = sideFiles
+          return { ...m, content: storedForWire.displayTxt, meta: sideMeta }
+        }
+        // A knowledge-prefixed send carries a `[KNOWLEDGE CONTEXT …]` envelope
+        // in the wire text only (never the bubble); it is surfaced separately
+        // via meta.knowledge. Do NOT wholesale-restore held.content here: a
+        // busy-drain can fold several queued messages into ONE reconciled row,
+        // so this row's content may contain OTHER messages' text beside the
+        // knowledge send — returning held.content would drop them from the
+        // transcript permanently. Instead strip only the knowledge envelope and
+        // re-collapse the held paste blocks over the remainder, preserving all
+        // other merged content. If no envelope prefix is found, fall through
+        // rather than clobber.
+        if (m.meta && (m.meta as Record<string, unknown>).knowledge !== undefined) {
+          const stripped = stripKnowledgeEnvelope(m.content)
+          if (stripped !== null) {
+            consumeHeld()
+            const recollapsedStripped = recollapsePastes(stripped, held.pastes)
+            return { ...m, content: recollapsedStripped, meta: newMeta }
+          }
+          // No envelope prefix despite meta.knowledge — fall through.
+        }
+        const recollapsed = recollapsePastes(m.content, held.pastes)
+        if (recollapsed !== m.content) {
+          consumeHeld()
+          return { ...m, content: recollapsed, meta: newMeta }
+        }
+        // No token could be folded in — do not clobber or consume; try the
+        // routes below.
+      }
+    }
+    // 2) In-memory FIFO preservation (optimistic bubble still present)
+    if (queue.length && !skipFifo) {
       // Compare against trimEnd()'d incoming content — backend strips trailing
       // whitespace on storage, so our expanded text (pre-strip) wouldn't match.
       const incomingTrimmed = m.content.trimEnd()
@@ -356,14 +537,14 @@ export function mergePreservedPastes<M extends { role: string; content: string; 
         return { ...m, content: match.content, meta: newMeta }
       }
     }
-    // 2) localStorage side table (survives refresh/chat-switch)
+    // 3) localStorage side table (survives refresh/chat-switch)
     const stored = readStoredPaste(m.content.trimEnd())
     if (stored) {
       const newMeta: Record<string, unknown> = { ...m.meta, pastes: stored.pastes }
       if (stored.files && stored.files.length) newMeta.files = stored.files
       return { ...m, content: stored.displayTxt, meta: newMeta }
     }
-    // 3) Self-contained re-collapse. The backend re-serves `meta.pastes`
+    // 4) Self-contained re-collapse. The backend re-serves `meta.pastes`
     // alongside the fully-expanded content, so when neither the optimistic
     // bubble nor the side table can re-collapse (fresh tab, evicted entry),
     // fold the message's own blocks back into `[ Paste #N ]` tokens. Without

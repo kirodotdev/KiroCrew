@@ -63,6 +63,16 @@ export default [
       // the module may contain ONLY paint data, so the filename IS the
       // boundary and its consumer (FolderGlyph.tsx) stays fully covered.
       'src/components/folderColorPaint.ts',
+      // Knowledge-context envelope markers: the two wire-format protocol
+      // strings (`[KNOWLEDGE CONTEXT`, `[END KNOWLEDGE CONTEXT]`) that bracket
+      // user-selected knowledge items in the LLM wire text. They are a contract
+      // between the producer (`expandKnowledgeBlock`) and the stripper
+      // (`stripKnowledgeEnvelope`), matched verbatim and never shown as UI copy;
+      // translating a fragment would break both. Same named-boundary idiom as
+      // `folderColorPaint.ts` above — the module contains ONLY these two
+      // protocol constants, so the filename IS the boundary and both consumers
+      // stay fully covered by the gate.
+      'src/pages/chat/knowledgeMarkers.ts',
       // The MCP App (SEP-1865) host theme token map: every string is a CSS custom
       // property name (`--bg`), a protocol variable key (`--color-text-primary`), a
       // CSS value (`400`, `9999px`) or the `color-mix()` wash template that derives
