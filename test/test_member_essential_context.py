@@ -200,12 +200,22 @@ def test_tail_and_updated_soul_survive_small_ordinary_context_budget(env):
     env.forbidden.assert_not_called()
 
 
-def test_oversized_essential_refuses_with_source_name_instead_of_partial_prompt(env):
+def test_oversized_guide_is_left_out_by_name_instead_of_refusing_the_turn(env):
+    """An over-budget guide drops out whole and is named; the turn still runs.
+
+    This replaced ``test_oversized_essential_refuses_with_source_name_instead_of_
+    partial_prompt``: the source is still named and never cut mid-body, but the
+    member's core keeps working instead of every turn refusing.
+    """
     (env.project / "AGENTS.md").write_text("x" * 64_001, encoding="utf-8")
-    with pytest.raises(MemberEssentialContextError, match="AGENTS.md"):
-        env.builder.build_message(
-            "Continue", False, memory_store=env.store, member=env.member, project=str(env.project)
-        )
+    message, _ = env.builder.build_message(
+        "Continue", False, memory_store=env.store, member=env.member, project=str(env.project)
+    )
+    assert "x" * 1_000 not in message
+    assert "[Essential source: essential-context#omitted]" in message
+    assert f"{env.project / 'AGENTS.md'} (64,001 characters)" in message
+    assert "Bound Soul: preserve the user's voice." in message
+    assert "Preference anchor: 请保留中文原文。" in message
 
 
 @pytest.mark.asyncio
@@ -2235,3 +2245,118 @@ def test_another_harness_never_reads_the_setting(operator_steering, monkeypatch,
     reads = _count_setting_reads(monkeypatch)
     _envelope_with_folder_steering_trees(env, provider_type=provider_type)
     assert reads == []
+
+
+def _declare_resources(env, names: list[str]) -> None:
+    spec = env.project / ".kiro" / "agents" / "writer-template.json"
+    data = json.loads(spec.read_text(encoding="utf-8"))
+    data["resources"] = [f"file://{name}" for name in names]
+    spec.write_text(json.dumps(data), encoding="utf-8")
+
+
+def _member_message(env) -> str:
+    message, _ = env.builder.build_message(
+        "Continue", False, memory_store=env.store, member=env.member, project=str(env.project)
+    )
+    return message
+
+
+def _envelope(message: str) -> str:
+    start = message.index("[V2 ESSENTIAL CONTEXT")
+    end = message.index("[END V2 ESSENTIAL CONTEXT]\n\n", start)
+    return message[start : end + len("[END V2 ESSENTIAL CONTEXT]\n\n")]
+
+
+def test_over_budget_declared_resources_leave_out_the_tail_and_the_turn_runs(env, caplog):
+    """The reported shape: an agent spec whose ``resources`` grew past the envelope.
+
+    Guides leave from the tail of declaration order, whole, only as many as needed;
+    every one left out is named with its size in one in-band notice; the member's
+    core (persona prompt, SOUL.md, profile anchors, recall note) is all still there;
+    the result fits the envelope; and the drop is logged at warning.
+    """
+    names = [f"context/g{i}.md" for i in range(4)]
+    (env.project / "context").mkdir()
+    for i, name in enumerate(names):
+        (env.project / name).write_text(f"GUIDE_{i}_HEAD\n" + "y" * 25_000, encoding="utf-8")
+    _declare_resources(env, names)
+    with caplog.at_level("WARNING"):
+        message = _member_message(env)
+    assert "GUIDE_0_HEAD" in message and "GUIDE_1_HEAD" in message
+    assert "GUIDE_2_HEAD" not in message and "GUIDE_3_HEAD" not in message
+    assert "[Essential source: essential-context#omitted]" in message
+    for name in names[2:]:
+        assert f"{env.project / name} (25,013 characters)" in message
+    for name in names[:2]:
+        assert f"{env.project / name} (25,013 characters)" not in message
+    for core in (
+        "Bound Soul: preserve the user's voice.",
+        "Project Soul: write with empathy.",
+        "Preference anchor: 请保留中文原文。",
+        "Project anchor: the launch guide is authoritative.",
+        "memory_recall",
+    ):
+        assert core in message
+    assert len(_envelope(message)) <= 64_000
+    warned = [r for r in caplog.records if r.levelname == "WARNING" and "g2.md" in r.getMessage()]
+    assert len(warned) == 1 and "g3.md" in warned[0].getMessage()
+
+
+def test_a_fitting_envelope_carries_no_omission_notice(env):
+    assert "essential-context#omitted" not in _member_message(env)
+
+
+@pytest.mark.parametrize("core", ["prompt", "SOUL.md"])
+def test_an_over_budget_core_still_refuses_with_the_source_named(env, core):
+    if core == "prompt":
+        spec = env.project / ".kiro" / "agents" / "writer-template.json"
+        data = json.loads(spec.read_text(encoding="utf-8"))
+        data["prompt"] = "p" * 64_001
+        spec.write_text(json.dumps(data), encoding="utf-8")
+        named = "writer-template.json#prompt"
+    else:
+        (env.project / "SOUL.md").write_text("s" * 64_001, encoding="utf-8")
+        named = "SOUL.md"
+    with pytest.raises(MemberEssentialContextError, match="exceeds 64000") as raised:
+        _member_message(env)
+    assert named in str(raised.value)
+
+
+def test_a_refused_declared_source_still_refuses_when_the_envelope_is_over_budget(env):
+    """Budget fitting never turns a source the reader refuses into an omission."""
+    (env.project / "AGENTS.md").write_text("x" * 64_001, encoding="utf-8")
+    (env.project / "declared-guide.md").unlink()
+    with pytest.raises(MemberEssentialContextError, match="declared-guide"):
+        _member_message(env)
+
+
+def test_guides_whose_names_do_not_fit_are_counted_by_the_short_notice():
+    """When the core leaves no room to list every left-out guide, they are counted."""
+    from kiro_crew.context_assembly.member import _fit_member_guides_into_envelope
+
+    guides = [(f"/project/context/{'n' * 200}-{i}.md", "g") for i in range(40)]
+    core = ("template#prompt", "c" * 63_200)
+    fitted, left_out = _fit_member_guides_into_envelope(
+        [core, *guides], frozenset(source for source, _ in guides), identity="I", owner="w"
+    )
+    assert left_out == 40
+    assert fitted[0] == core and len(fitted) == 2
+    source, notice = fitted[1]
+    assert source == "essential-context#omitted"
+    assert "40 guide document(s)" in notice and "nnnn" not in notice
+    big_core = ("template#prompt", "c" * 64_000)
+    documents = [big_core, *guides]
+    assert _fit_member_guides_into_envelope(
+        documents, frozenset(source for source, _ in guides), identity="I", owner="w"
+    ) == (documents, 0)
+
+
+def test_a_guide_too_large_to_fit_does_not_take_the_smaller_guides_after_it_out(env):
+    """Only the guides that cannot fit are left out; later small ones are given back."""
+    (env.project / "AGENTS.md").write_text("x" * 64_001, encoding="utf-8")
+    message = _member_message(env)
+    assert f"{env.project / 'AGENTS.md'} (64,001 characters)" in message
+    assert "1 guide document(s)" in message
+    assert "Declared guide: examples must be reproducible." in message
+    assert "Always guide: explain assumptions." in message
+    assert len(_envelope(message)) <= 64_000

@@ -33,6 +33,17 @@ if TYPE_CHECKING:
 logger = logging.getLogger("kiro_crew.context")
 
 
+def _essential_part_cost(source: str, body: str) -> int:
+    """The characters one document adds, exactly as ``render_essentials`` renders it."""
+    from kiro_crew import context as ctx  # circular import: the facade imports this owner
+
+    return (
+        len(f"[Essential source: {ctx._neutralize_structural_markers(source)}]\n")
+        + len(ctx._neutralize_structural_markers(_markers._scrub_member_payload(body)))
+        + 1
+    )
+
+
 def _fit_folder_steering_into_envelope(
     documents: list[tuple[str, str]],
     folder_docs: "SteeringCollection | list[tuple[str, str]]",
@@ -77,14 +88,6 @@ def _fit_folder_steering_into_envelope(
         # render raises with its own diagnostic. Folder steering adds nothing.
         return []
     count_room = ctx._MAX_DOCUMENTS - len(documents)
-
-    def _cost(source: str, body: str) -> int:
-        return (
-            len(f"[Essential source: {ctx._neutralize_structural_markers(source)}]\n")
-            + len(ctx._neutralize_structural_markers(_markers._scrub_member_payload(body)))
-            + 1
-        )
-
     fitted: list[tuple[str, str]] = []
     for source, body in candidates:
         if len(fitted) >= count_room:
@@ -95,7 +98,7 @@ def _fit_folder_steering_into_envelope(
         # is not one of those, so it is scrubbed here, before costing, and the
         # scrubbed spelling is what the envelope carries.
         source = _markers._scrub_member_payload(source)
-        cost = _cost(source, body)
+        cost = _essential_part_cost(source, body)
         if used + cost > ctx.ESSENTIAL_MAX_CHARS:
             break
         used += cost
@@ -119,7 +122,7 @@ def _fit_folder_steering_into_envelope(
         # fill every slot would lose folder steering with no trace in the
         # envelope that replaces every prior snapshot. Folder DOCUMENTS still
         # respect the count room above; only the notice is exempt.
-        if used + _cost(*notice) <= ctx.ESSENTIAL_MAX_CHARS:
+        if used + _essential_part_cost(*notice) <= ctx.ESSENTIAL_MAX_CHARS:
             logger.debug(
                 "folder steering truncated for member %s: %d of %d documents fit the envelope",
                 owner,
@@ -136,7 +139,7 @@ def _fit_folder_steering_into_envelope(
                 "[FOLDER STEERING OMISSION: this folder declares steering that does not fit "
                 "beside this member's own essentials; none of it is loaded.]",
             )
-            if used + _cost(*minimal) <= ctx.ESSENTIAL_MAX_CHARS:
+            if used + _essential_part_cost(*minimal) <= ctx.ESSENTIAL_MAX_CHARS:
                 logger.warning(
                     "folder steering omitted entirely for member %s: only the minimal notice fits",
                     owner,
@@ -148,7 +151,77 @@ def _fit_folder_steering_into_envelope(
                 owner,
             )
             return []
-        used -= _cost(*fitted.pop())
+        used -= _essential_part_cost(*fitted.pop())
+
+
+def _fit_member_guides_into_envelope(
+    documents: list[tuple[str, str]], guides: frozenset[str], *, identity: str, owner: str
+) -> tuple[list[tuple[str, str]], int]:
+    """``(documents, guides left out)`` so an over-budget envelope renders, not refuses.
+
+    Guides (*guides*: every source but the member's core) leave WHOLE from the
+    tail of declaration order until the rest plus ONE in-band notice fits; then
+    each left-out guide, in declaration order, is given back if it still fits,
+    so a guide too large to fit does not take the smaller ones after it out.
+    The notice names each left-out guide with its size, or only counts them when
+    that is all that fits. A fitting envelope is returned unchanged. A core that
+    does not fit beside even the short notice is returned as is, so
+    ``render_essentials`` refuses it with its own diagnostic. Nothing is read
+    here: a source the readers refused has already raised.
+    """
+    from kiro_crew import context as ctx  # circular import: the facade imports this owner
+    from kiro_crew.member_essential_context import ESSENTIAL_OMISSION_SOURCE
+
+    cap = ctx.ESSENTIAL_MAX_CHARS
+    try:
+        used = len(ctx.render_essentials([], identity=identity))
+    except ctx.MemberEssentialContextError:
+        return documents, 0  # the identity alone overflows; the caller's render refuses
+    costs = [_essential_part_cost(*document) for document in documents]
+    used += sum(costs)
+    if used <= cap:
+        return documents, 0
+
+    def _notice(out: list[int], used: int) -> tuple[str, str] | None:
+        lead = (
+            f"ESSENTIAL CONTEXT INCOMPLETE. {len(out)} guide document(s) for this agent were "
+            f"left out of this snapshot because the essential context is limited to {cap} "
+            "characters"
+        )
+        tail = (
+            ". They are left out for size, not removed. Do not assume their contents; if one "
+            "matters for this task, read the file directly or ask the user."
+        )
+        listed = ", ".join(f"{documents[i][0]} ({len(documents[i][1]):,} characters)" for i in out)
+        for body in (f"{lead}: {listed}{tail}", lead + tail):
+            if used + _essential_part_cost(ESSENTIAL_OMISSION_SOURCE, body) <= cap:
+                return (ESSENTIAL_OMISSION_SOURCE, body)
+        return None
+
+    out: list[int] = []
+    notice = None
+    for index in reversed([i for i, (source, _) in enumerate(documents) if source in guides]):
+        out.insert(0, index)
+        used -= costs[index]
+        notice = _notice(out, used)
+        if notice is not None:
+            break
+    if notice is None:
+        return documents, 0
+    for index in list(out):
+        rest = [i for i in out if i != index]
+        given_back = _notice(rest, used + costs[index]) if rest else None
+        if given_back is not None:
+            out, used, notice = rest, used + costs[index], given_back
+    logger.warning(
+        "essential context for member %s is over its %d-character limit; %d guide(s) left out: %s",
+        owner,
+        cap,
+        len(out),
+        ", ".join(f"{documents[i][0]} ({len(documents[i][1])} characters)" for i in out),
+    )
+    left = set(out)
+    return [d for i, d in enumerate(documents) if i not in left] + [notice], len(out)
 
 
 # Product-owned working protocol for crew members (layer 2 of the member
@@ -494,6 +567,10 @@ def build_v2_essentials(
     inherits_default_resources = True
     if profile_overrides is None and include_project and provider_type == ctx.PROVIDER_ACP:
         inherits_default_resources = ctx.member_inherits_default_resources(project)
+    # The member's CORE (persona prompt, SOUL.md, context settings, the
+    # profile anchors and recall note appended below) is never left out; every
+    # other document the readers return is a guide the fit below may drop whole.
+    core_sources: set[str] = set()
     documents = documents_for_member(
         template,
         project,
@@ -502,6 +579,7 @@ def build_v2_essentials(
         trigger_text=trigger_text,
         include_project=include_project,
         inherits_default_resources=inherits_default_resources,
+        core_sources_out=core_sources,
     )
     if execution_template and execution_template != template:
         sources = dict(documents)
@@ -513,6 +591,7 @@ def build_v2_essentials(
             trigger_text=trigger_text,
             include_project=include_project,
             inherits_default_resources=inherits_default_resources,
+            core_sources_out=core_sources,
         ):
             if source in sources and sources[source] != body:
                 raise MemberEssentialContextError(
@@ -545,6 +624,7 @@ def build_v2_essentials(
     # opt-out a folder document whose canonical path the template already
     # delivered is not collected again. Same verdict as the snapshot, read
     # once above.
+    guide_sources = frozenset(source for source, _ in documents) - core_sources
     folder_docs: SteeringCollection = ctx.SteeringCollection()
     folder_insert_at = len(documents)
     if steering_dirs and include_project:
@@ -591,6 +671,13 @@ def build_v2_essentials(
                 "current conversation already answers the question.",
             )
         )
+    # Guides first, folder steering into what is left, as before. Every guide
+    # sits before ``folder_insert_at`` and the notice is appended last, so the
+    # insertion point moves back by exactly the number left out.
+    documents, left_out = _fit_member_guides_into_envelope(
+        documents, guide_sources, identity=identity, owner=owner
+    )
+    folder_insert_at -= left_out
     if folder_docs:
         fitted = _fit_folder_steering_into_envelope(
             documents, folder_docs, identity=identity, owner=owner

@@ -19,6 +19,8 @@ logger = logging.getLogger(__name__)
 
 ESSENTIAL_MAX_CHARS = 64_000
 _MAX_SOURCE_BYTES = ESSENTIAL_MAX_CHARS * 4
+#: Source label of the in-band notice that names guides left out of the envelope.
+ESSENTIAL_OMISSION_SOURCE = "essential-context#omitted"
 _MAX_DIRECTORY_ENTRIES = 2048
 _MAX_DOCUMENTS = 64
 
@@ -397,6 +399,7 @@ def documents_for_member(
     context_settings: bool = False,
     trigger_text: str = "",
     inherits_default_resources: bool = True,
+    core_sources_out: set[str] | None = None,
 ) -> list[tuple[str, str]]:
     """Read actual project instructions and the owner's declared template sources.
 
@@ -408,6 +411,14 @@ def documents_for_member(
     harness hands the member kiro-cli's default resources (global and workspace
     steering, ``AGENTS.md``). It defaults to inheriting because only a session
     kiro-cli serves can opt out, and only that caller knows which harness it has.
+
+    *core_sources_out*, when given, receives the source label of every returned
+    document that belongs to the member's CORE -- the persona prompt, ``SOUL.md``,
+    the template context settings and any guide-not-loaded note -- so a caller
+    fitting an over-budget envelope knows which documents it must never leave
+    out. Every other returned document (global and project steering, the
+    conditional-guide index, ``AGENTS.md`` and the declared ``file://``
+    resources) is a guide the caller may drop whole.
     """
     from kiro_crew.agent import is_managed_prompt
     from kiro_crew.agent_discovery import _read_agent_spec
@@ -415,6 +426,10 @@ def documents_for_member(
     documents: list[tuple[str, str]] = []
     seen: set[Path] = set()
     project_root = _admitted_project_root(project)
+
+    def _mark_core(source: str) -> None:
+        if core_sources_out is not None:
+            core_sources_out.add(source)
 
     def add(path: Path, root: Path, *, steering: bool = False, body: str | None = None) -> None:
         if Path(os.path.abspath(path)) in seen:
@@ -505,8 +520,11 @@ def documents_for_member(
                 body = _read_implicit_guide(path, project_root)
                 if body is None:
                     documents.append(_omitted_guide(path, project_root))
+                    _mark_core(documents[-1][0])
                 else:
                     add(path, project_root, body=body)
+                    if name == "SOUL.md":
+                        _mark_core(str(path))
         if inherits:
             for path in _matches(project_root, ".kiro/steering/**/*.md"):
                 add(path, project_root, steering=True)
@@ -537,12 +555,15 @@ def documents_for_member(
             path = Path(prompt[7:]).expanduser()
             if path.is_absolute():
                 add(path, absolute_root)
+                _mark_core(str(path))
             else:
                 resolved = resolve_relative_prompt_path(path, spec_path, project)
                 if resolved is not None:
                     add(*resolved)
+                    _mark_core(str(resolved[0]))
         else:
             documents.append((f"{spec_path}#prompt", prompt))
+            _mark_core(documents[-1][0])
     if context_settings and not native_only:
         import json
 
@@ -567,6 +588,7 @@ def documents_for_member(
                 ),
             )
         )
+        _mark_core(documents[-1][0])
     resources = spec.get("resources", [])
     if include_project and (
         not isinstance(resources, list) or any(not isinstance(r, (str, dict)) for r in resources)
