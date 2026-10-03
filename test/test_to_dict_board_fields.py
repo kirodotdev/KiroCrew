@@ -351,6 +351,53 @@ def test_not_interrupted_on_clean_finish():
     assert d["interrupted"] is False
 
 
+def test_not_interrupted_after_a_quiet_end():
+    # A `nothing_to_do` turn ends on its tool row: [user, tool, tool] is the
+    # same tail a mid-turn crash leaves, so the directive's persisted TRUSTED
+    # identity is what tells the two apart.
+    s = _slot(
+        {"role": "user", "content": "patrol", "ts": "t1"},
+        {"role": "tool", "content": "🔧 gh pr view", "ts": "t2", "meta": {"tool_call_id": "a"}},
+        {
+            "role": "tool",
+            "content": "🔧 @kirocrew-core/nothing_to_do",
+            "ts": "t3",
+            "meta": {
+                "tool_call_id": "b",
+                "tool_name": "nothing_to_do",
+                "mcp_server": "kirocrew-core",
+            },
+        },
+    )
+    assert s.to_dict()["interrupted"] is False
+
+
+def test_quiet_end_needs_the_trusted_identity_not_the_title():
+    # A shell row whose TITLE names the tool has no `_meta.kiro` identity and
+    # must not close the turn.
+    s = _slot(
+        {"role": "user", "content": "patrol", "ts": "t1"},
+        {
+            "role": "tool",
+            "content": "🔧 echo nothing_to_do",
+            "ts": "t2",
+            "meta": {"tool_call_id": "a"},
+        },
+    )
+    assert s.to_dict()["interrupted"] is True
+    # ...and the right name on a foreign server is a foreign tool.
+    s = _slot(
+        {"role": "user", "content": "patrol", "ts": "t1"},
+        {
+            "role": "tool",
+            "content": "🔧 nothing_to_do",
+            "ts": "t2",
+            "meta": {"tool_call_id": "a", "tool_name": "nothing_to_do", "mcp_server": "other-mcp"},
+        },
+    )
+    assert s.to_dict()["interrupted"] is True
+
+
 def test_not_interrupted_after_deliberate_stop():
     # Pressing Stop ENDS the turn — same [user, stop_event] tail as a crash, but
     # the stop card must win.

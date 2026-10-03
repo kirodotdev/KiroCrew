@@ -339,8 +339,8 @@ from kiro_crew.dashboard.handlers.usage import (
     read_turn_model,
 )
 from kiro_crew.dashboard.session_directive_apply import (
-    QUESTION_CARD_SHOWN_PREFIX,
-    apply_session_directive,
+    DirectiveOutcome,
+    apply_session_directive_outcome,
 )
 from kiro_crew.dashboard.slot_queue_repository import RESTORED_QUEUE_KEY
 from kiro_crew.dashboard.state import (  # noqa: F401
@@ -605,6 +605,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: E402, F401
     EMPTY_RUNG_CONTINUE,
     EMPTY_RUNG_GIVE_UP,
     EMPTY_RUNG_REPLAY,
+    EMPTY_TURN_NOTICE_KIND,
     FALSE_TOOL_BLOCKER_REPLAY_KIND,
     MCP_APP_MESSAGE_KIND,
     MODEL_UNENTITLED_KIND,
@@ -8198,15 +8199,24 @@ async def _run_chat(
     # text and overwrite the applied outcome in the transcript. Replaying the
     # stored output keeps every frame consistent and marker-free.
     _dir_consumed_out: dict[str, str] = {}
-    # A successfully posted non-blocking question card is the intended terminal
-    # output of this turn. The tool tells the model to end without assistant
-    # text, so empty-response recovery must not inject a closing continuation.
-    _terminal_question_posted = False
+    # A terminal directive APPLIED this turn (a shown question card, a recorded
+    # quiet end — ``session_directive_apply.TERMINAL_DIRECTIVES``) is the turn's
+    # intended output. The tool tells the model to end without assistant text,
+    # so empty-response recovery must not inject a closing continuation. The
+    # signal is the applier's structured ``DirectiveOutcome.ends_turn``, never a
+    # match on the outcome prose.
+    _terminal_directive_applied = False
+    _terminal_directive_kind = ""
+    # Model activity (text or a tool call) observed AFTER the terminal directive
+    # applied: a turn-end contract violation. Only counted, then reported once
+    # at turn end — it never fails the turn and never re-arms recovery.
+    _activity_after_terminal = 0
 
-    def _record_terminal_question(kind: str, outcome: str) -> None:
-        nonlocal _terminal_question_posted
-        if kind == "ask_question" and outcome.startswith(QUESTION_CARD_SHOWN_PREFIX):
-            _terminal_question_posted = True
+    def _record_terminal_directive(kind: str, outcome: DirectiveOutcome) -> None:
+        nonlocal _terminal_directive_applied, _terminal_directive_kind
+        if outcome.ends_turn and not _terminal_directive_applied:
+            _terminal_directive_applied = True
+            _terminal_directive_kind = kind
 
     # When this turn began, for bounding an out-of-band directive claim to it.
     # A directive belongs to the turn that asked for it: a record parked by a turn
@@ -10786,6 +10796,8 @@ async def _run_chat(
                 # test_subagent_delivery_ttl_anchor), so a diagnostic flag goes
                 # above it rather than between the two.
                 _saw_text_chunk = True
+                if _terminal_directive_applied:
+                    _activity_after_terminal += 1
                 _turn_emitted = True  # tokens delivered — transient retry now unsafe
                 await _report_consumed(irreversible=True)
                 # Stream to the wire through the rolling buffer so a credential
@@ -10846,6 +10858,8 @@ async def _run_chat(
                 _turn_thought = True
             elif event.kind == EVENT_TOOL_CALL:
                 _turn_tool_calls += 1
+                if _terminal_directive_applied:
+                    _activity_after_terminal += 1
                 if (
                     event.is_shell
                     and event.tool_call_id
@@ -11586,7 +11600,7 @@ async def _run_chat(
                         _pending_dir_tool.pop(event.tool_call_id, None)
                         _dir_tool = ""
                         _applied_kind = str(_oob.get("kind") or "")
-                        _applied_one = await apply_session_directive(
+                        _applied_outcome = await apply_session_directive_outcome(
                             state,
                             slot,
                             session_key,
@@ -11597,7 +11611,8 @@ async def _run_chat(
                             producer_is_channel=_directive_producer_is_channel(),
                             producer_wake_loop_id=_directive_loop_id,
                         )
-                        _record_terminal_question(_applied_kind, _applied_one)
+                        _applied_one = _applied_outcome.text
+                        _record_terminal_directive(_applied_kind, _applied_outcome)
                         logger.info(
                             "session-directive applied OUT OF BAND for %s "
                             "(tool_call_id=%s, kind=%s): the marker was unavailable; "
@@ -11799,7 +11814,7 @@ async def _run_chat(
                             # arm two loops or render two cards, so retire the
                             # twin now that the marker path has taken it.
                             directive_queue.discard(session_key)
-                            _applied_one = await apply_session_directive(
+                            _applied_outcome = await apply_session_directive_outcome(
                                 state,
                                 slot,
                                 session_key,
@@ -11810,7 +11825,8 @@ async def _run_chat(
                                 producer_is_channel=_directive_producer_is_channel(),
                                 producer_wake_loop_id=_directive_loop_id,
                             )
-                            _record_terminal_question(_dir_tool, _applied_one)
+                            _applied_one = _applied_outcome.text
+                            _record_terminal_directive(_dir_tool, _applied_outcome)
                             _out = _redact_tool_field(_applied_one)
                             _dir_consumed_out[event.tool_call_id] = _out
                         else:
@@ -14720,6 +14736,21 @@ async def _run_chat(
             _flush_text_stream()
             _flush_segment(state, slot, assistant_text, broadcast=False)
 
+        if _terminal_directive_applied and _activity_after_terminal:
+            # Turn-end contract: a terminal directive is the LAST thing in its
+            # turn. Text or a tool call after it is the model's violation, not
+            # the runner's — the turn still ends cleanly and recovery stays
+            # off (re-arming it would turn a quiet end into a notice card),
+            # so this is reported once and nowhere else. Counts only, by
+            # contract: no text, no tool names.
+            logger.warning(
+                "Turn-end contract violation for slot %s: %d model event(s) "
+                "(text chunks or tool calls) after the terminal directive %r applied.",
+                slot.key,
+                _activity_after_terminal,
+                _terminal_directive_kind,
+            )
+
         if _answer_text:
             _flush_text_stream()
             _flush_segment(state, slot, assistant_text, broadcast=False)
@@ -14877,6 +14908,7 @@ async def _run_chat(
                 "ℹ️ The context was compacted mid-turn and the response stopped "
                 "there — continuing automatically.",
                 "msg msg-info",
+                meta={"kind": EMPTY_TURN_NOTICE_KIND},
             )
             _queue_recovery(
                 0,
@@ -14894,7 +14926,7 @@ async def _run_chat(
         elif (
             _stop_reason != STOP_REASON_CANCELLED
             and not _produced_visible_output
-            and not _terminal_question_posted
+            and not _terminal_directive_applied
             and not _refusal_reasons
         ):
             _had_empty_response_verdict = True
@@ -15017,6 +15049,7 @@ async def _run_chat(
                             f"(recovery {_continue_no} of {_max_continues})."
                         ),
                         "msg msg-info",
+                        meta={"kind": EMPTY_TURN_NOTICE_KIND},
                     )
                     _empty_continue_msg = _ACTIVITY_NO_REPLY_CONTINUE_MSG
                 else:
@@ -15029,6 +15062,7 @@ async def _run_chat(
                             f"(recovery {_continue_no} of {_max_continues})."
                         ),
                         "msg msg-info",
+                        meta={"kind": EMPTY_TURN_NOTICE_KIND},
                     )
                     _empty_continue_msg = _EMPTY_AUTO_CONTINUE_MSG
                 _queue_recovery(
@@ -15066,7 +15100,9 @@ async def _run_chat(
                     _empty_msg = EMPTY_TURN_NOTICE_AFTER_RECOVERY
                 else:
                     _empty_msg = EMPTY_TURN_NOTICE
-                slot.append("notice", _empty_msg, "msg msg-info")
+                slot.append(
+                    "notice", _empty_msg, "msg msg-info", meta={"kind": EMPTY_TURN_NOTICE_KIND}
+                )
             # ONE warning per empty verdict, emitted AFTER the rung is chosen so
             # the log line carries the decision rather than only the symptom. The
             # predecessor logged just "Empty model response (attempt N)", which

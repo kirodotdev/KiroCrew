@@ -46,6 +46,7 @@ import asyncio
 import logging
 import os
 import time
+from dataclasses import dataclass
 from typing import Any
 
 from kiro_crew.apps.builtins.auto_research.session_keys import (
@@ -64,6 +65,33 @@ from kiro_crew.session_surface import has_dashboard_surface
 logger = logging.getLogger(__name__)
 
 QUESTION_CARD_SHOWN_PREFIX = "Question card shown in this session."
+QUIET_END_OUTCOME_PREFIX = "Turn ended quietly — nothing to report."
+
+# The directives whose SUCCESSFUL application is the turn's intended terminal
+# output: the tool tells the model to end without a closing reply, so the
+# runner must not read the textless end as a failed generation. Membership
+# here is documentation and a test pin; the runtime signal is
+# ``DirectiveOutcome.ends_turn``, set by the applier only on the path where the
+# effect actually landed (a card the user can see; a quiet end recorded), never
+# derived from the outcome prose.
+TERMINAL_DIRECTIVES = frozenset({"ask_question", "nothing_to_do"})
+
+
+@dataclass(frozen=True)
+class DirectiveOutcome:
+    """The applied result of one session directive.
+
+    ``text`` is the human-readable confirmation every path has always returned
+    (recorded on the transcript, read by the model gateway-on). ``ends_turn`` is
+    the structured terminal-turn signal: True only when a directive in
+    ``TERMINAL_DIRECTIVES`` applied its effect, so the runner skips the
+    empty-response recovery for this turn. A refusal, an error and a delivery
+    failure all leave it False — the model must then fall back to a plain reply.
+    """
+
+    text: str
+    ends_turn: bool = False
+
 
 # Card directives require a connected dashboard surface. ``set_project`` is
 # admitted by the user-surface provenance gate below, then separately requires
@@ -256,8 +284,53 @@ async def apply_session_directive(
     producer_is_channel: bool = False,
     producer_wake_loop_id: str = "",
 ) -> str:
-    """Apply directive *kind* with *args* to *slot*/*session_key*; return a
-    confirmation string for the model. Fail-soft: any error is returned as a
+    """Apply directive *kind*; return the confirmation TEXT only.
+
+    The string-returning entry every existing consumer calls. A consumer that
+    owns an empty-response verdict (the dashboard runner) calls
+    :func:`apply_session_directive_outcome` instead and reads the structured
+    ``ends_turn`` signal; everything about the application is identical.
+    """
+    outcome = await apply_session_directive_outcome(
+        state,
+        slot,
+        session_key,
+        kind,
+        args,
+        producer_is_user_facing=producer_is_user_facing,
+        producer_is_self_wake=producer_is_self_wake,
+        producer_is_channel=producer_is_channel,
+        producer_wake_loop_id=producer_wake_loop_id,
+    )
+    return outcome.text
+
+
+def _outcome(result: "str | DirectiveOutcome") -> DirectiveOutcome:
+    """Normalise an applier's return. Only the terminal appliers return a
+    ``DirectiveOutcome``; a returned failure text never ends the turn, whatever
+    the applier claimed, so the audit and the signal cannot disagree."""
+    if isinstance(result, DirectiveOutcome):
+        if result.text.startswith("Error:"):
+            return DirectiveOutcome(result.text, False)
+        return result
+    return DirectiveOutcome(result, False)
+
+
+async def apply_session_directive_outcome(
+    state: Any,
+    slot: Any,
+    session_key: str,
+    kind: str,
+    args: dict[str, Any],
+    *,
+    producer_is_user_facing: bool = False,
+    producer_is_self_wake: bool = False,
+    producer_is_channel: bool = False,
+    producer_wake_loop_id: str = "",
+) -> DirectiveOutcome:
+    """Apply directive *kind* with *args* to *slot*/*session_key*; return the
+    structured :class:`DirectiveOutcome` (confirmation text for the model plus
+    the terminal-turn signal). Fail-soft: any error is returned as a
     readable message, never raised. Every path emits a SEL audit event.
     ``slot`` is ``None`` for a channel (TurnDriver) caller — see the module
     docstring. ``producer_wake_loop_id`` names the loop whose delivered wake
@@ -277,7 +350,7 @@ async def apply_session_directive(
         # one. The consumer is the only layer that knows the authoritative
         # session, so the check belongs HERE.
         _audit(session_key, kind, "denied")
-        return (
+        return DirectiveOutcome(
             f"Error: {kind} only works from a dashboard chat session "
             f"(this turn is {session_key!r}). Nothing was changed."
         )
@@ -290,7 +363,7 @@ async def apply_session_directive(
         # boundary. Slot-bearing callers continue to the provenance and
         # user-surface gate below.
         _audit(session_key, kind, "denied")
-        return (
+        return DirectiveOutcome(
             f"Error: {kind} targets this turn's chat slot, and this turn "
             f"holds none (this turn is {session_key!r}). Nothing was changed."
         )
@@ -301,7 +374,7 @@ async def apply_session_directive(
         # parent's slot. Positive admission prevents either from silently
         # retargeting the user's project/CWD.
         _audit(session_key, kind, "denied")
-        return (
+        return DirectiveOutcome(
             f"Error: {kind} only works from a user-facing session (dashboard "
             f"or a messaging channel); headless callers such as cron jobs and "
             f"sub-agents are refused (this turn is {session_key!r}). "
@@ -335,6 +408,7 @@ async def apply_session_directive(
             )
         elif producer_is_self_wake and producer_wake_loop_id and kind in _STOP_DIRECTIVES:
             _refuse_stale_wake_stop(session_key, producer_wake_loop_id)
+        result: str | DirectiveOutcome
         if kind == "monitor_start":
             result = await _monitor_start(
                 state,
@@ -386,9 +460,11 @@ async def apply_session_directive(
             result = await _suggest_followup(state, slot, args)
         elif kind == "ask_question":
             result = await _ask_question(state, slot, args)
+        elif kind == "nothing_to_do":
+            result = _nothing_to_do(args)
         else:
             _audit(session_key, kind, "error")
-            return f"Error: unknown session directive {kind!r}."
+            return DirectiveOutcome(f"Error: unknown session directive {kind!r}.")
     except _DirectiveDenied as exc:
         _audit(session_key, kind, "denied")
         logger.warning(
@@ -415,18 +491,19 @@ async def apply_session_directive(
                 str(exc),
                 prefix=STOP_REFUSAL_NOTICE_PREFIX,
             )
-        return str(exc)
+        return DirectiveOutcome(str(exc))
     except Exception as exc:  # never propagate into the turn loop
         logger.warning("apply_session_directive(%s) failed", kind, exc_info=True)
         _audit(session_key, kind, "error")
-        return f"Error applying {kind}: {exc}"
+        return DirectiveOutcome(f"Error applying {kind}: {exc}")
     # Some appliers RETURN a readable failure instead of raising (an invalid
     # project dir, an absent loop, no attached client), so a blanket "success"
     # would falsely mark those in the SEL chain. Derive the outcome from the
     # result the same way call_tool_with_logging does (an "Error:" prefix ==
     # failed), keeping the audit truthful for the failure paths too.
-    _audit(session_key, kind, "error" if result.startswith("Error:") else "success")
-    return result
+    outcome = _outcome(result)
+    _audit(session_key, kind, "error" if outcome.text.startswith("Error:") else "success")
+    return outcome
 
 
 # ── autonudge trio ──────────────────────────────────────────────────────────
@@ -1873,23 +1950,43 @@ async def _suggest_followup(state: Any, slot: Any, args: dict[str, Any]) -> str:
     return "Follow-up card shown below the composer."
 
 
-async def _ask_question(state: Any, slot: Any, args: dict[str, Any]) -> str:
+async def _ask_question(state: Any, slot: Any, args: dict[str, Any]) -> DirectiveOutcome:
     """Post a NON-BLOCKING question card to this session's slot. The card
     carries no ask_id, so the frontend submit sends the answers as an ordinary
-    next message that resumes the session — the agent must END its turn now."""
+    next message that resumes the session — the agent must END its turn now.
+    Only the SHOWN path ends the turn: a dropped card leaves the model owing a
+    plain-text question, so the empty-response recovery stays armed."""
     post = getattr(state, "post_question_card", None)
     if post is None:
-        return "Question card could not be delivered (no card channel)."
+        return DirectiveOutcome("Question card could not be delivered (no card channel).")
     clients = int(await post(slot.key, args.get("questions") or []))
     if clients == 0:
-        return (
+        return DirectiveOutcome(
             "Question posted, but no dashboard client is attached to see it — "
             "ask in plain text and end your turn instead."
         )
-    return (
+    return DirectiveOutcome(
         f"{QUESTION_CARD_SHOWN_PREFIX} End your turn now — the user's "
-        "answer will arrive as your next message; do not re-ask or guess."
+        "answer will arrive as your next message; do not re-ask or guess.",
+        ends_turn=True,
     )
+
+
+def _nothing_to_do(args: dict[str, Any]) -> DirectiveOutcome:
+    """Record the deliberate quiet end of this turn.
+
+    No slot, surface or provenance gate: a quiet end is meaningful on every
+    surface and from every producer (a cron wake or a patrol cycle with nothing
+    to report is the designed caller), and it mutates nothing, so there is no
+    effect a wrong identity could misdirect. The outcome text is what the
+    transcript's tool step shows — the low-key, inspectable record that the turn
+    ended on purpose — and the ``note`` the model supplied rides on it. It is
+    not a chat message: the consumer renders no assistant bubble, no notice
+    card and no continuation for a turn that ends here.
+    """
+    note = str(args.get("note") or "").strip()
+    text = QUIET_END_OUTCOME_PREFIX if not note else f"{QUIET_END_OUTCOME_PREFIX} {note}"
+    return DirectiveOutcome(text, ends_turn=True)
 
 
 def _push(state: Any) -> None:

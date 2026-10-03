@@ -1077,6 +1077,34 @@ def chat_message_frame(note: dict, *, include_metadata: bool) -> dict[str, Any]:
     return frame
 
 
+#: The tool row a turn ends on when the agent called ``nothing_to_do``. Read from
+#: the row's persisted TRUSTED identity (``_tool_identity_fields``: the backend's
+#: ``_meta.kiro`` name and server), never from the row's title text, so a shell
+#: command printing the tool's name cannot close a turn.
+QUIET_END_TOOL = "nothing_to_do"
+QUIET_END_SERVER = "kirocrew-core"
+
+
+def is_quiet_end_row(m: dict) -> bool:
+    """True when *m* is the applied ``nothing_to_do`` directive's tool row.
+
+    A quiet end is a FINISHED turn: the agent ran its checks, had nothing the
+    user needs to read, and said so through the directive rather than by
+    stopping bare. Without this the transcript tail is ``[user|nudge, tool…]``
+    -- shape-identical to a gateway that died mid-turn -- so the composer
+    would offer Resume and the sidebar would flag the session as interrupted
+    on every quiet patrol cycle.
+
+    Mirrors ``isQuietEndRow`` in ``website/src/store/chat/selectors.ts``.
+    """
+    if m.get("role") != "tool":
+        return False
+    meta = m.get("meta")
+    if not isinstance(meta, dict):
+        return False
+    return meta.get("tool_name") == QUIET_END_TOOL and meta.get("mcp_server") == QUIET_END_SERVER
+
+
 def is_stop_event_row(m: dict) -> bool:
     """True when *m* is the card recorded because the user pressed Stop.
 
@@ -1206,6 +1234,11 @@ def is_turn_interrupted(messages: list[dict]) -> bool:
         # is never scanned, because a later user/inject/assistant row returns
         # first.
         if is_stop_event_row(m):
+            return False
+        # A quiet end (``nothing_to_do``) is the turn's deliberate ending too:
+        # same reasoning as the Stop card, same position in the scan. Only the
+        # newest turn's row reaches here, for the same reason.
+        if is_quiet_end_row(m):
             return False
         if is_system_notice(role, meta):
             # Remember a compaction RESULT row on the newest turn. Skipping the

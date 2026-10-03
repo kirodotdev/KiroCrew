@@ -27,6 +27,7 @@ _DIRECTIVE_NOT_APPLIED_OUTCOMES: dict[str, str] = {
     "reset_conversation": "The conversation was not reset.",
     "chat_tag": "The session tags were not changed.",
     "ask_question": "The question was not shown.",
+    "nothing_to_do": "The quiet end was not recorded.",
     "suggest_followup": "The follow-up suggestions were not shown.",
 }
 

@@ -212,6 +212,20 @@ const firstPythonToken = (content: string): string | undefined =>
  * so the rule needs BOTH halves, matching `is_turn_interrupted` in
  * `src/kiro_crew/dashboard/state.py`.
  */
+/**
+ * The tool row a turn ends on when the agent called `nothing_to_do`: a quiet
+ * end is a FINISHED turn, not an interruption. Read from the row's persisted
+ * trusted identity (`meta.tool_name` / `meta.mcp_server`, the backend's
+ * `_meta.kiro` fields), never from the row's title, so a shell command that
+ * prints the tool's name cannot close a turn. Mirrors `is_quiet_end_row` in
+ * `src/kiro_crew/dashboard/state.py`.
+ */
+export const isQuietEndRow = (m: ChatMessage): boolean => {
+  if (m.role !== 'tool') return false
+  const meta = m.meta as { tool_name?: unknown; mcp_server?: unknown } | undefined
+  return meta?.tool_name === 'nothing_to_do' && meta?.mcp_server === 'kirocrew-core'
+}
+
 export const selectTurnInterrupted = (state: RootState): boolean => {
   const msgs = state.chat.messages
   let sawTrailingError = false
@@ -230,6 +244,8 @@ export const selectTurnInterrupted = (state: RootState): boolean => {
     // card deeper in history is never scanned, because a later user/inject/
     // assistant row returns first.
     if (isStopEvent(m)) return false
+    // A quiet end (`nothing_to_do`) is the turn's deliberate ending too.
+    if (isQuietEndRow(m)) return false
     if (m.role === 'error') { sawTrailingError = true; continue }
     // An inject row that DISPATCHED a turn (a queued continuation, a recovery,
     // a synthesis, a cron prompt) opens it exactly as a user row does, so one
@@ -321,6 +337,8 @@ export const selectTrailingSendUnconfirmed = (state: RootState): boolean => {
   for (let i = msgs.length - 1; i >= 0; i--) {
     const m = msgs[i]
     if (isStopEvent(m)) return false
+    // A quiet end (`nothing_to_do`) is the turn's deliberate ending too.
+    if (isQuietEndRow(m)) return false
     if (m.role === 'inject' && m.content && TURN_INJECT_KINDS.has((m.meta as { injectKind?: unknown } | undefined)?.injectKind)) return false
     if (m.role === 'nudge' && m.content) return false
     if (CONTINUE_SCAN_SKIP.has(m.role)) continue

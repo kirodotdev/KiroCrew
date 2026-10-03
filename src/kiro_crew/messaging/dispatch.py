@@ -624,15 +624,17 @@ def build_directive_consumer(
     and everything it cannot answer fails CLOSED in the authorizer.
     """
 
-    async def _consume(kind: str, args: dict[str, Any]) -> None:
+    async def _consume(kind: str, args: dict[str, Any]) -> bool:
         # Deferred import: the dashboard package imports every channel package
         # at boot, and the channel packages import this module (cycle).
-        from kiro_crew.dashboard.session_directive_apply import apply_session_directive
+        from kiro_crew.dashboard.session_directive_apply import (
+            apply_session_directive_outcome,
+        )
 
         state: Any = getattr(dispatcher, "dashboard_state", None)
         if state is None:
             state = _ChannelDirectiveState(sessions=sessions)
-        result = await apply_session_directive(
+        outcome = await apply_session_directive_outcome(
             state,
             None,
             session_key,
@@ -640,6 +642,7 @@ def build_directive_consumer(
             args,
             producer_is_channel=True,
         )
+        result = outcome.text
         # The channel surface never renders tool results, so the applier's
         # confirmation has no user-facing sink here; this log is the operator's
         # record (the applier itself SEL-audits every outcome). Failures log at
@@ -651,6 +654,10 @@ def build_directive_consumer(
         result, _ = redact_credentials(result)
         log = logger.warning if result.startswith(("Error", "Failed")) else logger.info
         log("session directive %s on %s: %s", kind, session_key, result)
+        # The driver reads this as the structured terminal-turn signal (see
+        # ``TurnDriver.DirectiveConsumer``): a quiet end applied on a channel
+        # turn owes the thread no empty-turn notice.
+        return outcome.ends_turn
 
     return _consume
 
