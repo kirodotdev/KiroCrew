@@ -412,7 +412,10 @@ class _PumpMixin(ManagerComponent):
     ) -> "SubagentInfo | None":
         """Claim a reserved row, settle its durable authority, then register it.
 
-        A failure before the claim leaves the row queued and releases the
+        Between the claim and the registration the row is re-read (still
+        ``admitted``, same generation, our lease) and the loop is checked for a
+        stop recorded meanwhile; either one failing refuses the start. A
+        failure before the claim leaves the row queued and releases the
         reservation. A store outage after the claim retains the admitted
         generation and reservation for a later pump pass. Registration consumes
         the reservation; every durably refused outcome releases it.
@@ -430,25 +433,41 @@ class _PumpMixin(ManagerComponent):
                 else await store.run(self.taskq_claim, point.agent_id)
             )
             generation, proceed, _reason = claimed
-            if proceed and point.boundary_owner:
+            if proceed:
                 from kiro_crew import taskq as _taskq
 
+                # Every claim the store took re-reads its row before it
+                # registers. The claim was a writer-thread hop, and a stop that
+                # ran while the pump waited on it (Stop all's
+                # ``taskq_cancel_queued`` accepts an ``admitted`` row) has
+                # cancelled the row by now: registering anyway starts work the
+                # parent was told had stopped. Generation 0 is a row the store
+                # never saw (``taskq_claim``), which has nothing to re-read and
+                # keeps its legacy start; a boundary claim always re-reads.
                 try:
-                    still_current = await store.run(
-                        self.taskq_claim_still_current,
-                        point.agent_id,
-                        generation,
+                    still_current = (
+                        await store.run(
+                            self.taskq_claim_still_current,
+                            point.agent_id,
+                            generation,
+                        )
+                        if generation or point.boundary_owner
+                        else True
                     )
                     cancellation_pending = getattr(
                         self._manager,
                         "_boundary_cancellation_pending",
                         None,
                     )
-                    pending = callable(cancellation_pending) and cancellation_pending(
-                        {
-                            "parent_session_key": point.parent_session_key,
-                            "_stage_boundary_owner": point.boundary_owner,
-                        }
+                    pending = (
+                        bool(point.boundary_owner)
+                        and callable(cancellation_pending)
+                        and cancellation_pending(
+                            {
+                                "parent_session_key": point.parent_session_key,
+                                "_stage_boundary_owner": point.boundary_owner,
+                            }
+                        )
                     )
                     if still_current and pending:
                         stopped = await store.run(
@@ -479,6 +498,12 @@ class _PumpMixin(ManagerComponent):
                         result = reenter((generation, False, self.CLAIM_RETAINED))
                     return result
                 if not still_current:
+                    claimed = (generation, False, self.CLAIM_REFUSED)
+                elif self._stopped_while_claimed(point.agent_id):
+                    # The re-read answered before a stop landed, and the stop
+                    # ran before this coroutine resumed. A queued stop installs
+                    # its record synchronously, so the loop's own state is the
+                    # last word: the row is not ours to start.
                     claimed = (generation, False, self.CLAIM_REFUSED)
             # No await between a successful final durable/boundary check and
             # registration: cancellation cannot interleave after the
@@ -517,6 +542,17 @@ class _PumpMixin(ManagerComponent):
                 self._manager._report_queued_stop(report_params)
         assert not isinstance(result, ClaimPoint)
         return result
+
+    def _stopped_while_claimed(self, agent_id: str) -> bool:
+        """Whether a stop was recorded for *agent_id* while its claim was in flight.
+
+        A claimed row has no ``_agents`` record until it registers, so a
+        stopped or ended record there was put there by a stop: the queued-stop
+        report's ``user_stopped`` terminal is the usual one. The inline pump
+        applies the same test to a popped row before it spawns one.
+        """
+        waiting = self._manager._agents.get(agent_id)
+        return waiting is not None and bool(waiting.done or waiting.user_stopped or waiting.reaped)
 
     def release_reservation(self, agent_id: str) -> None:
         """Give back the slot a ``ClaimPoint`` reserved for a row that did not start."""
@@ -670,8 +706,7 @@ class _PumpMixin(ManagerComponent):
         # instead: `cancel()` marks the info terminal but cannot unqueue this.
         queued_id = str(params.get("_preassigned_id") or "")
         if queued_id:
-            waiting = self._manager._agents.get(queued_id)
-            if waiting is not None and (waiting.done or waiting.user_stopped or waiting.reaped):
+            if self._stopped_while_claimed(queued_id):
                 logger.info("Skipping queued spawn %s: cancelled while waiting", queued_id)
                 self._manager._emit_queue_depth(
                     str(params.get("parent_session_key", "")), str(params.get("batch_id", ""))

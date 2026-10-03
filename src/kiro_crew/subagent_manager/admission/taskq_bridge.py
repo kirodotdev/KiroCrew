@@ -1187,7 +1187,15 @@ class _TaskqBridgeMixin(ManagerComponent):
         return None
 
     def taskq_pending_ids_for(self, parent_session_key: str) -> list[str]:
-        """Ids of this parent's waiting rows that are NOT in the in-memory window."""
+        """Ids of this parent's waiting rows that are NOT in the in-memory window.
+
+        Waiting means accepted with no run yet, the definition the overflow
+        count uses: claimable rows, and ``admitted`` rows nothing has
+        registered -- a claim the pump is still awaiting, or a retained one.
+        Stop all cancels exactly these ids, and the claimer's post-claim
+        re-read refuses a row cancelled here, so a claimed row never starts
+        after the stop.
+        """
         from kiro_crew import taskq as _taskq
 
         store = self.taskq_store()
@@ -1198,6 +1206,8 @@ class _TaskqBridgeMixin(ManagerComponent):
                 _taskq.KIND_SUBAGENT,
                 session_key=parent_session_key,
                 exclude_ids=self.taskq_excluded_ids(),
+                include_admitted=True,
+                exclude_admitted_ids=list(self._manager._agents),
             )
         except _taskq.TaskStoreUnavailable:
             return []
@@ -1211,12 +1221,15 @@ class _TaskqBridgeMixin(ManagerComponent):
         if store is None or not parent_session_key:
             return []
         exclude = self.taskq_excluded_ids()
+        registered = list(self._manager._agents)
         try:
             rows = await store.run(
                 store.list_pending,
                 _taskq.KIND_SUBAGENT,
                 session_key=parent_session_key,
                 exclude_ids=exclude,
+                include_admitted=True,
+                exclude_admitted_ids=registered,
             )
         except _taskq.TaskStoreUnavailable:
             return []
@@ -1983,15 +1996,11 @@ class _TaskqBridgeMixin(ManagerComponent):
 
         ``allow_admitted=False`` refuses a row that has been CLAIMED but not started.
         Stop-all leaves it True: the user pressed Stop, and a claimed-not-started row is
-        work they asked to end. A parent-end teardown passes False, for two reasons that
-        arrive at the same place. An ``admitted`` row has a claimer between its claim and
-        its registration, so cancelling it there leaves that claimer to register and run
-        work the teardown believed it had stopped -- and the claimer's own re-read of the
-        state before registering is the guard that then has nothing to catch, because the
-        row is gone rather than claimable. And a row in that window may be carrying a
-        decision a person made (a spawn approval is the visible case), which a teardown
-        has no standing to revoke on their behalf. Refusing leaves the row to the
-        incarnation that owns it.
+        work they asked to end; the claimer's post-claim re-read (``claim_and_start``)
+        refuses a row cancelled here. A parent-end teardown passes False: a row in that
+        window may be carrying a decision a person made (a spawn approval is the visible
+        case), which a teardown has no standing to revoke on their behalf. Refusing
+        leaves the row to the incarnation that owns it.
 
         Race-safe against the drain because the STATE TEST AND THE CANCEL SHARE
         ONE TRANSACTION: ``unstarted`` is both the predicate this code judges the
