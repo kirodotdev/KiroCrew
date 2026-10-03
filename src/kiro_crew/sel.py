@@ -272,6 +272,15 @@ _SEGMENT_SCAN_CAP = 4096
 # many the record is written unguarded, because a missing audit record is worse
 # than one suspect chain link.
 _APPEND_RETRIES = 3
+# Best-effort writer retries, with capped backoff; these errnos never heal.
+_WRITE_RETRIES = 3
+_WRITE_BACKOFF_SECS = 0.05
+_WRITE_BACKOFF_CAP_SECS = 1.0
+_PERMANENT_WRITE_ERRNOS = frozenset(
+    {errno.ENOSYS, errno.EINVAL, errno.EPERM, errno.EACCES, errno.EROFS}
+)
+# Writer thread only; an Event wait, as sel.py must not import time (on-loop guard).
+_backoff_wait = threading.Event().wait
 # Ceiling on collision probes when minting a segment name. Each probe is a
 # filesystem stat on the append path (where a critical audit is written inline,
 # sometimes on the event loop), so a directory pre-filled with consecutive
@@ -301,6 +310,10 @@ class SelChainContention(OSError):
     Reaching this needs a foreign write to land between our chaining and our open
     on every one of ``_APPEND_RETRIES + 1`` attempts.
     """
+
+
+class _MaybeWritten(OSError):
+    """A best-effort append that may have left bytes on disk (or cannot tell): never replayed."""
 
 
 def _live_log_moved_on(
@@ -574,6 +587,8 @@ class SecurityEventLog:
         # clear and its put).
         self._pending = 0
         self._pending_cond = threading.Condition()
+        self.dropped_events = 0
+        self._drop_streak = False
         self._initialized = True
 
     def set_forward_callback(self, callback: Callable[[dict], None] | None) -> None:
@@ -624,13 +639,34 @@ class SecurityEventLog:
             # later flush() would block until timeout. The except keeps the
             # thread alive so subsequent events still drain.
             try:
-                self._flush_batch(batch)
+                self._flush_with_retry(batch)
             except Exception:
                 logger.warning("SEL writer batch failed for %d events", len(batch), exc_info=True)
             finally:
                 self._decr_pending(len(batch))
             if stop:
                 return
+
+    def _flush_with_retry(self, batch: list[SecurityEvent]) -> None:
+        """Best-effort flush, retried with backoff; count a batch that is lost."""
+        for attempt in range(_WRITE_RETRIES + 1):
+            exc = self._flush_batch(batch)
+            if exc is None:
+                self._drop_streak = False
+                return
+            permanent = isinstance(exc, _MaybeWritten) or exc.errno in _PERMANENT_WRITE_ERRNOS
+            if permanent or attempt == _WRITE_RETRIES:
+                break
+            _backoff_wait(min(_WRITE_BACKOFF_SECS * 2**attempt, _WRITE_BACKOFF_CAP_SECS))
+        self.dropped_events += len(batch)
+        if not self._drop_streak:
+            self._drop_streak = True
+            logger.error(
+                "SEL dropped %d events after write failures (%s); total dropped %d",
+                len(batch),
+                exc,
+                self.dropped_events,
+            )
 
     def _decr_pending(self, n: int) -> None:
         """Drop *n* from the pending counter and wake any flush() waiters."""
@@ -1032,14 +1068,14 @@ class SecurityEventLog:
         events: list[SecurityEvent],
         *,
         raise_on_error: bool = False,
-    ) -> None:
+    ) -> OSError | None:
         """Append a batch of events under the chain lock, then forward them.
 
         When ``raise_on_error=True`` a filesystem failure (unwritable SEL file,
         full disk, un-creatable dir) is re-raised after rolling the chain tip
         back, so a fail-closed caller (critical audit) can refuse the action it
-        was about to audit. The default (async writer / best-effort) swallows
-        the error and keeps the writer thread alive.
+        was about to audit. The default (best-effort) logs the error and RETURNS
+        it, unforwarded, so the writer can retry; ``None`` means the batch landed.
 
         Whether this batch may ROTATE is decided by :meth:`_may_rotate`, not by the
         call site. Rotation does filesystem work -- a directory scan, a rename, a
@@ -1133,11 +1169,11 @@ class SecurityEventLog:
                 with self._lock:
                     try:
                         self._dir.mkdir(parents=True, exist_ok=True)
-                    except OSError:
+                    except OSError as exc:
                         if raise_on_error:
                             raise
                         logger.warning("SEL dir create failed for %d events", len(events), exc_info=True)
-                        return
+                        return exc
                     # Close the live log first when it is already at the size cap, so
                     # this batch lands in a fresh segment, and keep the cross-process
                     # rotation lock held across our own chain + append (see
@@ -1154,16 +1190,20 @@ class SecurityEventLog:
                         # then report a break). Read INSIDE the window: rotation resets
                         # the tip to genesis, and rolling back to a pre-rotation tip
                         # would chain this batch off a record in a different segment.
+                        before = None if raise_on_error else self._probe_live()
                         try:
                             self._append_chained_locked(events)
-                        except OSError:
+                        except OSError as exc:
                             if raise_on_error:
                                 raise
                             logger.warning(
                                 "SEL append failed for %d events", len(events), exc_info=True
                             )
+                            if before is None or self._probe_live() != before:
+                                return _MaybeWritten(errno.EIO, str(exc))
+                            return exc
                     callback = self._forward_callback
-        except OSError:
+        except OSError as exc:
             # The chain lock itself was unavailable: held by another writer while
             # this thread is the event loop (single-shot fail-closed acquire), or
             # its sidecar was unusable. Audit-or-deny for a critical caller; a
@@ -1173,9 +1213,11 @@ class SecurityEventLog:
             logger.warning(
                 "SEL chain lock unavailable for %d events", len(events), exc_info=True
             )
+            return exc
         if callback:
             for event in events:
                 self._forward_event(callback, event)
+        return None
 
     def _append_chained_locked(self, events: list[SecurityEvent]) -> None:
         """Chain *events* onto the live log, re-chaining if it moves under us.
@@ -1773,6 +1815,14 @@ class SecurityEventLog:
             st = self._path.stat()
         except OSError:
             return (0, 0, 0)
+        return (st.st_dev, st.st_ino, st.st_size)
+
+    def _probe_live(self) -> tuple[int, int, int] | None:
+        """:meth:`_live_identity`, but ``None`` when a failed stat leaves it unknown."""
+        try:
+            st = self._path.stat()
+        except OSError as exc:
+            return (0, 0, 0) if exc.errno == errno.ENOENT else None
         return (st.st_dev, st.st_ino, st.st_size)
 
     def _reanchor_if_replaced(self) -> int:
