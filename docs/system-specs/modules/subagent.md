@@ -2910,6 +2910,19 @@ The mechanism is one extra window plus one env value, applied at three seams:
   spawns with the replacement's own directory — the sessions lose their staged
   files to the tampering, the tree stays on disk unowned for a human, and the
   `_bg` slot is never locked out of a runtime.
+- **A resumed conversation rejoins its tree.** A key whose process ended (a
+  gateway restart, a transient backend exit) used to resume on a fresh
+  allocation, and its old tree, now ownerless, was swept an hour later with the
+  work in it. `get_or_create` records each new session's `work_scratch_dir` with
+  `agent_scratch.record_tree` (off the loop and not awaited, because it runs
+  after registration), and a resume (`resume_sid` set) reads it back with
+  `agent_scratch.recorded_tree` as `shared_scratch`. A fresh conversation on a
+  reused key starts its own tree. The index is `.trees.json` in the managed
+  root, not `session_map.json`: the root is masked from every sandboxed process,
+  while the session map is agent-writable, and a tree name an agent could
+  rewrite would let it mount another session's directory on its next resume.
+  The sweep removes directories only, so it never touches the index, and rows
+  whose tree is gone are dropped on each write.
 - **Every process seam is enumerated.** A seam that starts a kiro-cli process
   and forgets `shared_scratch` reproduces the bug with no red test, so
   `test_subagent_shared_scratch.py::TestEveryProcessSpawnSeamIsAccountedFor`

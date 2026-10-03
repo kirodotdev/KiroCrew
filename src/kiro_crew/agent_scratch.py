@@ -76,6 +76,7 @@ of by truncating a name the child can point somewhere else.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -609,6 +610,94 @@ def shared_scratch_window(path: Path | None) -> Path | None:
                 "agent-scratch: could not touch shared window %r", path.name, exc_info=True
             )
     return path
+
+
+#: Which tree each session key last exposed as ``$KIROCREW_SCRATCH``, so a key
+#: that returns after its process ended rejoins that tree instead of starting an
+#: empty directory while the old one waits for the sweep (:func:`recorded_tree`).
+#:
+#: Kept in the managed root, not in ``session_map.json``, for the boundary: the
+#: root is masked from every sandboxed process, while the session map is
+#: agent-writable. A tree name an agent could rewrite would let it point its own
+#: key at another session's directory and mount it on the next resume. The sweep
+#: removes plain directories only, so the file is never swept.
+TREE_INDEX_FILENAME = ".trees.json"
+
+#: Largest index this module will read. A row is a session key plus a directory
+#: name, and rows whose tree is gone are pruned on every write.
+_TREE_INDEX_MAX_BYTES = 1 << 20
+
+_TREE_INDEX_LOCK = threading.Lock()
+
+
+def _read_tree_index(root: Path) -> dict[str, str]:
+    """The index rows, or empty for anything this module did not write."""
+    index = root / TREE_INDEX_FILENAME
+    _refuse_linked(index, TREE_INDEX_FILENAME)
+    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(index, flags)
+    except FileNotFoundError:
+        return {}
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > _TREE_INDEX_MAX_BYTES:
+            return {}
+        data = os.read(fd, _TREE_INDEX_MAX_BYTES + 1)
+    finally:
+        os.close(fd)
+    try:
+        rows = json.loads(data)
+    except ValueError:
+        return {}
+    if not isinstance(rows, dict):
+        return {}
+    return {k: v for k, v in rows.items() if isinstance(k, str) and _is_tree_name(v)}
+
+
+def _is_tree_name(name: object) -> bool:
+    """A single directory name: no separator, no ``.``/``..``."""
+    return isinstance(name, str) and name not in ("", ".", "..") and Path(name).name == name
+
+
+def record_tree(key: str, tree: Path) -> None:
+    """Remember *tree* as *key*'s work directory. Fail-open, like all scratch.
+
+    Only a directory directly under the managed root is recorded. Rows whose
+    directory is absent are dropped in the same write, so the index
+    holds at most the trees the sweep has not reclaimed yet.
+    """
+    root = scratch_root()
+    if tree.parent != root or not _is_tree_name(tree.name):
+        return
+    with _TREE_INDEX_LOCK:
+        try:
+            _refuse_linked(root, f"managed root {_SUBDIR!r}")
+            rows = _read_tree_index(root)
+            if rows.get(key) == tree.name:
+                return
+            rows[key] = tree.name
+            rows = {k: v for k, v in rows.items() if _is_plain_dir(root / v)}
+            atomic_write(root / TREE_INDEX_FILENAME, json.dumps(rows, sort_keys=True))
+        except (OSError, ScratchBoundaryError):
+            logger.debug("agent-scratch: could not record the tree for a session", exc_info=True)
+
+
+def recorded_tree(key: str) -> Path | None:
+    """The tree :func:`record_tree` last stored for *key*, or None.
+
+    Not validated here: the spawner hands it to :func:`shared_scratch_window`,
+    which checks it is still a plain directory under the root and falls back to
+    the process's own directory when it is gone.
+    """
+    root = scratch_root()
+    with _TREE_INDEX_LOCK:
+        try:
+            name = _read_tree_index(root).get(key)
+        except (OSError, ScratchBoundaryError):
+            logger.debug("agent-scratch: could not read the tree index", exc_info=True)
+            return None
+    return root / name if name else None
 
 
 def _sweep_could_reclaim(path: Path) -> bool:

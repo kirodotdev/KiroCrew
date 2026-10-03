@@ -332,6 +332,8 @@ class _Ev:
 
 class FakeProvider:
     supports_steer, cwd = True, os.getcwd()
+    # LLMProvider's default: this provider allocated no scratch directory.
+    work_scratch_dir = None
 
     def __init__(self, reply: str = "Answer") -> None:
         self._reply = reply

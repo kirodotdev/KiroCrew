@@ -1176,6 +1176,123 @@ class TestBgRuntimeSuccessorInheritsTheTree:
         await mgr.close_all()
 
 
+class TestAResumedKeyRejoinsItsTree:
+    """A resumed conversation rejoins the scratch tree recorded for its key.
+
+    The gateway keeps the index inside the masked root and passes the recorded
+    tree as ``shared_scratch`` when the conversation's process starts.
+    """
+
+    def test_the_index_round_trips_and_prunes_reclaimed_trees(self, scratch_root: Path) -> None:
+        scratch_root.mkdir(parents=True)
+        old = scratch_root / "dashboard-chat-1-abcdef01"
+        old.mkdir()
+        sc.record_tree("dashboard:chat-1", old)
+        assert sc.recorded_tree("dashboard:chat-1") == old
+        old.rmdir()  # swept
+        new = scratch_root / "dashboard-chat-2-12345678"
+        new.mkdir()
+        sc.record_tree("dashboard:chat-2", new)
+        assert sc.recorded_tree("dashboard:chat-1") is None
+        assert sc.recorded_tree("dashboard:chat-2") == new
+
+    def test_only_a_direct_child_of_the_root_is_recorded(
+        self, scratch_root: Path, tmp_path: Path
+    ) -> None:
+        scratch_root.mkdir(parents=True)
+        outside = tmp_path / "elsewhere"
+        outside.mkdir()
+        sc.record_tree("dashboard:chat-1", outside)
+        assert sc.recorded_tree("dashboard:chat-1") is None
+
+    def test_a_row_naming_a_path_is_not_a_tree(self, scratch_root: Path) -> None:
+        scratch_root.mkdir(parents=True)
+        (scratch_root / sc.TREE_INDEX_FILENAME).write_text(
+            '{"dashboard:chat-1": "../../etc", "dashboard:chat-2": ".."}'
+        )
+        assert sc.recorded_tree("dashboard:chat-1") is None
+        assert sc.recorded_tree("dashboard:chat-2") is None
+
+    def test_the_sweep_leaves_the_index_alone(self, scratch_root: Path) -> None:
+        scratch_root.mkdir(parents=True)
+        tree = scratch_root / "dashboard-chat-1-abcdef01"
+        tree.mkdir()
+        sc.record_tree("dashboard:chat-1", tree)
+        sc.sweep_dead_scratch()
+        assert (scratch_root / sc.TREE_INDEX_FILENAME).is_file()
+
+    def _manager(self, resume_sid: str, work_scratch: Path | None):
+        from kiro_crew.session import SessionManager
+
+        cfg = MagicMock()
+        cfg.session.pool_size = 0
+        cfg.session.pool_agent = "kirocrew"
+        cfg.session.pool_ttl_secs = 1800
+        cfg.session.timeout_secs = 3600
+        cfg.agent.default_agent = ""
+        cfg.agent.model = "auto"
+
+        def _provider():
+            p = MagicMock()
+            p.start = AsyncMock()
+            p.shutdown = AsyncMock()
+            p.is_process_alive = MagicMock(return_value=True)
+            p.exit_code = None
+            p.cwd = ""
+            p.work_scratch_dir = work_scratch
+            return p
+
+        factory = MagicMock(side_effect=lambda *a, **kw: _provider())
+        with patch("kiro_crew.session.default_project_dir", return_value=""):
+            mgr = SessionManager(cfg, provider_factory=factory)
+        mgr._session_map = MagicMock()
+        mgr._session_map.get = MagicMock(return_value=resume_sid or None)
+        mgr._session_map.get_cwd = MagicMock(return_value="")
+        return mgr, factory
+
+    @pytest.mark.asyncio
+    async def test_a_resume_is_handed_the_recorded_tree(self, scratch_root: Path) -> None:
+        scratch_root.mkdir(parents=True)
+        tree = scratch_root / "dashboard-chat-1-abcdef01"
+        tree.mkdir()
+        sc.record_tree("dashboard:chat-1", tree)
+        mgr, factory = self._manager("sid-1", None)
+        try:
+            await mgr.get_or_create("dashboard:chat-1", agent="kirocrew")
+        finally:
+            await mgr.close_all()
+        assert factory.call_args.kwargs["shared_scratch"] == tree
+
+    @pytest.mark.asyncio
+    async def test_a_fresh_conversation_starts_its_own_tree(self, scratch_root: Path) -> None:
+        scratch_root.mkdir(parents=True)
+        tree = scratch_root / "dashboard-chat-1-abcdef01"
+        tree.mkdir()
+        sc.record_tree("dashboard:chat-1", tree)
+        mgr, factory = self._manager("", None)
+        try:
+            await mgr.get_or_create("dashboard:chat-1", agent="kirocrew")
+        finally:
+            await mgr.close_all()
+        assert "shared_scratch" not in factory.call_args.kwargs
+
+    @pytest.mark.asyncio
+    async def test_a_new_process_records_the_tree_it_exposes(self, scratch_root: Path) -> None:
+        scratch_root.mkdir(parents=True)
+        tree = scratch_root / "dashboard-chat-1-12345678"
+        tree.mkdir()
+        mgr, _factory = self._manager("", tree)
+        try:
+            await mgr.get_or_create("dashboard:chat-1", agent="kirocrew")
+            for _ in range(100):  # recorded off the loop, not awaited
+                if sc.recorded_tree("dashboard:chat-1") is not None:
+                    break
+                await asyncio.sleep(0.01)
+        finally:
+            await mgr.close_all()
+        assert sc.recorded_tree("dashboard:chat-1") == tree
+
+
 class TestEveryProcessSpawnSeamIsAccountedFor:
     """The fix rests on every seam that starts a kiro-cli process on a session's
     behalf threading ``shared_scratch``; a seam that forgets reproduces the

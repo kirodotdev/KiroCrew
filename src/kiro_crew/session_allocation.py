@@ -1956,6 +1956,24 @@ class SessionAllocationService:
             # waitpid/taskkill inline and wedging the event loop.
             threading.Thread(target=kill, args=(provider,), daemon=True).start()
 
+    def _record_scratch_tree(self, key: str, tree: Path) -> None:
+        """Record *key*'s work directory off the loop, without awaiting it.
+
+        Called after the session is registered, where an await would add a
+        cancellation point to the start. The record is hygiene: a write that is
+        dropped (executor shutdown) only means the next resume starts a fresh
+        directory, as it did before the record existed.
+        """
+        from kiro_crew import agent_scratch
+        from kiro_crew.executors import maintenance_executor
+
+        try:
+            asyncio.get_running_loop().run_in_executor(
+                maintenance_executor(), agent_scratch.record_tree, key, tree
+            )
+        except RuntimeError:
+            pass  # executor shut down: the gateway is stopping
+
     def _remove_reservation_now(self, key: str, token: object) -> None:
         """Remove a token in the yield-free span after a successful claim."""
         # A fence's invalidation lives exactly as long as the reservation it
@@ -2308,6 +2326,17 @@ class SessionAllocationService:
             stored_cwd = owner._session_map.get_cwd(key)
             if stored_cwd and await asyncio.to_thread(Path(stored_cwd).is_dir):
                 effective_cwd = stored_cwd
+        # A conversation resumed after its process ended (gateway restart, a
+        # transient backend exit) rejoins the work directory it had, instead of
+        # starting an empty one while the old tree waits for the sweep. The spawn
+        # re-validates the path (``agent_scratch.shared_scratch_window``) and
+        # falls back to its own directory if the tree is gone.
+        if resume_sid and extra_factory_kwargs.get("shared_scratch") is None:
+            from kiro_crew import agent_scratch
+
+            tree = await asyncio.to_thread(agent_scratch.recorded_tree, key)
+            if tree is not None:
+                extra_factory_kwargs["shared_scratch"] = tree
         claim_crew = extra_factory_kwargs.get("crew_agent")
         session_agent = agent
         preparation = await asyncio.to_thread(prepare_runtime, agent, claim_crew, effective_cwd)
@@ -2832,6 +2861,9 @@ class SessionAllocationService:
                                 provider=constants.provider_label_claude,
                                 cwd=provider_cwd,
                             )
+                    work_scratch = provider.work_scratch_dir
+                    if not is_stateless and isinstance(work_scratch, Path):
+                        self._record_scratch_tree(key, work_scratch)
 
                     # Cleanup owns its task slot; allocation only asks the
                     # facade to ensure it at the original registration point.
