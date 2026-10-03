@@ -3,7 +3,8 @@
  * and the dashboard-config type. The settings UI itself lives in
  * pages/settings/ChatPanel.tsx and pages/settings/VoicePanel.tsx.
  */
-import { safeSetItem } from '../../utils/safeStorage'
+import { safeGetItem, safeSetItem } from '../../utils/safeStorage'
+import { markCompositeFieldsDirty } from '../../lib/uiPrefs'
 import { DEFAULT_MESSAGE_FONT_SIZE, MAX_MESSAGE_FONT_SIZE, MIN_MESSAGE_FONT_SIZE } from './contentWidth'
 
 export type ContentWidth = 'compact' | 'comfortable' | 'full'
@@ -157,9 +158,125 @@ export function loadChatConfig(): ChatConfig {
   catch { return { ...DEFAULTS } }
 }
 
-export function saveChatConfig(cfg: ChatConfig) {
-  safeSetItem(LS_KEY, JSON.stringify(cfg))
+/**
+ * Persist the chat config. Returns `true` when the config was stored (and, for
+ * an edit, its dirty markers recorded), and `false` when the write was rolled
+ * back and nothing changed on disk -- so a caller can keep the displayed value
+ * in step with what is actually persisted and surface the failure, rather than
+ * showing a value a reload would revert (GPT 6.1 F2, ChatSettings.tsx:261).
+ */
+export function saveChatConfig(cfg: ChatConfig): boolean {
+  // Record which fields this write actually changed, so a deliberate edit --
+  // even one that sets a field back to its default value -- is uploaded to the
+  // host backup rather than withheld as an unproven default (GPT 5.6 F1). This
+  // runs at the single seam every chat-config edit already passes through; it
+  // is a marker set here, not interception of the ~300 raw localStorage writers
+  // (uiPrefs design decision 2).
+  //
+  // The comparison basis is the NORMALIZED prior via `loadChatConfig()`, not the
+  // raw stored blob: the blob is routinely PARTIAL (restore writers merge only
+  // host-held fields, and a build upgrade adds fields the old blob lacks) AND
+  // holds un-migrated legacy values, while `cfg` already came through
+  // `loadChatConfig()`'s normalizing read (`fileChipStyle:"pebble"` ->
+  // `'expanded'`, `sendOnEnter:false` -> `'ctrl-enter'`). Comparing a normalized
+  // `cfg` field against a raw legacy `prior` field would mark it dirty on an
+  // unrelated toggle and force-upload that untouched field over another origin's
+  // host value. `loadChatConfig()` default-fills AND migrates, so a field is
+  // dirty only when the user actually changed it (GPT/Opus F1).
+  const base = loadChatConfig() as unknown as Record<string, unknown>
+  const changed: string[] = []
+  for (const [field, value] of Object.entries(cfg)) {
+    if (JSON.stringify(base[field]) !== JSON.stringify(value)) changed.push(field)
+  }
+  // Persist ONLY the changed fields merged into the prior RAW blob -- NOT the
+  // whole `loadChatConfig()`-default-filled `cfg`. Writing the full default
+  // blob materializes all ~21 fields, so `expandComposite` yields 21 child
+  // keys with no fingerprints; on a profile that has synced other keys but
+  // never stored a chat-config child (any second origin/device's first chat
+  // edit after the upgrade) the composite counts as untouched, nothing is
+  // withheld, and `buildPatch` uploads every default over newer host values --
+  // overwriting e.g. the host's `showTimestamps` with the local default, with
+  // no recovery path (GPT 6.1, ChatSettings.tsx:202). Merging only the edited
+  // fields into the prior raw blob leaves unedited/absent fields ABSENT, so
+  // they stay genuinely unreconciled and are withheld from the flush, while the
+  // edited fields are forced up by the dirty marker below. An absent field a
+  // reader needs is default-filled on read by `loadChatConfig`, exactly as
+  // before -- the default lives in the reader, not the stored blob.
+  let priorBlob: Record<string, unknown> = {}
+  const priorRaw = safeGetItem(LS_KEY)
+  if (priorRaw !== null) {
+    try {
+      const parsed: unknown = JSON.parse(priorRaw)
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        priorBlob = parsed as Record<string, unknown>
+      }
+    } catch {
+      /* unparseable prior: start from an empty blob, only edited fields land */
+    }
+  }
+  const nextBlob: Record<string, unknown> = { ...priorBlob }
+  const cfgRecord = cfg as unknown as Record<string, unknown>
+  for (const field of changed) nextBlob[field] = cfgRecord[field]
+  // Exclude any field the raw prior blob carried forward that cannot be
+  // serialized (GPT 6.1 F1, save side): a legacy value nested thousands of
+  // arrays deep sits within the store's size cap but overflows the JS stack, so
+  // a bare JSON.stringify(nextBlob) throws a RangeError and the save -- and the
+  // boot path that calls it -- dies before React mounts, with no recovery.
+  // Serialize once with a replacer that drops any unserializable field,
+  // preserving every valid sibling; a changed field (writer-produced, always a
+  // primitive) is never the one dropped.
+  let serialized: string
+  try {
+    serialized = JSON.stringify(nextBlob)
+  } catch {
+    const safe: Record<string, unknown> = {}
+    for (const [field, value] of Object.entries(nextBlob)) {
+      try {
+        JSON.stringify(value)
+      } catch {
+        continue
+      }
+      safe[field] = value
+    }
+    serialized = JSON.stringify(safe)
+  }
+  // Write the merged blob FIRST, and mark fields dirty only if that write
+  // succeeded (GPT/Opus F2, first half). safeSetItem returns false when quota
+  // is exhausted after reclaim; a dirty marker written ahead of a failed blob
+  // write would force the UN-updated prior value past buildPatch's withholding
+  // and overwrite the host backup -- so no marker is left for a value that was
+  // never stored.
+  //
+  // But the marker is its own ~40-byte key, so the blob write can land while
+  // the marker write fails (near-full storage). An edited field recorded in the
+  // blob but NOT the marker is then withheld as an unproven default and
+  // baselined without uploading, and a cold restore reinstates the stale host
+  // value -- the edit is lost silently on both sides (GPT 5.6 F2). So when there
+  // ARE changed fields, the marker must persist for the save to be consistent:
+  // if it fails, roll the blob back to the prior raw value, leaving nothing
+  // stored that the sync would mishandle. The in-memory UI keeps the user's
+  // value and the next save retries; a quota wall surfaces as "not saved yet",
+  // never as a silent host-value overwrite.
+  const wrote = safeSetItem(LS_KEY, serialized)
+  if (wrote && changed.length > 0) {
+    const marked = markCompositeFieldsDirty(changed)
+    if (!marked) {
+      // Marker could not be persisted: undo the blob so no stored-but-unmarked
+      // edit survives for the sync to upload-or-withhold incorrectly, and report
+      // the failure so the caller does not display a value a reload will revert.
+      if (priorRaw === null) localStorage.removeItem(LS_KEY)
+      else safeSetItem(LS_KEY, priorRaw)
+      return false
+    }
+  }
+  // The blob write itself failed (quota exhausted even after reclaim): when the
+  // user actually changed a field, nothing was stored, so report failure for
+  // the same reason as the marker rollback -- the caller must not show a value
+  // that is not persisted. A no-op save (no changed fields) that fails to
+  // re-write an identical blob loses nothing and is not reported.
+  if (!wrote && changed.length > 0) return false
   window.dispatchEvent(new Event('mc-config-changed'))
+  return true
 }
 
 export interface DashboardConfig {

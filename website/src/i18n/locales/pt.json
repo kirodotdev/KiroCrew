@@ -15183,6 +15183,7 @@
         "failed_to_save_auto_compact_threshold": "Falha ao salvar o limite de compactação automática",
         "failed_to_save_completion_keep_characters": "Falha ao salvar os caracteres do evento de conclusão",
         "failed_to_save_completion_keep_mode": "Falha ao salvar o modo de truncamento do evento de conclusão",
+        "failed_to_save_chat_setting": "Não foi possível salvar esta configuração de chat. O armazenamento do navegador pode estar cheio.",
         "failed_to_save_dashboard_config": "Falha ao salvar a configuração do dashboard",
         "failed_to_save_default_model": "Falha ao salvar o modelo padrão",
         "failed_to_save_default_reasoning_effort": "Falha ao salvar o esforço de raciocínio padrão",

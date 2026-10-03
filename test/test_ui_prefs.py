@@ -312,3 +312,48 @@ def test_a_plain_read_still_degrades_to_empty(monkeypatch):
 def test_merge_over_a_corrupt_file_recovers():
     ui_prefs_path().write_text("{ truncated", encoding="utf-8")
     assert merge_ui_prefs({"mc-zoom": "1"}) == {"mc-zoom": "1"}
+
+
+# ── Composite chat-config child keys clear the server key checks ────────────
+
+
+def _chat_config_fields() -> list[str]:
+    """Field names of the dashboard's ChatConfig, read from its source so this
+    pin tracks the real shape rather than a copy that drifts."""
+    import re
+    from pathlib import Path
+
+    src = (
+        Path(__file__).resolve().parents[1]
+        / "website"
+        / "src"
+        / "pages"
+        / "chat"
+        / "ChatSettings.tsx"
+    ).read_text(encoding="utf-8")
+    match = re.search(r"const DEFAULTS: ChatConfig = \{(.*?)\}", src, re.DOTALL)
+    assert match, "could not locate the ChatConfig DEFAULTS object"
+    return re.findall(r"(\w+)\s*:", match.group(1))
+
+
+def _encode_field(field: str) -> str:
+    """Mirror of the client's encodeField in website/src/lib/uiPrefs.ts: four
+    lowercase hex digits per character. Hex carries none of the server's denied
+    key substrings and no separator character, so every field name is safe on
+    the wire whatever it is called."""
+    return "".join(f"{ord(c):04x}" for c in field)
+
+
+def test_every_chat_config_child_key_passes_the_server_key_checks():
+    """The composite is synced as `mc-chat-config.<hex(field)>` child keys. A
+    raw field name would put a credential substring on the wire -- the real
+    `showContextTokens` carries `token`, which `DENY_SUBSTRINGS` rejects, 400ing
+    the whole patch. The hex projection must clear the real validator for EVERY
+    field, so the fix is proven against the server rather than a mock."""
+    fields = _chat_config_fields()
+    assert "showContextTokens" in fields, "the field that motivated the fix must be present"
+    patch = {f"mc-chat-config.{_encode_field(f)}": "true" for f in fields}
+    # Not denied, and the whole patch lands as one merge (no per-key rejection).
+    merged = merge_ui_prefs(patch)
+    for field in fields:
+        assert merged[f"mc-chat-config.{_encode_field(field)}"] == "true"

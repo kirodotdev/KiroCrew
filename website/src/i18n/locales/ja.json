@@ -14719,6 +14719,7 @@
         "failed_to_save_auto_compact_threshold": "自動圧縮のしきい値を保存できませんでした",
         "failed_to_save_completion_keep_characters": "完了保持文字数を保存できませんでした",
         "failed_to_save_completion_keep_mode": "完了保持モードを保存できませんでした",
+        "failed_to_save_chat_setting": "このチャット設定を保存できませんでした。ブラウザーのストレージがいっぱいの可能性があります。",
         "failed_to_save_dashboard_config": "ダッシュボード設定を保存できませんでした",
         "failed_to_save_default_model": "デフォルトモデルを保存できませんでした",
         "failed_to_save_default_reasoning_effort": "デフォルト推論努力度を保存できませんでした",

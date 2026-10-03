@@ -1010,11 +1010,23 @@ consumed by `website/src/lib/uiPrefs.ts`. Deliberately NOT a section of
 
 Contract:
 
-- Values are opaque UTF-8 strings (what `localStorage` holds). The server never
-  parses them. The file is `{"prefs": {...}}` and nothing else: an earlier
-  revision carried a `version` and an `updated_at` that no code read, and the
-  loader is tolerant of any shape it does not recognize, so a future reshape
-  needs no version field to be safe.
+- Values are opaque strings the server never parses. For most keys the value is
+  exactly what `localStorage` holds (a UTF-8 string). ONE durable key —
+  `mc-chat-config`, a JSON object of ~20 independent chat settings — is the
+  exception: it is NOT stored whole. Each of its fields travels under its own
+  wire key `mc-chat-config.<hex(field)>`, whose value is that one field's JSON
+  fragment, so the server's existing per-KEY merge becomes a per-FIELD merge and
+  a profile uploads only the fields it actually changed (issue #15236; before
+  this, a second origin holding one stale field uploaded the whole blob and
+  overwrote fields it never touched). The field name is hex-encoded (`[0-9a-f]`,
+  4 digits per code unit) for two reasons: a raw name could contain the `.`
+  separator, and `showContextTokens` — a real field — contains `token`, which
+  the credential denylist below would reject, 400-ing every flush. Hex provably
+  contains no denied substring and no separator and reverses exactly. The server
+  stays oblivious: it just holds more, smaller opaque keys. The file is
+  `{"prefs": {...}}` and nothing else: an earlier revision carried a `version`
+  and an `updated_at` that no code read, and the loader is tolerant of any shape
+  it does not recognize, so a future reshape needs no version field to be safe.
 - `PUT` is a merge patch; a `null` value deletes its key. BOTH methods are
   owner-gated: the write so a viewer cannot overwrite the owner's settings, and
   the read because some values name real paths on the host (the file explorer's
@@ -1098,6 +1110,35 @@ Contract:
   the pass exists to prevent -- and the next boot retries; the failed-restore
   marker applies as on the cold path, so a default written by a settings-less
   render between the failure and the retry loses to the host.
+- The composite (`mc-chat-config`) rides that SAME reconcile and failed-restore
+  machinery at per-FIELD granularity, with three wrinkles worth knowing before
+  touching `uiPrefs.ts`:
+  - MIGRATION from a host backup written by a pre-split build (one whole-blob
+    `mc-chat-config` key): the whole blob is expanded into child wire keys once,
+    on both the cold restore and the warm reconcile, so an existing user's chat
+    settings are not lost on the first load after upgrade. A field the host
+    already holds as a child key wins over the same field inside the legacy
+    blob; neither copy is retired (that is more machinery than the issue needs,
+    and a child key is authoritative the moment any fixed build writes it).
+  - CLEARING a reconciled child: a plain key clears when it is in the synced
+    fingerprints OR the reconciled roster. A child gets BOTH — a child the host
+    held is fingerprinted; a child the host did NOT hold has nothing to
+    fingerprint, so the reconcile records it in the roster regardless of
+    outcome. Without the roster entry such a child would read as unreconciled on
+    every boot — withheld from flush forever while the first flush of any other
+    key fingerprinted it from a value never sent, silently dropping the user's
+    choice. The reconcile trigger therefore fires only while a child lacks BOTH
+    a fingerprint and a roster entry (or a legacy whole-blob fingerprint is
+    still present), so a fully reconciled profile pays no per-boot reconcile GET
+    and a transient GET failure cannot cost a whole session's backup.
+  - DOWNGRADE: the failed-restore marker records per-field child entries PLUS
+    the parent `mc-chat-config` key. A pre-split build iterates the whole-blob
+    allowlist and reads ownership by the parent, so the parent entry keeps its
+    stale host blob from overwriting local chat settings. A split-aware build
+    does NOT treat the parent as a blanket grant over its children — it honours
+    the parent only on a legacy marker that carries no child entries at all;
+    when child entries are present the exact child key is required, so a default
+    a settings-less render wrote AFTER the failure cannot masquerade as owned.
 - Also excluded: any value that GATES A SAFETY CONFIRMATION. `mc-yolo-ack` is the
   instance — its presence makes the approval-mode picker skip the confirmation
   and enable full auto-approval — and the reason is that this file sits in the

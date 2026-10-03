@@ -14951,6 +14951,7 @@
         "failed_to_save_auto_compact_threshold": "অটো-কমপ্যাক্ট থ্রেশহোল্ড সেভ করা যায়নি",
         "failed_to_save_completion_keep_characters": "কমপ্লিশন-কিপ ক্যারেক্টার সেভ করা যায়নি",
         "failed_to_save_completion_keep_mode": "কমপ্লিশন-কিপ মোড সেভ করা যায়নি",
+        "failed_to_save_chat_setting": "এই চ্যাট সেটিংটি সংরক্ষণ করা যায়নি। ব্রাউজার স্টোরেজ পূর্ণ হতে পারে।",
         "failed_to_save_dashboard_config": "ড্যাশবোর্ড কনফিগ সেভ করা যায়নি",
         "failed_to_save_default_model": "ডিফল্ট মডেল সেভ করা যায়নি",
         "failed_to_save_default_reasoning_effort": "ডিফল্ট রিজনিং এফোর্ট সেভ করা যায়নি",

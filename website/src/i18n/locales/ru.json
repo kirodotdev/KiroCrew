@@ -15415,6 +15415,7 @@
         "failed_to_save_auto_compact_threshold": "Не удалось сохранить порог автосжатия",
         "failed_to_save_completion_keep_characters": "Не удалось сохранить количество символов события завершения",
         "failed_to_save_completion_keep_mode": "Не удалось сохранить режим усечения события завершения",
+        "failed_to_save_chat_setting": "Не удалось сохранить эту настройку чата. Возможно, хранилище браузера переполнено.",
         "failed_to_save_dashboard_config": "Не удалось сохранить настройки панели",
         "failed_to_save_default_model": "Не удалось сохранить модель по умолчанию",
         "failed_to_save_default_reasoning_effort": "Не удалось сохранить уровень рассуждений по умолчанию",

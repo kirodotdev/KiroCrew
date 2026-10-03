@@ -15183,6 +15183,7 @@
         "failed_to_save_auto_compact_threshold": "No se pudo guardar el umbral de compactación automática",
         "failed_to_save_completion_keep_characters": "No se pudieron guardar los caracteres del evento de finalización",
         "failed_to_save_completion_keep_mode": "No se pudo guardar el modo de truncado del evento de finalización",
+        "failed_to_save_chat_setting": "No se pudo guardar esta configuración de chat. Puede que el almacenamiento del navegador esté lleno.",
         "failed_to_save_dashboard_config": "No se pudo guardar la configuración del panel",
         "failed_to_save_default_model": "No se pudo guardar el modelo predeterminado",
         "failed_to_save_default_reasoning_effort": "No se pudo guardar el esfuerzo de razonamiento predeterminado",
