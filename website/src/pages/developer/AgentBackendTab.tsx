@@ -3,7 +3,7 @@ import { useInRouterContext, useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Bot, Boxes, Check, CircleHelp, Sparkles, Terminal, X } from 'lucide-react'
 
-import { acpBackendName, agentChoiceSaved, setupMarkerErrorBody, setupMarkerErrorMessage } from '../../api/acpBackend'
+import { acpBackendName, acpProbeBlocksUse, agentChoiceSaved, setupMarkerErrorBody, setupMarkerErrorMessage } from '../../api/acpBackend'
 import { api } from '../../api/client'
 import type { AcpBackendProbe } from '../../api/client'
 import ErrorBoundary from '../../components/ErrorBoundary'
@@ -692,11 +692,14 @@ export function AgentBackendTab() {
    */
   const needsRestart = (value: string) => probe(value)?.restart_required === true
   /**
-   * Selectability is deliberately NOT part of this: an unselectable agent has no Use
-   * button at all rather than a dead one, so the only reasons a rendered button is
-   * dead are ones the user can act on — install the binary, or re-check.
+   * The probe row's own verdict, shared with first-run setup (`acpProbeBlocksUse`),
+   * so the two screens cannot disagree on what a row means. It includes the row's
+   * `selectable: false`, but that never disables a rendered button here: an
+   * unselectable agent is filtered out of `offered` or shown build-excluded with no
+   * Use button at all, so the only reasons a rendered button is dead are ones the
+   * user can act on — install the binary, or re-check.
    */
-  const cannotUse = (value: string) => notInstalled(value) || needsRestart(value)
+  const cannotUse = (value: string) => acpProbeBlocksUse(probe(value))
 
   /**
    * A standing caveat about the harness itself, independent of whether it is

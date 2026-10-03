@@ -19,7 +19,7 @@ import {
   type AcpBackendProbe,
   type KiroPrerequisiteStatus,
 } from '../api/client'
-import { ACP_BACKEND_KAS, ACP_BACKEND_KIRO, acpBackendName, agentChoiceSaved, setupMarkerErrorBody, setupMarkerErrorMessage } from '../api/acpBackend'
+import { ACP_BACKEND_KAS, ACP_BACKEND_KIRO, acpBackendName, acpProbeConfirmsUse, agentChoiceSaved, setupMarkerErrorBody, setupMarkerErrorMessage } from '../api/acpBackend'
 import { clearCachedModels } from '../providers/adapters/acp'
 import {
   PANEL_CLASS,
@@ -978,8 +978,9 @@ function configuredBackendCanStart(
   status: KiroPrerequisiteStatus | undefined,
   probe: AcpBackendProbe | undefined,
 ): boolean {
-  if (!status || !probe || probe.installed !== 'installed' || probe.restart_required
-    || probe.selectable === false || status.sandbox_unavailable
+  // The probe row's own verdict is the one Settings > Agent Harness reads too
+  // (`acpProbeConfirmsUse`); only the host and setup checks below are this gate's.
+  if (!status || !probe || !acpProbeConfirmsUse(probe) || status.sandbox_unavailable
     // A session can start when the host has an OS backend OR it permits
     // unsandboxed exec (platform default / operator opt-in). Fail closed on an
     // older gateway that sends neither field: `=== true` reads undefined as not

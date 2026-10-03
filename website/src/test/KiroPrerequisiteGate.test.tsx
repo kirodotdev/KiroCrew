@@ -2903,3 +2903,50 @@ describe('KiroPrerequisiteGate agent picker copy (UX round 5)', () => {
     })
   })
 })
+
+/**
+ * The shared probe verdict, rendered (#14517). The same states as
+ * acpBackend.eligibility.test.ts and Settings > Agent Harness's block, so a surface
+ * that stopped reading the shared verdict fails here. First-run setup is the
+ * STRICT reader (`acpProbeConfirmsUse`): finishing setup is durable, so a failed
+ * check disables Use here where Settings leaves it live.
+ */
+describe('KiroPrerequisiteGate shared probe eligibility', () => {
+  const render = () => renderWithProviders(
+    <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+  )
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    localStorage.clear()
+    vi.mocked(api.kirocrewConfig).mockResolvedValue({ agent: {} })
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status())
+  })
+
+  it.each([
+    ['installed', {}, true],
+    ['missing', { installed: 'missing', missing_components: ['claude-agent-acp'] }, false],
+    ['restart required', { restart_required: true }, false],
+    ['check failed', { installed: 'unknown' }, false],
+  ] as const)('%s: Use enabled = %s', async (_label, over, enabled) => {
+    vi.mocked(api.acpBackends).mockResolvedValue({ backends: [probe({ ...over })] })
+    render()
+    fireEvent.click(await screen.findByRole('button', { name: 'Use other coding agents' }))
+    const use = await screen.findByRole('button', { name: /Use Claude Code/ })
+    if (enabled) expect(use).toBeEnabled()
+    else expect(use).toBeDisabled()
+  })
+
+  it('unselectable: not offered at all', async () => {
+    vi.mocked(api.acpBackends).mockResolvedValue({
+      backends: [
+        probe({ selectable: false }),
+        probe({ id: 'codex', policy_id: 'codex' }),
+      ],
+    })
+    render()
+    fireEvent.click(await screen.findByRole('button', { name: 'Use other coding agents' }))
+    expect(await screen.findByRole('radio', { name: 'codex' })).toBeInTheDocument()
+    expect(screen.queryByRole('radio', { name: 'Claude Code' })).toBeNull()
+  })
+})
