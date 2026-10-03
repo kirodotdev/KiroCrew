@@ -1312,10 +1312,19 @@ measures, never above.
 
 - **Pin discovery inputs beyond the mocked call.** A test controlling
   `shutil.which` must also pin explicit candidate locations consulted first
-  (`TestPySpy`). Service fixtures modeling absent files must move `ENV_DIR` and
-  `ENV_FILE_PATH` under `tmp_path` alongside `UNIT_PATH`; a host's untouched seed
-  can otherwise add legitimate uninstall cleanup calls. Preserve the candidate
-  discovery and edited/untouched-seed assertions.
+  (`TestPySpy`). Preserve the candidate discovery assertions.
+
+- **A reimported module is restored in both places.** Tests that reimport a module
+  restore its `sys.modules` entry and its parent package's child attribute, including
+  their original absence, and remove temporary module entries before restoring the
+  saved objects. The pysqlite3 fallback tests left `kiro_crew.knowledge.store`
+  pointing at the stdlib-backed temporary module after restoring `sys.modules`, so
+  the next schema-behind test failed to catch the optional driver's exception. Verify
+  by running the fallback and its consumer in order in one `-n0` process.
+
+- **Keep source annotations outside generated configuration text.** An inline
+  `# wokeignore:rule=master` belongs on the Python literal, not inside its SSH config
+  value, where OpenSSH treats it as extra option arguments.
 
 - **A spawn that can outlive the test gets a process-GROUP reap, not `kill()`.** A child
   is routinely a wrapper that forks, so killing the direct pid reaps the wrapper and
