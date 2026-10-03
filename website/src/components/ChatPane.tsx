@@ -1520,6 +1520,14 @@ export default function ChatPane({
            name: classes here are styling and can churn without anyone
            auditing focus behaviour. */
         data-chat-pane={focused ? 'focused' : ''}
+        /* WHICH session this pane sends to, for a lookup that already knows
+           the slot it wants -- a quick-search open in split view
+           (`queryComposerForSlot` in pages/chat/composerFocus.ts, #15937).
+           `data-chat-pane` above answers a different question (is this the
+           grid-focused pane), and the grid's focus never follows
+           `activeSlot`, so without this nothing in the DOM could say which
+           pane renders the session the user just opened. */
+        data-pane-slot={slotKey}
         {...dropTargetProps}
         className={`relative flex flex-col h-full min-h-0 overflow-hidden bg-bg ${
           frameless

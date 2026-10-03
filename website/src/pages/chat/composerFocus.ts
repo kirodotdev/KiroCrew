@@ -377,29 +377,63 @@ function focusOnceSwitchHasLanded(key: string, store: ActiveSlotStore): void {
     })
     return
   }
-  focusComposerNow()
+  focusComposerNow(key)
 }
 
 /** The one place both quick-search helpers put the caret: the sidebar's three
  *  rules (touch, a field the user holds, and -- through `queryComposer` -- a
  *  collapsed composer stays collapsed, reported missing with no expand
- *  requested), then the composer.
+ *  requested), then the composer the gesture is about.
  *
- *  Split view is skipped entirely. While a session-grid pane is mounted the
- *  page shows N composers, each bound to its own pane's slot, and the grid's
- *  focus model never follows `activeSlot` (see SessionGridView), so
- *  `queryComposer` would answer with the grid-focused pane's composer -- a
- *  session the gesture did not open, where the next Enter would send. A sidebar
- *  click leaves the split before it focuses; a quick-search open does not, so
- *  the honest answer here is no caret, exactly what the surfaces did before
- *  they said anything about focus. A lookup that resolves the pane bound to
- *  the opened key is the follow-up; nothing in the DOM names a pane's slot
- *  today. */
-export function focusComposerNow(): void {
+ *  `key` is the slot the gesture OPENED, when it opened one. It decides which
+ *  composer in split view: while a session-grid pane is mounted the page shows
+ *  N composers, each bound to its own pane's slot, and the grid's focus model
+ *  never follows `activeSlot` (see SessionGridView), so `queryComposer` would
+ *  answer with the grid-focused pane's composer -- a session the gesture did
+ *  not open, where the next Enter would send. `queryComposerForSlot` resolves
+ *  the pane bound to the opened key instead (#15937). No pane renders the
+ *  key, or the gesture named no key (the palette's dismiss fallback), and the
+ *  honest answer stays no caret: a sidebar click leaves the split before it
+ *  focuses, a quick-search open does not, and the store having switched does
+ *  not put the session on screen. Outside split view the single composer is
+ *  bound to the active slot, which the callers have already checked IS `key`. */
+export function focusComposerNow(key?: string): void {
   if (isTouchDevice()) return
-  if (document.querySelector('[data-chat-pane]')) return
   if (activeElementIsEditable()) return
-  queryComposer()?.focus()
+  queryComposerForSlot(key)?.focus()
+}
+
+/**
+ * The composer that answers to `key` on this page, or null when none provably
+ * does.
+ *
+ * No pane mounted: the single-chat surface, whose one composer is bound to the
+ * active slot -- `queryComposer`'s document-wide answer, unchanged.
+ *
+ * Panes mounted: ONLY the pane whose `data-pane-slot` names `key`. The pane
+ * names its slot in the DOM for exactly this lookup (ChatPane's root carries
+ * `data-pane-slot` beside `data-chat-pane`), because nothing else there says
+ * which session a composer sends to: `data-chat-pane="focused"` says which pane
+ * the grid considers focused, and that is a different question with a
+ * different answer. Compared as attribute bytes rather than through an
+ * attribute selector, so a slot key never has to be CSS-escaped here.
+ *
+ * A pane bound to `key` is the only acceptable answer while panes are mounted:
+ * the grid-focused pane's composer would route the user's next Enter to a
+ * session the gesture did not open, and the first pane in document order is
+ * no better. Hence null, not a fallback, when no pane renders the key -- and
+ * null for an undefined `key`, since a gesture that opened nothing has no pane
+ * to claim.
+ */
+function queryComposerForSlot(key: string | undefined): HTMLTextAreaElement | null {
+  const panes = document.querySelectorAll<HTMLElement>('[data-chat-pane]')
+  if (panes.length === 0) return queryComposer()
+  if (key === undefined) return null
+  for (const pane of panes) {
+    if (pane.getAttribute('data-pane-slot') !== key) continue
+    return pane.querySelector<HTMLTextAreaElement>('textarea[data-composer-input]')
+  }
+  return null
 }
 
 /**
@@ -420,10 +454,14 @@ export function focusComposerNow(): void {
  * its fulfilled reducer, at the moment this promise settles, so there is no
  * provisional window for a keystroke to land in, and the slot the reducer
  * entered IS the one the gesture named.
+ *
+ * `key` is the thunk's own payload field -- the slot the gateway resumed, which
+ * is the one the reducer entered -- and names the pane to focus in split view
+ * (#15937).
  */
-export function focusComposerForResumedSession(resumed: Promise<{ ok: boolean; surface?: string }>): void {
+export function focusComposerForResumedSession(resumed: Promise<{ ok: boolean; surface?: string; key: string }>): void {
   void resumed
-    .then(result => { if (result.ok && isChatPageSurface(result.surface)) requestAnimationFrame(focusComposerNow) })
+    .then(result => { if (result.ok && isChatPageSurface(result.surface)) requestAnimationFrame(() => focusComposerNow(result.key)) })
     .catch(() => {})
 }
 

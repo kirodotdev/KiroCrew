@@ -23,7 +23,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, extname, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { COMPOSER_EXPAND_EVENT, focusComposer, focusComposerAfter, focusComposerForOpenedSession, focusComposerForResumedSession, queryComposer, revealComposer, releaseComposerForKeyboardSwitch, consumeComposerRelease } from '../pages/chat/composerFocus'
+import { COMPOSER_EXPAND_EVENT, focusComposer, focusComposerAfter, focusComposerForOpenedSession, focusComposerForResumedSession, focusComposerNow, queryComposer, revealComposer, releaseComposerForKeyboardSwitch, consumeComposerRelease } from '../pages/chat/composerFocus'
 
 let touch = false
 vi.mock('../utils/isTouchDevice', () => ({ isTouchDevice: () => touch }))
@@ -301,32 +301,124 @@ describe('focusComposerForOpenedSession — a quick-search surface opened a sess
     }
   })
 
-  it('focuses nothing while a session-grid pane is mounted: in split view no composer is provably the opened slot\'s', async () => {
+  describe('split view (#15937): the caret goes to the pane bound to the OPENED slot', () => {
     // Split view: every pane mounts its own composer bound to its own slot, and
-    // the grid's focus model never follows `activeSlot`. The only composer the
-    // lookup can offer is the grid-focused pane's -- a session the gesture did
-    // not open -- so the surface says nothing, as it did before this helper.
-    const pane = document.createElement('div')
-    pane.setAttribute('data-chat-pane', 'focused')
-    document.body.appendChild(pane)
-    pane.appendChild(composer)
-    try {
+    // the grid's focus model never follows `activeSlot`. Each pane names its slot
+    // in the DOM (`data-pane-slot`, ChatPane's root) so the lookup can find the
+    // pane that renders the opened session instead of the grid-focused one.
+    const GRID_FOCUSED = 'zzq-grid-focused'
+    type Pane = { pane: HTMLDivElement; ta: HTMLTextAreaElement }
+    const mountPane = (slot: string, gridFocused: boolean): Pane => {
+      const pane = document.createElement('div')
+      pane.setAttribute('data-chat-pane', gridFocused ? 'focused' : '')
+      pane.setAttribute('data-pane-slot', slot)
+      const ta = document.createElement('textarea')
+      ta.setAttribute('data-composer-input', '')
+      pane.appendChild(ta)
+      document.body.appendChild(pane)
+      return { pane, ta }
+    }
+    let focusedPane: Pane
+    let openedPane: Pane
+    beforeEach(() => {
+      // The suite-level fixture composer sits OUTSIDE any pane: with panes
+      // mounted it is nobody's composer, so it must never be the answer.
+      composer.remove()
+      focusedPane = mountPane(GRID_FOCUSED, true)
+      openedPane = mountPane(OPENED, false)
+    })
+    afterEach(() => {
+      focusedPane.pane.remove()
+      openedPane.pane.remove()
+      document.body.appendChild(composer)
+    })
+
+    it('focuses the composer of the pane bound to the opened key, never the grid-focused pane\'s', async () => {
       focusComposerForOpenedSession(Promise.resolve({ key: OPENED }), OPENED, storeOn(OPENED))
       await flushFrame()
       await flushFrame()
+      expect(document.activeElement).toBe(openedPane.ta)
+      expect(document.activeElement).not.toBe(focusedPane.ta)
+    })
+
+    it('never answers with the pane the grid marks focused when the key names another pane, whichever came first in the document', async () => {
+      // Document order reversed: the opened pane precedes the grid-focused one.
+      // A first-match or focused-marker lookup would each pick differently; the
+      // key decides regardless.
+      document.body.insertBefore(openedPane.pane, focusedPane.pane)
+      focusComposerForOpenedSession(Promise.resolve({ key: OPENED }), OPENED, storeOn(OPENED))
+      await flushFrame()
+      await flushFrame()
+      expect(document.activeElement).toBe(openedPane.ta)
+    })
+
+    it('focuses nothing when panes are mounted and none is bound to the opened key', async () => {
+      // The opened session is not on screen: the store switched, the grid did
+      // not change (what the split should DO here is the open product question
+      // on the issue), and the grid-focused pane is a session the gesture did
+      // not open -- the next Enter would send there. So: no caret.
+      openedPane.pane.setAttribute('data-pane-slot', 'zzq-some-other-slot')
+      focusComposerForOpenedSession(Promise.resolve({ key: OPENED }), OPENED, storeOn(OPENED))
+      await flushFrame()
+      await flushFrame()
+      expect(document.activeElement).not.toBe(focusedPane.ta)
+      expect(document.activeElement).not.toBe(openedPane.ta)
       expect(document.activeElement).not.toBe(composer)
-    } finally {
-      document.body.appendChild(composer)
-      pane.remove()
-    }
+    })
+
+    it('compares the slot key as bytes: a pane whose slot merely starts with the key is not the opened pane', async () => {
+      openedPane.pane.setAttribute('data-pane-slot', `${OPENED}-2`)
+      focusComposerForOpenedSession(Promise.resolve({ key: OPENED }), OPENED, storeOn(OPENED))
+      await flushFrame()
+      await flushFrame()
+      expect(document.activeElement).not.toBe(openedPane.ta)
+      expect(document.activeElement).not.toBe(focusedPane.ta)
+    })
+
+    it('a pane that names no slot at all (the pre-#15937 DOM) is never the answer', async () => {
+      // The shape #15785 pinned: a `data-chat-pane` with no slot name. Such a pane
+      // cannot be shown to be the opened session's, so nothing is focused -- the
+      // same outcome #15785 chose, now for the stated reason rather than for
+      // every pane unconditionally.
+      openedPane.pane.removeAttribute('data-pane-slot')
+      focusedPane.pane.removeAttribute('data-pane-slot')
+      focusComposerForOpenedSession(Promise.resolve({ key: OPENED }), OPENED, storeOn(OPENED))
+      await flushFrame()
+      await flushFrame()
+      expect(document.activeElement).not.toBe(openedPane.ta)
+      expect(document.activeElement).not.toBe(focusedPane.ta)
+    })
+
+    it('keeps the sidebar\'s rules in split view too: an editable element the user holds keeps the caret', async () => {
+      const searchBox = document.createElement('input')
+      document.body.appendChild(searchBox)
+      try {
+        searchBox.focus()
+        focusComposerForOpenedSession(Promise.resolve({ key: OPENED }), OPENED, storeOn(OPENED))
+        await flushFrame()
+        await flushFrame()
+        expect(document.activeElement).toBe(searchBox)
+      } finally {
+        searchBox.remove()
+      }
+    })
+
+    it('skips touch devices in split view too', async () => {
+      touch = true
+      focusComposerForOpenedSession(Promise.resolve({ key: OPENED }), OPENED, storeOn(OPENED))
+      await flushFrame()
+      await flushFrame()
+      expect(document.activeElement).not.toBe(openedPane.ta)
+    })
   })
 })
 
 describe('focusComposerForResumedSession — only once the resume entered the session', () => {
-  const entered = { ok: true, surface: '' }
+  const RESUMED = 'zzq-resumed'
+  const entered = { ok: true, surface: '', key: RESUMED }
 
   it('does NOT focus while the resume is in flight, then focuses once it has entered', async () => {
-    let resolve!: (r: { ok: boolean; surface?: string }) => void
+    let resolve!: (r: { ok: boolean; surface?: string; key: string }) => void
     focusComposerForResumedSession(new Promise(r => { resolve = r }))
     await flushFrame()
     expect(document.activeElement).not.toBe(composer)
@@ -336,13 +428,13 @@ describe('focusComposerForResumedSession — only once the resume entered the se
   })
 
   it('focuses nothing for an `ok: false` answer — the reducer left the active slot where it was', async () => {
-    focusComposerForResumedSession(Promise.resolve({ ok: false, surface: '' }))
+    focusComposerForResumedSession(Promise.resolve({ ok: false, surface: '', key: RESUMED }))
     await flushFrame()
     expect(document.activeElement).not.toBe(composer)
   })
 
   it('focuses nothing for a surface the chat page cannot display (#3624)', async () => {
-    focusComposerForResumedSession(Promise.resolve({ ok: true, surface: 'slack' }))
+    focusComposerForResumedSession(Promise.resolve({ ok: true, surface: 'slack', key: RESUMED }))
     await flushFrame()
     expect(document.activeElement).not.toBe(composer)
   })
@@ -356,6 +448,81 @@ describe('focusComposerForResumedSession — only once the resume entered the se
     process.off('unhandledRejection', unhandled)
     expect(document.activeElement).not.toBe(composer)
     expect(unhandled).not.toHaveBeenCalled()
+  })
+
+  describe('split view (#15937): the caret goes to the pane bound to the RESUMED slot', () => {
+    // The history path: the key the reducer entered is the thunk's own payload
+    // field, so the same pane lookup applies as for a live-row switch.
+    const GRID_FOCUSED = 'zzq-grid-focused'
+    const mountPane = (slot: string, gridFocused: boolean) => {
+      const pane = document.createElement('div')
+      pane.setAttribute('data-chat-pane', gridFocused ? 'focused' : '')
+      pane.setAttribute('data-pane-slot', slot)
+      const ta = document.createElement('textarea')
+      ta.setAttribute('data-composer-input', '')
+      pane.appendChild(ta)
+      document.body.appendChild(pane)
+      return { pane, ta }
+    }
+    let focusedPane: ReturnType<typeof mountPane>
+    let resumedPane: ReturnType<typeof mountPane>
+    beforeEach(() => {
+      composer.remove()
+      focusedPane = mountPane(GRID_FOCUSED, true)
+      resumedPane = mountPane(RESUMED, false)
+    })
+    afterEach(() => {
+      focusedPane.pane.remove()
+      resumedPane.pane.remove()
+      document.body.appendChild(composer)
+    })
+
+    it('focuses the composer of the pane bound to the resumed key, never the grid-focused pane\'s', async () => {
+      focusComposerForResumedSession(Promise.resolve(entered))
+      await flushFrame()
+      await flushFrame()
+      expect(document.activeElement).toBe(resumedPane.ta)
+      expect(document.activeElement).not.toBe(focusedPane.ta)
+    })
+
+    it('focuses nothing when panes are mounted and none is bound to the resumed key', async () => {
+      resumedPane.pane.setAttribute('data-pane-slot', 'zzq-some-other-slot')
+      focusComposerForResumedSession(Promise.resolve(entered))
+      await flushFrame()
+      await flushFrame()
+      expect(document.activeElement).not.toBe(focusedPane.ta)
+      expect(document.activeElement).not.toBe(resumedPane.ta)
+    })
+  })
+})
+
+describe('focusComposerNow with no opened key (the palette\'s dismiss fallback)', () => {
+  // The legacy palette falls back to `focusComposerNow()` when a dismiss has no
+  // element to restore focus to. That gesture opened NO session, so in split
+  // view there is no pane for it to claim, and it focuses nothing -- the
+  // pre-#15937 answer, pinned here so a change to it is a decision and not an
+  // accident. (A single composer with no pane mounted is focused, as before.)
+  it('focuses the single composer when no pane is mounted', async () => {
+    focusComposerNow()
+    expect(document.activeElement).toBe(composer)
+  })
+
+  it('focuses nothing while panes are mounted, not even the grid-focused pane\'s composer', async () => {
+    composer.remove()
+    const pane = document.createElement('div')
+    pane.setAttribute('data-chat-pane', 'focused')
+    pane.setAttribute('data-pane-slot', 'zzq-grid-focused')
+    const ta = document.createElement('textarea')
+    ta.setAttribute('data-composer-input', '')
+    pane.appendChild(ta)
+    document.body.appendChild(pane)
+    try {
+      focusComposerNow()
+      expect(document.activeElement).not.toBe(ta)
+    } finally {
+      pane.remove()
+      document.body.appendChild(composer)
+    }
   })
 })
 
