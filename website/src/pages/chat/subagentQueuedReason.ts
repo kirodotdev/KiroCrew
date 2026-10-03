@@ -17,18 +17,26 @@
  */
 import { fmtUnit } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
+import backendPhrases from '../../lib/backendPhrases.json'
 
 /** The gate's kinds. `concurrency_limit` clears on its own within seconds; the
- *  other three are deferrals re-checked every admit wait, possibly for hours. */
-export type SubagentQueuedReasonKind =
-  | 'concurrency_limit'
-  | 'low_memory'
-  | 'posture_critical'
-  | 'adaptive_cap_zero'
+ *  others can wait possibly for hours. `memory_pressure` is the macOS kernel's
+ *  pressure verdict and carries no GB figures: the free-memory figure cleared
+ *  the floor, so numbers would contradict it. */
+const KINDS = [
+  'concurrency_limit',
+  'low_memory',
+  'posture_critical',
+  'adaptive_cap_zero',
+  'memory_pressure',
+] as const
+
+export type SubagentQueuedReasonKind = (typeof KINDS)[number]
 
 export type SubagentQueuedReason = {
   reason: SubagentQueuedReasonKind
-  /** Reclaimable host memory the gate measured, in GB (memory kinds only). */
+  /** Reclaimable host memory the gate measured, in GB (`low_memory` and
+   *  `posture_critical` only; `memory_pressure` carries no figures). */
   available_gb?: number
   /** The bar that measurement fell short of, in GB (`low_memory` only). */
   required_gb?: number
@@ -44,9 +52,7 @@ export type SubagentQueuedEvent = {
   required_gb?: number
 }
 
-const KINDS: ReadonlySet<string> = new Set<SubagentQueuedReasonKind>([
-  'concurrency_limit', 'low_memory', 'posture_critical', 'adaptive_cap_zero',
-])
+const KIND_SET: ReadonlySet<string> = new Set<string>(KINDS)
 
 const finiteOrUndefined = (v: unknown): number | undefined =>
   typeof v === 'number' && Number.isFinite(v) ? v : undefined
@@ -54,7 +60,7 @@ const finiteOrUndefined = (v: unknown): number | undefined =>
 /** The typed label carried by an event, or `undefined` when the event carries
  *  none the UI knows how to render (older gateway, unknown kind). */
 export function parseSubagentQueuedReason(ev: SubagentQueuedEvent): SubagentQueuedReason | undefined {
-  if (typeof ev.reason !== 'string' || !KINDS.has(ev.reason)) return undefined
+  if (typeof ev.reason !== 'string' || !KIND_SET.has(ev.reason)) return undefined
   const out: SubagentQueuedReason = { reason: ev.reason as SubagentQueuedReasonKind }
   const available = finiteOrUndefined(ev.available_gb)
   const required = finiteOrUndefined(ev.required_gb)
@@ -93,7 +99,26 @@ export function queuedWaitText(reason: SubagentQueuedReason | undefined): string
         : i18nT('pages.chat.subagentQueued.posture_critical_no_figures')
     case 'adaptive_cap_zero':
       return i18nT('pages.chat.subagentQueued.adaptive_cap_zero')
+    case 'memory_pressure':
+      return i18nT('pages.chat.subagentQueued.memory_pressure')
     default:
       return null
   }
+}
+
+/** The opening words of the gate's terminal error for a start its macOS
+ *  memory-pressure hold ended (`MEMORY_PRESSURE_NEVER_STARTED`, backend). A run
+ *  carrying it launched nothing, so a grouped header must not call it
+ *  "finished".
+ *
+ *  It lives in `lib/backendPhrases.json`, not as a literal here, because it is
+ *  backend prose this UI MATCHES rather than copy it renders: the i18n gate reads
+ *  a string literal in a `.ts` file as a user-visible string to translate, which
+ *  this must never be. `test_the_card_and_the_gate_agree_on_the_never_started_prefix`
+ *  pins it against the Python constant. */
+export const NEVER_STARTED_PREFIX = backendPhrases.neverStartedPrefix
+
+/** Whether a terminal run's error says it never started. */
+export function isNeverStarted(error: string | undefined): boolean {
+  return typeof error === 'string' && error.startsWith(NEVER_STARTED_PREFIX)
 }

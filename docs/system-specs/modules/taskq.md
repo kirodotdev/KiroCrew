@@ -95,6 +95,9 @@ whose app could be disabled by the time the row starts, and `approval_mode`, who
 `"auto"` skips the spawn gate AND pre-approves the run's tools. A recovered row
 faces the gate its caller faced. `scope_ref` still RECORDS both, which is why the
 schema calls that column references rather than grants: no start path reads it.
+The one in-process exception is the accepting process's own `approval_mode` for a
+row still waiting, restored on its window refill (subagent.md,
+`_held_approval_modes`); a restart never sees it.
 Pinned by
 `test_taskq_admission_integration.py::test_an_ad_hoc_auto_approval_is_never_persisted_on_the_row`,
 and the legacy importer drops a persisted `auto_approve` for the same reason
@@ -856,7 +859,10 @@ subagent adapter calls it — instead of refusing — when
 caller receives a `queued` id. Only when there is no store (the feature is
 off, or the row is a legacy in-memory entry the store never saw) does pressure
 still refuse, exactly as before. `agent.admission_gate=false` still turns the
-posture tier off entirely.
+posture tier off entirely. The macOS kernel memory-pressure hold is not a deferral: it
+is a capacity-style wait in the window (subagent.md), and the runner lane,
+cron and workflow `ctx.agent` gates deliberately do not read the kernel level;
+only the subagent gate acts on it.
 
 ## Journal mode and network filesystems
 

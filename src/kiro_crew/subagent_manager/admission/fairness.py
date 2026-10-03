@@ -17,6 +17,8 @@ from .types import (
 _glue_logger = _logging.getLogger("kiro_crew.subagent_manager.admission")
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from kiro_crew import taskq as _taskq
     from kiro_crew.taskq import lanes as _lanes
 
@@ -328,7 +330,11 @@ class _FairnessMixin(ManagerComponent):
         return self.capacity_view().root_slot
 
     def pick_window_index(
-        self, view: CapacityView | None = None, *, lanes: Mapping[str, str] | None = None
+        self,
+        view: CapacityView | None = None,
+        *,
+        lanes: Mapping[str, str] | None = None,
+        root_held: Callable[[Mapping[str, Any]], bool] | None = None,
     ) -> int | None:
         """Which ``_queue`` entry the pump takes next, or None when none may start.
 
@@ -340,6 +346,10 @@ class _FairnessMixin(ManagerComponent):
         off the loop (:meth:`resolve_window_lanes_async`); without it the lane
         of an entry that carries none is walked here, which only an inline
         (no-loop) caller may pay for.
+
+        *root_held* answers, for a root entry that could otherwise start, whether
+        the kernel memory-pressure hold keeps it waiting; a nested entry never
+        asks it.
         """
         queue = self._manager._queue
         if not queue:
@@ -362,7 +372,10 @@ class _FairnessMixin(ManagerComponent):
             return (
                 not params.get("_startup_release")
                 and not self._manager._boundary_cancellation_pending(params)
-                and (roots_ok or self.entry_is_child(params))
+                and (
+                    self.entry_is_child(params)
+                    or (roots_ok and (root_held is None or not root_held(params)))
+                )
             )
 
         def lane_of(params: Mapping[str, Any]) -> str:

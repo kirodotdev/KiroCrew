@@ -10321,12 +10321,16 @@
         "adaptive_cap_zero": "開始待ち — このコンピューターのメモリ不足または高負荷のため新しい開始を一時停止中です。回復すると自動的に再開します",
         "low_memory": "開始待ち — {{required}} の空きメモリが必要です（現在の空き {{available}}）。続行するにはメモリを空けてください",
         "low_memory_no_figures": "開始待ち — 空きメモリが不足しています。続行するにはメモリを空けてください",
+        "memory_pressure": "開始待ち — macOS がメモリプレッシャーを報告しています。プレッシャーが下がるか、実行中のエージェントが終了すると自動的に再開します。プレッシャーが 30 分続くと開始は打ち切られます",
         "posture_critical": "開始待ち — このコンピューターのメモリが著しく不足しています（空き {{available}}）。続行するにはメモリを空けてください",
         "posture_critical_no_figures": "開始待ち — このコンピューターのメモリが著しく不足しています。続行するにはメモリを空けてください"
       },
       "subagentRunCard": {
         "agent_finished_other": "{{count}} 個のエージェントが完了",
         "agent_launched_other": "{{count}} 個のエージェントを起動",
+        "agent_never_started_other": "{{count}} 個のエージェントが開始されませんでした",
+        "agent_ran_of_total_other": "{{total}} 個中 {{count}} 個のエージェントが実行されました",
+        "never_started_memory_pressure_other": "{{count}} 個が開始されませんでした — macOS のメモリプレッシャーが時間内に下がりませんでした。プレッシャーが下がるか実行中のエージェントが終了したら、サブエージェントパネルの「失敗を再試行」を使ってください（プレッシャーはアクティビティモニタの「メモリ」タブで確認できます）",
         "agent_other": "{{count}} 個のエージェント",
         "agent_queued_other": "{{count}} 個のエージェントが待機中",
         "agent_running_other": "{{count}} 個のエージェントが実行中",

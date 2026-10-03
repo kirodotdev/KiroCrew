@@ -11,6 +11,7 @@ and the ``agent.admission_gate`` config key.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import threading
@@ -53,17 +54,62 @@ def _refused() -> rs.AdmissionDecision:
 
 
 def _admitted() -> rs.AdmissionDecision:
-    return rs.AdmissionDecision(
-        admitted=True, posture=rs.POSTURE_AMPLE, available_gb=16.0
-    )
+    return rs.AdmissionDecision(admitted=True, posture=rs.POSTURE_AMPLE, available_gb=16.0)
 
 
-async def _wait_for(predicate, timeout=5.0, interval=0.05):
-    """Poll until predicate is true or timeout."""
+@pytest.fixture(autouse=True)
+def _close_subagent_managers(monkeypatch: pytest.MonkeyPatch):
+    """Close every ``SubagentManager`` built in a test.
+
+    Construction opens the durable task queue (``tasks.db`` + ``-wal`` +
+    ``-shm`` and a writer thread), so a manager a test merely drops keeps them
+    until the cyclic collector runs. The shape ``test_subagent_sizing`` uses;
+    main requests the same body from conftest's ``close_subagent_managers``.
+    """
+    import kiro_crew.subagent as _subagent_mod
+
+    created: list = []
+    orig_init = _subagent_mod.SubagentManager.__init__
+
+    def _tracking_init(self, *args, **kwargs):
+        orig_init(self, *args, **kwargs)
+        created.append(self)
+
+    monkeypatch.setattr(_subagent_mod.SubagentManager, "__init__", _tracking_init)
+    try:
+        yield
+    finally:
+        for mgr in created:
+            try:
+                mgr.close()
+            except Exception:  # pragma: no cover - a half-built manager
+                pass
+
+
+#: Ceiling on waiting for a ``subagent_queued`` emit. The emit follows one
+#: writer-thread round trip, measured in milliseconds; this bounds a lost run on
+#: a loaded shard and is never a pass condition.
+_QUEUED_EMIT_CEILING_SECS = 5.0
+
+
+async def _await_queued_event(events: list[dict[str, Any]], reason: str | None = None) -> None:
+    """Wait for a ``subagent_queued`` extra (one carrying *reason*, when given);
+    RAISE, naming what was read, at the ceiling."""
+    deadline = time.monotonic() + _QUEUED_EMIT_CEILING_SECS
+    while not any(reason is None or e.get("reason") == reason for e in events):
+        assert time.monotonic() < deadline, (
+            f"no subagent_queued{f' with reason {reason!r}' if reason else ''} within "
+            f"{_QUEUED_EMIT_CEILING_SECS}s; events={events!r}"
+        )
+        await asyncio.sleep(0.01)
+
+
+async def _wait_for(predicate, timeout=5.0, interval=0.05, message="predicate"):
+    """Poll until predicate is true or timeout; the failure names *message*."""
     deadline = asyncio.get_running_loop().time() + timeout
     while not predicate():
         if asyncio.get_running_loop().time() > deadline:
-            raise AssertionError("Timed out waiting for predicate")
+            raise AssertionError(f"Timed out after {timeout}s waiting for {message}")
         await asyncio.sleep(interval)
 
 
@@ -96,18 +142,14 @@ class TestAdmissionCheck:
         assert decision.posture == posture
         assert decision.reason == ""
 
-    def test_off_switch_admits_even_when_critical(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_off_switch_admits_even_when_critical(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(rs, "_read_available_gb", lambda: 1.0)
         decision = rs.admission_check(_cfg(gate=False))
         assert decision.admitted is True
         # The posture is still reported truthfully — only enforcement is off.
         assert decision.posture == rs.POSTURE_CRITICAL
 
-    def test_fail_open_on_probe_exception(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_fail_open_on_probe_exception(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def _boom(cfg: object | None = None) -> rs.ResourceStatus:
             raise RuntimeError("probe exploded")
 
@@ -116,9 +158,7 @@ class TestAdmissionCheck:
         assert decision.admitted is True
         assert decision.posture == rs.POSTURE_UNKNOWN
 
-    def test_fail_open_on_config_load_failure(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_fail_open_on_config_load_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # An unreadable config must ADMIT (fail-open), never gate work on
         # default thresholds it could not actually read.
         monkeypatch.setattr(
@@ -142,9 +182,7 @@ class TestAdmissionCheck:
         )
         assert rs.admission_check(cfg).admitted is False
 
-    def test_non_bool_gate_value_defaults_on(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_non_bool_gate_value_defaults_on(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(rs, "_read_available_gb", lambda: 1.0)
         cfg = _cfg()
         cfg.agent.admission_gate = "yes"  # malformed → treated as enabled
@@ -180,9 +218,7 @@ class TestCronAdmissionDeferral:
         assert job.last_status is None
         assert job.id not in svc._claims
         infos = [
-            r
-            for r in caplog.records
-            if r.levelno == logging.INFO and "deferring" in r.getMessage()
+            r for r in caplog.records if r.levelno == logging.INFO and "deferring" in r.getMessage()
         ]
         assert len(infos) == 1  # one INFO per episode, not per tick
 
@@ -198,9 +234,7 @@ class TestCronAdmissionDeferral:
             with patch("kiro_crew.cron.admission_check", return_value=_refused()):
                 await svc._on_timer()
         assert any(
-            "deferring" in r.getMessage()
-            for r in caplog.records
-            if r.levelno == logging.INFO
+            "deferring" in r.getMessage() for r in caplog.records if r.levelno == logging.INFO
         )
         await svc.stop()
 
@@ -266,13 +300,12 @@ class TestSpawnAdmissionGate:
         """
         mgr = self._mgr()
         assert mgr._taskq is not None
-        with patch(
-            "kiro_crew.subagent.check_memory_available", return_value=(True, 8.0)
-        ), patch("kiro_crew.subagent.KiroCrewConfig") as mock_cfg, patch(
-            "kiro_crew.subagent.cached_admission_check", return_value=_refused()
-        ), patch(
-            "kiro_crew.subagent.sel"
-        ) as mock_sel:
+        with (
+            patch("kiro_crew.subagent.check_memory_available", return_value=(True, 8.0)),
+            patch("kiro_crew.subagent.KiroCrewConfig") as mock_cfg,
+            patch("kiro_crew.subagent.cached_admission_check", return_value=_refused()),
+            patch("kiro_crew.subagent.sel") as mock_sel,
+        ):
             mock_cfg.load.return_value.agent.spawn_min_memory_gb = 4.0
             mock_cfg.load.return_value.agent.subagent_cost_gb = 0.5
             mock_sel.return_value.log_tool_invocation = MagicMock()
@@ -294,13 +327,12 @@ class TestSpawnAdmissionGate:
         retry-later error, because there is nothing durable to park the row in."""
         mgr = self._mgr()
         mgr._taskq = None
-        with patch(
-            "kiro_crew.subagent.check_memory_available", return_value=(True, 8.0)
-        ), patch("kiro_crew.subagent.KiroCrewConfig") as mock_cfg, patch(
-            "kiro_crew.subagent.cached_admission_check", return_value=_refused()
-        ), patch(
-            "kiro_crew.subagent.sel"
-        ) as mock_sel:
+        with (
+            patch("kiro_crew.subagent.check_memory_available", return_value=(True, 8.0)),
+            patch("kiro_crew.subagent.KiroCrewConfig") as mock_cfg,
+            patch("kiro_crew.subagent.cached_admission_check", return_value=_refused()),
+            patch("kiro_crew.subagent.sel") as mock_sel,
+        ):
             mock_cfg.load.return_value.agent.spawn_min_memory_gb = 4.0
             mock_cfg.load.return_value.agent.subagent_cost_gb = 0.5
             mock_sel.return_value.log_tool_invocation = MagicMock()
@@ -318,15 +350,13 @@ class TestSpawnAdmissionGate:
     def test_spawn_proceeds_past_gate_when_admitted(self) -> None:
         """An admitted decision falls through to the next guard (cwd here)."""
         mgr = self._mgr()
-        with patch(
-            "kiro_crew.subagent.check_memory_available", return_value=(True, 8.0)
-        ), patch("kiro_crew.subagent.KiroCrewConfig") as mock_cfg, patch(
-            "kiro_crew.subagent.cached_admission_check", return_value=_admitted()
-        ), patch(
-            "kiro_crew.subagent.validate_cwd", return_value=("", "not allowed")
-        ), patch(
-            "kiro_crew.subagent.sel"
-        ) as mock_sel:
+        with (
+            patch("kiro_crew.subagent.check_memory_available", return_value=(True, 8.0)),
+            patch("kiro_crew.subagent.KiroCrewConfig") as mock_cfg,
+            patch("kiro_crew.subagent.cached_admission_check", return_value=_admitted()),
+            patch("kiro_crew.subagent.validate_cwd", return_value=("", "not allowed")),
+            patch("kiro_crew.subagent.sel") as mock_sel,
+        ):
             mock_cfg.load.return_value.agent.spawn_min_memory_gb = 4.0
             mock_cfg.load.return_value.agent.subagent_cwd_allowed_roots = []
             mock_sel.return_value.log_tool_invocation = MagicMock()
@@ -346,15 +376,13 @@ class TestSpawnAdmissionGate:
         the next gate after it: the posture gate, which defers the row.
         """
         mgr = self._mgr()
-        with patch(
-            "kiro_crew.subagent.check_memory_available", return_value=(True, -1.0)
-        ), patch("kiro_crew.platform_compat.IS_LINUX", True), patch(
-            "kiro_crew.subagent.KiroCrewConfig"
-        ) as mock_cfg, patch(
-            "kiro_crew.subagent.cached_admission_check", return_value=_refused()
-        ), patch(
-            "kiro_crew.subagent.sel"
-        ) as mock_sel:
+        with (
+            patch("kiro_crew.subagent.check_memory_available", return_value=(True, -1.0)),
+            patch("kiro_crew.platform_compat.IS_LINUX", True),
+            patch("kiro_crew.subagent.KiroCrewConfig") as mock_cfg,
+            patch("kiro_crew.subagent.cached_admission_check", return_value=_refused()),
+            patch("kiro_crew.subagent.sel") as mock_sel,
+        ):
             mock_cfg.load.return_value.agent.spawn_min_memory_gb = 4.0
             mock_cfg.load.return_value.agent.subagent_cost_gb = 0.5
             mock_sel.return_value.log_tool_invocation = MagicMock()
@@ -366,8 +394,7 @@ class TestSpawnAdmissionGate:
         assert info is not None
         assert info.done is False and info.queued is True
         outcomes = [
-            c[1]["outcome"]
-            for c in mock_sel.return_value.log_tool_invocation.call_args_list
+            c[1]["outcome"] for c in mock_sel.return_value.log_tool_invocation.call_args_list
         ]
         assert outcomes[-1] == "deferred_memory_critical"
         # ...and the guard-did-not-run case was made observable.
@@ -462,40 +489,68 @@ class TestSpawnAdmissionGate:
     # and ``POST /api/spawn`` answered ``spawned`` for it. The gate's verdict is
     # unchanged here; only what it tells the caller is.
 
-    def _spawn_capturing_queued(
-        self, mgr, *, memory: tuple[bool, float], admission: rs.AdmissionDecision
-    ) -> tuple[Any, list[dict[str, Any]]]:
-        """Run ``spawn`` on a live loop and collect every ``subagent_queued`` extra."""
+    @staticmethod
+    def _queued_sink() -> tuple[list[dict[str, Any]], Any]:
+        """``(events, on_event)``: every ``subagent_queued`` extra *on_event* sees."""
         events: list[dict[str, Any]] = []
 
         async def on_event(etype: str, info: Any, extra: dict[str, Any]) -> None:
             if etype == "subagent_queued":
                 events.append(dict(extra))
 
-        async def run() -> Any:
+        return events, on_event
+
+    def _spawn_capturing_queued(
+        self,
+        mgr,
+        *,
+        memory: tuple[bool, float] | None = None,
+        admission: rs.AdmissionDecision | None = None,
+        memory_mode: str | None = None,
+        floor_gb: float = 4.0,
+        parent_session_key: str = "sess-1",
+        **spawn_kwargs: Any,
+    ) -> tuple[Any, list[dict[str, Any]], MagicMock]:
+        """Run ``spawn`` on a live loop; return the info, every ``subagent_queued``
+        extra, and the SEL mock. A refused or started spawn is not waited on.
+
+        *memory* / *admission* left at None run the real floor reader and posture
+        verdict (a test that wants the real readers fakes what is under them)."""
+        events, on_event = self._queued_sink()
+
+        async def run() -> tuple[Any, MagicMock]:
             mgr._on_event = on_event
-            with (
-                patch("kiro_crew.subagent.check_memory_available", return_value=memory),
-                patch("kiro_crew.subagent.KiroCrewConfig") as mock_cfg,
-                patch("kiro_crew.subagent.cached_admission_check", return_value=admission),
-                patch("kiro_crew.subagent.sel") as mock_sel,
-            ):
-                mock_cfg.load.return_value.agent.spawn_min_memory_gb = 4.0
+            with contextlib.ExitStack() as stack:
+                if memory is not None:
+                    stack.enter_context(
+                        patch("kiro_crew.subagent.check_memory_available", return_value=memory)
+                    )
+                if admission is not None:
+                    stack.enter_context(
+                        patch("kiro_crew.subagent.cached_admission_check", return_value=admission)
+                    )
+                mock_cfg = stack.enter_context(patch("kiro_crew.subagent.KiroCrewConfig"))
+                mock_sel = stack.enter_context(patch("kiro_crew.subagent.sel"))
+                mock_cfg.load.return_value.agent.spawn_min_memory_gb = floor_gb
                 mock_cfg.load.return_value.agent.subagent_cost_gb = 0.5
                 mock_sel.return_value.log_tool_invocation = MagicMock()
-                info = mgr.spawn(task="test task", parent_session_key="sess-1")
-            deadline = time.monotonic() + 2.0
-            while not events and time.monotonic() < deadline:
-                await asyncio.sleep(0.01)
-            return info
+                info = mgr.spawn(
+                    task="test task",
+                    parent_session_key=parent_session_key,
+                    _memory_mode=memory_mode,
+                    **spawn_kwargs,
+                )
+            if info is not None and info.queued and not info.done:
+                await _await_queued_event(events)
+            return info, mock_sel
 
-        info = asyncio.run(run())
-        return info, events
+        info, mock_sel = asyncio.run(run())
+        return info, events, mock_sel
 
     def test_low_memory_deferral_names_its_reason_on_the_queued_event(self) -> None:
         mgr = self._mgr()
         assert mgr._taskq is not None
-        info, events = self._spawn_capturing_queued(
+        info, events, _sel = self._spawn_capturing_queued(
             mgr, memory=(False, 3.2), admission=_admitted()
         )
         assert info is not None and info.queued is True and info.done is False
@@ -512,7 +567,7 @@ class TestSpawnAdmissionGate:
     def test_posture_critical_deferral_names_its_reason_on_the_queued_event(self) -> None:
         mgr = self._mgr()
         assert mgr._taskq is not None
-        info, events = self._spawn_capturing_queued(
+        info, events, _sel = self._spawn_capturing_queued(
             mgr, memory=(True, 8.0), admission=_refused()
         )
         assert info is not None and info.queued is True
@@ -521,6 +576,880 @@ class TestSpawnAdmissionGate:
         assert events and events[-1]["reason"] == "posture_critical"
         assert events[-1]["available_gb"] == pytest.approx(_refused().available_gb)
         assert "required_gb" not in events[-1]
+
+    # ── macOS kernel memory pressure: a hold inside the memory floor ─────────
+    #
+    # The reclaimable figure cleared the floor; the kernel says WARN or worse.
+    # A root start waits in the capacity window while a dedicated runtime of
+    # ours is running, with a reason that names no GB figures (subagent.md,
+    # *macOS: the kernel memory-pressure hold*).
+
+    @staticmethod
+    def _level(monkeypatch: pytest.MonkeyPatch, level: int | None) -> None:
+        """Fake the kernel's answer under the floor's own reader (the fresh read)."""
+        from kiro_crew import platform_compat
+
+        monkeypatch.setattr(platform_compat, "memory_pressure_level", lambda: level)
+
+    @staticmethod
+    def _busy(mgr, **fields: Any) -> None:
+        """Give *mgr* one live dedicated child: a runtime of ours the hold can wait on."""
+        from kiro_crew.subagent import SubagentInfo
+
+        mgr._agents["busy"] = SubagentInfo(
+            id="busy", task="w", parent_session_key="sess-0", _pid=4242, **fields
+        )
+
+    @staticmethod
+    def _outcomes(mock_sel: MagicMock) -> list[str]:
+        return [c[1]["outcome"] for c in mock_sel.return_value.log_tool_invocation.call_args_list]
+
+    @staticmethod
+    def _sel_call(mock_sel: MagicMock, outcome: str) -> dict[str, Any]:
+        calls = [
+            c[1]
+            for c in mock_sel.return_value.log_tool_invocation.call_args_list
+            if c[1]["outcome"] == outcome
+        ]
+        assert calls, f"no {outcome!r} SEL row"
+        return calls[-1]
+
+    @pytest.mark.parametrize("level", [2, 4])
+    def test_pressure_holds_a_start_in_the_capacity_window(
+        self, monkeypatch: pytest.MonkeyPatch, level: int
+    ) -> None:
+        from kiro_crew.subagent_wait_reasons import MEMORY_PRESSURE_DETAIL
+
+        mgr = self._mgr()
+        self._busy(mgr)
+        self._level(monkeypatch, level)
+        info, events, mock_sel = self._spawn_capturing_queued(
+            mgr, memory=(True, 8.0), admission=_admitted()
+        )
+        assert info is not None and info.queued is True and info.done is False
+        assert info.queued_reason == "memory_pressure"
+        assert info.queued_reason_detail == MEMORY_PRESSURE_DETAIL
+        assert events[-1]["reason"] == "memory_pressure"
+        assert "available_gb" not in events[-1] and "required_gb" not in events[-1]
+        assert mgr._queue_wait["sess-1"] == {"reason": "memory_pressure"}
+        # A capacity-style wait: the entry is in the window and the store row is
+        # queued and due, never deferred.
+        assert [p["_preassigned_id"] for p in mgr._queue] == [info.id]
+        row = mgr._taskq.get(info.id)
+        assert row is not None and row.state == "queued" and row.next_run_at is None
+        call = self._sel_call(mock_sel, "deferred_memory_pressure")
+        assert call["metadata"]["memory_pressure_level"] == level
+        assert call["metadata"]["available_gb"] == pytest.approx(8.0)
+
+    @pytest.mark.parametrize(
+        ("busy", "level", "floor_gb", "parent"),
+        [
+            # Never stuck: nothing of ours to finish, so the start would wait on
+            # an episode it cannot end.
+            pytest.param(False, 2, 4.0, "sess-1", id="no-runtime-of-ours"),
+            pytest.param(True, None, 4.0, "sess-1", id="level-unreadable"),
+            pytest.param(True, 1, 4.0, "sess-1", id="level-normal"),
+            pytest.param(True, 4, 0.0, "sess-1", id="floor-off"),
+            # The busy runtime IS this child's parent, waiting on it: holding the
+            # child would hold the parent on an episode only the child can end.
+            pytest.param(True, 2, 4.0, "subagent:busy", id="nested-child"),
+        ],
+    )
+    def test_the_hold_lets_a_start_through(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        busy: bool,
+        level: int | None,
+        floor_gb: float,
+        parent: str,
+    ) -> None:
+        mgr = self._mgr()
+        if busy:
+            self._busy(mgr)
+        self._level(monkeypatch, level)
+        info, _events, mock_sel = self._spawn_capturing_queued(
+            mgr,
+            memory=(True, 8.0),
+            admission=_admitted(),
+            floor_gb=floor_gb,
+            parent_session_key=parent,
+        )
+        assert info is not None and info.queued_reason != "memory_pressure"
+        assert "deferred_memory_pressure" not in self._outcomes(mock_sel)
+
+    def test_a_critical_posture_wins_over_the_hold(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Both apply: the user still gets "free up memory" with the figure."""
+        mgr = self._mgr()
+        self._busy(mgr)
+        self._level(monkeypatch, 2)
+        info, events, mock_sel = self._spawn_capturing_queued(
+            mgr, memory=(True, 8.0), admission=_refused()
+        )
+        assert info is not None and info.queued_reason == "posture_critical"
+        assert events[-1]["reason"] == "posture_critical"
+        assert events[-1]["available_gb"] == pytest.approx(_refused().available_gb)
+        assert "deferred_memory_pressure" not in self._outcomes(mock_sel)
+
+    def test_an_unknown_agent_is_refused_before_the_hold(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.subagent import AGENT_NOT_FOUND_CODE
+
+        mgr = self._mgr()
+        self._busy(mgr)
+        self._level(monkeypatch, 2)
+        info, _events, mock_sel = self._spawn_capturing_queued(
+            mgr, memory=(True, 8.0), admission=_admitted(), agent="no-such-agent-xyz"
+        )
+        assert info is not None and info.done is True and info.queued is False
+        assert info.error_code == AGENT_NOT_FOUND_CODE
+        assert "deferred_memory_pressure" not in self._outcomes(mock_sel)
+
+    def test_a_restricted_spawn_waits_in_memory(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """No durable row to defer, but a capacity-style wait needs none: a
+        temporary spawn waits in the in-memory queue exactly as a capacity-held
+        one does, instead of being refused."""
+        from kiro_crew.subagent_wait_reasons import MEMORY_PRESSURE_DETAIL
+
+        mgr = self._mgr()
+        self._busy(mgr)
+        self._level(monkeypatch, 2)
+        info, events, _sel = self._spawn_capturing_queued(
+            mgr, memory=(True, 8.0), admission=_admitted(), memory_mode="temporary"
+        )
+        assert info is not None and info.queued is True and info.done is False
+        assert info.queued_reason == "memory_pressure"
+        assert info.queued_reason_detail == MEMORY_PRESSURE_DETAIL
+        assert mgr._queue_wait["sess-1"] == {"reason": "memory_pressure"}
+        assert events[-1]["reason"] == "memory_pressure"
+        assert [p["_preassigned_id"] for p in mgr._queue] == [info.id]
+
+    def test_a_held_member_keeps_its_asking_turn(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The hold exits through the capacity queue, which pins the turn that asked."""
+        from kiro_crew.crew_log import emit as crew_log_emit
+
+        pinned: list[tuple[str, str, int]] = []
+        monkeypatch.setattr(crew_log_emit, "enabled", lambda: True)
+        monkeypatch.setattr(
+            crew_log_emit,
+            "remember_child_origin",
+            lambda agent_id, sid, turn: pinned.append((agent_id, sid, turn)),
+        )
+        mgr = self._mgr()
+        self._busy(mgr)
+        self._level(monkeypatch, 2)
+        info, _events, _sel = self._spawn_capturing_queued(
+            mgr, memory=(True, 8.0), admission=_admitted(), _crew_log_asked=("sid-1", 7)
+        )
+        assert info is not None and info.queued_reason == "memory_pressure"
+        assert pinned == [(info.id, "sid-1", 7)]
+
+    def test_a_shared_wave_never_holds_itself(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Shared-priced starts are not runtimes the hold waits on, so a wave of
+        plain shared spawns at WARN with nothing dedicated running all pass it."""
+        from kiro_crew.subagent import _SharingPlan
+
+        mgr = self._mgr()
+        mgr._spawn_stagger_secs = 0.0
+        monkeypatch.setattr(mgr, "_startup_cap", lambda: 10)
+        # Started runs stay live (a run that never returns): each earlier member
+        # is a running, shared-priced row when the next one is admitted.
+        mgr._is_yolo = lambda: True
+        monkeypatch.setattr(mgr, "_run", AsyncMock())
+        self._level(monkeypatch, 2)
+        plan = MagicMock(return_value=_SharingPlan(eff_model="", eff_effort="", shared=True))
+        monkeypatch.setattr(mgr, "_sharing_plan", plan)
+        outcomes: list[str] = []
+        for _ in range(3):
+            info, _events, mock_sel = self._spawn_capturing_queued(
+                mgr, memory=(True, 8.0), admission=_admitted()
+            )
+            assert info is not None and info.queued_reason != "memory_pressure"
+            outcomes += self._outcomes(mock_sel)
+        live = [i for i in mgr._agents.values() if not i.done]
+        assert len(live) == 3 and all(i._start_priced_shared for i in live)
+        assert plan.call_count == 3
+        assert "deferred_memory_pressure" not in outcomes
+
+    def test_a_start_the_floor_prices_shared_is_held_too(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A shared start skips the kiro-cli process but still launches a fresh
+        copy of the agent's MCP servers, so it is held while a dedicated one runs."""
+        from kiro_crew.subagent import _SharingPlan
+
+        mgr = self._mgr()
+        self._busy(mgr)
+        self._level(monkeypatch, 2)
+        plan = MagicMock(return_value=_SharingPlan(eff_model="", eff_effort="", shared=True))
+        monkeypatch.setattr(mgr, "_sharing_plan", plan)
+        info, _events, mock_sel = self._spawn_capturing_queued(
+            mgr, memory=(True, 8.0), admission=_admitted()
+        )
+        assert plan.called, "the floor must have priced this start through the sharing plan"
+        assert info is not None and info.queued_reason == "memory_pressure"
+        assert "deferred_memory_pressure" in self._outcomes(mock_sel)
+
+    def test_a_hold_warns_once_per_level(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Every held row is re-checked each pass; a long episode must not log a
+        WARNING per row per pass."""
+        mgr = self._mgr()
+        self._busy(mgr)
+
+        def warnings() -> int:
+            return sum(
+                r.levelno == logging.WARNING and "macOS reports memory pressure" in r.getMessage()
+                for r in caplog.records
+            )
+
+        with caplog.at_level(logging.DEBUG, logger="kiro_crew.subagent"):
+            self._level(monkeypatch, 2)
+            for _ in range(3):
+                self._spawn_capturing_queued(mgr, memory=(True, 8.0), admission=_admitted())
+            assert warnings() == 1
+            self._level(monkeypatch, 4)
+            self._spawn_capturing_queued(mgr, memory=(True, 8.0), admission=_admitted())
+            assert warnings() == 2
+            # The episode ends (no reading held), so the next one warns again.
+            self._level(monkeypatch, 1)
+            self._spawn_capturing_queued(mgr, memory=(True, 8.0), admission=_admitted())
+            self._level(monkeypatch, 4)
+            self._spawn_capturing_queued(mgr, memory=(True, 8.0), admission=_admitted())
+            assert warnings() == 3
+
+    def test_a_held_start_expires_once_its_wait_runs_out(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from kiro_crew.subagent import _PRESSURE_HOLD_MAX_WAIT_SECS
+
+        mgr = self._mgr()
+        with patch("kiro_crew.subagent.sel") as mock_sel:
+            assert mgr._memory_pressure_holds("r1", 2, parent_session_key="sess-1") == "held"
+            mgr._pressure_holds["r1"] = time.monotonic() - _PRESSURE_HOLD_MAX_WAIT_SECS - 1
+            with caplog.at_level(logging.WARNING, logger="kiro_crew.subagent"):
+                assert mgr._memory_pressure_holds("r1", 2, parent_session_key="sess-1") == "expired"
+            # Stays expired, and is said once.
+            assert mgr._memory_pressure_holds("r1", 2, parent_session_key="sess-1") == "expired"
+        expired = self._sel_call(mock_sel, "never_started_memory_pressure")
+        assert expired["metadata"]["subagent_id"] == "r1"
+        assert expired["metadata"]["expired_by"] == "wait"
+        assert expired["metadata"]["waited_secs"] >= _PRESSURE_HOLD_MAX_WAIT_SECS
+        assert self._outcomes(mock_sel).count("never_started_memory_pressure") == 1
+        assert any("for its whole wait" in r.getMessage() for r in caplog.records)
+
+    def test_an_expired_held_row_is_ended_never_started(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Past its bound a held row does not proceed into the pressure it waited
+        on: the next pump pass ends it, never started, its row failed and its
+        parent's depth back to 0."""
+        from kiro_crew.subagent import _PRESSURE_HOLD_MAX_WAIT_SECS
+        from kiro_crew.subagent_wait_reasons import MEMORY_PRESSURE_NEVER_STARTED
+
+        mgr = self._mgr()
+        self._busy(mgr)
+        self._level(monkeypatch, 2)
+        info, _events, _sel = self._spawn_capturing_queued(
+            mgr, memory=(True, 8.0), admission=_admitted()
+        )
+        assert info is not None and info.queued_reason == "memory_pressure"
+        mgr._pressure_holds[info.id] = time.monotonic() - _PRESSURE_HOLD_MAX_WAIT_SECS - 1
+        mgr._spawn_stagger_secs = 0.0
+        with self._gate_patches():
+            mgr._drain_queue()
+        row = mgr._taskq.get(info.id)
+        assert row is not None and row.state == "failed"
+        assert any(
+            MEMORY_PRESSURE_NEVER_STARTED in str(e.data) for e in mgr._taskq.events(info.id)
+        ), [(e.kind, e.data) for e in mgr._taskq.events(info.id)]
+        assert mgr._queue == []
+        # Registered as a terminal record: a caller polling the id reads the
+        # never-started outcome, not a 404.
+        ended = mgr._agents[info.id]
+        assert ended.done is True and ended.error == MEMORY_PRESSURE_NEVER_STARTED
+
+    def test_an_approved_start_past_its_bound_is_ended_never_started(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.subagent import _PRESSURE_HOLD_MAX_WAIT_SECS, SubagentInfo
+
+        mgr = self._mgr()
+        self._busy(mgr)
+        self._level(monkeypatch, 2)
+
+        async def run() -> tuple[str, Any]:
+            info = SubagentInfo(id="approved", task="t", parent_session_key="sess-1")
+            info._start_release = asyncio.get_running_loop().create_future()
+            mgr._queue.append(
+                {
+                    "_resume_id": info.id,
+                    "_startup_release": True,
+                    "_start_info": info,
+                    "parent_session_key": info.parent_session_key,
+                }
+            )
+            mgr._pressure_holds[info.id] = time.monotonic() - _PRESSURE_HOLD_MAX_WAIT_SECS - 1
+            with self._gate_patches():
+                outcome = mgr._admission._release_admitted_start_impl()
+            return outcome, info._start_release
+
+        outcome, fut = asyncio.run(run())
+        assert outcome == "" and fut.result() == "never_started"
+        assert mgr._queue == []
+
+    @contextlib.contextmanager
+    def _gate_patches(self, *, floor_gb: float = 4.0):
+        """The floor reader, the posture verdict, config and SEL, patched for a
+        test that drives several spawns and pump passes on one loop."""
+        with (
+            patch("kiro_crew.subagent.check_memory_available", return_value=(True, 8.0)),
+            patch("kiro_crew.subagent.cached_admission_check", return_value=_admitted()),
+            patch("kiro_crew.subagent.KiroCrewConfig") as mock_cfg,
+            patch("kiro_crew.subagent.sel") as mock_sel,
+        ):
+            mock_cfg.load.return_value.agent.spawn_min_memory_gb = floor_gb
+            mock_cfg.load.return_value.agent.subagent_cost_gb = 0.5
+            mock_sel.return_value.log_tool_invocation = MagicMock()
+            yield mock_sel
+
+    def _starting_mgr(self, monkeypatch: pytest.MonkeyPatch, *, shared: bool) -> tuple[Any, list]:
+        """A manager whose admitted starts register and stay live (a run that
+        never returns), priced *shared* or dedicated, with no stagger."""
+        from kiro_crew.subagent import _SharingPlan
+
+        mgr = self._mgr()
+        mgr._spawn_stagger_secs = 0.0
+        monkeypatch.setattr(mgr, "_startup_cap", lambda: 10)
+        mgr._is_yolo = lambda: True
+        started: list[str] = []
+
+        async def _run(info: Any) -> None:
+            started.append(info.id)
+
+        monkeypatch.setattr(mgr, "_run", _run)
+        plan = _SharingPlan(eff_model="", eff_effort="", shared=shared)
+        monkeypatch.setattr(mgr, "_sharing_plan", lambda *_a, **_k: plan)
+        return mgr, started
+
+    def _end_run(self, mgr, info: Any) -> None:
+        """The slot release a finished run takes, as ``_run``'s own exit does."""
+        info.done = True
+        if mgr._release_slot(info):
+            mgr._running_count -= 1
+            mgr._drain_queue()
+
+    def test_a_chronic_episode_ends_new_starts_at_once_until_it_eases(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A kernel episode that has outlived the bound does not make every new
+        start pay the bound in turn, and does not let them into the pressure
+        either: each start the hold would keep is ended at once, never started.
+        Once the level eases, the next episode holds again."""
+        from kiro_crew.subagent import _PRESSURE_HOLD_MAX_WAIT_SECS
+        from kiro_crew.subagent_wait_reasons import MEMORY_PRESSURE_NEVER_STARTED
+
+        mgr = self._mgr()
+        self._busy(mgr)
+        self._level(monkeypatch, 2)
+        with self._gate_patches(), caplog.at_level(logging.WARNING, logger="kiro_crew.subagent"):
+            assert mgr._memory_pressure_hold() == 2
+            mgr._pressure_episode_since = time.monotonic() - _PRESSURE_HOLD_MAX_WAIT_SECS - 1
+            assert mgr._memory_pressure_hold() == 2
+            assert mgr._memory_pressure_hold() == 2
+            said = [r for r in caplog.records if "until it eases" in r.getMessage()]
+            assert len(said) == 1
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.subagent"):
+            info, _events, sel_mock = self._spawn_capturing_queued(
+                mgr, memory=(True, 8.0), admission=_admitted()
+            )
+        assert info is not None and info.done is True and info.queued is False
+        assert info.error == MEMORY_PRESSURE_NEVER_STARTED
+        # Audited as what happened: the spent episode ended it, it waited nothing.
+        expired = self._sel_call(sel_mock, "never_started_memory_pressure")
+        assert expired["metadata"]["expired_by"] == "episode"
+        assert expired["metadata"]["waited_secs"] < 1
+        assert expired["metadata"]["episode_secs"] >= _PRESSURE_HOLD_MAX_WAIT_SECS
+        assert not any("for its whole wait" in r.getMessage() for r in caplog.records)
+        assert any("ended without waiting" in r.getMessage() for r in caplog.records)
+        with self._gate_patches():
+            self._level(monkeypatch, 1)
+            assert mgr._memory_pressure_hold() is None
+            self._level(monkeypatch, 2)
+            assert mgr._memory_pressure_hold() == 2
+            assert mgr._memory_pressure_holds("fresh", 2) == "held"
+
+    def test_pressure_with_nothing_of_ours_running_never_spends_an_episode(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The episode clock runs only while the hold applies: a Mac at WARN with
+        no runtime of ours for longer than the bound must not end the first start
+        that meets a runtime of ours with a zero-second wait."""
+        mgr = self._mgr()
+        self._level(monkeypatch, 2)
+        with self._gate_patches():
+            assert mgr._memory_pressure_hold() is None
+            assert mgr._pressure_episode_since is None
+            self._busy(mgr)
+            assert mgr._memory_pressure_hold() == 2
+            assert mgr._memory_pressure_holds("first", 2) == "held"
+
+    def test_an_unobserved_gap_restarts_the_episode(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Reads are sampled; a gap longer than a few recheck intervals is a break
+        nobody saw, so the next read starts a fresh episode instead of finding a
+        spent one and ending a start that never waited."""
+        from kiro_crew.subagent import _PRESSURE_EPISODE_MAX_GAP_SECS, _PRESSURE_HOLD_MAX_WAIT_SECS
+
+        mgr = self._mgr()
+        self._busy(mgr)
+        self._level(monkeypatch, 2)
+        with self._gate_patches():
+            assert mgr._memory_pressure_hold() == 2
+            now = time.monotonic()
+            mgr._pressure_episode_since = now - _PRESSURE_HOLD_MAX_WAIT_SECS - 1
+            mgr._pressure_episode_read_at = now - _PRESSURE_EPISODE_MAX_GAP_SECS - 1
+            assert mgr._memory_pressure_hold() == 2
+            assert mgr._pressure_episode_spent is False
+            assert mgr._memory_pressure_holds("fresh", 2) == "held"
+
+    def test_the_pick_records_no_never_started_for_a_row_it_only_classifies(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An expired row is handed to the gate's re-check; if the level eased in
+        between it starts, so the pick must not have audited it as never started."""
+        from kiro_crew.subagent import _PRESSURE_HOLD_MAX_WAIT_SECS
+
+        mgr = self._mgr()
+        with patch("kiro_crew.subagent.sel") as mock_sel:
+            mgr._pressure_holds["r1"] = time.monotonic() - _PRESSURE_HOLD_MAX_WAIT_SECS - 1
+            verdict = mgr._memory_pressure_holds("r1", 2, commit_expiry=False)
+        assert verdict == "expired"
+        assert "never_started_memory_pressure" not in self._outcomes(mock_sel)
+        assert "r1" not in mgr._pressure_hold_expired
+
+    def test_the_held_wave_starts_as_soon_as_our_runtime_ends(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The slot release pumps the window and the pick lets the held roots go,
+        with no recheck timer and no admit wait in between; while our runtime
+        runs, the pick passes over them without even re-entering the gate."""
+        from kiro_crew.subagent import _SharingPlan
+
+        mgr, started = self._starting_mgr(monkeypatch, shared=True)
+        self._level(monkeypatch, 2)
+        dedicated = _SharingPlan(eff_model="", eff_effort="", shared=False)
+
+        async def run() -> tuple[list[Any], MagicMock]:
+            with self._gate_patches():
+                # Our runtime: a dedicated start, the one thing that holds others.
+                with patch.object(mgr, "_sharing_plan", lambda *_a, **_k: dedicated):
+                    busy = mgr.spawn(task="busy", parent_session_key="sess-0")
+                await _wait_for(lambda: busy.id in started, message="the busy run to start")
+                held = [mgr.spawn(task=f"t{i}", parent_session_key="sess-1") for i in range(3)]
+                assert all(i.queued_reason == "memory_pressure" for i in held)
+                reentries = MagicMock(wraps=mgr.spawn)
+                with patch.object(mgr, "spawn", reentries):
+                    mgr._drain_queue()
+                reentries.assert_not_called()
+                self._end_run(mgr, busy)
+                await _wait_for(
+                    lambda: all(i.id in started for i in held),
+                    message="every held member to start once our runtime ended",
+                )
+            return held, reentries
+
+        held, _reentries = asyncio.run(run())
+        assert mgr._queue == []
+        assert all(not mgr._agents[i.id].done for i in held)
+
+    def test_a_dedicated_wave_is_released_one_runtime_at_a_time(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A released member that is itself dedicated is a runtime of ours, so the
+        rest wait on it; their clocks keep running across the pause, so the
+        bound holds for the whole wave."""
+        mgr, started = self._starting_mgr(monkeypatch, shared=False)
+        self._level(monkeypatch, 2)
+
+        async def run() -> tuple[Any, list[Any], dict[str, float]]:
+            with self._gate_patches():
+                busy = mgr.spawn(task="busy", parent_session_key="sess-0")
+                await _wait_for(lambda: busy.id in started, message="the busy run to start")
+                held = [mgr.spawn(task=f"t{i}", parent_session_key="sess-1") for i in range(3)]
+                clocks = dict(mgr._pressure_holds)
+                self._end_run(mgr, busy)
+                await _wait_for(
+                    lambda: sum(i.id in started for i in held) == 1,
+                    message="exactly one held member to start",
+                )
+            return busy, held, clocks
+
+        _busy, held, clocks = asyncio.run(run())
+        waiting = [i for i in held if i.id not in started]
+        assert len(waiting) == 2
+        for info in waiting:
+            assert mgr._pressure_holds[info.id] == clocks[info.id]
+
+    def test_the_recheck_timer_notices_pressure_easing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Nothing finishes, the level drops: only the recheck timer can notice."""
+        from kiro_crew import subagent_wait_reasons
+
+        monkeypatch.setattr(subagent_wait_reasons, "MEMORY_PRESSURE_RECHECK_SECS", 0.05)
+        monkeypatch.setattr("kiro_crew.subagent.MEMORY_PRESSURE_RECHECK_SECS", 0.05)
+        mgr, started = self._starting_mgr(monkeypatch, shared=True)
+        self._busy(mgr)
+        self._level(monkeypatch, 2)
+
+        async def run() -> Any:
+            with self._gate_patches():
+                info = mgr.spawn(task="t", parent_session_key="sess-1")
+                assert info.queued_reason == "memory_pressure"
+                assert mgr._pressure_recheck_handle is not None
+                self._level(monkeypatch, 1)
+                await _wait_for(lambda: info.id in started, message="the timer's re-pump")
+            return info
+
+        asyncio.run(run())
+        assert mgr._pressure_recheck_handle is None
+
+    def test_the_recheck_timer_is_cancelled_at_shutdown(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mgr = self._mgr()
+        self._busy(mgr)
+        self._level(monkeypatch, 2)
+
+        async def run() -> Any:
+            with self._gate_patches():
+                assert mgr._memory_pressure_hold() == 2
+                handle = mgr._pressure_recheck_handle
+                assert handle is not None
+                mgr._agents.clear()
+                await mgr.cancel_all()
+            return handle
+
+        handle = asyncio.run(run())
+        assert handle.cancelled() and mgr._pressure_recheck_handle is None
+
+    def test_a_row_first_held_at_the_pick_is_relabelled(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Queued for capacity before the pressure began, then held at the pick:
+        its parent's label must say why it waits now, and the pump read no
+        figure, so the audit carries none."""
+        mgr, started = self._starting_mgr(monkeypatch, shared=True)
+        self._level(monkeypatch, None)
+        events, on_event = self._queued_sink()
+        mgr._on_event = on_event
+
+        async def run() -> tuple[Any, MagicMock]:
+            with self._gate_patches() as mock_sel:
+                mgr._max_concurrent = 1
+                first = mgr.spawn(task="a", parent_session_key="sess-0")
+                waiting = mgr.spawn(task="b", parent_session_key="sess-1")
+                assert waiting.queued_reason == "concurrency_limit"
+                # The running one is now dedicated, and the kernel says WARN.
+                mgr._agents[first.id]._start_priced_shared = False
+                self._level(monkeypatch, 2)
+                mgr._max_concurrent = 3
+                mgr._drain_queue()
+                await _await_queued_event(events, reason="memory_pressure")
+            return waiting, mock_sel
+
+        waiting, mock_sel = asyncio.run(run())
+        assert waiting.id not in started
+        assert mgr._queue_wait["sess-1"] == {"reason": "memory_pressure"}
+        metadata = self._sel_call(mock_sel, "deferred_memory_pressure")["metadata"]
+        assert "available_gb" not in metadata
+
+    def test_the_label_returns_to_capacity_when_the_hold_ends(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mgr = self._mgr()
+        self._busy(mgr)
+        self._level(monkeypatch, 2)
+        info, _events, _sel = self._spawn_capturing_queued(
+            mgr, memory=(True, 8.0), admission=_admitted()
+        )
+        assert mgr._queue_wait["sess-1"] == {"reason": "memory_pressure"}
+        self._level(monkeypatch, 1)
+        with self._gate_patches():
+            assert mgr._memory_pressure_hold() is None
+        assert mgr._queue_wait["sess-1"] == {"reason": "concurrency_limit"}
+        # A pause is not an end of the row's wait: its clock is kept.
+        assert info.id in mgr._pressure_holds
+
+    def test_the_hold_names_itself_over_a_full_cap(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The binding reason wins the label: with the cap full the start would
+        queue anyway, but it would not start on the next slot either."""
+        mgr = self._mgr()
+        self._busy(mgr)
+        mgr._running_count = mgr._max_concurrent
+        self._level(monkeypatch, 2)
+        info, _events, _sel = self._spawn_capturing_queued(
+            mgr, memory=(True, 8.0), admission=_admitted()
+        )
+        assert info is not None and info.queued_reason == "memory_pressure"
+
+    def test_a_paused_cap_keeps_its_own_label_under_pressure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With the adaptive cap at 0 nothing starts before the controller's probe
+        recovers, so the row keeps ``adaptive_cap_zero`` (and its detail), and the
+        end of the hold relabels to it rather than to the bare capacity kind."""
+        mgr = self._mgr()
+        self._busy(mgr)
+        mgr._max_concurrent = 0
+        self._level(monkeypatch, 2)
+        info, _events, _sel = self._spawn_capturing_queued(
+            mgr, memory=(True, 8.0), admission=_admitted()
+        )
+        assert info is not None and info.queued_reason == "adaptive_cap_zero"
+        assert "effective cap 0" in info.queued_reason_detail
+        mgr._queue_wait["sess-1"] = {"reason": "memory_pressure"}
+        mgr._pressure_hold_on = True
+        self._level(monkeypatch, 1)
+        with self._gate_patches():
+            assert mgr._memory_pressure_hold() is None
+        assert mgr._queue_wait["sess-1"] == {"reason": "adaptive_cap_zero"}
+
+    def test_a_held_root_release_does_not_block_a_child_behind_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The child exemption must hold at release too: a pressure-held root at
+        the head of the released starts is passed over, not waited on."""
+        from kiro_crew.subagent import SubagentInfo
+
+        mgr = self._mgr()
+        self._busy(mgr)
+        self._level(monkeypatch, 2)
+
+        async def run() -> tuple[list[str], bool, bool]:
+            loop = asyncio.get_running_loop()
+            root = SubagentInfo(id="root", task="t", parent_session_key="sess-1")
+            child = SubagentInfo(id="child", task="t", parent_session_key="subagent:busy")
+            for info in (root, child):
+                info._start_release = loop.create_future()
+                mgr._queue.append(
+                    {
+                        "_resume_id": info.id,
+                        "_startup_release": True,
+                        "_start_info": info,
+                        "parent_session_key": info.parent_session_key,
+                    }
+                )
+            with self._gate_patches():
+                outcomes = [mgr._admission._release_admitted_start_impl()]
+                mgr._last_spawn_ts = 0.0
+                outcomes.append(mgr._admission._release_admitted_start_impl())
+            return outcomes, child._start_release.done(), root._start_release.done()
+
+        outcomes, child_released, root_released = asyncio.run(run())
+        assert outcomes == ["released", "held"]
+        assert child_released is True and root_released is False
+
+    def test_a_stopped_release_behind_a_held_root_is_retired(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An approved start stopped while it waited, queued behind a held root,
+        is popped and its waiter woken now, not when the root's hold ends."""
+        from kiro_crew.subagent import SubagentInfo
+
+        mgr = self._mgr()
+        self._busy(mgr)
+        self._level(monkeypatch, 2)
+
+        async def run() -> tuple[str, Any, Any]:
+            loop = asyncio.get_running_loop()
+            root = SubagentInfo(id="root", task="t", parent_session_key="sess-1")
+            stopped = SubagentInfo(id="stopped", task="t", parent_session_key="sess-2")
+            for info in (root, stopped):
+                info._start_release = loop.create_future()
+                mgr._queue.append(
+                    {
+                        "_resume_id": info.id,
+                        "_startup_release": True,
+                        "_start_info": info,
+                        "parent_session_key": info.parent_session_key,
+                    }
+                )
+            stopped.user_stopped = True
+            with self._gate_patches():
+                outcome = mgr._admission._release_admitted_start_impl()
+            return outcome, root._start_release, stopped._start_release
+
+        outcome, root_fut, stopped_fut = asyncio.run(run())
+        assert outcome == "held"
+        assert stopped_fut.done() and stopped_fut.result() is False
+        assert not root_fut.done()
+        assert [p["_resume_id"] for p in mgr._queue] == ["root"]
+
+    def test_an_approved_start_is_held_at_release(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A prompt answered after the hold began must not launch past it."""
+        from kiro_crew.subagent import SubagentInfo
+
+        mgr = self._mgr()
+        self._busy(mgr)
+        self._level(monkeypatch, 2)
+
+        async def run() -> tuple[str, bool, str]:
+            info = SubagentInfo(id="approved", task="t", parent_session_key="sess-1")
+            fut = asyncio.get_running_loop().create_future()
+            info._start_release = fut
+            mgr._queue.append(
+                {
+                    "_resume_id": info.id,
+                    "_startup_release": True,
+                    "_start_info": info,
+                    "parent_session_key": info.parent_session_key,
+                }
+            )
+            with patch("kiro_crew.subagent.sel"):
+                held = mgr._admission._release_admitted_start_impl()
+                waiting = not fut.done()
+                self._level(monkeypatch, 1)
+                released = mgr._admission._release_admitted_start_impl()
+            return held, waiting, released
+
+        held, waiting, released = asyncio.run(run())
+        assert (held, waiting, released) == ("held", True, "released")
+
+    def test_a_held_app_spawn_keeps_its_auto_approval_across_a_refill(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The store never carries ``approval_mode``; a window refill restores it
+        from this process's side table, so the drained App Kit spawn raises no
+        prompt nobody can answer."""
+        mgr = self._mgr()
+        self._busy(mgr)
+        self._level(monkeypatch, 2)
+        info, _events, _sel = self._spawn_capturing_queued(
+            mgr, memory=(True, 8.0), admission=_admitted(), approval_mode="auto"
+        )
+        assert info is not None and info.queued_reason == "memory_pressure"
+        mgr._queue.clear()  # spilled to store-only, as a full window does
+        mgr._admission.taskq_refill_window()
+        entries = [p for p in mgr._queue if p.get("_preassigned_id") == info.id]
+        assert len(entries) == 1 and entries[0]["approval_mode"] == "auto"
+        mgr._agents["busy"].done = True
+        prompts = AsyncMock(return_value=True)
+        mgr._on_spawn_approval = prompts
+        monkeypatch.setattr(mgr, "_run", AsyncMock())
+        params = {k: v for k, v in entries[0].items() if k != "_lane"}
+
+        async def drain() -> Any:
+            with patch(
+                "kiro_crew.subagent.check_memory_available", return_value=(True, 8.0)
+            ), patch(
+                "kiro_crew.subagent.cached_admission_check", return_value=_admitted()
+            ), patch(
+                "kiro_crew.subagent.sel"
+            ) as mock_sel:
+                started = mgr.spawn(**params, _from_queue=True)
+                await asyncio.sleep(0)
+            return started, mock_sel
+
+        started, mock_sel = asyncio.run(drain())
+        assert started is not None and started.approval_mode == "auto"
+        assert self._sel_call(mock_sel, "auto_approved_spawn")["metadata"]["reason"] == (
+            "approval_mode_auto"
+        )
+        prompts.assert_not_called()
+        assert info.id not in mgr._held_approval_modes
+
+    def test_an_unreadable_macos_figure_is_reported_like_linux(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The floor fails open on an unmeasurable host, but never silently: the
+        macOS twin of Linux's ``memory_check_unavailable``. The hold still applies,
+        and its audit records the figure as unknown, not as -1."""
+        import kiro_crew.subagent as subagent_mod
+        from kiro_crew import platform_compat
+
+        for name in ("LINUX", "WINDOWS", "MACOS"):
+            monkeypatch.setattr(platform_compat, "IS_" + name, name == "MACOS")
+        monkeypatch.setattr(subagent_mod, "_macos_available_memory_gb", lambda: -1.0)
+        mgr = self._mgr()
+        self._busy(mgr)
+        self._level(monkeypatch, 2)
+        info, _events, mock_sel = self._spawn_capturing_queued(mgr, admission=_admitted())
+        assert info is not None and info.queued_reason == "memory_pressure"
+        assert "memory_check_unavailable" in self._outcomes(mock_sel)
+        assert (
+            self._sel_call(mock_sel, "deferred_memory_pressure")["metadata"]["available_gb"] is None
+        )
+
+    def test_the_real_reader_holds_a_start_through_the_gate(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """End to end on the readers: only the platform flags, the Mach figure and
+        the kernel level are faked. The floor check runs the real
+        ``check_memory_available``, and the level is read fresh through the real
+        ``read_memory_pressure_level``."""
+        import kiro_crew.subagent as subagent_mod
+        from kiro_crew import platform_compat
+
+        for name in ("LINUX", "WINDOWS", "MACOS"):
+            monkeypatch.setattr(platform_compat, "IS_" + name, name == "MACOS")
+        # 8 GB reclaimable clears the 4.0 GB floor plus warming-start reserves.
+        monkeypatch.setattr(subagent_mod, "_macos_available_memory_gb", lambda: 8.0)
+        self._level(monkeypatch, platform_compat.MEMORY_PRESSURE_WARN)
+        mgr = self._mgr()
+        self._busy(mgr)
+        info, events, _sel = self._spawn_capturing_queued(mgr, admission=_admitted())
+        assert info is not None and info.queued is True
+        assert info.queued_reason == "memory_pressure"
+        assert events[-1]["reason"] == "memory_pressure"
+
+    def test_the_pump_keeps_a_held_row_in_the_window_without_a_defer(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """On the coroutine pump the held row is passed over by the pick: no store
+        defer is written, the label stays the pressure reason, and the row stays
+        queued and due for the next pass."""
+        from kiro_crew.subagent_manager.admission import SpawnAdmissionCoordinator
+
+        monkeypatch.setattr(SpawnAdmissionCoordinator, "open_store_off_loop", True)
+        monkeypatch.setattr(SpawnAdmissionCoordinator, "pump_off_loop", True)
+        self._level(monkeypatch, 2)
+        events, on_event = self._queued_sink()
+
+        async def run() -> tuple[Any, Any, MagicMock]:
+            mgr = self._mgr()
+            await asyncio.wait_for(mgr.wait_taskq_ready(), _QUEUED_EMIT_CEILING_SECS)
+            self._busy(mgr)
+            mgr._spawn_stagger_secs = 0.0
+            mgr._on_event = on_event
+            park = MagicMock(wraps=mgr._admission.park_defer)
+            with (
+                patch("kiro_crew.subagent.check_memory_available", return_value=(True, 8.0)),
+                patch("kiro_crew.subagent.KiroCrewConfig") as mock_cfg,
+                patch("kiro_crew.subagent.cached_admission_check", return_value=_admitted()),
+                patch("kiro_crew.subagent.sel"),
+                patch.object(type(mgr._admission), "park_defer", park),
+            ):
+                mock_cfg.load.return_value.agent.spawn_min_memory_gb = 4.0
+                mock_cfg.load.return_value.agent.subagent_cost_gb = 0.5
+                info = await mgr.spawn_async("test task", parent_session_key="sess-1")
+                await _await_queued_event(events, reason="memory_pressure")
+                for _ in range(3):
+                    mgr._drain_queue()
+                    await _wait_for(
+                        lambda: mgr._drain_task is None or mgr._drain_task.done(),
+                        message="the pump pass to finish",
+                    )
+            return info, mgr, park
+
+        info, mgr, park = asyncio.run(run())
+        assert info is not None and info.queued_reason == "memory_pressure"
+        park.assert_not_called()
+        row = mgr._taskq.get(info.id)
+        assert row is not None and row.state == "queued" and row.next_run_at is None
+        assert mgr._queue_wait["sess-1"] == {"reason": "memory_pressure"}
 
     def test_parked_defer_publishes_the_label_only_after_the_write_succeeds(self) -> None:
         """The coroutine dispatcher writes the defer off the loop, after the gate
@@ -542,9 +1471,7 @@ class TestSpawnAdmissionGate:
         wait = {"reason": "low_memory", "available_gb": 3.2, "required_gb": 4.5}
 
         def _park(agent_id: str) -> SubagentInfo:
-            queued = SubagentInfo(
-                id=agent_id, task="t", parent_session_key="sess-1", queued=True
-            )
+            queued = SubagentInfo(id=agent_id, task="t", parent_session_key="sess-1", queued=True)
             refused = SubagentInfo(
                 id=agent_id, task="t", parent_session_key="sess-1", done=True, error="refused"
             )
@@ -578,9 +1505,7 @@ class TestSpawnAdmissionGate:
                 )
                 store.accept([rec])
                 held = await mgr._admission.finish_parked_defer(_park("row1"))
-            deadline = time.monotonic() + 2.0
-            while not events and time.monotonic() < deadline:
-                await asyncio.sleep(0.01)
+            await _await_queued_event(events)
             return (missing, no_label_after_refusal), held
 
         (missing, no_label_after_refusal), held = asyncio.run(run())
@@ -598,9 +1523,7 @@ def _load_from_dict(data: dict, tmp_path: Path) -> KiroCrewConfig:
     """Write *data* to a config file under *tmp_path* and load it."""
     tmp = tmp_path / "config.json"
     tmp.write_text(json.dumps(data))
-    with unittest.mock.patch(
-        "kiro_crew.config.loader.config_path", return_value=tmp
-    ):
+    with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
         return KiroCrewConfig.load()
 
 
@@ -729,9 +1652,7 @@ class TestCronExprPassthrough:
         await svc.stop()
 
     @pytest.mark.asyncio
-    async def test_job_edited_during_await_dispatches_live_object(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_job_edited_during_await_dispatches_live_object(self, tmp_path: Path) -> None:
         # A job replaced during the await must execute its LIVE definition,
         # not the stale snapshot's.
         executed: list[str] = []
@@ -756,9 +1677,7 @@ class TestCronExprPassthrough:
         await svc.stop()
 
     @pytest.mark.asyncio
-    async def test_cron_expr_job_runs_normally_under_critical(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_cron_expr_job_runs_normally_under_critical(self, tmp_path: Path) -> None:
         # A cron-expression job whose minute matches during a critical
         # episode fires anyway — the occurrence is neither dropped nor
         # remembered in state that a restart would lose.
@@ -780,9 +1699,7 @@ class TestCronExprPassthrough:
         await svc.stop()
 
     @pytest.mark.asyncio
-    async def test_mixed_due_defers_interval_but_fires_expr(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_mixed_due_defers_interval_but_fires_expr(self, tmp_path: Path) -> None:
         # One tick, both kinds due, critical posture: the interval job is
         # deferred (stays due, untouched), the cron-expression job fires.
         executed: list[str] = []
@@ -813,9 +1730,7 @@ class TestCronExprPassthrough:
         await svc.stop()
 
     @pytest.mark.asyncio
-    async def test_deferral_episode_floors_timer_delay(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_deferral_episode_floors_timer_delay(self, tmp_path: Path) -> None:
         # A deferred (overdue) interval job would otherwise re-arm the timer
         # at zero delay — a busy loop of scans and admission probes on a host
         # already under memory pressure. During an episode the re-arm delay
@@ -840,9 +1755,7 @@ class TestCronExprPassthrough:
         await svc.stop()
 
     @pytest.mark.asyncio
-    async def test_interval_edited_to_cron_during_await_still_fires(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_interval_edited_to_cron_during_await_still_fires(self, tmp_path: Path) -> None:
         # An interval job edited into a matching cron expression during the
         # admission await must be classified by its LIVE kind: partitioning
         # the stale snapshot would defer-and-drop the occurrence.
@@ -908,13 +1821,12 @@ class TestCronExprPassthrough:
         mgr._last_spawn_ts = 0.0
         mgr._emit_queue_depth = MagicMock()
 
-        with patch(
-            "kiro_crew.subagent.check_memory_available", return_value=(True, 8.0)
-        ), patch("kiro_crew.subagent.KiroCrewConfig") as mock_cfg, patch(
-            "kiro_crew.subagent.cached_admission_check", return_value=_refused()
-        ), patch(
-            "kiro_crew.subagent.sel"
-        ) as mock_sel:
+        with (
+            patch("kiro_crew.subagent.check_memory_available", return_value=(True, 8.0)),
+            patch("kiro_crew.subagent.KiroCrewConfig") as mock_cfg,
+            patch("kiro_crew.subagent.cached_admission_check", return_value=_refused()),
+            patch("kiro_crew.subagent.sel") as mock_sel,
+        ):
             mock_cfg.load.return_value.agent.spawn_min_memory_gb = 4.0
             mock_cfg.load.return_value.agent.subagent_cost_gb = 0.5
             mock_sel.return_value.log_tool_invocation = MagicMock()
@@ -926,15 +1838,13 @@ class TestCronExprPassthrough:
             for _ in range(5):
                 await asyncio.sleep(0)
 
-        assert [i.id for i in announced] == ["q1"], (
-            f"expected exactly one announcement, got {len(announced)}"
-        )
+        assert [i.id for i in announced] == [
+            "q1"
+        ], f"expected exactly one announcement, got {len(announced)}"
         assert "critical" in announced[0].error
 
     @pytest.mark.asyncio
-    async def test_interval_job_not_replayed_after_manual_run(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_interval_job_not_replayed_after_manual_run(self, tmp_path: Path) -> None:
         # An ``every`` job stays due on its own during a critical episode;
         # a manual trigger that completes the work must not be replayed on
         # recovery (deferral keeps no per-job state that could replay it).
@@ -997,9 +1907,7 @@ class TestALearnedWholeTreePeakNeverPricesAStart:
         now = time.time()
         log.write_text(
             "".join(
-                json.dumps(
-                    {"agent": "kirocrew", "mem_gb": v, "cpu_cores": 1.0, "ts": now - i}
-                )
+                json.dumps({"agent": "kirocrew", "mem_gb": v, "cpu_cores": 1.0, "ts": now - i})
                 + "\n"
                 for i, v in enumerate([1.2] * 5 + [132.3] * 5)
             )
@@ -1023,12 +1931,11 @@ class TestALearnedWholeTreePeakNeverPricesAStart:
             asked.append(min_gb)
             return (85.9 >= min_gb, 85.9)
 
-        with patch(
-            "kiro_crew.subagent.check_memory_available", side_effect=_check
-        ), patch("kiro_crew.subagent.KiroCrewConfig") as mock_cfg, patch(
-            "kiro_crew.subagent.cached_admission_check", return_value=_admitted()
-        ), patch(
-            "kiro_crew.subagent.sel"
+        with (
+            patch("kiro_crew.subagent.check_memory_available", side_effect=_check),
+            patch("kiro_crew.subagent.KiroCrewConfig") as mock_cfg,
+            patch("kiro_crew.subagent.cached_admission_check", return_value=_admitted()),
+            patch("kiro_crew.subagent.sel"),
         ):
             mock_cfg.load.return_value.agent.spawn_min_memory_gb = 4.0
             mock_cfg.load.return_value.agent.subagent_cost_gb = 0.5
@@ -1036,3 +1943,329 @@ class TestALearnedWholeTreePeakNeverPricesAStart:
 
         assert asked == [pytest.approx(4.0 + _UNLEARNED_DEDICATED_START_GB)]
         assert info is not None and info.queued is False
+
+
+# ── who counts as "a dedicated runtime of ours" for the pressure hold ────────
+
+
+def _row(**fields: Any) -> Any:
+    from kiro_crew.subagent import SubagentInfo
+
+    return SubagentInfo(id=str(fields.pop("id", "r")), task="t", **fields)
+
+
+@pytest.mark.parametrize(
+    ("rows", "claims", "owns"),
+    [
+        pytest.param([], {}, False, id="empty"),
+        pytest.param([{}], {}, True, id="a-dedicated-live-row"),
+        pytest.param([{"_session_sharing": True}], {}, False, id="confirmed-shared"),
+        pytest.param([{"_start_priced_shared": True}], {}, False, id="in-flight-priced-shared"),
+        pytest.param(
+            [{"_session_sharing": True}, {"id": "b", "_session_sharing": True}],
+            {},
+            False,
+            id="two-shared",
+        ),
+        pytest.param([{"_awaiting_approval": True}], {}, False, id="parked-at-spawn-approval"),
+        pytest.param(
+            [{"_awaiting_approval": True, "_exec_started": 1.0}],
+            {},
+            True,
+            id="waiting-on-a-tool-prompt",
+        ),
+        pytest.param([{"_start_release": object()}], {}, False, id="approved-awaiting-release"),
+        pytest.param([{"done": True}], {}, False, id="done"),
+        pytest.param([{"queued": True}], {}, False, id="queued"),
+        # A finished dedicated row keeps its slot until its teardown completes;
+        # it still owns no runtime the hold could wait on.
+        pytest.param(
+            [{"done": True, "_slot_released": False}], {}, False, id="finished-row-tearing-down"
+        ),
+        # A yielded dedicated parent mid-resume (its slot re-reserved before the
+        # flag clears) still has its process, so it counts.
+        pytest.param(
+            [{"_slot_released": True, "_resume_pending": True}],
+            {},
+            True,
+            id="yielded-parent-mid-resume",
+        ),
+        pytest.param([], {"c1": (1.0, False)}, True, id="unregistered-dedicated-claim"),
+        pytest.param([], {"c1": (0.65, True)}, False, id="unregistered-shared-claim"),
+    ],
+)
+def test_owns_dedicated_runtime(
+    rows: list[dict[str, Any]], claims: dict[str, tuple[float, bool]], owns: bool
+) -> None:
+    from kiro_crew.subagent import _owns_dedicated_runtime
+
+    assert _owns_dedicated_runtime([_row(**r) for r in rows], claim_prices=claims) is owns
+
+
+def test_a_defer_write_outage_answers_still_queued_never_refused() -> None:
+    """A ``TaskStoreUnavailable`` leaves the row QUEUED and due: announcing a
+    refusal would give one id a refusal now and a completion when the pump starts
+    it later."""
+    from kiro_crew import taskq
+    from kiro_crew.subagent import SubagentInfo, SubagentManager
+
+    sessions = MagicMock()
+    sessions.get_agent_selection.return_value = ("template", "")
+    mgr = SubagentManager(
+        sessions=sessions, ctx_builder=MagicMock(), on_done=MagicMock(), max_concurrent=3
+    )
+    store = mgr._taskq
+    assert store is not None
+    queued = SubagentInfo(id="row1", task="t", parent_session_key="sess-1", queued=True)
+    refused = SubagentInfo(
+        id="row1", task="t", parent_session_key="sess-1", done=True, error="refused"
+    )
+    mgr._admission.park_defer(
+        "row1",
+        reason="low memory",
+        parent_session_key="sess-1",
+        batch_id="",
+        queued=queued,
+        refused=refused,
+        wait={"reason": "low_memory"},
+    )
+    announce = MagicMock(side_effect=lambda info: info)
+
+    async def _outage(*_args: Any, **_kwargs: Any) -> Any:
+        raise taskq.TaskStoreUnavailable("disk gone")
+
+    async def run() -> Any:
+        with patch.object(store, "run", _outage), patch.object(
+            mgr, "_announce_rejection", announce
+        ):
+            return await mgr._admission.finish_parked_defer(queued)
+
+    answer = asyncio.run(run())
+    assert answer is queued and answer.done is False
+    announce.assert_not_called()
+
+
+def test_a_queued_stop_drops_what_the_process_kept_for_the_start() -> None:
+    from kiro_crew.subagent import SubagentManager
+
+    sessions = MagicMock()
+    sessions.get_agent_selection.return_value = ("template", "")
+    mgr = SubagentManager(
+        sessions=sessions, ctx_builder=MagicMock(), on_done=MagicMock(), max_concurrent=3
+    )
+    mgr._held_approval_modes["x"] = "auto"
+    mgr._pressure_holds["x"] = time.monotonic()
+    mgr._pressure_hold_expired.add("x")
+
+    async def run() -> None:
+        mgr._report_queued_stop({"_preassigned_id": "x", "parent_session_key": "sess-1"})
+        await asyncio.sleep(0)
+
+    asyncio.run(run())
+    assert "x" not in mgr._held_approval_modes
+    assert "x" not in mgr._pressure_holds and "x" not in mgr._pressure_hold_expired
+
+
+def test_the_user_docs_state_the_hold_bounds_the_code_uses() -> None:
+    """``subagents.md`` names the recheck interval and the per-start bound in
+    words; they must be the constants the gate runs on."""
+    from kiro_crew.subagent import _PRESSURE_HOLD_MAX_WAIT_SECS
+    from kiro_crew.subagent_wait_reasons import MEMORY_PRESSURE_RECHECK_SECS
+
+    doc = (Path(__file__).resolve().parents[1] / "src/kiro_crew/docs/subagents.md").read_text(
+        encoding="utf-8"
+    )
+    assert f"every {MEMORY_PRESSURE_RECHECK_SECS} seconds" in doc
+    assert f"after {int(_PRESSURE_HOLD_MAX_WAIT_SECS // 60)} minutes" in doc
+    # The chip sentence names the same bound.
+    catalog = (Path(__file__).resolve().parents[1] / "website/src/i18n/locales/en.json").read_text(
+        encoding="utf-8"
+    )
+    assert f"give up once the pressure has lasted {int(_PRESSURE_HOLD_MAX_WAIT_SECS // 60)} minutes" in catalog
+
+
+def test_the_card_and_the_gate_agree_on_the_never_started_prefix() -> None:
+    """The run card headlines a wholly never-started wave by matching the gate's
+    terminal error, so the two spellings must not drift."""
+    from kiro_crew.subagent_wait_reasons import MEMORY_PRESSURE_NEVER_STARTED
+
+    phrases = json.loads(
+        (
+            Path(__file__).resolve().parents[1] / "website/src/lib/backendPhrases.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert MEMORY_PRESSURE_NEVER_STARTED.startswith(phrases["neverStartedPrefix"])
+
+
+def test_event_loop_spawns_validate_the_agent_off_the_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``spawn_async`` and the coroutine pump take the agent-directory scan off
+    the loop and hand the gate the answer; the gate never walks it on the loop."""
+    import kiro_crew.subagent as subagent_mod
+    from kiro_crew.subagent import SubagentManager
+    from kiro_crew.subagent_manager.admission import SpawnAdmissionCoordinator
+
+    monkeypatch.setattr(SpawnAdmissionCoordinator, "open_store_off_loop", True)
+    monkeypatch.setattr(SpawnAdmissionCoordinator, "pump_off_loop", True)
+    threads: list[bool] = []
+
+    def _validate(agent: str, cwd: str = "") -> tuple[str, str, str]:
+        threads.append(threading.current_thread() is threading.main_thread())
+        return agent, "", ""
+
+    monkeypatch.setattr(subagent_mod, "_validate_agent", _validate)
+
+    async def run() -> Any:
+        sessions = MagicMock()
+        sessions.get_agent_selection.return_value = ("template", "")
+        mgr = SubagentManager(
+            sessions=sessions, ctx_builder=MagicMock(), on_done=MagicMock(), max_concurrent=3
+        )
+        await asyncio.wait_for(mgr.wait_taskq_ready(), _QUEUED_EMIT_CEILING_SECS)
+        mgr._spawn_stagger_secs = 60.0  # the second spawn queues for the stagger
+        with (
+            patch("kiro_crew.subagent.check_memory_available", return_value=(True, 8.0)),
+            patch("kiro_crew.subagent.KiroCrewConfig") as mock_cfg,
+            patch("kiro_crew.subagent.cached_admission_check", return_value=_admitted()),
+            patch("kiro_crew.subagent.sel"),
+        ):
+            mock_cfg.load.return_value.agent.spawn_min_memory_gb = 4.0
+            mock_cfg.load.return_value.agent.subagent_cost_gb = 0.5
+            await mgr.spawn_async("one", parent_session_key="sess-1", agent="reviewer")
+            queued = await mgr.spawn_async("two", parent_session_key="sess-1", agent="reviewer")
+            assert queued is not None and queued.queued is True
+            mgr._spawn_stagger_secs = 0.0
+            mgr._last_spawn_ts = 0.0
+            calls_before_drain = len(threads)
+            mgr._drain_queue()
+            await _wait_for(
+                lambda: len(threads) > calls_before_drain,
+                message="the pump's agent re-validation",
+            )
+            await _wait_for(
+                lambda: mgr._drain_task is None or mgr._drain_task.done(),
+                message="the pump pass to finish",
+            )
+        await mgr.cancel_all()
+
+    asyncio.run(run())
+    assert threads and not any(threads), threads
+
+
+def test_an_app_spawn_proves_ownership_off_the_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    """App ownership walks the agents directory too, so the gate must read the
+    off-loop answer instead of calling it on the loop."""
+    import kiro_crew.subagent as subagent_mod
+    from kiro_crew.subagent import SubagentManager
+
+    threads: list[bool] = []
+
+    def _owner(agent: str, app: str) -> str:
+        threads.append(threading.current_thread() is threading.main_thread())
+        return ""
+
+    monkeypatch.setattr(subagent_mod, "_validate_app_agent_ownership", _owner)
+    monkeypatch.setattr(subagent_mod, "_validate_agent", lambda a, cwd="": (a, "", ""))
+
+    async def run() -> Any:
+        sessions = MagicMock()
+        sessions.get_agent_selection.return_value = ("template", "")
+        mgr = SubagentManager(
+            sessions=sessions, ctx_builder=MagicMock(), on_done=MagicMock(), max_concurrent=3
+        )
+        with (
+            patch("kiro_crew.subagent.check_memory_available", return_value=(True, 8.0)),
+            patch("kiro_crew.subagent.KiroCrewConfig") as mock_cfg,
+            patch("kiro_crew.subagent.cached_admission_check", return_value=_admitted()),
+            patch("kiro_crew.subagent.sel"),
+        ):
+            mock_cfg.load.return_value.agent.spawn_min_memory_gb = 4.0
+            mock_cfg.load.return_value.agent.subagent_cost_gb = 0.5
+            await mgr.spawn_async(
+                "one", parent_session_key="sess-1", agent="app__helper", app="app"
+            )
+        await mgr.cancel_all()
+
+    asyncio.run(run())
+    assert threads and not any(threads), threads
+
+
+def test_the_off_loop_check_keys_on_the_app_the_gate_settles_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A spawn inside an app session passes no ``app`` of its own; the gate takes
+    the captured execution's app (``resolve_spawn_execution``), so the off-loop
+    answer must be computed and keyed for that app or the gate walks the agents
+    directory on the loop after all."""
+    import kiro_crew.subagent as subagent_mod
+    from kiro_crew.subagent import SubagentManager
+
+    asked: list[str] = []
+    monkeypatch.setattr(
+        subagent_mod,
+        "_validate_app_agent_ownership",
+        lambda agent, app: asked.append(app) or "",
+    )
+    monkeypatch.setattr(subagent_mod, "_validate_agent", lambda a, cwd="": (a, "", ""))
+    sessions = MagicMock()
+    sessions._pool_cwd = "/pool"
+    mgr = SubagentManager(
+        sessions=sessions, ctx_builder=MagicMock(), on_done=MagicMock(), max_concurrent=3
+    )
+    check = asyncio.run(
+        mgr._check_agent_off_loop(
+            "app__helper", "", app="", execution_context={"app": "the-app"}
+        )
+    )
+    assert check is not None and check[2] == "the-app"
+    assert asked == ["the-app"]
+
+
+def test_the_off_loop_agent_check_keys_on_the_canonical_cwd(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A symlinked or ``~``-relative cwd is canonicalized in the worker exactly as
+    the gate resolves it, so the gate's key matches and it never re-walks the
+    agents directory on the loop."""
+    import os
+
+    import kiro_crew.subagent as subagent_mod
+    from kiro_crew.subagent import SubagentManager
+
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    os.symlink(real, link)
+    threads: list[bool] = []
+
+    def _validate(agent: str, cwd: str = "") -> tuple[str, str, str]:
+        threads.append(threading.current_thread() is threading.main_thread())
+        return agent, "", ""
+
+    monkeypatch.setattr(subagent_mod, "_validate_agent", _validate)
+
+    async def run() -> Any:
+        sessions = MagicMock()
+        sessions.get_agent_selection.return_value = ("template", "")
+        mgr = SubagentManager(
+            sessions=sessions, ctx_builder=MagicMock(), on_done=MagicMock(), max_concurrent=3
+        )
+        with (
+            patch("kiro_crew.subagent.check_memory_available", return_value=(True, 8.0)),
+            patch("kiro_crew.subagent.KiroCrewConfig") as mock_cfg,
+            patch("kiro_crew.subagent.cached_admission_check", return_value=_admitted()),
+            patch("kiro_crew.subagent.sel"),
+        ):
+            mock_cfg.load.return_value.agent.spawn_min_memory_gb = 4.0
+            mock_cfg.load.return_value.agent.subagent_cost_gb = 0.5
+            mock_cfg.load.return_value.agent.subagent_cwd_allowed_roots = [str(tmp_path)]
+            check = await mgr._check_agent_off_loop("reviewer", str(link), prevalidated=False)
+            info = await mgr.spawn_async(
+                "one", parent_session_key="sess-1", agent="reviewer", cwd=str(link)
+            )
+        await mgr.cancel_all()
+        return check, info
+
+    check, info = asyncio.run(run())
+    assert check is not None and check[:2] == ("reviewer", os.path.realpath(real))
+    assert info is not None and "cwd" not in (info.error or "")
+    assert threads and not any(threads), threads

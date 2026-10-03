@@ -139,7 +139,11 @@ from kiro_crew.providers.base import (
     EVENT_TOOL_RESULT,
     LLMEvent,
 )
-from kiro_crew.resource_status import cached_admission_check
+from kiro_crew.resource_status import (
+    cached_admission_check,
+    pressure_level_held,
+    read_memory_pressure_level,
+)
 from kiro_crew.sandbox import _agents_slice_cgroup_dir
 from kiro_crew.security import (
     redact_and_truncate,
@@ -204,9 +208,13 @@ from kiro_crew.subagent_persistence import (  # noqa: F401 - read_tombstone reso
 )
 from kiro_crew.subagent_wait_reasons import (  # noqa: F401 - re-exported: the gate and handlers read them from this namespace
     DEFERRED_QUEUED_REASONS,
+    MEMORY_PRESSURE_DETAIL,
+    MEMORY_PRESSURE_NEVER_STARTED,
+    MEMORY_PRESSURE_RECHECK_SECS,
     QUEUED_REASON_ADAPTIVE_CAP_ZERO,
     QUEUED_REASON_CONCURRENCY_LIMIT,
     QUEUED_REASON_LOW_MEMORY,
+    QUEUED_REASON_MEMORY_PRESSURE,
     QUEUED_REASON_POSTURE_CRITICAL,
 )
 from kiro_crew.validation import _AGENT_NAME_RE, is_registered_agent_name
@@ -430,13 +438,23 @@ def _validate_app_agent_ownership(agent: str, app: str) -> str:
     return ""
 
 
+#: ``(requested, cwd, app, owner_error, agent, error, code)``: the two agent
+#: checks the gate makes -- app ownership (:func:`_validate_app_agent_ownership`)
+#: and :func:`_validate_agent` -- taken off the loop by an event-loop caller and
+#: handed to the gate, which uses them only when it would ask about the same
+#: ``(requested, cwd, app)``. Both walk the agents directory, which must never
+#: happen on the gateway loop.
+AgentCheck = tuple[str, str, str, str, str, str, str]
+
+
 def _validate_agent(requested: str, project_dir: str = "") -> tuple[str, str, str]:
     """Validate that an agent name is one kiro-cli can actually load.
 
-    Runs ON the event loop (``spawn`` is synchronous), so it must not add
-    filesystem work. The user-level ``list_agents()`` scan here is pre-existing —
-    callers that can validate off-loop skip it via ``_agent_prevalidated`` — and
-    this deliberately does NOT widen it: the project scope is read from
+    Runs ON the event loop when ``spawn`` is called synchronously, so it must not
+    add filesystem work. The user-level ``list_agents()`` scan here is
+    pre-existing; the event-loop callers run this function on a worker thread and
+    hand the gate the answer (``AgentCheck``), and the app SpawnSDK skips it via
+    ``_agent_prevalidated``. This deliberately does NOT widen the scan: the project scope is read from
     ``cached_project_agent_names()``, which performs no syscalls at all.
 
     Consequence, stated plainly: a project agent is accepted only once that
@@ -1019,6 +1037,20 @@ _RECOVERY_SLOT_WAIT_SECS = 60.0
 # with a warning: an admitted run is never failed on capacity.
 _DEDICATED_TOPUP_WAIT_SECS = 60.0
 _DEDICATED_TOPUP_POLL_SECS = 2.0
+# The most one root start waits on the macOS kernel memory-pressure hold, clocked
+# from its first hold; past it the start is ended, never started. A named
+# constant because release/0.8.0 has no ``agent.subagent_queue_max_wait_secs``;
+# it carries that key's default.
+_PRESSURE_HOLD_MAX_WAIT_SECS = 1800.0
+# A held row's clock older than this belongs to a row that left without a
+# registration or a refusal (cancelled in the store by another process); dropped.
+_PRESSURE_HOLD_PRUNE_SECS = 4 * _PRESSURE_HOLD_MAX_WAIT_SECS
+# The longest gap between two pressure-hold reads still taken as one continuous
+# episode: a few recheck intervals, the cadence its timer keeps while it applies.
+_PRESSURE_EPISODE_MAX_GAP_SECS = 4.0 * MEMORY_PRESSURE_RECHECK_SECS
+#: SEL outcome of a root start ended, never started, because the pressure hold
+#: kept it past its bound (or its episode had already outlived the bound).
+SEL_MEMORY_PRESSURE_NEVER_STARTED = "never_started_memory_pressure"
 # How long one off-loop host-memory read may wait for the shared executor before
 # the poller takes the same reading synchronously instead.
 _HOST_READ_OFF_LOOP_SECS = 2.0
@@ -2101,6 +2133,43 @@ def _row_settled(info: SubagentInfo, now: float) -> bool:
         answered is not None
         and info._first_stream_generation == info._rss_generation
         and now - answered >= _SETTLE_AFTER_SECS
+    )
+
+
+def _parked_at_spawn_approval(info: SubagentInfo) -> bool:
+    """Whether *info* is parked on the pre-execution SPAWN approval: it has no process.
+
+    ``_awaiting_approval`` alone does not say so: ``run.py`` sets it for TOOL
+    prompts inside a running run as well, and ``_exec_started`` (stamped once,
+    when execution begins) is what tells the two apart. The manager package's
+    one copy; ``dashboard/handlers/messaging.py`` keeps its own, for the reason
+    its ``_awaiting_spawn_approval`` gives.
+    """
+    return (
+        getattr(info, "_awaiting_approval", False) is True
+        and getattr(info, "_exec_started", None) is None
+    )
+
+
+def _owns_dedicated_runtime(
+    agents: Iterable[SubagentInfo], *, claim_prices: Mapping[str, tuple[float, bool]]
+) -> bool:
+    """Whether a dedicated subagent runtime of this gateway is running or warming.
+
+    The runtimes the macOS kernel memory-pressure hold waits on; which rows and
+    claims count, and why shared-priced ones do not, is subagent.md's (*macOS:
+    the kernel memory-pressure hold*). *claim_prices* is ``_claim_prices``.
+    """
+    if any(not priced_shared for _price, priced_shared in claim_prices.values()):
+        return True
+    return any(
+        not info.done
+        and not info.queued
+        and not info._session_sharing
+        and not info._start_priced_shared
+        and not _parked_at_spawn_approval(info)
+        and not (info._start_release is not None and info._exec_started is None)
+        for info in agents
     )
 
 
@@ -3431,6 +3500,26 @@ class SubagentManager:
         # own, and without this memory each re-emit would flip a memory-deferred
         # wave back to the default (concurrency) text.
         self._queue_wait: dict[str, dict[str, Any]] = {}
+        # The macOS kernel memory-pressure hold (``_memory_pressure_hold``): the
+        # level it last warned at (None between episodes, so each episode warns
+        # again), whether it applied at the last read, each held root start's
+        # first-held time, the rows whose wait ran out (released, said once),
+        # and the one re-check timer while it applies.
+        self._pressure_hold_level: int | None = None
+        self._pressure_hold_on = False
+        # When the current kernel episode (level WARN or worse) was first read,
+        # and whether it has outlived the bound, which ends the starts it would
+        # hold, never started, until the level eases.
+        self._pressure_episode_since: float | None = None
+        self._pressure_episode_spent = False
+        self._pressure_episode_read_at = 0.0
+        self._pressure_holds: dict[str, float] = {}
+        self._pressure_hold_expired: set[str] = set()
+        self._pressure_recheck_handle: asyncio.TimerHandle | None = None
+        # agent_id -> the ``approval_mode`` a durable row was accepted with, for
+        # as long as it waits: the store never carries it, so a window refill
+        # restores it from here (``_refill_apply``).
+        self._held_approval_modes: dict[str, str] = {}
         # Batch ids whose spawn_batch_started event has already fired.
         self._seen_batches: set[str] = set()
         # Submission accounting per wave: batch_id -> (submitted, expected).
@@ -4941,6 +5030,7 @@ class SubagentManager:
         _execution_context: dict | None = None,
         _stage_boundary_owner: str = "",
         _parent_spawn_policy: "ParentSpawnPolicy | None" = None,
+        _agent_check: "AgentCheck | None" = None,
     ) -> SubagentInfo | None:
         result = self._admission.spawn_impl(
             task,
@@ -4979,6 +5069,7 @@ class SubagentManager:
             _execution_context=_execution_context,
             _stage_boundary_owner=_stage_boundary_owner,
             _parent_spawn_policy=_parent_spawn_policy,
+            _agent_check=_agent_check,
         )
         assert not isinstance(result, PreparedSpawn)
         # Every synchronous gate return (started, queued, or refused) receives
@@ -5002,6 +5093,52 @@ class SubagentManager:
         if isinstance(prepared, SubagentInfo):
             prepared._stage_boundary_owner = str(kwargs.get("_stage_boundary_owner") or "")
         return prepared
+
+    async def _check_agent_off_loop(
+        self,
+        agent: str,
+        cwd: str,
+        *,
+        app: str = "",
+        execution_context: "Mapping[str, Any] | None" = None,
+        prevalidated: bool = False,
+    ) -> "AgentCheck | None":
+        """The gate's two agent-directory checks for *agent*, on a worker thread.
+
+        App ownership (when *app* is set) and ``_validate_agent`` in the cwd the
+        run will use, keyed by their inputs so the gate uses the answer only for
+        the same ``(agent, cwd, app)`` (``AgentCheck``). An explicit *cwd* is
+        canonicalized here exactly as the gate resolves it (``validate_cwd``
+        against the configured roots), and the app is the one the gate settles
+        on (the captured *execution_context*'s app wins over the caller's, as
+        ``resolve_spawn_execution`` does), so the keys match. None when there is
+        nothing to check, or when the cwd will be refused anyway."""
+        if not agent or prevalidated:
+            return None
+        app = str((execution_context or {}).get("app") or "") or app
+        pool_cwd = str(getattr(self._sessions, "_pool_cwd", "") or "")
+
+        def _check() -> "AgentCheck | None":
+            effective = pool_cwd
+            if cwd:
+                try:
+                    roots = KiroCrewConfig.load().agent.subagent_cwd_allowed_roots
+                except Exception:
+                    roots = []  # the gate fails closed the same way
+                resolved, err = validate_cwd(cwd, roots)
+                if err:
+                    return None
+                effective = resolved
+            owner_err = _validate_app_agent_ownership(agent, app) if app else ""
+            return (
+                agent,
+                effective,
+                app,
+                owner_err or "",
+                *_validate_agent(agent, effective),
+            )
+
+        return await asyncio.to_thread(_check)
 
     async def spawn_async(self, task: str, **kwargs: Any) -> SubagentInfo | None:
         """:meth:`spawn` for event-loop callers (``/api/spawn``).
@@ -5110,6 +5247,16 @@ class SubagentManager:
             kwargs["_parent_spawn_policy"] = await asyncio.to_thread(
                 parent_spawn_policy, str(kwargs.get("parent_session_key") or "")
             )
+        if kwargs.get("_agent_check") is None:
+            # The agent-directory scan, off the loop: the gate consumes this
+            # answer instead of walking the directory on the loop itself.
+            kwargs["_agent_check"] = await self._check_agent_off_loop(
+                str(kwargs.get("agent") or ""),
+                str(kwargs.get("cwd") or ""),
+                app=str(kwargs.get("app") or ""),
+                execution_context=kwargs.get("_execution_context"),
+                prevalidated=bool(kwargs.get("_agent_prevalidated")),
+            )
         store = self._admission.taskq_store()
         if store is None:
             return self.spawn(task, **kwargs)
@@ -5169,6 +5316,7 @@ class SubagentManager:
             _store_accepted=True,
             _window_hint=window_hint,
             _child_registration=False,  # the W3 branch runs awaited, below
+            _agent_check=kwargs.get("_agent_check"),
         )
         first: Any = self.spawn(**params, **common, _stop_before_claim=True)
         if not isinstance(first, ClaimPoint):
@@ -5196,6 +5344,44 @@ class SubagentManager:
 
     def _should_stagger_queue(self, now: float) -> tuple[bool, bool]:
         return self._admission._should_stagger_queue_impl(now)
+
+    def _memory_pressure_hold(self, *, floor_gb: float | None = None) -> int | None:
+        return self._admission._memory_pressure_hold_impl(floor_gb=floor_gb)
+
+    def memory_pressure_hold_active(self) -> bool:
+        """Whether the macOS kernel memory-pressure hold applies right now.
+
+        For a speculative caller (the eager-spawn admission) that must not take
+        the memory held starts wait for.
+        """
+        return self._memory_pressure_hold() is not None
+
+    def _memory_pressure_holds(
+        self,
+        agent_id: str,
+        level: int,
+        *,
+        parent_session_key: str = "",
+        batch_id: str = "",
+        available_gb: float | None = None,
+        relabel: bool = False,
+        commit_expiry: bool = True,
+    ) -> str:
+        return self._admission._memory_pressure_holds_impl(
+            agent_id,
+            level,
+            parent_session_key=parent_session_key,
+            batch_id=batch_id,
+            available_gb=available_gb,
+            relabel=relabel,
+            commit_expiry=commit_expiry,
+        )
+
+    def _forget_pending_start(self, agent_id: str) -> None:
+        """Drop what this process kept for a start that began or never will."""
+        self._pressure_holds.pop(agent_id, None)
+        self._pressure_hold_expired.discard(agent_id)
+        self._held_approval_modes.pop(agent_id, None)
 
     # ── Continuable conversations (keep=True) ─────────────────────────────
 
@@ -5726,6 +5912,7 @@ class SubagentManager:
             for timer in (
                 getattr(self, "_boundary_cancel_retry_handle", None),
                 getattr(self, "_retained_claim_retry_handle", None),
+                getattr(self, "_pressure_recheck_handle", None),
             )
         )
         followup_watcher = any(
@@ -5925,6 +6112,8 @@ _COMPONENT_GLOBAL_BINDINGS = (
     apply_completion_keep,
     asyncio,
     cached_admission_check,
+    pressure_level_held,
+    read_memory_pressure_level,
     cap_result_file,
     clear_tombstone,
     compact_cost_log,

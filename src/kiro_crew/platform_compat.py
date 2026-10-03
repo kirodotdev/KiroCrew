@@ -1862,37 +1862,52 @@ def darwin_process_path(pid: int) -> str | None:
 
 _darwin_libc_sysctl: Any = None
 _darwin_libc_sysctl_loaded = False
+_darwin_libc_sysctl_lock = threading.Lock()
 
 
 def _darwin_sysctl_handle() -> Any:
-    """Cached ``libc`` handle with ``sysctl`` declared, or None when unavailable.
+    """Cached ``libc`` handle with ``sysctl`` and ``sysctlbyname`` declared, or None.
 
     Cached for the same reason as the libproc handle: the argv probe runs per
     descendant on the liveness oracle's cadence, and a fresh ``CDLL`` per call
-    would dlopen every time.
+    would dlopen every time. :func:`memory_pressure_level` reads through the
+    same handle. Built once under a lock, with both prototypes declared before
+    the handle is published and the loaded flag set last, so a concurrent first
+    call waits for the build instead of reading a half-declared handle or None.
     """
     global _darwin_libc_sysctl, _darwin_libc_sysctl_loaded
     if _darwin_libc_sysctl_loaded:
         return _darwin_libc_sysctl
-    _darwin_libc_sysctl_loaded = True
-    try:
-        path = ctypes.util.find_library("c")
-        if path is None:
-            return None
-        libc = ctypes.CDLL(path)
-        libc.sysctl.argtypes = [
-            ctypes.POINTER(ctypes.c_int),
-            ctypes.c_uint,
-            ctypes.c_void_p,
-            ctypes.POINTER(ctypes.c_size_t),
-            ctypes.c_void_p,
-            ctypes.c_size_t,
-        ]
-        libc.sysctl.restype = ctypes.c_int
-        _darwin_libc_sysctl = libc
-    except Exception:
-        _darwin_libc_sysctl = None
-    return _darwin_libc_sysctl
+    with _darwin_libc_sysctl_lock:
+        if _darwin_libc_sysctl_loaded:
+            return _darwin_libc_sysctl
+        handle: Any = None
+        try:
+            path = ctypes.util.find_library("c")
+            if path is not None:
+                libc = ctypes.CDLL(path)
+                libc.sysctl.argtypes = [
+                    ctypes.POINTER(ctypes.c_int),
+                    ctypes.c_uint,
+                    ctypes.c_void_p,
+                    ctypes.POINTER(ctypes.c_size_t),
+                    ctypes.c_void_p,
+                    ctypes.c_size_t,
+                ]
+                libc.sysctl.restype = ctypes.c_int
+                libc.sysctlbyname.argtypes = [
+                    ctypes.c_char_p,
+                    ctypes.c_void_p,
+                    ctypes.POINTER(ctypes.c_size_t),
+                    ctypes.c_void_p,
+                    ctypes.c_size_t,
+                ]
+                handle = libc
+        except Exception:
+            handle = None
+        _darwin_libc_sysctl = handle
+        _darwin_libc_sysctl_loaded = True
+        return handle
 
 
 def darwin_process_argv(pid: int) -> list[str] | None:
@@ -10007,6 +10022,70 @@ def host_available_mib() -> int:
         mem = system_memory()  # GlobalMemoryStatusEx: (total, available)
         return (mem[1] // _MIB_BYTES) if mem else 0
     return 0
+
+
+#: The values ``kern.memorystatus_vm_pressure_level`` answers in. XNU's handler
+#: (``bsd/kern/kern_memorystatus_notify.c``) converts its internal level through
+#: ``convert_internal_pressure_level_to_dispatch_level`` before answering, so
+#: the reading is ``NOTE_MEMORYSTATUS_PRESSURE_*`` from ``sys/event_private.h``.
+#: Those are the same numbers as libdispatch's public
+#: ``DISPATCH_MEMORYPRESSURE_NORMAL`` / ``_WARN`` / ``_CRITICAL``. The internal
+#: "urgent" level reports as WARN.
+MEMORY_PRESSURE_NORMAL = 1
+MEMORY_PRESSURE_WARN = 2
+MEMORY_PRESSURE_CRITICAL = 4
+_MEMORY_PRESSURE_NAMES = {
+    MEMORY_PRESSURE_NORMAL: "NORMAL",
+    MEMORY_PRESSURE_WARN: "WARN",
+    MEMORY_PRESSURE_CRITICAL: "CRITICAL",
+}
+_MEMORY_PRESSURE_SYSCTL = b"kern.memorystatus_vm_pressure_level"
+
+
+def memory_pressure_level() -> int | None:
+    """The macOS kernel's memory-pressure level, or ``None`` when unknown.
+
+    Answers one of :data:`MEMORY_PRESSURE_NORMAL`, :data:`MEMORY_PRESSURE_WARN`
+    or :data:`MEMORY_PRESSURE_CRITICAL`, the level Activity Monitor's
+    memory-pressure graph shows. It is the kernel's own verdict, and it LAGS
+    (docs/system-specs/modules/subagent.md gives the measurement), so it is no
+    measure of available memory and cannot replace a figure such as
+    :func:`host_available_mib`. A caller uses it as a backstop
+    beside such a figure: when the kernel does say WARN, the host is short
+    whatever the page counters add up to.
+
+    ``None`` everywhere other than macOS, and on any failure: no ``libc``, a
+    failed call, a wrong-size answer, or a value that is not one of the three
+    levels. A caller treats ``None`` as "no reading" and fails
+    open, the same contract as ``host_available_mib``'s 0.
+
+    Reads in-process through the cached :func:`_darwin_sysctl_handle`, with no
+    ``sysctl`` subprocess, for the reason given in :func:`macos_vm_statistics`.
+    On macOS the sysctl needs no privilege; XNU checks one only on other Apple
+    platforms.
+    """
+    if not IS_MACOS:
+        return None
+    libc = _darwin_sysctl_handle()
+    if libc is None:
+        return None
+    level = ctypes.c_uint32(0)
+    size = ctypes.c_size_t(ctypes.sizeof(level))
+    try:
+        result = libc.sysctlbyname(
+            _MEMORY_PRESSURE_SYSCTL, ctypes.byref(level), ctypes.byref(size), None, 0
+        )
+    except (OSError, ValueError, ctypes.ArgumentError):
+        return None
+    if result != 0 or size.value != ctypes.sizeof(level):
+        return None
+    value = int(level.value)
+    return value if value in _MEMORY_PRESSURE_NAMES else None
+
+
+def memory_pressure_name(level: int | None) -> str:
+    """``"NORMAL"`` / ``"WARN"`` / ``"CRITICAL"`` for *level*, ``""`` when unknown."""
+    return _MEMORY_PRESSURE_NAMES.get(level, "") if level is not None else ""
 
 
 # ---------------------------------------------------------------------------

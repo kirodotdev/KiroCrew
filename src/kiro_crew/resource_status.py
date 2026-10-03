@@ -35,6 +35,12 @@ readable only from ``/sys/fs/cgroup`` by hand. It reaches the pull tool's report
 the injected line, and the diagnostics bundle. It is REPORTED, never gated: the
 posture stays a single memory scalar, so :func:`admission_check` and
 :func:`prewarm_allowance` behave exactly as before at any task count.
+
+On macOS the probe also reads the kernel's memory-pressure level
+(:func:`read_memory_pressure_level`). The level does not change the posture,
+which stays figure-based, and gates nothing here: it is reported on the same
+surfaces. The subagent gate's pressure hold reads it fresh through the same
+reader (``docs/system-specs/modules/subagent.md``).
 """
 
 from __future__ import annotations
@@ -48,8 +54,10 @@ from collections.abc import Callable, Iterable, MutableMapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from kiro_crew import platform_compat
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.cpu_affinity import affinity_cpu_count
+from kiro_crew.subagent_wait_reasons import MEMORY_PRESSURE_PHRASE
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +88,46 @@ def _read_available_gb() -> float:
     except Exception:  # pragma: no cover - defensive; probe must never raise
         logger.debug("available-memory probe failed", exc_info=True)
         return -1.0
+
+
+#: What a kernel memory-pressure reading means for the user, said the same way
+#: on every surface that reports it. "May": the hold's other conditions are in
+#: subagent.md (*macOS: the kernel memory-pressure hold*).
+PRESSURE_QUEUE_NOTE = (
+    "new subagents may queue until it eases or this gateway's dedicated subagents finish"
+)
+
+
+#: Whether this process has already said the macOS pressure level is unreadable.
+_pressure_unreadable_reported = False
+
+
+def read_memory_pressure_level() -> int | None:
+    """The kernel memory-pressure level, saying ONCE when macOS cannot read it.
+
+    ``None`` fails open everywhere it is read, so a sysctl that macOS stopped
+    answering (or answers with an unexpected value) would silently turn the
+    subagent pressure hold off. One WARNING per process
+    makes that visible without repeating on every probe.
+    """
+    global _pressure_unreadable_reported
+    level = platform_compat.memory_pressure_level()
+    if level is None and platform_compat.IS_MACOS and not _pressure_unreadable_reported:
+        _pressure_unreadable_reported = True
+        logger.warning(
+            "macOS kernel memory-pressure level is unreadable "
+            "(kern.memorystatus_vm_pressure_level); the subagent pressure hold is off"
+        )
+    return level
+
+
+def pressure_level_held(level: int | None) -> bool:
+    """Whether *level* is a kernel memory-pressure reading of WARN or worse.
+
+    The one definition of "held": the subagent gate and every advisory surface
+    read it through this (or the property over it).
+    """
+    return level is not None and level >= platform_compat.MEMORY_PRESSURE_WARN
 
 
 def _read_load_per_cpu(cpu_count: int) -> float | None:
@@ -340,10 +388,31 @@ class ResourceStatus:
     slice_tasks: int = -1  # slice pids.current; -1 when unreadable
     slice_tasks_limit: int = -1  # slice pids.max; 0 = no ceiling, -1 unreadable
     slice_tasks_own: int = -1  # this instance's share; -1 when unattributable
+    # The macOS kernel's memory-pressure level (platform_compat.MEMORY_PRESSURE_*),
+    # None off macOS or when unreadable. Reported beside the posture, never
+    # folded into it.
+    memory_pressure_level: int | None = None
+
+    @property
+    def memory_pressure_held(self) -> bool:
+        """True while the macOS kernel reports memory pressure of WARN or worse."""
+        return pressure_level_held(self.memory_pressure_level)
+
+    def _pressure_clause(self) -> str:
+        """Sentence for an advisory line while the kernel reports pressure."""
+        if not self.memory_pressure_held:
+            return ""
+        name = platform_compat.memory_pressure_name(self.memory_pressure_level)
+        return f" {MEMORY_PRESSURE_PHRASE} ({name}): {PRESSURE_QUEUE_NOTE}."
 
     @property
     def under_pressure(self) -> bool:
-        """True only for tight/critical — the gate for injecting the context line."""
+        """True only for tight/critical: the posture half of the context line's gate.
+
+        The line is also raised by a slice near its task ceiling and by a macOS
+        kernel pressure level of WARN or worse (:meth:`context_line`); neither
+        moves this figure-based answer.
+        """
         return self.posture in (POSTURE_TIGHT, POSTURE_CRITICAL)
 
     @property
@@ -400,16 +469,20 @@ class ResourceStatus:
         pull tool. Kept short on purpose — it costs tokens every pressured turn.
 
         The task ceiling can raise the line by itself, because a host one fork
-        from its ``pids.max`` is not observable in the memory figure at all. It
-        does NOT touch ``posture``, so nothing that gates on the posture tier
-        changes behaviour with it.
+        from its ``pids.max`` is not observable in the memory figure at all, and
+        so can a macOS kernel pressure level of WARN or worse, whatever the figure
+        reads (an unreadable figure included). Neither touches ``posture``, so
+        nothing that gates on the posture tier changes behaviour with them.
         """
         if self.pressure_gb <= 0:
             return ""  # off switch: disables the line regardless of critical tier
         if not self.under_pressure:
+            if self.memory_pressure_held:
+                return self._kernel_pressure_line()
             return self._tasks_only_line()
         gb = f"{self.available_gb:.1f}"
         load = self._load_suffix()
+        suffix = self._pressure_clause() + self._tasks_clause()
         if self.posture == POSTURE_CRITICAL:
             return (
                 f"[RESOURCES] Host memory is CRITICALLY low (~{gb} GB free{load}). "
@@ -417,13 +490,31 @@ class ResourceStatus:
                 "parallel sub-agent waves) — it may fail or destabilize other "
                 "sessions on this host. Run only the lightest necessary steps, or "
                 "wait for memory to free. Call the resource_status tool to re-check."
-            ) + self._tasks_clause()
+            ) + suffix
         return (
             f"[RESOURCES] Host memory is tight (~{gb} GB free{load}). Before heavy "
             "work, prefer the lighter path: run targeted tests instead of the full "
             "suite, avoid large parallel sub-agent waves, and serialize or defer "
             "memory-heavy builds/test runs. Call the resource_status tool to "
             "re-check before a heavy step."
+        ) + suffix
+
+    def _kernel_pressure_line(self) -> str:
+        """The advisory while the figure looks fine but the macOS kernel does not.
+
+        The posture stays figure-based, so without this line a Mac at WARN with
+        gigabytes reclaimable would inject nothing while new subagent starts
+        may queue.
+        """
+        free = (
+            f"~{self.available_gb:.1f} GB free"
+            if self.available_gb >= 0
+            else "an unreadable figure"
+        )
+        return (
+            f"[RESOURCES] Host memory reads {free}{self._load_suffix()}, but"
+            f"{self._pressure_clause()} Prefer the lighter path for heavy work, and call "
+            "the resource_status tool to re-check."
         ) + self._tasks_clause()
 
     def _tasks_clause(self) -> str:
@@ -470,6 +561,11 @@ class ResourceStatus:
         load = f"{self.load_per_cpu}/core" if self.load_per_cpu is not None else "unknown"
         lines.append(f"  CPU cores: {self.cpu_count}   1-min load: {load}")
         lines.append(f"  Posture: {self.posture.upper()}")
+        if self.memory_pressure_level is not None:
+            # macOS only: omitted elsewhere, like the slice task line below.
+            name = platform_compat.memory_pressure_name(self.memory_pressure_level)
+            held = f" — {PRESSURE_QUEUE_NOTE}" if self.memory_pressure_held else ""
+            lines.append(f"  Kernel memory pressure: {name}{held}")
         tasks = self.slice_tasks_text()
         if tasks:
             # Omitted, not reported as "unknown", where there is no cgroup task
@@ -681,6 +777,7 @@ def probe(cfg: object | None = None) -> ResourceStatus:
         slice_tasks=slice_tasks,
         slice_tasks_limit=slice_tasks_limit,
         slice_tasks_own=slice_tasks_own,
+        memory_pressure_level=read_memory_pressure_level(),
     )
 
 
@@ -892,6 +989,11 @@ def admission_check(cfg: object | None = None) -> AdmissionDecision:
 # the safe direction to be wrong in, which is why the number is left alone and
 # the premise is written down instead. The fix when sharing lands is to size on
 # the runtimes a pre-warm will actually SPAWN, not on the sessions it will serve.
+#
+# The macOS kernel memory-pressure hold is NOT applied here: it is the subagent
+# gate's rule, and the eager-spawn ADMISSION reads it from the manager
+# (``chat_runner._admit_prefetch``'s caller), never the re-probe after a
+# pre-warm registered.
 PREWARM_MAX_LIVE = 3
 _PREWARM_BY_POSTURE: dict[str, int] = {
     POSTURE_CRITICAL: 0,

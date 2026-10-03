@@ -15,6 +15,7 @@ if TYPE_CHECKING:
         Stats,
         SubagentInfo,
         _audit_ids,
+        _parked_at_spawn_approval,
         asyncio,
         clear_tombstone,
         delivery_is_parked,
@@ -300,6 +301,8 @@ class CancellationCoordinator(ManagerComponent):
         )
         if not info.id:
             return
+        # The row will never start: drop what this process kept for its start.
+        self._manager._forget_pending_start(info.id)
         # Queued runs have no `_agents` record yet. Register every synthetic
         # terminal before report tasks can run, leaving `done=False` until each
         # task starts. That keeps earlier reports from treating themselves as
@@ -354,16 +357,7 @@ class CancellationCoordinator(ManagerComponent):
         # part of the test for the same reason it is there: a run that has begun
         # executing and is parked on a LATER approval is live work, and a parent end does
         # stop that.
-        def _parked_on_an_unanswered_approval(info: "SubagentInfo") -> bool:
-            return bool(getattr(info, "_awaiting_approval", False)) and (
-                getattr(info, "_exec_started", None) is None
-            )
-
-        live = [
-            info.id
-            for info in mine
-            if not info.done and not _parked_on_an_unanswered_approval(info)
-        ]
+        live = [info.id for info in mine if not info.done and not _parked_at_spawn_approval(info)]
         # Parked on a spawn approval and never started: not CANCELLED, but not ignored
         # either. Two things are true at once and they want different halves of the
         # teardown.
@@ -381,7 +375,7 @@ class CancellationCoordinator(ManagerComponent):
         # then. So it keeps its own decision and loses only the injection, which is the
         # same split the finished-but-undelivered children get.
         approval_parked = [
-            info.id for info in mine if not info.done and _parked_on_an_unanswered_approval(info)
+            info.id for info in mine if not info.done and _parked_at_spawn_approval(info)
         ]
         # Finished, but its outcome has not reached the parent. The question is asked
         # through ``delivery_is_parked``, which reads the classification in
@@ -674,7 +668,7 @@ class CancellationCoordinator(ManagerComponent):
             if info.parent_session_key == parent_session_key
             and not info.done
             and not info.queued
-            and not (info._awaiting_approval and info._exec_started is None)
+            and not _parked_at_spawn_approval(info)
         ]
         results = await asyncio.gather(
             *(self._manager.cancel(agent_id) for agent_id in running_ids),
@@ -1061,6 +1055,13 @@ class CancellationCoordinator(ManagerComponent):
                 reason="shutdown retained claim retry",
             )
         self._manager._retained_claim_retry_handle = None
+        pressure_recheck = self._manager._pressure_recheck_handle
+        if pressure_recheck is not None and not pressure_recheck.cancelled():
+            self._manager._cancel_task_intentionally(
+                pressure_recheck,
+                reason="shutdown memory-pressure recheck",
+            )
+        self._manager._pressure_recheck_handle = None
         # Do not clear or release retained claims here. Their durable rows are
         # still ADMITTED, so process teardown ends the in-memory reservation and
         # the next boot reconciles them to QUEUED as one atomic ownership change.

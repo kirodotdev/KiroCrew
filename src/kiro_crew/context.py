@@ -5759,10 +5759,11 @@ class ContextBuilder:
                 )
 
         # Resource pressure — inject a compact advisory ONLY when a host ceiling
-        # is near: memory tight/critical, or the agent slice close to its cgroup
-        # task ceiling, so the model can choose the lighter path for heavy work
+        # is near: memory tight/critical, the agent slice close to its cgroup
+        # task ceiling, or the macOS kernel reporting memory pressure of WARN or
+        # worse, so the model can choose the lighter path for heavy work
         # (targeted tests, smaller sub-agent waves, deferred builds). Silent (zero
-        # token cost) when both are clear or unreadable. Agent-agnostic: rides
+        # token cost) when all three are clear or unreadable. Agent-agnostic: rides
         # the gateway context rail, so it survives agent switches (a tool grant
         # cannot). Skipped for minimal contexts. Best-effort — never let a probe
         # failure break message assembly.
