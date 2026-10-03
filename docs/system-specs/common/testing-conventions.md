@@ -4213,6 +4213,14 @@ More shapes this class hides, all Windows-only and all green on every Linux run:
   fixture is the shape: it lifts all three budgets on that path (`_APPEND_TIMEOUT_SECONDS`,
   `gate._LOG_BUDGET_SECS`, `tool_risk.LOG_BUDGET_SECS`), because lifting one leaves the
   assertion racing the next.
+- **`TerminateProcess` returns before the process has exited.** It starts the
+  termination and the object is signalled later, so a test that reads a member as
+  exited on the line after a drain signalled it asserts on scheduling.
+  `test_windows_failed_owner_drain_recovers_after_owner_drop` did that after a refused
+  pass and failed as `assert None is not None` on 16 unrelated heads in two days.
+  Reproduced by delivering the real terminate 0.5 s late from a timer. Wait on the
+  member's own exit signal with the file's bounded `_assert_exited`, never on the
+  call that requested it.
 
 **Guess-the-latency sleeps are this class too.** `asyncio.sleep(0.05)` "to let the
 first prompt register" is a bet that two awaits and a `to_thread` hop finish inside

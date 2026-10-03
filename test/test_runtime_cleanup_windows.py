@@ -410,7 +410,10 @@ async def test_windows_failed_owner_drain_recovers_after_owner_drop(tmp_path, mo
                 pending = next(iter(pc._PENDING_WINDOWS_TREE_CLEANUPS.values()))
                 pending_pids = set(pending.handles)
                 assert {pid for pid, _, _ in tree.identities} <= pending_pids
-                assert _identity(*tree.identities[0])[2] is not None
+                # The refused pass signalled the root before discovery failed on
+                # its child. TerminateProcess only starts the exit, so the root is
+                # read as exited once its object is signalled, not on the next line.
+                await _assert_exited(tree.identities[:1])
                 assert all(_identity(*item)[2] is None for item in tree.identities[1:])
                 assert all(
                     getattr(pending, slot) is not provider and getattr(pending, slot) is not rt
