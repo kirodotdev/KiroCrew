@@ -2910,6 +2910,48 @@ _LEAKED_INVOKE_OPEN_RE = re.compile(
 # not read as a full leaked invocation.
 _LEAKED_INVOKE_BODY_RE = re.compile(r"<(?:[A-Za-z][\w.-]*:)?(?:parameter\b|/invoke\s*>)")
 
+_OPTIONS_MARKER = "[OPTIONS:"
+
+
+def open_construct_at_end(text: str) -> str:
+    """Name the construct left OPEN at the end of *text*, or ``""`` when
+    finalizing a segment here is safe.
+
+    A segment cut is a PERSISTENCE boundary: the accumulated text becomes its
+    own assistant row and the buffer resets. Cutting inside a construct that
+    renders only when WHOLE therefore destroys it, because the halves persist
+    as two rows and nothing rejoins them.
+
+    A tool call cuts the segment, so while background agents run their tool
+    calls interleave with the parent's token stream and cut it wherever they
+    land. One reply then persists as many assistant rows split mid-word, and an
+    options marker whose closing ``]`` falls in the next row matches no render
+    grammar: the chips are lost and the tail reaches the user as literal prose.
+    The alternation repeats for as long as the wave runs.
+
+    Provenance cannot decide this. A child tool call arrives on this path with
+    no ``sub_session_id`` and no agent marker, indistinguishable from the
+    parent's own call, so the cut is made safe by asking WHERE it lands rather
+    than who owns it.
+
+    Deferral is bounded by construction: the turn-end flush does not consult
+    this predicate, so an unterminated construct still persists when the turn
+    closes. The cost of deferring is transcript ORDERING (the text lands after
+    the tools it preceded) and never text loss.
+
+    The name is returned rather than a bool so a deferred cut can log WHY.
+    """
+    if not text:
+        return ""
+    marker = text.rfind(_OPTIONS_MARKER)
+    if marker != -1 and "]" not in text[marker:]:
+        return "options-line"
+    if text.count("```") % 2:
+        return "code-fence"
+    if text.count("<mcwidget") > text.count("</mcwidget>"):
+        return "mcwidget"
+    return ""
+
 
 def has_leaked_tool_call(text: str) -> bool:
     """True when *text* contains a tool invocation emitted as PROSE — an
