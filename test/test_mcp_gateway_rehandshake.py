@@ -17,6 +17,7 @@ from typing import Any, Optional, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from test_update_provider import _UNALLOCATABLE_PID
 
 from kiro_crew.mcp_gateway import backend as backend_mod
 from kiro_crew.mcp_gateway.backend import Backend
@@ -39,7 +40,7 @@ def _no_real_metrics_file(monkeypatch: pytest.MonkeyPatch) -> None:
 def _make_backend() -> Backend:
     proc = MagicMock()
     proc.returncode = None
-    proc.pid = 4242
+    proc.pid = _UNALLOCATABLE_PID
     proc.wait = AsyncMock(return_value=0)
     stdin = MagicMock()
     stdin.write = MagicMock()
@@ -72,9 +73,7 @@ def _make_backend() -> Backend:
 def _frames(backend: Backend) -> list[dict]:
     out: list[dict] = []
     for call in cast(Any, backend.stdin).write.call_args_list:
-        out.extend(
-            json.loads(line) for line in call.args[0].decode().splitlines() if line
-        )
+        out.extend(json.loads(line) for line in call.args[0].decode().splitlines() if line)
     return out
 
 
@@ -132,9 +131,7 @@ async def test_lost_session_is_handshaken_again_and_the_call_retried_once() -> N
     fid = await _call(backend)
     cast(Any, backend.stdin).write.reset_mock()
 
-    await backend._route_backend_line(
-        _line({"jsonrpc": "2.0", "id": fid, "error": LOST_SESSION})
-    )
+    await backend._route_backend_line(_line({"jsonrpc": "2.0", "id": fid, "error": LOST_SESSION}))
 
     # One write: initialize, initialized, then the same request under a new id.
     assert cast(Any, backend.stdin).write.call_count == 1
@@ -174,9 +171,7 @@ async def test_lost_session_is_handshaken_again_and_the_call_retried_once() -> N
 async def test_a_retry_refused_again_is_delivered_not_retried() -> None:
     backend, inbox, _ = await _handshaken()
     fid = await _call(backend)
-    await backend._route_backend_line(
-        _line({"jsonrpc": "2.0", "id": fid, "error": LOST_SESSION})
-    )
+    await backend._route_backend_line(_line({"jsonrpc": "2.0", "id": fid, "error": LOST_SESSION}))
     retry_fid = _frames(backend)[-1]["id"]
     cast(Any, backend.stdin).write.reset_mock()
 
@@ -207,9 +202,7 @@ async def test_other_errors_are_delivered_untouched(error: dict) -> None:
     fid = await _call(backend)
     cast(Any, backend.stdin).write.reset_mock()
 
-    await backend._route_backend_line(
-        _line({"jsonrpc": "2.0", "id": fid, "error": error})
-    )
+    await backend._route_backend_line(_line({"jsonrpc": "2.0", "id": fid, "error": error}))
 
     assert _frames(backend) == []
     assert _inbox_frames(inbox) == [{"jsonrpc": "2.0", "id": 7, "error": error}]
@@ -221,9 +214,7 @@ async def test_a_method_outside_the_retry_set_is_delivered_untouched() -> None:
     fid = await _call(backend, method="logging/setLevel", params={"level": "info"})
     cast(Any, backend.stdin).write.reset_mock()
 
-    await backend._route_backend_line(
-        _line({"jsonrpc": "2.0", "id": fid, "error": LOST_SESSION})
-    )
+    await backend._route_backend_line(_line({"jsonrpc": "2.0", "id": fid, "error": LOST_SESSION}))
 
     assert _frames(backend) == []
     assert _inbox_frames(inbox) == [{"jsonrpc": "2.0", "id": 7, "error": LOST_SESSION}]
@@ -236,9 +227,7 @@ async def test_no_retry_for_a_stub_that_has_detached() -> None:
     await backend.detach_stub("s1")
     cast(Any, backend.stdin).write.reset_mock()
 
-    await backend._route_backend_line(
-        _line({"jsonrpc": "2.0", "id": fid, "error": LOST_SESSION})
-    )
+    await backend._route_backend_line(_line({"jsonrpc": "2.0", "id": fid, "error": LOST_SESSION}))
 
     assert [f.get("method") for f in _frames(backend)] == []
 
