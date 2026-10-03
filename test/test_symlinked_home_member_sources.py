@@ -72,7 +72,9 @@ def test_member_memory_reads_through_a_symlinked_home(linked_home):
     dated = files._history_dir / "2026-10-01.md"
     dated.write_text("A day of work.", encoding="utf-8")
 
-    assert files._guarded_entry(anchor, require_readable=True)["content"].startswith("Preference anchor")
+    assert files._guarded_entry(anchor, require_readable=True)["content"].startswith(
+        "Preference anchor"
+    )
     assert files._guarded_entry(dated, require_readable=True)["content"] == "A day of work."
 
 
