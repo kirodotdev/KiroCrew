@@ -67,6 +67,7 @@ CAPABILITY_FIELDS = (
     "effort_via_config_option",
     "compacts_inline",
     "crew_fires_spec_hooks",
+    "supports_native_todos",
 )
 
 
@@ -217,7 +218,7 @@ def test_each_capability_question_has_one_consumer_spelling() -> None:
 def test_every_capability_field_has_a_consumer() -> None:
     """A field nobody reads is a question nobody asks -- delete it or wire it up.
 
-    The record exists to move six branches off an identity check, so a field with
+    The record exists to move seven branches off an identity check, so a field with
     no consumer means one of those branches was missed or the field was invented.
     """
     fields = set(CAPABILITY_FIELDS)
@@ -327,11 +328,11 @@ def test_known_membership_is_unchanged_by_the_move() -> None:
 #: rather than derived from the sets, so a change to a set fails HERE with the
 #: backend named instead of passing tautologically.
 EXPECTED_CAPABILITIES = {
-    "": (PROVIDER_ACP, MODEL_NAMESPACE_ACP, False, False, False),
-    "kas": (PROVIDER_ACP, MODEL_NAMESPACE_ACP, False, False, False),
-    "claude": (PROVIDER_CLAUDE_CODE, "claude_code", True, True, True),
-    "codex": (PROVIDER_ACP, "codex", True, True, True),
-    "nope": (PROVIDER_ACP, MODEL_NAMESPACE_ACP, False, False, False),
+    "": (PROVIDER_ACP, MODEL_NAMESPACE_ACP, False, False, False, False),
+    "kas": (PROVIDER_ACP, MODEL_NAMESPACE_ACP, False, False, False, False),
+    "claude": (PROVIDER_CLAUDE_CODE, "claude_code", True, True, True, True),
+    "codex": (PROVIDER_ACP, "codex", True, True, True, False),
+    "nope": (PROVIDER_ACP, MODEL_NAMESPACE_ACP, False, False, False, False),
 }
 
 
@@ -346,6 +347,7 @@ def test_capabilities_are_pinned_per_backend(backend: str) -> None:
         caps.resolves_model_from_advertised_list,
         caps.effort_via_config_option,
         caps.compacts_inline,
+        caps.supports_native_todos,
     )
     assert actual == EXPECTED_CAPABILITIES[backend]
 
@@ -469,7 +471,7 @@ def test_capabilities_of_reads_a_real_record() -> None:
     ids=["plain-object", "none", "string", "wrong-type", "explicit-none"],
 )
 def test_capabilities_of_fails_closed_on_a_foreign_shape(provider: object) -> None:
-    """The convention the six predicates had: not a provider means False everywhere.
+    """The convention the seven predicates had: not a provider means False everywhere.
 
     They were ``isinstance(provider, AcpProvider) and provider.is_claude_backend``,
     so a wrapper, an unstarted provider or a test double answered False. Requiring

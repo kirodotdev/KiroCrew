@@ -2842,6 +2842,11 @@ async def api_effort_levels(request: web.Request) -> web.Response:
 async def api_slash_commands(request: web.Request) -> web.Response:
     """GET /api/slash-commands — list available slash commands (provider-aware)."""
     cfg = KiroCrewConfig.load()
+    # This global endpoint has no session/member key; the configured default
+    # backend is its capability authority, independent of the provider label.
+    blocked_commands = _BLOCKED_SLASH_COMMANDS
+    if capabilities_for(cfg.agent.acp_backend).supports_native_todos:
+        blocked_commands = blocked_commands - {"/todos"}
     if is_claude_code(cfg.agent.provider):
         state: DashboardState = request.app["state"]
         cc_commands: list[str] = []
@@ -2864,7 +2869,7 @@ async def api_slash_commands(request: web.Request) -> web.Response:
         result = [
             {"name": f"/{c}", "description": SLASH_COMMAND_DESCRIPTIONS.get(f"/{c}", "")}
             for c in cc_commands
-            if f"/{c}" not in _BLOCKED_SLASH_COMMANDS
+            if f"/{c}" not in blocked_commands
         ]
         for command in ("/side", "/workflow"):
             if not any(item["name"] == command for item in result):
@@ -2880,7 +2885,7 @@ async def api_slash_commands(request: web.Request) -> web.Response:
     return web.json_response(
         [
             {"name": c, "description": SLASH_COMMAND_DESCRIPTIONS.get(c, "")}
-            for c in sorted(_SLASH_COMMANDS - _BLOCKED_SLASH_COMMANDS)
+            for c in sorted(_SLASH_COMMANDS - blocked_commands)
         ]
     )
 
