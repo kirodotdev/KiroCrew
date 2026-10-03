@@ -65,7 +65,7 @@ describe('app shell composition', () => {
       'dispatch(fetchSlots())',
       'useWebSocket()',
       'useDashboardHealthProbe(forceReconnect)',
-      'useUpdateFlow(refetchKirocrewCfg)',
+      'useUpdateFlow()',
       'useStartupVideo({',
       'useNativeNotification(botName, avatar)',
       'useRequestFeature(colorTheme)',

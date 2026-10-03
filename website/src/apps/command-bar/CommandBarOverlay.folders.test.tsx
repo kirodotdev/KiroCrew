@@ -68,11 +68,16 @@ vi.mock('../../hooks/useTheme', () => ({ useTheme: () => ({ cycle: vi.fn() }) })
 const listApps = vi.fn(async () => [])
 const chatFolders = vi.fn(async () => [] as unknown[])
 const kirocrewConfig = vi.fn(async () => ({}) as unknown)
+// The settings-search governance reads: the root must answer from cache, never fetch.
+const dashboardConfig = vi.fn(async () => ({}) as unknown)
+const tipsStatus = vi.fn(async () => ({}) as unknown)
 vi.mock('../../api/client', () => ({
   api: {
     listApps: (...a: unknown[]) => listApps(...(a as [])),
     chatFolders: (...a: unknown[]) => chatFolders(...(a as [])),
     kirocrewConfig: (...a: unknown[]) => kirocrewConfig(...(a as [])),
+    dashboardConfig: (...a: unknown[]) => dashboardConfig(...(a as [])),
+    tipsStatus: (...a: unknown[]) => tipsStatus(...(a as [])),
   },
 }))
 
@@ -267,6 +272,9 @@ describe('command bar — the root', () => {
     // The folder ORDER's settings read is a cache subscription too: the shell holds
     // that entry, and opening the bar must not refetch it.
     expect(kirocrewConfig).not.toHaveBeenCalled()
+    // Nor do the settings rows' governance reads, whatever their age.
+    expect(dashboardConfig).not.toHaveBeenCalled()
+    expect(tipsStatus).not.toHaveBeenCalled()
   })
 })
 

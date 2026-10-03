@@ -1265,7 +1265,7 @@ export default function App() {
     toggleFocusMode, toggleNav: () => toggleNav(), terminalEnabled, isPopout, isEmbed, terminalPoppedOut, activeSlotProject,
   })
 
-  const { kiroUsageOpen, setKiroUsageOpen, kiroUsageState, kiroCreditSurface, kiroAccountEntry, refetchKirocrewCfg } = useKiroUsageReadout()
+  const { kiroUsageOpen, setKiroUsageOpen, kiroUsageState, kiroCreditSurface, kiroAccountEntry } = useKiroUsageReadout()
   const metrics = useMetricsReadout(isMobile, updateAvailable)
   const { capsuleCollapsed, setCapsuleCollapsed, capsuleLayoutPulse, pulseCapsuleLayout, sysMetrics, metricsProbeRef, metricsGroupRef } = metrics
 
@@ -1319,7 +1319,7 @@ export default function App() {
   const { subscribeLogs, subscribeSubagents, forceReconnect } = useWebSocket()
   useDashboardHealthProbe(forceReconnect)
 
-  const updateFlow = useUpdateFlow(refetchKirocrewCfg)
+  const updateFlow = useUpdateFlow()
   const { updating, setUpdating, showUpdateModal, setShowUpdateModal, showChangelog, changelogDecided, updateError, setUpdateError } = updateFlow
 
   const startupVideo = useStartupVideo({
@@ -2255,10 +2255,12 @@ export default function App() {
 
       {/* Updating overlay */}
       {(updating || showUpdateModal) && <UpdateOverlay onCancel={() => { setUpdating(false); setShowUpdateModal(false) }} />}
-      <UpdateModal />
+      {/* Both held while What's new is open, so two update dialogs never stack;
+          each takes its turn once What's new closes, with its state intact. */}
+      <UpdateModal held={showChangelog} />
       {updateAvailable && (
         <Suspense fallback={null}>
-          <UpdateFoundModal />
+          <UpdateFoundModal held={showChangelog} />
         </Suspense>
       )}
       <StartupVideo startupVideo={startupVideo} />

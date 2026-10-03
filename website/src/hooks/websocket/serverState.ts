@@ -134,6 +134,10 @@ export function refreshServerStateAfterReconnect(queryClient: QueryClient): void
   // comes back with its folders missing.
   queryClient.invalidateQueries({ queryKey: ['artifacts'] })
   queryClient.invalidateQueries({ queryKey: ['artifact-folders'] })
+  // A config `refresh` frame sent while the socket was down (a save from
+  // another tab, which is how the update switches learn of it) was never
+  // delivered either. Only observed readers refetch.
+  queryClient.invalidateQueries({ queryKey: ['kirocrewConfig'] })
   // `credential_redaction_changed` is pushed to CONNECTED owner sockets
   // with no replay, so a flip made from another window while this socket
   // was down never reached this document. Re-read the switch and, ONLY if

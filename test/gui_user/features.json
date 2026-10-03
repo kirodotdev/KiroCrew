@@ -6166,19 +6166,19 @@
     {
       "id": "settings-about-update-channel-and-notifications",
       "feature": "settings",
-      "title": "Switch update channel and toggle update notifications",
-      "user_story": "As a user, I want to choose stable or insider Update channel and toggle Notify when an update is available, so that I control how I receive updates.",
+      "title": "Switch update channel and set automatic updates",
+      "user_story": "As a user, I want to choose stable or insider Update channel and set Automatic updates, which installs updates and restarts where this install can and only notifies where it cannot, so that I control how I receive updates.",
       "start_url": "/settings/about",
-      "entry_path": "Settings > About > Update channel button group > Notify when an update is available toggle > Auto-update on restart toggle",
+      "entry_path": "Settings > About > Update channel button group > Automatic updates toggle (disabled, with a note under it, where the gateway cannot install) > Install app updates automatically toggle (desktop app)",
       "preconditions": {
         "seed": "minimal",
         "members": [],
         "feature_flags": [],
-        "notes": "configKey auto_update; Auto-update on restart relies on the Electron updater."
+        "notes": "configKey auto_update for the Automatic updates switch; Install app updates automatically is the Electron updater's own switch."
       },
       "runnable": "nightly",
       "estimated_steps": 4,
-      "rationale": "Channel/notify toggles persist in web; auto-update-on-restart effect is Electron-only but the control is degradable.",
+      "rationale": "Channel and gateway auto-update toggles persist in web; the app auto-install switch is Electron-only but the control is degradable.",
       "source": [
         "website/src/pages/settings/AboutPanel.tsx",
         "website/src/components/commandPalette/settingsRegistry.gen.ts"

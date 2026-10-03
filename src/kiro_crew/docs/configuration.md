@@ -622,8 +622,9 @@ happen.
 ### Turning it off and updating by hand
 
 Set `auto_update` with `kirocrew config set auto_update false`, from
-**Developer → Config → Auto Update** in the dashboard, or with the gateway's
-update switch on the About page when the dashboard is open in a browser.
+**Developer → Config → Auto Update** in the dashboard, or with **Automatic
+updates** on the About page. The About switch appears in a browser, and in the
+desktop app when the gateway it connects to installs updates itself.
 
 Updating by hand never restarts a running gateway, so finish with
 `kirocrew restart`:
@@ -649,9 +650,11 @@ the version the running gateway serves.
   a floor advances the host instead of churning on commit distance alone. The
   scope per install is in the
   [governance spec](../../../docs/system-specs/modules/governance.md#update-pins-updates--policy-only).
-- **The desktop app's own updater.** On a desktop install, the app's update
-  switch on the About page is the one that stops automatic updates. It updates
-  the app and the gateway bundled in it. `auto_update` matters there only if a
+- **The desktop app's own updater.** On a desktop install, **Install app
+  updates automatically** on the About page is the switch that stops automatic
+  updates. It updates the app and the gateway bundled in it. The **Automatic
+  updates** switch that can appear beside it sets only the attached gateway's
+  `auto_update`. `auto_update` matters there only if a
   policy names update commands, or if the app is attached to a separately
   installed gateway (from the CLI, as a service, or reached over an SSH tunnel),
   which follows its own `auto_update` per the table above. The app

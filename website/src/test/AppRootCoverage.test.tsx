@@ -54,6 +54,7 @@ vi.mock('../api/client', () => ({
     applyUpdate: vi.fn().mockResolvedValue({}),
     cancelUpdate: vi.fn().mockResolvedValue({}),
     setAutoUpdate: vi.fn().mockResolvedValue({}),
+    kirocrewConfig: vi.fn().mockResolvedValue({ auto_update: true }),
   },
   isAuthBannerShown: vi.fn(() => false),
   ApiError: class ApiError extends Error {},
@@ -117,6 +118,7 @@ beforeEach(() => {
   vi.mocked(api.applyUpdate).mockResolvedValue({} as never)
   vi.mocked(api.cancelUpdate).mockResolvedValue({} as never)
   vi.mocked(api.setAutoUpdate).mockResolvedValue({} as never)
+  vi.mocked(api.kirocrewConfig).mockResolvedValue({ auto_update: true } as never)
   vi.mocked(api.system).mockResolvedValue({ mem_used_gb: 4, mem_total_gb: 16, cpu_pct: 25, disk_total_gb: 100, disk_free_gb: 60 } as never)
   vi.mocked(api.sessionsUsage).mockResolvedValue({ usage: { available: false } } as never)
 })
@@ -209,12 +211,16 @@ describe('App — changelog modal controls', () => {
   it('persists the auto-update preference from the changelog switch', async () => {
     renderShell()
     const dialog = await changelogDialog()
-    const toggle = within(dialog).getByRole('switch', { name: 'Auto-update on restart' })
+    const toggle = await within(dialog).findByRole('switch', { name: 'Automatic updates' })
+    // Held until the saved value has been read.
+    await waitFor(() => expect(toggle).not.toHaveAttribute('aria-disabled'))
     expect(toggle.getAttribute('aria-checked')).toBe('true')
 
+    // The gateway now holds what it was sent, as the re-read after the save shows.
+    vi.mocked(api.kirocrewConfig).mockResolvedValue({ auto_update: false } as never)
     fireEvent.click(toggle)
     await waitFor(() => expect(api.setAutoUpdate).toHaveBeenCalledWith(false))
-    expect(toggle.getAttribute('aria-checked')).toBe('false')
+    await waitFor(() => expect(toggle.getAttribute('aria-checked')).toBe('false'))
   })
 })
 

@@ -1,13 +1,12 @@
 import { createElement } from 'react'
 import { useMemo } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useSettingsSearchGovernance } from '../useSettingsSearchGovernance'
 import { useNavigate } from 'react-router-dom'
 import { Settings } from 'lucide-react'
 import type { NavigateFunction } from 'react-router-dom'
 
 import { makeScoreThenNameComparator } from '../../../utils/fuzzyMatch'
 import { i18nT } from '../../../i18n/t'
-import { api } from '../../../api/client'
 import type { ResourceProvider, Result } from '../types'
 import { SETTINGS_REGISTRY } from '../settingsRegistry.gen'
 import {
@@ -19,7 +18,6 @@ import {
 import { settingsRoute } from '../settingsRoute'
 import { settingsTabLabel } from '../settingsTabLabel'
 import type { SettingEntry } from '../settingsTypes'
-import { fetchDashboardConfig } from '../../../api/dashboardConfigQuery'
 
 /**
  * Settings provider for the Search Everywhere command palette.
@@ -236,32 +234,11 @@ function searchFullCorpus(
 }
 
 /**
- * React hook: a Settings provider wired to the app router.
- *
- * Subscribes to the SAME `['dashboardConfig']` query the Decisions card reads, so
- * the search and the card cannot disagree about whether the feature exists. Shared
- * key and shared stale window mean this adds no request of its own on a dashboard
- * that has already loaded.
+ * React hook: a Settings provider wired to the app router and to the shared
+ * search governance (`useSettingsSearchGovernance`).
  */
 export function useSettingsProvider(): ResourceProvider {
   const navigate = useNavigate()
-  const dashCfgQ = useQuery<{ decisions_enabled?: boolean }>({
-    queryKey: ['dashboardConfig'],
-    queryFn: fetchDashboardConfig,
-    staleTime: 30_000,
-  })
-  // Offer unless the read SUCCEEDED and said otherwise: a failed or in-flight read
-  // is not a denial, and the card this navigates to reports the failure itself.
-  const decisionsEnabled = !dashCfgQ.isSuccess || dashCfgQ.data?.decisions_enabled === true
-  // The same `['tipsStatus']` read ChatPanel uses to drop its Discovery rail group.
-  const tipsQ = useQuery<{ enabled_config: boolean }>({
-    queryKey: ['tipsStatus'],
-    queryFn: () => api.tipsStatus(),
-    staleTime: 30_000,
-  })
-  const tipsEnabled = !tipsQ.isSuccess || tipsQ.data?.enabled_config !== false
-  return useMemo(
-    () => createSettingsProvider(navigate, { decisionsEnabled, tipsEnabled }),
-    [navigate, decisionsEnabled, tipsEnabled],
-  )
+  const governance = useSettingsSearchGovernance()
+  return useMemo(() => createSettingsProvider(navigate, governance), [navigate, governance])
 }
