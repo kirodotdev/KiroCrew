@@ -739,6 +739,17 @@ skills/crons/MCP registration overwrite in place.
 
 Writer: `apps/bridges.py::reconcile_enabled_app_resources`.
 
+Enablement also decides which of an app's **`kirocrew-core` tools are advertised**.
+The three built-in apps reached through that server — Issue Radar, Dev Fleet, Ops
+Mission Control — gate every agent route on `is_app_enabled` (a 403 whose body
+differs per app: Dev Fleet names it `app_not_enabled`, Ops Mission Control
+`app_disabled`, Issue Radar carries no code), and since #16099 `tools/list` emits a
+tool's descriptor only
+while the same `installed.json` read says the app is enabled; a read fault lists
+rather than hides. The contract, the tool-to-app map and why the listing reads the
+tri-state `app_enabled_state` are in
+[mcp](../../architecture/mcp.md#an-apps-tools-follow-the-apps-enablement).
+
 ### 7.1 A hung startup lifecycle hook is bounded at the dispatch boundary
 
 `LifecycleDispatcher` invokes startup hooks **serially** in lexicographic app-name

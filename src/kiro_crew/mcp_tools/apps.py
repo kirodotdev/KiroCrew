@@ -1,10 +1,18 @@
 """The app-scoped tools reachable only through this server's credential tools: what they advertise and what they do.
 
-``schemas()`` returns the ADVERTISEMENT half of each tool -- its name, the
+``schemas()`` returns the DECLARATION half of each tool -- its name, the
 model-facing description, and the JSON Schema a call is validated against.
 ``HANDLERS`` maps each of those names to the function that runs it. Both halves
 of a tool live here so its contract and its behavior are read together, and
 ``test_mcp_tool_registry`` fails if one arrives without the other.
+
+``advertised()`` is what ``tools/list`` actually emits: the declaration minus
+the tools of every app that is switched off. Each tool here belongs to one
+built-in app (``TOOL_APPS``) whose gateway routes refuse a call while the app is
+disabled, so advertising the tool regardless tells the model about a capability
+that can only refuse. The listing and the call read the SAME
+``installed.json`` through the same module; ``advertised()`` states the one
+state in which the two readers differ.
 
 Handlers reach this server's shared plumbing as attributes of ``mcp_core`` --
 ``mcp_core._post``, the identity resolvers, the governance vets. That is
@@ -16,12 +24,14 @@ every existing patch site.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Callable
 from typing import Any
 from urllib.parse import quote
 
 from kiro_crew import mcp_core
+from kiro_crew.apps.manager import app_enabled_state
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.validation import (
     _ISSUE_RADAR_CREW_CLEARABLE_FIELDS,
@@ -439,6 +449,78 @@ def schemas() -> list[dict[str, Any]]:
             },
         },
     ]
+
+
+#: Which built-in app each tool reaches, by the app's installed name (the directory
+#: under ``apps/`` whose ``installed.json`` the app's gateway routes gate on). Spelled
+#: as literals rather than imported from the apps: each app's ``APP_NAME`` lives in
+#: a backend module that drags that app's whole import graph into this server
+#: process. ``test_mcp_apps_tool_gate`` pins every entry to the real constant.
+TOOL_APPS: dict[str, str] = {
+    "issue_radar_record_investigation": "issue-radar",
+    "issue_radar_crew_read": "issue-radar",
+    "issue_radar_crew_record": "issue-radar",
+    "ops_mission_control_api": "ops-mission-control",
+    "pod_up": "dev-fleet",
+    "pod_down": "dev-fleet",
+    "pod_status": "dev-fleet",
+    "pod_ls": "dev-fleet",
+}
+
+
+def advertised() -> list[dict[str, Any]]:
+    """The descriptors ``tools/list`` emits now: ``schemas()`` minus disabled apps' tools.
+
+    The listing and the call read ONE file through ONE module -- the app's
+    ``installed.json`` via ``kiro_crew.apps.manager`` -- with two readers. Every
+    route these tools reach refuses the call with HTTP 403 while the binary
+    ``is_app_enabled`` does not prove the app enabled (Dev Fleet names the
+    refusal ``app_not_enabled``, Ops Mission Control ``app_disabled``, Issue
+    Radar carries no code). This reads the tri-state ``app_enabled_state`` and
+    hides only on a readable ``False`` -- not installed, or installed and
+    switched off. So a hidden tool is always one whose call would be refused,
+    while a listed tool is not always one whose call would succeed: an
+    unreadable record lists tools the route refuses. Hiding is a product
+    decision, not a security one -- the route stays the enforcement point, as it
+    does for the computer-use tools -- and it exists because kiro-cli caches
+    ``tools/list`` once per session, so a disabled app's tools would otherwise
+    spend context in every request of every session that can never use them.
+
+    Fail-OPEN on a read fault, as the per-session policy filter does: ``None``
+    (corrupt JSON, a dangling link, a directory in the file's place) lists the
+    tools, and so does a read that raises. The same once-per-session cache that
+    motivates hiding makes hiding on a transient fault permanent for the
+    session's whole life, while a listed tool whose call the gateway refuses is
+    not a hole; an exception escaping this build, by contrast, would withdraw
+    EVERY tool of the pooled server for every session that shares it.
+
+    Skipped entirely when an event loop is running, the rule
+    ``mcp_tools/spawn.py::_agent_roster_hint`` and ``mcp_tools/control.py`` apply
+    for the same caller: a running loop means this is NOT the stdio server but
+    ``mcp_discovery._managed_tools_in_process``, calling ``_list_tools()`` from
+    ``async def probe_server`` on the gateway's loop. That caller keeps only tool
+    NAMES, so the full declaration is returned there and no ``installed.json``
+    read is charged to the loop. The process that serves ``tools/list`` to a
+    model is ``mcp_shared.run_mcp_stdio_loop``, where no loop runs and the gate
+    IS applied.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass  # no loop: the stdio server, the one build whose listing reaches a model
+    else:
+        return schemas()
+    hidden: set[str] = set()
+    for app in sorted(set(TOOL_APPS.values())):
+        try:
+            state = app_enabled_state(app)
+        except Exception:
+            # Never let a metadata read break the tool advertisement: the route
+            # still refuses the call, while an escaping exception withdraws every tool.
+            continue
+        if state is False:
+            hidden.update(tool for tool, owner in TOOL_APPS.items() if owner == app)
+    return [spec for spec in schemas() if spec["name"] not in hidden]
 
 
 def _crew_session_key() -> tuple[str, str]:

@@ -1529,7 +1529,9 @@ answers `tools/list` from):
   `workflow_cancel`, `workflow_rerun_subtree`, `register_hook`
 - **App bridges:** `issue_radar_record_investigation`,
   `ops_mission_control_api`, `pod_up`, `pod_down`, `pod_status`, `pod_ls`,
-  `issue_radar_crew_read`, `issue_radar_crew_record`
+  `issue_radar_crew_read`, `issue_radar_crew_record`. Listed only while the app
+  each one reaches is enabled — see § An app's tools follow the app's enablement
+  below.
 - **Browser:** `browser`
 - **Diagnostics:** `resource_status`, `kiro_cli_logs` — a redacted tail of kiro-cli's own mcp/lsp protocol logs, so
   the agent can self-diagnose a rejected turn. Reads log files only: never the
@@ -1568,7 +1570,12 @@ nothing at runtime notices when only one half lands:
 
 - Its **descriptor** — name, model-facing description, JSON Schema — is returned
   by that module's `schemas()`. `build_tool_list()` concatenates every domain's,
-  and `mcp_core._list_tools` answers `tools/list` from it.
+  and `mcp_core._list_tools` answers `tools/list` from it. A domain may narrow
+  what it ADVERTISES with an `advertised()` function, which `build_tool_list()`
+  reads in place of `schemas()` when it exists; `schemas()` stays the full
+  declaration, and `advertised()` may only omit a declared descriptor, never add
+  or reshape one (`test_a_domain_advertises_only_what_it_declares`). `apps` is
+  the one domain that does this, below.
 - Its **handler** is an entry in that module's `HANDLERS` map, called as
   `handler(name, args)`. `dispatch()` finds it by name and
   `mcp_core._call_tool_inner` delegates to that.
@@ -1577,7 +1584,76 @@ A descriptor with no handler advertises a tool that answers with the
 dispatcher's fallthrough; a handler with no descriptor is unreachable, because
 the model is never told the name. `test/test_mcp_tool_registry.py` fails when
 either half is missing, when the two halves land in different domains, or when a
-name is claimed twice.
+name is claimed twice. Parity is read from `schemas()`, the declaration — not
+from `build_tool_list()`, which may legitimately omit a declared tool whose app
+is switched off.
+
+### An app's tools follow the app's enablement
+
+The eight `apps`-domain tools each reach one built-in app — Issue Radar
+(`issue_radar_record_investigation`, `issue_radar_crew_read`,
+`issue_radar_crew_record`), Dev Fleet (`pod_up`, `pod_down`, `pod_status`,
+`pod_ls`) and Ops Mission Control (`ops_mission_control_api`) — through gateway
+routes that refuse the call with HTTP 403 while the app is disabled, on
+`kiro_crew.apps.manager`'s read of the app's `installed.json`. The refusal body
+differs per app — Dev Fleet names it `app_not_enabled` (#10742), Ops Mission
+Control `app_disabled`, Issue Radar carries no `code` — so nothing here keys on a
+code; the predicate behind all three is the same `is_app_enabled` read.
+`tools/list` advertised all eight regardless (#16099), so a
+session with none of the apps enabled was told about tools that could only
+refuse — and because kiro-cli reads `tools/list` once per session and Crew's own
+servers are exempt from `tool_search` deferral, each one cost its full schema in
+every request of that session.
+
+`mcp_tools.apps.advertised()` therefore emits a tool's descriptor only while its
+app is enabled, and the decision reads **the same record the call refusal reads**:
+`TOOL_APPS` names the installed app behind each tool (pinned to the apps'
+own `APP_NAME` constants by `test_mcp_apps_tool_gate`), and the listing reads
+that app's `installed.json` through `kiro_crew.apps.manager`, the module the
+route's `is_app_enabled` reads it through. One file, one module, two readers:
+the route's binary `is_app_enabled` treats an unreadable record as disabled and
+refuses, while the listing's tri-state `app_enabled_state` hides only on a
+readable `False`. So a hidden tool is always one whose call would be refused,
+and a listed tool is not always one whose call would succeed — an unreadable
+record lists tools the route refuses, for the reason the fail-open bullet below
+gives. The MCP server
+process reads the data home directly here as it already does for the computer-use
+keystone, the skills tree and the knowledge store; the sandbox masks specific app
+data leaves, not `apps/<name>/installed.json`.
+
+Four details of the shape:
+
+- **Hiding is a product decision, not an enforcement point.** The route stays
+  the gate, as it does for the computer-use tools (`mcp_computer._list_tools`
+  returns `[]` while the keystone is off). `dispatch()` of a hidden tool is
+  unchanged: the handler runs and surfaces the route's own refusal — a hidden
+  tool is not an unknown one.
+- **Fail-OPEN on a read fault, as the per-session policy filter does.** The
+  listing reads the tri-state `app_enabled_state` and hides only on a definite
+  `False` (not installed, or installed and switched off); `None` — corrupt JSON,
+  a dangling link, a directory in the file's place — lists the tools, and so does
+  a read that raises: `advertised()` guards each app's read, because an exception
+  escaping the descriptor build would withdraw every tool of the pooled server
+  for every session (`spawn._agent_roster_hint` and `control.schemas()` keep the
+  same rule for their own reads). The
+  once-per-session `tools/list` cache that motivates hiding would make hiding on
+  a transient fault permanent for the session's whole life, while a listed tool
+  whose call the gateway refuses is not a hole. `is_app_enabled` cannot express
+  this (it collapses unreadable into False), which is why the listing reads the
+  tri-state twin in the same module rather than a third reader.
+- **Enabling an app mid-session does not surface its tools until the session
+  restarts** — kiro-cli caches the listing — and disabling one mid-session leaves
+  them listed and refusing, both exactly as the computer-use tools behave.
+  `schemas()` and `HANDLERS` keep naming all eight whatever the enablement, so a
+  disabled app never reads as registry drift.
+- **On the gateway's event loop the gate is skipped, not charged to the loop.**
+  A running loop means the caller is `mcp_discovery._managed_tools_in_process`,
+  reaching `_list_tools()` from `async def probe_server` on a host whose sandbox
+  refuses the probe spawn; it keeps only tool names. `advertised()` returns the
+  full declaration there and reads no `installed.json`, the rule
+  `spawn._agent_roster_hint` and `control.schemas()` already follow for their own
+  reads. The stdio server that answers a model's `tools/list` runs no loop, so the
+  gate applies where the listing is observed.
 
 Handlers reach the server's shared plumbing — `_post`/`_get`, the identity
 resolvers, the governance vets — as **attributes of `mcp_core`**, not as direct
