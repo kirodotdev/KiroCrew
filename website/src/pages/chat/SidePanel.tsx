@@ -8,7 +8,7 @@ import { usePointerDrag } from '../../hooks/usePointerDrag'
 import { useLongPressReorder } from '../../hooks/useLongPressReorder'
 import { Reorder } from 'framer-motion'
 import { FileText, Bot, Workflow, ScrollText, MessageCircleQuestionMark, TerminalSquare, GitCompare, GitPullRequest, GitBranch, History, Plus, MoreHorizontal, X, Hash, Pen, Columns2, Component, Globe, CircleDot, Folder, Folders, Link as LinkIcon, PanelRight, PanelBottom, Layers, ListTree, Pin } from 'lucide-react'
-import { PanelRightLight } from '../../components/icons/panels'
+import { SidePanelDockHost, SidePanelGlyph } from '../../components/SidePanelGlyph'
 import ActivityViewer from './ActivityViewer'
 // Loaded with its tab, not the shell: the panel (attention cards, tile lists,
 // the session card frame) is only mounted once a Dashboard tab exists.
@@ -970,6 +970,7 @@ export default function SidePanel({
   effectiveRef.current = { width: effectiveWidth, height: effectiveHeight }
 
   return (
+    <SidePanelDockHost value={canDockBottom}>
     <div
       ref={rootRef}
       data-testid="side-panel-root"
@@ -1195,7 +1196,7 @@ export default function SidePanel({
           title={i18nT('pages.chat.sidePanel.close_panel')}
           aria-label={i18nT('pages.chat.sidePanel.close_panel')}
         >
-          <PanelRightLight size={15} />
+          <SidePanelGlyph light size={15} />
         </button>
         )}
         </div>
@@ -1429,6 +1430,7 @@ export default function SidePanel({
         })}
       </div>
     </div>
+    </SidePanelDockHost>
   )
 }
 

@@ -15,7 +15,7 @@
  */
 import { memo, useId } from 'react'
 import { Workflow, CheckCircle2, AlertCircle, ChevronDown } from 'lucide-react'
-import { PanelRightSolid } from '../../components/icons/panels'
+import { SidePanelGlyph } from '../../components/SidePanelGlyph'
 import { useAppDispatch } from '../../store'
 import { openActivityToTab } from '../../store/chatSlice'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
@@ -137,7 +137,7 @@ const WorkflowCompletionCard = memo(function WorkflowCompletionCard({
             aria-label={i18nT('pages.chat.workflowCompletionCard.open_in_the_workflows_panel')}
             className="pi-morph flex items-center gap-1 text-[11px] leading-4 text-accent hover:text-accent-hover bg-transparent border-none cursor-pointer px-1.5 py-1 rounded hover:bg-accent/10 transition-colors"
           >
-            <PanelRightSolid size={13} />
+            <SidePanelGlyph size={13} />
             <span className="hidden sm:inline">{i18nT('pages.chat.workflowCompletionCard.panel')}</span>
           </button>
           {body && (

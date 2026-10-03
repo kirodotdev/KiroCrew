@@ -15,7 +15,7 @@
  */
 import { memo } from 'react'
 import { Bot, Loader2, CheckCircle2, AlertCircle, Clock, Square, Hand } from 'lucide-react'
-import { PanelRightSolid } from '../../components/icons/panels'
+import { SidePanelGlyph } from '../../components/SidePanelGlyph'
 import { useAppSelector, useAppDispatch } from '../../store'
 import { openActivityToTab, selectSubagent, switchSlot, isAwaitingSpawnApproval } from '../../store/chatSlice'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
@@ -353,7 +353,7 @@ const SubagentRunCard = memo(function SubagentRunCard({
           {i18nT('pages.chat.subagentRunCard.open_subagents_panel')}
         </div>
       </div>
-      <PanelRightSolid
+      <SidePanelGlyph
         size={14}
         className="text-muted shrink-0 mt-0.5 opacity-60 group-hover:opacity-100 transition-opacity"
       />

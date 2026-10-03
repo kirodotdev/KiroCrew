@@ -23,7 +23,7 @@ import {
   AlertCircle,
   Save,
 } from 'lucide-react'
-import { PanelRightSolid } from '../../components/icons/panels'
+import { SidePanelGlyph } from '../../components/SidePanelGlyph'
 import { api } from '../../api/client'
 import Modal from '../../components/Modal'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -222,7 +222,7 @@ const WorkflowRunCard = memo(function WorkflowRunCard({
               {runId} {i18nT('pages.chat.workflowRunCard.open_workflows_panel')}
             </div>
           </div>
-          <PanelRightSolid
+          <SidePanelGlyph
             size={14}
             className="text-muted shrink-0 mt-0.5 opacity-60 group-hover:opacity-100 transition-opacity"
           />

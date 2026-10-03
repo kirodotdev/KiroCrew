@@ -302,6 +302,7 @@ import { KnowledgePicker } from './chat/KnowledgePicker'
 import { MessageSquare, Clock, AppWindow, Undo2, Columns2, ExternalLink } from 'lucide-react'
 import { EdgeFade, JumpToBottomButton } from '../app-sdk/ChatScrollChrome'
 import { PanelLeftSolid, PanelLeftLight, PanelRightSolid } from '../components/icons/panels'
+import { SidePanelDockHost, SidePanelGlyph } from '../components/SidePanelGlyph'
 
 import SlotTagPopover from '../components/SlotTagPopover'
 import { TagPopoverProvider } from '../hooks/useTagPopover'
@@ -5147,6 +5148,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
 
   return (
     <RowDisclosureProvider resetKey={activeSlot}>
+    {/* The side panel can dock below the chat only while the shell's activity
+        bar hosts it; the inline panel (mobile, embed, popout) always opens
+        right, so every panel glyph on this page resolves against that. */}
+    <SidePanelDockHost value={!!activitySlot}>
     <TagPopoverProvider>
     {/* Self-hosted Jira allowlist for every markdown anchor in the page --
         message bodies, previews, and panels alike -- so a pasted Jira URL
@@ -5663,7 +5668,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   title={i18nT('pages.chatPage.open_activity_panel')}
                   aria-label={i18nT('pages.chatPage.open_activity_panel')}
                 >
-                  <PanelRightSolid size={15} />
+                  <SidePanelGlyph size={15} />
                 </Clickable>
               )}
               {!embedMode && splitFeatureEnabled && (splitAnchorForActive && !activeIsSplitAnchor ? (
@@ -6567,6 +6572,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     </SidebarFolderCtx.Provider>
     </JiraHostsCtx.Provider>
     </TagPopoverProvider>
+    </SidePanelDockHost>
     </RowDisclosureProvider>
   )
 }
