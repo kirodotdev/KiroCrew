@@ -4366,6 +4366,7 @@ class TestSpawnBackend:
         assert env["PATH"] == "/usr/bin"
         assert env[backend_mod.KIROCREW_SPAWNED_ENV] == backend_mod.KIROCREW_SPAWNED_VALUE
         assert env[backend_mod.POOLED_BACKEND_ENV] == backend_mod.POOLED_BACKEND_VALUE
+        assert env[backend_mod.POOLED_RESPAWN_COMMAND_ENV] == "/usr/bin/example-mcp"
         assert fake_spawn["kwargs"]["start_new_session"] is True
         assert backend.pid == 5150
         assert backend._last_ping_response_mono > 0

@@ -34,7 +34,11 @@ from kiro_crew.constants import (
     SUBAGENT_TIMEOUT_SECS,
 )
 from kiro_crew.executors import image_executor, maintenance_executor
-from kiro_crew.install_liveness import POOLED_BACKEND_ENV, POOLED_BACKEND_VALUE
+from kiro_crew.install_liveness import (
+    POOLED_BACKEND_ENV,
+    POOLED_BACKEND_VALUE,
+    POOLED_RESPAWN_COMMAND_ENV,
+)
 from kiro_crew.mcp_caller import (
     CALLER_CAPABILITY_KEY,
     CALLER_META_KEY,
@@ -4096,6 +4100,10 @@ async def spawn_backend(
     # Tells a first-party server it may exit to be replaced (its install was
     # pruned): this pool respawns it. Constant, so PoolKey-safe like the above.
     spawn_env[POOLED_BACKEND_ENV] = POOLED_BACKEND_VALUE
+    # The command a respawn reuses (the daemon's target map is frozen), so the
+    # server exits only when that relaunch can still work. Derived from the
+    # key's own command, so PoolKey-safe like the marker.
+    spawn_env[POOLED_RESPAWN_COMMAND_ENV] = command
     # Per-process temp containment. Safe re: the pooled-backend
     # PoolKey invariant for the same reason as the marker above -- the value
     # is derived from the key's own digest plus a token generated AFTER
