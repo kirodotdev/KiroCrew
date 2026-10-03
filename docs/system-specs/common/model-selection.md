@@ -182,6 +182,15 @@ Entitlement stays with the live `session/new` list (`_entitled_kiro_models`,
 install, and in that window the catalogs alone cannot call any pin foreign; every
 send is still a wire decision, so no turn runs the wrong model.
 
+A catalog row's wire id is its `model_id`. kiro-cli prints a `model_id` beside each
+`model_name`, and the two can differ: a model can carry a display name that is not
+its id. `session/new` advertises the id, and every reader of a picker row (the
+entitlement narrowing, the pin validators, `session/set_model`) treats
+`model_name` as the id, so `GET /api/models` serves such a row with `model_name`
+set to the `model_id` and the printed name kept as `display_name`
+(`_fetch_kiro_catalog`). Left under its printed name, the row would never match an
+advertised id and the picker would hide a model the account can run.
+
 That live list is revalidated on the read path before it narrows anything. A
 `session/new` snapshot is one answer captured at one instant, and an entitlement
 lookup racing a token refresh can answer with the free tier; no explicit pick is
