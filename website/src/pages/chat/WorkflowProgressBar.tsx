@@ -100,8 +100,9 @@ const WorkflowProgressBar = memo(function WorkflowProgressBar({ slot }: { slot: 
           scrolls would carry its own blur and light bands away with the rows.
           The clip lives on that child too: the pane's hairlines sit half a
           pixel OUTSIDE its top and bottom edges, and `overflow: hidden` on the
-          pane itself would cut them (see QuestionCard). */}
-      <Glass variant="chip" radius={8} className="mb-1 glass-accent animate-slide-up">
+          pane itself would cut them (see QuestionCard). `thick`: the progress
+          panes above the composer stay readable over the transcript (#16299). */}
+      <Glass variant="chip" thickness="thick" radius={8} className="mb-1 glass-accent animate-slide-up">
         <div
           data-testid="workflow-progress-bar"
           className={`rounded-[inherit] ${

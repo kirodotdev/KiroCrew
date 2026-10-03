@@ -265,8 +265,10 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
       {/* The same glass as every other pane in the composer dock
           (components/Glass.tsx), on the accent tint step: the old
           `bg-accent/10` wash had no blur and no body, so the transcript
-          scrolling under it showed through as if the bar were a hole. */}
-      <Glass variant="chip" radius={8} className="mb-1 glass-accent animate-slide-up">
+          scrolling under it showed through as if the bar were a hole. `thick`:
+          the progress panes above the composer carry dense rows that must stay
+          readable while the transcript passes under them (maintainer, #16299). */}
+      <Glass variant="chip" thickness="thick" radius={8} className="mb-1 glass-accent animate-slide-up">
         {/* The clip lives one level in, not on the pane: the pane's hairlines sit
             half a pixel OUTSIDE its top and bottom edges, and `overflow: hidden`
             on the pane itself would cut them (see QuestionCard). The inner box

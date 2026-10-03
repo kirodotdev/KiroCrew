@@ -94,11 +94,21 @@ the Liquid Glass surfaces (the composer dock and everything in it, the mobile
 Settings search capsule, the session list's and the crew roster's search field,
 the top bar's search trigger, readout capsule and Request a Feature pill)
 lay over their blurred backdrop (the pane draws no ring:
-lit top and bottom, a line down each side). `--glass-tint-accent`, `-warn`,
-`-danger` and `-hover` are derived from `--glass-tint` on `:root` (the picked
-chip, the incognito chip, the offline readout capsule and a hovered pane swap
-them in via `glass-accent` / `glass-warn` / `glass-danger` / `glass-hover`), so
-they follow the polarity too. And
+lit top and bottom, a line down each side). The tint is a ladder of five
+thicknesses, `--glass-tint-ultrathin` / `-thin` / `-regular` / `-thick` /
+`-ultrathick`, each a polarity-fixed `rgba()`: a pane picks one with the
+`thickness` prop on `components/Glass.tsx`, which puts `glass-<step>` on the
+host, and that class sets `--glass-tint` (what the primitive paints) and
+`--glass-tint-step` (the step's plain tint). Blur moves with it (2 / 4 / 8 / 14 /
+28px, owned by `Glass.tsx`), so a thickness is one material step, never a blur or
+an alpha chosen at a call site; `thin` is the default and the pre-ladder recipe.
+The colours are tuned so a pane over the plain page keeps one overall colour
+across the ladder (light `#f8f8f8` over white): the tint whitens as the alpha
+rises. The hue modifiers `glass-accent` / `glass-warn` / `glass-danger` /
+`glass-hover` / `glass-faded` (the picked chip, the incognito chip, the offline
+readout capsule, a hovered pane, a receding row) mix into `--glass-tint-step` on
+the host, so they land on the pane's own thickness and follow the polarity too.
+And
 the `--tile-*` set behind the Settings section icons. They are fixed on purpose —
 the glass must read as a lit pane on any light palette and as smoked glass on any
 dark one, and a section's tile is an identity mark that must look the same in

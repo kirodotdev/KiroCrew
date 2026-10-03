@@ -3022,9 +3022,45 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
  * resting ~28 and read as a pale slab, and a side-line / shadow step read as a
  * second material; the caret is the focus indicator on the composer). The light
  * tint is a neutral grey, not a bluish one, at 45%: the blue cast read as dirt
- * on a white page. */
-:root { --glass-tint: rgba(30, 30, 34, 0.40); --glass-band: rgba(255, 255, 255, 0.22); --glass-edge: rgba(255, 255, 255, 0.14); --glass-hairline: rgba(0, 0, 0, 0.50); }
-[data-mode="light"] { --glass-tint: rgba(240, 240, 240, 0.45); --glass-band: rgba(255, 255, 255, 1); --glass-edge: rgba(0, 0, 0, 0.24); --glass-hairline: rgba(0, 0, 0, 0.20); }
+ * on a white page.
+ *
+ * The tint comes in FIVE thicknesses (components/Glass.tsx `thickness`, issue
+ * #16299): `--glass-tint-ultrathin` … `--glass-tint-ultrathick`, one ladder on
+ * which blur (owned by Glass.tsx: 2 / 4 / 8 / 14 / 28px) and tint move together.
+ * `thin` is the pre-ladder recipe and the default. Each step's colour is chosen
+ * so a pane over the plain page keeps the SAME overall colour as thin (light:
+ * #f8f8f8 over white): `c = page + (c_thin - page) * (a_thin / a)` per channel,
+ * anchored on `--bg` (#12141a) in dark and on white in light. `--glass-tint`
+ * itself is the step the host wears (`.glass-<step>` below, `thin` on :root), and
+ * the modifier steps further down mix INTO `--glass-tint-step`, the host's own
+ * plain step tint, so an accent chip on a thick pane is a thick accent. */
+:root {
+  --glass-tint-ultrathin: rgba(34, 33, 37, 0.30);
+  --glass-tint-thin: rgba(30, 30, 34, 0.40);
+  --glass-tint-regular: rgba(28, 28, 32, 0.50);
+  --glass-tint-thick: rgba(26, 27, 31, 0.60);
+  --glass-tint-ultrathick: rgba(24, 25, 30, 0.78);
+  --glass-tint-step: var(--glass-tint-thin);
+  --glass-tint: var(--glass-tint-thin);
+  --glass-band: rgba(255, 255, 255, 0.22); --glass-edge: rgba(255, 255, 255, 0.14); --glass-hairline: rgba(0, 0, 0, 0.50);
+}
+[data-mode="light"] {
+  --glass-tint-ultrathin: rgba(236, 236, 236, 0.35);
+  --glass-tint-thin: rgba(240, 240, 240, 0.45);
+  --glass-tint-regular: rgba(243, 243, 243, 0.55);
+  --glass-tint-thick: rgba(245, 245, 245, 0.65);
+  --glass-tint-ultrathick: rgba(247, 247, 247, 0.82);
+  --glass-band: rgba(255, 255, 255, 1); --glass-edge: rgba(0, 0, 0, 0.24); --glass-hairline: rgba(0, 0, 0, 0.20);
+}
+/* The step a pane wears, set on the host by Glass.tsx. Both tokens are set so a
+ * modifier below (also on the host) can mix into `--glass-tint-step` while
+ * replacing `--glass-tint`: a property may read a sibling on the same element,
+ * never itself. */
+.glass-ultrathin { --glass-tint-step: var(--glass-tint-ultrathin); --glass-tint: var(--glass-tint-ultrathin); }
+.glass-thin { --glass-tint-step: var(--glass-tint-thin); --glass-tint: var(--glass-tint-thin); }
+.glass-regular { --glass-tint-step: var(--glass-tint-regular); --glass-tint: var(--glass-tint-regular); }
+.glass-thick { --glass-tint-step: var(--glass-tint-thick); --glass-tint: var(--glass-tint-thick); }
+.glass-ultrathick { --glass-tint-step: var(--glass-tint-ultrathick); --glass-tint: var(--glass-tint-ultrathick); }
 
 /* Tint steps for a Liquid Glass pane (components/Glass.tsx). Every surface in
  * the composer dock — the composer, the follow-up chips, the tip / suggestion /
@@ -3044,14 +3080,17 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
  * the pane's own backdrop-filter layers would have nothing to sample and the
  * glass would turn into a flat, unblurred wash. Each step is a `--glass-tint` swap on the host: the
  * primitive's frost box reads the token, so the pane repaints without a rule
- * of its own. The mixed values are computed once on :root (from the polarity's
- * own `--glass-tint`), so a swap on the host cannot reference itself. */
-:root { --glass-tint-accent: color-mix(in srgb, var(--accent) 14%, var(--glass-tint)); --glass-tint-warn: color-mix(in srgb, var(--warn) 12%, var(--glass-tint)); --glass-tint-danger: color-mix(in srgb, var(--danger) 12%, var(--glass-tint)); --glass-tint-hover: color-mix(in srgb, var(--text) 8%, var(--glass-tint)); --glass-tint-faded: color-mix(in srgb, var(--glass-tint) 55%, transparent); }
-.glass-accent { --glass-tint: var(--glass-tint-accent); }
-.glass-faded { --glass-tint: var(--glass-tint-faded); }
-.glass-warn { --glass-tint: var(--glass-tint-warn); }
-.glass-danger { --glass-tint: var(--glass-tint-danger); }
-.glass-hover:hover { --glass-tint: var(--glass-tint-hover); }
+ * of its own. The mix is computed ON THE HOST from `--glass-tint-step` -- the
+ * plain tint of the thickness the host wears (set by `.glass-<step>` above,
+ * `thin` on :root) -- so the hue lands on the pane's own thickness, and a
+ * property reads a sibling token rather than itself. These rules follow the
+ * step classes so that, at equal specificity, the modifier's `--glass-tint`
+ * wins on a host carrying both. */
+.glass-accent { --glass-tint: color-mix(in srgb, var(--accent) 14%, var(--glass-tint-step)); }
+.glass-faded { --glass-tint: color-mix(in srgb, var(--glass-tint-step) 55%, transparent); }
+.glass-warn { --glass-tint: color-mix(in srgb, var(--warn) 12%, var(--glass-tint-step)); }
+.glass-danger { --glass-tint: color-mix(in srgb, var(--danger) 12%, var(--glass-tint-step)); }
+.glass-hover:hover { --glass-tint: color-mix(in srgb, var(--text) 8%, var(--glass-tint-step)); }
 
 /* The context shelf (agent, project, branch, model chips) sits BELOW the glass
  * pane, on the bare transcript, and the dock floats over content, so a chip
