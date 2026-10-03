@@ -32,7 +32,9 @@ from kiro_crew.hooks import (
     HOOK_EVENTS,
     HOOK_EVENTS_AGENT_REQUESTED,
     HOOK_EVENTS_ALL,
+    HOOK_EVENTS_DORMANT,
     HOOK_EVENTS_KAS_ONLY,
+    HOOK_EVENTS_PENDING,
     ScriptHookStore,
     validate_hook_fields,
 )
@@ -111,9 +113,22 @@ class TestTheVocabulary:
         assert set(HOOK_EVENTS_KAS_ONLY) == set(TWINS.values())
         assert len(HOOK_EVENTS_KAS_ONLY) == 6
 
-    def test_the_two_groups_do_not_overlap(self) -> None:
+    def test_the_pending_group_is_the_one_gateway_event_without_delivery(self) -> None:
+        """Pinned like the other two, and pinned OUT of ``HOOK_EVENTS``.
+
+        A pending event is authorable but fired by nothing, so membership in
+        ``HOOK_EVENTS`` -- which is the promise that something calls ``fire`` --
+        would make the exit-code contract a claim about an event that never runs.
+        The round that ships delivery moves the name between these two tuples, and
+        this assertion is what makes that move deliberate rather than incidental.
+        """
+        assert HOOK_EVENTS_PENDING == ("SessionLaneChanged",)
+        assert not set(HOOK_EVENTS_PENDING) & set(HOOK_EVENTS)
+        assert not set(HOOK_EVENTS_PENDING) & set(HOOK_EVENTS_KAS_ONLY)
+
+    def test_the_three_groups_do_not_overlap(self) -> None:
         assert not set(HOOK_EVENTS) & set(HOOK_EVENTS_KAS_ONLY)
-        assert len(set(HOOK_EVENTS_ALL)) == 11
+        assert len(set(HOOK_EVENTS_ALL)) == 12
 
     def test_the_requested_subset_is_the_two_task_triggers(self) -> None:
         """The distance to running differs inside the six.
@@ -169,14 +184,14 @@ class TestTheVocabulary:
 class TestAuthoringTheNewTriggers:
     """Create, save, reload -- the round trip a new trigger has to survive."""
 
-    @pytest.mark.parametrize("event", sorted(HOOK_EVENTS_KAS_ONLY))
+    @pytest.mark.parametrize("event", sorted(HOOK_EVENTS_DORMANT))
     def test_create_accepts_the_trigger(self, event: str, tmp_path: Path) -> None:
         store = ScriptHookStore(tmp_path)
         hook = store.create(_valid(event=event, name=f"h-{event}"))
         assert hook.event == event
         assert store.get(hook.id) is not None
 
-    @pytest.mark.parametrize("event", sorted(HOOK_EVENTS_KAS_ONLY))
+    @pytest.mark.parametrize("event", sorted(HOOK_EVENTS_DORMANT))
     def test_the_trigger_reads_back_after_a_cold_reload(self, event: str, tmp_path: Path) -> None:
         """A second store instance parses the file from disk.
 
@@ -190,7 +205,7 @@ class TestAuthoringTheNewTriggers:
         assert reloaded.event == event
         assert reloaded.command == "true"
 
-    @pytest.mark.parametrize("event", sorted(HOOK_EVENTS_KAS_ONLY))
+    @pytest.mark.parametrize("event", sorted(HOOK_EVENTS_DORMANT))
     def test_the_persisted_file_records_the_trigger_verbatim(
         self, event: str, tmp_path: Path
     ) -> None:
@@ -198,13 +213,13 @@ class TestAuthoringTheNewTriggers:
         stored = json.loads((tmp_path / "hooks.json").read_text(encoding="utf-8"))
         assert [h["event"] for h in stored["hooks"]] == [event]
 
-    @pytest.mark.parametrize("event", sorted(HOOK_EVENTS_KAS_ONLY))
+    @pytest.mark.parametrize("event", sorted(HOOK_EVENTS_DORMANT))
     def test_update_can_move_a_hook_onto_the_trigger(self, event: str, tmp_path: Path) -> None:
         store = ScriptHookStore(tmp_path)
         hook = store.create(_valid())
         assert store.update(hook.id, {"event": event}).event == event
 
-    @pytest.mark.parametrize("event", sorted(HOOK_EVENTS_KAS_ONLY))
+    @pytest.mark.parametrize("event", sorted(HOOK_EVENTS_DORMANT))
     def test_both_dashboard_schemas_accept_the_trigger(self, event: str) -> None:
         assert validate_tool_args(_valid(event=event), HOOK_CREATE_SCHEMA)["event"] == event
         assert validate_tool_args({"event": event}, HOOK_UPDATE_SCHEMA)["event"] == event
@@ -225,7 +240,7 @@ class TestTheRefusalsThatMustSurvive:
         with pytest.raises(ValidationError):
             validate_tool_args(_valid(event=event), HOOK_CREATE_SCHEMA)
 
-    @pytest.mark.parametrize("event", sorted(HOOK_EVENTS_KAS_ONLY))
+    @pytest.mark.parametrize("event", sorted(HOOK_EVENTS_DORMANT))
     def test_a_dormant_hook_is_saved_switched_off(self, event: str, tmp_path: Path) -> None:
         """The activation contract, and the only reason this PR can store these.
 
@@ -238,7 +253,7 @@ class TestTheRefusalsThatMustSurvive:
         hook = ScriptHookStore(tmp_path).create(_valid(event=event))
         assert hook.enabled is False
 
-    @pytest.mark.parametrize("event", sorted(HOOK_EVENTS_KAS_ONLY))
+    @pytest.mark.parametrize("event", sorted(HOOK_EVENTS_DORMANT))
     def test_an_explicit_enable_is_honoured(self, event: str, tmp_path: Path) -> None:
         """Turning it on IS the reconfirmation, so a caller that asks is obeyed."""
         store = ScriptHookStore(tmp_path)
@@ -251,7 +266,7 @@ class TestTheRefusalsThatMustSurvive:
         """The default is narrowed for the six alone."""
         assert ScriptHookStore(tmp_path).create(_valid(event=event)).enabled is True
 
-    @pytest.mark.parametrize("event", sorted(HOOK_EVENTS_KAS_ONLY))
+    @pytest.mark.parametrize("event", sorted(HOOK_EVENTS_DORMANT))
     def test_the_contract_survives_the_schema_the_dashboard_creates_through(
         self, event: str, tmp_path: Path
     ) -> None:
@@ -280,7 +295,7 @@ class TestTheRefusalsThatMustSurvive:
         payload = validate_tool_args(_valid(event=event), HOOK_CREATE_SCHEMA)
         assert ScriptHookStore(tmp_path).create(payload).enabled is True
 
-    @pytest.mark.parametrize("event", sorted(HOOK_EVENTS_KAS_ONLY))
+    @pytest.mark.parametrize("event", sorted(HOOK_EVENTS_DORMANT))
     def test_an_explicit_enable_through_the_schema_is_honoured(
         self, event: str, tmp_path: Path
     ) -> None:
@@ -315,7 +330,7 @@ class TestTheRefusalsThatMustSurvive:
         assert create["enabled"] is value
         assert validate_tool_args({"enabled": value}, HOOK_UPDATE_SCHEMA)["enabled"] is value
 
-    @pytest.mark.parametrize("event", sorted(HOOK_EVENTS_KAS_ONLY))
+    @pytest.mark.parametrize("event", sorted(HOOK_EVENTS_DORMANT))
     def test_moving_a_live_hook_onto_the_trigger_switches_it_off(
         self, event: str, tmp_path: Path
     ) -> None:
@@ -331,14 +346,14 @@ class TestTheRefusalsThatMustSurvive:
         assert hook.enabled is True
         assert store.update(hook.id, {"event": event}).enabled is False
 
-    @pytest.mark.parametrize("event", sorted(HOOK_EVENTS_KAS_ONLY))
+    @pytest.mark.parametrize("event", sorted(HOOK_EVENTS_DORMANT))
     def test_an_explicit_enable_on_that_move_is_honoured(self, event: str, tmp_path: Path) -> None:
         """Naming it IS the reconfirmation, on the update path as on create."""
         store = ScriptHookStore(tmp_path)
         hook = store.create(_valid(event="PreToolUse"))
         assert store.update(hook.id, {"event": event, "enabled": True}).enabled is True
 
-    @pytest.mark.parametrize("event", sorted(HOOK_EVENTS_KAS_ONLY))
+    @pytest.mark.parametrize("event", sorted(HOOK_EVENTS_DORMANT))
     def test_editing_a_dormant_hook_does_not_switch_it_off_again(
         self, event: str, tmp_path: Path
     ) -> None:
@@ -363,7 +378,7 @@ class TestTheRefusalsThatMustSurvive:
         hook = store.create(_valid(event="PreToolUse"))
         assert store.update(hook.id, {"event": event}).enabled is True
 
-    @pytest.mark.parametrize("event", sorted(HOOK_EVENTS_KAS_ONLY))
+    @pytest.mark.parametrize("event", sorted(HOOK_EVENTS_DORMANT))
     def test_fire_skips_a_dormant_hook_while_test_still_runs_it(
         self, event: str, tmp_path: Path
     ) -> None:
@@ -391,7 +406,7 @@ class TestTheRefusalsThatMustSurvive:
             "hook runs, and saving these off would otherwise make them unrunnable"
         )
 
-    @pytest.mark.parametrize("event", sorted(HOOK_EVENTS_KAS_ONLY))
+    @pytest.mark.parametrize("event", sorted(HOOK_EVENTS_DORMANT))
     def test_a_matcher_is_refused_on_the_new_triggers(self, event: str, tmp_path: Path) -> None:
         """A matcher filters the event's payload, and these events have no payload.
 
@@ -412,7 +427,7 @@ class TestTheRefusalsThatMustSurvive:
                 matcher_mode="glob",
             )
 
-    @pytest.mark.parametrize("event", sorted(HOOK_EVENTS_KAS_ONLY))
+    @pytest.mark.parametrize("event", sorted(HOOK_EVENTS_DORMANT))
     def test_an_empty_matcher_is_still_fine_on_the_new_triggers(
         self, event: str, tmp_path: Path
     ) -> None:
@@ -426,7 +441,7 @@ class TestTheRefusalsThatMustSurvive:
             "fs_write"
         )
 
-    @pytest.mark.parametrize("event", sorted(HOOK_EVENTS_KAS_ONLY))
+    @pytest.mark.parametrize("event", sorted(HOOK_EVENTS_DORMANT))
     def test_a_hand_edited_matcher_is_dropped_on_load_not_trapped(
         self, event: str, tmp_path: Path
     ) -> None:
@@ -505,7 +520,7 @@ class TestTheRefusalsThatMustSurvive:
         hook = ScriptHookStore(tmp_path).get("h1")
         assert hook is not None and hook.matcher == "fs_write"
 
-    @pytest.mark.parametrize("event", sorted(HOOK_EVENTS_KAS_ONLY))
+    @pytest.mark.parametrize("event", sorted(HOOK_EVENTS_DORMANT))
     def test_a_partial_move_onto_the_new_triggers_drops_the_stored_matcher(
         self, event: str, tmp_path: Path
     ) -> None:
@@ -531,7 +546,7 @@ class TestTheRefusalsThatMustSurvive:
         reloaded = ScriptHookStore(tmp_path).get(hook.id)
         assert reloaded is not None and reloaded.matcher == ""
 
-    @pytest.mark.parametrize("event", sorted(HOOK_EVENTS_KAS_ONLY))
+    @pytest.mark.parametrize("event", sorted(HOOK_EVENTS_DORMANT))
     def test_a_matcher_sent_with_the_move_is_still_refused(
         self, event: str, tmp_path: Path
     ) -> None:
@@ -556,7 +571,7 @@ class TestTheRefusalsThatMustSurvive:
         moved = store.update(hook.id, {"event": event})
         assert moved is not None and moved.matcher == "fs_write"
 
-    @pytest.mark.parametrize("event", sorted(HOOK_EVENTS_KAS_ONLY))
+    @pytest.mark.parametrize("event", sorted(HOOK_EVENTS_DORMANT))
     def test_a_skills_hook_still_refuses_the_new_triggers(self, event: str) -> None:
         """The "Load skills:" directive has a reader on two events only, and a
         new trigger does not add one."""
@@ -699,6 +714,11 @@ class TestTheFormOffersThem:
         [
             ("KAS_ONLY_EVENTS", HOOK_EVENTS_KAS_ONLY),
             ("AGENT_REQUESTED_EVENTS", HOOK_EVENTS_AGENT_REQUESTED),
+            # Without this row the pending list was a hand copy with nothing holding
+            # it: ``HOOK_EVENTS_ALL`` does not change when delivery moves the name
+            # into ``HOOK_EVENTS``, so every other pin stayed green while the picker
+            # went on marking a firing event `not fired yet`.
+            ("PENDING_EVENTS", HOOK_EVENTS_PENDING),
         ],
     )
     def test_the_marker_reads_the_split_from_the_same_tuples(

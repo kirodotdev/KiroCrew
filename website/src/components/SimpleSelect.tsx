@@ -64,10 +64,17 @@ export interface SimpleSelectProps {
    *  an entry undefined for a row with nothing to say. `source` picks the colour,
    *  `label` is the already-translated text.
    *
+   *  `note` is plain text rendered between the VALUE and the badge, for a caller
+   *  that needs a word of its own on a badged row: this branch renders the bare
+   *  value rather than `optionLabels`, so a label-borne word reached the native
+   *  list and the typeahead only, never the open list where the choice is made.
+   *  It rides here rather than in a parallel array because it is only renderable
+   *  where a badge already is.
+   *
    *  Radix path only. On touch the row IS a native `<option>`, which holds text
-   *  and nothing else, so the same fact is appended as `name — label` there. The
+   *  and nothing else, so the same facts are appended as `name — label` there. The
    *  divergence is deliberate: each path gets the best form it can render. */
-  optionBadges?: ({ label: string; source: string; hint?: string } | undefined)[]
+  optionBadges?: ({ label: string; source: string; hint?: string; note?: string } | undefined)[]
   disabled?: boolean
   style?: React.CSSProperties
   /** Forwarded to the trigger so a caption's `<label htmlFor>` can name it
@@ -197,8 +204,20 @@ export default function SimpleSelect({ options, optionLabels, optionIcons, value
             return (
               <SelectItem key={opt} value={toRadix(opt)} textValue={label(opt, i)}>
                 {badge ? (
-                  <span className="inline-flex items-center gap-1.5">
-                    {opt}
+                  // `min-w-0 max-w-full` so the row can SHRINK inside a panel the
+                  // viewport clamped below the caller's floor: the note truncates and
+                  // the value and badge stay whole, rather than the row keeping its
+                  // natural width and pushing the badge out of an overflow-hidden panel.
+                  <span className="inline-flex min-w-0 max-w-full items-center gap-1.5">
+                    <span className="shrink-0">{opt}</span>
+                    {/* aria-hidden for the same reason the badge is: the option's
+                        accessible name stays the bare wire value, and the native
+                        path carries this word through `optionLabels` instead. */}
+                    {badge.note !== undefined && (
+                      <span aria-hidden="true" className="min-w-0 truncate text-[12px] text-text/80">
+                        {badge.note}
+                      </span>
+                    )}
                     {/* aria-hidden: the option's accessible name must stay the bare
                         template name — the badge text otherwise joins it and breaks
                         exact-name lookups (locators, SR "select kirocrew"). */}
