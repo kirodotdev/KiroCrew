@@ -161,7 +161,8 @@ class TestTokenRefusal:
         monkeypatch.setattr(cli_server, "run_preflight_checks", lambda: None)
         monkeypatch.setattr(cli_server, "resolve_client_port", lambda _port: 5476)
         monkeypatch.setattr(cli_server, "read_local_secret", lambda _port, **_kw: "s3cr3t")
-        monkeypatch.setattr(cli_server, "loopback_urlopen", refused)
+        monkeypatch.setattr(cli_server, "_verified_loopback_gateway_pids", lambda _port: [4242])
+        monkeypatch.setattr(cli_server, "_minting_secret_urlopen", refused)
         with pytest.raises(SystemExit) as exc:
             cli_server._token(argparse.Namespace(ttl="1h", port=None))
         assert exc.value.code == 1
@@ -176,7 +177,8 @@ class TestTokenRefusal:
         monkeypatch.setattr(cli_server, "run_preflight_checks", lambda: None)
         monkeypatch.setattr(cli_server, "resolve_client_port", lambda _port: 5476)
         monkeypatch.setattr(cli_server, "read_local_secret", lambda _port, **_kw: "s3cr3t")
-        monkeypatch.setattr(cli_server, "loopback_urlopen", boom)
+        monkeypatch.setattr(cli_server, "_verified_loopback_gateway_pids", lambda _port: [4242])
+        monkeypatch.setattr(cli_server, "_minting_secret_urlopen", boom)
         with pytest.raises(SystemExit) as exc:
             cli_server._token(argparse.Namespace(ttl="1h", port=None))
         assert exc.value.code == 1

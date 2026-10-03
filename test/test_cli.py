@@ -7347,13 +7347,16 @@ class TestPrintTokenUrl:
             "kiro_crew.cli_server.resolve_dashboard_host",
             lambda local_only=True: "canonical-host.invalid",
         )
+        monkeypatch.setattr(
+            "kiro_crew.cli_server._verified_loopback_gateway_pids", lambda _port: [4242]
+        )
 
         mock_resp = MagicMock()
         mock_resp.read.return_value = b'{"token": "abc123"}'
         mock_resp.__enter__ = lambda s: s
         mock_resp.__exit__ = MagicMock(return_value=False)
 
-        with patch("kiro_crew.cli_server.loopback_urlopen", return_value=mock_resp):
+        with patch("kiro_crew.cli_server._minting_secret_urlopen", return_value=mock_resp):
             _print_token_url(7777)
 
         out = capsys.readouterr().out
@@ -7372,13 +7375,16 @@ class TestPrintTokenUrl:
         monkeypatch.setattr(
             "kiro_crew.cli_server.dashboard_origin", lambda u: "http://kirocrew.dev:7777"
         )
+        monkeypatch.setattr(
+            "kiro_crew.cli_server._verified_loopback_gateway_pids", lambda _port: [4242]
+        )
 
         mock_resp = MagicMock()
         mock_resp.read.return_value = b'{"token": "xyz789"}'
         mock_resp.__enter__ = lambda s: s
         mock_resp.__exit__ = MagicMock(return_value=False)
 
-        with patch("kiro_crew.cli_server.loopback_urlopen", return_value=mock_resp):
+        with patch("kiro_crew.cli_server._minting_secret_urlopen", return_value=mock_resp):
             _print_token_url(7777)
 
         out = capsys.readouterr().out
@@ -7436,6 +7442,96 @@ class TestPrintTokenUrl:
 
         out = capsys.readouterr().out
         assert "kirocrew token" in out
+
+    def test_minting_secret_is_withheld_from_an_unproven_listener(self, capsys, monkeypatch):
+        """A secret is available but ownership is NOT proven, so nothing is sent.
+
+        /api/token/local mints owner tokens, so handing the X-Local-Secret to
+        whatever answers 127.0.0.1 would let a foreign local process act as the
+        operator. When ``_verified_loopback_gateway_pids`` returns no pid the
+        poll loop must never build the request: the transport is never reached,
+        and the deadline is hit with the ``kirocrew token`` fallback.
+
+        A fake clock gives the loop exactly one real iteration (a positive wait,
+        not ``_RESTART_TOKEN_WAIT=0`` which would skip the body entirely and make
+        the no-send assertion vacuous), so the gate is genuinely exercised: the
+        secret IS read, and the gate alone is what stops the send.
+        """
+        from kiro_crew import cli_server
+
+        secret_reads: list[int] = []
+        monkeypatch.setattr(
+            "kiro_crew.cli_server.read_local_secret",
+            lambda port, **_kw: secret_reads.append(port) or "test-secret",
+        )
+        monkeypatch.setattr("kiro_crew.cli_server._ownership_proof_available", lambda _port: True)
+        # Ownership never proves out -- a legacy generation or a foreign squatter.
+        monkeypatch.setattr(
+            "kiro_crew.cli_server._verified_loopback_gateway_pids", lambda _port: []
+        )
+
+        sends: list[object] = []
+        monkeypatch.setattr(
+            "kiro_crew.cli_server._minting_secret_urlopen",
+            lambda *a, **k: sends.append((a, k)),
+        )
+        monkeypatch.setattr(
+            "kiro_crew.cli_server.loopback_urlopen",
+            lambda *a, **k: sends.append((a, k)),
+        )
+
+        # Clock: start=0, one in-loop check at 1s (< 15s deadline), then 16s to
+        # cross the deadline and print the fallback. The body runs exactly once.
+        remaining = [0.0, 1.0, 16.0]
+        clock = types.SimpleNamespace(
+            monotonic=lambda: remaining.pop(0) if len(remaining) > 1 else remaining[0],
+            sleep=lambda _s: None,
+        )
+        with patch.object(cli_server, "time", clock):
+            cli_server._print_token_url(7777)
+
+        assert secret_reads == [7777], "the loop body must run once and read the secret"
+        assert sends == [], "the minting secret must not be sent to an unproven listener"
+        out = capsys.readouterr().out
+        assert "kirocrew token" in out
+
+    def test_still_prints_where_the_ownership_proof_cannot_run(self, capsys, monkeypatch):
+        """Native Windows / socket-degraded POSIX: the restart arm must still print a URL.
+
+        The proof is structurally unavailable there, so gating would poll to the
+        deadline and never print a URL -- removing the post-restart convenience.
+        The gate is capability-scoped: with the proof unavailable (even a
+        vacuously empty ``_verified_loopback_gateway_pids``), the token URL is
+        still printed.
+        """
+        from kiro_crew.cli_server import _print_token_url
+
+        monkeypatch.setattr(
+            "kiro_crew.cli_server.read_local_secret", lambda _port, **_kw: "test-secret"
+        )
+        monkeypatch.setattr("kiro_crew.cli_server._ownership_proof_available", lambda _port: False)
+        monkeypatch.setattr(
+            "kiro_crew.cli_server._verified_loopback_gateway_pids", lambda _port: []
+        )
+        monkeypatch.setattr(
+            "kiro_crew.cli_server.KiroCrewConfig.load",
+            lambda: MagicMock(dashboard=MagicMock(url="")),
+        )
+        monkeypatch.setattr(
+            "kiro_crew.cli_server.resolve_dashboard_host",
+            lambda local_only=True: "canonical-host.invalid",
+        )
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = b'{"token": "win-url-tok"}'
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("kiro_crew.cli_server._minting_secret_urlopen", return_value=mock_resp):
+            _print_token_url(7777)
+
+        out = capsys.readouterr().out
+        assert "token=win-url-tok" in out
 
 
 @pytest.mark.skipif(
@@ -7787,6 +7883,9 @@ class TestTokenCommand:
             "kiro_crew.cli_server.read_local_secret", lambda _port, **_kw: "test-secret"
         )
         monkeypatch.setattr(
+            "kiro_crew.cli_server._verified_loopback_gateway_pids", lambda _port: [50519]
+        )
+        monkeypatch.setattr(
             "kiro_crew.cli_server.KiroCrewConfig.load",
             lambda: MagicMock(dashboard=MagicMock(url="")),
         )
@@ -7800,7 +7899,7 @@ class TestTokenCommand:
 
         args = argparse.Namespace(ttl="1h", port=7777)
         with patch(
-            "kiro_crew.cli_server.loopback_urlopen",
+            "kiro_crew.cli_server._minting_secret_urlopen",
             return_value=self._mock_token_response("abc123"),
         ):
             _token(args)
@@ -7819,6 +7918,9 @@ class TestTokenCommand:
             "kiro_crew.cli_server.read_local_secret", lambda _port, **_kw: "test-secret"
         )
         monkeypatch.setattr(
+            "kiro_crew.cli_server._verified_loopback_gateway_pids", lambda _port: [50519]
+        )
+        monkeypatch.setattr(
             "kiro_crew.cli_server.KiroCrewConfig.load",
             lambda: MagicMock(dashboard=MagicMock(url="https://kirocrew.dev:7777")),
         )
@@ -7832,7 +7934,7 @@ class TestTokenCommand:
 
         args = argparse.Namespace(ttl="1h", port=7777)
         with patch(
-            "kiro_crew.cli_server.loopback_urlopen",
+            "kiro_crew.cli_server._minting_secret_urlopen",
             return_value=self._mock_token_response("xyz789"),
         ):
             _token(args)
@@ -7856,6 +7958,11 @@ class TestTokenCommand:
     def _stub_token_env(self, tmp_path, monkeypatch, *, secret: bool = True) -> None:
         value = "test-secret" if secret else ""
         monkeypatch.setattr("kiro_crew.cli_server.read_local_secret", lambda _port, **_kw: value)
+        # The ownership proof is a precondition for sending the minting secret;
+        # these tests exercise behaviour past it, so vouch for the port.
+        monkeypatch.setattr(
+            "kiro_crew.cli_server._verified_loopback_gateway_pids", lambda _port: [50519]
+        )
         monkeypatch.setattr(
             "kiro_crew.cli_server.KiroCrewConfig.load",
             lambda: MagicMock(dashboard=MagicMock(url="")),
@@ -7893,7 +8000,8 @@ class TestTokenCommand:
 
         self._stub_token_env(tmp_path, monkeypatch)
         with patch(
-            "kiro_crew.cli_server.loopback_urlopen", side_effect=urllib.error.URLError("refused")
+            "kiro_crew.cli_server._minting_secret_urlopen",
+            side_effect=urllib.error.URLError("refused"),
         ):
             with pytest.raises(SystemExit) as excinfo:
                 _token(argparse.Namespace(ttl="1h", port=7777))
@@ -7907,7 +8015,8 @@ class TestTokenCommand:
 
         self._stub_token_env(tmp_path, monkeypatch)
         with patch(
-            "kiro_crew.cli_server.loopback_urlopen", return_value=self._mock_token_response("")
+            "kiro_crew.cli_server._minting_secret_urlopen",
+            return_value=self._mock_token_response(""),
         ):
             with pytest.raises(SystemExit) as excinfo:
                 _token(argparse.Namespace(ttl="1h", port=7777))
@@ -7929,7 +8038,7 @@ class TestTokenCommand:
 
         self._stub_token_env(tmp_path, monkeypatch)
         with patch(
-            "kiro_crew.cli_server.loopback_urlopen",
+            "kiro_crew.cli_server._minting_secret_urlopen",
             return_value=self._mock_token_response("eyJa.b"),
         ):
             _token(argparse.Namespace(ttl="1h", port=7777))
@@ -7939,6 +8048,249 @@ class TestTokenCommand:
         for line in lines:
             assert line.lstrip().startswith("http"), f"non-URL text on stdout: {line!r}"
         assert "token=eyJa.b" in captured.out
+
+    def test_minting_secret_is_withheld_from_an_unproven_listener(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """A secret is available but the port's listener is not proven ours.
+
+        ``/api/token/local`` mints owner tokens, so the request must not be sent
+        to a listener whose gateway-ownership is unproven: the secret would be
+        handed to whatever answers the ambient-resolved loopback port. The CLI
+        refuses (exit 1, reason on stderr) and never reaches the transport.
+        """
+        from kiro_crew.cli_server import _token
+
+        monkeypatch.setattr(
+            "kiro_crew.cli_server.read_local_secret", lambda _port, **_kw: "test-secret"
+        )
+        monkeypatch.setattr("kiro_crew.cli_server._ownership_proof_available", lambda _port: True)
+        monkeypatch.setattr(
+            "kiro_crew.cli_server._verified_loopback_gateway_pids", lambda _port: []
+        )
+        monkeypatch.setattr(
+            "kiro_crew.cli_server.KiroCrewConfig.load",
+            lambda: MagicMock(dashboard=MagicMock(url="")),
+        )
+
+        sends: list[object] = []
+        with patch(
+            "kiro_crew.cli_server._minting_secret_urlopen",
+            side_effect=lambda *a, **k: sends.append((a, k)),
+        ):
+            with pytest.raises(SystemExit) as excinfo:
+                _token(argparse.Namespace(ttl="1h", port=7777))
+
+        assert excinfo.value.code == 1
+        assert sends == [], "the minting secret was sent to an unproven listener"
+        captured = capsys.readouterr()
+        assert "not verified" in captured.err
+        assert captured.out == ""
+
+    def test_still_mints_where_the_ownership_proof_cannot_run(self, tmp_path, capsys, monkeypatch):
+        """Native Windows / socket-degraded POSIX: the gate must NOT remove the feature.
+
+        The ownership proof is structurally unavailable there (no POSIX owner /
+        no port->pid tool), so ``_verified_loopback_gateway_pids`` returns ``[]``
+        for a reason that is not a real negative. Gating on that would fail
+        closed and delete ``kirocrew token`` on those platforms. The gate is
+        capability-scoped, so with the proof unavailable the token is still
+        minted -- the pre-existing behaviour for that platform.
+        """
+        from kiro_crew.cli_server import _token
+
+        self._stub_token_env(tmp_path, monkeypatch)
+        # Proof cannot run here, and even a (vacuously empty) proof must not gate.
+        monkeypatch.setattr("kiro_crew.cli_server._ownership_proof_available", lambda _port: False)
+        monkeypatch.setattr(
+            "kiro_crew.cli_server._verified_loopback_gateway_pids", lambda _port: []
+        )
+        with patch(
+            "kiro_crew.cli_server._minting_secret_urlopen",
+            return_value=self._mock_token_response("win-tok"),
+        ):
+            _token(argparse.Namespace(ttl="1h", port=7777))
+        captured = capsys.readouterr()
+        assert "token=win-tok" in captured.out
+        assert "not verified" not in captured.err
+
+
+class TestMintingSecretTransport:
+    """``_minting_secret_urlopen`` prefers the peer-verified socket, no TCP fallback.
+
+    The token-minting secret must go out over a transport the kernel verifies at
+    connect time (``SO_PEERCRED`` on the unix socket), closing the
+    check-then-connect window a port-ownership proof alone leaves open. TCP is
+    used only where there is no socket to prefer.
+    """
+
+    def test_prefers_the_unix_socket_and_never_touches_tcp(self, monkeypatch):
+        from kiro_crew import cli_server
+
+        monkeypatch.setattr(cli_server, "socket", types.SimpleNamespace(AF_UNIX=1))
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.urls.dashboard_socket_path",
+            lambda _port: "/run/sentinel.sock",
+        )
+        monkeypatch.setattr(cli_server.os.path, "exists", lambda _p: True)
+        sock_calls: list[object] = []
+        tcp_calls: list[object] = []
+        monkeypatch.setattr(
+            cli_server,
+            "unix_socket_urlopen",
+            lambda req, timeout, socket_path, verify_peer: sock_calls.append(
+                (socket_path, timeout, verify_peer)
+            )
+            or "ok",
+        )
+        monkeypatch.setattr(
+            cli_server, "loopback_urlopen", lambda *a, **k: tcp_calls.append((a, k))
+        )
+
+        result = cli_server._minting_secret_urlopen(MagicMock(), 7777, 5)
+
+        assert result == "ok"
+        assert len(sock_calls) == 1
+        socket_path, timeout, verify_peer = sock_calls[0]
+        assert (socket_path, timeout) == ("/run/sentinel.sock", 5)
+        assert callable(verify_peer), "the unix send must carry a connect-time peer verifier"
+        assert tcp_calls == [], "the minting secret must not fall back to TCP when a socket exists"
+
+    def test_uses_tcp_only_when_there_is_no_socket_to_prefer(self, monkeypatch):
+        from kiro_crew import cli_server
+
+        monkeypatch.setattr(cli_server, "socket", types.SimpleNamespace(AF_UNIX=1))
+        # No socket path resolves (e.g. the lookup fails) -> TCP is the only transport.
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.urls.dashboard_socket_path",
+            lambda _port: (_ for _ in ()).throw(RuntimeError("no socket")),
+        )
+        tcp_calls: list[object] = []
+        monkeypatch.setattr(
+            cli_server, "loopback_urlopen", lambda req, timeout: tcp_calls.append(timeout) or "tcp"
+        )
+
+        result = cli_server._minting_secret_urlopen(MagicMock(), 7777, 3)
+
+        assert result == "tcp"
+        assert tcp_calls == [3]
+
+    def test_a_derived_but_unbound_socket_path_falls_to_tcp(self, monkeypatch):
+        """A POSIX gateway up on TCP that never bound its socket must still work.
+
+        ``dashboard_socket_path`` derives a path regardless of whether the file
+        exists, so a non-existent socket path must fall to TCP (where the
+        ownership proof guards) rather than report the live gateway as not
+        running.
+        """
+        from kiro_crew import cli_server
+
+        monkeypatch.setattr(cli_server, "socket", types.SimpleNamespace(AF_UNIX=1))
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.urls.dashboard_socket_path",
+            lambda _port: "/run/never-bound.sock",
+        )
+        monkeypatch.setattr(cli_server.os.path, "exists", lambda _p: False)
+        sock_calls: list[object] = []
+        tcp_calls: list[object] = []
+        monkeypatch.setattr(
+            cli_server,
+            "unix_socket_urlopen",
+            lambda *a, **k: sock_calls.append((a, k)) or "sock",
+        )
+        monkeypatch.setattr(
+            cli_server, "loopback_urlopen", lambda req, timeout: tcp_calls.append(timeout) or "tcp"
+        )
+
+        result = cli_server._minting_secret_urlopen(MagicMock(), 7777, 4)
+
+        assert result == "tcp"
+        assert sock_calls == [], "an unbound (non-existent) socket path must not be dialed"
+        assert tcp_calls == [4]
+
+    def test_the_peer_verifier_refuses_a_mismatched_peer_before_any_bytes(self, monkeypatch):
+        """The unix send's verifier refuses a rebound socket at connect time.
+
+        A same-UID process can unlink the owner-writable socket path and bind
+        its own listener; the kernel peer pid is the one signal that survives
+        that swap. The verifier must raise -- before any HTTP bytes -- when the
+        connected peer's pid is not the gateway's recorded pid.
+        """
+        from kiro_crew import cli_server
+
+        monkeypatch.setattr(cli_server, "_recorded_gateway_pid", lambda _port: 4242)
+        # The socket is answered by a DIFFERENT pid than the recorded gateway.
+        monkeypatch.setattr(cli_server, "get_peer_pid", lambda _sock: 9999)
+        verify = cli_server._minting_peer_verifier(7777)
+
+        with pytest.raises(OSError):
+            verify(MagicMock())
+
+    def test_the_peer_verifier_refuses_an_unidentifiable_peer(self, monkeypatch):
+        """An unreadable peer pid is a refusal, not a pass (deny-by-default)."""
+        from kiro_crew import cli_server
+
+        monkeypatch.setattr(cli_server, "_recorded_gateway_pid", lambda _port: 4242)
+        monkeypatch.setattr(cli_server, "get_peer_pid", lambda _sock: None)
+        verify = cli_server._minting_peer_verifier(7777)
+
+        with pytest.raises(OSError):
+            verify(MagicMock())
+
+    def test_the_peer_verifier_refuses_when_no_gateway_pid_is_recorded(self, monkeypatch):
+        """No live recorded pid -> nothing can be attested, so refuse."""
+        from kiro_crew import cli_server
+
+        monkeypatch.setattr(cli_server, "_recorded_gateway_pid", lambda _port: None)
+        monkeypatch.setattr(cli_server, "get_peer_pid", lambda _sock: 4242)
+        verify = cli_server._minting_peer_verifier(7777)
+
+        with pytest.raises(OSError):
+            verify(MagicMock())
+
+    def test_the_peer_verifier_accepts_the_recorded_gateway_pid(self, monkeypatch):
+        """A peer whose pid matches the recorded gateway proceeds (no raise)."""
+        from kiro_crew import cli_server
+
+        monkeypatch.setattr(cli_server, "_recorded_gateway_pid", lambda _port: 4242)
+        monkeypatch.setattr(cli_server, "get_peer_pid", lambda _sock: 4242)
+        verify = cli_server._minting_peer_verifier(7777)
+
+        # Returns None (proceeds) without raising.
+        assert verify(MagicMock()) is None
+
+
+class TestOwnershipProofAvailable:
+    """``_ownership_proof_available`` is True only where the proof can actually run."""
+
+    def test_true_on_posix_with_the_lookup_tool(self, monkeypatch):
+        from kiro_crew import cli_server
+
+        monkeypatch.setattr(cli_server.platform_compat, "IS_POSIX", True)
+        monkeypatch.setattr(
+            cli_server.platform_compat, "listening_pid_tool_available", lambda: True
+        )
+        assert cli_server._ownership_proof_available(7777) is True
+
+    def test_false_off_posix(self, monkeypatch):
+        """Native Windows: no POSIX owner and no AF_UNIX, so the proof cannot run."""
+        from kiro_crew import cli_server
+
+        monkeypatch.setattr(cli_server.platform_compat, "IS_POSIX", False)
+        monkeypatch.setattr(
+            cli_server.platform_compat, "listening_pid_tool_available", lambda: True
+        )
+        assert cli_server._ownership_proof_available(7777) is False
+
+    def test_false_when_the_lookup_tool_is_missing(self, monkeypatch):
+        """Socket-degraded POSIX: lsof/netstat absent, so the loopback-owner step folds empty."""
+        from kiro_crew import cli_server
+
+        monkeypatch.setattr(cli_server.platform_compat, "IS_POSIX", True)
+        monkeypatch.setattr(
+            cli_server.platform_compat, "listening_pid_tool_available", lambda: False
+        )
+        assert cli_server._ownership_proof_available(7777) is False
 
 
 class TestBannerBranding:

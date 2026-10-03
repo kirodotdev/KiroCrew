@@ -22,7 +22,7 @@ import urllib.error
 import urllib.request
 from collections import deque
 from pathlib import Path
-from typing import NoReturn
+from typing import Any, Callable, NoReturn
 
 from kiro_crew import __version__, dep_sync, platform_compat
 from kiro_crew.beacon import distribution, is_default_home
@@ -62,6 +62,7 @@ from kiro_crew.instances import run_marker
 from kiro_crew.kiro_cli import PATH_ONLY_INSTALL_NOTE, is_bundled_kiro_cli, pin_kiro_cli
 from kiro_crew.learn import LessonStore
 from kiro_crew.loopback_http import loopback_urlopen, unix_socket_urlopen
+from kiro_crew.mcp_gateway.socketsec import get_peer_pid
 from kiro_crew.memory import MemoryStore
 from kiro_crew.platform.update_capability import (
     EXTERNALLY_MANAGED_MESSAGES,
@@ -183,13 +184,34 @@ def _token(args: argparse.Namespace) -> None:
         print("❌ Gateway not running — start it with: kirocrew gateway", file=sys.stderr)
         sys.exit(1)
 
+    # /api/token/local MINTS owner tokens, so the request below carries a
+    # credential a foreign local listener must never receive, and it goes out
+    # over the peer-verified transport (see _minting_secret_urlopen): the unix
+    # socket kernel-verifies the peer at connect time, with no TCP fallback.
+    # The ownership proof here is the guard for the TCP path, and it is enforced
+    # ONLY where it can run (_ownership_proof_available): on native Windows (no
+    # AF_UNIX, no POSIX owner) or a socket-degraded POSIX host the proof is
+    # structurally unavailable, so refusing there would remove the command
+    # rather than harden it -- those hosts keep the prior transport, which is
+    # where they already were. Where the proof CAN run, a secret present but
+    # ownership unproven means the gateway is not this home's, so refuse rather
+    # than hand the minting secret to whoever answers.
+    if _ownership_proof_available(port) and not _verified_loopback_gateway_pids(port):
+        print(
+            "❌ Gateway not verified on this port — the listener could not be "
+            "confirmed as this install's gateway; refusing to send the token "
+            "secret. Start it with: kirocrew gateway",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     url = f"http://{_CLI_LOOPBACK}:{port}/api/token/local?ttl={args.ttl}"
     epp = getattr(args, "embed_parent_port", None)
     if epp:
         url += f"&embed_parent_port={int(epp)}"
     req = urllib.request.Request(url, headers={"X-Local-Secret": secret})
     try:
-        with loopback_urlopen(req, timeout=5) as resp:
+        with _minting_secret_urlopen(req, port, 5) as resp:
             data = json.loads(resp.read())
             token = data.get("token", "")
     except urllib.error.HTTPError as exc:
@@ -481,6 +503,129 @@ def _verified_loopback_gateway_pids(port: int) -> list[int]:
     if owner is None or owner != os.getuid():
         return []
     return [pid]
+
+
+def _ownership_proof_available(port: int) -> bool:
+    """Whether the loopback-ownership proof can actually run on this host.
+
+    :func:`_verified_loopback_gateway_pids` returns ``[]`` both when the proof
+    RAN and found no owner (a real negative, enforce) and when the proof could
+    not run at all (structurally unavailable, do not enforce). Those must not be
+    conflated: enforcing on the second case fails closed on a platform where the
+    proof can never pass, which removes the feature there outright rather than
+    hardening it. The proof needs:
+
+    * **POSIX** -- off POSIX ``process_owner_uid`` reports no owner and the
+      file-permission argument the recorded identity rests on does not hold, so
+      the proof denies by construction (native Windows, where CPython also has
+      no ``AF_UNIX`` for the peer-verified transport);
+    * **the port->pid lookup tool** (``lsof`` / ``netstat``) -- without it the
+      loopback-owner step folds into an empty list, so a genuinely-owned port
+      reads as unproven (a socket-degraded host).
+
+    Where this is False the caller keeps the pre-existing transport for that
+    platform: the ``SO_PEERCRED`` / loopback-pid threat the gate closes needs
+    the very capability that is missing, and removing the feature is the worse
+    regression. Where it is True the gate is enforced, because that is exactly
+    where the proof works and the check-then-connect threat lives.
+    """
+    return platform_compat.IS_POSIX and platform_compat.listening_pid_tool_available()
+
+
+def _recorded_gateway_pid(port: int) -> int | None:
+    """The live pid the gateway recorded for ``port``, or ``None`` if unproven.
+
+    Reads ``run/gateway-<port>.pid`` and its ``.start`` sidecar (both ``0600``
+    inside the ``0700`` ``run/`` dir on the ``is_sensitive_path`` floor, so
+    another local user cannot nominate a process of theirs) and returns the pid
+    only when the recorded start token still matches the live pid's -- so a pid
+    left by a crash and recycled onto an unrelated process does not inherit the
+    claim. This is the identity :func:`_verified_loopback_gateway_pids` proves,
+    without the reachability/owner steps that the connect itself supplies.
+    """
+    record = run_marker.read_pid_record_path(
+        config_dir() / run_marker.RUN_DIR_NAME / run_marker.pid_file_name(port)
+    )
+    if record is None:
+        return None
+    pid, start_token = record
+    if not start_token or start_token != run_marker.pid_start_token(pid):
+        return None
+    return pid
+
+
+def _minting_peer_verifier(port: int) -> "Callable[[socket.socket], None]":
+    """Build a connect-time peer check pinned to ``port``'s recorded gateway.
+
+    A unix socket proves which *user* answers (the file lives in an owner-only
+    directory) but not which *process*: that directory's owner can unlink the
+    path and bind their own listener there, and the mint request would hand that
+    listener the token-minting secret. ``loopback_http.unix_socket_urlopen``
+    documents exactly this same-UID rebind, and ``pod/runtime_client`` already
+    guards its pod mint against it the same way. The kernel closes it: peer
+    credentials on the connected socket (``SO_PEERCRED`` on Linux,
+    ``LOCAL_PEERPID`` on macOS) name the listener's pid as of ``listen()``, so
+    requiring that pid to equal the gateway's recorded pid refuses a rebound
+    socket BEFORE any HTTP bytes -- the credential header included. The record
+    is re-read on the connected socket so a pid recycled between the record read
+    and connect cannot attest. Deny-by-default: a mismatched peer and an
+    unreadable peer both refuse.
+    """
+
+    def _verify(sock: socket.socket) -> None:
+        peer = get_peer_pid(sock)
+        current = _recorded_gateway_pid(port)
+        if current is None or peer != current:
+            raise OSError(
+                "refusing to send the token secret: the gateway socket is "
+                "answered by a process that is not this install's recorded "
+                "gateway (the socket path may have been rebound since the "
+                "gateway started). Start it with: kirocrew gateway"
+            )
+
+    return _verify
+
+
+def _minting_secret_urlopen(req: urllib.request.Request, port: int, timeout: float) -> Any:
+    """Send a request carrying the token-minting secret over a peer-verified transport.
+
+    ``/api/token/local`` mints owner tokens, so the request carries a credential
+    a foreign local listener must never receive. Prefer the gateway's unix
+    socket: it kernel-verifies the peer at connect time via ``SO_PEERCRED``, so
+    the credential reaches only a process the kernel confirms, with no TCP
+    fallback. That closes the check-then-connect window a port-ownership proof
+    alone leaves open — the proof reads one syscall and the request's own
+    ``loopback_urlopen`` opens a fresh connection in another, and a same-host
+    squatter can win the gap between them. The socket has no such gap.
+
+    The connect-time ``verify_peer`` check (:func:`_minting_peer_verifier`) adds
+    the one guarantee a unix socket does not give on its own: a same-UID process
+    can unlink the owner-writable socket path and bind its own listener, which
+    the file location cannot catch, so the kernel peer pid is checked against
+    the gateway's recorded pid before any bytes go out. The pod mint already
+    guards its socket this way (``pod/runtime_client``).
+
+    ``unix_socket_urlopen`` deliberately does NOT fall back to TCP: a stale
+    socket is exactly the dead-gateway case in which a foreign process may hold
+    the loopback port, so a fallback would hand the minting secret to whatever
+    answers. TCP is used only where there is no bound socket to prefer -- native
+    Windows (no ``AF_UNIX``), or a POSIX gateway up on TCP that has not bound its
+    socket file -- where the port is the sole local transport; there the
+    caller's address-aware ownership proof is the guard, since no socket exists
+    to prefer. A socket path that EXISTS is always used, even if stale, so the
+    no-fallback guarantee holds for the case it protects.
+    """
+    try:
+        from kiro_crew.dashboard.urls import dashboard_socket_path
+
+        socket_path: str | None = str(dashboard_socket_path(port))
+    except Exception:
+        socket_path = None
+    if socket_path is not None and hasattr(socket, "AF_UNIX") and os.path.exists(socket_path):
+        return unix_socket_urlopen(
+            req, timeout, socket_path=socket_path, verify_peer=_minting_peer_verifier(port)
+        )
+    return loopback_urlopen(req, timeout=timeout)
 
 
 def _stop_expected_pid(port: int, expect_pid: int) -> None:
@@ -1363,9 +1508,24 @@ def _print_token_url(port: int) -> None:
             if not secret:
                 time.sleep(_RESTART_READY_POLL_INTERVAL)
                 continue
+            # /api/token/local MINTS owner tokens, so the request below goes out
+            # over the peer-verified transport (see _minting_secret_urlopen): the
+            # unix socket kernel-verifies the peer at connect time, no TCP
+            # fallback. The ownership proof paces this restart arm ONLY where it
+            # can run (_ownership_proof_available): on native Windows or a
+            # socket-degraded POSIX host the proof is structurally unavailable,
+            # so gating there would never print a URL -- those hosts keep the
+            # prior behaviour (send once a secret is present). Where the proof CAN
+            # run, unproven is treated exactly like "no secret yet" -- the gateway
+            # may simply not have recorded its marker yet -- so keep polling until
+            # ownership is proven or the deadline passes rather than handing the
+            # secret to whoever answers.
+            if _ownership_proof_available(port) and not _verified_loopback_gateway_pids(port):
+                time.sleep(_RESTART_READY_POLL_INTERVAL)
+                continue
             url = f"http://{_CLI_LOOPBACK}:{port}/api/token/local?ttl={_RESTART_TOKEN_TTL}"
             req = urllib.request.Request(url, headers={"X-Local-Secret": secret})
-            with loopback_urlopen(req, timeout=3) as resp:
+            with _minting_secret_urlopen(req, port, 3) as resp:
                 data = json.loads(resp.read())
                 token = data.get("token", "")
             if token:
@@ -2496,8 +2656,7 @@ def _update_approve() -> None:
     req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
     # Prefer the gateway's unix socket: it kernel-verifies the caller
     # (SO_PEERCRED), so the approval works on a token-auth-enabled install
-    # without this CLI ever holding a dashboard token. TCP loopback is the
-    # fallback for hosts without the socket.
+    # without this CLI ever holding a dashboard token.
     try:
         from kiro_crew.dashboard.urls import dashboard_socket_path
 
@@ -2505,7 +2664,24 @@ def _update_approve() -> None:
     except Exception:
         socket_path = None
     try:
-        with loopback_urlopen(req, timeout=15, unix_socket_path=socket_path) as resp:
+        # NOT `loopback_urlopen`: this request carries the single-use nonce AND
+        # the local secret, and that opener's own contract says a caller whose
+        # request carries a credential another process could capture on the port
+        # wants `unix_socket_urlopen` instead. Its TCP fallback fires on a STALE
+        # socket -- exactly the dead-gateway case in which a foreign local process
+        # may hold the loopback port -- so falling back would hand both the nonce
+        # and the secret to whatever answers. A gateway that is gone is reported
+        # as not running rather than retried on a port nothing trustworthy holds.
+        #
+        # TCP stays the transport only where there is no bound socket to prefer:
+        # native Windows (no `AF_UNIX`), or a POSIX gateway up on TCP that has not
+        # bound its socket file. A socket path that EXISTS is always used, even if
+        # stale, so the no-fallback guarantee holds for the case it protects.
+        if socket_path is not None and hasattr(socket, "AF_UNIX") and os.path.exists(socket_path):
+            approve_resp = unix_socket_urlopen(req, 15, socket_path=socket_path)
+        else:
+            approve_resp = loopback_urlopen(req, timeout=15)
+        with approve_resp as resp:
             body = json.loads(resp.read())
     except urllib.error.HTTPError as e:
         try:

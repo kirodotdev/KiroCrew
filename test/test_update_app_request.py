@@ -447,3 +447,67 @@ class TestCliApprove:
         cli_server._update_approve()
         out = capsys.readouterr().out
         assert "Settings" in out and "About" in out
+
+    def test_approval_goes_over_the_socket_and_never_falls_back_to_tcp(
+        self, monkeypatch, capsys
+    ) -> None:
+        """The nonce + secret ride the unix socket, and a stale socket is fatal.
+
+        The approval request carries BOTH the single-use nonce and the local
+        secret, so a TCP retry when the socket is stale could hand both to a
+        foreign process holding the loopback port. This proves the opener is the
+        no-fallback ``unix_socket_urlopen`` (not ``loopback_urlopen``): when the
+        socket raises a stale-connect error, the CLI reports the gateway as not
+        running rather than reaching for TCP.
+        """
+        import socket as _socket
+        import time
+        import urllib.error
+
+        from kiro_crew import cli_server
+        from kiro_crew.platform import update_capability, update_stepup
+
+        if not hasattr(_socket, "AF_UNIX"):
+            pytest.skip("no AF_UNIX on this platform")
+
+        monkeypatch.setattr(update_capability, "derive_capability", _wheel_capability)
+        monkeypatch.setattr(
+            update_stepup,
+            "read_pending",
+            lambda: update_stepup.PendingUpdate(
+                request_id="rid",
+                nonce="n0nce",
+                version="9.9.9",
+                channel="stable",
+                created_at=time.time(),
+            ),
+        )
+        monkeypatch.setattr(cli_server, "resolve_client_port", lambda _p: 7777)
+        monkeypatch.setattr(cli_server, "read_local_secret", lambda _port, **_kw: "sekret")
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.urls.dashboard_socket_path", lambda _port: "/run/gw.sock"
+        )
+        # The socket file is PRESENT (bound) but goes stale at connect time: the
+        # path exists, so the socket branch is taken, and the stale-connect error
+        # is fatal rather than retried over TCP.
+        monkeypatch.setattr(cli_server.os.path, "exists", lambda _p: True)
+
+        tcp_calls: list[object] = []
+        monkeypatch.setattr(
+            cli_server,
+            "loopback_urlopen",
+            lambda *a, **k: tcp_calls.append((a, k)),
+        )
+
+        def stale_socket(_req, _timeout, *, socket_path):
+            raise urllib.error.URLError(FileNotFoundError(socket_path))
+
+        monkeypatch.setattr(cli_server, "unix_socket_urlopen", stale_socket)
+
+        with pytest.raises(SystemExit) as exc:
+            cli_server._update_approve()
+
+        assert exc.value.code == 1
+        assert tcp_calls == [], "a stale socket must not fall back to TCP with the nonce+secret"
+        out = capsys.readouterr().out
+        assert "not running" in out
