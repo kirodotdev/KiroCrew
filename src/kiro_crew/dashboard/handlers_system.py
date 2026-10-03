@@ -68,6 +68,34 @@ _sys_cpu_pct: float = 0.0
 # first sample; reuse the previous value so the header doesn't flash to 0).
 _last_win_cpu_pct: float = 0.0
 
+#: Whether this process has already WARNED that the live system-wide memory
+#: probe in :func:`_collect_system_metrics` came up empty.
+_live_mem_probe_reported: bool = False
+
+
+def _live_mem_probe_unavailable(reason: str, *, exc_info: bool = False) -> None:
+    """Say that the live system-wide memory probe produced no figures.
+
+    One WARNING per process, DEBUG after that: the probe re-runs every time
+    the :data:`_METRICS_CACHE_TTL` window lapses while a dashboard polls
+    ``/api/system``, so a host whose ``/proc/meminfo`` stays unreadable would
+    otherwise warn on every collection. Every failure still leaves one record,
+    so the gap stays diagnosable from the product's own logs. The static probe
+    in :func:`_get_static_system_info` is a separate path with its own policy.
+    """
+    global _live_mem_probe_reported
+    level = logging.DEBUG if _live_mem_probe_reported else logging.WARNING
+    _live_mem_probe_reported = True
+    # Phrased as what the LIVE probe did not publish: the payload may still
+    # carry a mem_total_gb the static probe read once at startup.
+    logger.log(
+        level,
+        "%s; the live probe published no mem_total_gb/mem_used_gb/mem_free_gb",
+        reason,
+        exc_info=exc_info or None,
+    )
+
+
 # Cached static system info (computed once)
 _STATIC_SYSTEM_INFO: dict[str, object] | None = None
 
@@ -552,9 +580,12 @@ def _collect_system_metrics() -> dict[str, object]:
         if sys.platform == "darwin":
             out = subprocess.check_output([_SYSCTL, "-n", "hw.memsize"], timeout=2).decode().strip()
             total_bytes = int(out)
-            data["mem_total_gb"] = round(total_bytes / (1024**3), 1)
             vm = subprocess.check_output([_VM_STAT], timeout=2).decode()
             mem_used, mem_free = _macos_memory_gb(total_bytes, vm)
+            # Published only once BOTH reads succeeded: a sysctl that answers
+            # and a vm_stat that then fails must not leave a live total beside
+            # a log line saying the live figures are unavailable.
+            data["mem_total_gb"] = round(total_bytes / (1024**3), 1)
             data["mem_used_gb"] = mem_used
             data["mem_free_gb"] = mem_free
         elif sys.platform == "win32":
@@ -566,13 +597,16 @@ def _collect_system_metrics() -> dict[str, object]:
                 data["mem_total_gb"] = mem_total
                 data["mem_free_gb"] = mem_free
                 data["mem_used_gb"] = round(mem_total - mem_free, 1)
+            else:
+                # system_memory() folds every failure into None, so there is
+                # no exception to attach here.
+                _live_mem_probe_unavailable("GlobalMemoryStatusEx returned nothing")
         else:
             with open("/proc/meminfo") as f:
                 meminfo: dict[str, int] = {}
                 for line in f:
                     parts = line.split()
                     meminfo[parts[0].rstrip(":")] = int(parts[1])
-                mem_total = round(meminfo.get("MemTotal", 0) / (1024**2), 1)
                 # Prefer the kernel's own MemAvailable (Linux 3.14+): it already
                 # accounts for reclaimable page cache AND reclaimable slab
                 # (SReclaimable), so "used" matches `free`'s accounting. The old
@@ -593,11 +627,21 @@ def _collect_system_metrics() -> dict[str, object]:
                         / (1024**2),
                         1,
                     )
-                data["mem_total_gb"] = mem_total
-                data["mem_free_gb"] = mem_free
-                data["mem_used_gb"] = round(mem_total - mem_free, 1)
+                # A /proc/meminfo with no MemTotal line is a probe that read
+                # nothing usable, not a 0 GB host, and a total defaulted to 0
+                # makes mem_used_gb = 0 - MemAvailable, a negative figure.
+                # Leave the three keys out instead (every reader already
+                # tolerates the absent shape) and say so.
+                total_kb = meminfo.get("MemTotal", 0)
+                if total_kb > 0:
+                    mem_total = round(total_kb / (1024**2), 1)
+                    data["mem_total_gb"] = mem_total
+                    data["mem_free_gb"] = mem_free
+                    data["mem_used_gb"] = round(mem_total - mem_free, 1)
+                else:
+                    _live_mem_probe_unavailable("/proc/meminfo has no usable MemTotal line")
     except Exception:
-        pass
+        _live_mem_probe_unavailable("system-wide memory probe failed", exc_info=True)
 
     # CPU usage
     cores = os.cpu_count() or 1
