@@ -1257,6 +1257,39 @@ return the slot because the record it reads is gone. Pinned by
 `test_overload_integration_glue.py::test_stop_all_reaps_a_resident_resumed_run_it_never_treats_as_queued`
 and `::test_stop_all_never_takes_the_queued_stop_path_for_a_claimable_resident_row`. Queue removal happens before the first
 suspending await, so a scheduled drain cannot start work after the stop request.
+The rows' store cancels never run on the loop: a synchronous cancel there holds
+it for the store's busy timeout, once per row, whenever the store is contended
+(one measured Stop all froze the gateway for 10 s that way). Each pass
+(the window's rows, then this parent's rows waiting outside it) queues ONE job
+on the store's writer thread for all its rows (`taskq_post_cancel_queued` →
+`taskq_cancel_queued_each`, which runs `taskq_cancel_queued` per row) and only
+then drops the window entries. Both happen before the pass first awaits, and
+the writer thread runs jobs in submission order, so a refill or claim queued
+afterwards lands behind the cancels and finds the rows cancelled. With the pump
+inline the job runs inline too, because there the pump's own store calls are
+not ordered behind that thread. A refill fetch queued BEFORE the job can still
+run first and read the rows as waiting, so the parent is held in
+`_stopping_parents` across both passes and `_refill_apply` windows none of its
+rows meanwhile: such a fetch can neither put back a row the stop is cancelling
+nor window a store-only row the pending read would then skip. The job is queued
+before the entries are dropped so that a post that raises leaves the window
+whole. The answers are applied by a tracked task the
+request awaits through a shield, so a request cancelled after the job was
+queued still reports every row the job cancelled. A cancel that landed is the
+row's terminal write, so its queued-stop report skips the settle's `finish`
+(`row_settled`; it could only be refused) and keeps the propagation to a waiting
+parent. The stage Cancel, the parent-end teardown and a single `cancel` pass the
+same flag for the rows whose own cancel landed. A cancel that did not land
+leaves the settle in place and is re-posted (`_repost_unlanded_cancel`). Pinned by
+`test_queue_depth_reconcile.py::test_stop_all_over_store_only_rows_never_blocks_the_loop`,
+`::test_stop_all_queues_its_cancels_and_drops_its_entries_before_it_suspends`,
+`::test_a_refill_queued_before_stop_all_windows_none_of_the_parents_rows`,
+`::test_a_stop_all_whose_post_raises_leaves_the_window_whole`,
+`::test_stop_all_reposts_a_row_cancel_that_did_not_land`,
+`::test_a_stop_all_cancelled_mid_batch_still_reports_every_row_it_cancelled`,
+`::test_shutdown_during_stop_all_drains_the_reports_its_applier_spawns` (see
+`cancel_all`) and
+`::test_a_queued_stop_skips_the_settle_its_landed_cancel_already_wrote`.
 Each removed queue entry emits a neutral stopped terminal record through the
 normal completion consumer, which closes batch accounting instead of stranding a
 wave. Those synthetic records remain marked as never started while their terminal
@@ -1279,7 +1312,8 @@ even when there was nothing left to stop. A queued pass that raises ends the
 call before the running sweep, and the request reports the failure: reaping
 first would free slots the pump fills at once with the very rows the failed
 pass did not reach. One row that fails does not stop the pass: a row whose
-unqueue raised is still waiting, so the pass goes on and then raises that
+store cancel raised is still waiting (the store still holds it, and the next
+refill puts it back in the window), so the pass goes on and then raises that
 failure; a row whose report raised was removed and counts as stopped.
 
 ### `cancel_for_boundary(parent_session_key, boundary_owner) -> (running, queued)`
@@ -1326,6 +1360,13 @@ remains eligible.
 
 ### `cancel_all() -> None`
 Cancels all running subagents, stops the reaper loop, and awaits their cleanup. Handles `CancelledError` gracefully — sessions released, count decremented.
+The shielded terminal reports (`_report_tasks`) are then drained inside ONE
+`_REPORT_DRAIN_TIMEOUT` budget, and the drain re-reads the set after each wait:
+a drained task can start another (a Stop all's tracked applier spawns each row's
+queued-stop report once its writer-thread job answers), so a report that joined
+during the drain is waited for too, and one still pending at the deadline is a
+straggler like the rest. Pinned by
+`test_queue_depth_reconcile.py::test_shutdown_during_stop_all_drains_the_reports_its_applier_spawns`.
 
 ### `steer_run(agent_id, message) -> (ok, detail)` / `follow_up_run(agent_id, message) -> (ok, detail)`
 Two delivery modes for `spawn_steer` (REST `POST /api/spawn/{id}/steer`, body `mode`: `"interrupt"` default / `"follow_up"`). `steer_run` injects into the RUNNING turn via the provider's `steer`, with a bounded startup-grace poll for a live run whose session has not registered yet (#1113). `follow_up_run` never interrupts: it queues the message on `SubagentInfo.pending_followups` and arms a one-per-run watcher (`_deliver_followups`, registered in the manager-owned `_followup_watchers` dict — NOT the global `_safe_fire` set — because a watcher can spawn a brand-new run and must therefore be reachable by `cancel_all()`, per the same containment contract as `_schedule_cancel_recovery`; `cancel_all` cancels watchers BEFORE the run tasks so none can dispatch into a shutting-down gateway, and the watcher re-checks `_shutting_down` before dispatch). The watcher waits for the run to complete (`info.done` AND its task popped from `_tasks`, so teardown is finished), then dispatches the whole queue as ONE `continue_conversation` on the run's own conversation (messages joined in arrival order — three corrections cost one continuation, not three). Companion `_followup_watcher_parents` and `_followup_watcher_infos` maps retain the parent and exact run record independently of `_agents`; pending-work queries count each live parent-owned watcher, and exact stage cancellation can still revoke an owner after completed-record eviction. Stage cancellation clears that owner's queued follow-ups and cancels its watcher before durable settlement, so no continuation can dispatch or re-arm. The continuation is a normal new run on the same parent session, so its result arrives as a separate completion event. OUTCOME-AWARE: a run the user explicitly STOPPED (`user_stopped`) suppresses dispatch (`followup_suppressed` audit) — resurrecting killed work is the opposite of "the correction can wait"; error/timeout terminals still dispatch (the continuation carries the conversation's context, so "fix what broke" is legitimate). An exact stage cancellation also suppresses the follow-up, but emits no synthetic completion because that owner's parent route has been revoked. Other undeliverable paths (user stop, watcher expiry, dispatch failure) announce a SYNTHETIC failure completion event through the normal `_on_done` path, because the spawn_steer reply promised the parent an event — `followup_expired`/`followup_failed`/`followup_suppressed` SEL audits alone would leave the parent blocked on an event that never comes. Deliberately a per-run poller, NOT a hook in `_run`'s 3-guard finalization: completion is reached from many terminal paths (normal/error/timeout/cancel-recovery/reaper) and a watcher observes the outcome without adding an obligation to any of them. Bounded everywhere: poll cadence 2s, hard deadline `default_timeout + 300s`, and residual `conversation_busy` after done gets a bounded retry. Typed refusals mirror steer: `not_found`, and `not_running` (use `spawn_continue` directly on a finished run).
@@ -2141,9 +2182,12 @@ Specified in [taskq.md](taskq.md); this section is the manager's side of it.
   since an outage leaves this generation on the row. Pinned on both settle paths
   by `test_taskq_admission_integration.py::test_a_terminal_write_the_store_refused_still_resumes_the_parent`
   and `::test_a_fenced_settle_propagates_unless_a_live_owner_holds_the_row`.
-- **Cancel.** `_unqueue_impl` cancels the store row FIRST (`taskq_cancel_queued`,
-  which also returns the params for a store-only row so the queued-stop report
-  is whole), then drops the window entry. `cancelled` beats the drain in either
+- **Cancel.** The store row is cancelled FIRST (`taskq_cancel_queued`, which
+  also returns the params for a store-only row so the queued-stop report is
+  whole), then `_unqueue_impl` drops the window entry. A single `cancel` takes
+  the store phase itself and hands it to `_unqueue` (`store_cancelled=True`), so
+  its report knows whether the cancel landed. Stop all keeps that order for a
+  whole pass in one writer-thread job (see `cancel_for_parent`). `cancelled` beats the drain in either
   order (see taskq.md § Atomic claim). It matches UNSTARTED entries only: a
   `_resume_id` entry carries a resident run's own id, so an id match cannot tell
   the two apart, and both callers would then convert a live or already-reported

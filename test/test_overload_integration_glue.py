@@ -1370,7 +1370,7 @@ async def test_stop_all_never_takes_the_queued_stop_path_for_a_claimable_residen
         await asyncio.sleep(3600)
 
     reported: list[str] = []
-    mgr._report_queued_stop = lambda params: reported.append(  # type: ignore[assignment]
+    mgr._report_queued_stop = lambda params, **_kw: reported.append(  # type: ignore[assignment]
         str(params.get("_preassigned_id") or "")
     )
     try:
