@@ -8,6 +8,7 @@ import InfoTip from '../../components/InfoTip'
 import SimpleSelect from '../../components/SimpleSelect'
 // The crew editor's create dialog, shared the way the Crewmates dialog shares it.
 import { WorkspaceModal } from '../KiroCrewAgentsPage'
+import RestartButton from '../../components/RestartButton'
 import { useProvider } from '../../providers'
 import { useSidePanelLeaveGuard } from '../../components/SidePanelLayout'
 import { DEFAULT_CREWMATE_HIGHLIGHT_ANCHOR } from '../../hooks/useSettingHighlight'
@@ -494,6 +495,9 @@ export default function KiroCrewCfgTab() {
           <CfgNumber key={`poolsize-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.pool_size')} path="session.pool_size" value={cfg.session.pool_size ?? 0} min={0} max={10} hint={i18nT('pages.overview.kiroCrewCfgTab.number_of_pre_spawned_processes_0_disables')} onSave={save} />
           <CfgSelect key={`poolagent-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.pool_agent')} path="session.pool_agent" value={cfg.session.pool_agent ?? ''} options={['', ...Object.keys(cfg.agents)]} labels={{'': `(${cfg.default_agent || i18nT('pages.overview.kiroCrewCfgTab.default_agent')})`}} hint={i18nT('pages.overview.kiroCrewCfgTab.agent_for_pool_processes_empty_uses_default_agent')} onSave={save} />
           <CfgNumber key={`poolttl-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.pool_ttl')} path="session.pool_ttl_secs" value={cfg.session.pool_ttl_secs} suffix="s" min={0} max={7200} hint={i18nT('pages.overview.kiroCrewCfgTab.max_age_for_pooled_processes_0_disables_expiry')} onSave={save} />
+        </div>
+        <div className="mt-4">
+          <RestartButton />
         </div>
       </Card>
       )}

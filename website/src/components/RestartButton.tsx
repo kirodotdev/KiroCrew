@@ -1,9 +1,9 @@
 import { useState } from 'react'
 import { Zap } from 'lucide-react'
 import { api } from '../api/client'
+import ErrorNotice from './ErrorNotice'
 
 import { i18nT } from '../i18n/t'
-import ErrorNotice from './ErrorNotice'
 
 export default function RestartButton() {
   const [restarting, setRestarting] = useState(false)
