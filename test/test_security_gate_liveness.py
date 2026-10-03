@@ -158,7 +158,11 @@ def _url_payload_command(n: int) -> str:
 #: added here fails this gate and has to be re-pinned deliberately, with its reason
 #: written above. The guards that detect a monolith growing back are the per-file cap
 #: and the facade's share below, and both must stay untouched.
-_PACKAGE_LINE_BUDGET = 28_399
+#:
+#: Re-pinned from 28,399 for the one ``pinned-order`` entry in
+#: ``paths._CREW_SECRET_LEAVES``: the person's pinned-session order is fenced
+#: from agent file tools like ``tag-grants`` beside it.
+_PACKAGE_LINE_BUDGET = 28_400
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

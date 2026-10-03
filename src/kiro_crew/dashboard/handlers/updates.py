@@ -2416,6 +2416,27 @@ async def api_logs(request: web.Request) -> web.StreamResponse:
 # ── Dashboard SSE ──
 
 
+def _without_pin_ranks(payload: str) -> str:
+    """The SSE slots frame with every row's ``pin_rank`` removed.
+
+    A rank is a place in the person's whole pinned order, which is the
+    person's own; a scoped stream client gets none of it, as on the app
+    WebSocket and the slots GET.
+    """
+    try:
+        rows = json.loads(payload)
+    except (TypeError, ValueError):
+        return payload
+    if not isinstance(rows, list):
+        return payload
+    return json.dumps(
+        [
+            {k: v for k, v in row.items() if k != "pin_rank"} if isinstance(row, dict) else row
+            for row in rows
+        ]
+    )
+
+
 async def api_stream(request: web.Request) -> web.StreamResponse:
     """SSE endpoint — pushes status + notifications to each connected client.
 
@@ -2452,6 +2473,8 @@ async def api_stream(request: web.Request) -> web.StreamResponse:
                     msg_type = note.get("_type", "")
                     if msg_type == "slots":
                         payload = note["slots"]
+                        if not is_dashboard_user:
+                            payload = _without_pin_ranks(payload)
                         await resp.write(f"event: slots\ndata: {payload}\n\n".encode())
                     elif msg_type == "slot_title":
                         payload = json.dumps({"key": note["key"], "title": note["title"]})

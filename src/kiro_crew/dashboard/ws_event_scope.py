@@ -1366,7 +1366,7 @@ def filter_slots_for_app(
         if slot is None:
             continue
         if _slot_visible(slot, app, allowed_events, state):
-            result.append(_strip_source_link_status(slot_dict))
+            result.append(_strip_pin_rank(_strip_source_link_status(slot_dict)))
             _audit_allow(app, "slots_item")
         else:
             _audit_deny(app, "slots_item", "slot_scope_denied")
@@ -1379,6 +1379,18 @@ def filter_slots_for_app(
 # not the operator's credential-backed view of a repository. Stripped here so
 # widening the general list for dashboard users cannot leak into an app frame.
 _SOURCE_LINK_STATUS_KEYS = ("ci", "state", "mergeable", "mergeStateStatus")
+
+
+def _strip_pin_rank(slot_dict: dict[str, Any]) -> dict[str, Any]:
+    """Return *slot_dict* without its ``pin_rank``.
+
+    A rank is a position in the person's whole pinned order, so in a filtered
+    view the gaps between the ranks left would count the pinned sessions the
+    caller cannot see. The order is the person's; scoped callers get none of it.
+    """
+    if "pin_rank" not in slot_dict:
+        return slot_dict
+    return {k: v for k, v in slot_dict.items() if k != "pin_rank"}
 
 
 def _strip_source_link_status(slot_dict: dict[str, Any]) -> dict[str, Any]:

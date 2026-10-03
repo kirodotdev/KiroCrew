@@ -191,6 +191,9 @@ CHANNEL_AGENT_BLOCKED_TOOLS: tuple[str, ...] = (
     # ``chat_tag_column_list`` stays available: the layout names no session.
     "chat_tag_column_create",
     "chat_tag_column_move",
+    # Reordering pins is the same containment case: it rewrites the person's
+    # sidebar order, and its handler refuses a ``channel:`` caller at dispatch.
+    "chat_session_pin_move",
     "session_revive",
     # The four work-ledger tools, blocked for the same containment reason and not
     # for a new one: a channel agent has no dispatch relationship, so it is

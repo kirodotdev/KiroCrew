@@ -58,6 +58,7 @@ vi.mock('../api/client', async (importOriginal) => {
           'renameSlot', 'forkSession',
         ].map(k => [k, vi.fn().mockResolvedValue({})]),
       ),
+      setPinnedOrder: vi.fn(async (keys: string[]) => ({ ok: true, order: keys })),
       chatFolders: vi.fn().mockResolvedValue([]),
       sessionsSearch: sessionsSearchMock,
     },
@@ -76,6 +77,7 @@ Object.defineProperty(window, 'matchMedia', {
 globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({}) }) as unknown as typeof fetch
 
 import ChatSidebar from '../pages/ChatSidebar'
+import { api } from '../api/client'
 import type { ChatSlot } from '../types'
 import type { RootState } from '../store'
 
@@ -138,6 +140,7 @@ function renderSidebar() {
 describe('ChatSidebar – active-session search preserves backend relevance order', () => {
   beforeEach(() => {
     sessionsSearchMock.mockClear()
+    vi.mocked(api.setPinnedOrder).mockClear()
     localStorage.clear()
     localStorage.setItem('mc-session-stale-collapse-ms', '0')
   })
@@ -165,7 +168,6 @@ describe('ChatSidebar – active-session search preserves backend relevance orde
   })
 
   it('disables pinned reordering while backend relevance rank is active', async () => {
-    localStorage.setItem('mc-pinned-session-order', JSON.stringify(['chat-fresh', 'chat-pinned']))
     renderSidebar()
 
     fireEvent.change(screen.getByPlaceholderText(/search sessions/i), {
@@ -179,8 +181,7 @@ describe('ChatSidebar – active-session search preserves backend relevance orde
     await waitFor(() => expect(pinnedRow()).not.toHaveAttribute('aria-keyshortcuts'))
     fireEvent.keyDown(pinnedRow()!, { key: 'ArrowDown', altKey: true })
 
-    expect(JSON.parse(localStorage.getItem('mc-pinned-session-order')!))
-      .toEqual(['chat-fresh', 'chat-pinned'])
+    expect(api.setPinnedOrder).not.toHaveBeenCalled()
   })
 
   it('pin-first + date-desc re-sort would have inverted this fixture (guards fixture validity)', () => {

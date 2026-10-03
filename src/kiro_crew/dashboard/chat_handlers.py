@@ -192,6 +192,7 @@ from kiro_crew.dashboard.state import (
     stage_boundary_for,
 )
 from kiro_crew.dashboard.system_notices import SESSION_RELOAD_KIND, is_system_notice
+from kiro_crew.dashboard.token_auth import folder_principal
 from kiro_crew.dashboard.turn_dispatch import spawn_guarded_turn
 from kiro_crew.history import (
     HUMAN_TURN_META_KEY,
@@ -1421,6 +1422,11 @@ async def api_chat_slots(request: web.Request) -> web.Response:
     # the full, unchanged response (an app row is already app-scoped downstream).
     from kiro_crew.dashboard.token_auth import MEMBER_CHAT_PRINCIPAL_KEY
 
+    if folder_principal(state, request):
+        # ``pin_rank`` is a place in the person's whole pinned order; an app or
+        # member caller gets none of it, so a filtered list's rank gaps cannot
+        # count the pinned sessions it is not shown.
+        payloads = [{k: v for k, v in p.items() if k != "pin_rank"} for p in payloads]
     if str(request.get(MEMBER_CHAT_PRINCIPAL_KEY) or "").startswith("member:"):
         from kiro_crew.dashboard.session_control import member_owns_slot
 
@@ -3843,6 +3849,19 @@ _DEFERRED_PLAIN_CREATE_KNOWN_KEYS = frozenset(
 )
 
 
+def _created_slot_row(state: Any, request: web.Request, slot: Any) -> dict[str, Any]:
+    """*slot*'s row for the create route's answer, rank-free for a scoped caller.
+
+    A create can answer with an existing, already-pinned session (an
+    idempotent retry or a raced key). Its ``pin_rank`` is a place in the
+    person's whole pinned order, which an app or member caller gets none of.
+    """
+    row = state.serialize_slot(slot)
+    if folder_principal(state, request):
+        row.pop("pin_rank", None)
+    return row
+
+
 async def api_chat_slot_create(request: web.Request) -> web.Response:
     """POST /api/chat/slots — create a new chat slot."""
     state: DashboardState = request.app["state"]
@@ -4059,7 +4078,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         # above already refused everyone else, so this is not a read-back oracle.
         already = adopted_slot_for(state, instance_id, adopt_remote_slot)
         if already is not None:
-            return web.json_response(state.serialize_slot(already))
+            return web.json_response(_created_slot_row(state, request, already))
         # The key is CALLER-supplied, so it is validated against the peer's live
         # session list — the same read the merged sidebar renders. That makes the
         # check free of new policy: a key absent from that view is forged, closed,
@@ -4084,7 +4103,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             # itself.
             raced = adopted_slot_for(state, instance_id, adopt_remote_slot)
             if raced is not None:
-                return web.json_response(state.serialize_slot(raced))
+                return web.json_response(_created_slot_row(state, request, raced))
             return web.json_response({"error": str(exc), "code": ADOPT_TARGET_UNKNOWN}, status=404)
         except RemoteTurnError as exc:
             return web.json_response({"error": str(exc), "code": "remote_bind_failed"}, status=502)
@@ -4144,7 +4163,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             # adoptable now", and a caller must not learn which read observed it.
             raced = adopted_slot_for(state, instance_id, adopt_remote_slot)
             if raced is not None:
-                return web.json_response(state.serialize_slot(raced))
+                return web.json_response(_created_slot_row(state, request, raced))
             return web.json_response({"error": str(exc), "code": ADOPT_TARGET_UNKNOWN}, status=404)
     elif instance_id:
         try:
@@ -4324,7 +4343,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         # frontend's `switchSlot(resp.key)` correct for whichever request lost.
         raced = adopted_slot_for(state, instance_id, adopt_remote_slot)
         if raced is not None:
-            return web.json_response(state.serialize_slot(raced))
+            return web.json_response(_created_slot_row(state, request, raced))
 
     # Coalesce every push inside into ONE broadcast at exit, so the first frame
     # any client sees already carries the folder, title, artifact binding and
@@ -4712,7 +4731,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     # process and a model handshake for a session that never uses it.
     if not slot.is_remote:
         schedule_eager_spawn(state, slot)
-    return web.json_response(state.serialize_slot(slot))
+    return web.json_response(_created_slot_row(state, request, slot))
 
 
 def _reject_pending_approvals(slot: _ChatSlot) -> None:
